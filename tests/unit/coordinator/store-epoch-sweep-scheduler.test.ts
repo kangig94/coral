@@ -69,7 +69,7 @@ import type * as StoreEpoch from '#src/store/epoch/index.js';
 
 import * as historical from '#src/jobs/historical-reader.js';
 
-it('wakes the sweep on historical hydration hints and removes the listener on stop', async () => {
+it('spaces historical hydration hints and removes the listener on stop', async () => {
   vi.useFakeTimers();
   const subscribe = vi.spyOn(historical, 'onHistoricalHydrationHint');
   const f = createTerminalExportFixture();
@@ -88,8 +88,11 @@ it('wakes the sweep on historical hydration hints and removes the listener on st
     const listener = subscribe.mock.calls.at(-1)?.[1];
     expect(listener).toBeTypeOf('function');
     listener?.('historical-epoch');
-    expect(timer.mock.calls.at(-1)?.[1]).toBe(0);
-    await vi.advanceTimersByTimeAsync(0);
+    expect(timer.mock.calls.at(-1)?.[1]).toBe(5000);
+    await vi.advanceTimersByTimeAsync(250);
+    listener?.('historical-epoch');
+    expect(refreshHistoricalEpochs).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(5000);
     expect(refreshHistoricalEpochs).toHaveBeenCalledTimes(2);
     listener?.(f.epochKey);
     expect(timer.mock.calls.at(-1)?.[1]).toBe(5000);

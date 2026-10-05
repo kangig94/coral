@@ -1,3 +1,4 @@
+import { WaitSessionError } from '../../jobs/wait/session.js';
 import { jobsWaitExtensions } from '../rpc/jobs.js';
 import type { ProcessIncarnation } from '../../infra/node-process.js';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
@@ -933,7 +934,8 @@ async function handleJobsWaitSubscription(
     }
   } catch (error) {
     if (!closed && !controller.signal.aborted) {
-      throw error;
+      if (error instanceof WaitSessionError) writeSseEvent(res, 'error', { code: error.code, message: error.message });
+      else throw error;
     }
   } finally {
     close();

@@ -1,71 +1,15 @@
+import { sharedFixture } from '#tests/helpers/shared-fixtures.js';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
-import { build } from 'esbuild';
+import { join } from 'node:path';
 import { afterAll, beforeAll, expect, it } from 'vitest';
 
-const root = resolve('.');
 const directory = mkdtempSync(join(tmpdir(), 'coral-wait-phase-a-'));
 
-beforeAll(async () => {
-  symlinkSync(join(root, 'node_modules'), join(directory, 'node_modules'), 'dir');
-  for (const variant of ['real', 'ungated-handover', 'include-missing', 'property-decoder', 'unbounded-observer']) {
-    await build({
-      entryPoints: [join(root, 'tests/fixtures/wait-lifetime/phase-a.mjs')],
-      outfile: join(directory, `${variant}.mjs`),
-      bundle: true,
-      platform: 'node',
-      format: 'esm',
-      packages: 'external',
-      loader: { '.sql': 'text' },
-      plugins: [
-        {
-          name: 'phase-a-controls',
-          setup(builder) {
-            builder.onResolve({ filter: /^#src\// }, ({ path }) => ({
-              path: join(root, path.replace('#src/', 'src/').replace(/\.js$/, '.ts')),
-            }));
-            builder.onResolve({ filter: /^#tools\// }, ({ path }) => ({
-              path: join(root, path.replace('#tools/', 'tools/').replace(/\.js$/, '.ts')),
-            }));
-            builder.onLoad({ filter: /(?:handler|dispatch|cursor|session|wait|reader)\.ts$/ }, ({ path }) => {
-              let source = readFileSync(path, 'utf8');
-              if (variant === 'unbounded-observer' && path.endsWith('/jobs/wait/reader.ts'))
-                source = source.replace(
-                  'void observeCarriers(input, session, signal).finally(',
-                  'await observeCarriers(input, session, signal).finally(',
-                );
-              if (variant === 'ungated-handover' && path.endsWith('/http/handler.ts')) {
-                source =
-                  "import { raceWithSignal } from '../../infra/promise-signal.js';\n" +
-                  source
-                    .replace(
-                      'const handoverSignal = request.supportsHandover === true ? undefined : deps.jobs.waitHandoverSignal();',
-                      'const handoverSignal = undefined;',
-                    )
-                    .replace(
-                      'const next = await iterator.next();',
-                      "const next = await raceWithSignal(iterator.next(), deps.jobs.waitHandoverSignal(), () => ({ done: false, value: { type: 'handover' } }));",
-                    );
-              }
-              if (variant === 'include-missing' && path.endsWith('/jobs/wait/session.ts'))
-                source = source.replace(
-                  "job.disposition === 'discovery-unknown' ||",
-                  "job.disposition === 'missing' || job.disposition === 'discovery-unknown' ||",
-                );
-              if (variant === 'property-decoder' && path.endsWith('/jobs/wait/cursor.ts'))
-                source = source.replace(
-                  "if (!isRecord(value)) return rejected('wait_cursor_malformed');",
-                  "if (!isRecord(value)) return rejected('wait_cursor_malformed'); if ('afterSeq' in value) return { kind: 'decoded', cursor: value as WaitCursor };",
-                );
-              return { contents: source, loader: 'ts' };
-            });
-          },
-        },
-      ],
-    });
-  }
+beforeAll(() => {
+  for (const variant of ['real', 'ungated-handover', 'include-missing', 'property-decoder', 'unbounded-observer'])
+    symlinkSync(sharedFixture(`phase-${variant}`), join(directory, `${variant}.mjs`));
 });
 
 afterAll(() => rmSync(directory, { recursive: true, force: true }));

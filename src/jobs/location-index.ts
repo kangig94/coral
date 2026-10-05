@@ -27,7 +27,7 @@ import {
 } from './terminal/export.js';
 import { hasReadableTerminalDetail, sameTerminal, validatedTerminal } from './terminal/identity.js';
 import { readAcceptedTerminal, withTerminalSource } from './terminal/source.js';
-import { readIntactJobTerminalAge, readJobTerminalAge } from './terminal-age.js';
+import { readJobTerminalAge } from './terminal-age.js';
 import { trustedJobRetentionCutoff } from './retention-clock.js';
 import { composeReducers } from '../store/reducers.js';
 import { createEventBodyCodec } from '../store/event-body-codec.js';
@@ -496,7 +496,8 @@ export class JobLocationIndex {
         throw new Error(`Source terminal content disagrees: ${jobId}`);
       const cutoff = trustedJobRetentionCutoff(this.runtime);
       if (cutoff === null) return undefined;
-      const age = newlyAppended ? readJobTerminalAge(db, accepted) : readIntactJobTerminalAge(db, accepted, cutoff);
+      const age = readJobTerminalAge(db, accepted);
+      if (!newlyAppended && typeof age === 'number' && age < cutoff) return undefined;
       return {
         epochKey: existing.epochKey,
         terminalSeq,
@@ -668,10 +669,26 @@ export class JobLocationIndex {
     });
   }
 
-  reconcileUnknownLocationHolds(presentKeys: readonly string[]): void {
+  reconcileUnknownLocationHolds(presentKeys: readonly string[], inventoryComplete = true): void {
     for (const hold of this.unknownLocationHolds()) {
       const present = presentKeys.find((key) => sameEpoch(key, hold.epochKey ?? { directory: hold.directory }));
       if (present) continue;
+      if (hold.epochKey === undefined) {
+        if (!inventoryComplete) continue;
+        const scan = this.scan();
+        if (
+          scan.unreadable.length > 0 ||
+          scan.readable.some(
+            (location) =>
+              sameEpoch(location.epochKey, { directory: hold.directory }) && !hasReadableTerminalDetail(location),
+          )
+        )
+          continue;
+        this.runtime.storage.rmSync(join(this.root, 'epochs', hold.directory, 'unknown-locations.v1.json'), {
+          force: true,
+        });
+        continue;
+      }
       if (
         hold.epochKey !== undefined &&
         (this.certificate(hold.epochKey) || this.locationsFor(hold.epochKey).every(hasReadableTerminalDetail))
@@ -681,11 +698,7 @@ export class JobLocationIndex {
       }
       if (hold.epochKey !== undefined && this.historicalSourceState(hold.epochKey) !== 'absent') continue;
       const reason = 'Source retired; no further source read is possible';
-      if (hold.epochKey === undefined) {
-        const path = join(this.root, 'epochs', hold.directory, 'unknown-locations.v1.json');
-        const previous = optionalJson(this.runtime, path, unknownHoldSchema);
-        atomicJson(this.runtime, path, { ...previous, version: 'v1', reason, retryScheduled: false });
-      } else this.holdUnknownLocations(hold.epochKey, reason, false);
+      this.holdUnknownLocations(hold.epochKey, reason, false);
     }
   }
 

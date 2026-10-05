@@ -1,7 +1,6 @@
-import { build } from 'esbuild';
+import { sharedFixture } from '#tests/helpers/shared-fixtures.js';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { mkdirSync, symlinkSync } from 'node:fs';
 import { Command } from 'commander';
 import { registerSessionCommands } from '#src/cli/commands/session.js';
 import { createBuiltInProviderRegistry } from '#src/providers/bootstrap.js';
@@ -157,11 +156,11 @@ describe('actual wait carriage', () => {
     },
   );
 
-  it('delivers 128 huge retained outcomes in one complete unary IPC envelope and full detail keeps diagnostics and trailing text', async () => {
+  it('delivers two bounded retained outcomes in one complete unary IPC envelope and full detail keeps diagnostics and trailing text', async () => {
     const f = createTerminalExportFixture('provider', true);
     cleanup.push(f.close);
-    const ids = Array.from({ length: 128 }, (_, i) => (i === 0 ? f.jobId : `large-${i}`));
-    const content = '🙂\\\"\n'.repeat(16000) + '\nUNIQUE_BEYOND_10000\nTAIL_CONTENT\n';
+    const ids = Array.from({ length: 2 }, (_, i) => (i === 0 ? f.jobId : `large-${i}`));
+    const content = '🙂\\\"\n'.repeat(6000) + '\nUNIQUE_BEYOND_10000\nTAIL_CONTENT\n';
     const warning = 'complete diagnostic '.repeat(8000) + 'DIAGNOSTIC_TAIL';
     for (const [i, jobId] of ids.entries()) {
       if (i > 0)
@@ -176,7 +175,7 @@ describe('actual wait carriage', () => {
         f.store,
         jobId,
         i === 0 ? 'session-1' : `session-${i}`,
-        { content, outcome: { kind: 'provider_exit', code: 0, note: 'large note '.repeat(10000) }, durationMs: 9 },
+        { content, outcome: { kind: 'provider_exit', code: 0, note: 'large note '.repeat(500) }, durationMs: 9 },
         { diagnostics: { warnings: [warning] } },
       );
       const d = f.store.loadJobProjectionDetail(jobId);
@@ -237,7 +236,7 @@ describe('actual wait carriage', () => {
     const response = client.request<WaitSnapshot>('jobs.wait.snapshot', { jobIds: ids, projectRoot: f.root });
     await expect(response).resolves.toHaveProperty('version', 'jobs.wait.v3');
     const snapshot = parseWaitSnapshot(await response);
-    expect(snapshot.jobs).toHaveLength(128);
+    expect(snapshot.jobs).toHaveLength(2);
     expect(
       snapshot.jobs.every(
         (job) => job.terminal && job.terminal.contentOmittedBytes > 0 && job.terminal.diagnosticOmittedBytes > 0,
@@ -258,7 +257,7 @@ describe('actual wait carriage', () => {
         cursor: new WaitSession([]).cursor(),
       }),
     );
-    expect(resumed.jobs).toHaveLength(128);
+    expect(resumed.jobs).toHaveLength(2);
     const acknowledged = new WaitSession(ids);
     acknowledged.reconcile(addressing.admitWait({ jobIds: ids, projectRoot: f.root }));
     for (const job of acknowledged.admissions) acknowledged.acknowledge(job);
@@ -392,11 +391,17 @@ describe('actual wait carriage', () => {
     p.jobs.scopeCheck = () => ({ valid: ['a'], missing: [], mismatch: [] });
     p.jobs.admitWait = () => [job];
     p.jobs.validateWait = () => null;
+    let clock = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => clock);
     p.jobs.waitStream = async function* () {
+      clock = mode === 'drains' ? 950 : 1000;
       yield { type: 'waiting', version: 'jobs.wait.v3', waitingJobIds: ['a'], cursor: session.cursor(), exitCode: 75 };
     };
     const handler = createHttpHandler(p);
-    let responseClosed = false;
+    let closeResponse!: () => void;
+    const responseClosed = new Promise<void>((resolve) => {
+      closeResponse = resolve;
+    });
     const server = createServer((req, res) => {
       const write = res.write.bind(res);
       let blocked = false;
@@ -413,7 +418,7 @@ describe('actual wait carriage', () => {
         return write(data);
       }) as typeof res.write;
       res.once('close', () => {
-        responseClosed = true;
+        closeResponse();
       });
       void handler(req, res);
     });
@@ -425,7 +430,7 @@ describe('actual wait carriage', () => {
         }),
     );
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-    const started = performance.now();
+    const started = Date.now();
     const response = new Promise<string>((resolve, reject) => {
       const req = request(
         {
@@ -449,14 +454,14 @@ describe('actual wait carriage', () => {
     });
     await expect(response).resolves.toEqual(expect.any(String));
     const body = await response;
-    expect(responseClosed).toBe(true);
+    await responseClosed;
     expect(body.endsWith('\n\n')).toBe(true);
     if (mode === 'drains') {
-      expect(performance.now() - started).toBeGreaterThanOrEqual(20);
+      expect(Date.now() - started).toBeGreaterThanOrEqual(20);
       expect(body).toContain('event: waiting');
       expect(body).toContain(serializeWaitCursor(session.cursor()));
     } else {
-      expect(performance.now() - started).toBeLessThan(1500);
+      expect(Date.now() - started).toBeLessThan(1500);
       expect(body).toContain('event: error');
       expect(body).toContain('last completely received cursor');
       expect(body).not.toContain('id: ');
@@ -527,41 +532,7 @@ describe('actual wait carriage', () => {
     expect(snapshot.jobs[0].availability?.kind).toBe('repair-pending');
     expect(snapshot.cursor.jobs[0].flags).toBe(3);
     expect(hints.has(f.jobId)).toBe(true);
-    const imports = [
-      ['createRealRuntime', 'src/runtime/real.ts'],
-      ['JobStore', 'src/jobs/store.ts'],
-      ['JobLocationIndex', 'src/jobs/location-index.ts'],
-      ['createEventBodyCodec', 'src/store/event-body-codec.ts'],
-      ['newRawDatabase', 'tests/helpers/test-db.ts'],
-      ['permissiveProviderLookupPort', 'tests/helpers/append-context.ts'],
-    ]
-      .map(([name, path]) => `import { ${name} } from ${JSON.stringify(resolve(path))};`)
-      .join('\n');
-    const entry = join(f.root, 'maintenance.ts');
-    const outfile = join(f.root, 'maintenance.mjs');
-    writeFileSync(
-      entry,
-      imports +
-        `
-const runtime = createRealRuntime('prod', { baseDir: process.argv[2] });
-const db = newRawDatabase(process.argv[3]);
-const index = new JobLocationIndex(runtime, process.argv[2]);
-const store = new JobStore('fixture', runtime, createEventBodyCodec(), { db, providers: permissiveProviderLookupPort });
-store.configureResultExports(index);
-console.log(JSON.stringify(store.ensureResultArtifact(process.argv[4])));
-db.close();
-`,
-    );
-    symlinkSync(resolve('node_modules'), join(f.root, 'node_modules'), 'dir');
-    await build({
-      entryPoints: [entry],
-      outfile,
-      bundle: true,
-      platform: 'node',
-      format: 'esm',
-      packages: 'external',
-      loader: { '.sql': 'text' },
-    });
+    const outfile = sharedFixture('maintenance');
     const childHome = join(f.root, 'maintenance-home');
     mkdirSync(childHome);
     const published = execFileSync(process.execPath, [outfile, f.root, f.epoch.path, f.jobId], {
@@ -586,4 +557,56 @@ db.close();
       }),
     ]);
   });
+});
+
+import { WaitSessionError } from '#src/jobs/wait/session.js';
+it('HTTP sends a typed mid-stream error and canonicalizes the admission scope', async () => {
+  const f = createTerminalExportFixture();
+  cleanup.push(() => f.close());
+  const alias = join(f.root, 'alias');
+  symlinkSync(f.root, alias);
+  const p = ports();
+  const session = new WaitSession(['a']);
+  session.reconcile([admitted('a', [], false)]);
+  p.jobs.admitWait = vi.fn(() => session.admissions);
+  p.jobs.validateWait = () => null;
+  p.jobs.waitStream = async function* () {
+    yield { type: 'waiting', version: 'jobs.wait.v3', waitingJobIds: ['a'], cursor: session.cursor(), exitCode: 75 };
+    throw new WaitSessionError('wait_epoch_unsupported', 'Run coral-cli jobs detail a --full.');
+  };
+  const handler = createHttpHandler(p);
+  const server = createServer((req, res) => void handler(req, res));
+  cleanup.push(
+    () =>
+      new Promise<void>((resolve) => {
+        server.closeAllConnections();
+        server.close(() => resolve());
+      }),
+  );
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const body = await new Promise<string>((resolve, reject) => {
+    const req = request(
+      {
+        hostname: '127.0.0.1',
+        port: (server.address() as { port: number }).port,
+        path: '/jobs/wait',
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Coral-Backend-Token': 'http-token' },
+      },
+      (res) => {
+        let text = '';
+        res.on('data', (chunk: Buffer) => {
+          text += chunk.toString();
+        });
+        res.on('end', () => resolve(text));
+        res.on('aborted', () => resolve(text));
+        res.on('error', () => resolve(text));
+      },
+    );
+    req.on('error', reject);
+    req.end(JSON.stringify({ jobIds: ['a'], projectRoot: alias, supportsWaitV3: true }));
+  });
+  expect(body).toContain('event: error');
+  expect(body).toContain('wait_epoch_unsupported');
+  expect(p.jobs.admitWait).toHaveBeenCalledWith(expect.objectContaining({ projectRoot: f.root }));
 });

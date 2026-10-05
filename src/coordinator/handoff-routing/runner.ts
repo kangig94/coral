@@ -1206,7 +1206,7 @@ async function recordTerminal(
 
 function supportsWaitInvocation(
   target: string,
-  invocation: WaitInvocationHandoff,
+  invocation: Pick<WaitInvocationHandoff, 'signal' | 'remainingMs' | 'cleanupRemainingMs'>,
   runtime: Runtime,
 ): Promise<boolean | null> {
   return new Promise((resolveContract) => {
@@ -1454,12 +1454,22 @@ export async function runHandoff(
   }
 
   const { routing, runtime, time } = await resolveHandoffRoutingForOperation(operation, options);
-  if (routing.kind === 'handoff' && options.waitInvocation !== undefined) {
+  const needsV3 = operation.kind === 'wait-jobs' && operation.serializedCursor.startsWith('jobs.wait.v3:');
+  if (routing.kind === 'handoff' && (options.waitInvocation !== undefined || needsV3)) {
     const execution = withValidatedHandoffTarget(routing.target);
     execution.assertExecutable();
     const target = join(execution.bundleDir, CLI_BUNDLE_FILE);
-    const supported = await supportsWaitInvocation(target, options.waitInvocation, runtime);
-    if (supported === null) throw new WaitInvocationReadinessError(options.waitInvocation.originalCommand);
+    const probe = options.waitInvocation ?? {
+      signal: options.signal ?? new AbortController().signal,
+      remainingMs: () => 1000,
+      cleanupRemainingMs: () => 100,
+    };
+    const supported = await supportsWaitInvocation(target, probe, runtime);
+    if (supported === null)
+      throw new WaitInvocationReadinessError(
+        options.waitInvocation?.originalCommand ??
+          `coral-cli wait jobs ${operation.kind === 'wait-jobs' ? operation.jobId : ''}`,
+      );
     if (!supported)
       return {
         kind: 'recording-not-applicable',

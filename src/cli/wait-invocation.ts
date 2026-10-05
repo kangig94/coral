@@ -79,6 +79,7 @@ export class WaitInvocation implements WaitInvocationHandoff {
   private readonly onSigint = () => {
     if (!this.continuationFlushed && !this.signal.aborted) this.stop();
     else if (this.signal.aborted) {
+      if (this.monitorEnding) return this.flushContinuation();
       this.flushContinuation(true);
       process.exit(75);
     }
@@ -97,7 +98,7 @@ export class WaitInvocation implements WaitInvocationHandoff {
       inherited !== undefined && process.env[CLI_HANDOFF_GUARD_ENV] === '1' && process.send !== undefined;
     let budget = mode === 'snapshot' ? SNAPSHOT_BUDGET_MS : WAIT_BUDGET_MS;
     let cleanup = mode === 'snapshot' ? SNAPSHOT_CLEANUP_MS : WAIT_CLEANUP_MS;
-    if (process.env[CLI_HANDOFF_GUARD_ENV] === '1' && !this.delegated) budget = 0;
+    if (process.env[CLI_HANDOFF_GUARD_ENV] === '1' && !this.delegated) budget -= 100;
     if (this.delegated) {
       try {
         const context: unknown = JSON.parse(inherited ?? '');
@@ -115,8 +116,7 @@ export class WaitInvocation implements WaitInvocationHandoff {
         budget = Math.min(budget, context.remainingMs);
         cleanup = Math.min(cleanup, context.cleanupMs);
       } catch {
-        budget = 0;
-        cleanup = 0;
+        budget -= 100;
       }
       process.on('message', this.onMessage);
     }

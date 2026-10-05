@@ -21,6 +21,6 @@ export default defineConfig({
     hookTimeout: 30_000,
     pool: 'forks',
     maxWorkers: 1,
-    globalSetup: ['vitest/no-real-coral-leak.ts', 'vitest/isolated-unit-home.ts'],
+    globalSetup: ['vitest/no-real-coral-leak.ts', 'vitest/isolated-unit-home.ts', 'vitest/shared-fixtures.ts'],
   },
 });

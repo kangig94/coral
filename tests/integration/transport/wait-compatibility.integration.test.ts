@@ -1,9 +1,8 @@
-import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { sharedFixture } from '#tests/helpers/shared-fixtures.js';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
-import { build } from 'esbuild';
+import { join } from 'node:path';
 import { afterAll, beforeAll, expect, it } from 'vitest';
 import { JobAddressing } from '#src/jobs/addressing.js';
 import { admitted } from '#tests/helpers/wait-session.js';
@@ -22,7 +21,7 @@ const directory = mkdtempSync(join(tmpdir(), 'coral-released-wait-'));
 const released = new Map<
   string,
   {
-    parseWaitStreamEventValue(value: unknown): unknown;
+    parseWaitStreamEventValue(value: unknown): WaitStreamEvent | null;
     advanceWaitRenderCursor(cursor: WaitCursor, event: WaitStreamEvent): { cursor: WaitCursor; shouldRender: boolean };
     jobWaitSchema: { parse(value: unknown): unknown };
     formatWaitTerminal(event: unknown, cursor: string | null, inline: boolean): string;
@@ -30,36 +29,14 @@ const released = new Map<
     mapWaitSubscriptionError(error: unknown): Error;
   }
 >();
-beforeAll(async () => {
-  for (const tag of ['v0.10.15', 'v0.10.16', 'v0.10.17']) {
-    const root = join(directory, tag);
-    const { mkdirSync } = await import('node:fs');
-    mkdirSync(root);
-    execFileSync('tar', ['-x', '-C', root], {
-      input: execFileSync('git', ['archive', tag, 'src'], { maxBuffer: 30 * 1024 * 1024 }),
-    });
-    symlinkSync(resolve('node_modules'), join(root, 'node_modules'), 'dir');
-    const entry = join(root, 'released.ts');
-    writeFileSync(
-      entry,
-      `export { parseWaitStreamEventValue, advanceWaitRenderCursor } from './src/jobs/wait-stream-event.ts';\nexport { jobWaitSchema } from './src/transport/rpc/jobs.ts';\nexport { formatWaitTerminal } from './src/cli/format/wait.ts';\nexport { errorCodeToExit } from './src/cli/errors.ts';\nexport { mapWaitSubscriptionError } from './src/cli/wait-stream-error.ts';\n`,
-    );
-    const outfile = join(root, 'released.mjs');
-    await build({
-      entryPoints: [entry],
-      outfile,
-      bundle: true,
-      platform: 'node',
-      format: 'esm',
-      packages: 'external',
-      loader: { '.sql': 'text' },
-    });
-    released.set(tag, await import(pathToFileURL(outfile).href));
-  }
+beforeAll(() => {
+  for (const tag of ['v0.10.15', 'v0.10.16', 'v0.10.17', 'v0.10.18'])
+    released.set(tag, createRequire(import.meta.url)(sharedFixture(tag)));
 });
+
 afterAll(() => rmSync(directory, { recursive: true, force: true }));
 
-it.each(['v0.10.16', 'v0.10.17'])(
+it.each(['v0.10.16', 'v0.10.17', 'v0.10.18'])(
   '%s gets supported refusals before unrepresentable membership or missing siblings',
   async (tag) => {
     const reader = released.get(tag)!;
@@ -153,7 +130,7 @@ function addressing(artifact: 'available' | 'repair-pending' | 'retained-away' |
   );
 }
 
-it.each(['v0.10.15', 'v0.10.16', 'v0.10.17'])(
+it.each(['v0.10.15', 'v0.10.16', 'v0.10.17', 'v0.10.18'])(
   'executes %s request, decoder, formatter and error contracts in both cursor directions',
   async (tag) => {
     const reader = released.get(tag)!;
@@ -305,7 +282,7 @@ it.each(['v0.10.15', 'v0.10.16', 'v0.10.17'])(
     await flushMicrotasks(20);
     await expect(next).rejects.toMatchObject({ code: 'wait_epoch_unsupported' });
     for (const availability of ['repair-pending', 'failed', 'retained-away'] as const) {
-      if (availability !== 'repair-pending') {
+      if (availability === 'retained-away') {
         const alreadyAcknowledged: WaitStreamEvent[] = [];
         for await (const event of addressing(availability).waitStream(
           jobsWaitRequest(
@@ -319,7 +296,7 @@ it.each(['v0.10.15', 'v0.10.16', 'v0.10.17'])(
         expect(alreadyAcknowledged.filter((event) => event.type === 'terminal')).toEqual([]);
         expect(alreadyAcknowledged.filter((event) => event.type === 'waiting')).toEqual([]);
       }
-      if (availability === 'repair-pending' || availability === 'failed') {
+      if (availability === 'repair-pending') {
         const pending: WaitStreamEvent[] = [];
         for await (const event of addressing(availability).waitStream({ ...request, timeoutSeconds: 0 } as never)) {
           reader.parseWaitStreamEventValue(event);
@@ -345,5 +322,30 @@ it.each(['v0.10.15', 'v0.10.16', 'v0.10.17'])(
       expect(error.message).not.toContain('--full');
       expect(reader.errorCodeToExit(typed.code)).toBe(1);
     }
+  },
+);
+
+it.each(['v0.10.15', 'v0.10.16', 'v0.10.17', 'v0.10.18'])(
+  'held-progress warning leaves the terminal renderable by %s',
+  async (tag) => {
+    const reader = released.get(tag)!;
+    const job = admitted('a');
+    job.sourceRead = 'transient-unknown';
+    let cursor: WaitCursor = { afterSeq: 0 };
+    const rendered: WaitStreamEvent[] = [];
+    for await (const event of readWaitSession({
+      request: { jobIds: ['a'], supportsWaitV2: tag !== 'v0.10.15', timeoutSeconds: 0 },
+      time: createRealTimePort(),
+      activeEpochKey: 'epoch-E',
+      read: () => [job],
+    })) {
+      const decoded = reader.parseWaitStreamEventValue(event);
+      if (!decoded) continue;
+      const decision = reader.advanceWaitRenderCursor(cursor, decoded);
+      cursor = decision.cursor;
+      if (decision.shouldRender) rendered.push(decoded);
+    }
+    expect(rendered[0]).toMatchObject({ type: 'progress', message: expect.stringContaining('was not shown') });
+    expect(rendered.at(-1)).toMatchObject({ type: 'terminal' });
   },
 );

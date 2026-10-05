@@ -168,12 +168,27 @@ export type ResultAvailability =
       unverifiedResultPath?: string;
     }>;
 
+class RepairSet extends Set<string> {
+  private readonly limit: number;
+  constructor(limit = 1024) {
+    super();
+    this.limit = limit;
+  }
+  override add(jobId: string): this {
+    if (!this.has(jobId) && this.size >= this.limit) {
+      const oldest = this.values().next().value;
+      if (oldest !== undefined) this.delete(oldest);
+    }
+    return super.add(jobId);
+  }
+}
+
 const repairFailures = new WeakMap<object, Set<string>>();
 
 export function resultRepairFailuresFor(ownerScope: object): Set<string> {
   let failures = repairFailures.get(ownerScope);
   if (!failures) {
-    failures = new Set<string>();
+    failures = new RepairSet();
     repairFailures.set(ownerScope, failures);
   }
   return failures;
@@ -198,15 +213,16 @@ export class TerminalResultExportOwner {
     workflowReport?: WorkflowReportPort;
     failures?: Set<string>;
     repairScope?: object;
+    repairQueueLimit?: number;
     prepareTerminal?(jobId: string, db: Database): void;
     hydrationRetry?(jobId: string): boolean | undefined;
   }>;
 
   constructor(input: TerminalResultExportOwner['input']) {
     this.input = input;
-    this.failures = input.failures ?? new Set<string>();
+    this.failures = input.failures ?? new RepairSet(input.repairQueueLimit);
     const scope = input.repairScope ?? this;
-    this.repairQueue = repairQueues.get(scope) ?? { hints: new Set<string>(), listener: null };
+    this.repairQueue = repairQueues.get(scope) ?? { hints: new RepairSet(input.repairQueueLimit), listener: null };
     repairQueues.set(scope, this.repairQueue);
     this.hints = this.repairQueue.hints;
     for (const jobId of this.failures) this.hints.add(jobId);
@@ -345,11 +361,14 @@ export class TerminalResultExportOwner {
     if (!location || location.disposition !== 'terminal') {
       const path = location?.resultPath ?? resultPathFor(this.input.jobsRoot, jobId);
       const unverifiedResultPath = this.readableFile(path) ? path : undefined;
-      if (this.failures.has(jobId))
-        return { kind: 'failed', cause: 'repair-failed', retryScheduled: true, unverifiedResultPath };
       try {
-        if (this.withSource(jobId, (db) => readAcceptedTerminal(db, jobId) !== null))
-          return { kind: 'repair-pending', ageUncertain: true };
+        const terminal = this.withSource(jobId, (db) => readAcceptedTerminal(db, jobId) !== null);
+        if (terminal === null)
+          return { kind: 'failed', cause: 'terminal-unusable', retryScheduled: false, unverifiedResultPath };
+        if (terminal)
+          return this.failures.has(jobId)
+            ? { kind: 'failed', cause: 'repair-failed', retryScheduled: true, unverifiedResultPath }
+            : { kind: 'repair-pending', ageUncertain: true };
       } catch (error) {
         const retry = this.input.hydrationRetry?.(jobId);
         if (retry !== false && sourceReadFailureDisposition(error) === 'transient-unknown')

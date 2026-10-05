@@ -87,7 +87,10 @@ function createStoreOpenedObserver(input: LifecycleRecoveryInput): NonNullable<L
         epoch.resolved ? [encodeResolvedStoreEpoch(runtime, epoch.resolved)] : [],
       );
       present.push(encodeResolvedStoreEpoch(runtime, openStore));
-      jobLocationIndex.reconcileUnknownLocationHolds(present);
+      jobLocationIndex.reconcileUnknownLocationHolds(
+        present,
+        epochs.every((epoch) => epoch.resolved !== null),
+      );
     }
   };
 }

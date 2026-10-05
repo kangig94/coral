@@ -137,9 +137,15 @@ export class WaitSession {
   }
 
   reconcile(admissions: WaitAdmission[]): void {
+    const epochKeys = [...this.epochs.keys()];
     admissions = admissions.map((job) => {
+      if (job.epochKey) {
+        const canonical = epochKeys.find((key) => sameEpoch(key, job.epochKey));
+        if (canonical) job = { ...job, epochKey: canonical };
+        else epochKeys.push(job.epochKey);
+      }
       const previous = this.admissionById.get(job.jobId);
-      if (job.observationDeferred && previous?.disposition === 'admitted' && previous.detail?.exit) return previous;
+      if (job.observationDeferred && previous) return previous;
       if (job.disposition !== 'discovery-unknown' || job.epochKey) return job;
       const saved =
         this.input?.version === 'jobs.wait.v3'
@@ -181,9 +187,8 @@ export class WaitSession {
       job.epochKey !== undefined &&
       this.admissions.some(
         (member) =>
-          (member.observationDeferred === true && member.epochKey === undefined) ||
-          (sameEpoch(member.epochKey, job.epochKey) &&
-            (member.disposition === 'discovery-unknown' || sourceReadDisposition(member) === 'transient-unknown')),
+          sameEpoch(member.epochKey, job.epochKey) &&
+          (member.disposition === 'discovery-unknown' || sourceReadDisposition(member) === 'transient-unknown'),
       )
     );
   }
@@ -497,6 +502,7 @@ export class WaitSession {
     this.progressComplete = true;
     this.tailDelivery = true;
     if (tail.length === 0) this.skipEarlierProgress();
+    else this.skipProgressBefore(tail);
   }
 
   hasProgress(): boolean {
@@ -531,6 +537,15 @@ export class WaitSession {
         'wait_cursor_epoch_required',
         'Collection membership changed; rerun the wait without its cursor to collect earlier progress.',
       );
+  }
+
+  skipProgressBefore(lines: readonly WaitProgressLine[]): void {
+    for (const [epochKey, position] of this.epochs) {
+      const first = lines.find((line) => line.epochKey === epochKey);
+      if (!first) continue;
+      position.watermark = Math.max(0, first.seq - (first.offset === 0 ? 1 : 0));
+      position.lineOffset = first.offset;
+    }
   }
 
   skipEarlierProgress(): void {

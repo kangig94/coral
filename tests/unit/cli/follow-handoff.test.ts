@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type * as FollowModule from '#src/cli/follow.js';
 import type * as HandoffNoticeModule from '#src/cli/handoff-notice.js';
@@ -26,6 +26,10 @@ vi.mock('#src/coordinator/handoff-routing/runner.js', async (importOriginal) => 
 vi.mock('#src/cli/handoff-notice.js', async (importOriginal) => {
   const actual = await importOriginal<typeof HandoffNoticeModule>();
   return { ...actual, renderHandoffNotice: mockState.renderHandoffNotice };
+});
+
+beforeAll(async () => {
+  await import('#src/cli/follow.js');
 });
 
 const launchResult = {

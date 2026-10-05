@@ -470,7 +470,7 @@ function createWorldProviderHosts(input: WorldProviderHostInput) {
       const dbDir = runtime.paths.coral.store.dbDir;
       const epoch = resolveCurrentStoreEpoch(runtime.storage, dbDir);
       if (epoch === null) throw new Error('Provider custody requires a selected store epoch.');
-      const epochKey = readEpochKey(runtime, resolvedStoreEpoch(dbDir, epoch));
+      const epochKey = readEpochKey(runtime, resolvedStoreEpoch(dbDir, epoch), 5000);
       if (epochKey === null) throw new Error('Provider custody requires a readable epoch lineage.');
       return { runDir, epoch: join(dbDir, `epoch-${epoch}`), epochKey };
     };

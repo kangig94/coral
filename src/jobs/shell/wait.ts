@@ -78,6 +78,7 @@ export interface WaitCoordinatorDeps {
   getCurrentJournalSeq: () => number;
   currentJobEpochKey?: () => string | null;
   jobEpochKey?: (jobId: string) => string | null;
+  historicalWaitAdmission?: (jobId: string, session?: object) => WaitAdmission;
   observeJobAbsence?: (jobId: string) => boolean;
   resultJobsRoot: string;
   observeResultAvailability: (jobId: string, session?: object) => ResultAvailability;
@@ -332,6 +333,8 @@ export class WaitCoordinator {
     session?: object,
     frontier = this.deps.getCurrentJournalSeq(),
   ): WaitAdmission {
+    if (this.deps.historicalWaitAdmission && !sameEpoch(epochKey, this.deps.currentJobEpochKey?.() ?? epochKey))
+      return this.deps.historicalWaitAdmission(jobId, session);
     const frontiers = (session ? this.eventFrontiers.get(session) : undefined) ?? new Map<string, WaitEventFrontier>();
     if (session) this.eventFrontiers.set(session, frontiers);
     let cached = frontiers.get(jobId);

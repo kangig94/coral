@@ -200,11 +200,15 @@ export function recordCustodyIntent(
   const observedEpochKey =
     epochNumber === undefined
       ? null
-      : readEpochKey(runtime, {
-          storeRoot: dirname(input.epoch),
-          epoch: epochNumber,
-          path: join(input.epoch, 'store.db'),
-        });
+      : readEpochKey(
+          runtime,
+          {
+            storeRoot: dirname(input.epoch),
+            epoch: epochNumber,
+            path: join(input.epoch, 'store.db'),
+          },
+          5000,
+        );
   if (input.epochKey !== undefined && observedEpochKey !== null && !sameEpoch(input.epochKey, observedEpochKey)) {
     throw new Error('Custody epoch key does not match its directory lineage.');
   }

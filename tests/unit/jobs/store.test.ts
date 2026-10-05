@@ -30,7 +30,10 @@ function createDb(): Database {
   return db;
 }
 
-function createStore(db: Database = createDb()): {
+function createStore(
+  db: Database = createDb(),
+  terminalAgeCacheLimit = 1024,
+): {
   runtime: SimulationRuntime;
   store: JobStore;
 } {
@@ -38,6 +41,7 @@ function createStore(db: Database = createDb()): {
   return {
     runtime,
     store: new JobStore('test-ns', runtime, createEventBodyCodec(), {
+      terminalAgeCacheLimit,
       eventBus: new TypedEventBus(),
       db,
       providers: permissiveProviderLookupPort,
@@ -142,18 +146,18 @@ it('retains the export owner, pending hints and listener when recovery reuses th
 });
 
 it('epoch-less terminal availability bounds age evidence and reads only the terminal', () => {
-  const { store } = createStore();
-  for (let i = 0; i < 1025; i++) {
+  const { store } = createStore(createDb(), 2);
+  for (let i = 0; i < 3; i++) {
     const id = `local-${i}`;
     initProviderJob(store, id, id);
     commitJobTerminal(store, id, id, { content: 'done', outcome: { kind: 'completed' }, durationMs: 1 });
     store.getResultExportOwner().observeResultAvailability(id);
   }
   const read = vi.spyOn(store, 'readJobEvents');
-  store.getResultExportOwner().observeResultAvailability('local-1024');
+  store.getResultExportOwner().observeResultAvailability('local-2');
   expect(read.mock.calls.every(([, terminalOnly]) => terminalOnly === true)).toBe(true);
   expect((store as unknown as { localTerminalAges: Map<string, unknown> }).localTerminalAges.size).toBeLessThanOrEqual(
-    1024,
+    2,
   );
 });
 

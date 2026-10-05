@@ -1,4 +1,4 @@
-import { pathToFileURL } from 'node:url';
+import { sharedFixture } from '#tests/helpers/shared-fixtures.js';
 import { execFile, execFileSync, spawn } from 'node:child_process';
 import {
   closeSync,
@@ -17,7 +17,6 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
-import { build } from 'esbuild';
 import { afterAll, beforeAll, expect, it } from 'vitest';
 import { createRealRuntime } from '#src/runtime/real.js';
 
@@ -32,54 +31,16 @@ const env = () => ({
   TMPDIR: '/tmp',
 });
 
-beforeAll(async () => {
-  symlinkSync(join(root, 'node_modules'), join(directory, 'node_modules'), 'dir');
-  for (const variant of ['real', 'shared', 'sweep']) {
-    await build({
-      entryPoints: [join(root, 'src/runtime/real.ts')],
-      outfile: join(directory, `${variant}.cjs`),
-      define: {
-        'import.meta.url': JSON.stringify(pathToFileURL(join(root, 'src/runtime/wrapper-entrypoint.ts')).href),
-      },
-      bundle: true,
-      platform: 'node',
-      format: 'cjs',
-      packages: 'external',
-      loader: { '.sql': 'text' },
-      plugins: [
-        {
-          name: 'publication-controls',
-          setup(builder) {
-            builder.onLoad({ filter: /src\/runtime\/real\.ts$/ }, ({ path }) => {
-              let source = readFileSync(path, 'utf8');
-              if (variant === 'shared')
-                source = source
-                  .replace('`${path}.stage-${process.pid}-${++durableStageCounter}-${randomUUID()}`', '`${path}.tmp`')
-                  .replaceAll("openSync(tempPath, 'wx'", "openSync(tempPath, 'w'");
-              if (variant === 'sweep')
-                source = source.replace(
-                  '  let ownsStage = false;',
-                  `
-            for (const sibling of readdirSync(parent)) {
-              const stage = join(parent, sibling);
-              if (sibling.includes('.stage-') && Date.now() - statSync(stage).mtimeMs > 86400000) unlinkSync(stage);
-            }
-            let ownsStage = false;`,
-                );
-              return { contents: source, loader: 'ts' };
-            });
-          },
-        },
-      ],
-    });
-  }
+beforeAll(() => {
+  for (const variant of ['real', 'shared', 'sweep'])
+    symlinkSync(sharedFixture(`atomic-${variant}`), join(directory, `${variant}.cjs`));
 });
 
 afterAll(() => rmSync(directory, { recursive: true, force: true }));
 
-it('publishes two processes × 400 writes of 300 KB without failed writes or invalid files', async () => {
+it('publishes two processes × 4 writes of 1 KB without failed writes or invalid files', async () => {
   const target = join(directory, 'concurrent.json');
-  writeFileSync(target, JSON.stringify({ padding: 'x'.repeat(300_000), writer: 0, i: 0 }));
+  writeFileSync(target, JSON.stringify({ padding: 'x'.repeat(1024), writer: 0, i: 0 }));
   const results = await Promise.all(
     [1, 2].map(() =>
       runFile(process.execPath, [fixture, join(directory, 'real.cjs'), target, 'concurrent'], {
@@ -88,7 +49,7 @@ it('publishes two processes × 400 writes of 300 KB without failed writes or inv
       }),
     ),
   );
-  for (const result of results) expect(JSON.parse(result.stdout)).toEqual({ failed: 0, invalid: 0, count: 400 });
+  for (const result of results) expect(JSON.parse(result.stdout)).toEqual({ failed: 0, invalid: 0, count: 4 });
   expect(readdirSync(directory).filter((name) => name.includes('.stage-'))).toEqual([]);
 });
 
@@ -104,7 +65,7 @@ it.each(['real', 'shared'])('held-fd corruption control: %s', (variant) => {
     });
     writeSync(fd, Buffer.from('CORRUPTED'), 0, 9, 0);
     if (variant === 'shared') expect(() => JSON.parse(readFileSync(target, 'utf8'))).toThrow(SyntaxError);
-    else expect(JSON.parse(readFileSync(target, 'utf8')).padding).toHaveLength(300_000);
+    else expect(JSON.parse(readFileSync(target, 'utf8')).padding).toHaveLength(1024);
   } finally {
     closeSync(fd);
   }

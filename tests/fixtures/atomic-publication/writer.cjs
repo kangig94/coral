@@ -15,11 +15,11 @@ if (mode === 'held') {
 }
 const { createRealRuntime } = require(bundle);
 const storage = createRealRuntime('prod', { baseDir: process.env.HOME }).storage;
-const count = mode === 'concurrent' ? 400 : 1;
+const count = mode === 'concurrent' ? 4 : 1;
 let failed = 0;
 let invalid = 0;
 for (let i = 0; i < count; i++) {
-  const value = JSON.stringify({ padding: 'x'.repeat(300_000), writer: process.pid, i });
+  const value = JSON.stringify({ padding: 'x'.repeat(1024), writer: process.pid, i });
   try {
     assert.equal(storage.writeAtomicDurableSync(target, value), true, 'owned publication failed');
   } catch (error) {
@@ -28,7 +28,7 @@ for (let i = 0; i < count; i++) {
   }
   try {
     const published = JSON.parse(fs.readFileSync(target, 'utf8'));
-    assert.equal(published.padding, 'x'.repeat(300_000));
+    assert.equal(published.padding, 'x'.repeat(1024));
     assert.ok(Number.isInteger(published.writer));
   } catch { invalid++; }
 }

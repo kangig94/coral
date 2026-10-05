@@ -126,3 +126,30 @@ it('startup authorizer attempts the incumbent seed once', () => {
     f.close();
   }
 });
+
+it.each(['preserved', 'garbage'] as const)('pre-bind startup registers %s history without seeding it', async (role) => {
+  const f = createTerminalExportFixture('provider', true);
+  const list = vi.spyOn(epochs, 'listStoreEpochs').mockReturnValue([
+    {
+      role,
+      resolved: f.epoch,
+      epochKey: f.epochKey,
+      epochJson: { kind: 'valid', value: { build: { storeFormatFingerprint: currentCoralStoreFormat().fingerprint } } },
+    },
+  ] as never);
+  const open = vi.spyOn(f.runtime.storage, 'openSqliteDatabaseSync');
+  try {
+    createStartupMintAuthorizer(
+      f.runtime,
+      f.index,
+      'startup',
+    )({ incumbent: null, incumbentEpochKey: null, observedEpochCount: 1, classification: { kind: 'absent' } } as never);
+    expect(open.mock.calls.filter(([path]) => path === f.epoch.path)).toEqual([]);
+    await retryUnknownHistoricalEpochs(f.index, { remaining: 0 });
+    expect(open.mock.calls.some(([path]) => path === f.epoch.path)).toBe(true);
+  } finally {
+    open.mockRestore();
+    list.mockRestore();
+    f.close();
+  }
+});

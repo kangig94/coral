@@ -91,6 +91,7 @@ type CreateExecutionServicesDeps = {
   getActiveEpochPath?: () => string | null;
   currentJobEpochKey?: () => string | null;
   jobEpochKey?: (jobId: string) => string | null;
+  historicalWaitAdmission?: ExecutionServiceDeps['historicalWaitAdmission'];
   observeJobAbsence?: (jobId: string) => boolean;
   bundleHash: string;
   backendNamespace: string;
@@ -153,6 +154,7 @@ function createExecutionServiceRegistry(input: {
       getCurrentJournalSeq,
       currentJobEpochKey: input.deps.currentJobEpochKey,
       jobEpochKey: input.deps.jobEpochKey,
+      historicalWaitAdmission: input.deps.historicalWaitAdmission,
       observeJobAbsence: input.deps.observeJobAbsence,
       observeResultAvailability: (jobId, session) =>
         getProgressStore().getResultExportOwner().observeResultAvailability(jobId, session),

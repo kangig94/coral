@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type * as HandoffNoticeMod from '#src/cli/handoff-notice.js';
 import type * as GenerationMutationMod from '#src/store/generation-mutation-coordination.js';
@@ -60,6 +60,10 @@ vi.mock('#src/cli/handoff-notice.js', async (importOriginal) => {
 vi.mock('#src/cli/plugin-root.js', () => ({
   resolvePluginRoot: mockState.resolvePluginRoot,
 }));
+
+beforeAll(async () => {
+  await import('#src/cli/program.js');
+});
 
 const GUARD_ENV = 'CORAL_CLI_HANDOFF_DELEGATED';
 
@@ -199,7 +203,7 @@ describe('program', () => {
     expect(mockState.runHandoff).toHaveBeenCalledWith({ kind: 'cli-invocation', argv }, { pluginRoot: '/plugin/root' });
     expect(mockState.renderHandoffNotice).toHaveBeenCalledOnce();
     expect(mockState.renderHandoffNotice).toHaveBeenCalledWith(success);
-    expect(filterForwardableCoralEnv({ [GUARD_ENV]: '1' })).toEqual({ [GUARD_ENV]: '1' });
+    expect(filterForwardableCoralEnv({ [GUARD_ENV]: '1' })).toEqual({});
   });
 });
 

@@ -121,6 +121,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
       getCurrentJournalSeq: deps.getCurrentJournalSeq,
       currentJobEpochKey: deps.currentJobEpochKey,
       jobEpochKey: deps.jobEpochKey,
+      historicalWaitAdmission: deps.historicalWaitAdmission,
       observeJobAbsence: deps.observeJobAbsence,
       resultJobsRoot: this.runtime.paths.coral.exports.jobsRoot,
       observeResultAvailability: deps.observeResultAvailability,

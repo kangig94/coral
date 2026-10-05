@@ -359,9 +359,16 @@ describe('addressing discovery retry preserves interleaved progress', () => {
   }
 
   it('preserves unread progress after one EMFILE on a member location read (production addressing path)', async () => {
+    let now = 0n;
     let failB = 0;
     const view: JobLocationView = {
-      time: createRealTimePort(),
+      time: {
+        ...createRealTimePort(),
+        monotonicNow: () => now,
+        sleep: async (ms: number) => {
+          now += BigInt(ms);
+        },
+      },
       read: (jobId) => {
         if (jobId === 'b' && failB++ === 1)
           throw Object.assign(new Error('EMFILE: too many open files'), { code: 'EMFILE' });
@@ -424,3 +431,35 @@ describe('addressing discovery retry preserves interleaved progress', () => {
     expect(lines).toContain('b-5');
   });
 });
+
+it('merges two addresses for one lineage without duplicate progress', () => {
+  const one = JSON.stringify({ storeRoot: '/x', epoch: '1', path: '/x/epoch-1/store.db', lineageKey: 'L:1' });
+  const two = JSON.stringify({ storeRoot: '/y', epoch: '1', path: '/y/epoch-1/store.db', lineageKey: 'L:1' });
+  const session = new WaitSession(['a', 'b']);
+  session.reconcile([
+    admitted(
+      'a',
+      [
+        [1, 'a1'],
+        [3, 'a3'],
+      ],
+      false,
+      one,
+    ),
+    admitted('b', [[2, 'b2']], false, two),
+  ]);
+  expect(session.progress().map((line) => line.text)).toEqual(['a1', 'b2', 'a3']);
+  expect(session.cursor().epochs).toHaveLength(1);
+});
+
+it.each(['admitted', 'missing', 'scope-mismatch', 'discovery-unknown'] as const)(
+  'a budget deferral preserves previous %s admission',
+  (disposition) => {
+    const previous = disposition === 'admitted' ? admitted('a', [], false) : { jobId: 'a', disposition };
+    const session = new WaitSession(['a']);
+    session.reconcile([previous]);
+    session.reconcile([{ jobId: 'a', disposition: 'discovery-unknown', observationDeferred: true }]);
+    expect(session.admissions).toEqual([previous]);
+    expect(session.notices.filter((notice) => notice.includes('held'))).toEqual([]);
+  },
+);

@@ -127,8 +127,12 @@ type HistoricalEpochSource = {
   refreshPending?: { jobIds: string[]; frontier: number };
   seed?: {
     frontier?: number;
-    rows?: unknown[];
-    launches?: unknown[];
+    rows?: { job_id: string }[];
+    launches?: { stream_id: string; seq: number }[];
+    recordingError?: Error;
+    failedRowOffset?: number;
+    failedLaunchOffset?: number;
+    failures?: number;
     launchOffset: number;
     rowOffset: number;
     unresolvedOffset: number;
@@ -214,12 +218,7 @@ export async function retryUnknownHistoricalEpochs(
         (!source.seed || source.attempts >= 3)
       )
         continue;
-      if (
-        (source.attempts === 0 && !source.seed) ||
-        (!source.seed &&
-          !index.unknownLocationHolds().some((hold) => sameEpoch(hold.epochKey, epochKey) && hold.retryScheduled))
-      )
-        continue;
+      if (!source.seed) continue;
       void seedHistoricalEpoch(
         source.runtime,
         index,
@@ -451,31 +450,52 @@ export function registerPresentHistoricalEpochs(
   budget?: { remaining: number },
 ): void {
   for (const entry of entries) {
-    const resolved =
-      entry.resolved ??
-      (entry.epoch
-        ? {
-            storeRoot: runtime.paths.coral.store.dbDir,
-            epoch: entry.epoch,
-            path: join(runtime.paths.coral.store.dbDir, `epoch-${entry.epoch}`, 'store.db'),
-          }
-        : null);
-    if (!resolved || observeStorePath(runtime.storage, resolved.path) === 'absent') continue;
-    const key = inspectResolvedStoreEpochKey(runtime, resolved) ?? encodeResolvedStoreEpoch(runtime, resolved);
-    if (sameEpoch(key, activeEpochKey) || historicalSources.get(index)?.has(key)) continue;
-    const fingerprint = entry.epochJson.kind === 'valid' ? entry.epochJson.value.build.storeFormatFingerprint : '';
-    void seedHistoricalEpoch(
-      runtime,
-      index,
-      resolved,
-      key,
-      fingerprint,
-      runtime.paths.coral.exports.jobsRoot,
-      runtime.storage,
-      [],
-      false,
-      budget,
-    );
+    try {
+      const resolved =
+        entry.resolved ??
+        (entry.epoch
+          ? {
+              storeRoot: runtime.paths.coral.store.dbDir,
+              epoch: entry.epoch,
+              path: join(runtime.paths.coral.store.dbDir, `epoch-${entry.epoch}`, 'store.db'),
+            }
+          : null);
+      if (!resolved) continue;
+      if (observeStorePath(runtime.storage, resolved.path) === 'absent') continue;
+      const key = inspectResolvedStoreEpochKey(runtime, resolved) ?? encodeResolvedStoreEpoch(runtime, resolved);
+      if (sameEpoch(key, activeEpochKey) || historicalSources.get(index)?.has(key)) continue;
+      const fingerprint = entry.epochJson.kind === 'valid' ? entry.epochJson.value.build.storeFormatFingerprint : '';
+      const certificate = index.certificate(key);
+      if (certificate) {
+        const sources = historicalSources.get(index) ?? new Map<string, HistoricalEpochSource>();
+        sources.set(key, {
+          runtime,
+          originalEpoch: resolved,
+          fingerprint,
+          jobsRoot: runtime.paths.coral.exports.jobsRoot,
+          storage: runtime.storage,
+          attempts: 0,
+          refreshAttempts: 0,
+          sweep: { revision: certificate.revision, frontier: certificate.terminalHighWaterSeq },
+        });
+        historicalSources.set(index, sources);
+        continue;
+      }
+      void seedHistoricalEpoch(
+        runtime,
+        index,
+        resolved,
+        key,
+        fingerprint,
+        runtime.paths.coral.exports.jobsRoot,
+        runtime.storage,
+        [],
+        false,
+        budget,
+      );
+    } catch {
+      // An unobservable entry cannot prevent registration of other epochs.
+    }
   }
 }
 
@@ -569,24 +589,21 @@ export function seedHistoricalEpoch(
     verifyHistoricalIdentity(source, epochKey, addressedEpoch);
     db = storage.openSqliteDatabaseSync(dbPath, { readOnly: true });
     db.exec('BEGIN');
-    const rows = (seed.rows ??= reader(db));
+    const rows = (seed.rows ??= db.prepare('SELECT job_id FROM projection_jobs ORDER BY job_id ASC').all() as {
+      job_id: string;
+    }[]);
     const highWaterSeq = z
       .object({ seq: z.number().int().nonnegative() })
       .parse(db.prepare("SELECT COALESCE(MAX(seq), 0) AS seq FROM events WHERE stream_kind = 'job'").get()).seq;
     seed.frontier ??= highWaterSeq;
     const observed = new Set<string>();
-    let recordingError: Error | undefined;
-    let failedRowOffset: number | undefined;
+
     const launches = (seed.launches ??= db
       .prepare(
-        "SELECT stream_id, body FROM events WHERE stream_kind = 'job' AND type = 'job.launch.requested' ORDER BY seq ASC",
+        "SELECT stream_id, seq FROM events WHERE stream_kind = 'job' AND type = 'job.launch.requested' ORDER BY seq ASC",
       )
-      .all());
+      .all() as { stream_id: string; seq: number }[]);
     const pending = (): HistoricalSeedResult => {
-      if (recordingError && failedRowOffset !== undefined) {
-        seed.rowOffset = failedRowOffset;
-        throw recordingError;
-      }
       source.attempts = 0;
       index.holdUnknownLocations(
         epochKey,
@@ -597,55 +614,65 @@ export function seedHistoricalEpoch(
     };
     for (let i = seed.launchOffset; i < launches.length; i++) {
       if (budget && budget.remaining-- <= 0) return pending();
-      const launch = z.object({ stream_id: z.string(), body: z.instanceof(Uint8Array) }).parse(launches[i]);
-      const body = launchBodySchema.parse(parseBody(launch.body));
-      index.register(launch.stream_id, epochKey, {
-        projectRoot: body.projectRoot,
-        workDir: body.jobKind === 'kb' ? null : (body.request?.cwd ?? body.projectRoot),
-        jobKind: body.jobKind,
-      });
-      seed.launchOffset = i + 1;
+      try {
+        const launch = launches[i];
+        const row = z
+          .object({ body: z.instanceof(Uint8Array) })
+          .parse(db.prepare('SELECT body FROM events WHERE seq = ?').get(launch.seq));
+        const body = launchBodySchema.parse(parseBody(row.body));
+        index.register(launch.stream_id, epochKey, {
+          projectRoot: body.projectRoot,
+          workDir: body.jobKind === 'kb' ? null : (body.request?.cwd ?? body.projectRoot),
+          jobKind: body.jobKind,
+        });
+      } catch (error) {
+        seed.recordingError ??= error instanceof Error ? error : new Error(String(error));
+        seed.failedLaunchOffset ??= i;
+      } finally {
+        seed.launchOffset = i + 1;
+      }
     }
     for (let i = seed.rowOffset; i < rows.length; i++) {
       if (budget && budget.remaining-- <= 0) return pending();
-      const row = (fingerprint === FINGERPRINT_0110 ? newerProjectionSchema : olderProjectionSchema).parse(rows[i]);
-      observed.add(row.job_id);
-      const events = readEvents(db, row.job_id);
-      const detail = historicalDetail(db, row, events);
-      index.register(row.job_id, epochKey, {
-        projectRoot: detail.status.projectRoot,
-        workDir: detail.status.workDir,
-        jobKind: detail.status.jobKind,
-      });
-      if (!isTerminalPhase(detail.status.phase) || detail.exit === null) {
-        index.recordObserved(row.job_id, detail);
-        index.markUnresolved(row.job_id);
-        seed.rowOffset = i + 1;
-        continue;
-      }
-      const terminal = [...detail.events].reverse().find((event) => event.type === 'terminal');
-      if (terminal === undefined) {
-        index.markUnresolved(row.job_id);
-        seed.rowOffset = i + 1;
-        continue;
-      }
-      const resultPath = resultPathFor(jobsRoot, row.job_id);
       try {
+        const row = (fingerprint === FINGERPRINT_0110 ? newerProjectionSchema : olderProjectionSchema).parse(
+          db.prepare('SELECT * FROM projection_jobs WHERE job_id = ?').get(rows[i].job_id),
+        );
+        observed.add(row.job_id);
+        const events = readEvents(db, row.job_id);
+        const detail = historicalDetail(db, row, events);
+        index.register(row.job_id, epochKey, {
+          projectRoot: detail.status.projectRoot,
+          workDir: detail.status.workDir,
+          jobKind: detail.status.jobKind,
+        });
+        if (!isTerminalPhase(detail.status.phase) || detail.exit === null) {
+          index.recordObserved(row.job_id, detail);
+          index.markUnresolved(row.job_id);
+          continue;
+        }
+        const terminal = [...detail.events].reverse().find((event) => event.type === 'terminal');
+        if (terminal === undefined) {
+          index.markUnresolved(row.job_id);
+          continue;
+        }
+        const resultPath = resultPathFor(jobsRoot, row.job_id);
         index.recordTerminal(row.job_id, detail, resultPath, terminal.seq, db as Database);
-      } catch (error: unknown) {
-        recordingError ??= error instanceof Error ? error : new Error(String(error));
-        failedRowOffset ??= i;
-        index.markUnresolved(row.job_id);
-        index.resultRepairFailures.add(row.job_id);
+        try {
+          index.resultExportOwnerForSource(db as Database, epochKey, jobsRoot).ensureResultMarkdownArtifact(row.job_id);
+        } catch {
+          /* Failed publication must not hide a retained terminal or stop hydration of other jobs. */
+        }
+      } catch (error) {
+        seed.recordingError ??= error instanceof Error ? error : new Error(String(error));
+        seed.failedRowOffset ??= i;
+        index.markUnresolved(rows[i].job_id);
+        index.resultRepairFailures.add(rows[i].job_id);
+      } finally {
+        seed.rowOffset = i + 1;
       }
-      try {
-        index.resultExportOwnerForSource(db as Database, epochKey, jobsRoot).ensureResultMarkdownArtifact(row.job_id);
-      } catch {
-        /* Failed publication must not hide a retained terminal or stop hydration of other jobs. */
-      }
-      seed.rowOffset = i + 1;
     }
-    for (const row of rows) observed.add(z.object({ job_id: z.string() }).parse(row).job_id);
+    for (const row of rows) observed.add(row.job_id);
     const unresolved = [
       ...new Set([
         ...launches.map((launch) => z.object({ stream_id: z.string() }).parse(launch).stream_id),
@@ -658,9 +685,16 @@ export function seedHistoricalEpoch(
       seed.unresolvedOffset = i + 1;
     }
     for (const jobId of unresolved) observed.add(jobId);
-    if (recordingError !== undefined && failedRowOffset !== undefined) {
-      seed.rowOffset = failedRowOffset;
-      throw recordingError;
+    if (seed.recordingError !== undefined) {
+      if (seed.failedRowOffset !== undefined) seed.rowOffset = seed.failedRowOffset;
+      if (seed.failedLaunchOffset !== undefined) seed.launchOffset = seed.failedLaunchOffset;
+      source.attempts = (seed.failures ?? 0) + 1;
+      seed.failures = source.attempts;
+      const error = seed.recordingError;
+      seed.recordingError = undefined;
+      seed.failedRowOffset = undefined;
+      seed.failedLaunchOffset = undefined;
+      throw error;
     }
     index.clearUnknownLocations(epochKey);
     source.seed = undefined;
@@ -875,7 +909,7 @@ export async function refreshHistoricalEpochs(index: JobLocationIndex, budget?: 
       );
       if (result.kind === 'read') {
         source.refreshAttempts = 0;
-        index.clearUnknownLocations(epochKey);
+        if (!source.refreshPending) index.clearUnknownLocations(epochKey);
       } else holdSourceFailure(index, epochKey, new Error(result.reason), ++source.refreshAttempts, false);
     } catch (error) {
       try {
@@ -895,6 +929,7 @@ export function refreshHistoricalEpoch(
 ): { kind: 'read' } | { kind: 'unreadable'; reason: string } {
   const source = historicalSources.get(index)?.get(epochKey);
   if (source === undefined) return { kind: 'unreadable', reason: 'Source is not registered' };
+  if (source.seed) return { kind: 'unreadable', reason: 'Historical hydration has not completed' };
   const hold = index.unknownLocationHolds().find((hold) => sameEpoch(hold.epochKey, epochKey));
   if (hold?.retryScheduled === false) return { kind: 'unreadable', reason: hold.reason };
   let addressedEpoch: ResolvedStoreEpoch;
@@ -1012,6 +1047,7 @@ export function refreshHistoricalEpoch(
     const highWaterSeq = z
       .object({ seq: z.number().int().nonnegative() })
       .parse(db.prepare("SELECT COALESCE(MAX(seq), 0) AS seq FROM events WHERE stream_kind = 'job'").get()).seq;
+    index.clearUnknownLocations(epochKey);
     index.certify(epochKey, highWaterSeq);
     source.sweep = { revision: index.revision(epochKey), frontier: source.refreshPending?.frontier ?? frontier };
     source.refreshPending = undefined;

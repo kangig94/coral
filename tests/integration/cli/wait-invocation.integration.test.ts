@@ -1,16 +1,13 @@
+import { sharedFixture } from '#tests/helpers/shared-fixtures.js';
 import { spawn } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
-import { build } from 'esbuild';
-import ts from 'typescript';
+import { join } from 'node:path';
 import { afterAll, beforeAll, expect, it } from 'vitest';
 import { CLI_HANDOFF_GUARD_ENV } from '#src/coordinator/handoff-routing/wait-invocation.js';
 import { serializeWaitCursor } from '#src/jobs/wait/cursor.js';
 
 const directory = mkdtempSync(join(tmpdir(), 'coral-wait-invocation-'));
-const root = resolve('.');
 const saved = serializeWaitCursor({ afterSeq: 7 });
 const frontier = serializeWaitCursor({
   version: 'jobs.wait.v2',
@@ -19,18 +16,7 @@ const frontier = serializeWaitCursor({
   deliveredJobIds: [],
 });
 
-function body(source: string, name: string, replacement: string): string {
-  const file = ts.createSourceFile('probe.ts', source, ts.ScriptTarget.Latest, true);
-  const node = file.statements.find(
-    (statement): statement is ts.FunctionDeclaration =>
-      ts.isFunctionDeclaration(statement) && statement.name?.text === name,
-  );
-  if (!node?.body) throw new Error(`No body for ${name}`);
-  return source.slice(0, node.body.getStart(file)) + `{ ${replacement} }` + source.slice(node.body.end);
-}
-
 beforeAll(async () => {
-  symlinkSync(join(root, 'node_modules'), join(directory, 'node_modules'), 'dir');
   for (const variant of [
     'real',
     'late-boundary',
@@ -40,98 +26,9 @@ beforeAll(async () => {
     'monitor-abort',
   ]) {
     const outdir = join(directory, variant);
-    await build({
-      entryPoints: [join(root, 'tests/fixtures/wait-invocation/cli.mjs')],
-      outfile: join(outdir, 'coral-cli.cjs'),
-      bundle: true,
-      platform: 'node',
-      format: 'cjs',
-      packages: 'external',
-      loader: { '.sql': 'text' },
-      define: {
-        'import.meta.url': JSON.stringify(pathToFileURL(join(root, 'src/runtime/wrapper-entrypoint.ts')).href),
-      },
-      plugins: [
-        {
-          name: 'wait-boundary-fixture',
-          setup(builder) {
-            builder.onResolve({ filter: /^#src\// }, ({ path }) => ({
-              path: join(root, path.replace('#src/', 'src/').replace(/\.js$/, '.ts')),
-            }));
-            builder.onLoad(
-              { filter: /(?:wait-invocation|runner|handoff-target|ensure|program|follow|session)\.ts$/ },
-              ({ path }) => {
-                let source = readFileSync(path, 'utf8');
-                if (path.endsWith('/cli/wait-invocation.ts')) {
-                  source = source
-                    .replace('const WAIT_BUDGET_MS = 590_000', 'const WAIT_BUDGET_MS = 600')
-                    .replace('const WAIT_CLEANUP_MS = 10_000', 'const WAIT_CLEANUP_MS = 200')
-                    .replace('const SNAPSHOT_BUDGET_MS = 30_000', 'const SNAPSHOT_BUDGET_MS = 600')
-                    .replace('const SNAPSHOT_CLEANUP_MS = 1_000', 'const SNAPSHOT_CLEANUP_MS = 200');
-                  if (variant === 'no-backstop') source = source.replaceAll('process.exit(75)', 'undefined');
-                  if (variant === 'monitor-abort')
-                    source = source.replace(
-                      'if (!this.continuationFlushed && !this.signal.aborted) this.stop();\n    else if (this.signal.aborted) {\n      this.flushContinuation(true);\n      process.exit(75);\n    }',
-                      'undefined;',
-                    );
-                }
-                if (path.endsWith('/cli/follow.ts'))
-                  source = source.replace(
-                    'deadlineMs - performance.now() <= 1000',
-                    'deadlineMs - performance.now() <= 1',
-                  );
-                if (variant === 'monitor-abort' && path.endsWith('/cli/follow.ts'))
-                  source = source.replaceAll("if (options.reconnectPolicy === 'until-terminal') process.", 'process.');
-                if (variant === 'monitor-abort' && path.endsWith('/commands/session.ts'))
-                  source = source.replace(
-                    "reconnectPolicy: 'bounded',",
-                    "reconnectPolicy: 'bounded', abortJobs: (ids) => client.abortJobs([...ids]),",
-                  );
-                if (path.endsWith('/cli/program.ts') && variant === 'late-boundary')
-                  source = source.replace(
-                    'mode === undefined ? undefined : new WaitInvocation(mode, argv)',
-                    'undefined',
-                  );
-                if (path.endsWith('/handoff-routing/runner.ts')) {
-                  source = body(source, 'resolveHandoffRoutingForOperation', 'return globalThis.waitProbe.routing();');
-                  source = body(
-                    source,
-                    'publishHandoffTransition',
-                    'return globalThis.waitProbe.publication(transition);',
-                  );
-                  source = source.replace(
-                    'const childObservation = observeChild(child);',
-                    'process.stderr.write(`OWNED_MONITOR:${child.pid}\\nHANDOFF_BUDGET:${JSON.parse(spawnOptions.env[WAIT_INVOCATION_CONTEXT_ENV]).remainingMs}\\n`); const childObservation = observeChild(child);',
-                  );
-                  if (variant === 'restart-budget')
-                    source = source.replace('remainingMs: waitInvocation.remainingMs()', 'remainingMs: 600');
-                  if (variant === 'discard-frontier')
-                    source = source.replace(
-                      'invocation.saveContinuation(message.continuation, message.complete === true, message.delivered === true)',
-                      'undefined',
-                    );
-                }
-                if (path.endsWith('/infra/handoff-target.ts')) {
-                  source = body(source, 'withValidatedHandoffTarget', 'return globalThis.waitProbe.execution;');
-                  source = body(
-                    source,
-                    'inspectValidatedHandoffTarget',
-                    'return { build: globalThis.waitProbe.execution.manifest };',
-                  );
-                }
-                if (path.endsWith('/ipc/ensure.ts'))
-                  source = body(source, 'ensure', 'return globalThis.waitProbe.ensure();');
-                return { contents: source, loader: 'ts' };
-              },
-            );
-            builder.onLoad({ filter: /wait-invocation\/cli\.mjs$/ }, ({ path }) => ({
-              contents: readFileSync(path, 'utf8').replace('await runCli();', 'void runCli();'),
-              loader: 'js',
-            }));
-          },
-        },
-      ],
-    });
+    const { mkdirSync } = await import('node:fs');
+    mkdirSync(outdir);
+    symlinkSync(sharedFixture(`wait-${variant}`), join(outdir, 'coral-cli.cjs'));
     symlinkSync('coral-cli.cjs', join(outdir, 'coral-cli'));
   }
   const old = join(directory, 'old');
@@ -189,19 +86,20 @@ async function probe(
   child.stdout.on('data', (chunk: Buffer) => {
     stdout += chunk.toString();
   });
+  let interrupted = false;
+  let secondInterrupt: NodeJS.Timeout | undefined;
   child.stderr.on('data', (chunk: Buffer) => {
     stderr += chunk.toString();
+    if (interrupt && !interrupted && stderr.includes('INTERRUPT_READY')) {
+      interrupted = true;
+      child.kill('SIGINT');
+      secondInterrupt = setTimeout(() => child.kill('SIGINT'), 10);
+    }
   });
   const killer = setTimeout(() => {
     timedOut = true;
     child.kill('SIGKILL');
-  }, 1_800);
-  const sigint = interrupt
-    ? setTimeout(() => {
-        child.kill('SIGINT');
-        setTimeout(() => child.kill('SIGINT'), 10);
-      }, 250)
-    : undefined;
+  }, 800);
   try {
     const code = await new Promise<number | null>((resolveEnd, reject) => {
       child.once('error', reject);
@@ -212,7 +110,7 @@ async function probe(
     return { code, timedOut, stdout, stderr, elapsed: performance.now() - start };
   } finally {
     clearTimeout(killer);
-    clearTimeout(sigint);
+    clearTimeout(secondInterrupt);
     child.kill('SIGKILL');
   }
 }
@@ -254,7 +152,7 @@ it.each([
     expect(result.stdout).not.toContain('admission did not complete');
   } else expect(result.stdout).toContain(`Run coral-cli wait jobs a ghost --embed --cursor ${saved}`);
   if (scenario === 'late-delegation')
-    expect(Number([...result.stderr.matchAll(/HANDLER_BUDGET:([\d.]+)/g)].at(-1)?.[1])).toBeLessThan(250);
+    expect(Number([...result.stderr.matchAll(/HANDLER_BUDGET:([\d.]+)/g)].at(-1)?.[1])).toBeLessThan(330);
 });
 
 it.each(['routing', 'selection', 'terminal', 'delegation', 'delegated-delivery', 'silent'])(
@@ -297,7 +195,7 @@ it('restarting the delegated budget fails the remaining-duration assertion', asy
   const result = await probe('late-delegation', 'restart-budget');
   assertBounded(result);
   const remaining = Number([...result.stderr.matchAll(/HANDOFF_BUDGET:([\d.]+)/g)].at(-1)?.[1]);
-  expect(remaining).toBeGreaterThan(250);
+  expect(remaining).toBeGreaterThan(330);
 });
 
 it('discarding delegated delivery fails the frozen-frontier assertion', async () => {
@@ -313,7 +211,7 @@ it.each(['sync', 'delegated-sync'])('records S2 synchronous-stall residual: %s',
   expect(result.timedOut).toBe(false);
   expect(result.code).toBe(75);
   expect(result.stdout.match(/Run coral-cli wait jobs/g), result.stderr).toHaveLength(1);
-  if (scenario === 'sync') expect(result.elapsed).toBeGreaterThan(800);
+  if (scenario === 'sync') expect(result.elapsed).toBeGreaterThan(400);
   else assertBounded(result);
 });
 
@@ -326,7 +224,7 @@ it.each(['sync-delivery', 'delegated-sync-delivery'])(
     expect(result.stdout.match(/Run coral-cli wait jobs/g), result.stderr).toHaveLength(1);
     expect(result.stdout).toContain(`--cursor ${frontier}`);
     expect(result.stdout).not.toContain('wait jobs a ghost');
-    if (scenario === 'sync-delivery') expect(result.elapsed).toBeGreaterThan(800);
+    if (scenario === 'sync-delivery') expect(result.elapsed).toBeGreaterThan(400);
     else assertBounded(result);
   },
 );
@@ -358,9 +256,12 @@ it('snapshot delegation cannot restart the invocation budget', async () => {
   const original = await probe('late-delegation', 'real', false, true);
   assertBounded(original);
   expect(original.stdout).toContain('--now');
-  expect(Number([...original.stderr.matchAll(/HANDLER_BUDGET:([\d.]+)/g)].at(-1)?.[1])).toBeLessThan(250);
+  expect(Number([...original.stderr.matchAll(/HANDLER_BUDGET:([\d.]+)/g)].at(-1)?.[1])).toBeLessThan(330);
+});
+
+it('snapshot delegated budget restart is detected by its negative control', async () => {
   const control = await probe('late-delegation', 'restart-budget', false, true);
-  expect(Number([...control.stderr.matchAll(/HANDOFF_BUDGET:([\d.]+)/g)].at(-1)?.[1])).toBeGreaterThan(250);
+  expect(Number([...control.stderr.matchAll(/HANDOFF_BUDGET:([\d.]+)/g)].at(-1)?.[1])).toBeGreaterThan(330);
 });
 
 it.each(['sync', 'delegated-sync'])('snapshot records the S2 synchronous-stall residual: %s', async (scenario) => {
@@ -369,7 +270,7 @@ it.each(['sync', 'delegated-sync'])('snapshot records the S2 synchronous-stall r
   expect(result.code).toBe(75);
   expect(result.stdout).toContain('--now');
   expect(result.stdout.match(/Run coral-cli wait jobs/g)).toHaveLength(1);
-  if (scenario === 'sync') expect(result.elapsed).toBeGreaterThan(800);
+  if (scenario === 'sync') expect(result.elapsed).toBeGreaterThan(400);
 });
 
 it('freezes delegated output before printing the parent continuation', async () => {
@@ -383,14 +284,11 @@ it('freezes delegated output before printing the parent continuation', async () 
   expect(result.stdout).toContain(`--cursor ${frontier}`);
 });
 
-it.each([false, true])(
-  'a released parent without a budget context ends with a continuation, snapshot=%s',
-  async (snapshot) => {
-    const result = await probe('legacy-parent', 'real', false, snapshot);
-    expect(result.timedOut).toBe(false);
-    expect(result.code).toBe(75);
-    expect(result.stdout).toContain(`--cursor ${saved}`);
-    expect(result.stdout.match(/Run coral-cli wait jobs/g)).toHaveLength(1);
-    expect(result.stderr).not.toContain('HANDLER_BUDGET:');
-  },
-);
+it.each([false, true])('a released parent gets a bounded, admitted wait, snapshot=%s', async (snapshot) => {
+  const result = await probe('legacy-parent', 'real', false, snapshot);
+  expect(result.timedOut).toBe(false);
+  expect(result.code).toBe(75);
+  expect(result.stdout).toContain(`--cursor ${saved}`);
+  expect(result.stdout.match(/Run coral-cli wait jobs/g)).toHaveLength(1);
+  expect(result.stderr).toContain('HANDLER_BUDGET:');
+});

@@ -585,6 +585,8 @@ export function createCoordinatorCore(
     getActiveEpochPath: () => core.state.selectedStoreEpochPath,
     currentJobEpochKey: core.currentJobEpochKey,
     jobEpochKey: (jobId) => core.jobLocationIndex.read(jobId)?.epochKey ?? null,
+    historicalWaitAdmission: (jobId) =>
+      requestPorts.jobAddressing.admitWait({ jobIds: [jobId], supportsWaitV3: true })[0],
     observeJobAbsence: (jobId) => getProgressStore().observeJobAbsence(jobId),
     bundleHash: world.identity.bundleHash,
     backendNamespace: world.namespace,

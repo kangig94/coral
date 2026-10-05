@@ -595,3 +595,12 @@ it('observes replacement bytes even when inode and all coarse timestamps collide
 it('imports terminal readability only from its owner', async () => {
   expect(await import('#src/jobs/location-index.js')).not.toHaveProperty('hasReadableTerminalDetail');
 });
+
+it('discharges a released directory-only hold after complete absent inventory', () => {
+  const { root, index } = fixture();
+  index.holdUnknownLocations('retired', 'legacy hold', true);
+  const path = join(root, 'job-locations.v1', 'epochs', runtime.ids.sha256('retired'), 'unknown-locations.v1.json');
+  writeFileSync(path, JSON.stringify({ version: 'v1', reason: 'legacy hold' }));
+  index.reconcileUnknownLocationHolds([]);
+  expect(index.unknownLocationHolds()).toEqual([]);
+});

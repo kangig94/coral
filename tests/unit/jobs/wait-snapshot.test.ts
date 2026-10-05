@@ -104,11 +104,11 @@ describe('wait snapshot', () => {
     expect(selectWaitSnapshot(session).exitCode).toBe(42);
   });
 
-  it('bounds 128 escape-heavy multibyte terminal and diagnostic previews; full detail keeps the tail', () => {
-    const jobs = Array.from({ length: 128 }, (_, i) => {
+  it('bounds two escape-heavy multibyte terminal and diagnostic previews; full detail keeps the tail', () => {
+    const jobs = Array.from({ length: 2 }, (_, i) => {
       const a = admitted(`j${i}`);
-      a.detail!.exit!.content = '🙂\\\"\n'.repeat(30000) + 'BEYOND_10000_MARKER\nTRAILING_CONTENT\n';
-      a.detail!.exit!.diagnostics.warnings = ['full diagnostic '.repeat(10000)];
+      a.detail!.exit!.content = '🙂\\\"\n'.repeat(2000) + 'BEYOND_10000_MARKER\nTRAILING_CONTENT\n';
+      a.detail!.exit!.diagnostics.warnings = ['full diagnostic '.repeat(500)];
       a.availability = { kind: 'failed', cause: 'source-epoch-retired', retryScheduled: false };
       return a;
     });

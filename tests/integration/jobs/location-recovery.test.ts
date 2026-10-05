@@ -1,4 +1,5 @@
-import { join } from 'node:path';
+import { readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import { createRetentionFixture } from '#tests/helpers/storage-retention.js';
 import { JobLocationIndex } from '#src/jobs/location-index.js';
@@ -44,4 +45,65 @@ it('a throwing historical epoch cannot fail active location recovery', () => {
   }
   expect(thrown).toBeUndefined();
   expect(refresh).not.toHaveBeenCalled();
+});
+
+import { createTerminalExportFixture, TERMINAL_EXPORT_CUTOFF } from '#tests/helpers/terminal-export.js';
+
+import { currentCoralStoreFormat } from '#src/store-format.js';
+
+it.each(['recovery', 'seed', 'repair'] as const)('preserves legacy past-window discharge through %s', (owner) => {
+  const f = createTerminalExportFixture('provider', true);
+  try {
+    const seq = f.complete({
+      terminalAt: TERMINAL_EXPORT_CUTOFF - 86_400_000,
+      precedingAt: TERMINAL_EXPORT_CUTOFF - 2 * 86_400_000,
+    });
+    const legacy = JSON.parse(readFileSync(f.locationPath, 'utf8'));
+    delete legacy.terminalAge;
+    writeFileSync(f.locationPath, JSON.stringify(legacy));
+    rmSync(dirname(f.resultPath), { recursive: true, force: true });
+    expect(f.index.certify(f.epochKey, seq)).not.toBeNull();
+    expect(f.index.resultsReleased(f.epochKey)).toBe(true);
+    if (owner === 'recovery') recoverJobLocations(f.index, f.epochKey, f.store);
+    else if (owner === 'seed')
+      seedHistoricalEpoch(
+        f.runtime,
+        f.index,
+        f.epoch,
+        f.epochKey,
+        currentCoralStoreFormat().fingerprint,
+        f.runtime.paths.coral.exports.jobsRoot,
+        f.runtime.storage,
+        [],
+        true,
+      );
+    else f.store.getResultExportOwner().ensureResultMarkdownArtifact(f.jobId);
+    expect(JSON.parse(readFileSync(f.locationPath, 'utf8')).terminalAge).toBeUndefined();
+    expect(f.index.certify(f.epochKey, seq)).not.toBeNull();
+    expect(f.index.resultsReleased(f.epochKey)).toBe(true);
+  } finally {
+    f.close();
+  }
+});
+
+import { trustedJobRetentionCutoff } from '#src/jobs/retention-clock.js';
+it('untrusted post-commit capture remains legacy after past-window hydration', () => {
+  const f = createTerminalExportFixture('provider', true);
+  try {
+    trustedJobRetentionCutoff(f.runtime);
+    f.jump(2 * 86_400_000);
+    const seq = f.complete({
+      terminalAt: TERMINAL_EXPORT_CUTOFF - 86_400_000,
+      precedingAt: TERMINAL_EXPORT_CUTOFF - 2 * 86_400_000,
+    });
+    expect(JSON.parse(readFileSync(f.locationPath, 'utf8')).terminalAge).toBeUndefined();
+    f.advance(300_000);
+    rmSync(dirname(f.resultPath), { recursive: true, force: true });
+    recoverJobLocations(f.index, f.epochKey, f.store);
+    expect(JSON.parse(readFileSync(f.locationPath, 'utf8')).terminalAge).toBeUndefined();
+    expect(f.index.certify(f.epochKey, seq)).not.toBeNull();
+    expect(f.index.resultsReleased(f.epochKey)).toBe(true);
+  } finally {
+    f.close();
+  }
 });

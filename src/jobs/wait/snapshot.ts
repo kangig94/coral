@@ -13,12 +13,13 @@ function encodedBytes(value: unknown): number {
 }
 
 function preview(text: string, budget: number): { text: string; omitted: number } {
-  if (encodedBytes(text) <= budget) return { text, omitted: 0 };
+  const window = text.slice(0, budget);
+  if (window.length === text.length && encodedBytes(window) <= budget) return { text, omitted: 0 };
   let start = 0;
-  let end = text.length;
+  let end = window.length;
   while (start < end) {
     const middle = Math.ceil((start + end) / 2);
-    if (encodedBytes(text.slice(0, middle)) <= budget - 100) start = middle;
+    if (encodedBytes(window.slice(0, middle)) <= budget - 100) start = middle;
     else end = middle - 1;
   }
   if (start > 0 && /[\uD800-\uDBFF]/.test(text[start - 1])) start--;
@@ -31,9 +32,8 @@ function preview(text: string, budget: number): { text: string; omitted: number 
 export function selectWaitSnapshot(session: WaitSession, lines?: number): WaitSnapshot {
   const notices = [...session.notices];
   const jobs = session.admissions.map((admission) => snapshotJob(session, admission, notices));
-  const originalProgress = session.cursor();
   validateSnapshotMetadata(session, jobs, notices);
-  const selectedCount = selectSnapshotProgress(session, jobs, notices, lines);
+  const selected = selectSnapshotProgress(session, jobs, notices, lines);
   const remainingJobIds = session.remaining();
   const snapshot: WaitSnapshot = {
     version: 'jobs.wait.v3',
@@ -43,7 +43,7 @@ export function selectWaitSnapshot(session: WaitSession, lines?: number): WaitSn
     cursor: session.cursor(remainingJobIds),
     exitCode: session.exitCode(),
   };
-  fitSnapshotResponse(session, snapshot, originalProgress, selectedCount);
+  fitSnapshotResponse(session, snapshot, selected.resume, selected.count);
   return snapshot;
 }
 
@@ -75,7 +75,21 @@ function terminalSummary(
   terminal: NonNullable<NonNullable<WaitAdmission['detail']>['exit']>,
 ): WaitTerminalSummary {
   const content = preview(terminal.content, 2048);
-  const diagnostic = preview(JSON.stringify({ outcome: terminal.outcome, diagnostics: terminal.diagnostics }), 2048);
+  let diagnosticOmitted = 0;
+  const warnings = terminal.diagnostics.warnings?.slice(0, 8).map((warning) => {
+    const selected = preview(warning, 256);
+    diagnosticOmitted += selected.omitted;
+    return selected.text;
+  });
+  for (const warning of terminal.diagnostics.warnings?.slice(8) ?? []) diagnosticOmitted += Buffer.byteLength(warning);
+  const diagnostics = { ...terminal.diagnostics, warnings };
+  const outcome = { ...terminal.outcome };
+  if ('note' in outcome && outcome.note !== undefined) {
+    const selected = preview(outcome.note, 256);
+    outcome.note = selected.text;
+    diagnosticOmitted += selected.omitted;
+  }
+  const diagnostic = preview(JSON.stringify({ outcome, diagnostics }), 2048);
   return {
     seq: detail.events.find((event) => event.type === 'terminal')?.seq ?? detail.status.lastSeq ?? 0,
     outcomeKind: terminal.outcome.kind,
@@ -84,7 +98,7 @@ function terminalSummary(
     contentPreview: content.text,
     contentOmittedBytes: content.omitted,
     diagnosticPreview: diagnostic.text,
-    diagnosticOmittedBytes: diagnostic.omitted,
+    diagnosticOmittedBytes: diagnosticOmitted + diagnostic.omitted,
   };
 }
 
@@ -108,7 +122,8 @@ function selectSnapshotProgress(
   jobs: WaitSnapshotJob[],
   notices: string[],
   lines?: number,
-): number {
+): { count: number; resume: WaitCursorV3 } {
+  let resume = session.cursor();
   const available =
     lines === undefined
       ? session.progress(WAIT_PROGRESS_LINES + 1)
@@ -117,6 +132,8 @@ function selectSnapshotProgress(
   if (lines !== undefined) {
     selected = available;
     if (session.hasProgressBefore(selected)) notices.push('Earlier progress outside the selected tail was not shown.');
+    session.skipProgressBefore(selected);
+    resume = session.cursor();
     session.skipEarlierProgress();
   } else {
     let bytes = 0;
@@ -132,7 +149,7 @@ function selectSnapshotProgress(
       notices.push('Progress truncated; run the continuation to collect the remaining lines.');
   }
   for (const line of selected) jobs.find((job) => job.jobId === line.jobId)?.progress.push(shortenWaitLine(line.text));
-  return selected.length;
+  return { count: selected.length, resume };
 }
 
 function fitSnapshotResponse(

@@ -130,7 +130,7 @@ export class JobAddressing {
       .filter((hold) => !sameEpoch(hold.epochKey, this.active.epochKey() ?? ':memory:'))
       .map(
         (hold) =>
-          `Unreadable epoch ${hold.epochKey === undefined ? hold.directory.slice(0, 12) : waitEpochToken(hold.epochKey)}: ${hold.reason}.`,
+          `${hold.retryScheduled ? 'Retry scheduled for epoch' : 'Unreadable epoch'} ${hold.epochKey === undefined ? hold.directory.slice(0, 12) : waitEpochToken(hold.epochKey)}: ${hold.reason}.`,
       )
       .join(' ');
   }
@@ -342,7 +342,7 @@ export class JobAddressing {
 
   private readonly liveJobs = new WeakMap<object, Set<string>>();
   private readonly readOffsets = new WeakMap<object, number>();
-  admitWait(request: WaitStreamRequest, budgeted = true): WaitAdmission[] {
+  admitWait(request: WaitStreamRequest, budgeted = this.liveJobs.has(request)): WaitAdmission[] {
     const observe = (): WaitAdmission[] => this.readAdmissions(request, budgeted);
     const admissions =
       budgeted && request.supportsWaitV3 === true && this.locations.observePoll
@@ -534,22 +534,20 @@ export class JobAddressing {
           message: `Jobs not found: ${missing.join(', ')}. Remove those IDs to collect the remaining jobs. ${this.unknownJobCaveat()}`,
         };
     }
-    if (
-      cursor?.version === undefined &&
-      cursor !== undefined &&
-      admissions.some((job) => job.disposition === 'admitted' && !sameEpoch(job.epochKey, activeEpochKey))
-    )
-      return { code: 'wait_cursor_epoch_required', message: 'The legacy cursor cannot identify historical epochs.' };
+    const historicalAdmission = admissions.find(
+      (job) => job.disposition === 'admitted' && !sameEpoch(job.epochKey, activeEpochKey),
+    );
+    if (cursor?.version === undefined && cursor !== undefined && historicalAdmission !== undefined)
+      return {
+        code: 'wait_cursor_epoch_required',
+        message: `The legacy cursor cannot identify historical epochs. Run coral-cli jobs detail ${historicalAdmission.jobId} --full.`,
+      };
     if (request.supportsWaitV3 !== true && cursor?.version === 'jobs.wait.v3')
       return { code: 'wait_cursor_unsupported', message: 'V3 cursor requires supportsWaitV3.' };
-    if (
-      request.supportsWaitV3 !== true &&
-      request.supportsWaitV2 !== true &&
-      admissions.some((job) => job.disposition === 'admitted' && !sameEpoch(job.epochKey, activeEpochKey))
-    )
+    if (request.supportsWaitV3 !== true && request.supportsWaitV2 !== true && historicalAdmission !== undefined)
       return {
         code: 'wait_epoch_unsupported',
-        message: 'This CLI cannot identify historical progress epochs; use jobs detail.',
+        message: `This CLI cannot identify historical progress epochs. Run coral-cli jobs detail ${historicalAdmission.jobId} --full.`,
       };
     try {
       const session = new WaitSession(request.jobIds, cursor, activeEpochKey);
@@ -576,11 +574,16 @@ export class JobAddressing {
     const error = this.validateWait(request);
     if (error) throw new WaitSessionError(error.code, error.message);
     const activeEpochKey = this.waitEpoch(request);
+    let firstRead = true;
     yield* readWaitSession({
       request,
       time: this.locations.time,
       activeEpochKey,
-      read: () => this.admitWait(request),
+      read: () => {
+        const admissions = this.admitWait(request, !firstRead);
+        firstRead = false;
+        return admissions;
+      },
       observe: async (session, signal) => {
         const activeIds = session.admissions
           .filter(

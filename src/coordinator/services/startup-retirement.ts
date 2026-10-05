@@ -429,7 +429,9 @@ export function createStartupMintAuthorizer(
   startupId: string,
 ): (observation: StoreMintObservation) => StoreMintDisposition | null {
   return (observation) => {
-    registerPresentHistoricalEpochs(runtime, index, listStoreEpochs(runtime), observation.incumbentEpochKey);
+    registerPresentHistoricalEpochs(runtime, index, listStoreEpochs(runtime), observation.incumbentEpochKey, {
+      remaining: 0,
+    });
     const incumbent = observation.incumbent;
     if (incumbent === null) {
       return retirementMintDisposition(observation.observedEpochCount === 0 ? 'initial' : 'unopenable', null);

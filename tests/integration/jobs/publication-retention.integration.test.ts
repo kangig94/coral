@@ -1,9 +1,8 @@
-import { fork, execFileSync, type ChildProcess } from 'node:child_process';
-import { existsSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { sharedFixture } from '#tests/helpers/shared-fixtures.js';
+import { fork, type ChildProcess } from 'node:child_process';
+import { existsSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { createRequire } from 'node:module';
-import { build } from 'esbuild';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   createTerminalExportFixture,
@@ -37,62 +36,12 @@ function fixture(kind: 'provider' | 'workflow' = 'provider') {
   return f;
 }
 
-beforeAll(async () => {
-  const f = fixture();
-  symlinkSync(resolve('node_modules'), join(f.root, 'node_modules'));
-  publisher = join(f.root, 'publisher.cjs');
-  const options = {
-    bundle: true,
-    platform: 'node' as const,
-    format: 'cjs' as const,
-    packages: 'external' as const,
-    loader: { '.sql': 'text' as const },
-    define: { 'import.meta.url': JSON.stringify(pathToFileURL(resolve('src/runtime/wrapper-entrypoint.ts')).href) },
-  };
-  await build({
-    ...options,
-    entryPoints: [resolve('tests/fixtures/terminal-export/publisher.ts')],
-    outfile: publisher,
-    plugins: [
-      {
-        name: 'fixture-stage-pause',
-        setup(builder) {
-          builder.onLoad({ filter: /runtime\/real\.ts$/ }, (args) => {
-            const source = readFileSync(args.path, 'utf8');
-            const start = source.indexOf('function writeAtomicDurableSyncNode(');
-            const stage = source.indexOf('    fd = null;', start);
-            return {
-              contents: `${source.slice(0, stage)}    globalThis.phaseCStage?.(path);\n${source.slice(stage)}`,
-              loader: 'ts',
-            };
-          });
-        },
-      },
-    ],
-  });
-  kbBundle = join(f.root, 'kb-host.cjs');
-  await build({
-    ...options,
-    entryPoints: [resolve('src/kb-daemon/runtime-host.ts')],
-    outfile: kbBundle,
-    plugins: [
-      {
-        name: 'fixture-kb-composition',
-        setup(builder) {
-          builder.onLoad({ filter: /kb-daemon\/runtime-host\.ts$/ }, (args) => ({
-            contents: `${readFileSync(args.path, 'utf8')}\nexport { createKbDaemonProgressStore };\n`,
-            loader: 'ts',
-          }));
-        },
-      },
-    ],
-  });
-  for (const version of ['v0.10.16', 'v0.10.17']) {
-    const source = execFileSync('git', ['show', `${version}:src/jobs/location-index.ts`], { encoding: 'utf8' });
-    const outfile = join(f.root, `${version}.cjs`);
-    await build({ ...options, stdin: { contents: source, loader: 'ts', resolveDir: resolve('src/jobs') }, outfile });
-    releasedReaders.set(version, createRequire(import.meta.url)(outfile));
-  }
+beforeAll(() => {
+  fixture();
+  publisher = sharedFixture('publisher');
+  kbBundle = sharedFixture('kb-host');
+  for (const version of ['v0.10.16', 'v0.10.17', 'v0.10.18'])
+    releasedReaders.set(version, createRequire(import.meta.url)(sharedFixture(version)));
 });
 
 afterAll(() => {

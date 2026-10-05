@@ -582,3 +582,15 @@ it('does not keep active history in a coordinator-lifetime cache when no session
   for (let poll = 0; poll < 3; poll++) f.wait.readWaitAdmissions(['job-1'], 'epoch');
   expect(read).toHaveBeenCalledTimes(3);
 });
+
+it('internal child wait reads its durable historical epoch', async () => {
+  const f = fixture();
+  f.deps.currentJobEpochKey = () => 'active';
+  f.deps.jobEpochKey = () => 'historical';
+  f.deps.loadJobProjectionDetail = () => ({ status: null, launch: null, runtime: null, exit: null });
+  f.deps.observeJobAbsence = () => true;
+  f.deps.historicalWaitAdmission = () => admitted('child', [], true, 'historical');
+  const events = [];
+  for await (const event of f.wait.waitForOutcomes({ jobIds: ['child'], timeoutSeconds: 0 })) events.push(event);
+  expect(events.at(-1)).toMatchObject({ type: 'terminal', jobId: 'child', result: { content: 'child result' } });
+});

@@ -78,9 +78,17 @@ export async function* readWaitSession(input: WaitReadInput): AsyncGenerator<Wai
   const retryDelays = [250, 1000, 5000];
   try {
     while (!signal.aborted) {
-      session.reconcile(read());
+      const admissions = read();
+      const deferred = new Set(admissions.filter((job) => job.observationDeferred).map((job) => job.jobId));
+      session.reconcile(admissions);
       if (request.supportsWaitV3 !== true) validateLegacyAdmission(session);
-      if (firstPoll && !request.cursor && !input.internal && request.supportsWaitV3 === true) {
+      if (
+        firstPoll &&
+        !request.cursor &&
+        !request.drainProgress &&
+        !input.internal &&
+        request.supportsWaitV3 === true
+      ) {
         firstPoll = false;
         session.startAtTail(20, WAIT_PROGRESS_LINES, WAIT_PROGRESS_BYTES);
       }
@@ -111,9 +119,10 @@ export async function* readWaitSession(input: WaitReadInput): AsyncGenerator<Wai
         return;
       }
       const unknownRead = session.allRemainingProgressUnknown();
+      const observedUnknown = unknownRead && session.remaining().some((jobId) => !deferred.has(jobId));
       if (!unknownRead) unknownReadAttempts = 0;
       if (
-        (unknownRead && unknownReadAttempts === retryDelays.length) ||
+        (observedUnknown && unknownReadAttempts === retryDelays.length) ||
         (!input.internal &&
           request.drainProgress !== true &&
           request.supportsWaitV3 === true &&
@@ -127,7 +136,7 @@ export async function* readWaitSession(input: WaitReadInput): AsyncGenerator<Wai
       await time
         .sleep(
           Math.min(
-            unknownRead ? retryDelays[unknownReadAttempts++] : 250,
+            observedUnknown ? retryDelays[unknownReadAttempts++] : 250,
             Math.max(0, deadline - Number(time.monotonicNow())),
           ),
           { signal },
@@ -153,6 +162,14 @@ async function observeCarriers(input: WaitReadInput, session: WaitSession, signa
 
 function validateLegacyAdmission(session: WaitSession): void {
   session.requireLegacyReplaySupport();
+  const failed = session.admissions.find(
+    (job) => job.disposition === 'admitted' && job.availability?.kind === 'failed',
+  );
+  if (failed)
+    throw new WaitSessionError(
+      'wait_epoch_unsupported',
+      `Job ${failed.jobId}: result artifact failed. Read coral-cli jobs detail ${failed.jobId}.`,
+    );
   const missing = session.admissions.filter((job) => job.disposition === 'missing').map((job) => job.jobId);
   if (missing.length > 0)
     throw new WaitSessionError(
@@ -164,7 +181,7 @@ function validateLegacyAdmission(session: WaitSession): void {
   );
   if (refused)
     throw new WaitSessionError(
-      refused.disposition === 'discovery-unknown' ? 'transient' : 'wait_epoch_unsupported',
+      'wait_epoch_unsupported',
       `Job ${refused.jobId}: ${refused.disposition}. Read coral-cli jobs detail ${refused.jobId} for its retained outcome.`,
     );
 }
@@ -337,7 +354,11 @@ function terminalEvent(
       request.supportsWaitV3 === true
         ? session.remaining()
         : session.admissions
-            .filter((job) => job.disposition === 'admitted' && !session.acknowledged(job.jobId))
+            .filter(
+              (job) =>
+                job.disposition === 'discovery-unknown' ||
+                (job.disposition === 'admitted' && (!session.acknowledged(job.jobId) || session.progressHeld(job))),
+            )
             .map((job) => job.jobId),
     ...(availability?.kind === 'available' ? { resultPath: availability.resultPath } : {}),
     ...(request.supportsWaitV3 === true
@@ -367,10 +388,7 @@ function* terminalEvents(
     if (!job.detail?.exit) continue;
     const availability = job.availability;
     if (session.acknowledged(job.jobId) && !session.artifactPending(job.jobId)) continue;
-    if (
-      request.supportsWaitV3 !== true &&
-      (availability?.kind === 'repair-pending' || (availability?.kind === 'failed' && availability.retryScheduled))
-    ) {
+    if (request.supportsWaitV3 !== true && availability?.kind === 'repair-pending') {
       if (request.supportsWaitV2 !== true) return false;
       continue;
     }
@@ -380,6 +398,29 @@ function* terminalEvents(
         `Job ${job.jobId} has a final outcome but its result artifact is ${availability?.kind ?? 'unavailable'}. Run coral-cli jobs detail ${job.jobId}.`,
       );
     if (!session.acknowledged(job.jobId)) {
+      if (request.supportsWaitV3 !== true && session.progressHeld(job)) {
+        const warningSeq = terminalSeq(job) - (request.supportsWaitV2 === true ? 0 : 1);
+        if (request.supportsWaitV2 !== true && session.legacyCursor(false).afterSeq >= warningSeq)
+          throw new WaitSessionError(
+            'wait_epoch_unsupported',
+            `Earlier progress for ${job.jobId} is held. Run coral-cli jobs detail ${job.jobId} --full to inspect its retained outcome.`,
+          );
+        yield {
+          type: 'progress',
+          jobId: job.jobId,
+          seq: warningSeq,
+          message: `Earlier progress for ${job.jobId} is held and was not shown before this terminal. Run coral-cli jobs detail ${job.jobId} --full to inspect its retained outcome.`,
+          timing: {
+            origin: 'runtime',
+            originAt: job.detail.status.updatedAt,
+            emittedAt: job.detail.status.updatedAt,
+            elapsedMs: job.detail.exit.durationMs,
+          },
+          ...(request.supportsWaitV2 === true
+            ? { version: 'jobs.wait.v2', epochKey: job.epochKey, cursor: session.legacyCursor(true) }
+            : {}),
+        };
+      }
       session.acknowledge(job);
       yield terminalEvent(session, request, job, job.detail.exit);
       return true;

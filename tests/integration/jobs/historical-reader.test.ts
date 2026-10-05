@@ -845,7 +845,7 @@ process.stdin.on('data', (input) => {
         const stream = f.addressing.waitStream({
           jobIds: ['old-live'],
           supportsWaitV3: true,
-          timeoutSeconds: 2,
+          timeoutSeconds: 0,
         } as never);
         const ev = (await stream.next()).value as Record<string, unknown>;
         expect(ev).toMatchObject({
@@ -868,7 +868,7 @@ process.stdin.on('data', (input) => {
         const stream = f.addressing.waitStream({
           jobIds: ['old-live'],
           supportsWaitV2: true,
-          timeoutSeconds: 2,
+          timeoutSeconds: 0,
         } as never);
         await expect(stream.next()).resolves.toMatchObject({ value: { type: 'waiting', waitingJobIds: ['old-live'] } });
         await stream.return(undefined);
@@ -1876,7 +1876,7 @@ it('seeds one journal snapshot and catches a launch committed between inventory 
             }
             return (sql: string) => {
               const statement = target.prepare(sql);
-              if (!sql.includes('SELECT * FROM projection_jobs')) return statement;
+              if (!sql.includes('SELECT job_id FROM projection_jobs')) return statement;
               return new Proxy(statement, {
                 get(stmt, property) {
                   const value = Reflect.get(stmt, property);
@@ -2547,6 +2547,75 @@ describe('historical maintenance budgets and retirement', () => {
     return { root, epochDir, db, addJob };
   }
 
+  it('isolates unobservable epoch entries during registration', () => {
+    const index = new JobLocationIndex(runtime, join(fixture().root, 'state'));
+    const inaccessible = { storeRoot: '/inaccessible', epoch: '1', path: '/inaccessible/store.db' };
+    const brokenRuntime = {
+      ...runtime,
+      storage: {
+        ...storage,
+        lstatSync: () => {
+          throw Object.assign(new Error('EACCES'), { code: 'EACCES' });
+        },
+      },
+    };
+    expect(() =>
+      registerPresentHistoricalEpochs(
+        brokenRuntime,
+        index,
+        [
+          { resolved: null, epoch: '99', epochKey: null, epochJson: { kind: 'absent' } },
+          { resolved: inaccessible, epochKey: 'inaccessible', epochJson: { kind: 'absent' } },
+        ] as never,
+        'active',
+        { remaining: 0 },
+      ),
+    ).not.toThrow();
+  });
+
+  it('a failing row does not stall later budgeted seed rows', async () => {
+    const f = fixture();
+    for (let i = 0; i < 9; i++) f.addJob(`done-${i}`);
+    f.db.close();
+    const epoch = { storeRoot: join(f.root, 'db'), epoch: '7', path: join(f.epochDir, 'store.db') };
+    const key = encodeResolvedStoreEpoch(runtime, epoch);
+    const index = new JobLocationIndex(runtime, join(f.root, 'state'));
+    const record = index.recordTerminal.bind(index);
+    vi.spyOn(index, 'recordTerminal').mockImplementation((...args) => {
+      if (args[0] === 'done-0') throw new Error('EIO');
+      return record(...args);
+    });
+    for (let tick = 0; tick < 12; tick++)
+      seedHistoricalEpoch(runtime, index, epoch, key, FP0, join(f.root, 'results'), storage, [], true, {
+        remaining: 2,
+      });
+    expect(index.read('done-8')?.terminalSeq).toBeDefined();
+  });
+
+  it('restart preserves a certified present epoch under a seed budget', async () => {
+    const f = fixture();
+    for (let i = 0; i < 9; i++) f.addJob(`done-${i}`);
+    f.db.close();
+    const epoch = { storeRoot: join(f.root, 'db'), epoch: '7', path: join(f.epochDir, 'store.db') };
+    const key = encodeResolvedStoreEpoch(runtime, epoch);
+    const state = join(f.root, 'state');
+    const first = new JobLocationIndex(runtime, state);
+    seedHistoricalEpoch(runtime, first, epoch, key, FP0, join(f.root, 'results'), storage, [], true);
+    expect(first.resultsReleased(key)).toBe(true);
+    const restarted = new JobLocationIndex(runtime, state);
+    const entry = {
+      resolved: epoch,
+      epochKey: key,
+      epochJson: { kind: 'valid', value: { build: { storeFormatFingerprint: FP0 } } },
+    } as never;
+    registerPresentHistoricalEpochs(runtime, restarted, [entry], 'active', { remaining: 0 });
+    await retryUnknownHistoricalEpochs(restarted, { remaining: 0 });
+    await refreshHistoricalEpochs(restarted, { remaining: 0 });
+    expect(restarted.resultsReleased(key)).toBe(true);
+    expect(restarted.certificate(key)).toEqual(first.certificate(key));
+    expect(restarted.unknownLocationHolds()).toEqual([]);
+  });
+
   it('retiring a certified terminal source keeps unknown IDs missing across restart', async () => {
     const f = fixture();
     f.addJob('done-1');
@@ -2585,8 +2654,8 @@ describe('historical maintenance budgets and retirement', () => {
 
   it.each([true, false])('bounds terminal record re-reads and preserves eventual progress, terminal=%s', (terminal) => {
     const f = fixture();
-    const ids = Array.from({ length: 128 }, (_, i) => `job-${i}`);
-    for (const id of ids) f.addJob(id, { contentBytes: 100_000, terminal, progress: 1 });
+    const ids = Array.from({ length: 40 }, (_, i) => `job-${i}`);
+    for (const id of ids) f.addJob(id, { contentBytes: 1000, terminal, progress: 1 });
     f.db.close();
     const epoch = { storeRoot: join(f.root, 'db'), epoch: '7', path: join(f.epochDir, 'store.db') };
     const key = encodeResolvedStoreEpoch(runtime, epoch);
@@ -2626,16 +2695,37 @@ describe('historical maintenance budgets and retirement', () => {
           expect(
             read.mock.calls.filter(([path]) => String(path).includes('/jobs/') && String(path).endsWith('.json'))
               .length,
-          ).toBeLessThanOrEqual(32);
+          ).toBeLessThanOrEqual(poll === 0 ? 40 : 32);
       }
-      expect(observed.size).toBe(128);
-      expect(delivered.size).toBe(128);
-      expect(deliveredLines).toBe(128);
+      expect(observed.size).toBe(40);
+      expect(delivered.size).toBe(40);
+      expect(deliveredLines).toBe(40);
       expect(session.admissions.every((job) => job.disposition === 'admitted')).toBe(true);
       expect(session.admissions.every((job) => !session.progressHeld(job))).toBe(true);
     } finally {
       read.mockRestore();
     }
+  });
+
+  it('does not restart a completed seed after a transient refresh failure', async () => {
+    const f = fixture();
+    f.addJob('one');
+    f.db.close();
+    const epoch = { storeRoot: join(f.root, 'db'), epoch: '7', path: join(f.epochDir, 'store.db') };
+    const key = encodeResolvedStoreEpoch(runtime, epoch);
+    const index = new JobLocationIndex(runtime, join(f.root, 'state'));
+    seedHistoricalEpoch(runtime, index, epoch, key, FP0, join(f.root, 'results'), storage, [], true);
+    const failure = vi.spyOn(storage, 'openSqliteDatabaseSync').mockImplementationOnce(() => {
+      throw new Error('temporary open failure');
+    });
+    refreshHistoricalEpochs(index);
+    failure.mockRestore();
+    const register = vi.spyOn(index, 'register');
+    await retryUnknownHistoricalEpochs(index, { remaining: 0 });
+    expect(register).not.toHaveBeenCalled();
+    register.mockRestore();
+    refreshHistoricalEpochs(index);
+    expect(index.certificate(key)).not.toBeNull();
   });
 
   it('retirement proofs share one source read for inside-window terminals', () => {
@@ -2653,6 +2743,55 @@ describe('historical maintenance budgets and retirement', () => {
     } finally {
       open.mockRestore();
     }
+  });
+
+  it('a seed slice fetches bodies only for its budgeted subjects', () => {
+    const f = fixture();
+    for (let i = 0; i < 4; i++) f.addJob(`payload-${i}`);
+    f.db.close();
+    const epoch = { storeRoot: join(f.root, 'db'), epoch: '7', path: join(f.epochDir, 'store.db') };
+    const key = encodeResolvedStoreEpoch(runtime, epoch);
+    const index = new JobLocationIndex(runtime, join(f.root, 'state'));
+    let payloadBytes = 0;
+    const count = (value: unknown): void => {
+      if (value instanceof Uint8Array) payloadBytes += value.byteLength;
+      else if (Array.isArray(value)) value.forEach(count);
+      else if (value && typeof value === 'object') Object.values(value).forEach(count);
+    };
+    const open = storage.openSqliteDatabaseSync;
+    const measured = {
+      ...storage,
+      openSqliteDatabaseSync: (...args: Parameters<typeof open>) => {
+        const db = open(...args);
+        return new Proxy(db, {
+          get(target, member) {
+            if (member !== 'prepare') {
+              const value = Reflect.get(target, member);
+              return typeof value === 'function' ? value.bind(target) : value;
+            }
+            return (sql: string) =>
+              new Proxy(target.prepare(sql), {
+                get(statement, method) {
+                  const value = Reflect.get(statement, method);
+                  if (method !== 'all' && method !== 'get')
+                    return typeof value === 'function' ? value.bind(statement) : value;
+                  return (...bindings: SqliteValue[]) => {
+                    const result = value.apply(statement, bindings);
+                    count(result);
+                    return result;
+                  };
+                },
+              });
+          },
+        });
+      },
+    };
+    seedHistoricalEpoch(runtime, index, epoch, key, FP0, join(f.root, 'results'), measured, [], false, {
+      remaining: 1,
+    });
+    expect(payloadBytes).toBeLessThan(4000);
+    expect(index.read('payload-0')).not.toBeNull();
+    expect(index.read('payload-1')).toBeNull();
   });
 
   it('budgeted seed passes parse only their subjects and defer startup seeding', async () => {

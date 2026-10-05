@@ -949,7 +949,7 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
       const run = <T>(work: () => Promise<T>) => (invocation ? invocation.run(work) : work());
       const refusal = () =>
         new WaitSnapshotResponseError(
-          `coral-cli wait jobs ${fields.jobIds.join(' ')}${fields.cursor && fields.cursor.version !== 'jobs.wait.v3' ? ` --cursor ${serializeWaitCursor(fields.cursor)}` : ''}`,
+          `coral-cli wait jobs ${fields.jobIds.join(' ')}${fields.cursor ? ` --cursor ${serializeWaitCursor(fields.cursor)}` : ''}`,
           'this coordinator predates --now; no collection cursor advanced.',
         );
       await run(reconcileKbBoot);

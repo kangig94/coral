@@ -590,28 +590,29 @@ it('crosses a timer boundary before returning an immediate internal deadline wit
   await stream.return(undefined);
 });
 
-it('settles an acknowledged legacy terminal before refusing unavailable artifact carriage', async () => {
+it('refuses a failed artifact even after a legacy terminal was acknowledged', async () => {
   const job = admitted('a');
   job.availability = { kind: 'failed', cause: 'source-epoch-retired', retryScheduled: false };
-  const events = await collect(
-    readWaitSession({
-      request: {
-        jobIds: ['a'],
-        supportsWaitV2: true,
-        cursor: {
-          version: 'jobs.wait.v2',
-          locations: { a: 'epoch-E' },
-          positions: { 'epoch-E': 0 },
-          deliveredJobIds: ['a'],
+  await expect(
+    collect(
+      readWaitSession({
+        request: {
+          jobIds: ['a'],
+          supportsWaitV2: true,
+          cursor: {
+            version: 'jobs.wait.v2',
+            locations: { a: 'epoch-E' },
+            positions: { 'epoch-E': 0 },
+            deliveredJobIds: ['a'],
+          },
+          timeoutSeconds: 0,
         },
-        timeoutSeconds: 0,
-      },
-      time: createRealTimePort(),
-      activeEpochKey: 'epoch-E',
-      read: () => [job],
-    }),
-  );
-  expect(events).toEqual([]);
+        time: createRealTimePort(),
+        activeEpochKey: 'epoch-E',
+        read: () => [job],
+      }),
+    ),
+  ).rejects.toMatchObject({ code: 'wait_epoch_unsupported', message: expect.stringContaining('jobs detail a') });
 });
 
 it('retries an unknown historical read on a bounded schedule, then exits 75 unresolved', async () => {
@@ -982,7 +983,7 @@ describe('discovery retry preserves interleaved progress', () => {
     const events = await collect(
       readWaitSession({
         request: { jobIds: ['a', 'b'], supportsWaitV3: true, timeoutSeconds: 2, cursor },
-        time: createRealTimePort(),
+        time: advancingTime(),
         activeEpochKey: 'epoch-E',
         read: () => (++poll === 1 ? [a, bUnknown] : [a, b]),
       }),
@@ -1027,7 +1028,7 @@ describe('unknown first member preserves continuation', () => {
       collect(
         readWaitSession({
           request: { jobIds: ['u', 'a'], supportsWaitV3: true, timeoutSeconds: 1, cursor: c },
-          time: createRealTimePort(),
+          time: advancingTime(),
           activeEpochKey: 'epoch-E',
           read: () => [u, a],
         }),
@@ -1045,7 +1046,7 @@ describe('unknown first member preserves continuation', () => {
     const recovered = await collect(
       readWaitSession({
         request: { jobIds: ['u', 'a'], supportsWaitV3: true, timeoutSeconds: 0, cursor: secondLast.cursor },
-        time: createRealTimePort(),
+        time: advancingTime(),
         activeEpochKey: 'epoch-E',
         read: () => [admitted('u', [], false), a],
       }),
@@ -1106,48 +1107,60 @@ describe('bounded tail selection excludes older history', () => {
   });
 });
 
-it.each(['v0.10.15', 'v0.10.17'] as const)('released %s clients can resume transient artifact waits', async (tag) => {
-  const directories: string[] = [];
-  try {
-    const released = await loadReleasedWait(tag, directories);
-    for (const availability of [
-      { kind: 'repair-pending', ageUncertain: false },
-      { kind: 'failed', cause: 'repair-failed', retryScheduled: true },
-      { kind: 'failed', cause: 'cutoff-untrusted', retryScheduled: true },
-    ] as const) {
-      const job = { ...admitted('a'), availability };
-      const parsed = released.jobWaitSchema.parse({
-        jobIds: ['a'],
-        projectRoot: '/tmp',
-        timeoutSeconds: 1,
-        ...(tag === 'v0.10.15' ? {} : { supportsWaitV2: true }),
-      });
-      const request = { ...(parsed as object), timeoutSeconds: 0 } as never;
-      const events = await collect(
-        readWaitSession({ request, time: createRealTimePort(), activeEpochKey: 'epoch-E', read: () => [job] }),
-      );
-      expect(events.some((event) => event.type === 'terminal')).toBe(false);
-      const waiting = events.at(-1)!;
-      expect(waiting).toMatchObject({ type: 'waiting', waitingJobIds: ['a'] });
-      expect(released.parseWaitStreamEventValue(waiting)).toMatchObject({ type: 'waiting' });
-      if ('cursor' in waiting && waiting.cursor?.version === 'jobs.wait.v2')
-        expect(waiting.cursor.deliveredJobIds).toEqual([]);
-      const text = released.formatWaitWaiting(waiting, released.serializeWaitCursor({ afterSeq: 0 }), ['a']);
-      expect(text).toContain('coral-cli wait jobs a');
-      expect(text).toContain('(cursor: ');
-      job.availability = { kind: 'available', resultPath: '/results/a' } as never;
-      const repaired = await collect(
-        readWaitSession({ request, time: createRealTimePort(), activeEpochKey: 'epoch-E', read: () => [job] }),
-      );
-      expect(released.parseWaitStreamEventValue(repaired.find((event) => event.type === 'terminal'))).toMatchObject({
-        type: 'terminal',
-        resultPath: '/results/a',
-      });
+it.each(['v0.10.15', 'v0.10.17', 'v0.10.18'] as const)(
+  'released %s clients hold pending repairs and refuse failed artifacts',
+  async (tag) => {
+    const directories: string[] = [];
+    try {
+      const released = await loadReleasedWait(tag, directories);
+      for (const availability of [
+        { kind: 'repair-pending', ageUncertain: false },
+        { kind: 'failed', cause: 'repair-failed', retryScheduled: true },
+        { kind: 'failed', cause: 'cutoff-untrusted', retryScheduled: true },
+      ] as const) {
+        const job = { ...admitted('a'), availability };
+        const parsed = released.jobWaitSchema.parse({
+          jobIds: ['a'],
+          projectRoot: '/tmp',
+          timeoutSeconds: 1,
+          ...(tag === 'v0.10.15' ? {} : { supportsWaitV2: true }),
+        });
+        const request = { ...(parsed as object), timeoutSeconds: 0 } as never;
+        const read = () =>
+          collect(
+            readWaitSession({ request, time: createRealTimePort(), activeEpochKey: 'epoch-E', read: () => [job] }),
+          );
+        if (availability.kind === 'failed') {
+          await expect(read()).rejects.toMatchObject({
+            code: 'wait_epoch_unsupported',
+            message: expect.stringContaining('jobs detail a'),
+          });
+          continue;
+        }
+        const events = await read();
+        expect(events.some((event) => event.type === 'terminal')).toBe(false);
+        const waiting = events.at(-1)!;
+        expect(waiting).toMatchObject({ type: 'waiting', waitingJobIds: ['a'] });
+        expect(released.parseWaitStreamEventValue(waiting)).toMatchObject({ type: 'waiting' });
+        if ('cursor' in waiting && waiting.cursor?.version === 'jobs.wait.v2')
+          expect(waiting.cursor.deliveredJobIds).toEqual([]);
+        const text = released.formatWaitWaiting(waiting, released.serializeWaitCursor({ afterSeq: 0 }), ['a']);
+        expect(text).toContain('coral-cli wait jobs a');
+        expect(text).toContain('(cursor: ');
+        job.availability = { kind: 'available', resultPath: '/results/a' } as never;
+        const repaired = await collect(
+          readWaitSession({ request, time: createRealTimePort(), activeEpochKey: 'epoch-E', read: () => [job] }),
+        );
+        expect(released.parseWaitStreamEventValue(repaired.find((event) => event.type === 'terminal'))).toMatchObject({
+          type: 'terminal',
+          resultPath: '/results/a',
+        });
+      }
+    } finally {
+      for (const dir of directories) rmSync(dir, { recursive: true, force: true });
     }
-  } finally {
-    for (const dir of directories) rmSync(dir, { recursive: true, force: true });
-  }
-});
+  },
+);
 
 it('mid-stream discovery unknown retains a legacy continuation', async () => {
   let poll = 0;
@@ -1190,4 +1203,170 @@ it('legacy progress preserves released bytes including overlong lines', async ()
     );
     expect(events.find((event) => event.type === 'progress')).toMatchObject({ message });
   }
+});
+
+it.each([false, true])('refuses every failed artifact for a released reader, retry=%s', async (retryScheduled) => {
+  const job = admitted('a');
+  job.availability = { kind: 'failed', cause: 'repair-failed', retryScheduled };
+  await expect(
+    collect(
+      readWaitSession({
+        request: { jobIds: ['a'], supportsWaitV2: true, timeoutSeconds: 0 },
+        time: createRealTimePort(),
+        activeEpochKey: 'epoch-E',
+        read: () => [job],
+      }),
+    ),
+  ).rejects.toMatchObject({
+    code: 'wait_epoch_unsupported',
+    message: expect.stringContaining('coral-cli jobs detail a'),
+  });
+});
+
+it('released terminal keeps a transient sibling in the remaining batch', async () => {
+  const events = await collect(
+    readWaitSession({
+      request: { jobIds: ['a', 'b'], supportsWaitV2: true, timeoutSeconds: 0 },
+      time: createRealTimePort(),
+      activeEpochKey: 'epoch-E',
+      read: () => [admitted('a'), { jobId: 'b', disposition: 'discovery-unknown' }],
+    }),
+  );
+  expect(events.at(-1)).toMatchObject({ type: 'terminal', remainingJobIds: ['b'] });
+});
+
+it('launch follow drains early progress rather than selecting a tail', async () => {
+  const events = await collect(
+    readWaitSession({
+      request: { jobIds: ['a'], supportsWaitV3: true, drainProgress: true, timeoutSeconds: 0 },
+      time: createRealTimePort(),
+      activeEpochKey: 'epoch-E',
+      read: () => [
+        admitted(
+          'a',
+          Array.from({ length: 21 }, (_, i) => [i + 1, `early-${i}`]),
+        ),
+      ],
+    }),
+  );
+  expect(events.filter((e) => e.type === 'progress')).toHaveLength(21);
+});
+
+it('windows snapshot content and diagnostics before encoding', () => {
+  const job = admitted('a');
+  job.detail!.exit!.content = 'a"\\🙂\n'.repeat(100_000);
+  job.detail!.exit!.diagnostics.warnings = ['w'.repeat(1_000_000)];
+  const session = new WaitSession(['a']);
+  session.reconcile([job]);
+  const stringify = vi.spyOn(JSON, 'stringify');
+  const snapshot = selectWaitSnapshot(session);
+  expect(snapshot.jobs[0].terminal!.contentOmittedBytes).toBeGreaterThan(0);
+  expect(stringify.mock.calls.every(([v]) => typeof v !== 'string' || v.length <= 4096)).toBe(true);
+  expect(
+    stringify.mock.calls.every(
+      ([v]) => !v || typeof v !== 'object' || !('diagnostics' in v) || JSON.stringify(v).length < 10_000,
+    ),
+  ).toBe(true);
+});
+
+function advancingTime() {
+  let now = 0n;
+  return {
+    ...createRealTimePort(),
+    monotonicNow: () => now,
+    sleep: async (ms: number) => {
+      now += BigInt(ms);
+    },
+  };
+}
+
+it('states held progress before delivering a legacy terminal', async () => {
+  const a = admitted('a');
+  a.sourceRead = 'transient-unknown';
+  const events = await collect(
+    readWaitSession({
+      request: { jobIds: ['a'], supportsWaitV2: true, timeoutSeconds: 0 },
+      time: createRealTimePort(),
+      activeEpochKey: 'epoch-E',
+      read: () => [a],
+    }),
+  );
+  expect(events[0]).toMatchObject({ type: 'progress', message: expect.stringContaining('was not shown') });
+  expect(events.at(-1)).toMatchObject({ type: 'terminal' });
+});
+
+it('cursorless snapshot omission retains the current tail watermark', () => {
+  const job = admitted(
+    'a',
+    [
+      [1, 'old'],
+      [30, 'x'.repeat(4000)],
+    ],
+    false,
+  );
+  job.message = 'm'.repeat(2 * 1024 * 1024 - 2300);
+  const session = new WaitSession(['a']);
+  session.reconcile([job]);
+  const snapshot = selectWaitSnapshot(session, 1);
+  expect(snapshot.jobs[0].progress).toEqual([]);
+  expect(snapshot.cursor.epochs[0].watermark).toBe(29);
+});
+
+it('a released acknowledged terminal still refuses a failed artifact', async () => {
+  const job = admitted('a');
+  job.availability = { kind: 'failed', cause: 'cutoff-untrusted', retryScheduled: true };
+  await expect(
+    collect(
+      readWaitSession({
+        request: {
+          jobIds: ['a'],
+          supportsWaitV2: true,
+          cursor: {
+            version: 'jobs.wait.v2',
+            positions: { 'epoch-E': 1000 },
+            locations: { a: 'epoch-E' },
+            deliveredJobIds: ['a'],
+          },
+          timeoutSeconds: 0,
+        },
+        time: createRealTimePort(),
+        activeEpochKey: 'epoch-E',
+        read: () => [job],
+      }),
+    ),
+  ).rejects.toMatchObject({ code: 'wait_epoch_unsupported' });
+});
+
+it('does not spend unknown-read retries on a deferred poll', async () => {
+  let poll = 0;
+  const events = await collect(
+    readWaitSession({
+      request: { jobIds: ['a'], supportsWaitV3: true, timeoutSeconds: 20 },
+      time: advancingTime(),
+      activeEpochKey: 'epoch-E',
+      read: () => {
+        poll++;
+        if (poll === 1) return [{ jobId: 'a', disposition: 'discovery-unknown' }];
+        if (poll < 5) return [{ jobId: 'a', disposition: 'discovery-unknown', observationDeferred: true }];
+        return [admitted('a')];
+      },
+    }),
+  );
+  expect(events.some((event) => event.type === 'terminal')).toBe(true);
+  expect(poll).toBe(5);
+});
+
+it('gives a legacy cursor without a warning sequence slot a runnable held-progress refusal', async () => {
+  const job = admitted('a');
+  job.sourceRead = 'transient-unknown';
+  await expect(
+    collect(
+      readWaitSession({
+        request: { jobIds: ['a'], cursor: { afterSeq: 999 }, timeoutSeconds: 0 },
+        time: createRealTimePort(),
+        activeEpochKey: 'epoch-E',
+        read: () => [job],
+      }),
+    ),
+  ).rejects.toMatchObject({ code: 'wait_epoch_unsupported', message: expect.stringContaining('jobs detail a --full') });
 });

@@ -175,7 +175,7 @@ it.each(['completion', 'handoff'] as const)(
       expect(readProviderOperationForJob(db, jobId)).toBeNull();
       expect(launchCoordinator.reservationFor(jobId)).not.toBeNull();
       const events: WaitStreamEvent[] = [];
-      for await (const event of service.waitStream({ jobIds: [jobId], timeoutSeconds: 1 })) events.push(event);
+      for await (const event of service.waitStream({ jobIds: [jobId], timeoutSeconds: 0.01 })) events.push(event);
       const waiting = events.find((event) => event.type === 'waiting');
       if (waiting?.type !== 'waiting') throw new Error('expected a waiting event');
       const output = events
@@ -199,7 +199,7 @@ it.each(['completion', 'handoff'] as const)(
       expect(launchCoordinator.reservationFor(jobId)).not.toBeNull();
       observedPasses.length = 0;
       const unknown: WaitStreamEvent[] = [];
-      for await (const event of service.waitStream({ jobIds: [jobId], timeoutSeconds: 1 })) unknown.push(event);
+      for await (const event of service.waitStream({ jobIds: [jobId], timeoutSeconds: 0.01 })) unknown.push(event);
       const unknownWaiting = unknown.find((event) => event.type === 'waiting');
       if (unknownWaiting?.type !== 'waiting') throw new Error('expected a quiesced waiting event');
       expect(formatWaitWaiting(unknownWaiting, null)).toContain(`Carrier unconfirmed for: ${jobId}`);
@@ -482,7 +482,8 @@ it('observes a progressing inherited proxy through execution-service assembly an
       },
     });
     const events: WaitStreamEvent[] = [];
-    for await (const event of service.waitStream({ jobIds: [operation.jobId], timeoutSeconds: 1 })) events.push(event);
+    for await (const event of service.waitStream({ jobIds: [operation.jobId], timeoutSeconds: 0.01 }))
+      events.push(event);
     const waiting = events.find((event) => event.type === 'waiting');
     if (waiting?.type !== 'waiting') throw new Error('expected a waiting event');
     const output = events
@@ -498,7 +499,8 @@ it('observes a progressing inherited proxy through execution-service assembly an
     observedPasses.length = 0;
     await proxy.close();
     const unknown: WaitStreamEvent[] = [];
-    for await (const event of service.waitStream({ jobIds: [operation.jobId], timeoutSeconds: 1 })) unknown.push(event);
+    for await (const event of service.waitStream({ jobIds: [operation.jobId], timeoutSeconds: 0.01 }))
+      unknown.push(event);
     const unknownWaiting = unknown.find((event) => event.type === 'waiting');
     if (unknownWaiting?.type !== 'waiting') throw new Error('expected an unobservable waiting event');
     expect(formatWaitWaiting(unknownWaiting, null)).toContain(`Carrier unconfirmed for: ${operation.jobId}`);

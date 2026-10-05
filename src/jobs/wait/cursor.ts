@@ -120,7 +120,7 @@ export function decodeSerializedWaitCursor(raw: string): WaitCursorDecoded {
 }
 
 export const WAIT_CURSOR_REPLAY_NOTICE =
-  'saved cursor not accepted by this coordinator; progress and results are replayed from the start, so earlier results may repeat';
+  'saved cursor not accepted by this coordinator; the current progress tail and retained results are collected again, so earlier results may repeat';
 
 export const ACKNOWLEDGED_FLAG = 1;
 export const ARTIFACT_PENDING_FLAG = 2;

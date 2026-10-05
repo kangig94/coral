@@ -26,6 +26,7 @@ export function createStoreEpochSweepScheduler(input: {
   let timer: TimerHandle | null = null;
   let settleScheduled: (() => void) | null = null;
   let settlement = Promise.resolve();
+  let lastSweep = -Infinity;
 
   return {
     schedule: (openStore) => {
@@ -38,6 +39,7 @@ export function createStoreEpochSweepScheduler(input: {
         });
         timer = runtime.time.setTimeout(() => {
           timer = null;
+          lastSweep = Number(runtime.time.monotonicNow());
           void (async () => {
             const budget = { remaining: 0 };
             try {
@@ -89,7 +91,7 @@ export function createStoreEpochSweepScheduler(input: {
         runtime.time.clearTimeout(timer);
         timer = null;
         settleScheduled?.();
-        schedule(0);
+        schedule(Math.max(0, 5_000 - (Number(runtime.time.monotonicNow()) - lastSweep)));
       });
       schedule(0);
     },

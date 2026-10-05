@@ -908,3 +908,38 @@ describe('first publication schedules retry after clock trust', () => {
     });
   });
 });
+
+it('bounds unscheduled daemon repair hints and failures', () => {
+  const f = fixture();
+  const owner = new TerminalResultExportOwner({
+    runtime: f.runtime,
+    jobsRoot: f.runtime.paths.coral.exports.jobsRoot,
+    location: () => null,
+    withSource: () => {
+      throw new Error('EIO');
+    },
+    repairQueueLimit: 2,
+  });
+  for (const id of ['a', 'b', 'c']) {
+    owner.hintRepair(id);
+    expect(() => owner.ensureResultMarkdownArtifact(id)).toThrow('EIO');
+  }
+  expect((owner as unknown as { hints: Set<string>; failures: Set<string> }).hints.size).toBe(2);
+  expect((owner as unknown as { hints: Set<string>; failures: Set<string> }).failures.size).toBe(2);
+});
+
+it('retired source dominates a remembered repair failure', () => {
+  const f = fixture();
+  const owner = new TerminalResultExportOwner({
+    runtime: f.runtime,
+    jobsRoot: f.runtime.paths.coral.exports.jobsRoot,
+    location: () => null,
+    withSource: () => null,
+    failures: new Set(['a']),
+  });
+  expect(owner.observeResultAvailability('a')).toMatchObject({
+    kind: 'failed',
+    cause: 'terminal-unusable',
+    retryScheduled: false,
+  });
+});

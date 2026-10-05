@@ -1,18 +1,16 @@
-import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, symlinkSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { sharedFixture } from '#tests/helpers/shared-fixtures.js';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
-import { build } from 'esbuild';
+import { join } from 'node:path';
 import { afterAll, beforeAll, expect, it, vi } from 'vitest';
 import { decodeSerializedWaitCursor } from '#src/jobs/wait/cursor.js';
 import { jobsWaitRequest, jobWaitSchema } from '#src/transport/rpc/jobs.js';
 import type { WaitCursor } from '#src/jobs/wait/contract.js';
 import type { z } from 'zod';
 
-const root = resolve('.');
 const directory = mkdtempSync(join(tmpdir(), 'coral-released-wait-cursor-'));
-const releases = ['v0.10.15', 'v0.10.16', 'v0.10.17'];
+const releases = ['v0.10.15', 'v0.10.16', 'v0.10.17', 'v0.10.18'];
 const contracts = new Map<
   string,
   {
@@ -22,44 +20,8 @@ const contracts = new Map<
   }
 >();
 
-beforeAll(async () => {
-  symlinkSync(join(root, 'node_modules'), join(directory, 'node_modules'), 'dir');
-  for (const release of releases) {
-    const sources = new Map(
-      ['src/jobs/wait.ts', 'src/jobs/wait-stream-event.ts', 'src/transport/rpc/jobs.ts'].map((path) => [
-        join(root, path),
-        execFileSync('git', ['show', `${release}:${path}`], { cwd: root, encoding: 'utf8' }),
-      ]),
-    );
-    const outfile = join(directory, `${release}.mjs`);
-    await build({
-      stdin: {
-        contents: `export * from './src/jobs/wait.ts'; export { jobWaitSchema } from './src/transport/rpc/jobs.ts';`,
-        resolveDir: root,
-      },
-      outfile,
-      bundle: true,
-      platform: 'node',
-      format: 'esm',
-      packages: 'external',
-      plugins: [
-        {
-          name: 'released-cursor-contract',
-          setup(builder) {
-            builder.onResolve({ filter: /(?:wait(?:-stream-event)?|jobs)\.(?:ts|js)$/ }, ({ path, resolveDir }) => {
-              const resolved = resolve(resolveDir, path).replace(/\.js$/, '.ts');
-              return sources.has(resolved) ? { path: resolved } : undefined;
-            });
-            builder.onLoad({ filter: /(?:wait(?:-stream-event)?|jobs)\.ts$/ }, ({ path }) => {
-              const source = sources.get(path);
-              return source === undefined ? undefined : { contents: source, loader: 'ts' };
-            });
-          },
-        },
-      ],
-    });
-    contracts.set(release, await import(pathToFileURL(outfile).href));
-  }
+beforeAll(() => {
+  for (const tag of releases) contracts.set(tag, createRequire(import.meta.url)(sharedFixture(tag)));
 });
 
 afterAll(() => rmSync(directory, { recursive: true, force: true }));

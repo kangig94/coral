@@ -221,6 +221,18 @@ it('describes a reset snapshot cursor as a latest progress tail', async () => {
   await program().parseAsync(['node', 'coral-cli', 'wait', 'jobs', 'a', '--now', '--cursor', 'malformed']);
   expect(output).toContain('This snapshot shows the latest progress tail');
   expect(output).toContain(WAIT_CURSOR_REPLAY_NOTICE);
-  expect(output).toContain('from the start');
+  expect(output).toContain('current progress tail');
   expect(output).toContain('line-29');
+});
+
+it('older-coordinator snapshot refusal preserves the v3 cursor in remediation', async () => {
+  vi.spyOn(ensure, 'ensure').mockResolvedValue({ jobsWaitExtensions: ['supportsWaitV2'] } as never);
+  const p = program();
+  const wait = p.commands.find((command) => command.name() === 'wait')!.commands[0];
+  const session = new WaitSession(['a']);
+  session.reconcile([admitted('a', [], false)]);
+  const cursor = session.cursor();
+  await expect(
+    dispatch.makeClient(process.cwd(), wait).snapshotJobsWait({ jobIds: ['a'], cursor }),
+  ).rejects.toMatchObject({ remediation: expect.stringContaining(`--cursor ${serializeWaitCursor(cursor)}`) });
 });

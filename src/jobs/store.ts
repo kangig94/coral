@@ -63,6 +63,7 @@ import { writeDurableCliProvisionalProcessRuntimeMeta } from './runtime-meta-sto
 import type { DurableCliProvisionalProcessRuntimeMeta } from './runtime-meta.js';
 
 export type JobStoreOptions = {
+  terminalAgeCacheLimit?: number;
   eventBus?: JobEventBus;
   db: Database;
   reducers?: ComposedReducers;
@@ -427,6 +428,7 @@ export class JobStore implements JobProgressStore {
     options: JobStoreOptions,
   ) {
     this.namespace = namespace;
+    this.terminalAgeCacheLimit = options.terminalAgeCacheLimit ?? 1024;
     this.runtime = runtime;
     const { eventBus = createNoopJobEventBus(), db, reducers = composeReducers(jobsRegistry) } = options;
 
@@ -559,6 +561,7 @@ export class JobStore implements JobProgressStore {
   private resultExports: TerminalResultExportOwner | null = null;
   private exportLocations: JobLocationIndex | null = null;
   private workflowReport?: WorkflowReportPort;
+  private readonly terminalAgeCacheLimit: number;
   private readonly localTerminalAges = new Map<string, unknown>();
 
   configureResultExports(locations: JobLocationIndex | null, workflowReport?: WorkflowReportPort): void {
@@ -598,7 +601,7 @@ export class JobStore implements JobProgressStore {
         if (!accepted) return null;
         if (!this.localTerminalAges.has(jobId) && trustedJobRetentionCutoff(this.runtime) !== null) {
           const age = readIntactJobTerminalAge(this.db, accepted, trustedJobRetentionCutoff(this.runtime));
-          if (this.localTerminalAges.size >= 1024) {
+          if (this.localTerminalAges.size >= this.terminalAgeCacheLimit) {
             const oldest = this.localTerminalAges.keys().next().value;
             if (oldest !== undefined) this.localTerminalAges.delete(oldest);
           }

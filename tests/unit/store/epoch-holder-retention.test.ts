@@ -238,7 +238,6 @@ it.each(['v0.10.15', 'v0.10.16', 'v0.10.17'] as const)(
         expect(await released.sweepStoreEpochsPostReady!(runtime, selected)).toBe('complete');
         expect(existsSync(firstReaping)).toBe(false);
       }
-      f.runtime.storage.unlinkSync(join(f.baseDir, 'node_modules'));
       const second = crashHolderPublication(f.baseDir, root);
       expect(await released.sweepStoreEpochsPostReady!(runtime, selected)).toBe('complete');
       expect(existsSync(second)).toBe(true);
