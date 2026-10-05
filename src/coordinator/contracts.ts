@@ -105,6 +105,7 @@ export type ExecutionServiceDeps = {
   }) => AsyncIterable<JobEvent>;
   getCurrentJournalSeq: () => number;
   currentJobEpochKey?: () => string | null;
+  jobEpochKey?: (jobId: string) => string | null;
   observeJobAbsence?: (jobId: string) => boolean;
   observeResultAvailability: (jobId: string, session?: object) => ResultAvailability;
   hintResultRepair?: (jobId: string) => void;

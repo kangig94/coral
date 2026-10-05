@@ -113,7 +113,7 @@ export class WaitSession {
   private readonly members = new Map<string, { epochKey?: string; acknowledged: boolean; artifactPending: boolean }>();
   private progressLines: WaitProgressLine[] | undefined;
   private progressHead = 0;
-  private readonly unreadByJob = new Map<string, number>();
+  private progressComplete = false;
   private readonly admissionById = new Map<string, WaitAdmission>();
   private readonly historyShape = new Map<string, string>();
   private readonly coverage = new Map<string, { kind: 'live' | 'absent' | 'unknown'; frontier: number }>();
@@ -149,7 +149,8 @@ export class WaitSession {
     }
     for (const job of admissions) {
       if (!this.progressHeld(job)) continue;
-      const notice = `Earlier progress for ${job.jobId}: progress held until this epoch can be read. If all remaining work is progress-unknown, the bounded read retries after 250 ms, 1 s and 5 s, then exit 75; retry the continuation after the source lock is released or its scheduled repair completes.`;
+      const { jobId, epochKey, message } = job;
+      const notice = `Earlier progress for ${jobId} is held: epoch ${epochKey} cannot be read right now${message ? ` (${message})` : ''}. Epoch maintenance probes it every 5 s and settles after 3 failed probes; this read retries after 250 ms, 1 s and 5 s, then exits 75 with a continuation.`;
       if (!this.notices.includes(notice)) this.notices.push(notice);
     }
   }
@@ -322,60 +323,138 @@ export class WaitSession {
     if (member) member.artifactPending = false;
   }
 
-  private indexProgress(): WaitProgressLine[] {
-    if (this.progressLines !== undefined) return this.progressLines;
+  private firstUnread(job: WaitAdmission): number {
+    const events = job.detail?.events ?? [];
+    const position = this.epochs.get(job.epochKey ?? '');
+    if (!position) return events.length;
+    let low = 0;
+    let high = events.length;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      if (
+        events[middle].seq < position.watermark ||
+        (events[middle].seq === position.watermark && position.lineOffset === 0)
+      )
+        low = middle + 1;
+      else high = middle;
+    }
+    return low;
+  }
+
+  private jobHasProgress(job: WaitAdmission): boolean {
+    if (job.disposition !== 'admitted' || !job.epochKey || this.progressHeld(job)) return false;
+    const events = job.detail?.events ?? [];
+    for (let i = this.firstUnread(job); i < events.length; i++) {
+      const event = events[i];
+      if (event.type === 'progress') return true;
+    }
+    return false;
+  }
+
+  private *jobProgress(job: WaitAdmission, tail?: number): Generator<WaitProgressLine> {
+    if (job.disposition !== 'admitted' || !job.epochKey || this.progressHeld(job)) return;
+    const events = job.detail?.events ?? [];
+    const position = this.epochs.get(job.epochKey);
+    if (!position) return;
+    const first = this.firstUnread(job);
+    let count = 0;
+    for (
+      let index = tail === undefined ? first : events.length - 1;
+      index >= first && index < events.length;
+      index += tail === undefined ? 1 : -1
+    ) {
+      const event = events[index];
+      if (event.type !== 'progress') continue;
+      const parts = splitWaitProgress(event.message);
+      const start = event.seq === position.watermark ? position.lineOffset : 0;
+      for (
+        let offset = tail === undefined ? start : parts.length - 1;
+        offset >= start && offset < parts.length;
+        offset += tail === undefined ? 1 : -1
+      ) {
+        yield {
+          jobId: job.jobId,
+          epochKey: job.epochKey,
+          seq: event.seq,
+          offset,
+          last: offset === parts.length - 1,
+          text: parts[offset],
+          timing: event.timing,
+        };
+        if (tail !== undefined && ++count === tail) return;
+      }
+    }
+  }
+
+  progress(limit = Infinity): WaitProgressLine[] {
+    if (
+      this.progressLines !== undefined &&
+      (this.progressComplete || this.progressLines.length - this.progressHead >= limit)
+    )
+      return this.progressLines.slice(this.progressHead, this.progressHead + limit);
     const result: WaitProgressLine[] = [];
-    this.unreadByJob.clear();
-    for (const [epochKey, position] of this.epochs) {
-      if (this.admissions.some((job) => job.epochKey === epochKey && this.progressHeld(job))) continue;
-      const lines: WaitProgressLine[] = [];
-      for (const job of this.admissions) {
-        if (job.disposition !== 'admitted' || job.epochKey !== epochKey) continue;
-        const events = job.detail?.events ?? [];
-        let low = 0;
-        let high = events.length;
-        while (low < high) {
-          const middle = (low + high) >>> 1;
-          if (
-            events[middle].seq < position.watermark ||
-            (events[middle].seq === position.watermark && position.lineOffset === 0)
-          )
-            low = middle + 1;
-          else high = middle;
-        }
-        for (let index = low; index < events.length; index++) {
-          const event = events[index];
-          if (event.type !== 'progress') continue;
-          const parts = splitWaitProgress(event.message);
-          const first = event.seq === position.watermark ? position.lineOffset : 0;
-          for (let offset = first; offset < parts.length; offset++) {
-            lines.push({
-              jobId: event.jobId,
-              epochKey,
-              seq: event.seq,
-              offset,
-              last: offset === parts.length - 1,
-              text: shortenWaitLine(parts[offset]),
-              timing: event.timing,
-            });
-            this.unreadByJob.set(job.jobId, (this.unreadByJob.get(job.jobId) ?? 0) + 1);
+    for (const epochKey of this.epochs.keys()) {
+      const iterators = this.admissions.filter((job) => job.epochKey === epochKey).map((job) => this.jobProgress(job));
+      const heads = iterators.map((iterator) => iterator.next());
+      while (result.length < limit) {
+        let selected = -1;
+        let selectedLine: WaitProgressLine | undefined;
+        for (let i = 0; i < heads.length; i++) {
+          const head = heads[i];
+          if (!head.done && (!selectedLine || head.value.seq < selectedLine.seq)) {
+            selected = i;
+            selectedLine = head.value;
           }
         }
+        if (!selectedLine) break;
+        result.push(selectedLine);
+        heads[selected] = iterators[selected].next();
       }
-      lines.sort((a, b) => a.seq - b.seq || a.offset - b.offset);
-      for (const line of lines) result.push(line);
+      if (result.length === limit) break;
     }
+    this.progressComplete = result.length < limit;
     this.progressLines = result;
     this.progressHead = 0;
     return result;
   }
 
-  progress(): WaitProgressLine[] {
-    return this.indexProgress().slice(this.progressHead);
+  tailProgress(count: number): WaitProgressLine[] {
+    if (count === 0) return [];
+    return this.admissions
+      .flatMap((job) => [...this.jobProgress(job, count)].reverse())
+      .sort((a, b) => a.epochKey.localeCompare(b.epochKey) || a.seq - b.seq || a.offset - b.offset);
+  }
+
+  hasProgressBefore(lines: readonly WaitProgressLine[]): boolean {
+    return this.admissions.some((job) => {
+      const first = this.jobProgress(job).next();
+      if (first.done) return false;
+      const selected = lines.find((line) => line.jobId === job.jobId);
+      return (
+        !selected ||
+        first.value.seq < selected.seq ||
+        (first.value.seq === selected.seq && first.value.offset < selected.offset)
+      );
+    });
+  }
+
+  startAtTail(count: number): void {
+    const tail = this.tailProgress(count);
+    this.skipEarlierProgress();
+    for (const [key, position] of this.epochs) {
+      const first = tail.find((line) => line.epochKey === key);
+      if (first) {
+        position.watermark = first.offset === 0 ? first.seq - 1 : first.seq;
+        position.lineOffset = first.offset;
+      }
+    }
+    this.progressLines = tail;
+    this.progressHead = 0;
+    this.progressComplete = true;
   }
 
   hasProgress(): boolean {
-    return this.progressHead < this.indexProgress().length;
+    return this.admissions.some((job) => this.jobHasProgress(job));
   }
   restoreProgress(cursor: WaitCursorV3): void {
     this.progressLines = undefined;
@@ -394,7 +473,6 @@ export class WaitSession {
     position.lineOffset = line.last ? 0 : line.offset + 1;
     if (this.progressLines?.[this.progressHead] === line) {
       this.progressHead++;
-      this.unreadByJob.set(line.jobId, (this.unreadByJob.get(line.jobId) ?? 1) - 1);
     } else this.progressLines = undefined;
   }
   requireLegacyReplaySupport(): void {
@@ -409,18 +487,16 @@ export class WaitSession {
     this.progressLines = [];
     this.progressHead = 0;
     const blockedEpochs = new Set(this.admissions.filter((job) => this.progressHeld(job)).map((job) => job.epochKey));
-    for (const job of this.admissions) if (!blockedEpochs.has(job.epochKey)) this.unreadByJob.delete(job.jobId);
     for (const admission of this.admissions) {
       if (!admission.epochKey || admission.disposition !== 'admitted') continue;
       if (blockedEpochs.has(admission.epochKey)) continue;
       const position = this.epochs.get(admission.epochKey);
       if (!position) continue;
-      for (const event of admission.detail?.events ?? []) position.watermark = Math.max(position.watermark, event.seq);
+      position.watermark = Math.max(position.watermark, admission.detail?.events.at(-1)?.seq ?? 0);
       position.lineOffset = 0;
     }
   }
   remaining(): string[] {
-    this.indexProgress();
     return this.admissions
       .filter(
         (job) =>
@@ -430,7 +506,7 @@ export class WaitSession {
               !this.acknowledged(job.jobId) ||
               this.artifactPending(job.jobId) ||
               this.progressHeld(job) ||
-              (this.unreadByJob.get(job.jobId) ?? 0) > 0)),
+              this.jobHasProgress(job))),
       )
       .map((job) => job.jobId);
   }
@@ -446,28 +522,41 @@ export class WaitSession {
   }
   cursor(jobIds: readonly string[] = this.jobIds): WaitCursorV3 {
     const epochs: WaitCursorV3['epochs'] = [];
-    const keys: string[] = [];
     const jobs: WaitCursorV3['jobs'] = [];
     for (const jobId of jobIds) {
       const admission = this.admissionById.get(jobId);
       if (!admission || (admission.disposition !== 'admitted' && admission.disposition !== 'discovery-unknown'))
         continue;
       const member = this.members.get(jobId);
-      if (admission.disposition === 'discovery-unknown') {
-        jobs.push({ hash: waitJobHash(jobId), epoch: UNRESOLVED_EPOCH, flags: 0 });
+      if (admission.disposition === 'discovery-unknown' && !member?.epochKey) {
+        const inputJob =
+          this.input?.version === 'jobs.wait.v3'
+            ? this.input.jobs.find((job) => job.hash === waitJobHash(jobId))
+            : undefined;
+        const saved =
+          this.input?.version === 'jobs.wait.v3' && inputJob && inputJob.epoch !== UNRESOLVED_EPOCH
+            ? this.input.epochs[inputJob.epoch]
+            : undefined;
+        if (saved && inputJob) {
+          let ordinal = epochs.findIndex((epoch) => epoch.token === saved.token);
+          if (ordinal === -1) {
+            ordinal = epochs.length;
+            epochs.push({ ...saved });
+          }
+          jobs.push({ hash: inputJob.hash, epoch: ordinal, flags: inputJob.flags });
+        } else jobs.push({ hash: waitJobHash(jobId), epoch: UNRESOLVED_EPOCH, flags: 0 });
         continue;
       }
       if (!member?.epochKey) continue;
       const epochKey = member.epochKey;
       const position = this.epochs.get(epochKey);
       if (!position) continue;
-      if (!keys.includes(epochKey)) {
-        keys.push(epochKey);
+      if (!epochs.some((epoch) => epoch.token === position.token)) {
         epochs.push({ ...position });
       }
       jobs.push({
         hash: waitJobHash(jobId),
-        epoch: keys.indexOf(epochKey),
+        epoch: epochs.findIndex((epoch) => epoch.token === position.token),
         flags: (member.acknowledged ? ACKNOWLEDGED_FLAG : 0) | (member.artifactPending ? ARTIFACT_PENDING_FLAG : 0),
       });
     }
@@ -504,10 +593,8 @@ export function splitWaitProgress(message: string): string[] {
 export function shortenWaitLine(line: string): string {
   const bytes = Buffer.byteLength(line);
   if (bytes <= 4096) return line;
-  let text = '';
-  for (const char of line) {
-    if (Buffer.byteLength(text) + Buffer.byteLength(char) > 4000) break;
-    text += char;
-  }
-  return `${text}[line shortened: ${bytes - Buffer.byteLength(text)} bytes omitted]`;
+  const buffer = Buffer.from(line);
+  let end = 4000;
+  while ((buffer[end] & 0xc0) === 0x80) end--;
+  return `${buffer.subarray(0, end).toString('utf8')}[line shortened: ${bytes - end} bytes omitted]`;
 }

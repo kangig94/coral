@@ -582,13 +582,11 @@ export class JobStore implements JobProgressStore {
               ?.retryScheduled
           : undefined;
       },
-      prepareTerminal: (jobId) => {
+      prepareTerminal: (jobId, db) => {
         const index = this.exportLocations;
         const location = index?.read(jobId);
         if (!index || !location || (hasReadableTerminalDetail(location) && location.terminalAge !== undefined)) return;
-        withTerminalSource(this.runtime, location.epochKey, (db) =>
-          index.prepareTerminal(jobId, db, location.epochKey, this.runtime.paths.coral.exports.jobsRoot),
-        );
+        index.prepareTerminal(jobId, db, location.epochKey, this.runtime.paths.coral.exports.jobsRoot);
       },
       location: (jobId): JobLocation | null => {
         if (this.exportLocations) return this.exportLocations.read(jobId);

@@ -82,7 +82,7 @@ it('returns transient remediation with the unchanged command on a failed stream 
     }),
   );
   expect(save).toHaveBeenCalledOnce();
-  expect(save.mock.calls[0][0]).toContain(serializeWaitCursor({ afterSeq: 0 }));
+  expect(save.mock.calls[0][0]).not.toContain('--cursor');
 });
 
 it.each([
@@ -166,7 +166,8 @@ it.each(['opening', 'silent', 'backoff', 'close', 'iterator-return'])(
       expect(frozen).toContain('Carrier unconfirmed for: a');
     } else if (stall === 'silent') {
       expect(frozen).toContain('Still waiting on 2 jobs');
-      expect(frozen).toContain(serializeWaitCursor({ afterSeq: 0 }));
+      expect(frozen).not.toContain('--cursor');
+      expect(frozen).toContain('Carrier unconfirmed for: a, ghost.');
     } else {
       expect(frozen).toContain('admission did not complete');
       expect(frozen).toContain('Run coral-cli wait jobs a ghost --cursor opaque');
@@ -237,7 +238,9 @@ it('a stdout drain cannot outlive the invocation or advance an undelivered curso
   const exit = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
   await vi.advanceTimersByTimeAsync(10_000);
   expect(exit).toHaveBeenCalledWith(75);
-  expect(stdout).toContain(`Run coral-cli wait jobs a --cursor ${serializeWaitCursor({ afterSeq: 0 })}`);
+  expect(stdout).toContain('Run coral-cli wait jobs a to continue waiting.');
+  expect(stdout).not.toContain('--cursor');
+  expect(stdout).toContain('Carrier unconfirmed for: a.');
   for (const callback of callbacks) callback();
   expect(stdout.match(/Run coral-cli wait jobs/g)).toHaveLength(1);
 });
@@ -403,8 +406,10 @@ it('interrupt before the first event preserves the original command without clai
     }),
   ).toBe(75);
   expect(save).toHaveBeenCalledOnce();
-  expect(save.mock.calls[0][0]).toContain(serializeWaitCursor({ afterSeq: 0 }));
-  expect(stdout()).toContain(`Run coral-cli wait jobs a ghost --cursor ${serializeWaitCursor({ afterSeq: 0 })}`);
+  expect(save.mock.calls[0][0]).not.toContain('--cursor');
+  expect(stdout()).toContain('Run coral-cli wait jobs a ghost to continue waiting.');
+  expect(stdout()).not.toContain('--cursor');
+  expect(stdout()).toContain('Carrier unconfirmed for: a, ghost.');
   expect(stdout()).toContain('Still waiting');
 });
 

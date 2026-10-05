@@ -76,6 +76,7 @@ export interface WaitCoordinatorDeps {
   }) => AsyncIterable<JobEvent>;
   getCurrentJournalSeq: () => number;
   currentJobEpochKey?: () => string | null;
+  jobEpochKey?: (jobId: string) => string | null;
   observeJobAbsence?: (jobId: string) => boolean;
   resultJobsRoot: string;
   observeResultAvailability: (jobId: string, session?: object) => ResultAvailability;
@@ -312,7 +313,9 @@ export class WaitCoordinator {
 
   readWaitAdmissions(jobIds: readonly string[], epochKey: string, session?: object): WaitAdmission[] {
     const frontier = this.deps.getCurrentJournalSeq();
-    return jobIds.map((jobId) => this.readWaitAdmission(jobId, epochKey, session, frontier));
+    return jobIds.map((jobId) =>
+      this.readWaitAdmission(jobId, this.deps.jobEpochKey?.(jobId) ?? epochKey, session, frontier),
+    );
   }
 
   async observeWaitCarriers(jobIds: readonly string[], signal: AbortSignal) {

@@ -2596,3 +2596,14 @@ it('terminal and historical readers have no runtime import back into the locatio
     ),
   ).toEqual([]);
 });
+
+it('keeps the wait invocation handoff contract out of infra', () => {
+  const contracts = PRODUCTION_SOURCE_FILES.filter(
+    (path) =>
+      path.startsWith('src/infra/') &&
+      /WaitInvocation(?:Handoff|Mode|ReadinessError)|WAIT_INVOCATION_CONTEXT_ENV/.test(
+        readFileSync(resolve(REPO_ROOT, path), 'utf8'),
+      ),
+  );
+  expect(contracts).toEqual([]);
+});

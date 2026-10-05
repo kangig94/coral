@@ -307,7 +307,7 @@ it('keeps an unreadable historical progress backlog pending and recovers it on t
   );
   const first = addressing.snapshot({ jobIds: [jobId] });
   expect(first.remainingJobIds).toEqual([jobId]);
-  expect(first.notices.join('\n')).toContain('progress held');
+  expect(first.notices.join('\n')).toContain('Earlier progress for historical is held');
   readable = true;
   const second = addressing.snapshot({ jobIds: [jobId], cursor: first.cursor });
   expect(second.jobs[0].progress).toEqual(['unread backlog']);
@@ -417,7 +417,8 @@ it.each(['readable', 'transient-unknown', 'settled-unreadable', 'retired'] as co
     const snapshot = addressing.snapshot({ jobIds: ['A', 'U'] });
     expect(snapshot.remainingJobIds).toEqual(sourceRead === 'transient-unknown' ? ['A', 'U'] : []);
     expect(snapshot.jobs[0].progress).toEqual(sourceRead === 'transient-unknown' ? [] : ['sibling backlog']);
-    if (sourceRead === 'transient-unknown') expect(snapshot.notices.join(' ')).toContain('A: progress held');
+    if (sourceRead === 'transient-unknown')
+      expect(snapshot.notices.join(' ')).toContain('Earlier progress for A is held');
     if (sourceRead === 'settled-unreadable') {
       expect(snapshot.notices.join(' ')).toContain('cannot be read by this build');
       expect(snapshot.notices.join(' ')).not.toContain('no longer kept');

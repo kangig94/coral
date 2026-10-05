@@ -152,7 +152,8 @@ it('resumes recovery through ExecutionService and the real WaitCoordinator using
       aggregateWorkflowUsage: () => undefined,
       subscribeJobEvents: async function* () {},
       getCurrentJournalSeq: () => seq,
-      currentJobEpochKey: () => f.epochKey,
+      currentJobEpochKey: () => 'new-selected-epoch',
+      jobEpochKey: (id: string) => f.index.read(id)?.epochKey ?? null,
       observeResultAvailability: () => ({ kind: 'failed', cause: 'repair-failed', retryScheduled: true }),
     } as unknown as ExecutionServiceDeps);
     const progress: string[] = [];

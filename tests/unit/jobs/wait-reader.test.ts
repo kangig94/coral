@@ -38,8 +38,8 @@ it('does not rebuild history for each delivered event cursor', async () => {
         read: () => [job],
       }),
     );
-    expect(events.filter((event) => event.type === 'progress')).toHaveLength(500);
-    expect(split.mock.calls.length).toBeLessThanOrEqual(2100);
+    expect(events.filter((event) => event.type === 'progress')).toHaveLength(20);
+    expect(split.mock.calls.length).toBeLessThanOrEqual(100);
   } finally {
     split.mockRestore();
   }
@@ -421,7 +421,7 @@ it('resets membership resolved during a bounded wait and preserves acknowledged 
     });
     let waiting;
     for await (const event of stream) if (event.type === 'waiting') waiting = event;
-    expect(observations).toBe(2);
+    expect(observations).toBe(1);
     expect(waiting).toMatchObject({ waitingJobIds: ['live-job'] });
     expect(waiting?.carrierUnknownJobIds).toBeUndefined();
   });
@@ -633,7 +633,7 @@ it('retries an unknown historical read on a bounded schedule, then exits 75 unre
   expect(read).toHaveBeenCalledTimes(4);
   expect(events.at(-1)).toMatchObject({ type: 'waiting', exitCode: 75, waitingJobIds: ['a'] });
   expect(events.find((event) => event.type === 'notice')).toMatchObject({
-    message: expect.stringContaining('exit 75'),
+    message: expect.stringContaining('exits 75'),
   });
 });
 
@@ -679,15 +679,13 @@ it('preserves a terminal sibling backlog across a transient epoch hold in stream
   );
   expect(events.find((event) => event.type === 'terminal')).toMatchObject({ remainingJobIds: ['A', 'U'] });
   expect(
-    events.some(
-      (event) => event.type === 'notice' && event.message.includes('A') && event.message.includes('progress held'),
-    ),
+    events.some((event) => event.type === 'notice' && event.message.includes('A') && event.message.includes('is held')),
   ).toBe(true);
   const session = new WaitSession(['A', 'U']);
   session.reconcile([a, u]);
   const snapshot = selectWaitSnapshot(session, 20);
   expect(snapshot.remainingJobIds).toEqual(['A', 'U']);
-  expect(snapshot.notices.some((notice) => notice.includes('A') && notice.includes('progress held'))).toBe(true);
+  expect(snapshot.notices.some((notice) => notice.includes('A') && notice.includes('is held'))).toBe(true);
 });
 
 it('does not shorten a live sibling window after transient source retries', async () => {
@@ -870,4 +868,72 @@ it('a settled source ends a wait on the first poll without a continuation', asyn
   );
   expect(read).toHaveBeenCalledTimes(1);
   expect(events.at(-1)).toMatchObject({ type: 'notice', exitCode: 1, cursor: { jobs: [] } });
+});
+
+it('rate limits idle carrier observation across forty polls', async () => {
+  const time = new VirtualTime();
+  const observe = vi.fn((session: WaitSession) => session.observeCoverage(['a'], [], 0));
+  const stream = readWaitSession({
+    request: { jobIds: ['a'], supportsWaitV3: true, timeoutSeconds: 10 },
+    time,
+    activeEpochKey: 'epoch-E',
+    read: () => [admitted('a', [], false)],
+    observe,
+  });
+  const next = stream.next();
+  await flushMicrotasks(20);
+  for (let i = 0; i < 40; i++) {
+    time.tick(250);
+    await flushMicrotasks(20);
+  }
+  expect((await next).value).toMatchObject({ type: 'waiting' });
+  expect(observe).toHaveBeenCalledTimes(3);
+  await stream.return(undefined);
+});
+
+it('admitted, unknown, admitted retains one acknowledged terminal in a resumed stream', async () => {
+  const a = admitted('a');
+  const first = new WaitSession(['a']);
+  first.reconcile([a]);
+  first.acknowledge(a);
+  const middle = new WaitSession(['a'], first.cursor());
+  middle.reconcile([{ jobId: 'a', disposition: 'discovery-unknown' }]);
+  const events = await collect(
+    readWaitSession({
+      request: { jobIds: ['a'], supportsWaitV3: true, cursor: middle.cursor(), timeoutSeconds: 0 },
+      time: createRealTimePort(),
+      activeEpochKey: 'epoch-E',
+      read: () => [a],
+    }),
+  );
+  expect(events.filter((event) => event.type === 'terminal')).toEqual([]);
+  expect(events.at(-1)).toMatchObject({ type: 'notice', exitCode: 0 });
+});
+
+it('a fresh bounded poll selects every job tail across a shared epoch without intervening backlog', async () => {
+  const jobs = [
+    admitted(
+      'a',
+      Array.from({ length: 2000 }, (_, i) => [i + 1, `a${i}`]),
+      false,
+    ),
+    admitted(
+      'b',
+      Array.from({ length: 2000 }, (_, i) => [2001 + i, `b${i}`]),
+      false,
+    ),
+  ];
+  const events = await collect(
+    readWaitSession({
+      request: { jobIds: ['a', 'b'], supportsWaitV3: true, timeoutSeconds: 0 },
+      time: createRealTimePort(),
+      activeEpochKey: 'epoch-E',
+      read: () => jobs,
+    }),
+  );
+  const progress = events.filter((event) => event.type === 'progress');
+  expect(progress.map((event) => event.message)).toEqual([
+    ...Array.from({ length: 20 }, (_, i) => `a${1980 + i}`),
+    ...Array.from({ length: 20 }, (_, i) => `b${1980 + i}`),
+  ]);
 });

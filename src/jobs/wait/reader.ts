@@ -1,7 +1,7 @@
 import { raceWithSignal } from '../../infra/promise-signal.js';
 import type { TimePort } from '../../infra/port-types.js';
 import type { WaitAdmission } from './session.js';
-import { WaitSession, WaitSessionError } from './session.js';
+import { shortenWaitLine, WaitSession, WaitSessionError } from './session.js';
 import { WAIT_PROGRESS_BYTES, WAIT_PROGRESS_LINES } from './snapshot.js';
 import { type WaitStreamEvent, type WaitStreamRequest } from './contract.js';
 
@@ -69,6 +69,9 @@ export async function* readWaitSession(input: WaitReadInput): AsyncGenerator<Wai
     progressLost: new Set(),
   };
   let observing = false;
+  let lastObservation = -Infinity;
+  let deadlineObserved = false;
+  let firstPoll = true;
   let crossedTimer = false;
   let unknownReadAttempts = 0;
   const retryDelays = [250, 1000, 5000];
@@ -76,8 +79,16 @@ export async function* readWaitSession(input: WaitReadInput): AsyncGenerator<Wai
     while (!signal.aborted) {
       session.reconcile(read());
       if (request.supportsWaitV3 !== true) validateLegacyAdmission(session);
-      if (!observing && Number(time.monotonicNow()) < deadline) {
+      if (firstPoll && !request.cursor && !input.internal && request.supportsWaitV3 === true) {
+        firstPoll = false;
+        session.startAtTail(20);
+      }
+      const now = Number(time.monotonicNow());
+      const nearDeadline: boolean = now >= deadline - 250 && !deadlineObserved;
+      if (!observing && (now - lastObservation >= 5000 || nearDeadline) && now < deadline) {
         observing = true;
+        lastObservation = now;
+        deadlineObserved ||= nearDeadline;
         void observeCarriers(input, session, signal).finally(() => {
           observing = false;
         });
@@ -250,7 +261,11 @@ function* progressEvents(
   const versionless = request.supportsWaitV3 !== true && request.supportsWaitV2 !== true;
   const nextTerminal = terminals.find((job) => !session.acknowledged(job.jobId));
   const unread = session
-    .progress()
+    .progress(
+      !internal && request.supportsWaitV3 === true && request.drainProgress !== true
+        ? WAIT_PROGRESS_LINES + 1
+        : Infinity,
+    )
     .filter((line) => !versionless || !nextTerminal || line.seq <= terminalSeq(nextTerminal));
   for (let index = 0; index < unread.length; ) {
     const first = unread[index];
@@ -262,7 +277,8 @@ function* progressEvents(
         group.push(next);
       }
     }
-    const bytes = group.reduce((sum, line) => sum + Buffer.byteLength(line.text), 0);
+    const messages = group.map((line) => shortenWaitLine(line.text));
+    const bytes = messages.reduce((sum, text) => sum + Buffer.byteLength(text), 0);
     if (
       !internal &&
       request.drainProgress !== true &&
@@ -279,7 +295,7 @@ function* progressEvents(
       type: 'progress',
       jobId: first.jobId,
       seq: first.seq,
-      message: group.map((line) => line.text).join('\n'),
+      message: messages.join('\n'),
       timing: first.timing,
       ...(request.supportsWaitV3 === true
         ? { version: 'jobs.wait.v3', epochKey: first.epochKey }

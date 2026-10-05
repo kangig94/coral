@@ -1,4 +1,4 @@
-import { WaitInvocationReadinessError } from '../infra/wait-invocation-context.js';
+import { WaitInvocationReadinessError } from '../coordinator/handoff-routing/wait-invocation.js';
 import { CommanderError } from 'commander';
 import { ZodError } from 'zod';
 

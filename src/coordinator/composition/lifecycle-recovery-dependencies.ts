@@ -3,7 +3,7 @@ import { writeAuditEvent } from '../../infra/audit-log.js';
 import { pinRunningBuildRoot } from '../../infra/retained-build-root.js';
 import { formatError } from '../../infra/error-format.js';
 import type { Runtime } from '../../runtime/ports.js';
-import { seedHistoricalEpoch } from '../../jobs/historical-reader.js';
+import { registerPresentHistoricalEpochs, seedHistoricalEpoch } from '../../jobs/historical-reader.js';
 import type { JobLocationIndex } from '../../jobs/location-index.js';
 import { createStartupMintAuthorizer, prepareRetainedControllerHandoff } from '../services/startup-retirement.js';
 import { recordControllerOpen, recordControllerServing } from '../succession/controller-open.js';
@@ -11,6 +11,7 @@ import { controllerRecoveryTarget } from '../services/retained-epoch-executor.js
 import { readOrCreateEpochKey } from '../../store/epoch/index.js';
 import {
   decodeResolvedStoreEpoch,
+  observeResolvedStoreEpoch,
   encodeResolvedStoreEpoch,
   listStoreEpochs,
   type ResolvedStoreEpoch,
@@ -80,34 +81,11 @@ function createStoreOpenedObserver(input: LifecycleRecoveryInput): NonNullable<L
     onOpenedStore(openStore);
     if (openStore.path !== ':memory:') {
       const epochs = listStoreEpochs(runtime);
-      for (const historical of epochs) {
-        if (
-          historical.role !== 'protected' ||
-          historical.resolved === null ||
-          historical.epochKey === null ||
-          historical.epochKey === undefined
-        )
-          continue;
-        const historicalKey = encodeResolvedStoreEpoch(runtime, historical.resolved);
-        const fingerprint =
-          historical.epochJson.kind === 'valid' ? historical.epochJson.value.build.storeFormatFingerprint : '';
-        void seedHistoricalEpoch(
-          runtime,
-          jobLocationIndex,
-          historical.resolved,
-          historicalKey,
-          fingerprint,
-          runtime.paths.coral.exports.jobsRoot,
-          runtime.storage,
-        );
-      }
+      registerPresentHistoricalEpochs(runtime, jobLocationIndex, epochs, encodeResolvedStoreEpoch(runtime, openStore));
       const present = new Set(epochs.map((epoch) => epoch.epochKey));
-      for (const epoch of epochs)
-        if (epoch.resolved !== null) present.add(encodeResolvedStoreEpoch(runtime, epoch.resolved));
-      present.add(encodeResolvedStoreEpoch(runtime, openStore));
       present.add(readOrCreateEpochKey(runtime, openStore));
       for (const hold of jobLocationIndex.unknownLocationHolds()) {
-        if (!present.has(hold.epochKey))
+        if (!present.has(observeResolvedStoreEpoch(runtime, hold.epochKey)?.lineageKey ?? hold.epochKey))
           jobLocationIndex.holdUnknownLocations(
             hold.epochKey,
             'Source retired; this coordinator will not re-read it before its next start',

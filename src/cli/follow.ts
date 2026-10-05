@@ -760,8 +760,8 @@ async function monitorFollowJobs(context: FollowContext): Promise<number> {
     if (connection.kind === 'subscription' && options.reconnectPolicy === 'bounded') {
       options.invocation?.saveContinuation(
         formatWaitWaiting(
-          { type: 'waiting', waitingJobIds: state.remainingJobIds },
-          serializeWaitCursor(state.currentCursor),
+          { type: 'waiting', waitingJobIds: state.remainingJobIds, carrierUnknownJobIds: state.carrierUnknownJobIds },
+          serializedCursor(state.currentCursor) ?? null,
         ) + '\n',
       );
     }

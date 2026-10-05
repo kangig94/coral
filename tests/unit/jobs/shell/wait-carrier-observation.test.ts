@@ -95,5 +95,5 @@ it.each(['initial', 'poll', 'throw'])('the stream deadline bounds %s carrier obs
     value: { type: 'waiting', waitingJobIds: [JOB_A], carrierUnknownJobIds: [JOB_A] },
   });
   await stream.return(undefined);
-  expect(calls).toBe(stall === 'initial' ? 1 : stall === 'poll' ? 2 : 4);
+  expect(calls).toBe(stall === 'initial' ? 1 : 2);
 });

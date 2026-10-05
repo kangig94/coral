@@ -1,8 +1,9 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
 
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import * as epochObservation from '#src/store/epoch/observation.js';
+import { sweepStoreEpochsPostReady } from '#src/store/epoch/post-ready-sweep.js';
 import { attemptExclusiveFileLockSync } from '#src/infra/fs-lock.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -10,6 +11,7 @@ import { newRawDatabase } from '../../helpers/test-db.js';
 import { JobLocationIndex } from '../../../src/jobs/location-index.js';
 import { JobAddressing } from '../../../src/jobs/addressing.js';
 import {
+  registerPresentHistoricalEpochs,
   refreshHistoricalEpochs,
   refreshHistoricalEpoch,
   retryUnknownHistoricalEpochs,
@@ -1093,7 +1095,7 @@ process.stdin.on('data', (input) => {
   });
 }
 
-it('isolates invalid job reads, continues hydration after a recording failure and skips certified epoch sweeps', () => {
+it('isolates invalid job reads, continues hydration after a recording failure and probes certified epochs without hydration', () => {
   const { root, epochDir, db } = fixture(fingerprints[0]);
   for (const [i, jobId] of ['bad', 'good'].entries()) {
     db.prepare('INSERT INTO projection_jobs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
@@ -1201,7 +1203,7 @@ it('isolates invalid job reads, continues hydration after a recording failure an
   const reads = vi.spyOn(storage, 'readFileSync');
   try {
     for (let sweep = 0; sweep < 20; sweep++) refreshHistoricalEpochs(index);
-    expect(opens).not.toHaveBeenCalled();
+    expect(opens).toHaveBeenCalledTimes(20);
     expect(reads.mock.calls.filter(([path]) => String(path).includes('/job-locations.v1/jobs/'))).toHaveLength(0);
     rmSync(epoch.path);
     refreshHistoricalEpochs(index);
@@ -1958,5 +1960,276 @@ it('historical maintenance never rewrites an unregistered active-epoch hold', ()
     expect(addressing.unknownJobDisposition()).toBe('not-found');
   } finally {
     f.close();
+  }
+});
+
+const FP = fingerprints[0];
+describe('unpublished protected addresses', () => {
+  it('read, seed and refresh observe an unpublished address until the post-ready owner publishes it', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'nreview6-c2-'));
+    directories.push(root);
+    const runtime = createRealRuntime('prod', { baseDir: root });
+    const epochDir = join(root, 'db', 'epoch-7');
+    mkdirSync(epochDir, { recursive: true });
+    writeFileSync(
+      join(epochDir, '.coral-lineage.v1.json'),
+      JSON.stringify({ version: 'v1', lineageId: '00000000-0000-4000-8000-000000000007' }),
+    );
+    newRawDatabase(join(epochDir, '.lock')).close();
+    const db = newRawDatabase(join(epochDir, 'store.db'));
+    db.exec(`CREATE TABLE projection_jobs (job_id TEXT, execution_owner TEXT, phase TEXT, diagnostics TEXT, session_id TEXT,
+      provider TEXT, project_root TEXT, backend_namespace TEXT, bundle_hash TEXT, job_kind TEXT, parent_workflow_job_id TEXT,
+      workflow_slot TEXT, workflow_slot_generation INTEGER, replaces_workflow_job_id TEXT, created_at TEXT, last_seq INTEGER);
+      CREATE TABLE events (seq INTEGER, ts TEXT, type TEXT, stream_kind TEXT, stream_id TEXT, body BLOB);`);
+    db.close();
+    const epoch = { storeRoot: join(root, 'db'), epoch: '7', path: join(epochDir, 'store.db') };
+    const address = protectStoreEpoch(runtime, epoch);
+    const resolved = {
+      storeRoot: dirname(address.protectedPath),
+      epoch: '7',
+      path: join(address.protectedPath, 'store.db'),
+      lineageKey: address.epochKey,
+      canonicalStoreRoot: join(root, 'db'),
+    };
+    const epochKey = encodeResolvedStoreEpoch(runtime, resolved);
+    const index = new JobLocationIndex(runtime, root);
+    seedHistoricalEpoch(runtime, index, resolved, epochKey, FP, join(root, 'results'), runtime.storage);
+    const addresses = join(protectedStoreEpochRoot(join(root, 'db')), 'addresses');
+    // an address that is not (or no longer) published, e.g. a protection whose publication was skipped
+    for (const name of readdirSync(addresses)) rmSync(join(addresses, name));
+    expect(readdirSync(addresses)).toEqual([]);
+    const result = readHistoricalSource(index, epochKey, ['job-1']);
+    expect(result.kind).toBe('read');
+    expect(readdirSync(addresses)).toEqual([]);
+    seedHistoricalEpoch(runtime, index, resolved, epochKey, FP, join(root, 'results'), runtime.storage);
+    await refreshHistoricalEpochs(index);
+    expect(readdirSync(addresses)).toEqual([]);
+    await sweepStoreEpochsPostReady(runtime, epoch, { resultsReleased: () => false });
+    expect(readdirSync(addresses)).toHaveLength(1);
+  });
+});
+
+it('registers the present inventory once, including preserved epochs and stale active holds', () => {
+  const f = fixture(fingerprints[0]);
+  f.db.close();
+  const epoch = { storeRoot: join(f.root, 'db'), epoch: '7', path: join(f.epochDir, 'store.db') };
+  const key = encodeResolvedStoreEpoch(runtime, epoch);
+  const index = new JobLocationIndex(runtime, f.root);
+  index.holdUnknownLocations(key, 'former active recovery pending', true);
+  const entry = {
+    resolved: epoch,
+    epochKey: key,
+    role: 'preserved',
+    epochJson: { kind: 'valid', value: { build: { storeFormatFingerprint: fingerprints[0] } } },
+  } as never;
+  const open = vi.spyOn(storage, 'openSqliteDatabaseSync');
+  registerPresentHistoricalEpochs(runtime, index, [entry], 'other');
+  expect(readHistoricalSource(index, key, ['typo']).kind).toBe('read');
+  expect(index.unknownLocationHolds()).toEqual([]);
+  const count = open.mock.calls.length;
+  registerPresentHistoricalEpochs(runtime, index, [entry], 'other');
+  expect(open).toHaveBeenCalledTimes(count);
+  open.mockRestore();
+});
+
+it('registers an epoch newly observable after the first inventory projection', () => {
+  const f = fixture(fingerprints[0]);
+  f.db.close();
+  const epoch = { storeRoot: join(f.root, 'db'), epoch: '7', path: join(f.epochDir, 'store.db') };
+  const key = encodeResolvedStoreEpoch(runtime, epoch);
+  const index = new JobLocationIndex(runtime, f.root);
+  const metadata = { kind: 'valid', value: { build: { storeFormatFingerprint: fingerprints[0] } } };
+  registerPresentHistoricalEpochs(
+    runtime,
+    index,
+    [{ resolved: null, epochKey: key, epochJson: metadata }] as never,
+    'other',
+  );
+  expect(readHistoricalSource(index, key, ['typo'])).toMatchObject({ disposition: 'transient-unknown' });
+  registerPresentHistoricalEpochs(
+    runtime,
+    index,
+    [{ resolved: epoch, epochKey: key, epochJson: metadata }] as never,
+    'other',
+  );
+  expect(readHistoricalSource(index, key, ['typo']).kind).toBe('read');
+});
+
+it('probes a certified source, repairs its guard and settles three failed opens', () => {
+  const f = fixture(fingerprints[0]);
+  f.db.close();
+  const epoch = { storeRoot: join(f.root, 'db'), epoch: '7', path: join(f.epochDir, 'store.db') };
+  const key = encodeResolvedStoreEpoch(runtime, epoch);
+  const index = new JobLocationIndex(runtime, f.root);
+  seedHistoricalEpoch(runtime, index, epoch, key, fingerprints[0], join(f.root, 'results'), storage, [], true);
+  expect(index.certificate(key)).not.toBeNull();
+  writeFileSync(join(f.epochDir, '.lock'), 'malformed');
+  refreshHistoricalEpochs(index);
+  expect(index.unknownLocationHolds()).toEqual([]);
+  const guard = attemptExclusiveFileLockSync(join(f.epochDir, '.lock'));
+  expect(guard.kind).toBe('acquired');
+  if (guard.kind === 'acquired') guard.lease();
+  const open = vi.spyOn(storage, 'openSqliteDatabaseSync').mockImplementation(() => {
+    throw new Error('unable to open database file');
+  });
+  for (let i = 0; i < 3; i++) refreshHistoricalEpochs(index);
+  expect(index.unknownLocationHolds()).toMatchObject([{ retryScheduled: false }]);
+  expect(index.certificate(key)).toBeNull();
+  open.mockRestore();
+});
+
+it('budgets seed writes, yields between epochs and resumes every hydration slice', async () => {
+  const f = fixture(fingerprints[0]);
+  for (let i = 0; i < 40; i++)
+    f.db
+      .prepare('INSERT INTO events VALUES (?, ?, ?, ?, ?, ?)')
+      .run(
+        i + 1,
+        '2026-09-25T00:00:00.000Z',
+        'job.launch.requested',
+        'job',
+        `bulk-${i}`,
+        Buffer.from(JSON.stringify({ projectRoot: f.root, jobKind: 'provider', request: { cwd: f.root } })),
+      );
+  f.db.close();
+  const epoch = { storeRoot: join(f.root, 'db'), epoch: '7', path: join(f.epochDir, 'store.db') };
+  const key = encodeResolvedStoreEpoch(runtime, epoch);
+  const index = new JobLocationIndex(runtime, f.root);
+  const register = vi.spyOn(index, 'register');
+  const budget = { remaining: 16 };
+  seedHistoricalEpoch(runtime, index, epoch, key, fingerprints[0], join(f.root, 'results'), storage, [], false, budget);
+  expect(register).toHaveBeenCalledTimes(16);
+  let yielded = false;
+  setImmediate(() => {
+    yielded = true;
+  });
+  await retryUnknownHistoricalEpochs(index, { remaining: 0 });
+  expect(yielded).toBe(true);
+  expect(register).toHaveBeenCalledTimes(32);
+  await retryUnknownHistoricalEpochs(index, { remaining: 0 });
+  expect(register).toHaveBeenCalledTimes(40);
+  for (let i = 0; i < 3; i++) await retryUnknownHistoricalEpochs(index, { remaining: 0 });
+  expect(index.unknownLocationHolds()).toEqual([]);
+});
+
+it('resumes refresh after its budget instead of rehydrating the same live prefix', async () => {
+  const f = fixture(fingerprints[0]);
+  for (let i = 0; i < 40; i++) {
+    f.db
+      .prepare('INSERT INTO projection_jobs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(
+        `live-${i}`,
+        JSON.stringify({ kind: 'provider-session', id: 'session-1' }),
+        'running',
+        JSON.stringify({ progressFaults: [] }),
+        'session-1',
+        'codex',
+        f.root,
+        'test',
+        null,
+        'provider',
+        null,
+        null,
+        null,
+        null,
+        '2026-09-25T00:00:00.000Z',
+        i + 1,
+      );
+    f.db
+      .prepare('INSERT INTO events VALUES (?, ?, ?, ?, ?, ?)')
+      .run(
+        i + 1,
+        '2026-09-25T00:00:00.000Z',
+        'job.launch.requested',
+        'job',
+        `live-${i}`,
+        Buffer.from(JSON.stringify({ projectRoot: f.root, jobKind: 'provider', request: { cwd: f.root } })),
+      );
+  }
+  f.db.close();
+  const epoch = { storeRoot: join(f.root, 'db'), epoch: '7', path: join(f.epochDir, 'store.db') };
+  const key = encodeResolvedStoreEpoch(runtime, epoch);
+  const index = new JobLocationIndex(runtime, f.root);
+  seedHistoricalEpoch(runtime, index, epoch, key, fingerprints[0], join(f.root, 'results'), storage);
+  expect(index.unknownLocationHolds()).toEqual([]);
+  for (let i = 0; i < 40; i++) index.markUncertified(`live-${i}`);
+  const writer = newRawDatabase(epoch.path);
+  for (let i = 0; i < 40; i++)
+    writer.prepare('INSERT INTO events VALUES (?, ?, ?, ?, ?, ?)').run(
+      i + 41,
+      '2026-09-25T00:00:01.000Z',
+      'job.progress.emitted',
+      'job',
+      `live-${i}`,
+      Buffer.from(
+        JSON.stringify({
+          message: 'advancing progress',
+          timing: { origin: 'runtime', originAt: '', emittedAt: '', elapsedMs: 0 },
+        }),
+      ),
+    );
+  writer.close();
+  const observed = vi.spyOn(index, 'recordObserved');
+  for (let i = 0; i < 3; i++) await refreshHistoricalEpochs(index, { remaining: 0 });
+  expect(index.unknownLocationHolds()).toEqual([]);
+  expect(observed).toHaveBeenCalledTimes(40);
+  expect(new Set(observed.mock.calls.map(([id]) => id)).size).toBe(40);
+});
+
+it('refreshes jobs inserted before a partially seeded projection prefix', async () => {
+  const f = fixture(fingerprints[0]);
+  const addJob = (db: typeof f.db, jobId: string, seq: number): void => {
+    db.prepare(
+      `INSERT INTO projection_jobs VALUES (?, ?, 'running', ?, 'session-1', 'codex', ?,
+      'test', NULL, 'provider', NULL, NULL, NULL, NULL, '2026-09-25T00:00:00.000Z', ?)`,
+    ).run(
+      jobId,
+      JSON.stringify({ kind: 'provider-session', id: 'session-1' }),
+      JSON.stringify({ progressFaults: [] }),
+      f.root,
+      seq,
+    );
+    db.prepare("INSERT INTO events VALUES (?, '2026-09-25T00:00:00.000Z', 'job.launch.requested', 'job', ?, ?)").run(
+      seq,
+      jobId,
+      Buffer.from(JSON.stringify({ projectRoot: f.root, jobKind: 'provider', request: { cwd: f.root } })),
+    );
+  };
+  for (let i = 0; i < 40; i++) addJob(f.db, `live-${i}`, i + 1);
+  f.db.close();
+  const epoch = { storeRoot: join(f.root, 'db'), epoch: '7', path: join(f.epochDir, 'store.db') };
+  const key = encodeResolvedStoreEpoch(runtime, epoch);
+  const index = new JobLocationIndex(runtime, f.root);
+  seedHistoricalEpoch(runtime, index, epoch, key, fingerprints[0], join(f.root, 'results'), storage, [], false, {
+    remaining: 16,
+  });
+  await retryUnknownHistoricalEpochs(index, { remaining: 0 });
+  await retryUnknownHistoricalEpochs(index, { remaining: 0 });
+  const writer = newRawDatabase(epoch.path);
+  addJob(writer, 'aaa-new', 41);
+  writer.close();
+  for (let i = 0; i < 4; i++) await retryUnknownHistoricalEpochs(index, { remaining: 0 });
+  expect(index.unknownLocationHolds()).toEqual([]);
+  await refreshHistoricalEpochs(index);
+  expect(index.read('aaa-new')?.detail.kind).toBe('recorded');
+});
+
+it('scheduled source holds name the owner cadence and failure bound without an imperative', () => {
+  const f = fixture(fingerprints[0]);
+  f.db.close();
+  const epoch = { storeRoot: join(f.root, 'db'), epoch: '7', path: join(f.epochDir, 'store.db') };
+  const key = encodeResolvedStoreEpoch(runtime, epoch);
+  const index = new JobLocationIndex(runtime, f.root);
+  const open = vi.spyOn(storage, 'openSqliteDatabaseSync').mockImplementation(() => {
+    throw new Error('source is busy');
+  });
+  try {
+    seedHistoricalEpoch(runtime, index, epoch, key, fingerprints[0], join(f.root, 'results'), storage);
+    const reason = index.unknownLocationHolds()[0].reason;
+    expect(reason).toContain('probe 1 of 3 failed');
+    expect(reason).toContain('epoch maintenance probes every 5 s');
+    expect(reason).not.toMatch(/retry the continuation|repair|restore/i);
+  } finally {
+    open.mockRestore();
   }
 });

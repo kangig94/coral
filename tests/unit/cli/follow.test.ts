@@ -92,12 +92,14 @@ import { SimulationRuntime } from '#tools/simulation/runtime.js';
       expect(r.out()).not.toContain('Carrier unconfirmed');
       expect(r.save.mock.calls.at(-1)?.[0]).not.toContain('Carrier unconfirmed');
     });
-    it('saves a fresh silent subscription cursor before timeout or SIGINT', async () => {
+    it('saves a cursorless silent subscription before timeout or SIGINT', async () => {
       const r = run([], true);
       await r.allDelivered;
       r.budget.stop();
       expect(await r.result).toBe(75);
-      expect(r.out()).toContain('Still waiting on 1 job. Run coral-cli wait jobs live-job --cursor');
+      expect(r.out()).toContain('Still waiting on 1 job. Run coral-cli wait jobs live-job to continue waiting.');
+      expect(r.out()).not.toContain('--cursor');
+      expect(r.out()).toContain('Carrier unconfirmed for: live-job.');
       expect(r.out()).not.toContain('admission did not complete');
     });
     it('preserves the input cursor for an admitted silent job', async () => {

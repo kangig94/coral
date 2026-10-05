@@ -299,7 +299,7 @@ it.each(['readable', 'transient-unknown', 'settled-unreadable', 'retired'] as co
     if (sourceRead === 'transient-unknown') {
       expect(session.progress()).toEqual([]);
       expect(session.remaining()).toEqual(['A', 'U']);
-      expect(session.notices.some((notice) => notice.includes('A') && notice.includes('progress held'))).toBe(true);
+      expect(session.notices.some((notice) => notice.includes('A') && notice.includes('is held'))).toBe(true);
       expect(session.cursor(session.remaining()).epochs[0].watermark).toBe(0);
     } else {
       expect(session.progress().map((line) => line.text)).toEqual(['a-ten', 'a-eleven']);
@@ -324,4 +324,21 @@ it('a versionless deliveredJobIds list acknowledges terminals without declaring 
   ]);
   expect(session.notices).toEqual([]);
   expect(session.progress().map((line) => line.text)).toEqual(['next']);
+});
+
+it.each([false, true])('unknown discovery preserves known cursor flags, resumed=%s', (resumed) => {
+  const a = admitted('A');
+  a.availability = { kind: 'repair-pending', ageUncertain: false };
+  const session = new WaitSession(['A']);
+  session.reconcile([a]);
+  session.acknowledge(a);
+  const saved = session.cursor();
+  const middle = resumed ? new WaitSession(['A'], saved) : session;
+  middle.reconcile([{ jobId: 'A', disposition: 'discovery-unknown' }]);
+  expect(middle.cursor()).toEqual(saved);
+  const next = new WaitSession(['A'], middle.cursor());
+  next.reconcile([a]);
+  expect(next.acknowledged('A')).toBe(true);
+  expect(next.artifactPending('A')).toBe(true);
+  expect(next.notices).toEqual([]);
 });

@@ -1,3 +1,4 @@
+import { encodeResolvedStoreEpoch, protectStoreEpoch, protectedStoreEpochRoot } from '#src/store/epoch/index.js';
 import { formatJobDetail } from '#src/cli/format/jobs.js';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
@@ -488,4 +489,35 @@ it.each(['missing', 'malformed'] as const)('maintenance repairs a %s guard after
     detail: { exit: { content: 'journal terminal' } },
   });
   check();
+});
+
+it('reads an unpublished protected historical address without Coral writes', () => {
+  const f = fixture(true);
+  f.complete();
+  f.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+  const address = protectStoreEpoch(f.runtime, f.epoch);
+  const epoch = {
+    storeRoot: dirname(address.protectedPath),
+    epoch: f.epoch.epoch,
+    path: join(address.protectedPath, 'store.db'),
+    lineageKey: address.epochKey,
+    canonicalStoreRoot: f.epoch.storeRoot,
+  };
+  const key = encodeResolvedStoreEpoch(f.runtime, epoch);
+  const index = new JobLocationIndex(f.runtime, join(f.root, 'protected-locations'));
+  seedHistoricalEpoch(
+    f.runtime,
+    index,
+    epoch,
+    key,
+    currentCoralStoreFormat().fingerprint,
+    f.runtime.paths.coral.exports.jobsRoot,
+    f.runtime.storage,
+  );
+  const addresses = join(protectedStoreEpochRoot(f.epoch.storeRoot), 'addresses');
+  for (const name of readdirSync(addresses)) rmSync(join(addresses, name));
+  const check = measure(f);
+  expect(index.readHistorical(key, [f.jobId]).kind).toBe('read');
+  check();
+  expect(readdirSync(addresses)).toEqual([]);
 });

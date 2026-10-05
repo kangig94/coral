@@ -1,13 +1,14 @@
 import { formatError } from '../../infra/error-format.js';
 import type { TimerHandle } from '../../infra/port-types.js';
 import {
+  registerPresentHistoricalEpochs,
   refreshHistoricalEpochs,
   retryUnknownHistoricalEpochs,
   onHistoricalHydrationHint,
 } from '../../jobs/historical-reader.js';
 import type { JobLocationIndex } from '../../jobs/location-index.js';
 import type { Runtime } from '../../runtime/ports.js';
-import { sweepStoreEpochsPostReady, type ResolvedStoreEpoch } from '../../store/epoch/index.js';
+import { listStoreEpochs, sweepStoreEpochsPostReady, type ResolvedStoreEpoch } from '../../store/epoch/index.js';
 import { settleSupersededEpochClosures } from '../services/recovery/epoch-closure.js';
 import type { CoordinatorWorld } from './world.js';
 
@@ -37,7 +38,19 @@ export function createStoreEpochSweepScheduler(input: {
         timer = runtime.time.setTimeout(() => {
           timer = null;
           void (async () => {
-            retryUnknownHistoricalEpochs(jobLocationIndex);
+            const budget = { remaining: 0 };
+            try {
+              registerPresentHistoricalEpochs(
+                runtime,
+                jobLocationIndex,
+                listStoreEpochs(runtime),
+                input.selectedStoreEpochKey(),
+                budget,
+              );
+            } catch (error) {
+              world.log(`Historical epoch registration could not complete: ${formatError(error)}\n`);
+            }
+            await retryUnknownHistoricalEpochs(jobLocationIndex, budget);
             await settleSupersededEpochClosures(
               runtime,
               jobLocationIndex,
@@ -47,7 +60,7 @@ export function createStoreEpochSweepScheduler(input: {
               input.closeProxySetForEpochClosure,
             );
             if (!controller.signal.aborted) {
-              refreshHistoricalEpochs(jobLocationIndex);
+              await refreshHistoricalEpochs(jobLocationIndex, budget);
               void (await sweepStoreEpochsPostReady(
                 runtime,
                 { ...openStore, storeRoot: openStore.canonicalStoreRoot ?? openStore.storeRoot },

@@ -3,7 +3,7 @@ import { decodeWaitCursor, waitJobHash, serializeWaitCursor } from './cursor.js'
 import { WAIT_SNAPSHOT_BYTES, type WaitCursorV3 } from './contract.js';
 import { resultAvailabilitySchema } from './stream-event.js';
 import type { WaitAdmission, WaitSession, WaitSnapshot, WaitSnapshotJob, WaitTerminalSummary } from './session.js';
-import { WaitSessionError, waitTerminalExitCode } from './session.js';
+import { WaitSessionError, waitTerminalExitCode, shortenWaitLine } from './session.js';
 
 export const WAIT_PROGRESS_LINES = 500;
 export const WAIT_PROGRESS_BYTES = 64 * 1024;
@@ -120,7 +120,10 @@ function selectSnapshotProgress(
   notices: string[],
   lines?: number,
 ): number {
-  const available = session.progress();
+  const available =
+    lines === undefined
+      ? session.progress(WAIT_PROGRESS_LINES + 1)
+      : session.tailProgress(Math.min(lines, WAIT_PROGRESS_LINES));
   let selected: typeof available;
   if (lines !== undefined) {
     let low = 0;
@@ -131,28 +134,28 @@ function selectSnapshotProgress(
       const candidate = lastLinesPerJob(tails, middle);
       if (
         candidate.length <= WAIT_PROGRESS_LINES &&
-        candidate.reduce((sum, line) => sum + Buffer.byteLength(line.text), 0) <= WAIT_PROGRESS_BYTES
+        candidate.reduce((sum, line) => sum + Math.min(Buffer.byteLength(line.text), 4096), 0) <= WAIT_PROGRESS_BYTES
       )
         low = middle;
       else high = middle - 1;
     }
     selected = lastLinesPerJob(tails, low);
-    if (selected.length < available.length)
-      notices.push(`${available.length - selected.length} earlier progress lines were not shown.`);
+    if (session.hasProgressBefore(selected)) notices.push('Earlier progress outside the selected tail was not shown.');
     session.skipEarlierProgress();
   } else {
     let bytes = 0;
     selected = [];
-    for (const line of available) {
+    for (const raw of available) {
+      const line = { ...raw, text: shortenWaitLine(raw.text) };
       if (selected.length === WAIT_PROGRESS_LINES || bytes + Buffer.byteLength(line.text) > WAIT_PROGRESS_BYTES) break;
       selected.push(line);
       bytes += Buffer.byteLength(line.text);
-      session.consume(line);
+      session.consume(raw);
     }
     if (selected.length < available.length)
       notices.push('Progress truncated; run the continuation to collect the remaining lines.');
   }
-  for (const line of selected) jobs.find((job) => job.jobId === line.jobId)?.progress.push(line.text);
+  for (const line of selected) jobs.find((job) => job.jobId === line.jobId)?.progress.push(shortenWaitLine(line.text));
   return selected.length;
 }
 

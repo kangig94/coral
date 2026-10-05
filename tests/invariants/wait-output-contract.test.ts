@@ -212,3 +212,13 @@ it.each(['docs/architecture.md', 'docs/core-modules.md'])('F11 and owner contrac
   expect(text).not.toContain('explicit continuity snapshot');
   expect(text).not.toContain('object construction is owned by `jobs/store.ts`');
 });
+
+it('progress holds name maintenance cadence and its bound without instructions', () => {
+  const a = { ...admitted('a'), sourceRead: 'transient-unknown' as const };
+  const session = new WaitSession(['a']);
+  session.reconcile([a]);
+  const notice = session.notices.join(' ');
+  expect(notice).toContain('every 5 s');
+  expect(notice).toContain('3 failed probes');
+  expect(notice).not.toMatch(/retry the continuation|repair|restore/i);
+});

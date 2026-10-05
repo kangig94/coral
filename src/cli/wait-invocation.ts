@@ -7,7 +7,7 @@ import {
   WAIT_INVOCATION_CONTEXT_ENV,
   type WaitInvocationHandoff,
   type WaitInvocationMode,
-} from '../infra/wait-invocation-context.js';
+} from '../coordinator/handoff-routing/wait-invocation.js';
 
 const WAIT_BUDGET_MS = 590_000;
 const WAIT_CLEANUP_MS = 10_000;
@@ -73,6 +73,7 @@ export class WaitInvocation implements WaitInvocationHandoff {
   private continuationFlushed = false;
   private continuationFlushPending = false;
   private snapshotOutputPending = false;
+  private monitorFlushPending = false;
   private readonly delegated: boolean;
   private readonly onSigint = () => {
     if (!this.continuationFlushed && !this.signal.aborted) this.stop();
@@ -179,6 +180,17 @@ export class WaitInvocation implements WaitInvocationHandoff {
 
   flushContinuation(force = false): void {
     if (this.continuationFlushed || this.delegated || this.snapshotOutputPending) return;
+    if (!force && this.monitorEnding) {
+      if (this.monitorFlushPending) return;
+      this.monitorFlushPending = true;
+      void this.monitorEnding
+        .catch(() => undefined)
+        .then(() => {
+          this.monitorEnding = undefined;
+          this.flushContinuation();
+        });
+      return;
+    }
     if (!force && this.continuation !== undefined) {
       if (this.continuationFlushPending) return;
       this.continuationFlushPending = true;

@@ -3,7 +3,7 @@ import {
   WAIT_INVOCATION_CONTEXT_ENV,
   WAIT_INVOCATION_CONTRACT_ARGUMENT,
   type WaitInvocationHandoff,
-} from '../../infra/wait-invocation-context.js';
+} from './wait-invocation.js';
 import { isRecord } from '../../infra/json.js';
 import { raceObserved } from '../../infra/promise-signal.js';
 import { gracefulKill } from '../../infra/process-supervision.js';

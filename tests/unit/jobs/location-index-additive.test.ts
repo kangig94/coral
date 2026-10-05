@@ -1,7 +1,7 @@
 import { loadReleasedWait } from '#tests/helpers/released-wait.js';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { JobLocationIndex } from '#src/jobs/location-index.js';
@@ -530,4 +530,64 @@ it('retains incremental nonterminal progress for the real rolled-back v0.10.17 r
     kind: 'recorded',
     value: { events: [expect.objectContaining({ message: 'first' }), expect.objectContaining({ message: 'second' })] },
   });
+});
+
+import { createTerminalExportFixture as cacheFixture } from '#tests/helpers/terminal-export.js';
+const cacheFixtures: ReturnType<typeof cacheFixture>[] = [];
+afterEach(() => {
+  for (const f of cacheFixtures.splice(0)) f.close();
+});
+describe('bounded location cache', () => {
+  it('a full maintenance-style scan retains at most 32 terminal records', () => {
+    const f = cacheFixture();
+    cacheFixtures.push(f);
+    f.complete({ terminal: { content: 'x'.repeat(100_000), outcome: { kind: 'completed' }, durationMs: 1 } });
+    const template = readFileSync(f.locationPath, 'utf8');
+    const dir = dirname(f.locationPath);
+    const N = 300;
+    for (let i = 0; i < N; i++) {
+      const id = `bulk-${i}`;
+      writeFileSync(
+        join(dir, `${Buffer.from(id).toString('base64url')}.json`),
+        template.replaceAll('"job-1"', JSON.stringify(id)),
+      );
+    }
+    const index = new JobLocationIndex(f.runtime, f.root);
+    global.gc?.();
+    const before = process.memoryUsage().heapUsed;
+    let terminal = 0;
+    for (const id of index.jobIds()) if (index.read(id)?.disposition === 'terminal') terminal++;
+    global.gc?.();
+    const after = process.memoryUsage().heapUsed;
+    const cached = (index as unknown as { storedLocations: Map<string, unknown> }).storedLocations.size;
+    console.log(
+      JSON.stringify({
+        records: N + 1,
+        terminal,
+        cached,
+        heapDeltaMB: Math.round((after - before) / 1e6),
+        recordKB: Math.round(template.length / 1000),
+      }),
+    );
+    expect(cached).toBeLessThanOrEqual(32);
+  });
+});
+
+it('observes replacement bytes even when inode and all coarse timestamps collide', () => {
+  const { root, index } = fixture();
+  const jobId = 'coarse-stamp';
+  index.register(jobId, 'lineage-1:1', {
+    projectRoot: '/workspace/first',
+    workDir: '/workspace/first',
+    jobKind: 'provider',
+  });
+  const path = join(root, 'job-locations.v1', 'jobs', `${Buffer.from(jobId).toString('base64url')}.json`);
+  const stamp = runtime.storage.lstatSync(path, { bigint: true });
+  const lstat = runtime.storage.lstatSync.bind(runtime.storage);
+  vi.spyOn(runtime.storage, 'lstatSync').mockImplementation((file, options) =>
+    file === path ? stamp : lstat(file, options),
+  );
+  expect(index.read(jobId)?.subject.projectRoot).toBe('/workspace/first');
+  writeFileSync(path, readFileSync(path, 'utf8').replaceAll('/workspace/first', '/workspace/other'));
+  expect(index.read(jobId)?.subject.projectRoot).toBe('/workspace/other');
 });

@@ -93,3 +93,35 @@ it('saves an exact continuation after a refused sibling disposition is delivered
     invocation.dispose(true);
   }
 });
+
+it('saves cursorless subscription admission with all carriers unconfirmed', async () => {
+  vi.spyOn(process.stdout, 'write').mockImplementation(((_text: string, callback?: () => void) => {
+    callback?.();
+    return true;
+  }) as never);
+  const invocation = new WaitInvocation('bounded', ['node', 'coral-cli', 'wait', 'jobs', 'historical']);
+  const saved = vi.spyOn(invocation, 'saveContinuation');
+  try {
+    await followJobs({
+      start: { kind: 'jobs', jobIds: ['historical'] },
+      reconnectPolicy: 'bounded',
+      projectRoot: '/project',
+      render: { isTTY: false, columns: 80, embed: false, verbose: false },
+      invocation,
+      emitError: vi.fn(),
+      connect: async () => ({
+        kind: 'subscription',
+        subscription: {
+          async *[Symbol.asyncIterator]() {
+            throw new Error('closed before any event');
+          },
+          close: async () => {},
+        },
+      }),
+    });
+    expect(saved.mock.calls[0][0]).not.toContain('--cursor');
+    expect(saved.mock.calls[0][0]).toContain('Carrier unconfirmed for: historical');
+  } finally {
+    invocation.dispose(true);
+  }
+});

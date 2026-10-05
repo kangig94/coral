@@ -64,3 +64,31 @@ it('prints one continuation when cleanup races a pending stdout callback', () =>
     invocation.dispose(true);
   }
 });
+
+it('waits for delegated IPC delivery before flushing a parent continuation', async () => {
+  let output = '';
+  vi.spyOn(process.stdout, 'write').mockImplementation(((text: string, callback?: () => void) => {
+    output += text;
+    callback?.();
+    return true;
+  }) as never);
+  const invocation = new WaitInvocation('bounded', ['node', 'coral-cli', 'wait', 'jobs', 'a']);
+  let end!: () => void;
+  invocation.monitorEnding = new Promise<void>((resolve) => {
+    end = resolve;
+  });
+  try {
+    invocation.saveContinuation('parent continuation\n');
+    invocation.stop();
+    invocation.flushContinuation();
+    expect(output).toBe('');
+    output += 'child continuation\n';
+    invocation.saveContinuation('child continuation\n', true);
+    end();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(output).toBe('child continuation\n');
+  } finally {
+    invocation.dispose(true);
+  }
+});

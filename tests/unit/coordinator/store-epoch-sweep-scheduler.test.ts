@@ -1,3 +1,4 @@
+import { setImmediate } from 'node:timers/promises';
 import { afterEach, expect, it, vi } from 'vitest';
 
 import { createStoreEpochSweepScheduler } from '#src/coordinator/composition/store-epoch-sweep-scheduler.js';
@@ -15,6 +16,7 @@ import type * as StoreEpoch from '#src/store/epoch/index.js';
 {
   vi.mock('#src/jobs/historical-reader.js', async (original) => ({
     ...(await original<typeof HistoricalReader>()),
+    registerPresentHistoricalEpochs: vi.fn(),
     retryUnknownHistoricalEpochs: vi.fn(),
     refreshHistoricalEpochs: vi.fn(),
   }));
@@ -132,10 +134,48 @@ it('still runs retirement when one historical source throws', async () => {
   try {
     scheduler.schedule(f.epoch);
     await vi.advanceTimersByTimeAsync(0);
+    await setImmediate();
     expect(epochs.sweepStoreEpochsPostReady).toHaveBeenCalledOnce();
   } finally {
     await scheduler.stop();
     vi.mocked(refreshHistoricalEpochs).mockReset();
     f.close();
+  }
+});
+
+it('registration runs first and its failure does not skip closure or retention', async () => {
+  vi.useFakeTimers();
+  const epochs = await import('#src/store/epoch/index.js');
+  const closure = await import('#src/coordinator/services/recovery/epoch-closure.js');
+  const f = createTerminalExportFixture();
+  const order: string[] = [];
+  vi.mocked(historical.registerPresentHistoricalEpochs).mockImplementation(() => {
+    order.push('register');
+    throw new Error('unobservable inventory');
+  });
+  vi.mocked(closure.settleSupersededEpochClosures).mockImplementation(async () => {
+    order.push('closure');
+    return [];
+  });
+  vi.mocked(epochs.sweepStoreEpochsPostReady).mockImplementation(async () => {
+    order.push('sweep');
+    return {} as never;
+  });
+  const scheduler = createStoreEpochSweepScheduler({
+    runtime: f.runtime,
+    world: { log: vi.fn() },
+    jobLocationIndex: f.index,
+    selectedStoreEpochKey: () => f.epochKey,
+    onOpen: vi.fn(),
+    closeProxySetForEpochClosure: vi.fn(),
+  });
+  try {
+    scheduler.schedule(f.epoch);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(order).toEqual(['register', 'closure', 'sweep']);
+  } finally {
+    await scheduler.stop();
+    f.close();
+    vi.mocked(historical.registerPresentHistoricalEpochs).mockReset();
   }
 });

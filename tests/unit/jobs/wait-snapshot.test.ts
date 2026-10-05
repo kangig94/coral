@@ -22,7 +22,7 @@ describe('wait snapshot', () => {
     );
     const snapshot = collect(jobs, 20);
     expect(snapshot.jobs.every((job) => job.progress.length === 3)).toBe(true);
-    expect(snapshot.notices).toContain('640 earlier progress lines were not shown.');
+    expect(snapshot.notices).toContain('Earlier progress outside the selected tail was not shown.');
     expect(snapshot.jobs[0].progress).toEqual(['line5', 'line6', 'line7']);
     expect(snapshot.exitCode).toBe(75);
   });
@@ -223,4 +223,76 @@ it('oversized snapshot remediation preserves every requested job and the input c
   } catch (error) {
     for (const job of jobs) expect(String(error)).toContain(`wait jobs '${job.jobId}' --now --cursor`);
   }
+});
+
+it.each([
+  [10, 20000, 5000],
+  [1, 2000, 5000],
+  [1, 5000, 5000],
+  [3, 2000, 4200],
+])('tail work is bounded for %s jobs × %s lines × %s bytes', (count, length, width) => {
+  const jobs = Array.from({ length: count }, (_, i) =>
+    admitted(
+      `cost-${i}`,
+      Array.from({ length }, (_, n) => [i * length + n + 1, 'x'.repeat(width)] as [number, string]),
+      false,
+    ),
+  );
+  const split = vi.spyOn(String.prototype, 'split');
+  const byteLength = Buffer.byteLength;
+  let byteLengthCalls = 0;
+  Buffer.byteLength = (...args) => {
+    byteLengthCalls++;
+    return byteLength(...args);
+  };
+  try {
+    const snapshot = collect(jobs, 20);
+    expect(snapshot.jobs.every((job) => job.progress.length > 0)).toBe(true);
+    expect(split.mock.calls.filter((call) => (call[0] as unknown) === '\n').length).toBeLessThanOrEqual(count * 21);
+    expect(byteLengthCalls).toBeLessThan(5000);
+  } finally {
+    split.mockRestore();
+    Buffer.byteLength = byteLength;
+  }
+});
+
+it('continuations inspect only their unread page and never rebuild the backlog', () => {
+  const job = admitted(
+    'a',
+    Array.from({ length: 10000 }, (_, i) => [i + 1, `line${i}`]),
+    false,
+  );
+  let cursor;
+  for (let page = 0; page < 3; page++) {
+    const session: WaitSession = new WaitSession(['a'], cursor);
+    session.reconcile([job]);
+    const split = vi.spyOn(String.prototype, 'split');
+    try {
+      const snapshot = selectWaitSnapshot(session);
+      expect(snapshot.jobs[0].progress[0]).toBe(`line${page * 500}`);
+      expect(split.mock.calls.length).toBeLessThanOrEqual(502);
+      cursor = snapshot.cursor;
+    } finally {
+      split.mockRestore();
+    }
+  }
+});
+
+it('reports tail omissions only when recorded progress was actually omitted', () => {
+  expect(collect([admitted('a', [[1, 'only line']], false)], 20).notices).toEqual([]);
+  expect(
+    collect(
+      [
+        admitted(
+          'a',
+          [
+            [1, 'earlier'],
+            [2, 'selected'],
+          ],
+          false,
+        ),
+      ],
+      1,
+    ).notices,
+  ).toContain('Earlier progress outside the selected tail was not shown.');
 });

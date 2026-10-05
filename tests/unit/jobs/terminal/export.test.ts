@@ -1,3 +1,6 @@
+import { WaitSession } from '#src/jobs/wait/session.js';
+import { selectWaitSnapshot } from '#src/jobs/wait/snapshot.js';
+import { admitted } from '#tests/helpers/wait-session.js';
 import { trustedJobRetentionCutoff } from '#src/jobs/retention-clock.js';
 import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -724,4 +727,91 @@ it('a settled source owner ends artifact retry after a retained terminal read fa
     retryScheduled: false,
   });
   expect(f.index.read(f.jobId)?.disposition).toBe('terminal');
+});
+
+it('a busy legacy source stays repair-pending through a middle poll', () => {
+  const f = fixture();
+  f.complete();
+  const record = JSON.parse(readFileSync(f.locationPath, 'utf8'));
+  delete record.terminalAge;
+  writeFileSync(f.locationPath, JSON.stringify(record));
+  let busy = false;
+  const owner = new TerminalResultExportOwner({
+    runtime: f.runtime,
+    jobsRoot: f.runtime.paths.coral.exports.jobsRoot,
+    location: (id) => f.index.read(id),
+    withSource: (_id, read) => {
+      if (busy) throw Object.assign(new Error('database is locked'), { code: 'ERR_SQLITE_ERROR' });
+      return read(f.db, f.store);
+    },
+  });
+  expect(owner.observeResultAvailability(f.jobId).kind).toBe('repair-pending');
+  const a = admitted(f.jobId);
+  a.availability = owner.observeResultAvailability(f.jobId);
+  const session = new WaitSession([f.jobId]);
+  session.reconcile([a]);
+  session.acknowledge(a);
+  busy = true;
+  a.availability = owner.observeResultAvailability(f.jobId);
+  session.reconcile([a]);
+  expect(selectWaitSnapshot(session).cursor.jobs[0].flags).toBe(3);
+  expect(owner.observeResultAvailability(f.jobId)).toMatchObject({ kind: 'repair-pending', ageUncertain: true });
+  busy = false;
+  expect(owner.observeResultAvailability(f.jobId).kind).toBe('repair-pending');
+});
+
+it.each(['recorded', 'legacy', 'unhydrated'] as const)(
+  'one failed owner attempt settles %s artifact pending',
+  async (kind) => {
+    const f = fixture();
+    f.complete();
+    if (kind === 'legacy') {
+      const record = JSON.parse(readFileSync(f.locationPath, 'utf8'));
+      delete record.terminalAge;
+      writeFileSync(f.locationPath, JSON.stringify(record));
+    }
+    if (kind === 'unhydrated') f.index.markUncertified(f.jobId);
+    const failures = new Set<string>();
+    const owner = new TerminalResultExportOwner({
+      runtime: f.runtime,
+      jobsRoot: f.runtime.paths.coral.exports.jobsRoot,
+      failures,
+      location: (id) => f.index.read(id),
+      withSource: (_id, read) => {
+        if (kind === 'unhydrated') return read(f.db, f.store);
+        throw new Error('Source lock is malformed.');
+      },
+      prepareTerminal: () => {
+        throw new Error('Source lock is malformed.');
+      },
+    });
+    expect(owner.observeResultAvailability(f.jobId).kind).toBe('repair-pending');
+    for (let pass = 0; pass < 5; pass++) {
+      await owner.repairPass([f.jobId], { canContinue: () => true, record: () => {} });
+      expect(failures.has(f.jobId)).toBe(true);
+      expect(owner.observeResultAvailability(f.jobId)).toMatchObject({
+        kind: 'failed',
+        cause: 'repair-failed',
+        retryScheduled: true,
+      });
+      f.advance(5 * 60_000);
+    }
+  },
+);
+
+it('publication uses one source session including final authorization', () => {
+  const f = fixture();
+  f.complete();
+  const withSource = vi.fn((_id: string, read: (db: typeof f.db, ctx: typeof f.store) => unknown) =>
+    read(f.db, f.store),
+  );
+  const owner = new TerminalResultExportOwner({
+    runtime: f.runtime,
+    jobsRoot: f.runtime.paths.coral.exports.jobsRoot,
+    location: (id) => f.index.read(id),
+    withSource: withSource as never,
+  });
+  owner.publishTerminalResult(f.jobId);
+  expect(readFileSync(f.resultPath, 'utf8')).toBe('canonical result\n');
+  expect(withSource).toHaveBeenCalledTimes(1);
 });

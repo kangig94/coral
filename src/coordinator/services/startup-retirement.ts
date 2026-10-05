@@ -3,13 +3,16 @@ import { z } from 'zod';
 
 import type { ValidatedHandoffTarget } from '../../infra/handoff-target.js';
 import { observeRecordedContainment } from '../../infra/process-containment.js';
-import { seedHistoricalEpoch, type HistoricalSeedResult } from '../../jobs/historical-reader.js';
+import {
+  registerPresentHistoricalEpochs,
+  seedHistoricalEpoch,
+  type HistoricalSeedResult,
+} from '../../jobs/historical-reader.js';
 import type { JobLocationIndex } from '../../jobs/location-index.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { readCustodyLedger } from '../../store/custody-ledger.js';
 import {
   decodeResolvedStoreEpoch,
-  encodeResolvedStoreEpoch,
   inspectCurrentStore,
   listStoreEpochs,
   observeResolvedStoreEpoch,
@@ -424,27 +427,7 @@ export function createStartupMintAuthorizer(
   startupId: string,
 ): (observation: StoreMintObservation) => StoreMintDisposition | null {
   return (observation) => {
-    for (const historical of listStoreEpochs(runtime)) {
-      if (
-        historical.role !== 'protected' ||
-        historical.resolved === null ||
-        historical.epochKey === null ||
-        historical.epochKey === undefined
-      )
-        continue;
-      const historicalKey = encodeResolvedStoreEpoch(runtime, historical.resolved);
-      const fingerprint =
-        historical.epochJson.kind === 'valid' ? historical.epochJson.value.build.storeFormatFingerprint : '';
-      void seedHistoricalEpoch(
-        runtime,
-        index,
-        historical.resolved,
-        historicalKey,
-        fingerprint,
-        runtime.paths.coral.exports.jobsRoot,
-        runtime.storage,
-      );
-    }
+    registerPresentHistoricalEpochs(runtime, index, listStoreEpochs(runtime), observation.incumbentEpochKey);
     const incumbent = observation.incumbent;
     if (incumbent === null) {
       return retirementMintDisposition(observation.observedEpochCount === 0 ? 'initial' : 'unopenable', null);

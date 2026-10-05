@@ -270,7 +270,10 @@ export class JobLocationIndex {
   readonly time: TimePort;
   private readonly root: string;
   private locationsStamp: string | undefined;
-  private readonly storedLocations = new Map<string, { stamp: string; stored: StoredJobLocation; view: JobLocation }>();
+  private readonly storedLocations = new Map<
+    string,
+    { stamp: string; raw: string; stored: StoredJobLocation; view: JobLocation }
+  >();
   private readonly epochRevisions = new Map<string, number>();
   private readonly certificates = new Map<string, { stamp: string; value: JobLocationCertificate | null }>();
   private locationsUnreadable: Array<{ file: string; epochKey: string | null }> = [];
@@ -323,10 +326,20 @@ export class JobLocationIndex {
     try {
       const stat = this.runtime.storage.lstatSync(path, { bigint: true });
       const stamp = `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}:${stat.birthtimeNs}`;
+      const raw = this.runtime.storage.readFileSync(path, 'utf-8');
       const cached = this.storedLocations.get(jobId);
-      if (cached?.stamp === stamp) return cached.stored;
-      const stored = optionalJson(this.runtime, path, locationSchema);
-      if (stored) this.storedLocations.set(jobId, { stamp, stored, view: viewLocation(stored) });
+      if (cached?.stamp === stamp && cached.raw === raw) {
+        this.storedLocations.delete(jobId);
+        this.storedLocations.set(jobId, cached);
+        return cached.stored;
+      }
+      const stored = locationSchema.parse(JSON.parse(raw));
+      if (stored) {
+        this.storedLocations.delete(jobId);
+        this.storedLocations.set(jobId, { stamp, raw, stored, view: viewLocation(stored) });
+        const oldest = this.storedLocations.keys().next().value;
+        if (this.storedLocations.size > 32 && oldest !== undefined) this.storedLocations.delete(oldest);
+      }
       return stored;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
