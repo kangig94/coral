@@ -591,3 +591,7 @@ it('observes replacement bytes even when inode and all coarse timestamps collide
   writeFileSync(path, readFileSync(path, 'utf8').replaceAll('/workspace/first', '/workspace/other'));
   expect(index.read(jobId)?.subject.projectRoot).toBe('/workspace/other');
 });
+
+it('imports terminal readability only from its owner', async () => {
+  expect(await import('#src/jobs/location-index.js')).not.toHaveProperty('hasReadableTerminalDetail');
+});

@@ -23,5 +23,6 @@ export function readIntactJobTerminalAge(
   cutoff: number | null = null,
 ): number | 'unknown' | 'regression' {
   if (cutoff === null) return 'unknown';
-  return readJobTerminalAge(db, terminal);
+  const age = readJobTerminalAge(db, terminal);
+  return typeof age === 'number' && age < cutoff ? 'unknown' : age;
 }

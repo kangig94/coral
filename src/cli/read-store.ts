@@ -1,3 +1,4 @@
+import { sameEpoch } from '../store/epoch/identity.js';
 import { createRealRuntime } from '../runtime/real.js';
 import { readBuildFlavor } from '../infra/bundle-manifest.js';
 import { CoralStore } from '../read-model/coral-store.js';
@@ -111,7 +112,7 @@ export function openReadCoralStore(projectRoot: string, epochKey?: string): Read
   const runtime = createRealRuntime(flavor);
   const addressed = observeResolvedStoreEpoch(runtime, epochKey);
   if (epochKey !== undefined && addressed === undefined) throw new Error('Invalid cause epoch address');
-  if (addressed?.lineageKey !== undefined && readEpochKey(runtime, addressed) !== addressed.lineageKey)
+  if (addressed?.lineageKey !== undefined && !sameEpoch(readEpochKey(runtime, addressed), addressed.lineageKey))
     throw new Error('Cause epoch lineage does not match');
   const resolved =
     addressed === undefined

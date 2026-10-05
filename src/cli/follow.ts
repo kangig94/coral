@@ -375,7 +375,7 @@ async function connectFollowStream(
       drainProgress: options.reconnectPolicy === 'until-terminal',
       jobIds: state.remainingJobIds,
       ...(state.sendCursor || serializedCursor(state.currentCursor) !== undefined
-        ? { cursor: state.currentCursor }
+        ? { cursor: waitCursorForJobs(state.currentCursor, state.remainingJobIds) }
         : {}),
       timeoutSeconds:
         options.reconnectPolicy === 'bounded' ? boundedTimeoutSeconds(deadlineMs) : FOLLOW_TIMEOUT_SECONDS,
@@ -536,6 +536,7 @@ async function deliverFollowEvent(event: WaitStreamEvent, context: FollowContext
           event.type === 'waiting' ||
           event.type === 'artifact' ||
           (event.type === 'notice' && event.exitCode !== undefined),
+        true,
       );
     },
   ).catch((error: unknown) => {

@@ -1,3 +1,5 @@
+import { settleSupersededEpochClosures } from '#src/coordinator/services/recovery/epoch-closure.js';
+import { JobLocationIndex } from '#src/jobs/location-index.js';
 import type * as MockedFsLockModule from '#src/infra/fs-lock.js';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -123,4 +125,14 @@ it('retains an unsafe closure timestamp as unreadable', () => {
   const path = join(stateRoot, 'epoch-closure.v1', `${runtime.ids.sha256(evidence.epochKey)}.json`);
   writeFileSync(path, JSON.stringify({ ...evidence, observedAtMs: Number.MAX_SAFE_INTEGER + 1 }));
   expect(observeEpochClosure(runtime, stateRoot, evidence.epochKey).kind).toBe('unreadable');
+});
+
+it('excludes an active full JSON key from lineage closure candidates', async () => {
+  const runtime = harness();
+  for (const epoch of ['1', '2', '3']) publish(runtime, epoch);
+  const old = resolvedStoreEpoch(runtime.paths.coral.store.dbDir, '1');
+  const lineage = readOrCreateEpochKey(runtime, old);
+  const full = encodeResolvedStoreEpoch(runtime, old);
+  const index = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
+  expect(await settleSupersededEpochClosures(runtime, index, undefined, lineage, full)).toEqual([]);
 });

@@ -319,6 +319,16 @@ it.each(['v0.10.15', 'v0.10.16', 'v0.10.17'])(
         expect(alreadyAcknowledged.filter((event) => event.type === 'terminal')).toEqual([]);
         expect(alreadyAcknowledged.filter((event) => event.type === 'waiting')).toEqual([]);
       }
+      if (availability === 'repair-pending' || availability === 'failed') {
+        const pending: WaitStreamEvent[] = [];
+        for await (const event of addressing(availability).waitStream({ ...request, timeoutSeconds: 0 } as never)) {
+          reader.parseWaitStreamEventValue(event);
+          pending.push(event);
+        }
+        expect(pending.some((event) => event.type === 'terminal')).toBe(false);
+        expect(pending.at(-1)).toMatchObject({ type: 'waiting', waitingJobIds: ['a'] });
+        continue;
+      }
       let refusal: unknown;
       try {
         for await (const event of addressing(availability).waitStream(request as never))

@@ -73,7 +73,7 @@ import type {
 const INCUMBENT_HEALTH_PROBE_TIMEOUT_MS = 3_000;
 const STDOUT_HANDOFF_DRAIN_TIMEOUT_MS = 3_000;
 const BACKEND_STARTUP_LIVENESS_CONFIRMATION_MS = 100;
-const CLI_HANDOFF_GUARD_ENV = 'CORAL_CLI_HANDOFF_DELEGATED';
+import { CLI_HANDOFF_GUARD_ENV } from './wait-invocation.js';
 
 const handoffSuccessBrand: unique symbol = Symbol('HandoffSuccess');
 const cliHandoffGuardSchema = z.enum(['0', '1']).optional();
@@ -1219,7 +1219,7 @@ function supportsWaitInvocation(
     const child = execFile(
       process.execPath,
       [target, WAIT_INVOCATION_CONTRACT_ARGUMENT],
-      { maxBuffer: 1024, env: { ...process.env } },
+      { maxBuffer: 64 * 1024, env: { ...process.env, [CLI_HANDOFF_GUARD_ENV]: '1' } },
       (error, stdout) => {
         if (cancelling) return;
         if (error) return finish(typeof error.code === 'number' ? false : null);
@@ -1274,7 +1274,7 @@ function bindMonitorChild(
       typeof message.continuation === 'string' &&
       Buffer.byteLength(message.continuation) <= 1024 * 1024
     )
-      invocation.saveContinuation(message.continuation, message.complete === true);
+      invocation.saveContinuation(message.continuation, message.complete === true, message.delivered === true);
   };
   const cancel = () => {
     if (child.connected) child.send({ type: 'wait-cancel' }, () => {});

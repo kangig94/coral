@@ -1,3 +1,4 @@
+import { sameEpoch } from '../../store/epoch/identity.js';
 import { raceWithSignal } from '../../infra/promise-signal.js';
 import type { TimePort } from '../../infra/port-types.js';
 import type { WaitAdmission } from './session.js';
@@ -81,7 +82,7 @@ export async function* readWaitSession(input: WaitReadInput): AsyncGenerator<Wai
       if (request.supportsWaitV3 !== true) validateLegacyAdmission(session);
       if (firstPoll && !request.cursor && !input.internal && request.supportsWaitV3 === true) {
         firstPoll = false;
-        session.startAtTail(20);
+        session.startAtTail(20, WAIT_PROGRESS_LINES, WAIT_PROGRESS_BYTES);
       }
       const now = Number(time.monotonicNow());
       const nearDeadline: boolean = now >= deadline - 250 && !deadlineObserved;
@@ -158,7 +159,9 @@ function validateLegacyAdmission(session: WaitSession): void {
       'jobs_not_found',
       `Jobs not found: ${missing.join(', ')}. Remove those IDs to collect the remaining jobs.`,
     );
-  const refused = session.admissions.find((job) => job.disposition !== 'admitted');
+  const refused = session.admissions.find(
+    (job) => job.disposition !== 'admitted' && job.disposition !== 'discovery-unknown',
+  );
   if (refused)
     throw new WaitSessionError(
       refused.disposition === 'discovery-unknown' ? 'transient' : 'wait_epoch_unsupported',
@@ -273,11 +276,13 @@ function* progressEvents(
     if (internal || request.supportsWaitV3 !== true) {
       while (index + group.length < unread.length) {
         const next = unread[index + group.length];
-        if (next.epochKey !== first.epochKey || next.seq !== first.seq) break;
+        if (!sameEpoch(next.epochKey, first.epochKey) || next.seq !== first.seq) break;
         group.push(next);
       }
     }
-    const messages = group.map((line) => shortenWaitLine(line.text));
+    const messages = group.map((line) =>
+      request.supportsWaitV3 === true && !internal ? shortenWaitLine(line.text) : line.text,
+    );
     const bytes = messages.reduce((sum, text) => sum + Buffer.byteLength(text), 0);
     if (
       !internal &&
@@ -362,11 +367,13 @@ function* terminalEvents(
     if (!job.detail?.exit) continue;
     const availability = job.availability;
     if (session.acknowledged(job.jobId) && !session.artifactPending(job.jobId)) continue;
-    if (request.supportsWaitV3 !== true && availability?.kind === 'repair-pending')
-      throw new WaitSessionError(
-        'wait_epoch_unsupported',
-        `Job ${job.jobId} has a final outcome whose pending result artifact cannot be represented by this CLI. Run coral-cli jobs detail ${job.jobId}.`,
-      );
+    if (
+      request.supportsWaitV3 !== true &&
+      (availability?.kind === 'repair-pending' || (availability?.kind === 'failed' && availability.retryScheduled))
+    ) {
+      if (request.supportsWaitV2 !== true) return false;
+      continue;
+    }
     if (request.supportsWaitV3 !== true && availability?.kind !== 'available')
       throw new WaitSessionError(
         'wait_epoch_unsupported',

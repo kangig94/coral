@@ -477,3 +477,33 @@ it('preserves the saved cursor in backend-unreachable remediation', async () => 
     vi.restoreAllMocks();
   }
 });
+
+it('trims a legacy saved cursor before connecting a subset wait', async () => {
+  const cursor = {
+    version: 'jobs.wait.v2' as const,
+    locations: { a: 'epoch-E', b: 'epoch-E' },
+    positions: { 'epoch-E': 4 },
+    deliveredJobIds: ['b'],
+  };
+  const connect = vi.fn(async () => ({
+    kind: 'delegated' as const,
+    version: '9.9.9',
+    outcome: { kind: 'handoff-exit' as const, version: '9.9.9', exitCode: 75 },
+  }));
+  try {
+    await followJobs({
+      start: { kind: 'jobs', jobIds: ['a'], serializedCursor: serializeWaitCursor(cursor) },
+      reconnectPolicy: 'bounded',
+      projectRoot: '/project',
+      render: { isTTY: false, columns: 80, embed: false, verbose: false },
+      emitError: vi.fn(),
+      connect,
+    });
+    expect(connect.mock.calls[0]).toMatchObject([{ cursor: { locations: { a: 'epoch-E' }, deliveredJobIds: [] } }]);
+    expect(
+      (connect.mock.calls as unknown as Array<[{ cursor: { locations: object } }]>)[0][0].cursor.locations,
+    ).toEqual({ a: 'epoch-E' });
+  } finally {
+    vi.restoreAllMocks();
+  }
+});

@@ -1,3 +1,4 @@
+import { sameEpoch } from '../../store/epoch/identity.js';
 import { readWaitSession } from '../wait/reader.js';
 import type { WaitAdmission } from '../wait/session.js';
 import { isTerminalPhase, type JobPhase } from '../phase.js';
@@ -334,7 +335,7 @@ export class WaitCoordinator {
     const frontiers = (session ? this.eventFrontiers.get(session) : undefined) ?? new Map<string, WaitEventFrontier>();
     if (session) this.eventFrontiers.set(session, frontiers);
     let cached = frontiers.get(jobId);
-    if (cached?.epochKey === epochKey && cached.frontier === frontier && cached.admission) {
+    if (cached && sameEpoch(cached.epochKey, epochKey) && cached.frontier === frontier && cached.admission) {
       const admission = cached.admission;
       if (!admission.detail?.exit) return admission;
       const availability = this.deps.observeResultAvailability(jobId, session);
@@ -348,7 +349,7 @@ export class WaitCoordinator {
         ? { jobId, disposition: 'missing', sourceRead: 'readable' }
         : { jobId, disposition: 'admitted', epochKey, sourceRead: 'transient-unknown' };
     }
-    if (!cached || cached.epochKey !== epochKey || cached.frontier > frontier) {
+    if (!cached || !sameEpoch(cached.epochKey, epochKey) || cached.frontier > frontier) {
       cached = { epochKey, frontier: -1, events: [] };
     }
     if (cached.frontier !== frontier) {

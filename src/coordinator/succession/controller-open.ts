@@ -1,3 +1,4 @@
+import { sameEpoch } from '../../store/epoch/identity.js';
 import { join } from 'node:path';
 import { z } from 'zod';
 
@@ -193,7 +194,7 @@ export function latestControllerOpen(
       continue;
     }
     const parsed = openSchema.safeParse(parseJson(raw));
-    if (!parsed.success || parsed.data.epochKey !== epochKey) {
+    if (!parsed.success || !sameEpoch(parsed.data.epochKey, epochKey)) {
       unreadable.push(path);
       continue;
     }
@@ -213,7 +214,8 @@ export function latestControllerOpen(
         continue;
       }
       if (
-        serving?.epochKey !== epochKey ||
+        serving === null ||
+        !sameEpoch(serving.epochKey, epochKey) ||
         serving.successorInstanceId !== record.instanceId ||
         serving.controlGeneration !== record.controlGeneration
       )

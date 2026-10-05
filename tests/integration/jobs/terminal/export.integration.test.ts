@@ -16,7 +16,7 @@ import { createStorageRetentionScheduler } from '#src/coordinator/composition/st
 {
   describe('legacy unknown-age terminal with a pruned export', () => {
     it('releases an unknown-age legacy terminal without recreating its export directory', () => {
-      const f = createTerminalExportFixture('provider');
+      const f = createTerminalExportFixture('provider', true);
       try {
         f.complete();
         f.store.publishTerminalResult(f.jobId);
@@ -48,6 +48,13 @@ import { createStorageRetentionScheduler } from '#src/coordinator/composition/st
           seq,
           f.db,
         );
+        const legacyPath = f.locationPath.replace(
+          Buffer.from(f.jobId).toString('base64url'),
+          Buffer.from('legacy').toString('base64url'),
+        );
+        const legacyLocation = JSON.parse(readFileSync(legacyPath, 'utf8'));
+        delete legacyLocation.terminalAge;
+        writeFileSync(legacyPath, JSON.stringify(legacyLocation));
         const high = (
           f.db.prepare("SELECT MAX(seq) AS s FROM events WHERE stream_kind = 'job'").get() as {
             s: number;
@@ -190,11 +197,11 @@ import { createStorageRetentionScheduler } from '#src/coordinator/composition/st
       trustedJobRetentionCutoff(f.runtime);
       f.jump(86400000);
       const seq = f.complete();
-      f.store.getResultExportOwner().publishTerminalResult(f.jobId, seq);
-      expect(existsSync(f.resultPath)).toBe(false);
       const owner = f.store.getResultExportOwner();
       const wake = vi.fn();
       owner.onRepairHint(wake);
+      owner.publishTerminalResult(f.jobId, seq);
+      expect(existsSync(f.resultPath)).toBe(false);
       const observation = {};
       const availability = owner.observeResultAvailability(f.jobId, observation);
       expect(availability).toMatchObject({ kind: 'failed', cause: 'cutoff-untrusted', retryScheduled: true });
@@ -526,7 +533,7 @@ it('unknown-age discharge requires an observed source and cannot use a failed re
   }
 });
 
-it('proves a legacy terminal older than cutoff after unrelated predecessor rows were pruned without a full count', () => {
+it('keeps a pruned legacy terminal age unknown while allowing absent-export discharge', () => {
   const f = createTerminalExportFixture('provider', true);
   try {
     f.complete({ terminalAt: TERMINAL_EXPORT_CUTOFF - 1000, precedingAt: TERMINAL_EXPORT_CUTOFF - 2000 });
@@ -535,8 +542,11 @@ it('proves a legacy terminal older than cutoff after unrelated predecessor rows 
     writeFileSync(f.locationPath, JSON.stringify(location));
     f.db.prepare("DELETE FROM events WHERE type <> 'job.terminal.recorded'").run();
     const eligibility = f.index.terminalEligibility(f.jobId);
-    expect(eligibility.kind).toBe('expired');
-    expect(f.store.getResultExportOwner().observeResultAvailability(f.jobId).kind).toBe('retained-away');
+    expect(eligibility.kind).toBe('unknown');
+    expect(f.store.getResultExportOwner().observeResultAvailability(f.jobId)).toMatchObject({
+      kind: 'failed',
+      cause: 'terminal-age-unknown',
+    });
     expect(f.index.resultDurable(f.jobId)).toBe(true);
   } finally {
     f.close();

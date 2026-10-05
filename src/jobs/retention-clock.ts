@@ -12,7 +12,7 @@ export function resolveJobRetentionMs(raw: string | undefined): number {
   return (Number.isSafeInteger(days) && days > 0 ? days : 14) * DAY_MS;
 }
 
-/** Keep a long baseline across idle periods; suspend and clock jumps defer every retention owner alike. */
+/** Compare against the last trusted observation; idle periods retain that baseline. */
 export function trustedJobRetentionCutoff(runtime: Pick<Runtime, 'time' | 'env'>): number | null {
   const wall = runtime.time.now();
   const monotonic = runtime.time.monotonicNow();
@@ -29,6 +29,6 @@ export function trustedJobRetentionCutoff(runtime: Pick<Runtime, 'time' | 'env'>
     return null;
   }
   if (baseline.untrusted && elapsed < CLOCK_SETTLE_MS) return null;
-  baseline.untrusted = false;
+  clocks.set(runtime.time, { wall, monotonic, untrusted: false });
   return wall - resolveJobRetentionMs(runtime.env.get('CORAL_JOBS_RETENTION_DAYS')) - CLOCK_JUMP_TOLERANCE_MS;
 }

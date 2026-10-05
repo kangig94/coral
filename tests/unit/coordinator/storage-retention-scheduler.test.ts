@@ -67,7 +67,7 @@ afterEach(async () => {
   vi.restoreAllMocks();
   vi.useRealTimers();
 });
-function fixture(f = createRetentionFixture(), getProgressStore = () => f.store) {
+function fixture(f = createRetentionFixture(), getProgressStore: () => typeof f.store | null = () => f.store) {
   if (!fixtures.includes(f)) fixtures.push(f);
   const fixedWall = f.runtime.time.now;
   const originalMonotonic = f.runtime.time.monotonicNow;
@@ -685,4 +685,145 @@ it('re-arms repair when a new hint arrives during an outstanding pass', async ()
   release();
   await vi.advanceTimersByTimeAsync(2000);
   expect(passes.some((pass) => pass.includes('job-b'))).toBe(true);
+});
+
+describe('hints survive backlog scheduling', () => {
+  describe('probe', () => {
+    it('honors a read hint during a failed repair pass before the backlog retry', async () => {
+      const { f, scheduler } = fixture();
+      const owner = f.store.getResultExportOwner();
+      const passes: string[][] = [];
+      let release: () => void = () => {};
+      const hints = (owner as unknown as { hints: Set<string> }).hints;
+      let first = true;
+      vi.spyOn(owner, 'repairPass').mockImplementation(async (_ids, budget) => {
+        const snapshot = [...hints];
+        passes.push(snapshot);
+        for (const id of snapshot) hints.delete(id);
+        if (first) {
+          first = false;
+          budget.record({ kind: 'failed', subject: 'other-job', reason: 'repair-failed' });
+          await new Promise<void>((resolve) => {
+            release = resolve;
+          });
+        }
+      });
+      scheduler.start();
+      await vi.advanceTimersByTimeAsync(0);
+      owner.hintRepair('job-b');
+      release();
+      await vi.advanceTimersByTimeAsync(10_000);
+      const after10s = passes.some((pass) => pass.includes('job-b'));
+      await vi.advanceTimersByTimeAsync(300_000);
+      const after5m = passes.some((pass) => pass.includes('job-b'));
+
+      expect(after10s).toBe(true);
+      expect(after5m).toBe(true);
+    });
+  });
+});
+
+describe('due owners always advance time', () => {
+  describe('probe: storage retention scheduler with an untrusted clock and a pending repair hint', () => {
+    it('does not spin while the clock settles', async () => {
+      const f = createRetentionFixture();
+      const base = Date.now();
+      let jump = 0;
+      f.runtime.time = {
+        ...f.runtime.time,
+        now: () => Date.now() + jump,
+        monotonicNow: () => BigInt(Date.now() - base),
+      };
+      const statuses: RetentionRunStatus[] = [];
+      const log = vi.fn();
+      const scheduler = createStorageRetentionScheduler({
+        runtime: f.runtime,
+        getProgressStore: () => f.store,
+        openEpoch: () => ({
+          storeRoot: f.runtime.paths.coral.store.dbDir,
+          epoch: '1',
+          path: '/tmp/fixture/epoch-1/store.db',
+        }),
+        activeEpochKey: () => 'active',
+        jobLocations: new JobLocationIndex(f.runtime, f.runtime.paths.coral.generation.dataRoot),
+        log,
+        publish: (status) => statuses.push(status),
+        cleanupScratch: async () => {},
+      });
+      scheduler.start();
+      await vi.advanceTimersByTimeAsync(10);
+      jump = 2 * 60 * 60 * 1000; // wall clock steps forward 2 h (e.g. host resume)
+      await vi.advanceTimersByTimeAsync(2_000);
+      f.store.getResultExportOwner().hintRepair('job-x');
+      const before = statuses.length;
+      await vi.advanceTimersByTimeAsync(3_000);
+      const runs = (statuses.length - before) / 2;
+
+      await scheduler.stop();
+      f.close();
+      expect(runs).toBeLessThan(5);
+    });
+
+    it('bounds backlog retries while the clock is untrusted', async () => {
+      const f = createRetentionFixture();
+      const base = Date.now();
+      let jump = 0;
+      f.runtime.time = {
+        ...f.runtime.time,
+        now: () => Date.now() + jump,
+        monotonicNow: () => BigInt(Date.now() - base),
+      };
+      const statuses: RetentionRunStatus[] = [];
+      const log = vi.fn();
+      const scheduler = createStorageRetentionScheduler({
+        runtime: f.runtime,
+        getProgressStore: () => f.store,
+        openEpoch: () => ({
+          storeRoot: f.runtime.paths.coral.store.dbDir,
+          epoch: '1',
+          path: '/tmp/fixture/epoch-1/store.db',
+        }),
+        activeEpochKey: () => 'active',
+        jobLocations: new JobLocationIndex(f.runtime, f.runtime.paths.coral.generation.dataRoot),
+        log,
+        publish: (status) => statuses.push(status),
+        cleanupScratch: async (_signal, budget) => {
+          // A real backlog: progress made, more remains -> the owner asks for a 5-minute fast retry.
+          budget.record({ kind: 'deleted', subject: 'scratch', count: 1 });
+          budget.record({ kind: 'kept', subject: 'scratch', reason: 'scan-pending' });
+        },
+      });
+      scheduler.start();
+      await vi.advanceTimersByTimeAsync(10);
+      await vi.advanceTimersByTimeAsync(4 * 60_000);
+      jump = 2 * 60 * 60 * 1000; // host resume steps the wall clock forward
+      await vi.advanceTimersByTimeAsync(30_000); // some unrelated trusted-cutoff observation detects it
+      f.store.getResultExportOwner().observeResultAvailability('nothing'); // any eligibility read detects the jump
+      const before = statuses.length;
+      await vi.advanceTimersByTimeAsync(40_000); // the 5-minute backlog retry falls due inside the 5-minute settle window
+      const runs = (statuses.length - before) / 2;
+
+      await scheduler.stop();
+      f.close();
+      expect(runs).toBeLessThan(5);
+    });
+  });
+});
+
+it('bounds a hinted owner while the selected store is unavailable', async () => {
+  const f = createRetentionFixture();
+  let available = true;
+  const { scheduler, statuses } = fixture(f, () => (available ? f.store : null));
+  const repair = vi.spyOn(f.store.getResultExportOwner(), 'repairPass').mockResolvedValue();
+  scheduler.start();
+  await vi.advanceTimersByTimeAsync(0);
+  available = false;
+  f.store.getResultExportOwner().hintRepair('held-job');
+  const before = statuses.length;
+  await vi.advanceTimersByTimeAsync(3_000);
+  expect((statuses.length - before) / 2).toBeLessThan(5);
+  expect(repair).toHaveBeenCalledTimes(1);
+  available = true;
+  await vi.advanceTimersByTimeAsync(300_000);
+  expect(repair).toHaveBeenCalledTimes(2);
 });

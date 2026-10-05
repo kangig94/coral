@@ -1,7 +1,7 @@
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
 
-import { acquireSharedFileLockSync } from '../../infra/fs-lock.js';
+import { acquireSharedFileLockNoRepairSync, acquireSharedFileLockSync } from '../../infra/fs-lock.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { ResolvedStoreEpoch } from './types.js';
 
@@ -12,7 +12,7 @@ export function readEpochKey(runtime: Pick<Runtime, 'storage'>, epoch: ResolvedS
   let release: (() => void) | null = null;
   let key: string | null;
   try {
-    release = acquireSharedFileLockSync(join(dirname(epoch.path), '.lock'));
+    release = acquireSharedFileLockNoRepairSync(join(dirname(epoch.path), '.lock'));
     const lineage = lineageSchema.parse(
       JSON.parse(runtime.storage.readFileSync(join(dirname(epoch.path), LINEAGE_FILE), 'utf-8')) as unknown,
     );

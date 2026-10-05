@@ -1,3 +1,4 @@
+import { sameEpoch } from './identity.js';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
 import { writeAuditEvent } from '../../infra/audit-log.js';
@@ -117,7 +118,7 @@ export function observeEpochClosure(
     return { kind: 'unsupported', path, version: value.version };
   }
   const parsed = closureSchema.safeParse(value);
-  return parsed.success && parsed.data.epochKey === epochKey
+  return parsed.success && sameEpoch(parsed.data.epochKey, epochKey)
     ? { kind: 'recorded', evidence: parsed.data }
     : { kind: 'unreadable', path };
 }

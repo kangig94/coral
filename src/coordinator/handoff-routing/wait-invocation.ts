@@ -1,3 +1,4 @@
+export const CLI_HANDOFF_GUARD_ENV = 'CORAL_CLI_HANDOFF_DELEGATED';
 export const WAIT_INVOCATION_CONTEXT_ENV = 'CORAL_WAIT_INVOCATION_CONTEXT';
 export const WAIT_INVOCATION_CONTRACT_ARGUMENT = '--print-wait-invocation-contract';
 
@@ -23,5 +24,5 @@ export interface WaitInvocationHandoff {
   monitorEnding?: Promise<unknown>;
   remainingMs(): number;
   cleanupRemainingMs(): number;
-  saveContinuation(text: string, complete?: boolean): void;
+  saveContinuation(text: string, complete?: boolean, delivered?: boolean): void;
 }

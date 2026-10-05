@@ -1,3 +1,4 @@
+import { sameEpoch } from '../../store/epoch/identity.js';
 import type { JobLocation } from '../location-index.js';
 import { z } from 'zod';
 import { jobTerminalSchema } from './result.js';
@@ -53,7 +54,7 @@ export function validatedTerminal(
     !terminal ||
     !detail.exit ||
     detail.status.jobId !== jobId ||
-    (detail.epochKey !== undefined && detail.epochKey !== epochKey) ||
+    (detail.epochKey !== undefined && !sameEpoch(detail.epochKey, epochKey)) ||
     detail.status.phase !== phaseForOutcome(terminal.result.outcome) ||
     (detail.status.lastSeq !== undefined && detail.status.lastSeq !== seq) ||
     detail.status.updatedAt !== terminal.ts ||

@@ -108,8 +108,15 @@ export function createStorageRetentionScheduler(input: {
     for (const [subject, owner] of owners) {
       if ((owner.fastDue ?? owner.dailyDue) <= startedAt) {
         dueOwners.add(subject);
+        owner.fastDue = null;
+        owner.dailyDue = startedAt + BigInt(DAILY_MS);
       }
     }
+    const executedOwners = new Set<string>();
+    const deferOwner = (owner: { fastDue: bigint | null }): void => {
+      const due = runtime.time.monotonicNow() + BigInt(BACKLOG_DELAY_MS);
+      if (owner.fastDue === null || due < owner.fastDue) owner.fastDue = due;
+    };
     const hintedOnly = repairHinted && dueOwners.size === 1 && dueOwners.has('result-repair');
     repairHinted = false;
     let partial = false;
@@ -159,7 +166,7 @@ export function createStorageRetentionScheduler(input: {
             if (owner === undefined || !dueOwners.has(subject)) return;
             owner.outcomes = [];
             if (outstandingOwners.has(subject)) {
-              owner.fastDue = runtime.time.monotonicNow() + BigInt(BACKLOG_DELAY_MS);
+              deferOwner(owner);
               record({ kind: 'kept', subject, reason: 'previous-owner-still-running' }, subject);
               return;
             }
@@ -220,8 +227,7 @@ export function createStorageRetentionScheduler(input: {
                 const work = Promise.resolve().then(() => {
                   if (ownerAbort.signal.aborted || abort.signal.aborted || !budget.canMutate()) return;
                   executed = true;
-                  owner.dailyDue = startedAt + BigInt(DAILY_MS);
-                  owner.fastDue = null;
+                  executedOwners.add(subject);
                   return operation(budget, ownerAbort.signal, mutate);
                 });
                 outstandingOwners.set(subject, work);
@@ -240,9 +246,8 @@ export function createStorageRetentionScheduler(input: {
                 !abort.signal.aborted &&
                 !outstandingOwners.has(subject) &&
                 (exhausted || (scanPending && progressed) || repairPending || (failed && subject === 'result-repair'));
-              if (!executed && !abort.signal.aborted)
-                owner.fastDue = runtime.time.monotonicNow() + BigInt(BACKLOG_DELAY_MS);
-              else if (fastRetry) owner.fastDue = runtime.time.monotonicNow() + BigInt(BACKLOG_DELAY_MS);
+              if (!executed && !abort.signal.aborted) deferOwner(owner);
+              else if (fastRetry) deferOwner(owner);
               finished = true;
               if (exhausted) record({ kind: 'kept', subject, reason: 'scan-pending' }, subject);
               if (ownerAbort.signal.aborted && outstandingOwners.has(subject))
@@ -371,8 +376,7 @@ export function createStorageRetentionScheduler(input: {
       input.publish(status);
       for (const subject of dueOwners) {
         const owner = owners.get(subject);
-        if (owner && owner.dailyDue <= startedAt)
-          owner.fastDue = runtime.time.monotonicNow() + BigInt(BACKLOG_DELAY_MS);
+        if (owner && !executedOwners.has(subject)) deferOwner(owner);
       }
       const delay = nextDelay();
       if (!hintedOnly)

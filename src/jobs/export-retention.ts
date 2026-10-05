@@ -1,3 +1,4 @@
+import { sameEpoch } from '../store/epoch/identity.js';
 import type { StorageBigIntStat } from '../infra/port-types.js';
 import { isRetentionChildName, readRetentionMeta } from '../store/retention-meta.js';
 import { dirname, join } from 'node:path';
@@ -72,7 +73,7 @@ export function terminalEligibility(
   const saved = terminalAgeSchema.safeParse(location.terminalAge);
   const matches =
     saved.success &&
-    saved.data.epochKey === location.epochKey &&
+    sameEpoch(saved.data.epochKey, location.epochKey) &&
     saved.data.terminalSeq === terminal.seq &&
     saved.data.terminalTimestamp === terminal.ts;
   let age: number | 'unknown' | 'regression' =

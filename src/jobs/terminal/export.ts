@@ -7,7 +7,7 @@ import type { AppendedEvent, PostCommitObserver } from '../../store/append.js';
 
 import type { StoragePort } from '../../infra/port-types.js';
 import { type StoreReadContext } from '../../store/body-codec.js';
-import { getEvent } from '../../store/event-queries.js';
+
 import type { EventsRow } from '../../store/schema.js';
 import { extractCauseRef, renderCauseRefFallback, type CauseRef } from '../../causality/cause-ref.js';
 import type { CoralEvent } from '../../store/envelope.js';
@@ -93,13 +93,15 @@ function describeCauseRefChain(
   }
   visited.add(key);
 
-  const event = getEvent(db, ref.stream, ref.seq, ctx);
-  if (!event) {
+  const row = db.prepare<[number], EventsRow>('SELECT * FROM events WHERE seq = ?').get(ref.seq);
+  if (!row || row.stream_kind !== ref.stream.kind || row.stream_id !== ref.stream.id) {
     return null;
   }
 
+  const body: unknown = JSON.parse(Buffer.from(row.body).toString('utf8'));
+  const event = { type: row.type, body } as CoralEvent;
   const localDescription = describeKnownEvent(event);
-  const nextRef = extractCauseRef(event.body);
+  const nextRef = extractCauseRef(body);
   if (!nextRef) {
     return localDescription;
   }
@@ -177,13 +179,16 @@ export function resultRepairFailuresFor(ownerScope: object): Set<string> {
   return failures;
 }
 
+const repairQueues = new WeakMap<object, { hints: Set<string>; listener: (() => void) | null }>();
+
 export class TerminalResultExportOwner {
   private readonly failures: Set<string>;
   private sourceSession: { db: Database; ctx: StoreReadContext } | undefined;
-  private readonly hints = new Set<string>();
+  private readonly repairQueue: { hints: Set<string>; listener: (() => void) | null };
+  private readonly hints: Set<string>;
+  private ownsRepairSchedule = false;
   private repairScan: Iterator<string> | undefined;
   private repairHintNext = true;
-  private hintListener: (() => void) | null = null;
 
   private readonly input: Readonly<{
     runtime: Pick<Runtime, 'storage' | 'paths' | 'time' | 'env'>;
@@ -192,6 +197,7 @@ export class TerminalResultExportOwner {
     withSource<T>(jobId: string, read: (db: Database, ctx: StoreReadContext) => T): T | null;
     workflowReport?: WorkflowReportPort;
     failures?: Set<string>;
+    repairScope?: object;
     prepareTerminal?(jobId: string, db: Database): void;
     hydrationRetry?(jobId: string): boolean | undefined;
   }>;
@@ -199,6 +205,10 @@ export class TerminalResultExportOwner {
   constructor(input: TerminalResultExportOwner['input']) {
     this.input = input;
     this.failures = input.failures ?? new Set<string>();
+    const scope = input.repairScope ?? this;
+    this.repairQueue = repairQueues.get(scope) ?? { hints: new Set<string>(), listener: null };
+    repairQueues.set(scope, this.repairQueue);
+    this.hints = this.repairQueue.hints;
     for (const jobId of this.failures) this.hints.add(jobId);
   }
 
@@ -285,8 +295,9 @@ export class TerminalResultExportOwner {
   }
 
   /** Availability observation never synchronizes or repairs storage. */
-  progressRetentionExpired(jobId: string): boolean {
-    return this.eligibility(jobId, false).kind === 'expired';
+  progressRetentionExpired(jobId: string): boolean | undefined {
+    const kind = this.eligibility(jobId, false).kind;
+    return kind === 'unknown' || kind === 'regression' ? undefined : kind === 'expired';
   }
 
   private readonly observedEligibility = new WeakMap<
@@ -405,7 +416,7 @@ export class TerminalResultExportOwner {
       );
     } catch (error) {
       this.failures.add(jobId);
-      if (repair) this.hints.add(jobId);
+      if (repair && this.ownsRepairSchedule) this.hints.add(jobId);
       else this.hintRepair(jobId);
       throw error;
     }
@@ -416,7 +427,7 @@ export class TerminalResultExportOwner {
       this.prepareTerminal(jobId, db);
     } catch (error) {
       this.failures.add(jobId);
-      if (repair) this.hints.add(jobId);
+      if (repair && this.ownsRepairSchedule) this.hints.add(jobId);
       else this.hintRepair(jobId);
       throw error;
     }
@@ -445,13 +456,14 @@ export class TerminalResultExportOwner {
         });
       });
       if (this.available(jobId)) this.failures.delete(jobId);
-      if (this.observeResultAvailability(jobId).kind === 'repair-pending') {
-        if (repair) this.hints.add(jobId);
+      const after = this.observeResultAvailability(jobId);
+      if (after.kind === 'repair-pending' || (after.kind === 'failed' && after.retryScheduled)) {
+        if (repair && this.ownsRepairSchedule) this.hints.add(jobId);
         else this.hintRepair(jobId);
       }
     } catch (error) {
       this.failures.add(jobId);
-      if (repair) this.hints.add(jobId);
+      if (repair && this.ownsRepairSchedule) this.hints.add(jobId);
       else this.hintRepair(jobId);
       throw error;
     }
@@ -461,11 +473,12 @@ export class TerminalResultExportOwner {
   hintRepair(jobId: string): void {
     if (this.hints.has(jobId)) return;
     this.hints.add(jobId);
-    this.hintListener?.();
+    this.repairQueue.listener?.();
   }
 
   onRepairHint(listener: (() => void) | null): void {
-    this.hintListener = listener;
+    this.ownsRepairSchedule = listener !== null;
+    this.repairQueue.listener = listener;
   }
 
   async repairPass(jobIds: Iterable<string>, budget: RetentionRunBudget, hintedOnly = false): Promise<void> {

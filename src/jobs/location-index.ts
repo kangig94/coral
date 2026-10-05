@@ -1,3 +1,4 @@
+import { sameEpoch, epochHoldDirectory } from '../store/epoch/identity.js';
 import { dirname, join } from 'node:path';
 import { setImmediate } from 'node:timers/promises';
 import { isDeepStrictEqual } from 'node:util';
@@ -168,13 +169,21 @@ export type JobLocationDetail =
 
 export type JobLocation = z.infer<typeof locationIdentitySchema> & { detail: JobLocationDetail; terminalAge?: unknown };
 
-export type UnknownLocationHold = Readonly<{ epochKey: string; reason: string; retryScheduled: boolean }>;
+export type UnknownLocationHold = Readonly<
+  { reason: string; retryScheduled: boolean } & (
+    | { epochKey: string; directory?: undefined }
+    | { epochKey?: undefined; directory: string }
+  )
+>;
+
+export class LocationObservationDeferred extends Error {}
 
 export interface JobLocationView {
   readHistorical?: HistoricalSourceReader;
   historicalSourceState?(epochKey: string): 'present' | 'absent' | 'unobservable';
   readonly time: TimePort;
   read(jobId: string): JobLocation | null;
+  observePoll?<T>(read: () => T, liveJobIds?: ReadonlySet<string>): T;
   resultPathFor(jobId: string): string;
   unknownLocationHolds(): UnknownLocationHold[];
 }
@@ -241,7 +250,6 @@ function preserveStoredDetail<T>(stored: unknown, next: T, path = ''): T {
   return result as T;
 }
 
-export { hasReadableTerminalDetail } from './terminal/identity.js';
 export type JobLocationSubject = Readonly<{ projectRoot: string; workDir: string | null; jobKind: JobKind }>;
 export type JobLocationController = z.infer<typeof controllerSchema>;
 export type JobLocationCertificate = z.infer<typeof certificateSchema>;
@@ -294,7 +302,7 @@ export class JobLocationIndex {
   }
 
   private epochPath(epochKey: string, name: string): string {
-    return join(this.root, 'epochs', this.runtime.ids.sha256(epochKey), name);
+    return join(this.root, 'epochs', epochHoldDirectory(epochKey), name);
   }
 
   private withRevisionLock<T>(epochKey: string, action: () => T): T {
@@ -321,7 +329,36 @@ export class JobLocationIndex {
     return revision;
   }
 
+  private pollReads: Map<string, StoredJobLocation | null> | undefined;
+
+  private pollReadCount = 0;
+  private livePollJobs: ReadonlySet<string> = new Set();
+
+  observePoll<T>(read: () => T, liveJobIds: ReadonlySet<string> = new Set()): T {
+    this.pollReadCount = 0;
+    this.livePollJobs = liveJobIds;
+    this.pollReads = new Map();
+    try {
+      return read();
+    } finally {
+      this.pollReads = undefined;
+      this.livePollJobs = new Set();
+    }
+  }
+
   private readStored(jobId: string): StoredJobLocation | null {
+    if (this.pollReads?.has(jobId)) return this.pollReads.get(jobId) ?? null;
+    if (this.pollReads && !this.livePollJobs.has(jobId)) {
+      if (this.pollReadCount >= 32)
+        throw new LocationObservationDeferred('Location observation deferred to the next bounded poll');
+      this.pollReadCount++;
+    }
+    const stored = this.observeStored(jobId);
+    this.pollReads?.set(jobId, stored);
+    return stored;
+  }
+
+  private observeStored(jobId: string): StoredJobLocation | null {
     const path = this.jobPath(jobId);
     try {
       const stat = this.runtime.storage.lstatSync(path, { bigint: true });
@@ -372,6 +409,7 @@ export class JobLocationIndex {
     return {
       time: this.time,
       read: (jobId) => this.read(jobId),
+      observePoll: (read, liveJobIds) => this.observePoll(read, liveJobIds),
       resultPathFor: (jobId) => this.resultPathFor(jobId),
       unknownLocationHolds: () => this.unknownLocationHolds(),
       readHistorical: (epochKey, jobIds, session) => this.readHistorical(epochKey, jobIds, session),
@@ -388,7 +426,7 @@ export class JobLocationIndex {
     return this.withRevisionLock(epochKey, () => {
       const existing = this.readStored(jobId);
       if (existing !== null) {
-        if (existing.epochKey !== epochKey) throw new Error(`Job ${jobId} already belongs to another epoch`);
+        if (!sameEpoch(existing.epochKey, epochKey)) throw new Error(`Job ${jobId} already belongs to another epoch`);
         return viewLocation(existing);
       }
       this.advanceRevision(epochKey);
@@ -562,7 +600,7 @@ export class JobLocationIndex {
   retireNeverAccepted(jobId: string, epochKey: string): void {
     this.withRevisionLock(epochKey, () => {
       const current = this.readStored(jobId);
-      if (current === null || current.epochKey !== epochKey || current.disposition === 'terminal') return;
+      if (current === null || !sameEpoch(current.epochKey, epochKey) || current.disposition === 'terminal') return;
       this.runtime.storage.unlinkSync(this.jobPath(jobId));
       this.advanceRevision(epochKey);
       if (!this.runtime.storage.syncDirectoryDurableSync(dirname(this.jobPath(jobId)))) {
@@ -592,15 +630,23 @@ export class JobLocationIndex {
     });
   }
 
-  private readUnknownLocationHold(path: string, epochKey: string): UnknownLocationHold | null {
+  private readUnknownLocationHold(path: string, identity: string, directory = false): UnknownLocationHold | null {
     try {
       const hold = optionalJson(this.runtime, path, unknownHoldSchema);
       return hold === null
         ? null
-        : { epochKey: hold.epochKey ?? epochKey, reason: hold.reason, retryScheduled: hold.retryScheduled === true };
+        : {
+            ...(hold.epochKey
+              ? { epochKey: hold.epochKey }
+              : directory
+                ? { directory: identity }
+                : { epochKey: identity }),
+            reason: hold.reason,
+            retryScheduled: hold.retryScheduled === true,
+          };
     } catch {
       return {
-        epochKey,
+        ...(directory ? { directory: identity } : { epochKey: identity }),
         reason: 'Location recovery hold cannot be decoded or read by this build; no automatic retry is scheduled',
         retryScheduled: false,
       };
@@ -617,9 +663,30 @@ export class JobLocationIndex {
     const root = join(this.root, 'epochs');
     if (!this.runtime.storage.existsSync(root)) return [];
     return this.runtime.storage.readdirSync(root).flatMap((key) => {
-      const hold = this.readUnknownLocationHold(join(root, key, 'unknown-locations.v1.json'), key);
+      const hold = this.readUnknownLocationHold(join(root, key, 'unknown-locations.v1.json'), key, true);
       return hold ? [hold] : [];
     });
+  }
+
+  reconcileUnknownLocationHolds(presentKeys: readonly string[]): void {
+    for (const hold of this.unknownLocationHolds()) {
+      const present = presentKeys.find((key) => sameEpoch(key, hold.epochKey ?? { directory: hold.directory }));
+      if (present) continue;
+      if (
+        hold.epochKey !== undefined &&
+        (this.certificate(hold.epochKey) || this.locationsFor(hold.epochKey).every(hasReadableTerminalDetail))
+      ) {
+        this.clearUnknownLocations(hold.epochKey);
+        continue;
+      }
+      if (hold.epochKey !== undefined && this.historicalSourceState(hold.epochKey) !== 'absent') continue;
+      const reason = 'Source retired; no further source read is possible';
+      if (hold.epochKey === undefined) {
+        const path = join(this.root, 'epochs', hold.directory, 'unknown-locations.v1.json');
+        const previous = optionalJson(this.runtime, path, unknownHoldSchema);
+        atomicJson(this.runtime, path, { ...previous, version: 'v1', reason, retryScheduled: false });
+      } else this.holdUnknownLocations(hold.epochKey, reason, false);
+    }
   }
 
   /**
@@ -694,7 +761,8 @@ export class JobLocationIndex {
     return this.withRevisionLock(epochKey, () => {
       const locations = this.locationsFor(epochKey);
       if (this.unknownLocationHold(epochKey) !== null) return null;
-      if (this.locationsUnreadable.some((entry) => entry.epochKey === null || entry.epochKey === epochKey)) return null;
+      if (this.locationsUnreadable.some((entry) => entry.epochKey === null || sameEpoch(entry.epochKey, epochKey)))
+        return null;
       if (locations.some((location) => !hasReadableTerminalDetail(location))) {
         return null;
       }
@@ -735,16 +803,33 @@ export class JobLocationIndex {
   resultsReleased(epochKey: string): boolean {
     const certificate = this.certificate(epochKey);
     if (certificate === null) return false;
-    return certificate.jobIds.every((jobId) => this.resultDurable(jobId));
+    if (
+      certificate.jobIds.every(
+        (jobId) => terminalEligibility(this.runtime, this.read(jobId), () => null, false).kind === 'expired',
+      )
+    )
+      return true;
+    try {
+      return (
+        withTerminalSource(this.runtime, epochKey, (db) =>
+          certificate.jobIds.every((jobId) => this.resultDurable(jobId, db)),
+        ) ?? certificate.jobIds.every((jobId) => this.resultDurable(jobId, null))
+      );
+    } catch {
+      return certificate.jobIds.every((jobId) => this.resultDurable(jobId, null));
+    }
   }
 
   /** Proves the retained artifact for one job independently of other jobs in its epoch. */
-  resultDurable(jobId: string): boolean {
+  resultDurable(jobId: string, source?: Database | null): boolean {
     const location = this.read(jobId);
     if (location === null || !hasReadableTerminalDetail(location)) {
       return false;
     }
-    const eligibility = this.terminalEligibility(jobId);
+    const eligibility =
+      source === undefined
+        ? this.terminalEligibility(jobId)
+        : terminalEligibility(this.runtime, location, (read) => (source === null ? null : read(source)));
     if (eligibility.kind === 'expired') return true;
     if (
       eligibility.age === 'unknown' &&
@@ -794,11 +879,14 @@ export class JobLocationIndex {
       jobsRoot,
       workflowReport: this.workflowReport,
       failures: this.resultRepairFailures,
-      hydrationRetry: () => this.unknownLocationHolds().find((hold) => hold.epochKey === epochKey)?.retryScheduled,
+      repairScope: this,
+      hydrationRetry: () =>
+        this.unknownLocationHolds().find((hold) => sameEpoch(hold.epochKey, epochKey))?.retryScheduled,
       prepareTerminal: (jobId) => this.prepareTerminal(jobId, db, epochKey, jobsRoot),
       location: (jobId) => this.read(jobId),
       withSource: (jobId, read) => {
-        if (this.read(jobId)?.epochKey !== epochKey) throw new Error('Source epoch identity cannot be confirmed');
+        if (!sameEpoch(this.read(jobId)?.epochKey, epochKey))
+          throw new Error('Source epoch identity cannot be confirmed');
         return read(db, ctx);
       },
     });
@@ -808,7 +896,7 @@ export class JobLocationIndex {
     const current = this.read(jobId);
     if (
       !current ||
-      current.epochKey !== epochKey ||
+      !sameEpoch(current.epochKey, epochKey) ||
       (hasReadableTerminalDetail(current) && current.terminalAge !== undefined)
     )
       return;
@@ -843,7 +931,7 @@ export class JobLocationIndex {
         if (observeStorePath(this.runtime.storage, this.jobPath(jobId)) !== 'absent') return 'unknown';
         return 'released';
       }
-      if (location.epochKey === activeEpochKey) return 'released';
+      if (sameEpoch(location.epochKey, activeEpochKey)) return 'released';
       const epoch = observeResolvedStoreEpoch(this.runtime, location.epochKey);
       if (epoch === undefined) return 'unknown';
       const storeRoot = epoch.canonicalStoreRoot ?? epoch.storeRoot;

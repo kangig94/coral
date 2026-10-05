@@ -1,3 +1,4 @@
+import { sameEpoch } from '../store/epoch/identity.js';
 import { hasReadableTerminalDetail } from './terminal/identity.js';
 import type { Database } from '../store/db.js';
 import { join } from 'node:path';
@@ -575,10 +576,11 @@ export class JobStore implements JobProgressStore {
       jobsRoot: this.runtime.paths.coral.exports.jobsRoot,
       workflowReport: this.workflowReport,
       failures: this.exportLocations?.resultRepairFailures,
+      repairScope: this.exportLocations ?? undefined,
       hydrationRetry: (jobId) => {
         const location = this.exportLocations?.read(jobId);
         return location
-          ? this.exportLocations?.unknownLocationHolds().find((hold) => hold.epochKey === location.epochKey)
+          ? this.exportLocations?.unknownLocationHolds().find((hold) => sameEpoch(hold.epochKey, location.epochKey))
               ?.retryScheduled
           : undefined;
       },

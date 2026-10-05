@@ -1,3 +1,4 @@
+import { waitEpochToken } from '#src/jobs/wait/cursor.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -326,7 +327,7 @@ it('answers a typo as discovery-unreadable with the permanent epoch caveat', asy
     statusCode: 409,
     body: {
       code: 'job_outcome_unreadable',
-      message: expect.stringContaining('permanently-lost: retained-store-root-missing'),
+      message: expect.stringContaining(`${waitEpochToken('permanently-lost')}: retained-store-root-missing`),
     },
   });
   expect(errorCodeToExit('job_outcome_unreadable', 409)).toBe(1);

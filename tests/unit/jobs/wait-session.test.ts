@@ -1,3 +1,5 @@
+import type { JobLocation, JobLocationView } from '#src/jobs/location-index.js';
+import type { WaitStreamEvent, WaitCursorV3 } from '#src/jobs/wait/contract.js';
 import { JobAddressing } from '#src/jobs/addressing.js';
 import { createRealTimePort } from '#src/infra/time.js';
 import { admitted } from '#tests/helpers/wait-session.js';
@@ -341,4 +343,84 @@ it.each([false, true])('unknown discovery preserves known cursor flags, resumed=
   expect(next.acknowledged('A')).toBe(true);
   expect(next.artifactPending('A')).toBe(true);
   expect(next.notices).toEqual([]);
+});
+
+describe('addressing discovery retry preserves interleaved progress', () => {
+  const E = 'epoch-E';
+  function loc(jobId: string): JobLocation {
+    return {
+      version: 'v1',
+      jobId,
+      epochKey: E,
+      subject: { projectRoot: '/tmp', workDir: '/tmp', jobKind: 'provider' },
+      disposition: 'active-owner',
+      detail: { kind: 'absent' },
+    } as JobLocation;
+  }
+
+  it('preserves unread progress after one EMFILE on a member location read (production addressing path)', async () => {
+    let failB = 0;
+    const view: JobLocationView = {
+      time: createRealTimePort(),
+      read: (jobId) => {
+        if (jobId === 'b' && failB++ === 1)
+          throw Object.assign(new Error('EMFILE: too many open files'), { code: 'EMFILE' });
+        return loc(jobId);
+      },
+      resultPathFor: (jobId) => `/r/${jobId}`,
+      unknownLocationHolds: () => [],
+    };
+    const a = admitted(
+      'a',
+      [
+        [7, 'a-7'],
+        [8, 'a-8'],
+      ],
+      false,
+    );
+    const b = admitted(
+      'b',
+      [
+        [5, 'b-5'],
+        [6, 'b-6'],
+      ],
+      false,
+    );
+    const addressing = new JobAddressing(
+      view,
+      {
+        epochKey: () => E,
+        detail: () => null,
+        readWaitAdmissions: (ids) => ids.map((id) => (id === 'a' ? a : b)),
+        abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
+      },
+      () => false,
+      () => 'pending',
+      undefined,
+      () => ({ kind: 'available', resultPath: '/r/x' }),
+    );
+    const cursor: WaitCursorV3 = {
+      version: 'jobs.wait.v3',
+      epochs: [{ token: waitEpochToken(E), watermark: 4, lineOffset: 0 }],
+      jobs: [
+        { hash: waitJobHash('a'), epoch: 0, flags: 0 },
+        { hash: waitJobHash('b'), epoch: 0, flags: 0 },
+      ],
+    };
+    const events: WaitStreamEvent[] = [];
+    // first read() is validateWait's admission (failB=0 -> ok), second is the stream's first poll (failB=1 -> EMFILE)
+    for await (const e of addressing.waitStream({
+      jobIds: ['a', 'b'],
+      supportsWaitV3: true,
+      timeoutSeconds: 1,
+      cursor,
+      projectRoot: '/tmp',
+    }))
+      events.push(e);
+    const lines = events.flatMap((e) =>
+      e.type === 'progress' ? [e.message] : e.type === 'disposition' ? [`<${e.jobId}:${e.disposition}>`] : [],
+    );
+
+    expect(lines).toContain('b-5');
+  });
 });

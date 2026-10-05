@@ -1,3 +1,4 @@
+import { sameEpoch } from '../../store/epoch/identity.js';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
 
@@ -181,7 +182,7 @@ function prepareRetainedControllerHandoffForLineage(
 ): Readonly<{ target: ValidatedHandoffTarget; epochKey: string }> | null {
   const current = inspectCurrentStore(runtime);
   const currentEpoch =
-    current.kind === 'current' && readEpochKey(runtime, current.epoch) === lineageKey ? current.epoch : null;
+    current.kind === 'current' && sameEpoch(readEpochKey(runtime, current.epoch), lineageKey) ? current.epoch : null;
   let epoch: ResolvedStoreEpoch | null;
   try {
     epoch =
@@ -192,7 +193,8 @@ function prepareRetainedControllerHandoffForLineage(
   }
   if (epoch === null) return null;
   const epochKey = observeResolvedStoreEpochKey(runtime, epoch);
-  if (epochKey === null || observeResolvedStoreEpoch(runtime, epochKey)?.lineageKey !== lineageKey) return null;
+  if (epochKey === null || !sameEpoch(observeResolvedStoreEpoch(runtime, epochKey)?.lineageKey, lineageKey))
+    return null;
   const unresolved = index.locationsFor(epochKey).filter((location) => location.disposition !== 'terminal');
   if (
     unresolved.length === 0 ||
@@ -204,7 +206,7 @@ function prepareRetainedControllerHandoffForLineage(
   let selectedController: Readonly<{ instanceId: string; buildSetId: string; controlGeneration: number }> | null = null;
   for (const location of unresolved) {
     const jobReceipts = receipts
-      .filter((receipt) => receipt.jobId === location.jobId && receipt.epochKey === epochKey)
+      .filter((receipt) => receipt.jobId === location.jobId && sameEpoch(receipt.epochKey, epochKey))
       .sort(
         (left, right) =>
           right.controlGeneration - left.controlGeneration || right.acknowledgedAtMs - left.acknowledgedAtMs,
@@ -255,7 +257,7 @@ function prepareRetainedControllerHandoffForLineage(
     for (const entry of custody) {
       if (
         entry.kind !== 'bound' ||
-        entry.intent.epochKey !== lineageKey ||
+        !sameEpoch(entry.intent.epochKey, lineageKey) ||
         (entry.intent.jobId ?? entry.intent.operationId) !== location.jobId ||
         entry.binding.process === null ||
         (latest !== undefined && entry.intent.id !== latest.custodyIntentId)
@@ -305,7 +307,7 @@ function controllerReceiptsMayNameEpoch(runtime: Runtime, epochKey: string, line
   const { receipts, unreadable } = readDurableCliControllerReceipts(runtime, runtime.paths.coral.coordinator.runDir);
   return (
     unreadable.length > 0 ||
-    receipts.some((receipt) => receipt.epochKey === epochKey || receipt.lineageEpochKey === lineageKey)
+    receipts.some((receipt) => sameEpoch(receipt.epochKey, epochKey) || sameEpoch(receipt.lineageEpochKey, lineageKey))
   );
 }
 
@@ -322,7 +324,7 @@ function observeStartupRetirementCustody(
     const matching = custody.filter(
       (entry) =>
         entry.kind === 'unreadable' ||
-        entry.intent.epochKey === lineageKey ||
+        sameEpoch(entry.intent.epochKey, lineageKey) ||
         entry.intent.epoch === dirname(incumbent.path),
     );
     custodyNamesEpoch = matching.length > 0;

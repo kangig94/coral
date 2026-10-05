@@ -1,3 +1,4 @@
+import { sameEpoch } from '../../../store/epoch/identity.js';
 import { dirname, join } from 'node:path';
 
 import {
@@ -161,7 +162,7 @@ function predatesCustodyCoverage(runtime: Runtime, candidate: ClosureCandidate):
   }
   const epochs = listStoreEpochs(runtime);
   const observed = epochs.find(
-    (entry) => entry.epochKey === candidate.epochKey && entry.resolved?.path === candidate.epoch.path,
+    (entry) => sameEpoch(entry.epochKey, candidate.epochKey) && entry.resolved?.path === candidate.epoch.path,
   );
   return (
     observed?.epochJson.kind === 'valid' &&
@@ -187,9 +188,9 @@ function observePreCoverageCustody(
     const keyed = entry.intent.epochKey !== undefined;
     const pathMatches =
       entry.intent.epoch === candidate.originalPath ||
-      entry.intent.epoch === candidate.epochKey ||
+      sameEpoch(entry.intent.epoch, candidate.epochKey) ||
       entry.intent.epoch === dirname(candidate.epoch.path);
-    if (keyed ? entry.intent.epochKey !== candidate.epochKey : !pathMatches) continue;
+    if (keyed ? !sameEpoch(entry.intent.epochKey, candidate.epochKey) : !pathMatches) continue;
     if (!keyed && ambiguousOriginalPath) return { kind: 'undecidable' };
     if (entry.kind === 'holding') return { kind: 'undecidable' };
     if (entry.kind === 'absent') continue;
@@ -368,7 +369,7 @@ function providerOperationCustodyReason(
   } catch {
     return `provider operation ${entry.intent.operationId} result is unreadable`;
   }
-  return location?.epochKey === jobEpochKey && location.disposition === 'terminal'
+  return location !== null && sameEpoch(location.epochKey, jobEpochKey) && location.disposition === 'terminal'
     ? null
     : `provider operation ${entry.intent.operationId} awaits owner terminal result`;
 }
@@ -444,11 +445,13 @@ async function certifyMatchedCustody(options: {
       }
       const transfers = receipts.receipts.filter((receipt) => receipt.jobId === entry.intent.operationId);
       if (
-        location?.epochKey !== jobEpochKey ||
+        location === null ||
+        !sameEpoch(location.epochKey, jobEpochKey) ||
         location.disposition !== 'terminal' ||
         (transfers.length > 0 &&
           !transfers.some(
-            (receipt) => receipt.custodyIntentId === entry.intent.id && receipt.lineageEpochKey === candidate.epochKey,
+            (receipt) =>
+              receipt.custodyIntentId === entry.intent.id && sameEpoch(receipt.lineageEpochKey, candidate.epochKey),
           ))
       ) {
         return {
@@ -531,8 +534,8 @@ async function certifyCustody(
       (entry.intent.epochKey === undefined
         ? entry.intent.epoch === candidate.originalPath ||
           entry.intent.epoch === dirname(candidate.epoch.path) ||
-          entry.intent.epoch === candidate.epochKey
-        : entry.intent.epochKey === candidate.epochKey),
+          sameEpoch(entry.intent.epoch, candidate.epochKey)
+        : sameEpoch(entry.intent.epochKey, candidate.epochKey)),
   );
   if (entries.some((entry) => entry.kind === 'unreadable')) {
     return {
@@ -559,7 +562,7 @@ async function certifyRetiringEpochCustody(
   absence: AbsenceProof,
 ): Promise<boolean> {
   const lineageKey = decodeResolvedStoreEpoch(runtime, epochKey)?.lineageKey;
-  const candidate = closureCandidates(runtime).find((entry) => entry.epochKey === lineageKey);
+  const candidate = closureCandidates(runtime).find((entry) => sameEpoch(entry.epochKey, lineageKey));
   if (candidate === undefined) return false;
   const entries = readCustodyLedger(runtime, runtime.paths.coral.coordinator.runDir);
   const settlement = await certifyCustody(
@@ -647,9 +650,9 @@ export async function settleSupersededEpochClosures(
   const uncertifiable = uncertifiableEpochKeys(runtime, activeEpochKey);
   if (uncertifiable === null) return [];
   const isUncertifiable = (epochKey: string): boolean => {
-    if (uncertifiable.has(epochKey)) return true;
+    if ([...uncertifiable].some((key) => sameEpoch(key, epochKey))) return true;
     const current = uncertifiableEpochKeys(runtime, activeEpochKey);
-    return current === null || current.has(epochKey);
+    return current === null || [...current].some((key) => sameEpoch(key, epochKey));
   };
   const custody = readCustodyLedger(runtime, runtime.paths.coral.coordinator.runDir);
   const evidence: EpochClosureEvidence[] = [];
@@ -682,7 +685,7 @@ export async function settleSupersededEpochClosures(
   }
   for (const candidate of candidates) {
     if (signal?.aborted) break;
-    if (subjectKey !== undefined && subjectKey !== candidate.epochKey) continue;
+    if (subjectKey !== undefined && !sameEpoch(subjectKey, candidate.epochKey)) continue;
     if (isUncertifiable(candidate.epochKey)) continue;
     const jobEpochKey = lineageJobEpochKey(
       candidate.epoch.canonicalStoreRoot ?? candidate.epoch.storeRoot,
@@ -716,10 +719,11 @@ export async function settleSupersededEpochClosures(
     }
     const ambiguousOriginalPath =
       candidates.some(
-        (other) => other.epochKey !== candidate.epochKey && other.originalPath === candidate.originalPath,
+        (other) => !sameEpoch(other.epochKey, candidate.epochKey) && other.originalPath === candidate.originalPath,
       ) ||
       historicalAddresses.some(
-        (address) => address.epochKey !== candidate.epochKey && address.originalPath === candidate.originalPath,
+        (address) =>
+          !sameEpoch(address.epochKey, candidate.epochKey) && address.originalPath === candidate.originalPath,
       );
     const settlement = predatesCustodyCoverage(runtime, candidate)
       ? settlePreCoverageCustody(runtime, candidate, custody, ambiguousOriginalPath)

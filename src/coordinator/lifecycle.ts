@@ -1,3 +1,4 @@
+import { sameEpoch } from '../store/epoch/identity.js';
 import { renderWorkflowReport } from '../workflow/result-report.js';
 import { removeTreeNoFollowSync, type TreeRemovalStorage } from '../infra/remove-tree.js';
 import { raceObserved } from '../infra/promise-signal.js';
@@ -3078,7 +3079,7 @@ function protectRetiringStoreEpoch(
     throw new Error('Retiring store is unavailable.');
   }
   const current = inspectCurrentStore(runtime);
-  if (current.kind !== 'current' || encodeResolvedStoreEpoch(runtime, current.epoch) !== epochKey) {
+  if (current.kind !== 'current' || !sameEpoch(encodeResolvedStoreEpoch(runtime, current.epoch), epochKey)) {
     throw new Error('Retiring store changed before protection.');
   }
   handle.closeCurrent();

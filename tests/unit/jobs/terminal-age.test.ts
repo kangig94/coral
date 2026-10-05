@@ -11,7 +11,7 @@ it('checks only the job predecessors and never counts the full journal when eval
     if (!terminal) throw new Error('missing accepted terminal');
     const prepare = vi.spyOn(f.db, 'prepare');
     for (let evaluation = 0; evaluation < 20; evaluation++) {
-      expect(readIntactJobTerminalAge(f.db, terminal, TERMINAL_EXPORT_CUTOFF)).toBe(TERMINAL_EXPORT_CUTOFF - 1000);
+      expect(readIntactJobTerminalAge(f.db, terminal, TERMINAL_EXPORT_CUTOFF)).toBe('unknown');
     }
     expect(prepare.mock.calls.some(([sql]) => /COUNT\s*\(/i.test(sql))).toBe(false);
     expect(prepare.mock.calls).toHaveLength(20);
@@ -72,3 +72,15 @@ it.each(['known', 'no predecessor', 'bad terminal', 'bad predecessor', 'regressi
     }
   },
 );
+
+it('backfill records unknown when older predecessors could have been pruned', () => {
+  const f = createTerminalExportFixture();
+  try {
+    f.complete({ terminalAt: TERMINAL_EXPORT_CUTOFF - 1000 });
+    const terminal = readAcceptedTerminal(f.db, f.jobId)!;
+    f.db.prepare('DELETE FROM events WHERE stream_id = ? AND seq < ?').run(f.jobId, terminal.seq);
+    expect(readIntactJobTerminalAge(f.db, terminal, TERMINAL_EXPORT_CUTOFF)).toBe('unknown');
+  } finally {
+    f.close();
+  }
+});

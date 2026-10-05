@@ -1,6 +1,7 @@
 import { expect, it, vi } from 'vitest';
 import { createLifecycleRecoveryDependencies } from '#src/coordinator/composition/lifecycle-recovery-dependencies.js';
 import { encodeResolvedStoreEpoch, readOrCreateEpochKey } from '#src/store/epoch/index.js';
+import { retryUnknownHistoricalEpochs } from '#src/jobs/historical-reader.js';
 import { createTerminalExportFixture } from '#tests/helpers/terminal-export.js';
 
 it('reconciles orphan holds at store open without stealing the active owner hold', () => {
@@ -29,10 +30,7 @@ it('reconciles orphan holds at store open without stealing the active owner hold
     expect(f.index.unknownLocationHolds().find((hold) => hold.epochKey === activeLineageKey)).toMatchObject({
       retryScheduled: true,
     });
-    expect(f.index.unknownLocationHolds().find((hold) => hold.epochKey === 'retired:99')).toMatchObject({
-      retryScheduled: false,
-      reason: expect.stringContaining('next start'),
-    });
+    expect(f.index.unknownLocationHolds().find((hold) => hold.epochKey === 'retired:99')).toBeUndefined();
   } finally {
     f.close();
   }
@@ -44,7 +42,7 @@ import { createStartupMintAuthorizer } from '#src/coordinator/services/startup-r
 
 it.each(['preserved', 'protected'] as const)(
   'open registers a present %s epoch and preserves an unobservable lineage hold',
-  (role) => {
+  async (role) => {
     const f = createTerminalExportFixture('provider', true);
     const active = createTerminalExportFixture('provider', true);
     const fullKey = encodeResolvedStoreEpoch(f.runtime, f.epoch);
@@ -70,6 +68,8 @@ it.each(['preserved', 'protected'] as const)(
       } as unknown as Parameters<typeof createLifecycleRecoveryDependencies>[0];
       const observer = createLifecycleRecoveryDependencies(input).onStoreOpened!;
       observer(active.epoch);
+      expect(f.index.unknownLocationHolds().find((hold) => hold.epochKey === fullKey)?.retryScheduled).toBe(true);
+      await retryUnknownHistoricalEpochs(f.index);
       expect(f.index.unknownLocationHolds().find((hold) => hold.epochKey === fullKey)).toBeUndefined();
       expect(f.index.readHistorical(fullKey, [f.jobId]).kind).toBe('read');
       list.mockReturnValue([{ ...(entry as object), resolved: null }] as never);

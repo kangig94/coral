@@ -1,3 +1,4 @@
+import { sameEpoch } from '../../store/epoch/identity.js';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
 import type { Runtime } from '../../runtime/ports.js';
@@ -88,7 +89,7 @@ export function verifyDurableCliRecoveryGrant(
     const grant = durableCliRecoveryGrantSchema.parse(JSON.parse(raw));
     return (
       grant.attemptId === attemptId &&
-      grant.epochKey === epochKey &&
+      sameEpoch(grant.epochKey, epochKey) &&
       grant.incumbentInstanceId === incumbentInstanceId &&
       JSON.stringify(grant.transfer) === JSON.stringify(transfer)
     );
@@ -124,10 +125,10 @@ function collectDurableCliTransfer(
         entry.kind === 'bound' &&
         entry.intent.owner === 'durable-cli' &&
         entry.intent.operationId === jobId &&
-        entry.intent.epochKey === lineageKey &&
+        sameEpoch(entry.intent.epochKey, lineageKey) &&
         (entry.intent.epoch === dirname(epoch.path) ||
           entry.intent.epoch === canonicalDirectory ||
-          entry.intent.epoch === epoch.lineageKey) &&
+          sameEpoch(entry.intent.epoch, epoch.lineageKey)) &&
         entry.binding.process !== null &&
         entry.binding.process.pid === evidence.record.pid &&
         entry.binding.process.incarnation === evidence.record.incarnation &&

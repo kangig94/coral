@@ -103,17 +103,6 @@ function validateSnapshotMetadata(session: WaitSession, jobs: WaitSnapshotJob[],
   assertSnapshotFits(mandatory, session);
 }
 
-function lastLinesPerJob(available: ReturnType<WaitSession['progress']>, count: number): typeof available {
-  const offsets = new Map<string, number>();
-  for (const line of available) offsets.set(line.jobId, (offsets.get(line.jobId) ?? 0) + 1);
-  const seen = new Map<string, number>();
-  return available.filter((line) => {
-    const index = (seen.get(line.jobId) ?? 0) + 1;
-    seen.set(line.jobId, index);
-    return index > (offsets.get(line.jobId) ?? 0) - count;
-  });
-}
-
 function selectSnapshotProgress(
   session: WaitSession,
   jobs: WaitSnapshotJob[],
@@ -123,23 +112,10 @@ function selectSnapshotProgress(
   const available =
     lines === undefined
       ? session.progress(WAIT_PROGRESS_LINES + 1)
-      : session.tailProgress(Math.min(lines, WAIT_PROGRESS_LINES));
+      : session.selectTailProgress(lines, WAIT_PROGRESS_LINES, WAIT_PROGRESS_BYTES);
   let selected: typeof available;
   if (lines !== undefined) {
-    let low = 0;
-    let high = Math.min(lines, WAIT_PROGRESS_LINES);
-    const tails = lastLinesPerJob(available, high);
-    while (low < high) {
-      const middle = Math.ceil((low + high) / 2);
-      const candidate = lastLinesPerJob(tails, middle);
-      if (
-        candidate.length <= WAIT_PROGRESS_LINES &&
-        candidate.reduce((sum, line) => sum + Math.min(Buffer.byteLength(line.text), 4096), 0) <= WAIT_PROGRESS_BYTES
-      )
-        low = middle;
-      else high = middle - 1;
-    }
-    selected = lastLinesPerJob(tails, low);
+    selected = available;
     if (session.hasProgressBefore(selected)) notices.push('Earlier progress outside the selected tail was not shown.');
     session.skipEarlierProgress();
   } else {

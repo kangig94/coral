@@ -1,3 +1,4 @@
+import { sameEpoch } from '../../../store/epoch/identity.js';
 import { formatError } from '../../../infra/error-format.js';
 import { encodeResolvedStoreEpoch, inspectCurrentStore } from '../../../store/epoch/index.js';
 import {
@@ -96,7 +97,10 @@ export function createCommitWindowAdmission(
       attemptDeadline: new Date(deadlineAt).toISOString(),
     }));
     const inspected = inspectCurrentStore(runtime);
-    if (inspected.kind !== 'current' || encodeResolvedStoreEpoch(runtime, inspected.epoch) !== preparation.epochKey) {
+    if (
+      inspected.kind !== 'current' ||
+      !sameEpoch(encodeResolvedStoreEpoch(runtime, inspected.epoch), preparation.epochKey)
+    ) {
       throw new TransientCommitFailure('Incumbent store epoch changed before writer park.');
     }
     const writer = joinSuccessionWriterGeneration(runtime, inspected.epoch);

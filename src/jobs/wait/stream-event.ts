@@ -72,9 +72,14 @@ export function advanceWaitRenderCursor(cursor: WaitCursor, event: WaitStreamEve
 
     const legacy = cursor.version === 'jobs.wait.v2' ? legacyRenderCursor(cursor.deliveredJobIds) : cursor;
     if (event.type === 'terminal') {
-      if (legacy.deliveredJobIds?.includes(event.jobId)) return { cursor: legacy, shouldRender: false };
+      if (legacy.deliveredJobIds?.includes(event.jobId))
+        return { cursor: { ...legacy, afterSeq: Math.max(legacy.afterSeq, event.seq) }, shouldRender: false };
       return {
-        cursor: { ...legacy, deliveredJobIds: [...(legacy.deliveredJobIds ?? []), event.jobId] },
+        cursor: {
+          ...legacy,
+          afterSeq: Math.max(legacy.afterSeq, event.seq),
+          deliveredJobIds: [...(legacy.deliveredJobIds ?? []), event.jobId],
+        },
         shouldRender: true,
       };
     }

@@ -1,3 +1,4 @@
+import { sameEpoch } from '../../store/epoch/identity.js';
 import { STORE_LOCK_FILE_NAME } from '../../store/epoch/index.js';
 import { dirname, join } from 'node:path';
 import type { Runtime } from '../../runtime/ports.js';
@@ -35,7 +36,7 @@ export function withTerminalSource<T>(
   try {
     release = acquireSharedFileLockNoRepairSync(join(dirname(epoch.path), STORE_LOCK_FILE_NAME));
     const identity = inspectResolvedStoreEpochKey(runtime, epoch);
-    if (identity !== epochKey) throw new Error('Source epoch identity cannot be confirmed');
+    if (!sameEpoch(identity, epochKey)) throw new Error('Source epoch identity cannot be confirmed');
     db = runtime.storage.openSqliteDatabaseSync(epoch.path, { readOnly: true }) as Database;
     return read(db);
   } finally {

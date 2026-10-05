@@ -5,6 +5,7 @@ import { raceWithSignal } from '../infra/promise-signal.js';
 import { isRecord } from '../infra/json.js';
 import {
   WAIT_INVOCATION_CONTEXT_ENV,
+  CLI_HANDOFF_GUARD_ENV,
   type WaitInvocationHandoff,
   type WaitInvocationMode,
 } from '../coordinator/handoff-routing/wait-invocation.js';
@@ -93,9 +94,10 @@ export class WaitInvocation implements WaitInvocationHandoff {
     const inherited = process.env[WAIT_INVOCATION_CONTEXT_ENV];
     delete process.env[WAIT_INVOCATION_CONTEXT_ENV];
     this.delegated =
-      inherited !== undefined && process.env.CORAL_CLI_HANDOFF_DELEGATED === '1' && process.send !== undefined;
+      inherited !== undefined && process.env[CLI_HANDOFF_GUARD_ENV] === '1' && process.send !== undefined;
     let budget = mode === 'snapshot' ? SNAPSHOT_BUDGET_MS : WAIT_BUDGET_MS;
     let cleanup = mode === 'snapshot' ? SNAPSHOT_CLEANUP_MS : WAIT_CLEANUP_MS;
+    if (process.env[CLI_HANDOFF_GUARD_ENV] === '1' && !this.delegated) budget = 0;
     if (this.delegated) {
       try {
         const context: unknown = JSON.parse(inherited ?? '');
@@ -142,12 +144,16 @@ export class WaitInvocation implements WaitInvocationHandoff {
     if (!this.signal.aborted) this.controller.abort();
   }
 
-  saveContinuation(text: string, complete = false): void {
-    if (this.signal.aborted && !complete) return;
+  saveContinuation(text: string, complete = false, delivered = false): void {
+    if (this.continuationFlushed && !complete) return;
+    if (this.signal.aborted && !complete && !delivered) return;
     this.continuation = text;
     this.continuationFlushed ||= complete;
     if (this.delegated && process.connected)
-      process.send?.({ type: 'wait-delivery', continuation: text, complete }, () => {});
+      process.send?.(
+        { type: 'wait-delivery', continuation: text, complete, ...(delivered ? { delivered } : {}) },
+        () => {},
+      );
   }
 
   async run<T>(work: () => Promise<T>): Promise<T> {

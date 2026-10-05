@@ -1,3 +1,4 @@
+import { sameEpoch } from '../../store/epoch/identity.js';
 import type { JobDetailResponse, JobProgressEvent, JobTerminal } from '../records.js';
 import type { ContinuitySnapshot } from '../../sessions/continuity.js';
 import type { ResultAvailability } from '../terminal/export.js';
@@ -33,6 +34,7 @@ type WaitAdmissionDetail = {
   availability?: ResultAvailability;
   continuity?: ContinuitySnapshot | null;
   sourceRead?: SourceReadDisposition;
+  observationDeferred?: boolean;
   progressLost?: boolean;
   progressUnknown?: boolean;
   queued?: Extract<WaitStreamEvent, { type: 'queued' }>;
@@ -135,6 +137,25 @@ export class WaitSession {
   }
 
   reconcile(admissions: WaitAdmission[]): void {
+    admissions = admissions.map((job) => {
+      const previous = this.admissionById.get(job.jobId);
+      if (job.observationDeferred && previous?.disposition === 'admitted' && previous.detail?.exit) return previous;
+      if (job.disposition !== 'discovery-unknown' || job.epochKey) return job;
+      const saved =
+        this.input?.version === 'jobs.wait.v3'
+          ? this.input.jobs.find((entry) => entry.hash === waitJobHash(job.jobId))
+          : undefined;
+      const token =
+        this.input?.version === 'jobs.wait.v3' && saved && saved.epoch !== UNRESOLVED_EPOCH
+          ? this.input.epochs[saved.epoch]?.token
+          : undefined;
+      const epochKey =
+        this.members.get(job.jobId)?.epochKey ??
+        (this.input?.version === 'jobs.wait.v2' ? this.input.locations[job.jobId] : undefined) ??
+        admissions.find((member) => member.epochKey && sameEpoch(waitEpochToken(member.epochKey), token))?.epochKey ??
+        [...this.epochs].find(([, position]) => position.token === token)?.[0];
+      return epochKey ? { ...job, epochKey } : job;
+    });
     this.validateEpochTokens(admissions);
     this.admissions = admissions;
     for (const admission of admissions) {
@@ -150,19 +171,19 @@ export class WaitSession {
     for (const job of admissions) {
       if (!this.progressHeld(job)) continue;
       const { jobId, epochKey, message } = job;
-      const notice = `Earlier progress for ${jobId} is held: epoch ${epochKey} cannot be read right now${message ? ` (${message})` : ''}. Epoch maintenance probes it every 5 s and settles after 3 failed probes; this read retries after 250 ms, 1 s and 5 s, then exits 75 with a continuation.`;
+      const notice = `Earlier progress for ${jobId} is held: epoch ${epochKey ? waitEpochToken(epochKey) : 'unknown'} cannot be read right now${message ? ` (${message})` : ''}. Epoch maintenance probes it every 5 s and settles after 3 failed probes; bounded waits retry after 250 ms, 1 s and 5 s, then exit 75 with a continuation. Snapshots return immediately with a continuation.`;
       if (!this.notices.includes(notice)) this.notices.push(notice);
     }
   }
 
   progressHeld(job: WaitAdmission): boolean {
     return (
-      job.disposition === 'admitted' &&
+      job.epochKey !== undefined &&
       this.admissions.some(
         (member) =>
-          member.disposition === 'admitted' &&
-          member.epochKey === job.epochKey &&
-          sourceReadDisposition(member) === 'transient-unknown',
+          (member.observationDeferred === true && member.epochKey === undefined) ||
+          (sameEpoch(member.epochKey, job.epochKey) &&
+            (member.disposition === 'discovery-unknown' || sourceReadDisposition(member) === 'transient-unknown')),
       )
     );
   }
@@ -184,7 +205,7 @@ export class WaitSession {
       if (!admission.epochKey) continue;
       const token = waitEpochToken(admission.epochKey);
       const previous = tokens.get(token);
-      if (previous !== undefined && previous !== admission.epochKey)
+      if (previous !== undefined && !sameEpoch(previous, admission.epochKey))
         throw new WaitSessionError('wait_cursor_mismatch', 'Ambiguous epoch token');
       tokens.set(token, admission.epochKey);
     }
@@ -207,15 +228,15 @@ export class WaitSession {
       (inputEpoch && inputEpoch.token !== token) ||
       (legacy?.version === 'jobs.wait.v2' &&
         legacy.locations[jobId] !== undefined &&
-        legacy.locations[jobId] !== epochKey)
+        !sameEpoch(legacy.locations[jobId], epochKey))
     )
       throw new WaitSessionError('wait_cursor_mismatch', `Job ${jobId} changed epoch identity`);
     const unchanged =
       inputEpoch !== undefined ||
-      (legacy?.version === 'jobs.wait.v2' && legacy.locations[jobId] === epochKey) ||
+      (legacy?.version === 'jobs.wait.v2' && sameEpoch(legacy.locations[jobId], epochKey)) ||
       (legacy?.version === undefined &&
         legacy !== undefined &&
-        epochKey === this.activeEpochKey &&
+        sameEpoch(epochKey, this.activeEpochKey) &&
         (this.internal ||
           legacy.afterSeq === 0 ||
           legacy.admittedJobIds === undefined ||
@@ -246,7 +267,7 @@ export class WaitSession {
         (legacy?.version === undefined &&
           legacy !== undefined &&
           legacy.afterSeq > 0 &&
-          epochKey === this.activeEpochKey));
+          sameEpoch(epochKey, this.activeEpochKey)));
     if (affected && !this.internal) {
       this.progressLines = undefined;
       this.epochs.set(epochKey, { token, watermark: 0, lineOffset: 0 });
@@ -257,12 +278,12 @@ export class WaitSession {
 
   private reconcileMember(admission: WaitAdmission): void {
     const { jobId, epochKey, disposition } = admission;
-    if (disposition !== 'admitted' || epochKey === undefined) {
+    if ((disposition !== 'admitted' && disposition !== 'discovery-unknown') || epochKey === undefined) {
       if (!this.members.has(jobId)) this.members.set(jobId, { acknowledged: false, artifactPending: false });
       return;
     }
     const previous = this.members.get(jobId);
-    if (previous?.epochKey === epochKey) return;
+    if (sameEpoch(previous?.epochKey, epochKey)) return;
     const input = this.inputMembership(jobId, epochKey);
     this.reconcileEpoch(jobId, epochKey, input);
     const { inputJob, legacy } = input;
@@ -394,7 +415,9 @@ export class WaitSession {
       return this.progressLines.slice(this.progressHead, this.progressHead + limit);
     const result: WaitProgressLine[] = [];
     for (const epochKey of this.epochs.keys()) {
-      const iterators = this.admissions.filter((job) => job.epochKey === epochKey).map((job) => this.jobProgress(job));
+      const iterators = this.admissions
+        .filter((job) => sameEpoch(job.epochKey, epochKey))
+        .map((job) => this.jobProgress(job));
       const heads = iterators.map((iterator) => iterator.next());
       while (result.length < limit) {
         let selected = -1;
@@ -438,19 +461,42 @@ export class WaitSession {
     });
   }
 
-  startAtTail(count: number): void {
-    const tail = this.tailProgress(count);
-    this.skipEarlierProgress();
-    for (const [key, position] of this.epochs) {
-      const first = tail.find((line) => line.epochKey === key);
-      if (first) {
-        position.watermark = first.offset === 0 ? first.seq - 1 : first.seq;
-        position.lineOffset = first.offset;
-      }
+  selectTailProgress(count: number, maxLines: number, maxBytes: number): WaitProgressLine[] {
+    const available = this.tailProgress(Math.min(count, maxLines));
+    const totals = new Map<string, number>();
+    for (const line of available) totals.set(line.jobId, (totals.get(line.jobId) ?? 0) + 1);
+    const select = (limit: number): WaitProgressLine[] => {
+      const seen = new Map<string, number>();
+      return available.filter((line) => {
+        const ordinal = (seen.get(line.jobId) ?? 0) + 1;
+        seen.set(line.jobId, ordinal);
+        return ordinal > (totals.get(line.jobId) ?? 0) - limit;
+      });
+    };
+    let low = 0;
+    let high = Math.min(count, maxLines);
+    while (low < high) {
+      const middle = Math.ceil((low + high) / 2);
+      const candidate = select(middle);
+      if (
+        candidate.length <= maxLines &&
+        candidate.reduce((sum, line) => sum + Buffer.byteLength(shortenWaitLine(line.text)), 0) <= maxBytes
+      )
+        low = middle;
+      else high = middle - 1;
     }
+    return select(low);
+  }
+
+  private tailDelivery = false;
+  startAtTail(count: number, maxLines: number, maxBytes: number): void {
+    const tail = this.selectTailProgress(count, maxLines, maxBytes);
+    if (this.hasProgressBefore(tail)) this.notices.push('Earlier progress outside the selected tail was not shown.');
     this.progressLines = tail;
     this.progressHead = 0;
     this.progressComplete = true;
+    this.tailDelivery = true;
+    if (tail.length === 0) this.skipEarlierProgress();
   }
 
   hasProgress(): boolean {
@@ -473,6 +519,10 @@ export class WaitSession {
     position.lineOffset = line.last ? 0 : line.offset + 1;
     if (this.progressLines?.[this.progressHead] === line) {
       this.progressHead++;
+      if (this.tailDelivery && this.progressHead === this.progressLines.length) {
+        this.tailDelivery = false;
+        this.skipEarlierProgress();
+      }
     } else this.progressLines = undefined;
   }
   requireLegacyReplaySupport(): void {
@@ -541,7 +591,7 @@ export class WaitSession {
           let ordinal = epochs.findIndex((epoch) => epoch.token === saved.token);
           if (ordinal === -1) {
             ordinal = epochs.length;
-            epochs.push({ ...saved });
+            epochs.push({ ...([...this.epochs.values()].find((position) => position.token === saved.token) ?? saved) });
           }
           jobs.push({ hash: inputJob.hash, epoch: ordinal, flags: inputJob.flags });
         } else jobs.push({ hash: waitJobHash(jobId), epoch: UNRESOLVED_EPOCH, flags: 0 });
@@ -576,9 +626,12 @@ export class WaitSession {
       version: 'jobs.wait.v2',
       positions: Object.fromEntries([...this.epochs].map(([key, value]) => [key, value.watermark])),
       locations: Object.fromEntries(
-        this.admissions.flatMap((job) =>
-          job.disposition === 'admitted' && job.epochKey ? [[job.jobId, job.epochKey]] : [],
-        ),
+        this.admissions.flatMap((job) => {
+          const epochKey = this.members.get(job.jobId)?.epochKey;
+          return (job.disposition === 'admitted' || job.disposition === 'discovery-unknown') && epochKey !== undefined
+            ? [[job.jobId, epochKey]]
+            : [];
+        }),
       ),
       deliveredJobIds,
     };

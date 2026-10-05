@@ -11,7 +11,6 @@ import { controllerRecoveryTarget } from '../services/retained-epoch-executor.js
 import { readOrCreateEpochKey } from '../../store/epoch/index.js';
 import {
   decodeResolvedStoreEpoch,
-  observeResolvedStoreEpoch,
   encodeResolvedStoreEpoch,
   listStoreEpochs,
   type ResolvedStoreEpoch,
@@ -81,17 +80,14 @@ function createStoreOpenedObserver(input: LifecycleRecoveryInput): NonNullable<L
     onOpenedStore(openStore);
     if (openStore.path !== ':memory:') {
       const epochs = listStoreEpochs(runtime);
-      registerPresentHistoricalEpochs(runtime, jobLocationIndex, epochs, encodeResolvedStoreEpoch(runtime, openStore));
-      const present = new Set(epochs.map((epoch) => epoch.epochKey));
-      present.add(readOrCreateEpochKey(runtime, openStore));
-      for (const hold of jobLocationIndex.unknownLocationHolds()) {
-        if (!present.has(observeResolvedStoreEpoch(runtime, hold.epochKey)?.lineageKey ?? hold.epochKey))
-          jobLocationIndex.holdUnknownLocations(
-            hold.epochKey,
-            'Source retired; this coordinator will not re-read it before its next start',
-            false,
-          );
-      }
+      registerPresentHistoricalEpochs(runtime, jobLocationIndex, epochs, encodeResolvedStoreEpoch(runtime, openStore), {
+        remaining: 0,
+      });
+      const present = epochs.flatMap((epoch) =>
+        epoch.resolved ? [encodeResolvedStoreEpoch(runtime, epoch.resolved)] : [],
+      );
+      present.push(encodeResolvedStoreEpoch(runtime, openStore));
+      jobLocationIndex.reconcileUnknownLocationHolds(present);
     }
   };
 }

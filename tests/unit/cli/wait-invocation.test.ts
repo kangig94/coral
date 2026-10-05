@@ -1,4 +1,8 @@
 import { afterEach, expect, it, vi } from 'vitest';
+import {
+  CLI_HANDOFF_GUARD_ENV,
+  WAIT_INVOCATION_CONTEXT_ENV,
+} from '#src/coordinator/handoff-routing/wait-invocation.js';
 import { WaitInvocation } from '#src/cli/wait-invocation.js';
 
 afterEach(() => {
@@ -88,6 +92,67 @@ it('waits for delegated IPC delivery before flushing a parent continuation', asy
     await Promise.resolve();
     await Promise.resolve();
     expect(output).toBe('child continuation\n');
+  } finally {
+    invocation.dispose(true);
+  }
+});
+
+it.each(['bounded', 'snapshot'] as const)(
+  'returns a continuation when a released parent has no %s budget context',
+  (mode) => {
+    const send = process.send;
+    const inherited = process.env[WAIT_INVOCATION_CONTEXT_ENV];
+    const delegated = process.env[CLI_HANDOFF_GUARD_ENV];
+    process.send = undefined;
+    delete process.env[WAIT_INVOCATION_CONTEXT_ENV];
+    process.env[CLI_HANDOFF_GUARD_ENV] = '1';
+    let output = '';
+    vi.spyOn(process.stdout, 'write').mockImplementation(((text: string, callback?: () => void) => {
+      output += text;
+      callback?.();
+      return true;
+    }) as never);
+    const invocation = new WaitInvocation(mode, ['node', 'coral-cli', 'wait', 'jobs', 'a']);
+    try {
+      expect(invocation.remainingMs()).toBe(0);
+      expect(() => invocation.check()).toThrow('Wait invocation ended');
+      invocation.flushContinuation(true);
+      expect(output).toContain('Run coral-cli wait jobs a');
+      expect(process.exitCode).toBe(75);
+    } finally {
+      invocation.dispose(true);
+      process.send = send;
+      if (inherited === undefined) delete process.env[WAIT_INVOCATION_CONTEXT_ENV];
+      else process.env[WAIT_INVOCATION_CONTEXT_ENV] = inherited;
+      if (delegated === undefined) delete process.env[CLI_HANDOFF_GUARD_ENV];
+      else process.env[CLI_HANDOFF_GUARD_ENV] = delegated;
+    }
+  },
+);
+
+it('keeps confirmed progress during cancellation cleanup while ignoring late admission', async () => {
+  let output = '';
+  vi.spyOn(process.stdout, 'write').mockImplementation(((text: string, callback?: () => void) => {
+    output += text;
+    callback?.();
+    return true;
+  }) as never);
+  const invocation = new WaitInvocation('bounded', ['node', 'coral-cli', 'wait', 'jobs', 'a']);
+  let end!: () => void;
+  invocation.monitorEnding = new Promise<void>((resolve) => {
+    end = resolve;
+  });
+  try {
+    invocation.saveContinuation('original continuation\n');
+    invocation.stop();
+    invocation.saveContinuation('late admission\n');
+    invocation.saveContinuation('confirmed progress continuation\n', false, true);
+    invocation.flushContinuation();
+    expect(output).toBe('');
+    end();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(output).toBe('confirmed progress continuation\n');
   } finally {
     invocation.dispose(true);
   }

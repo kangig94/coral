@@ -17,10 +17,10 @@ export function formatResultAvailability(availability: ResultAvailability, follo
     case 'retained-away':
       return `no longer kept: past the ${availability.retentionDays}-day retention window`;
     case 'repair-pending':
-      return 'Result file pending; Coral will retry on its next maintenance pass.';
+      return 'Result file pending; Coral will attempt publication on its next maintenance pass.';
     case 'failed':
       if (availability.cause === 'cutoff-untrusted')
-        return 'Result file unavailable: the retention clock is untrusted. Nothing publishes until five minutes of stable clock observation; Coral will then retry on a maintenance pass.';
+        return 'Result file unavailable: the retention clock is untrusted. Nothing publishes until five minutes of stable clock observation; Coral retries on the next five-minute maintenance pass after trust returns.';
       return `${availability.unverifiedResultPath ? `Unverified result path: ${availability.unverifiedResultPath}\n` : ''}Result file unavailable: ${failureCauses[availability.cause]}. ${availability.retryScheduled ? 'Coral will retry on its next maintenance pass.' : 'Coral cannot repair this file automatically.'}`;
   }
 }

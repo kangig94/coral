@@ -1,3 +1,4 @@
+import { sameEpoch } from '../../store/epoch/identity.js';
 import { formatError } from '../../infra/error-format.js';
 import type { TimerHandle } from '../../infra/port-types.js';
 import {
@@ -84,7 +85,7 @@ export function createStoreEpochSweepScheduler(input: {
       };
 
       onHistoricalHydrationHint(jobLocationIndex, (epochKey) => {
-        if (epochKey === input.selectedStoreEpochKey() || controller.signal.aborted || timer === null) return;
+        if (sameEpoch(epochKey, input.selectedStoreEpochKey()) || controller.signal.aborted || timer === null) return;
         runtime.time.clearTimeout(timer);
         timer = null;
         settleScheduled?.();

@@ -1,3 +1,4 @@
+import { sameEpoch } from '../../../store/epoch/identity.js';
 import { dirname } from 'node:path';
 import { setImmediate } from 'node:timers/promises';
 import { createMonotonicClock } from '../../../infra/monotonic-clock.js';
@@ -6,7 +7,8 @@ import {
   reapRecordedContainment,
   type RecordedProcessIdentity,
 } from '../../../infra/process-containment.js';
-import { hasReadableTerminalDetail, type JobLocationIndex } from '../../../jobs/location-index.js';
+import type { JobLocationIndex } from '../../../jobs/location-index.js';
+import { hasReadableTerminalDetail } from '../../../jobs/terminal/identity.js';
 import { inspectEpochKey } from '../../../store/epoch/key.js';
 import { decodeResolvedStoreEpoch } from '../../../store/epoch/observation.js';
 import type { ResolvedStoreEpoch } from '../../../store/epoch/types.js';
@@ -139,7 +141,7 @@ export function reconcileStartupCustody(
     const matching = candidates.filter((candidate) =>
       intent.epochKey === undefined
         ? intent.epoch === candidate.originalPath || intent.epoch === dirname(candidate.epoch.path)
-        : intent.epochKey === candidate.epochKey,
+        : sameEpoch(intent.epochKey, candidate.epochKey),
     );
     if (matching.length !== 1) {
       return matching.length === 0 && intent.epochKey === undefined && intent.epoch === currentEpoch
@@ -212,7 +214,7 @@ function readFinishedCarrierEvidence(runtime: Runtime, epoch: ResolvedStoreEpoch
   const release = acquireStoreEpochReadLock(runtime, epoch, 0);
   if (release === null) return null;
   try {
-    if (epoch.lineageKey === undefined || inspectEpochKey(runtime, epoch) !== epoch.lineageKey) return null;
+    if (epoch.lineageKey === undefined || !sameEpoch(inspectEpochKey(runtime, epoch), epoch.lineageKey)) return null;
     const db = runtime.storage.openSqliteDatabaseSync(epoch.path, { readOnly: true });
     try {
       return readDurableCliPreReadyOwnershipEvidence(db as unknown as Database, jobId);
@@ -276,7 +278,7 @@ export async function reconcileFinishedCustody(input: {
             epoch !== undefined &&
             (entry.intent.epochKey === undefined
               ? entry.intent.epoch === dirname(epoch.path)
-              : entry.intent.epochKey === epoch.lineageKey);
+              : sameEpoch(entry.intent.epochKey, epoch.lineageKey));
           if (entry.intent.owner === 'durable-cli') {
             const initial =
               epoch === null || epoch === undefined ? null : readFinishedCarrierEvidence(runtime, epoch, jobId);
@@ -295,7 +297,7 @@ export async function reconcileFinishedCustody(input: {
               transfers.every(
                 (receipt) =>
                   receipt.custodyIntentId === entry.intent.id &&
-                  receipt.lineageEpochKey === entry.intent.epochKey &&
+                  sameEpoch(receipt.lineageEpochKey, entry.intent.epochKey) &&
                   entry.binding.process !== null &&
                   receipt.runtimeMeta.pid === entry.binding.process.pid &&
                   receipt.runtimeMeta.incarnation === entry.binding.process.incarnation &&

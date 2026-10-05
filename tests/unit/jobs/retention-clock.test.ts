@@ -58,3 +58,15 @@ it('resumes retention after five stable minutes following suspend or a clock jum
   state.wall += 1;
   expect(trustedJobRetentionCutoff(runtime)).not.toBeNull();
 });
+
+it('reanchors a trusted busy clock so a minute-scale jump after a day is still detected', () => {
+  const state = { wall: Date.parse('2026-10-01T00:00:00Z'), mono: 0n };
+  const runtime = fakeRuntime(state);
+  for (let step = 0; step < 2880; step++) {
+    trustedJobRetentionCutoff(runtime);
+    state.wall += 30000;
+    state.mono += 30000n;
+  }
+  state.wall += 120000;
+  expect(trustedJobRetentionCutoff(runtime)).toBeNull();
+});

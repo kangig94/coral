@@ -417,8 +417,10 @@ it.each(['readable', 'transient-unknown', 'settled-unreadable', 'retired'] as co
     const snapshot = addressing.snapshot({ jobIds: ['A', 'U'] });
     expect(snapshot.remainingJobIds).toEqual(sourceRead === 'transient-unknown' ? ['A', 'U'] : []);
     expect(snapshot.jobs[0].progress).toEqual(sourceRead === 'transient-unknown' ? [] : ['sibling backlog']);
-    if (sourceRead === 'transient-unknown')
+    if (sourceRead === 'transient-unknown') {
       expect(snapshot.notices.join(' ')).toContain('Earlier progress for A is held');
+      expect(snapshot.notices.join(' ')).toContain('Snapshots return immediately with a continuation');
+    }
     if (sourceRead === 'settled-unreadable') {
       expect(snapshot.notices.join(' ')).toContain('cannot be read by this build');
       expect(snapshot.notices.join(' ')).not.toContain('no longer kept');
@@ -507,4 +509,14 @@ it('isolates a schema-incompatible location from readable siblings', () => {
   const admissions = addressing.admitWait({ jobIds: ['good', 'bad'], supportsWaitV3: true });
   expect(admissions).toMatchObject([{ disposition: 'admitted' }, { disposition: 'discovery-unreadable' }]);
   expect(addressing.snapshot({ jobIds: ['good', 'bad'] })).toMatchObject({ exitCode: 1, remainingJobIds: [] });
+});
+
+it.each([true, false])('abort shares unknown discovery classification when retryScheduled=%s', (retryScheduled) => {
+  const { index } = fixture();
+  index.holdUnknownLocations('historical', 'source cannot be observed', retryScheduled);
+  const addressing = historicalAddressing(index);
+  expect(addressing.abort(['typo'])).toMatchObject({
+    kind: 'answered',
+    result: { notFound: [], [retryScheduled ? 'held' : 'refused']: [{ jobId: 'typo' }] },
+  });
 });

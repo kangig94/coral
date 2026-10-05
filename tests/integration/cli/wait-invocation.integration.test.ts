@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
 import ts from 'typescript';
 import { afterAll, beforeAll, expect, it } from 'vitest';
+import { CLI_HANDOFF_GUARD_ENV } from '#src/coordinator/handoff-routing/wait-invocation.js';
 import { serializeWaitCursor } from '#src/jobs/wait/cursor.js';
 
 const directory = mkdtempSync(join(tmpdir(), 'coral-wait-invocation-'));
@@ -100,13 +101,13 @@ beforeAll(async () => {
                   );
                   source = source.replace(
                     'const childObservation = observeChild(child);',
-                    'process.stderr.write(`OWNED_MONITOR:${child.pid}\\n`); const childObservation = observeChild(child);',
+                    'process.stderr.write(`OWNED_MONITOR:${child.pid}\\nHANDOFF_BUDGET:${JSON.parse(spawnOptions.env[WAIT_INVOCATION_CONTEXT_ENV]).remainingMs}\\n`); const childObservation = observeChild(child);',
                   );
                   if (variant === 'restart-budget')
                     source = source.replace('remainingMs: waitInvocation.remainingMs()', 'remainingMs: 600');
                   if (variant === 'discard-frontier')
                     source = source.replace(
-                      'invocation.saveContinuation(message.continuation, message.complete === true)',
+                      'invocation.saveContinuation(message.continuation, message.complete === true, message.delivered === true)',
                       'undefined',
                     );
                 }
@@ -174,6 +175,7 @@ async function probe(
         HOME: home,
         LANG: 'C.UTF-8',
         TMPDIR: '/tmp',
+        ...(scenario === 'legacy-parent' ? { [CLI_HANDOFF_GUARD_ENV]: '1' } : {}),
         WAIT_PROBE_SCENARIO: scenario,
         WAIT_PROBE_MODE: snapshot ? 'snapshot' : 'bounded',
         WAIT_PROBE_TARGET: target,
@@ -294,7 +296,7 @@ it.each(['late-boundary', 'no-backstop'])('negative control %s fails the bounded
 it('restarting the delegated budget fails the remaining-duration assertion', async () => {
   const result = await probe('late-delegation', 'restart-budget');
   assertBounded(result);
-  const remaining = Number([...result.stderr.matchAll(/HANDLER_BUDGET:([\d.]+)/g)].at(-1)?.[1]);
+  const remaining = Number([...result.stderr.matchAll(/HANDOFF_BUDGET:([\d.]+)/g)].at(-1)?.[1]);
   expect(remaining).toBeGreaterThan(250);
 });
 
@@ -358,7 +360,7 @@ it('snapshot delegation cannot restart the invocation budget', async () => {
   expect(original.stdout).toContain('--now');
   expect(Number([...original.stderr.matchAll(/HANDLER_BUDGET:([\d.]+)/g)].at(-1)?.[1])).toBeLessThan(250);
   const control = await probe('late-delegation', 'restart-budget', false, true);
-  expect(Number([...control.stderr.matchAll(/HANDLER_BUDGET:([\d.]+)/g)].at(-1)?.[1])).toBeGreaterThan(250);
+  expect(Number([...control.stderr.matchAll(/HANDOFF_BUDGET:([\d.]+)/g)].at(-1)?.[1])).toBeGreaterThan(250);
 });
 
 it.each(['sync', 'delegated-sync'])('snapshot records the S2 synchronous-stall residual: %s', async (scenario) => {
@@ -380,3 +382,15 @@ it('freezes delegated output before printing the parent continuation', async () 
   expect(result.stdout.match(/Run coral-cli wait jobs/g)).toHaveLength(1);
   expect(result.stdout).toContain(`--cursor ${frontier}`);
 });
+
+it.each([false, true])(
+  'a released parent without a budget context ends with a continuation, snapshot=%s',
+  async (snapshot) => {
+    const result = await probe('legacy-parent', 'real', false, snapshot);
+    expect(result.timedOut).toBe(false);
+    expect(result.code).toBe(75);
+    expect(result.stdout).toContain(`--cursor ${saved}`);
+    expect(result.stdout.match(/Run coral-cli wait jobs/g)).toHaveLength(1);
+    expect(result.stderr).not.toContain('HANDLER_BUDGET:');
+  },
+);

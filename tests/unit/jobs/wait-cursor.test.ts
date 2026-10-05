@@ -167,3 +167,19 @@ it('a V3 notice or observation without a cursor preserves collected outcomes and
     advanceWaitRenderCursor(cursor, { type: 'notice', version: 'jobs.wait.v3', message: 'progress retired' }).cursor,
   ).toBe(cursor);
 });
+
+it('versionless terminal delivery and suppression both advance afterSeq', () => {
+  const event = {
+    type: 'terminal' as const,
+    jobId: 'a',
+    seq: 10,
+    result: { content: '', outcome: { kind: 'completed' as const }, durationMs: 1 },
+    continuity: null,
+    remainingJobIds: ['b'],
+    resultPath: '/r/a',
+  };
+  const first = advanceWaitRenderCursor({ afterSeq: 4 }, event);
+  expect(first).toMatchObject({ cursor: { afterSeq: 10, deliveredJobIds: ['a'] }, shouldRender: true });
+  const hidden = advanceWaitRenderCursor({ afterSeq: 4, deliveredJobIds: ['a'] }, event);
+  expect(hidden).toMatchObject({ cursor: { afterSeq: 10 }, shouldRender: false });
+});

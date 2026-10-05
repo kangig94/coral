@@ -1,3 +1,4 @@
+import { waitEpochToken } from '#src/jobs/wait/cursor.js';
 import { encodeResolvedStoreEpoch, protectStoreEpoch, protectedStoreEpochRoot } from '#src/store/epoch/index.js';
 import { formatJobDetail } from '#src/cli/format/jobs.js';
 import { createHash } from 'node:crypto';
@@ -407,7 +408,7 @@ describe('Phase D wait read purity (Revision S3)', () => {
     const caveat = f.addressing.unknownJobCaveat();
     check();
     expect(disposition).toBe(retryScheduled ? 'discovery-unknown' : 'discovery-unreadable');
-    expect(caveat).toContain(f.epochKey);
+    expect(caveat).toContain(waitEpochToken(f.epochKey));
   });
 
   it('keeps pending closure and source identity uncertainty unresolved', () => {
@@ -453,6 +454,7 @@ describe('Phase D wait read purity (Revision S3)', () => {
     const f = fixture();
     expect(Object.keys(f.index.readOnlyView()).sort()).toEqual([
       'historicalSourceState',
+      'observePoll',
       'read',
       'readHistorical',
       'resultPathFor',

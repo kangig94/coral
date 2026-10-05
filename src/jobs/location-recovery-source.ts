@@ -1,3 +1,4 @@
+import { sameEpoch } from '../store/epoch/identity.js';
 import { defineRecoverySource, type RecoverySource, type RecoverySubject } from '../recovery/containment.js';
 
 export function jobLocationRecoverySource(
@@ -7,7 +8,7 @@ export function jobLocationRecoverySource(
   return defineRecoverySource({
     boundary: 'job-location-write-through',
     scanSubject: subject,
-    scan: () => (subject.key === epochKey ? [{ epochKey }] : []),
+    scan: () => (sameEpoch(subject.key, epochKey) ? [{ epochKey }] : []),
     subject: (item) => ({ key: item.epochKey, revision: { kind: 'until-cleared' } }),
   });
 }

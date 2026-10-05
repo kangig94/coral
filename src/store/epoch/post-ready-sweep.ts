@@ -1,3 +1,4 @@
+import { sameEpoch } from './identity.js';
 import { removeTreeNoFollowSync } from '../../infra/remove-tree.js';
 import { type StoragePort } from '../../infra/port-types.js';
 import { type Runtime } from '../../runtime/ports.js';
@@ -172,10 +173,13 @@ function closedReapingDirectoryRemovable(
     const marker = JSON.parse(runtime.storage.readFileSync(markerPath, 'utf-8')) as unknown;
     if (
       !validClosedReapingMarker(marker) ||
-      readEpochKey(runtime, {
-        ...resolvedStoreEpoch(dbDir, marker.epoch),
-        path: join(path, STORE_DATABASE_FILE_NAME),
-      }) !== marker.epochKey ||
+      !sameEpoch(
+        readEpochKey(runtime, {
+          ...resolvedStoreEpoch(dbDir, marker.epoch),
+          path: join(path, STORE_DATABASE_FILE_NAME),
+        }),
+        marker.epochKey,
+      ) ||
       observeStorePath(runtime.storage, epochDirectory(dbDir, marker.epoch)) !== 'absent' ||
       closureCapability(runtime, runtime.paths.coral.generation.dataRoot, marker.epochKey) === null ||
       !resultsReleased(lineageJobEpochKey(dbDir, marker.epochKey))

@@ -1,3 +1,11 @@
+import { renderWorkflowReport } from '#src/workflow/result-report.js';
+import { composeReducers } from '#src/store/reducers.js';
+import { jobsRegistry } from '#src/jobs/events.js';
+import { sessionsRegistry } from '#src/sessions/events.js';
+import { discussRegistry } from '#src/discuss/event-registry.js';
+import { workflowRegistry } from '#src/workflow/events.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
+import { dirname } from 'node:path';
 import { WaitSession } from '#src/jobs/wait/session.js';
 import { selectWaitSnapshot } from '#src/jobs/wait/snapshot.js';
 import { admitted } from '#tests/helpers/wait-session.js';
@@ -390,7 +398,7 @@ describe('terminal export owner', () => {
     });
   });
 
-  it('accepts expired legacy age after pruning and refuses malformed or mismatched evidence', () => {
+  it('refuses unproven legacy age after pruning and malformed or mismatched evidence', () => {
     const f = fixture();
     f.complete({ terminalAt: TERMINAL_EXPORT_CUTOFF - 1 });
     const record = JSON.parse(readFileSync(f.locationPath, 'utf8'));
@@ -399,7 +407,7 @@ describe('terminal export owner', () => {
     f.db.prepare('DELETE FROM events WHERE seq = 1').run();
     f.store.ensureResultArtifact(f.jobId);
     expect(existsSync(f.resultPath)).toBe(false);
-    expect(f.index.resultDurable(f.jobId)).toBe(true);
+    expect(f.index.resultDurable(f.jobId)).toBe(false);
     for (const terminalAge of [
       { kind: 'known', terminalAt: TERMINAL_EXPORT_CUTOFF - 1 },
       { ...record.terminalAge, epochKey: 'other' },
@@ -572,7 +580,7 @@ it('does not recapture an already saved unknown terminal age', () => {
   writeFileSync(f.locationPath, JSON.stringify(stored));
   const prepare = vi.spyOn(f.db, 'prepare');
   const owner = f.store.getResultExportOwner();
-  for (let n = 0; n < 20; n++) expect(owner.progressRetentionExpired(f.jobId)).toBe(false);
+  for (let n = 0; n < 20; n++) expect(owner.progressRetentionExpired(f.jobId)).toBeUndefined();
   expect(prepare.mock.calls.some(([sql]) => /COUNT|ORDER BY ts DESC/.test(sql))).toBe(false);
 });
 
@@ -706,7 +714,11 @@ it('rechecks a deferred source age after clock trust returns and the terminal ex
     retryScheduled: true,
   });
   f.advance(30 * 86_400_000);
-  expect(owner.observeResultAvailability(f.jobId, session)).toMatchObject({ kind: 'retained-away' });
+  expect(owner.observeResultAvailability(f.jobId, session)).toMatchObject({
+    kind: 'failed',
+    cause: 'terminal-age-unknown',
+    retryScheduled: false,
+  });
 });
 
 it('a settled source owner ends artifact retry after a retained terminal read fails', () => {
@@ -814,4 +826,85 @@ it('publication uses one source session including final authorization', () => {
   owner.publishTerminalResult(f.jobId);
   expect(readFileSync(f.resultPath, 'utf8')).toBe('canonical result\n');
   expect(withSource).toHaveBeenCalledTimes(1);
+});
+
+describe('canonical render across owner contexts', () => {
+  describe('result renderer canonicality', () => {
+    it('renders identical bytes for a failed terminal across owner read contexts', () => {
+      const f = createTerminalExportFixture('provider');
+      try {
+        const ins = f.db
+          .prepare('INSERT INTO events(ts, type, stream_kind, stream_id, refs, body) VALUES (?, ?, ?, ?, ?, ?)')
+          .run(
+            new Date().toISOString(),
+            'workflow.lifecycle_fault',
+            'workflow',
+            'wf-1',
+            JSON.stringify({ workflowId: 'wf-1' }),
+            Buffer.from(JSON.stringify({ kind: 'wrapper_crashed', message: 'boom' })),
+          );
+        const causeSeq = Number(ins.lastInsertRowid);
+        f.complete({
+          terminal: {
+            content: '',
+            outcome: { kind: 'failed', causeRef: { stream: { kind: 'workflow', id: 'wf-1' }, seq: causeSeq } },
+            durationMs: 1,
+          } as never,
+        });
+        const render = (ctx: object) => {
+          rmSync(dirname(f.resultPath), { recursive: true, force: true });
+          const owner = new TerminalResultExportOwner({
+            runtime: f.runtime,
+            jobsRoot: f.runtime.paths.coral.exports.jobsRoot,
+            workflowReport: renderWorkflowReport,
+            location: (id) => f.index.read(id),
+            withSource: (_id, read) => read(f.db, ctx as never),
+          });
+          owner.publishTerminalResult(f.jobId);
+          return readFileSync(f.resultPath, 'utf8');
+        };
+        const full = {
+          ...composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry),
+          bodyCodec: createEventBodyCodec(),
+        };
+        const jobsOnly = { ...composeReducers(jobsRegistry), bodyCodec: createEventBodyCodec() };
+        const coordinatorBytes = render(full);
+        const historicalBytes = render(jobsOnly);
+
+        expect(coordinatorBytes).toBe(historicalBytes);
+      } finally {
+        f.close();
+      }
+    });
+  });
+});
+
+describe('first publication schedules retry after clock trust', () => {
+  describe('first publication under an untrusted cutoff', () => {
+    it('defers an untrusted first publication and posts its repair hint', () => {
+      const f = createTerminalExportFixture('provider');
+      try {
+        const owner = f.store.getResultExportOwner();
+        let hinted = 0;
+        owner.onRepairHint(() => {
+          hinted++;
+        });
+        trustedJobRetentionCutoff(f.runtime); // establish the clock baseline
+        f.jump(120_000); // wall steps +2 min without monotonic progress
+        f.complete();
+        owner.publishTerminalResult(f.jobId);
+        const during = owner.observeResultAvailability(f.jobId);
+        const hints = [...(owner as unknown as { hints: Set<string> }).hints];
+        f.advance(5 * 60_000 + 1);
+        const after = owner.observeResultAvailability(f.jobId);
+
+        expect(during).toMatchObject({ kind: 'failed', cause: 'cutoff-untrusted', retryScheduled: true });
+        expect(hinted).toBe(1);
+        expect(hints).toEqual([f.jobId]);
+        expect(after.kind).toBe('repair-pending');
+      } finally {
+        f.close();
+      }
+    });
+  });
 });
