@@ -36,7 +36,7 @@ function prepareBroker(options: {
     storage: { existsSync: options.existsSync ?? (() => true) },
     platform: 'linux',
   } as const;
-  const hostPlan = claudeAppServerLifecycle.planHost({ purpose: 'execution', ...input });
+  const hostPlan = claudeAppServerLifecycle.planHost({ hostRoot: '/plugin/bridge', purpose: 'execution', ...input });
   buildClaudeExecutionPlan({ ...input, hostPlan });
   return claudeAppServerLifecycle.compileStableHost(hostPlan);
 }

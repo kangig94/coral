@@ -1,3 +1,4 @@
+import { localProviderHostRoot } from '../../infra/bundle-manifest.js';
 import {
   bindProviderRunner,
   type DurableContainmentOperatorControl,
@@ -1113,7 +1114,12 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
         : {}),
     });
     const operationEnvironment = providerOperationEnvironment(protectedEnv);
+    const hostRoot =
+      options.forceLocalAppServerPlacement === true
+        ? localProviderHostRoot()
+        : (this.deps.appServerProxyRoute?.hostRoot() ?? localProviderHostRoot());
     const prepared = provider.prepareExecution({
+      hostRoot,
       request: requestWithInject,
       persistedContinuity: continuity.value,
       baseEnv: this.deps.runtime.env.fullSnapshot(),
@@ -1489,7 +1495,17 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
       if (launch.signal.aborted) return { kind: 'cancelled' };
       const proxyPlacement = await this.activateAppServerProxyPlacement(prepared, launch);
       if (proxyPlacement !== undefined) return proxyPlacement;
-      return this.executeLocalAppServerPlacement(prepared, launch);
+      const localPrepared = launch.provider.prepareExecution({
+        hostRoot: localProviderHostRoot(),
+        request: launch.requestForRoute,
+        persistedContinuity: launch.persistedContinuity,
+        baseEnv: this.deps.runtime.env.fullSnapshot(),
+        protectedEnv: launch.operationEnvironment.env,
+        platform: this.deps.runtime.env.platform(),
+        storage: this.deps.runtime.storage,
+      });
+      if (localPrepared.kind !== 'app-server') throw new Error('Local placement requires an app-server provider.');
+      return this.executeLocalAppServerPlacement(localPrepared, launch);
     }
     return this.executeStandalonePlacement(prepared, launch);
   }

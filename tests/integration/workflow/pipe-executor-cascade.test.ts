@@ -130,6 +130,7 @@ describe('pipe executor coral cascade invariant', () => {
           providerScope: TEST_CODEX_SCOPE,
         },
         {
+          runningWorkflowJobs: new Set(),
           childPrincipalRegistry: testChildPrincipalRegistry(runtime.ids),
           runtime,
           progressStore,
@@ -274,6 +275,7 @@ describe('pipe executor coral cascade invariant', () => {
           providerScope: TEST_CODEX_SCOPE,
         },
         {
+          runningWorkflowJobs: new Set(),
           childPrincipalRegistry: testChildPrincipalRegistry(runtime.ids),
           runtime,
           progressStore,

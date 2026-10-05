@@ -1,3 +1,4 @@
+import { localProviderHostRoot } from '../infra/bundle-manifest.js';
 import { z } from 'zod';
 import {
   bindCustodyProcessTicket,
@@ -1305,6 +1306,8 @@ export async function startProviderProxyRole(
   // eslint-disable-next-line prefer-const
   let proxyRef!: Proxy;
   const semantic = createSemanticOperationRuntime({
+    hostRoot: localProviderHostRoot(),
+    hostFingerprint: identity.hostFingerprint,
     runtime: ports.runtime,
     hostAuthority,
     getProxy: () => proxyRef,

@@ -43,6 +43,7 @@ function snapshotAppServer<Plan extends ProviderExecutionPlan, Access extends Js
         new Set(['storage', 'request']),
       );
       const common = {
+        hostRoot: canonicalInput.hostRoot,
         access: snapshotBoundaryData(canonicalInput.access, 'Provider host credential access'),
         baseEnv: snapshotBoundaryData(canonicalInput.baseEnv, 'Provider host base environment'),
         platform: canonicalInput.platform,

@@ -100,6 +100,7 @@ function registriesFor(
     loadJobProjectionDetail: (jobId) => details.get(jobId) ?? { status: null, launch: null, runtime: null, exit: null },
     platform: PLATFORM,
     hasStartupRecoveryPassed: () => false,
+    isWorkflowOwnedByThisCoordinator: () => false,
     isAdmittedByThisCoordinator: () => false,
     registryStateForJob: () => null,
     ...overrides,
@@ -422,4 +423,19 @@ describe('createObserveCarriers', () => {
       { jobId: DURABLE_JOB_ID, liveness: 'unknown', storedPhase: 'running', observedMaxJournalSeq: 7 },
     ]);
   });
+});
+
+it('reports a live workflow from its owner despite having no launch reservation', async () => {
+  const registries = registriesFor(
+    new Map([
+      ['workflow', detail({ transport: 'workflow', startTime: '2026-04-19T00:00:00.000Z' }, { jobKind: 'workflow' })],
+    ]),
+    {
+      isAdmittedByThisCoordinator: () => false,
+      isWorkflowOwnedByThisCoordinator: (jobId) => jobId === 'workflow',
+    },
+  );
+  await expect(createObserveCarriers(registries, () => 99)(['workflow'])).resolves.toEqual([
+    { jobId: 'workflow', liveness: 'live', storedPhase: 'running', observedMaxJournalSeq: 99 },
+  ]);
 });

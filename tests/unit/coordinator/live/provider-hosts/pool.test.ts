@@ -28,6 +28,7 @@ const FIXTURE_BUILD_SET_ID = '00000000-0000-4000-8000-000000000004';
 const mockedEnsureProxySet = vi.mocked(ensureProviderProxySet);
 
 const proxySetAcquisition = {
+  placement: { hostRoot: '/plugin/bridge', entrypoint: null },
   pluginRoot: '/plugin',
   identity: { instanceId: 'i', buildSetId: FIXTURE_BUILD_SET_ID, flavor: 'prod' as const },
   // This suite fakes `ensureProxySet` itself (`mockedEnsureProxySet`), so nothing here ever reads the

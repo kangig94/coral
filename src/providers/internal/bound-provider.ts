@@ -215,6 +215,7 @@ function createBoundAppServerTools<Plan extends ProviderExecutionPlan, Access ex
           ? {}
           : { persistedContinuity: snapshotBoundaryData(input.persistedContinuity, 'Provider host continuity') }),
         baseEnv: snapshotBoundaryData(input.baseEnv, 'Provider host base environment'),
+        hostRoot: input.hostRoot,
         platform: input.platform,
         storage: input.storage,
         access,
@@ -538,6 +539,7 @@ function bindCuration<Plan extends ProviderExecutionPlan, Access extends JsonVal
       const prepared = curation.prepare(
         canonicalRequest,
         Object.freeze({
+          hostRoot: canonicalRuntime.hostRoot,
           storage: canonicalRuntime.storage,
           ids: canonicalRuntime.ids,
           baseEnv: snapshotBoundaryData(canonicalRuntime.baseEnv, 'Provider curation environment'),
@@ -595,6 +597,7 @@ function createBoundAppServerLifecycle<Plan extends ProviderExecutionPlan, Acces
         purpose: 'curation',
         request,
         baseEnv: snapshotBoundaryData(runtime.baseEnv, 'Provider curation environment'),
+        hostRoot: runtime.hostRoot,
         platform: runtime.platform,
         storage: runtime.storage,
         access,

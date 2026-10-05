@@ -78,6 +78,7 @@ export type BoundProviderPreparedCuration = Readonly<{
 }>;
 
 export type BoundProviderExecutionPreparationInput = {
+  hostRoot: string;
   request: ProviderRequest;
   persistedContinuity?: ProviderRuntime['persistedContinuity'];
   baseEnv: Readonly<Record<string, string>>;

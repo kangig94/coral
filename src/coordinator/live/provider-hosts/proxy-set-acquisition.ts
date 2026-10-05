@@ -1,3 +1,4 @@
+import { type ProviderProxyPlacement } from './host-root.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import type { CoordinatorIdentity as ProviderProxyCoordinatorIdentity } from '../../../provider-proxy/protocol.js';
 import type { ProviderEventHandler } from '../../../provider-proxy/control-client.js';
@@ -12,7 +13,8 @@ import {
   providerProxyControlSessionOwner,
   type ProviderProxyAcquisitionSessionHandedOver,
 } from '../provider-proxy/control-session.js';
-import { hostFingerprintFromSpec, type ProviderHostEntry } from './state.js';
+import { type ProviderHostEntry } from './state.js';
+import { hostFingerprintFromSpec } from '../../../providers/host-identity.js';
 
 /**
  * How long one guardian/reaper/proxy set acquisition — spawn, the three-role handshake, and its own cleanup
@@ -42,7 +44,7 @@ export type ProviderProxySetAcquisitionIdentity = Readonly<{
 export type ProviderProxySetAcquisitionConfig = Readonly<{
   pluginRoot: string;
 
-  retainedHostRoot?: () => string | null;
+  placement: ProviderProxyPlacement;
   identity: ProviderProxySetAcquisitionIdentity;
   /** Supplies the live provider roots used for stop-and-reap agreement. */
   operationRegistry: ProviderProxyOperationSnapshot;
@@ -191,7 +193,7 @@ export function ensureProviderProxySet(
   const steps = createProviderProxyAcquisitionSteps({
     runtime: env.runtime,
     pluginRoot: env.pluginRoot,
-    ...(env.retainedHostRoot === undefined ? {} : { retainedHostRoot: env.retainedHostRoot() }),
+    currentEntrypoint: env.placement.entrypoint,
     coordinatorIdentity,
     hostFingerprint: hostFingerprintFromSpec(entry.spec),
     operationRegistry: env.operationRegistry,

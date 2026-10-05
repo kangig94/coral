@@ -1,3 +1,4 @@
+import { localProviderHostRoot } from '../../infra/bundle-manifest.js';
 import type { SystemProviderScope } from '../../infra/provider-scope.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { CoralSetupError, documentedCoralSetupError } from '../../runtime/errors.js';
@@ -77,6 +78,7 @@ export function createKbCurateAssistantHandler(options: {
         signal,
       },
       {
+        hostRoot: localProviderHostRoot(),
         storage: options.runtime.storage,
         ids: options.runtime.ids,
         baseEnv: options.runtime.env.fullSnapshot(),

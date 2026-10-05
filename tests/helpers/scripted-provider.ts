@@ -265,7 +265,7 @@ export function prepareFixtureExecutionPlan(
     cwd: input.request.cwd,
     leaseMode: 'job-exclusive',
   };
-  const host = prepareFixtureHost({ ...input, purpose: 'execution' }, serverSpec);
+  const host = prepareFixtureHost({ ...input, hostRoot: '/test/plugin/bridge', purpose: 'execution' }, serverSpec);
   const prepared = prepareFixtureAppServerExecutionPlan({ ...input, hostPlan: host });
   const exactEnv = compileEnvironmentLayers([...host.environment, ...prepared.turn.environment], {
     platform: input.platform,

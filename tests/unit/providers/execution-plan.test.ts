@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { join } from 'node:path';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import {
   buildClaudeExecutionPlan as buildClaudeExecutionPlanWithHost,
@@ -11,7 +12,8 @@ import {
   buildCodexHost,
 } from '#src/providers/codex/execution-plan.js';
 import { TEST_CLAUDE_ACCESS, TEST_CODEX_ACCESS } from '#tests/helpers/provider-credentials.js';
-import { hostKeyFromSpec } from '#src/coordinator/live/provider-hosts/state.js';
+
+import { hostKeyFromSpec } from '#src/providers/host-identity.js';
 import { codexAppServerLifecycle } from '#src/providers/codex/provider-facets.js';
 import { resolveClaudeTransportMode } from '#src/providers/claude/transport-mode.js';
 
@@ -24,7 +26,7 @@ function buildClaudeExecutionPlan(options: Omit<Parameters<typeof buildClaudeExe
     request: options.request,
     baseEnv: options.baseEnv,
     platform: options.platform,
-    storage: options.storage,
+    hostRoot: '/test/plugin/bridge',
     transportMode: resolveClaudeTransportMode(options.request.coralEnv),
   });
   const prepared = buildClaudeExecutionPlanWithHost({
@@ -53,6 +55,18 @@ function codexThreadEnvironment(prepared: ReturnType<typeof buildCodexExecutionP
 }
 
 describe('provider execution plan', () => {
+  it('compiles a relative dist root with the source appserver entrypoint', () => {
+    const host = buildClaudeHost({
+      access: TEST_CLAUDE_ACCESS,
+      request: { cwd: fixtureCanonicalWorkDir('/workspace'), coralEnv: {} },
+      baseEnv: {},
+      platform: process.platform,
+      hostRoot: 'dist',
+      transportMode: 'print',
+    });
+    expect(host.broker.args).toEqual([join('dist', 'providers', 'claude', 'appserver', 'server.js')]);
+  });
+
   it('keeps Claude broker account-neutral and binds only its controller', () => {
     const prepared = buildClaudeExecutionPlan({
       access: TEST_CLAUDE_ACCESS,

@@ -236,43 +236,58 @@ describe('cli follow handoff', () => {
     expect(output.join('')).toContain('Job job-1 completed');
   });
 
-  it('should preserve double Ctrl-C abort semantics while delegated waits are active', async () => {
-    const firstHandoff = createDeferred<HandoffRunnerModule.HandoffRunResult>();
-    const secondHandoff = createDeferred<HandoffRunnerModule.HandoffRunResult>();
-    const secondRunStarted = createDeferred<void>();
-    const abortJob = vi.fn().mockResolvedValue({ aborted: ['job-1'], notFound: [] });
-    vi.spyOn(process.stdout, 'write').mockImplementation(((
-      _chunk: string | Uint8Array,
-      callback?: (error?: Error | null) => void,
-    ) => {
-      callback?.();
-      return true;
-    }) as typeof process.stdout.write);
-    mockState.ensure.mockResolvedValue(makeBackend());
-    mockState.runHandoff.mockReturnValueOnce(firstHandoff.promise).mockImplementationOnce(async () => {
-      secondRunStarted.resolve();
-      return secondHandoff.promise;
-    });
+  it.each(['aborted', 'stopRequested'] as const)(
+    'preserves double Ctrl-C %s evidence while delegated waits are active',
+    async (outcome) => {
+      const firstHandoff = createDeferred<HandoffRunnerModule.HandoffRunResult>();
+      const secondHandoff = createDeferred<HandoffRunnerModule.HandoffRunResult>();
+      const secondRunStarted = createDeferred<void>();
+      const abortJob = vi.fn().mockResolvedValue({
+        aborted: outcome === 'aborted' ? ['job-1'] : [],
+        ...(outcome === 'stopRequested'
+          ? {
+              stopRequested: ['job-1'],
+              held: [{ jobId: 'job-2', reason: 'provider_stop_pending', nextStep: 'Waiting for terminal evidence.' }],
+            }
+          : {}),
+        notFound: [],
+      });
+      vi.spyOn(process.stdout, 'write').mockImplementation(((
+        _chunk: string | Uint8Array,
+        callback?: (error?: Error | null) => void,
+      ) => {
+        callback?.();
+        return true;
+      }) as typeof process.stdout.write);
+      mockState.ensure.mockResolvedValue(makeBackend());
+      mockState.runHandoff.mockReturnValueOnce(firstHandoff.promise).mockImplementationOnce(async () => {
+        secondRunStarted.resolve();
+        return secondHandoff.promise;
+      });
 
-    const { launchAndFollow } = await import('#src/cli/follow.js');
-    const follow = launchAndFollow(makeOptions({ abortJob }));
-    await vi.waitFor(() => expect(mockState.runHandoff).toHaveBeenCalledTimes(1));
+      const { launchAndFollow } = await import('#src/cli/follow.js');
+      const follow = launchAndFollow(makeOptions({ abortJob }));
+      await vi.waitFor(() => expect(mockState.runHandoff).toHaveBeenCalledTimes(1));
 
-    sigintHandler?.();
-    expect(abortJob).not.toHaveBeenCalled();
-    firstHandoff.resolve(
-      recorded({ kind: 'delegated', version: '2.0.0', outcome: { kind: 'handoff-signal', signal: 'SIGINT' } }),
-    );
-    await secondRunStarted.promise;
+      sigintHandler?.();
+      expect(abortJob).not.toHaveBeenCalled();
+      firstHandoff.resolve(
+        recorded({ kind: 'delegated', version: '2.0.0', outcome: { kind: 'handoff-signal', signal: 'SIGINT' } }),
+      );
+      await secondRunStarted.promise;
 
-    sigintHandler?.();
-    secondHandoff.resolve(
-      recorded({ kind: 'delegated', version: '2.0.0', outcome: { kind: 'handoff-signal', signal: 'SIGINT' } }),
-    );
-    await expect(follow).resolves.toBe(1);
+      sigintHandler?.();
+      secondHandoff.resolve(
+        recorded({ kind: 'delegated', version: '2.0.0', outcome: { kind: 'handoff-signal', signal: 'SIGINT' } }),
+      );
+      await expect(follow).resolves.toBe(outcome === 'aborted' ? 1 : 3);
 
-    expect(abortJob).toHaveBeenCalledOnce();
-    expect(abortJob).toHaveBeenCalledWith('job-1');
-    expect(process.stderr.write).toHaveBeenCalledWith('\nPress Ctrl+C again to abort the job.\n');
-  });
+      expect(abortJob).toHaveBeenCalledOnce();
+      expect(abortJob).toHaveBeenCalledWith('job-1');
+      expect(process.stderr.write).toHaveBeenCalledWith('\nPress Ctrl+C again to abort the job.\n');
+      if (outcome === 'stopRequested') {
+        expect(process.stdout.write).toHaveBeenCalledWith(expect.stringContaining('Stop requested for jobs: job-1'));
+      }
+    },
+  );
 });

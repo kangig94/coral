@@ -36,6 +36,7 @@ async function runClaudeOneShotTurn(
   request: Parameters<typeof claudeCurationCapability.prepare>[0],
 ) {
   const hostPlan = claudeAppServerLifecycle.planHost({
+    hostRoot: '/test/plugin/bridge',
     purpose: 'curation',
     access: deps.executionPlan.access,
     request,
@@ -44,6 +45,7 @@ async function runClaudeOneShotTurn(
     storage: deps.storage,
   });
   const prepared = claudeCurationCapability.prepare(request, {
+    hostRoot: '/test/plugin/bridge',
     storage: deps.storage,
     ids: deps.ids,
     access: deps.executionPlan.access,

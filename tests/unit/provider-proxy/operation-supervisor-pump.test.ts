@@ -115,11 +115,15 @@ function hostRef(): HostRef {
 
 async function executingSupervisor(
   pushProviderEvent: ConstructorParameters<typeof OperationSupervisor>[0]['pushProviderEvent'],
+  publish = true,
 ): Promise<{
   supervisor: OperationSupervisor;
   operation: OperationIdentity;
   faults: ProviderEventControlFault[];
   clock: ReturnType<typeof controlledTimer>;
+  stop: ReturnType<typeof vi.fn>;
+  release: ReturnType<typeof vi.fn>;
+  prepareAttemptKey: string;
 }> {
   const operation: OperationIdentity = {
     jobId: randomUUID(),
@@ -129,12 +133,14 @@ async function executingSupervisor(
   };
   const clock = controlledTimer();
   const faults: ProviderEventControlFault[] = [];
+  const stop = vi.fn(async () => {});
+  const release = vi.fn(async () => {});
   const host: SemanticOperationHost = {
     start: () => ({
       result: Promise.resolve({ kind: 'started', hostRef: hostRef() }),
-      abortAndRelease: async () => {},
+      abortAndRelease: release,
     }),
-    stop: async () => {},
+    stop,
   };
   const receipt = asJointContainmentReceipt('containment');
   const stage: OperationStageHandle = {
@@ -176,8 +182,8 @@ async function executingSupervisor(
     jointActivationReceipt: asJointActivationReceipt('activation'),
     activationFingerprint: prepareAttemptKey,
   });
-  await supervisor.attach(operation, 0);
-  return { supervisor, operation, faults, clock };
+  if (publish) await supervisor.attach(operation, 0);
+  return { supervisor, operation, faults, clock, stop, release, prepareAttemptKey };
 }
 
 function preExecutionReleaseFixture(abortAndRelease: OperationStageHandle['abortAndRelease']): Readonly<{
@@ -388,4 +394,35 @@ describe('provider-event supervisor pump', () => {
     expect(reject).not.toHaveBeenCalled();
     expect(fixture.supervisor.ledger().get(fixture.operation)?.committedThroughProviderSeq).toBe(1);
   });
+});
+
+it.each(['stop', 'cancel'] as const)('ends an unpublished start through %s and releases the host', async (method) => {
+  const fixture = await executingSupervisor(
+    () => ({
+      controlEpoch: 1,
+      response: Promise.resolve({ kind: 'ack', committedThroughProviderSeq: 0 }),
+    }),
+    false,
+  );
+  try {
+    await expect(fixture.supervisor.inspect(fixture.operation, fixture.prepareAttemptKey)).resolves.toMatchObject({
+      state: 'started-awaiting-publication',
+    });
+    if (method === 'stop') {
+      await expect(fixture.supervisor.stop(fixture.operation, 'signal_abort')).resolves.toMatchObject({
+        state: 'released',
+      });
+    } else {
+      await expect(fixture.supervisor.cancel(fixture.operation, 1, fixture.prepareAttemptKey)).rejects.toThrow(
+        'unpublished start was stopped',
+      );
+    }
+    expect(fixture.stop).toHaveBeenCalledOnce();
+    expect(fixture.release).toHaveBeenCalledOnce();
+    await expect(fixture.supervisor.inspect(fixture.operation, fixture.prepareAttemptKey)).resolves.toMatchObject({
+      state: 'released-activation-indeterminate',
+    });
+  } finally {
+    fixture.supervisor.close();
+  }
 });

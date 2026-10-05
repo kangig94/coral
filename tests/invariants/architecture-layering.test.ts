@@ -136,6 +136,7 @@ const COORDINATOR_ALLOWED = new Set([
   'src/providers/contract.ts',
   'src/providers/host-admission.ts',
   'src/providers/host-diagnostics.ts',
+  'src/providers/host-identity.ts',
   // Both independent host owners consume provider-owned serviceability policy while retaining their live state.
   'src/providers/serviceability.ts',
 ]);
