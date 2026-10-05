@@ -91,11 +91,40 @@ describe('retained-epoch-executor', () => {
 
       expect(settleWithRetainedExecutor(runtime, EPOCH_KEY)).toEqual(settlement);
       expect(execSync.mock.calls[0]?.[1]).toEqual([
-        expect.stringMatching(/coral-backend\.cjs$/u) as unknown,
+        `${opened.pluginRoot}/bridge/coral-backend.cjs`,
         '--recover-retained-epoch',
         EPOCH_KEY,
       ]);
     });
+  });
+
+  it.each(['/installed/plugin', '/coral-retained-executor/gen2/builds/legacy-build'])(
+    'validates the recorded literal root %s without deriving a copy location',
+    (pluginRoot) => {
+      vi.mocked(latestControllerOpen).mockReturnValue({ latest: { ...opened, pluginRoot }, unreadable: [] });
+      const validate = vi.fn(() => ({ kind: 'validated' as const, target }));
+      vi.mocked(createForeignTargetValidator).mockReturnValue(validate);
+      vi.mocked(runtime.process.execSync).mockReturnValue({ status: 0, stdout: openProof, stderr: '' });
+      expect(controllerRecoveryTarget(runtime, EPOCH_KEY)).toBe(target);
+      expect(settleWithRetainedExecutor(runtime, EPOCH_KEY)).toEqual({ kind: 'settled' });
+      expect(validate.mock.calls).toEqual([
+        [`${pluginRoot}/bridge`, opened.build],
+        [`${pluginRoot}/bridge`, opened.build],
+      ]);
+    },
+  );
+
+  it('refuses recovery and settlement when the recorded install no longer validates', () => {
+    vi.mocked(createForeignTargetValidator).mockReturnValue(() => ({
+      kind: 'invalid',
+      evidence: { bundleDir: opened.pluginRoot, expectedManifest: opened.build, failure: 'bundle-dir-unavailable' },
+    }));
+    expect(controllerRecoveryTarget(runtime, EPOCH_KEY)).toBeNull();
+    expect(settleWithRetainedExecutor(runtime, EPOCH_KEY)).toEqual({
+      kind: 'no-capable-root',
+      reason: 'installed build root does not validate',
+    });
+    expect(runtime.process.execSync).not.toHaveBeenCalled();
   });
 
   describe('controllerRecoveryTarget', () => {
@@ -103,6 +132,12 @@ describe('retained-epoch-executor', () => {
       vi.spyOn(runtime.process, 'execSync').mockReturnValue({ status: 0, stdout: openProof, stderr: '' });
 
       expect(controllerRecoveryTarget(runtime, EPOCH_KEY)).toBe(target);
+      expect(vi.mocked(runtime.process.execSync).mock.calls[0]?.[1]).toEqual([
+        `${opened.pluginRoot}/bridge/coral-backend.cjs`,
+        '--probe-retained-epoch',
+        EPOCH_KEY,
+        opened.instanceId,
+      ]);
     });
 
     it('should refuse a target while an unreadable open record could name a later controller', () => {

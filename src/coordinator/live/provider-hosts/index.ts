@@ -427,7 +427,7 @@ export class DefaultProviderHostManager
       options.allocateProviderServerGeneration ?? (() => this.nextProviderServerGeneration++);
     this.carrierBlocksRetirement = options.carrierBlocksRetirement;
     this.proxySetAcquisitionConfig = options.proxySetAcquisition;
-    this.proxyPlacement = options.proxySetAcquisition?.placement ?? providerProxyPlacement(null);
+    this.proxyPlacement = options.proxySetAcquisition?.placement ?? providerProxyPlacement();
     this.providerProxyLifecycleRef = options.providerProxyLifecycleRef;
     this.admission = options.admission ?? createHostAdmissionCollection({ classify: () => 'unknown' });
   }

@@ -7,7 +7,7 @@ import {
   type GracefulKillOutcome,
   type GracefulKillPendingDisposition,
 } from '../../../infra/process-supervision.js';
-import { readBundleHash, resolveStrictBundleIdentity } from '../../../infra/bundle-manifest.js';
+import { readBundleHash } from '../../../infra/bundle-manifest.js';
 import { pluginRootNamespace } from '../../../infra/plugin-identity.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import type { SerializedCoralSetupError } from '../../../runtime/errors.js';
@@ -335,7 +335,6 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
   const { runtime, pluginRoot } = options;
   const command = options.command ?? process.execPath;
   const entrypoint = options.entrypoint ?? resolveDefaultKbDaemonEntrypoint(pluginRoot);
-  const runningIdentity = resolveStrictBundleIdentity();
   const startTimeoutMs = options.startTimeoutMs ?? DEFAULT_START_TIMEOUT_MS;
   const stopTimeoutMs = options.stopTimeoutMs ?? DEFAULT_STOP_TIMEOUT_MS;
   const requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
@@ -407,7 +406,6 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
       pluginRoot,
       command,
       entrypoint,
-      runningIdentity,
       forwardedKbDaemonEnv,
       backendNamespace,
       bundleHash,

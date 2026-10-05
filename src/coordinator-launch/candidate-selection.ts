@@ -5,7 +5,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { recordControllerEvidenceRefusals } from '../infra/launch-status.js';
 import { type StrictBundleManifest } from '../infra/bundle-manifest.js';
 import { compareProductVersions } from '../infra/product-version.js';
-import { validatedRunningBuildRoot } from '../infra/retained-build-root.js';
+import { validatedRunningBuildRoot } from '../infra/installed-build-root.js';
 import { readUpgradeIntent } from '../infra/upgrade-intent.js';
 import { createRealRuntime } from '../runtime/real.js';
 import { readCustodyLedger } from '../store/custody-ledger.js';
@@ -15,7 +15,8 @@ import { incumbentAt, incumbentLiveness, observedLaunchIncumbent, socketClaimedB
 import { type OwnerHandle } from './ownership.js';
 import { closeUnavailableLegacyRequest, pendingExecutable, pendingIntent } from './pending-upgrade.js';
 import { recordLegacyUpgradeIntent } from './request.js';
-import { relaunchRoots, validatedBuild } from './selection.js';
+import { relaunchRoots } from './selection.js';
+import { validatedBuild } from '../infra/installed-build-root.js';
 import { type SupervisorLaunchMemory } from './state.js';
 import { POLL_MS } from './timing.js';
 
@@ -44,7 +45,7 @@ function candidates(
   const committedRoot =
     committedIntent === null
       ? null
-      : validatedRunningBuildRoot(runDir, committedIntent.target.pluginRootLabel, committedIntent.target.build);
+      : validatedRunningBuildRoot(committedIntent.target.pluginRootLabel, committedIntent.target.build);
   const committed =
     committedRoot === null || committedIntent === null
       ? null
@@ -57,8 +58,8 @@ function candidates(
     pending !== null && validatedExecutable(pendingExecutable(pending))?.buildSetId === pending.target.build.buildSetId
       ? [{ executable: pendingExecutable(pending), buildSetId: pending.target.build.buildSetId }]
       : [];
-  const originalRoot = validatedRunningBuildRoot(runDir, dirname(dirname(original.executable)), originalManifest);
-  const recovery = relaunchRoots(runDir, originalManifest).flatMap((root) => {
+  const originalRoot = validatedRunningBuildRoot(dirname(dirname(original.executable)), originalManifest);
+  const recovery = relaunchRoots(originalManifest).flatMap((root) => {
     const build = validatedBuild(root);
     return build === null
       ? []
@@ -67,25 +68,11 @@ function candidates(
   const requiredBuild = controller.kind === 'required' ? controller.buildSetId : (committed?.buildSetId ?? null);
   if (refusalGraceExpired && requiredBuild === null)
     return validatedExecutable(original.executable)?.buildSetId === original.buildSetId ? [original] : [];
-  const retainedController =
-    requiredBuild === null ? null : validatedBuild(join(dirname(runDir), 'builds', requiredBuild));
-  const controllerCandidate =
-    retainedController !== null &&
-    retainedController.buildSetId === requiredBuild &&
-    retainedController.flavor === originalManifest.flavor
-      ? [
-          {
-            executable: join(dirname(runDir), 'builds', requiredBuild, 'bridge', 'coral-backend.cjs'),
-            buildSetId: requiredBuild,
-          },
-        ]
-      : [];
   const choices = [
     ...new Map(
       [
         ...requested,
         ...(committed === null ? [] : [committed]),
-        ...controllerCandidate,
         ...recovery,
         ...(originalOutstanding ? [original] : []),
         ...(originalRoot === null

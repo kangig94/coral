@@ -12,7 +12,7 @@ import { probeProcessIncarnation, type ProcessIncarnation } from '../infra/node-
 import { SENTINEL_TIMING } from '../infra/sentinel-timing.js';
 import { attemptExclusiveFileLockSync } from '../infra/fs-lock.js';
 import { supervisorLockPath } from '../infra/path/index.js';
-import { validatedRunningBuildRoot } from '../infra/retained-build-root.js';
+import { validatedRunningBuildRoot } from '../infra/installed-build-root.js';
 import { createRealRuntime } from './real.js';
 import { installReplacementSupervisorChannel } from './succession-attempt.js';
 
@@ -302,7 +302,7 @@ function launchReplacementSupervisor(control: ReplacementSupervisorControl): voi
     return;
   }
   sourceIdentityHold(control, false);
-  const root = validatedRunningBuildRoot(control.runDir, control.pluginRoot, control.manifest);
+  const root = validatedRunningBuildRoot(control.pluginRoot, control.manifest);
   if (root === null || !existsSync(join(root, 'bridge', 'coral-sentinel.cjs'))) {
     updateLaunchStatus(control.runDir, (status) => ({
       ...status,
@@ -465,8 +465,8 @@ export async function resumeLegacyUpgradeObservation(
       if (lock.kind === 'acquired') lock.lease();
     }
     const root =
-      (manifest === null ? null : validatedRunningBuildRoot(runDir, installedRoot, manifest)) ??
-      validatedRunningBuildRoot(runDir, observed.intent.target.pluginRootLabel, observed.intent.target.build);
+      (manifest === null ? null : validatedRunningBuildRoot(installedRoot, manifest)) ??
+      validatedRunningBuildRoot(observed.intent.target.pluginRootLabel, observed.intent.target.build);
     if (root === null) return report('no-validated-observer-build');
     if (performance.now() >= deadline) return report('acknowledgement-budget-exhausted');
     const bundleDir = join(root, 'bridge');

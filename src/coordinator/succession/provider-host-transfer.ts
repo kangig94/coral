@@ -54,7 +54,7 @@ export type ProviderHostTransferPorts = Readonly<{
   jobSettled: (jobId: string) => boolean;
   localOperationJobIds: () => readonly string[];
   /** A host that keeps running after its install is replaced must run from a root that outlives it. */
-  hostRootRetained: (buildSetId: string) => boolean;
+  hostInstalledRootAvailable: (buildSetId: string) => boolean;
   attemptId: () => string | null;
   /** Hosts move only with the exact epoch their saga rows live in, which a successor of another format cannot open. */
   targetChangesStoreFormat: () => boolean;
@@ -269,8 +269,8 @@ async function prepareProviderHostTransfer(
     if (lifecycle.authorityFor(set.setIdentity) !== set) {
       return blocking('a provider proxy set is not under operational control');
     }
-    if (!ports.hostRootRetained(set.setIdentity.buildSetId)) {
-      return untransferable('a provider host runs from a plugin root that is not retained');
+    if (!ports.hostInstalledRootAvailable(set.setIdentity.buildSetId)) {
+      return untransferable("a provider host's installed root is unavailable or invalid");
     }
   }
   const successor = { generation: 'gen2' as const, flavor: ports.flavor, buildSetId: capabilities.buildSetId };

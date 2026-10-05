@@ -103,6 +103,7 @@ function transferFor(
   options: Readonly<{
     db?: Database;
     hosts?: readonly DurableProviderProxyOperationAuthority[];
+    hostInstalledRootAvailable?: (buildSetId: string) => boolean;
   }> = {},
 ) {
   const db = options.db ?? databaseWith([]);
@@ -114,7 +115,7 @@ function transferFor(
     db: () => db,
     jobSettled: () => false,
     localOperationJobIds: () => [],
-    hostRootRetained: () => true,
+    hostInstalledRootAvailable: options.hostInstalledRootAvailable ?? (() => true),
     attemptId: () => null,
     targetChangesStoreFormat: () => false,
     log: () => undefined,
@@ -257,6 +258,23 @@ async function preparedTransfer(
   return { attemptId: 'attempt-1', transfer };
 }
 
+it('blocks host transfer when its installed root is unavailable', async () => {
+  const runtime = runtimeFor();
+  const record = executing();
+  const host = hostFor(record, authorized);
+  const available = vi.fn(() => false);
+  const transfer = transferFor(runtime, {
+    db: databaseWith([record]),
+    hosts: [host],
+    hostInstalledRootAvailable: available,
+  });
+  expect(await classify(transfer)).toMatchObject({
+    sets: { kind: 'blocking', reason: "a provider host's installed root is unavailable or invalid" },
+  });
+  expect(available).toHaveBeenCalledWith(record.operation.buildSetId);
+  expect(host.authorizeControllerTransfer).not.toHaveBeenCalled();
+});
+
 describe('provider host transfer owners', () => {
   it('transfers every host and its operations under the recovery grant each host holds', async () => {
     const record = executing();
@@ -373,7 +391,7 @@ describe('provider host transfer at the commit and after serving', () => {
       db: () => db,
       jobSettled: () => false,
       localOperationJobIds: () => [],
-      hostRootRetained: () => true,
+      hostInstalledRootAvailable: () => true,
       attemptId: () => null,
       targetChangesStoreFormat: () => false,
       log,

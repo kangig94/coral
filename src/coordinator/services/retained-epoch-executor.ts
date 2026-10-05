@@ -3,7 +3,6 @@ import { join } from 'node:path';
 import { probeCoordinator } from '../../infra/backend-discovery.js';
 import { resolveStrictBundleIdentity, type StrictBundleManifest } from '../../infra/bundle-manifest.js';
 import { createForeignTargetValidator, type ValidatedHandoffTarget } from '../../infra/handoff-target.js';
-import { retainedBuildRoot } from '../../infra/retained-build-root.js';
 import { seedHistoricalEpoch } from '../../jobs/historical-reader.js';
 import { JobLocationIndex } from '../../jobs/location-index.js';
 import type { Runtime } from '../../runtime/ports.js';
@@ -139,7 +138,7 @@ export function controllerRecoveryTarget(
   const observation = latestControllerOpen(runtime, epochKey, instanceId);
   const opened = observation.latest;
   if (opened === null || observation.unreadable.length > 0) return null;
-  const root = retainedBuildRoot(runtime, opened.build.buildSetId);
+  const root = opened.pluginRoot;
   const validated = createForeignTargetValidator()(join(root, 'bridge'), opened.build);
   if (validated.kind !== 'validated') return null;
   const probe = runtime.process.execSync(
@@ -159,10 +158,10 @@ export function controllerRecoveryTarget(
 export function settleWithRetainedExecutor(runtime: Runtime, epochKey: string): RetainedExecutorSettlement {
   const opened = latestControllerOpen(runtime, epochKey).latest;
   if (opened === null) return { kind: 'no-capable-root', reason: 'no readable controller open names the epoch' };
-  const root = retainedBuildRoot(runtime, opened.build.buildSetId);
+  const root = opened.pluginRoot;
   const validated = createForeignTargetValidator()(join(root, 'bridge'), opened.build);
   if (validated.kind !== 'validated')
-    return { kind: 'no-capable-root', reason: 'retained build root does not validate' };
+    return { kind: 'no-capable-root', reason: 'installed build root does not validate' };
   const result = runtime.process.execSync(
     process.execPath,
     [join(root, 'bridge', 'coral-backend.cjs'), RECOVER_FLAG, epochKey],

@@ -11,6 +11,7 @@ import { readLaunchStatus } from '#src/infra/launch-status.js';
 import { compareAndSwapUpgradeIntent } from '#src/infra/upgrade-intent.js';
 import { probeProcessIncarnation } from '#src/infra/node-process.js';
 import * as discovery from '#src/provider-proxy/handoff-capsule-discovery.js';
+import * as registry from '#src/infra/plugin-registry.js';
 import * as transfer from '#src/coordinator/succession/provider-host-transfer.js';
 import { decodeHandoffCapsule } from '#src/provider-proxy/handoff-capsule.js';
 import { createRealRuntime } from '#src/runtime/real.js';
@@ -48,8 +49,11 @@ function fixture(originalVersion?: string) {
   const runtime = createRealRuntime('prod', { baseDir: join(root, '.coral') });
   const runDir = runtime.paths.coral.coordinator.runDir;
   mkdirSync(runDir, { recursive: true });
-  const retained = join(runtime.paths.coral.generation.root, 'builds', build.buildSetId);
-  cpSync('clients/build', join(retained, 'bridge'), { recursive: true });
+  const installed = join(root, 'installed');
+  vi.spyOn(registry, 'createPluginRegistry').mockReturnValue({
+    installedPluginRoots: () => [installed],
+  } as unknown as ReturnType<typeof registry.createPluginRegistry>);
+  cpSync('clients/build', join(installed, 'bridge'), { recursive: true });
   const incarnation = probeProcessIncarnation(process.pid)!;
   const capsule = decodeHandoffCapsule(
     Buffer.from(
@@ -96,10 +100,10 @@ function fixture(originalVersion?: string) {
   };
   const clock = vi.spyOn(process.hrtime, 'bigint').mockReturnValue(0n);
   vi.spyOn(process.stderr, 'write').mockReturnValue(true);
-  return { runtime, runDir, retained, build, capsule, path, input, clock };
+  return { runtime, runDir, installed, build, capsule, path, input, clock };
 }
 
-it.each(['retained', 'missing'] as const)(
+it.each(['installed', 'missing'] as const)(
   'selects newer original C with a %s completed A-to-B receipt and no refusals',
   async (availability) => {
     const f = fixture('999.0.0');
@@ -115,7 +119,7 @@ it.each(['retained', 'missing'] as const)(
           bundleHash: f.build.bundleHash,
           flavor: 'prod',
         },
-        target: { build: f.build, pluginRootLabel: f.retained },
+        target: { build: f.build, pluginRootLabel: f.installed },
         attemptId: 'a-to-b',
         attemptOwner: { kind: 'incumbent', instanceId: 'old-a', pid: 2147483647, incarnation: null },
         disposition: 'completed',
@@ -133,13 +137,13 @@ it.each(['retained', 'missing'] as const)(
         },
       }),
     ).toMatchObject({ kind: 'written' });
-    if (availability === 'missing') rmSync(f.retained, { recursive: true });
+    if (availability === 'missing') rmSync(f.installed, { recursive: true });
     expect(controllerBuild(f.runDir)).toEqual({ kind: 'none' });
     expect(await selectNextCandidate(f.input)).toEqual({ kind: 'candidate', candidate: f.input.original });
   },
 );
 
-it.each(['retained', 'missing'] as const)(
+it.each(['installed', 'missing'] as const)(
   'requires the %s completed serving build after a capsule read refusal expires',
   async (availability) => {
     const f = fixture();
@@ -154,7 +158,7 @@ it.each(['retained', 'missing'] as const)(
           bundleHash: f.build.bundleHash,
           flavor: 'prod',
         },
-        target: { build: f.build, pluginRootLabel: f.retained },
+        target: { build: f.build, pluginRootLabel: f.installed },
         attemptId: 'a-to-b',
         attemptOwner: { kind: 'incumbent', instanceId: 'old-a', pid: 2147483647, incarnation: null },
         disposition: 'completed',
@@ -172,14 +176,14 @@ it.each(['retained', 'missing'] as const)(
         },
       }),
     ).toMatchObject({ kind: 'written' });
-    if (availability === 'missing') rmSync(f.retained, { recursive: true });
+    if (availability === 'missing') rmSync(f.installed, { recursive: true });
     vi.spyOn(discovery, 'readProviderHandoffCapsuleCandidate').mockImplementation(() => {
       throw new Error('EIO');
     });
     expect(await selectNextCandidate(f.input)).toEqual({ kind: 'retry' });
     f.clock.mockReturnValue(2_000_000_000n);
     const selected = await selectNextCandidate(f.input);
-    if (availability === 'retained')
+    if (availability === 'installed')
       expect(selected).toMatchObject({ kind: 'candidate', candidate: { buildSetId: f.build.buildSetId } });
     else {
       expect(selected).toEqual({ kind: 'retry' });
@@ -227,7 +231,7 @@ it('selects a readable live requirement despite another refused capsule', async 
     kind: 'candidate',
     candidate: { buildSetId: f.build.buildSetId },
   });
-  f.input.tried.add(join(f.retained, 'bridge/coral-backend.cjs'));
+  f.input.tried.add(join(f.installed, 'bridge/coral-backend.cjs'));
   f.clock.mockReturnValue(20_000_000_000n);
   expect(await selectNextCandidate(f.input)).toEqual({ kind: 'retry' });
 });
