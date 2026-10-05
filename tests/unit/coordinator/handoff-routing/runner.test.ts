@@ -535,7 +535,10 @@ it('writes no shared routing record when a newer target fails the wait contract 
       reason: { kind: 'handoff-abandoned', reason: 'wait-contract-unsupported' },
     },
   });
-  expect(mockState.execFile.mock.calls[0][2]).toMatchObject({ env: { CORAL_CLI_HANDOFF_DELEGATED: '1' } });
+  expect(mockState.execFile.mock.calls[0][2].env).toEqual({
+    CORAL_BASE_ENV: 'preserved',
+    CORAL_CLI_HANDOFF_DELEGATED: '1',
+  });
   expect(mockState.publishGenerationCoordinatedHandoffRoutingTransitions).not.toHaveBeenCalled();
 });
 

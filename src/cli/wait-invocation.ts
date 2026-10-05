@@ -63,6 +63,7 @@ export function waitInvocationMode(program: Command, argv: readonly string[]): W
 export class WaitInvocation implements WaitInvocationHandoff {
   readonly signal: AbortSignal;
   readonly mode: WaitInvocationMode;
+  private readonly clock: { now(): number };
   readonly originalCommand: string;
   monitorEnding?: Promise<unknown>;
   private readonly controller = new AbortController();
@@ -70,6 +71,7 @@ export class WaitInvocation implements WaitInvocationHandoff {
   private readonly hardDeadline: number;
   private readonly watchdog: NodeJS.Timeout;
   private readonly backstop: NodeJS.Timeout;
+  completedExitCode: number | undefined;
   private continuation: string | undefined;
   private continuationFlushed = false;
   private continuationFlushPending = false;
@@ -81,15 +83,16 @@ export class WaitInvocation implements WaitInvocationHandoff {
     else if (this.signal.aborted) {
       if (this.monitorEnding) return this.flushContinuation();
       this.flushContinuation(true);
-      process.exit(75);
+      process.exit(this.completedExitCode ?? 75);
     }
   };
   private readonly onMessage = (message: unknown) => {
     if (isRecord(message) && message.type === 'wait-cancel') this.stop();
   };
 
-  constructor(mode: WaitInvocationMode, argv: readonly string[]) {
+  constructor(mode: WaitInvocationMode, argv: readonly string[], clock = { now: () => performance.now() }) {
     this.mode = mode;
+    this.clock = clock;
     this.signal = this.controller.signal;
     this.originalCommand = commandText(argv.slice(2));
     const inherited = process.env[WAIT_INVOCATION_CONTEXT_ENV];
@@ -120,7 +123,7 @@ export class WaitInvocation implements WaitInvocationHandoff {
       }
       process.on('message', this.onMessage);
     }
-    const start = performance.now();
+    const start = this.clock.now();
     this.deadline = start + budget;
     this.hardDeadline = this.deadline + cleanup;
     this.watchdog = setTimeout(() => this.stop(), budget);
@@ -128,30 +131,43 @@ export class WaitInvocation implements WaitInvocationHandoff {
     this.backstop = setTimeout(() => {
       this.stop();
       this.flushContinuation(true);
-      process.exit(75);
+      process.exit(this.completedExitCode ?? 75);
     }, budget + cleanup);
     this.backstop.unref();
     process.on('SIGINT', this.onSigint);
   }
 
   remainingMs(): number {
-    return Math.max(0, this.deadline - performance.now());
+    return Math.max(0, this.deadline - this.clock.now());
   }
   cleanupRemainingMs(): number {
-    return Math.max(0, this.hardDeadline - performance.now());
+    return Math.max(0, this.hardDeadline - this.clock.now());
   }
   stop(): void {
     if (!this.signal.aborted) this.controller.abort();
   }
 
-  saveContinuation(text: string, complete = false, delivered = false): void {
+  saveContinuation(text: string, complete = false, delivered = false, exitCode?: number): void {
     if (this.continuationFlushed && !complete) return;
     if (this.signal.aborted && !complete && !delivered) return;
     this.continuation = text;
     this.continuationFlushed ||= complete;
+    if (complete && exitCode !== undefined) {
+      this.completedExitCode = exitCode;
+      if (this.mode === 'snapshot') {
+        clearTimeout(this.watchdog);
+        clearTimeout(this.backstop);
+      }
+    }
     if (this.delegated && process.connected)
       process.send?.(
-        { type: 'wait-delivery', continuation: text, complete, ...(delivered ? { delivered } : {}) },
+        {
+          type: 'wait-delivery',
+          continuation: text,
+          complete,
+          ...(delivered ? { delivered } : {}),
+          ...(exitCode !== undefined ? { exitCode } : {}),
+        },
         () => {},
       );
   }
@@ -164,6 +180,7 @@ export class WaitInvocation implements WaitInvocationHandoff {
   }
 
   check(): void {
+    if (this.completedExitCode !== undefined) return;
     if (this.remainingMs() === 0) this.stop();
     if (this.signal.aborted) throw new WaitInvocationEnded();
   }
@@ -178,6 +195,10 @@ export class WaitInvocation implements WaitInvocationHandoff {
       });
     if (this.continuationFlushed) await flush();
     else await this.run(flush);
+  }
+
+  markContinuationPrinted(): void {
+    this.saveContinuation(this.continuation ?? '', true, true, 75);
   }
 
   flushSavedContinuation(): void {
@@ -207,11 +228,11 @@ export class WaitInvocation implements WaitInvocationHandoff {
     process.exitCode = 75;
     process.stdout.write(
       this.continuation ??
-        `${this.mode === 'snapshot' ? 'coordinator not ready; snapshot admission did not complete.' : 'Wait admission did not complete; monitoring ended.'}\nRun ${this.originalCommand}\n`,
+        `${this.mode === 'snapshot' ? 'Snapshot monitoring ended before delivery completed.' : 'Wait admission did not complete; monitoring ended.'}\nRun ${this.originalCommand}\n`,
     );
   }
 
-  async writeSnapshotOutput(output: string, continuation: string): Promise<void> {
+  async writeSnapshotOutput(output: string, continuation: string, exitCode = 75): Promise<void> {
     this.check();
     this.snapshotOutputPending = true;
     const write = new Promise<void>((resolve, reject) => {
@@ -219,12 +240,31 @@ export class WaitInvocation implements WaitInvocationHandoff {
         this.snapshotOutputPending = false;
         if (error) reject(new WaitOutputError(error, this.originalCommand));
         else {
-          this.saveContinuation(continuation, true);
+          this.saveContinuation(continuation, true, true, exitCode);
           resolve();
         }
       });
     });
-    await this.run(() => write);
+    try {
+      await this.run(() => write);
+    } catch (error) {
+      if (this.snapshotOutputPending && error instanceof WaitInvocationEnded) {
+        let timer: NodeJS.Timeout | undefined;
+        try {
+          await Promise.race([
+            write,
+            new Promise<void>((resolve) => {
+              timer = setTimeout(resolve, this.cleanupRemainingMs());
+              timer.unref();
+            }),
+          ]);
+        } finally {
+          clearTimeout(timer);
+        }
+        if (this.completedExitCode !== undefined) return;
+      }
+      throw error;
+    }
   }
 
   dispose(force = false): void {

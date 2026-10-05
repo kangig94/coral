@@ -354,7 +354,9 @@ it.each(['pending', 'burst', 'failed'] as const)(
         },
       });
       expect(code).toBe(scenario === 'failed' ? 42 : 0);
-      expect(stdout).not.toContain('Run coral-cli wait');
+      if (scenario === 'pending' || scenario === 'failed')
+        expect(stdout).toContain('Run coral-cli wait jobs a --cursor jobs.wait.v3:');
+      else expect(stdout).not.toContain('Run coral-cli wait');
       if (scenario === 'burst') expect(stdout).toContain('foreground-line-599');
     } finally {
       write.mockRestore();

@@ -44,7 +44,12 @@ function unavailableForEligibility(eligibility: TerminalEligibility, retentionDa
       retryScheduled: false,
       ageUncertain: eligibility.age === 'regression',
     };
-  if (eligibility.age === 'regression' && !eligibility.regressionAuthorized && !eligibility.sourceReadFailed)
+  if (
+    eligibility.age === 'regression' &&
+    !eligibility.ageDeferred &&
+    !eligibility.regressionAuthorized &&
+    !eligibility.sourceReadFailed
+  )
     return { kind: 'failed', cause: 'terminal-clock-regression', retryScheduled: false, ageUncertain: true };
   if (!eligibility.cutoffTrusted) return { kind: 'failed', cause: 'cutoff-untrusted', retryScheduled: true };
   return null;
@@ -183,12 +188,57 @@ class RepairSet extends Set<string> {
   }
 }
 
+class RepairFailureSet extends Set<string> {
+  private readonly root: string;
+  private spilled: boolean;
+  private readonly runtime: Pick<Runtime, 'storage' | 'paths'>;
+  private readonly limit: number;
+  constructor(runtime: Pick<Runtime, 'storage' | 'paths'>, limit = 1024) {
+    super();
+    this.runtime = runtime;
+    this.limit = limit;
+    this.root = join(runtime.paths.coral.generation.dataRoot, 'result-repair-failures.v1');
+    this.spilled = runtime.storage.existsSync(this.root);
+  }
+  private path(jobId: string): string {
+    return join(this.root, Buffer.from(jobId).toString('base64url') + '.json');
+  }
+  override has(jobId: string): boolean {
+    return super.has(jobId) || (this.spilled && this.runtime.storage.existsSync(this.path(jobId)));
+  }
+  override add(jobId: string): this {
+    if (!super.has(jobId) && this.size >= this.limit) {
+      const oldest = this.values().next().value;
+      if (oldest !== undefined) {
+        this.runtime.storage.mkdirSync(this.root, { recursive: true });
+        if (
+          !this.runtime.storage.writeAtomicDurableSync(
+            this.path(oldest),
+            JSON.stringify({ version: 'v1', jobId: oldest }),
+            { mode: 0o600 },
+          )
+        )
+          throw new Error('Repair failure evidence could not be retained');
+        this.spilled = true;
+        super.delete(oldest);
+      }
+    }
+    return super.add(jobId);
+  }
+  override delete(jobId: string): boolean {
+    const present = this.has(jobId);
+    if (this.spilled) this.runtime.storage.rmSync(this.path(jobId), { force: true });
+    super.delete(jobId);
+    return present;
+  }
+}
+
 const repairFailures = new WeakMap<object, Set<string>>();
 
-export function resultRepairFailuresFor(ownerScope: object): Set<string> {
+export function resultRepairFailuresFor(ownerScope: object, runtime: Pick<Runtime, 'storage' | 'paths'>): Set<string> {
   let failures = repairFailures.get(ownerScope);
   if (!failures) {
-    failures = new RepairSet();
+    failures = new RepairFailureSet(runtime);
     repairFailures.set(ownerScope, failures);
   }
   return failures;
@@ -198,6 +248,8 @@ const repairQueues = new WeakMap<object, { hints: Set<string>; listener: (() => 
 
 export class TerminalResultExportOwner {
   private readonly failures: Set<string>;
+  private publicationLocation: JobLocation | null | undefined;
+  private publicationTerminal: { accepted: EventsRow; terminal: JobTerminal } | undefined;
   private sourceSession: { db: Database; ctx: StoreReadContext } | undefined;
   private readonly repairQueue: { hints: Set<string>; listener: (() => void) | null };
   private readonly hints: Set<string>;
@@ -209,7 +261,13 @@ export class TerminalResultExportOwner {
     runtime: Pick<Runtime, 'storage' | 'paths' | 'time' | 'env'>;
     jobsRoot: string;
     location(jobId: string): JobLocation | null;
-    withSource<T>(jobId: string, read: (db: Database, ctx: StoreReadContext) => T): T | null;
+    withSource<T>(
+      jobId: string,
+      read: (db: Database, ctx: StoreReadContext) => T,
+      location?: JobLocation | null,
+    ): T | null;
+    publicationLocation?(jobId: string): JobLocation | null;
+    publicationUnchanged?(jobId: string, location: JobLocation): boolean;
     workflowReport?: WorkflowReportPort;
     failures?: Set<string>;
     repairScope?: object;
@@ -220,7 +278,7 @@ export class TerminalResultExportOwner {
 
   constructor(input: TerminalResultExportOwner['input']) {
     this.input = input;
-    this.failures = input.failures ?? new RepairSet(input.repairQueueLimit);
+    this.failures = input.failures ?? new RepairFailureSet(input.runtime, input.repairQueueLimit);
     const scope = input.repairScope ?? this;
     this.repairQueue = repairQueues.get(scope) ?? { hints: new RepairSet(input.repairQueueLimit), listener: null };
     repairQueues.set(scope, this.repairQueue);
@@ -237,9 +295,10 @@ export class TerminalResultExportOwner {
   private eligibility(jobId: string, observeSource = true): TerminalEligibility {
     return terminalEligibility(
       this.input.runtime,
-      this.input.location(jobId),
+      this.publicationLocation ?? this.input.location(jobId),
       (read) => this.withSource(jobId, (db) => read(db)),
       observeSource,
+      this.publicationTerminal,
     );
   }
 
@@ -260,7 +319,7 @@ export class TerminalResultExportOwner {
 
   private readonly observedWorkflowReports = new WeakMap<
     object,
-    Map<string, { stamp: string; location: JobLocation; readable: boolean }>
+    Map<string, { stamp: string; identity: string | undefined; readable: boolean }>
   >();
 
   private workflowReadable(jobId: string, session?: object): boolean {
@@ -269,29 +328,36 @@ export class TerminalResultExportOwner {
     const stamp = epoch ? sourceReadStamp(this.input.runtime.storage, epoch.path) : null;
     const cache = session ? this.observedWorkflowReports.get(session) : undefined;
     const previous = cache?.get(jobId);
-    if (stamp !== null && previous?.stamp === stamp && previous.location === location) return previous.readable;
+    if (
+      stamp !== null &&
+      previous?.stamp === stamp &&
+      location?.storedIdentity !== undefined &&
+      previous.identity === location.storedIdentity
+    )
+      return previous.readable;
     const readable = this.render(jobId) !== null;
     if (session && stamp !== null && location) {
       const next = cache ?? new Map();
-      next.set(jobId, { stamp, location, readable });
+      next.set(jobId, { stamp, identity: location.storedIdentity, readable });
       this.observedWorkflowReports.set(session, next);
     }
     return readable;
   }
 
-  private prepareTerminal(jobId: string, db: Database): void {
-    const location = this.input.location(jobId);
+  private prepareTerminal(jobId: string, db: Database, location = this.input.location(jobId)): void {
     if (location && hasReadableTerminalDetail(location) && location.terminalAge !== undefined) return;
     this.input.prepareTerminal?.(jobId, db);
   }
 
   private render(jobId: string): string | null {
-    const location = this.input.location(jobId);
+    const location = this.publicationLocation ?? this.input.location(jobId);
     if (!location || !hasReadableTerminalDetail(location)) return null;
     return this.withSource(jobId, (db, ctx) => {
-      const accepted = readAcceptedTerminal(db, jobId);
+      const accepted = this.publicationTerminal?.accepted ?? readAcceptedTerminal(db, jobId);
       if (!accepted || accepted.seq !== location.terminalSeq) return null;
-      const body = jobTerminalRecordedBodySchema.parse(JSON.parse(Buffer.from(accepted.body).toString('utf8')));
+      const body = this.publicationTerminal
+        ? { terminal: this.publicationTerminal.terminal }
+        : jobTerminalRecordedBodySchema.parse(JSON.parse(Buffer.from(accepted.body).toString('utf8')));
       if (
         location.detail.kind !== 'recorded' ||
         !location.detail.value.exit ||
@@ -318,7 +384,7 @@ export class TerminalResultExportOwner {
 
   private readonly observedEligibility = new WeakMap<
     object,
-    Map<string, { stamp: string; location: JobLocation; eligibility: TerminalEligibility }>
+    Map<string, { stamp: string; identity: string | undefined; eligibility: TerminalEligibility }>
   >();
 
   private observeEligibility(jobId: string, session?: object): TerminalEligibility {
@@ -329,14 +395,22 @@ export class TerminalResultExportOwner {
     if (
       stamp !== null &&
       previous?.stamp === stamp &&
-      previous.location === location &&
+      location?.storedIdentity !== undefined &&
+      previous.identity === location.storedIdentity &&
       (!previous.eligibility.ageDeferred || trustedJobRetentionCutoff(this.input.runtime) === null)
     ) {
       const current = this.eligibility(jobId, false);
       if (current.kind === 'expired') return current;
       const cutoff = trustedJobRetentionCutoff(this.input.runtime);
       const age = previous.eligibility.age;
-      const kind = cutoff === null ? 'unknown' : typeof age === 'number' ? (age < cutoff ? 'expired' : 'inside') : age;
+      const kind =
+        cutoff === null
+          ? 'unknown'
+          : typeof age === 'number' && !previous.eligibility.ageUnproven
+            ? age < cutoff
+              ? 'expired'
+              : 'inside'
+            : previous.eligibility.kind;
       return {
         ...previous.eligibility,
         kind,
@@ -350,7 +424,7 @@ export class TerminalResultExportOwner {
     const eligibility = this.eligibility(jobId);
     if (session && location && stamp !== null && !eligibility.sourceReadFailed) {
       const cache = this.observedEligibility.get(session) ?? new Map();
-      cache.set(jobId, { stamp, location, eligibility });
+      cache.set(jobId, { stamp, identity: location.storedIdentity, eligibility });
       this.observedEligibility.set(session, cache);
     }
     return eligibility;
@@ -372,7 +446,9 @@ export class TerminalResultExportOwner {
       } catch (error) {
         const retry = this.input.hydrationRetry?.(jobId);
         if (retry !== false && sourceReadFailureDisposition(error) === 'transient-unknown')
-          return { kind: 'repair-pending', ageUncertain: true };
+          return this.failures.has(jobId)
+            ? { kind: 'failed', cause: 'repair-failed', retryScheduled: true, unverifiedResultPath }
+            : { kind: 'repair-pending', ageUncertain: true };
       }
       const retry = this.input.hydrationRetry?.(jobId);
       if (retry === false)
@@ -417,21 +493,28 @@ export class TerminalResultExportOwner {
   }
 
   private publish(jobId: string, repair: boolean): string {
-    const targetPath = this.input.location(jobId)?.resultPath ?? resultPathFor(this.input.jobsRoot, jobId);
-    if (this.available(jobId)) {
+    const location = this.input.publicationLocation?.(jobId) ?? this.input.location(jobId);
+    const targetPath = location?.resultPath ?? resultPathFor(this.input.jobsRoot, jobId);
+    if (location && hasReadableTerminalDetail(location) && this.readableFile(targetPath)) {
       this.failures.delete(jobId);
       return targetPath;
     }
     try {
       return (
-        this.input.withSource(jobId, (db, ctx) => {
-          this.sourceSession = { db, ctx };
-          try {
-            return this.publishInSource(jobId, repair, db);
-          } finally {
-            this.sourceSession = undefined;
-          }
-        }) ?? targetPath
+        this.input.withSource(
+          jobId,
+          (db, ctx) => {
+            this.sourceSession = { db, ctx };
+            try {
+              return this.publishInSource(jobId, repair, db, location);
+            } finally {
+              this.sourceSession = undefined;
+              this.publicationLocation = undefined;
+              this.publicationTerminal = undefined;
+            }
+          },
+          location,
+        ) ?? targetPath
       );
     } catch (error) {
       this.failures.add(jobId);
@@ -441,51 +524,61 @@ export class TerminalResultExportOwner {
     }
   }
 
-  private publishInSource(jobId: string, repair: boolean, db: Database): string {
+  private publishInSource(jobId: string, repair: boolean, db: Database, snapshot: JobLocation | null): string {
     try {
-      this.prepareTerminal(jobId, db);
+      this.prepareTerminal(jobId, db, snapshot);
     } catch (error) {
       this.failures.add(jobId);
       if (repair && this.ownsRepairSchedule) this.hints.add(jobId);
       else this.hintRepair(jobId);
       throw error;
     }
-    const targetPath = this.input.location(jobId)?.resultPath ?? resultPathFor(this.input.jobsRoot, jobId);
-    if (this.available(jobId)) {
+    const location = snapshot?.terminalAge !== undefined ? snapshot : this.input.location(jobId);
+    this.publicationLocation = location;
+    const targetPath = location?.resultPath ?? resultPathFor(this.input.jobsRoot, jobId);
+    if (this.readableFile(targetPath)) {
       this.failures.delete(jobId);
       return targetPath;
     }
-    const availability = this.observeResultAvailability(jobId);
-    if (
-      availability.kind !== 'repair-pending' &&
-      !(
-        availability.kind === 'failed' &&
-        availability.retryScheduled &&
-        (availability.cause === 'repair-failed' || availability.cause === 'cutoff-untrusted')
-      )
-    )
+    const accepted = readAcceptedTerminal(db, jobId);
+    if (!location || !accepted) return targetPath;
+    const body = jobTerminalRecordedBodySchema.parse(JSON.parse(Buffer.from(accepted.body).toString('utf8')));
+    this.publicationTerminal = { accepted, terminal: body.terminal };
+    const eligibility = this.eligibility(jobId);
+    if (!eligibility.publicationAuthorized) {
+      if (!eligibility.cutoffTrusted || eligibility.sourceReadTransient) this.hintRepair(jobId);
       return targetPath;
-    const authorized = (): boolean => this.eligibility(jobId).publicationAuthorized;
-    try {
-      this.withSource(jobId, () => {
-        const markdown = this.render(jobId);
-        if (!markdown || !authorized() || (repair && this.available(jobId))) return;
-        writeResultArtifact(this.input.runtime.storage, targetPath, markdown, () => {
-          return authorized() && this.render(jobId) === markdown && !(repair && this.available(jobId));
-        });
-      });
-      if (this.available(jobId)) this.failures.delete(jobId);
-      const after = this.observeResultAvailability(jobId);
-      if (after.kind === 'repair-pending' || (after.kind === 'failed' && after.retryScheduled)) {
-        if (repair && this.ownsRepairSchedule) this.hints.add(jobId);
-        else this.hintRepair(jobId);
-      }
-    } catch (error) {
-      this.failures.add(jobId);
-      if (repair && this.ownsRepairSchedule) this.hints.add(jobId);
-      else this.hintRepair(jobId);
-      throw error;
     }
+    const markdown = this.render(jobId);
+    if (!markdown) return targetPath;
+    const authorized = (): boolean => {
+      const cutoff = trustedJobRetentionCutoff(this.input.runtime);
+      if (cutoff === null || (typeof eligibility.age === 'number' && eligibility.age < cutoff)) return false;
+      const current = this.input.publicationUnchanged
+        ? this.input.publicationUnchanged(jobId, location)
+          ? location
+          : null
+        : this.input.location(jobId);
+      if (
+        !current ||
+        current.disposition !== 'terminal' ||
+        current.terminalSeq !== accepted.seq ||
+        (isRecord(current.terminalAge) ? current.terminalAge.kind : undefined) !==
+          (isRecord(location.terminalAge) ? location.terminalAge.kind : undefined)
+      )
+        return false;
+      const row = db
+        .prepare<
+          [string],
+          { seq: number; ts: string }
+        >("SELECT seq, ts FROM events WHERE stream_kind = 'job' AND stream_id = ? AND type = 'job.terminal.recorded' ORDER BY seq DESC LIMIT 1")
+        .get(jobId);
+      return row?.seq === accepted.seq && row.ts === accepted.ts;
+    };
+    writeResultArtifact(this.input.runtime.storage, targetPath, markdown, authorized);
+    if (this.readableFile(targetPath)) this.failures.delete(jobId);
+    else if (repair && this.ownsRepairSchedule) this.hints.add(jobId);
+    else this.hintRepair(jobId);
     return targetPath;
   }
 

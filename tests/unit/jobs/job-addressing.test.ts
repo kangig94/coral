@@ -69,6 +69,88 @@ afterEach(() => {
   for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
 
+it('describes unreadable addresses without exposing storage paths or raw errors', () => {
+  const { index } = fixture();
+  const failure = new Error('EACCES: /secret/job-locations.v1/jobs/record.json');
+  index.read = () => {
+    throw failure;
+  };
+  const job = historicalAddressing(index).admitWait({ jobIds: ['job'], supportsWaitV3: true })[0];
+  expect(job.disposition).toBe('discovery-unknown');
+  expect(job.message).toContain('250 ms, 1 s and 5 s');
+  expect(job.message).not.toContain('/secret');
+  expect(job.message).not.toContain('EACCES');
+});
+
+it('uses a short epoch label for a settled historical source', () => {
+  const { index } = fixture();
+  const key = JSON.stringify({
+    storeRoot: '/secret/db',
+    epoch: '7',
+    path: '/secret/db/epoch-7/store.db',
+    lineageKey: 'old:7',
+  });
+  index.register('job', key, { projectRoot: '/workspace/project', workDir: '/workspace/project', jobKind: 'provider' });
+  const addressing = new JobAddressing(
+    index.readOnlyView(),
+    {
+      epochKey: () => 'new:8',
+      detail: () => null,
+      abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
+    },
+    () => false,
+    () => 'pending',
+    () => ({ kind: 'unreadable', disposition: 'settled-unreadable' }),
+    () => ({ kind: 'failed', cause: 'terminal-unusable', retryScheduled: false }),
+  );
+  const job = addressing.admitWait({ jobIds: ['job'], supportsWaitV3: true })[0];
+  expect(job.message).toMatch(/^Epoch [0-9a-f]{8}:/);
+  expect(job.message).toContain('next coordinator start');
+  expect(job.message).not.toContain('/secret');
+});
+
+it.each([false, true])('gives persisted machine hold reasons an owner and retry bound, retry=%s', (retry) => {
+  const { index } = fixture();
+  index.holdUnknownLocations('old:7', 'retained-store-root-missing', retry);
+  const text = historicalAddressing(index).unknownJobCaveat();
+  expect(text).toMatch(/epoch [0-9a-f]{8}:/);
+  expect(text).toContain('Epoch maintenance');
+  expect(text).toContain(retry ? '3 consecutive failures' : 'next coordinator start');
+  expect(text).not.toContain('retained-store-root-missing');
+});
+
+it.each([
+  'retained-store-root-missing',
+  'Error: EACCES reading /secret/epoch-7/store.db',
+  '{"storeRoot":"/secret/db","epoch":"7"}',
+  'EACCES: identity unreadable',
+])('normalizes persisted historical reasons for known jobs: %s', (reason) => {
+  const { index } = fixture();
+  index.register('known', 'old:7', { projectRoot: '/workspace', workDir: '/workspace', jobKind: 'provider' });
+  for (const disposition of ['transient-unknown', 'settled-unreadable'] as const) {
+    const addressing = new JobAddressing(
+      index.readOnlyView(),
+      {
+        epochKey: () => 'new:8',
+        detail: () => null,
+        abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
+      },
+      () => false,
+      () => 'pending',
+      () => ({ kind: 'unreadable', disposition, reason }),
+      () => ({ kind: 'failed', cause: 'terminal-unusable', retryScheduled: false }),
+    );
+    const job = addressing.admitWait({ jobIds: ['known'], supportsWaitV3: true })[0];
+    expect(job.message).toContain('Epoch maintenance');
+    expect(job.message).toContain(
+      disposition === 'transient-unknown' ? '3 consecutive failures' : 'next coordinator start',
+    );
+    expect(job.message).not.toContain(reason);
+    expect(job.message).not.toContain('/secret');
+    expect(job.message).not.toContain('EACCES');
+  }
+});
+
 function historicalAddressing(index: JobLocationIndex): JobAddressing {
   return new JobAddressing(
     index,
@@ -358,6 +440,42 @@ it.each([false, true])(
   },
 );
 
+it('reclassifies the previous active epoch after a proven selection change within one wait', () => {
+  const { index } = fixture();
+  index.register('known', 'previous', {
+    projectRoot: '/workspace/project',
+    workDir: '/workspace/project',
+    jobKind: 'provider',
+  });
+  let epoch = 'previous';
+  const historicalReads: string[] = [];
+  const addressing = new JobAddressing(
+    index.readOnlyView(),
+    {
+      epochKey: () => epoch,
+      detail: () => detail('known', 'running'),
+      abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
+    },
+    () => false,
+    () => 'pending',
+    (epochKey) => {
+      historicalReads.push(epochKey);
+      return { kind: 'unreadable', disposition: 'settled-unreadable', reason: 'Source owner settled the read' };
+    },
+    () => ({ kind: 'available', resultPath: '/result' }),
+  );
+  const request = { jobIds: ['known'], supportsWaitV3: true };
+  expect(addressing.admitWait(request)[0]).toMatchObject({ disposition: 'admitted', epochKey: 'previous' });
+  expect(historicalReads).toEqual([]);
+  epoch = 'successor';
+  expect(addressing.admitWait(request)[0]).toMatchObject({
+    disposition: 'outcome-unreadable',
+    epochKey: 'previous',
+    sourceRead: 'settled-unreadable',
+  });
+  expect(historicalReads).toEqual(['previous']);
+});
+
 it.each(['readable', 'transient-unknown', 'settled-unreadable', 'retired'] as const)(
   'carries %s through historical admission, remaining work and snapshot with an epoch sibling',
   (sourceRead) => {
@@ -595,7 +713,7 @@ it.each([undefined, { afterSeq: 1 }])(
     const addressing = historicalAddressing(index);
     expect(addressing.validateWait({ jobIds: ['old'], cursor })).toMatchObject({
       code: cursor ? 'wait_cursor_epoch_required' : 'wait_epoch_unsupported',
-      message: expect.stringContaining('Run coral-cli jobs detail old --full'),
+      message: expect.stringContaining('Run coral-cli jobs detail old'),
     });
   },
 );

@@ -604,3 +604,17 @@ it('discharges a released directory-only hold after complete absent inventory', 
   index.reconcileUnknownLocationHolds([]);
   expect(index.unknownLocationHolds()).toEqual([]);
 });
+
+it('resolves the hold and revision through the identity shared by lineage encodings', () => {
+  const { root, index } = fixture();
+  const full = JSON.stringify({ storeRoot: '/real/store', epoch: '7', lineageKey: 'lineage:7' });
+  const alias = JSON.stringify({ storeRoot: '/alias/store', epoch: '7', lineageKey: 'lineage:7' });
+  index.holdUnknownLocations(full, 'owner settled', false);
+  index.register('job', full, { projectRoot: '/project', workDir: '/project', jobKind: 'provider' });
+  const restarted = new JobLocationIndex(runtime, root);
+  expect(restarted.unknownLocationHold(alias)).toBe('owner settled');
+  expect(restarted.revision(alias)).toBe(index.revision(full));
+  expect(restarted.locationsFor(alias).map((job) => job.jobId)).toEqual(['job']);
+  restarted.clearUnknownLocations(alias);
+  expect(index.unknownLocationHold(full)).toBeNull();
+});

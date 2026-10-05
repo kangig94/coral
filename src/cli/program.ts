@@ -115,9 +115,10 @@ export function peekCliHandoffPreflightResult(): LiveHandoffResult | null {
 export async function parseProgramWithHandoff(
   program: Command,
   argv: readonly string[] = process.argv,
+  clock?: { now(): number },
 ): Promise<HandoffOutcome | null> {
   const mode = waitInvocationMode(program, argv);
-  const invocation = mode === undefined ? undefined : new WaitInvocation(mode, argv);
+  const invocation = mode === undefined ? undefined : new WaitInvocation(mode, argv, clock);
   installWaitInvocation(invocation);
   const dispatch = async () => {
     const handoff = await runCliHandoffPreflight(argv);
@@ -147,7 +148,7 @@ export async function parseProgramWithHandoff(
       }
     }
     invocation.flushContinuation();
-    return { kind: 'handoff-exit', exitCode: 75 };
+    return { kind: 'handoff-exit', exitCode: invocation.completedExitCode ?? 75 };
   } finally {
     invocation?.dispose();
     installWaitInvocation(undefined);

@@ -294,7 +294,9 @@ it.each(['v0.10.15', 'v0.10.16', 'v0.10.17', 'v0.10.18'])(
           alreadyAcknowledged.push(event);
         }
         expect(alreadyAcknowledged.filter((event) => event.type === 'terminal')).toEqual([]);
-        expect(alreadyAcknowledged.filter((event) => event.type === 'waiting')).toEqual([]);
+        expect(alreadyAcknowledged.filter((event) => event.type === 'waiting')).toEqual([
+          expect.objectContaining({ type: 'waiting', waitingJobIds: [] }),
+        ]);
       }
       if (availability === 'repair-pending') {
         const pending: WaitStreamEvent[] = [];

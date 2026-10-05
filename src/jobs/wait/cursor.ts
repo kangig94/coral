@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { epochIdentity, sameEpoch } from '../../store/epoch/identity.js';
 import { isRecord } from '../../infra/json.js';
 import type { WaitCursor, WaitCursorV3 } from './contract.js';
 
@@ -26,7 +27,9 @@ export function waitCursorForJobs(cursor: WaitCursor, jobIds: readonly string[])
   );
   const requestedEpochs = new Set(Object.values(locations));
   const positions = Object.fromEntries(
-    Object.entries(cursor.positions).filter(([epochKey]) => requestedEpochs.has(epochKey)),
+    Object.entries(cursor.positions).filter(([epochKey]) =>
+      [...requestedEpochs].some((key) => sameEpoch(key, epochKey)),
+    ),
   );
   return {
     version: 'jobs.wait.v2',
@@ -97,7 +100,7 @@ export function decodeWaitCursor(value: unknown): WaitCursorDecoded {
           id.length === 0 ||
           typeof key !== 'string' ||
           key.length === 0 ||
-          !Object.hasOwn(value.positions as object, key),
+          !Object.keys(value.positions as object).some((positionKey) => sameEpoch(positionKey, key)),
       ) ||
       Object.keys(value).some((key) => !['version', 'positions', 'locations', 'deliveredJobIds'].includes(key))
     )
@@ -124,14 +127,20 @@ export const WAIT_CURSOR_REPLAY_NOTICE =
 
 export const ACKNOWLEDGED_FLAG = 1;
 export const ARTIFACT_PENDING_FLAG = 2;
+export const TAIL_PENDING_FLAG = 4;
 
 const V3_PREFIX = 'jobs.wait.v3:';
 const MAX_CURSOR_BYTES = 8192;
 export const UNRESOLVED_EPOCH = 0xff;
 
 /** Tokens identify accepted locations; they cannot reconstruct filesystem paths. */
+export function waitEpochPosition(positions: Record<string, number>, epochKey: string): number | undefined {
+  const matches = Object.entries(positions).filter(([key]) => sameEpoch(key, epochKey));
+  return matches.length ? Math.max(...matches.map(([, seq]) => seq)) : undefined;
+}
+
 export function waitEpochToken(epochKey: string): string {
-  return createHash('sha256').update(epochKey).digest().subarray(0, 16).toString('hex');
+  return createHash('sha256').update(epochIdentity(epochKey)).digest().subarray(0, 16).toString('hex');
 }
 
 export function waitJobHash(jobId: string): string {
@@ -176,9 +185,9 @@ function validV3(value: Record<string, unknown>): boolean {
       (job.epoch !== UNRESOLVED_EPOCH && ((job.epoch as number) < 0 || (job.epoch as number) >= value.epochs.length)) ||
       !Number.isInteger(job.flags) ||
       (job.flags as number) < 0 ||
-      (job.flags as number) > (ACKNOWLEDGED_FLAG | ARTIFACT_PENDING_FLAG) ||
-      (job.epoch === UNRESOLVED_EPOCH && job.flags !== 0) ||
-      job.flags === ARTIFACT_PENDING_FLAG
+      (job.flags as number) > (ACKNOWLEDGED_FLAG | ARTIFACT_PENDING_FLAG | TAIL_PENDING_FLAG) ||
+      (job.epoch === UNRESOLVED_EPOCH && job.flags !== 0 && job.flags !== TAIL_PENDING_FLAG) ||
+      (((job.flags as number) & ARTIFACT_PENDING_FLAG) !== 0 && ((job.flags as number) & ACKNOWLEDGED_FLAG) === 0)
     )
       return false;
     hashes.add(job.hash);
@@ -252,4 +261,33 @@ export function filterWaitCursorV3(cursor: WaitCursorV3, jobIds: readonly string
       epoch: job.epoch === UNRESOLVED_EPOCH ? UNRESOLVED_EPOCH : ordinals.indexOf(job.epoch),
     })),
   };
+}
+
+/** A request's frontier belongs to the recorded member, never to a newly discovered sibling. */
+export function waitReadPosition(
+  request: { cursor?: WaitCursor; supportsWaitV3?: boolean; drainProgress?: boolean; lines?: number },
+  jobId: string,
+  epochKey: string,
+): { afterSeq: number; tail?: number; limit?: number } {
+  const cursor = request.cursor;
+  if (cursor?.version === 'jobs.wait.v3') {
+    const member = cursor.jobs.find((job) => job.hash === waitJobHash(jobId));
+    if (member && (member.flags & TAIL_PENDING_FLAG) !== 0) return { afterSeq: 0, tail: request.lines ?? 20 };
+    const epoch = member && member.epoch !== UNRESOLVED_EPOCH ? cursor.epochs[member.epoch] : undefined;
+    return {
+      afterSeq:
+        epoch && epoch.token === waitEpochToken(epochKey)
+          ? Math.max(0, epoch.watermark - Number(epoch.lineOffset > 0))
+          : 0,
+      ...(request.drainProgress ? {} : { limit: 501 }),
+    };
+  }
+  if (cursor?.version === 'jobs.wait.v2')
+    return {
+      afterSeq: sameEpoch(cursor.locations[jobId], epochKey) ? (waitEpochPosition(cursor.positions, epochKey) ?? 0) : 0,
+    };
+  if (cursor) return { afterSeq: cursor.afterSeq };
+  return request.supportsWaitV3 && !request.drainProgress
+    ? { afterSeq: 0, tail: request.lines ?? 20 }
+    : { afterSeq: 0 };
 }

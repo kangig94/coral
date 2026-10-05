@@ -105,8 +105,11 @@ function seedUnprovenIncumbentJobs(
       .object({ value: z.string() })
       .safeParse(db.prepare("SELECT value FROM meta WHERE key = 'store_format_fingerprint'").get());
     return fingerprint.success ? fingerprint.data.value : '';
-  } catch (error: unknown) {
-    index.holdUnknownLocations(epochKey, error instanceof Error ? error.message : String(error));
+  } catch {
+    index.holdUnknownLocations(
+      epochKey,
+      'Startup recovery cannot read retained launch identities; this owner retries at the next coordinator start',
+    );
     return '';
   } finally {
     db?.close();
@@ -477,7 +480,10 @@ export function createStartupMintAuthorizer(
       executorSettled,
     );
     if (!executorSettled) {
-      index.holdUnknownLocations(epochKey, 'retained-controller-recovery-unavailable');
+      index.holdUnknownLocations(
+        epochKey,
+        'Retained controller recovery is unavailable; startup retirement re-observes it at the next coordinator start',
+      );
       for (const location of index.locationsFor(epochKey)) index.markUncertified(location.jobId);
     }
     const { settled: custodySettled, namesEpoch: custodyNamesEpoch } = observeStartupRetirementCustody(

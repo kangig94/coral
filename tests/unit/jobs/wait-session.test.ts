@@ -78,7 +78,7 @@ describe('wait session', () => {
               session.acknowledge(a);
               return session.cursor();
             })();
-      expect(cursor.jobs.find((job) => job.hash === waitJobHash('u'))).toMatchObject({ epoch: 255, flags: 0 });
+      expect(cursor.jobs.find((job) => job.hash === waitJobHash('u'))).toMatchObject({ epoch: 255, flags: 4 });
       const joined = [a, admitted('u', [[2, 'u below 100']], false)];
       const resumed = new WaitSession(['a', 'u'], cursor);
       resumed.reconcile(joined);

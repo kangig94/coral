@@ -3,11 +3,12 @@ import { describe, expect, it, vi } from 'vitest';
 import type { InvocationContext } from '../../../src/runtime/invocation-context.js';
 import type { LaunchedAtom, WorkflowExecutionPort } from '../../../src/workflow/execution-contract.js';
 import { admitted } from '#tests/helpers/wait-session.js';
+import { JobAddressing } from '#src/jobs/addressing.js';
 import { WaitCoordinator } from '#src/jobs/shell/wait.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { waitForAtoms } from '../../../src/workflow/wait.js';
-import type { WaitStreamEvent } from '../../../src/jobs/wait/contract.js';
+import type { WaitStreamEvent, WaitStreamRequest } from '../../../src/jobs/wait/contract.js';
 
 function atom(jobId: string, atomIndex: number): LaunchedAtom {
   return {
@@ -139,6 +140,22 @@ it('resumes recovery through ExecutionService and the real WaitCoordinator using
   const f = createTerminalExportFixture();
   try {
     const seq = f.complete();
+    const addressing = new JobAddressing(
+      f.index.readOnlyView(),
+      {
+        epochKey: () => 'new-selected-epoch',
+        detail: () => null,
+        abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
+      },
+      () => false,
+      () => 'pending',
+      (_epochKey, jobIds) => ({
+        kind: 'read',
+        dispositions: new Map(jobIds.map((jobId) => [jobId, 'readable' as const])),
+        locations: new Map(jobIds.map((jobId) => [jobId, f.index.read(jobId)!])),
+      }),
+      () => ({ kind: 'failed', cause: 'repair-failed', retryScheduled: true }),
+    );
     const ctx = { projectRoot: f.root } as InvocationContext;
     const service = new ExecutionService(ctx, {
       runtime: f.runtime,
@@ -153,7 +170,7 @@ it('resumes recovery through ExecutionService and the real WaitCoordinator using
       subscribeJobEvents: async function* () {},
       getCurrentJournalSeq: () => seq,
       currentJobEpochKey: () => 'new-selected-epoch',
-      jobEpochKey: (id: string) => f.index.read(id)?.epochKey ?? null,
+      internalWaitAdmissions: (_ids: readonly string[], request: WaitStreamRequest) => addressing.admitWait(request),
       observeResultAvailability: () => ({ kind: 'failed', cause: 'repair-failed', retryScheduled: true }),
     } as unknown as ExecutionServiceDeps);
     const progress: string[] = [];

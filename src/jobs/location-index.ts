@@ -1,4 +1,5 @@
-import { sameEpoch, epochHoldDirectory } from '../store/epoch/identity.js';
+import { createHash } from 'node:crypto';
+import { sameEpoch, epochHoldDirectory, epochIdentity } from '../store/epoch/identity.js';
 import { dirname, join } from 'node:path';
 import { setImmediate } from 'node:timers/promises';
 import { isDeepStrictEqual } from 'node:util';
@@ -16,6 +17,7 @@ import { jobLaunchRequestBodySchema } from './launch.js';
 import { jobPhaseSchema } from './phase.js';
 import { jobKindSchema, type JobDetailResponse, type JobKind } from './records.js';
 import { jobDiagnosticsSchema, jobTerminalSchema, jobTerminalRecordedBodySchema } from './terminal/result.js';
+import { type ResolvedStoreEpoch } from '../store/epoch/types.js';
 import { observeResolvedStoreEpoch } from '../store/epoch/observation.js';
 import { observeStorePath } from '../store/path-observation.js';
 import { protectedStoreEpochRoot } from '../store/epoch/protection.js';
@@ -167,7 +169,12 @@ export type JobLocationDetail =
   | Readonly<{ kind: 'absent' }>
   | Readonly<{ kind: 'unreadable' }>;
 
-export type JobLocation = z.infer<typeof locationIdentitySchema> & { detail: JobLocationDetail; terminalAge?: unknown };
+export type JobLocation = z.infer<typeof locationIdentitySchema> & {
+  detail: JobLocationDetail;
+  terminalAge?: unknown;
+  storedIdentity?: string;
+  storedStamp?: string;
+};
 
 export type UnknownLocationHold = Readonly<
   { reason: string; retryScheduled: boolean } & (
@@ -254,12 +261,14 @@ export type JobLocationSubject = Readonly<{ projectRoot: string; workDir: string
 export type JobLocationController = z.infer<typeof controllerSchema>;
 export type JobLocationCertificate = z.infer<typeof certificateSchema>;
 
-function atomicJson(runtime: Runtime, path: string, value: unknown): void {
+function atomicJson(runtime: Runtime, path: string, value: unknown): string {
   const parent = dirname(path);
   runtime.storage.mkdirSync(parent, { recursive: true, mode: 0o700 });
-  if (!runtime.storage.writeAtomicDurableSync(path, `${JSON.stringify(value)}\n`, { mode: 0o600 })) {
+  const raw = `${JSON.stringify(value)}\n`;
+  if (!runtime.storage.writeAtomicDurableSync(path, raw, { mode: 0o600 })) {
     throw new Error(`Could not write job location record: ${path}`);
   }
+  return raw;
 }
 
 function optionalJson<T>(runtime: Runtime, path: string, schema: z.ZodType<T>): T | null {
@@ -273,7 +282,7 @@ function optionalJson<T>(runtime: Runtime, path: string, schema: z.ZodType<T>): 
 
 export class JobLocationIndex {
   get resultRepairFailures(): Set<string> {
-    return resultRepairFailuresFor(this);
+    return resultRepairFailuresFor(this, this.runtime);
   }
   readonly time: TimePort;
   private readonly root: string;
@@ -301,8 +310,35 @@ export class JobLocationIndex {
     return join(this.root, 'jobs', `${Buffer.from(jobId).toString('base64url')}.json`);
   }
 
+  private readonly epochDirectories = new Map<string, string>();
+
   private epochPath(epochKey: string, name: string): string {
-    return join(this.root, 'epochs', epochHoldDirectory(epochKey), name);
+    const identity = epochIdentity(epochKey);
+    let directory = this.epochDirectories.get(identity);
+    if (!directory) {
+      const root = join(this.root, 'epochs');
+      directory = epochHoldDirectory(epochKey);
+      if (this.runtime.storage.existsSync(root)) {
+        for (const candidate of this.runtime.storage.readdirSync(root)) {
+          const matches = ['revision.v1.json', 'certificate.v1.json', 'unknown-locations.v1.json'].some((file) => {
+            try {
+              const stored = z
+                .object({ epochKey: z.string() })
+                .safeParse(JSON.parse(this.runtime.storage.readFileSync(join(root, candidate, file), 'utf-8')));
+              return stored.success && sameEpoch(stored.data.epochKey, epochKey);
+            } catch {
+              return false;
+            }
+          });
+          if (matches) {
+            directory = candidate;
+            break;
+          }
+        }
+      }
+      this.epochDirectories.set(identity, directory);
+    }
+    return join(this.root, 'epochs', directory, name);
   }
 
   private withRevisionLock<T>(epochKey: string, action: () => T): T {
@@ -325,7 +361,7 @@ export class JobLocationIndex {
     const previous = optionalJson(this.runtime, revisionPath, revisionSchema);
     const revision = (previous?.revision ?? 0) + 1;
     if (!Number.isSafeInteger(revision)) throw new RangeError('Job location revision exhausted its counter.');
-    atomicJson(this.runtime, revisionPath, { ...previous, version: 'v1', revision });
+    atomicJson(this.runtime, revisionPath, { ...previous, version: 'v1', epochKey, revision });
     return revision;
   }
 
@@ -373,7 +409,15 @@ export class JobLocationIndex {
       const stored = locationSchema.parse(JSON.parse(raw));
       if (stored) {
         this.storedLocations.delete(jobId);
-        this.storedLocations.set(jobId, { stamp, raw, stored, view: viewLocation(stored) });
+        this.storedLocations.set(jobId, {
+          stamp,
+          raw,
+          stored,
+          view: Object.defineProperties(viewLocation(stored), {
+            storedIdentity: { value: createHash('sha256').update(raw).digest('hex') },
+            storedStamp: { value: stamp },
+          }),
+        });
         const oldest = this.storedLocations.keys().next().value;
         if (this.storedLocations.size > 32 && oldest !== undefined) this.storedLocations.delete(oldest);
       }
@@ -390,6 +434,24 @@ export class JobLocationIndex {
   read(jobId: string): JobLocation | null {
     const stored = this.readStored(jobId);
     return stored === null ? null : (this.storedLocations.get(jobId)?.view ?? viewLocation(stored));
+  }
+
+  publicationUnchanged(jobId: string, location: JobLocation): boolean {
+    if (!location.storedStamp) return false;
+    try {
+      const stat = this.runtime.storage.lstatSync(this.jobPath(jobId), { bigint: true });
+      return (
+        location.storedStamp ===
+        `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}:${stat.birthtimeNs}`
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  publicationLocation(jobId: string): JobLocation | null {
+    const cached = this.storedLocations.get(jobId)?.view;
+    return cached && this.publicationUnchanged(jobId, cached) ? cached : this.read(jobId);
   }
 
   historicalSourceState(epochKey: string): 'present' | 'absent' | 'unobservable' {
@@ -536,7 +598,16 @@ export class JobLocationIndex {
         detail: preserveStoredDetail(current.detail, { ...detail, events: [terminal] }),
       };
       if (!isDeepStrictEqual(current, location)) {
-        atomicJson(this.runtime, this.jobPath(jobId), location);
+        const raw = atomicJson(this.runtime, this.jobPath(jobId), location);
+        const stat = this.runtime.storage.lstatSync(this.jobPath(jobId), { bigint: true });
+        const stamp = `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}:${stat.birthtimeNs}`;
+        const view = Object.defineProperties(viewLocation(location), {
+          storedIdentity: { value: createHash('sha256').update(raw).digest('hex') },
+          storedStamp: { value: stamp },
+        });
+        this.storedLocations.set(jobId, { raw, stamp, stored: location, view });
+        const oldest = this.storedLocations.keys().next().value;
+        if (this.storedLocations.size > 32 && oldest !== undefined) this.storedLocations.delete(oldest);
         this.advanceRevision(current.epochKey);
       }
       return viewLocation(location);
@@ -612,16 +683,20 @@ export class JobLocationIndex {
 
   holdUnknownLocations(epochKey: string, reason: string, retryScheduled = false): void {
     this.withRevisionLock(epochKey, () => {
-      this.advanceRevision(epochKey);
-      const path = this.epochPath(epochKey, 'unknown-locations.v1.json');
+      const path = join(this.root, 'epochs', epochHoldDirectory(epochKey), 'unknown-locations.v1.json');
       const previous = optionalJson(this.runtime, path, unknownHoldSchema);
+      if (previous?.reason === reason && previous.retryScheduled === retryScheduled) return;
+      this.advanceRevision(epochKey);
       atomicJson(this.runtime, path, { ...previous, version: 'v1', epochKey, reason, retryScheduled });
     });
   }
 
   clearUnknownLocations(epochKey: string): void {
     this.withRevisionLock(epochKey, () => {
-      const path = this.epochPath(epochKey, 'unknown-locations.v1.json');
+      const ownedPath = join(this.root, 'epochs', epochHoldDirectory(epochKey), 'unknown-locations.v1.json');
+      const path = this.runtime.storage.existsSync(ownedPath)
+        ? ownedPath
+        : this.epochPath(epochKey, 'unknown-locations.v1.json');
       if (!this.runtime.storage.existsSync(path)) return;
       this.runtime.storage.unlinkSync(path);
       this.advanceRevision(epochKey);
@@ -655,24 +730,31 @@ export class JobLocationIndex {
   }
 
   unknownLocationHold(epochKey: string): string | null {
+    const ownedPath = join(this.root, 'epochs', epochHoldDirectory(epochKey), 'unknown-locations.v1.json');
     return (
-      this.readUnknownLocationHold(this.epochPath(epochKey, 'unknown-locations.v1.json'), epochKey)?.reason ?? null
+      this.readUnknownLocationHold(
+        this.runtime.storage.existsSync(ownedPath) ? ownedPath : this.epochPath(epochKey, 'unknown-locations.v1.json'),
+        epochKey,
+      )?.reason ?? null
     );
   }
 
   unknownLocationHolds(): UnknownLocationHold[] {
     const root = join(this.root, 'epochs');
     if (!this.runtime.storage.existsSync(root)) return [];
-    return this.runtime.storage.readdirSync(root).flatMap((key) => {
-      const hold = this.readUnknownLocationHold(join(root, key, 'unknown-locations.v1.json'), key, true);
-      return hold ? [hold] : [];
-    });
+    return this.runtime.storage
+      .readdirSync(root)
+      .flatMap((key) => {
+        const hold = this.readUnknownLocationHold(join(root, key, 'unknown-locations.v1.json'), key, true);
+        return hold ? [hold] : [];
+      })
+      .sort((a, b) => Number(a.retryScheduled) - Number(b.retryScheduled));
   }
 
   reconcileUnknownLocationHolds(presentKeys: readonly string[], inventoryComplete = true): void {
     for (const hold of this.unknownLocationHolds()) {
       const present = presentKeys.find((key) => sameEpoch(key, hold.epochKey ?? { directory: hold.directory }));
-      if (present) continue;
+      if (present || !inventoryComplete) continue;
       if (hold.epochKey === undefined) {
         if (!inventoryComplete) continue;
         const scan = this.scan();
@@ -761,13 +843,15 @@ export class JobLocationIndex {
       const scan = this.scan();
       this.locationsUnreadable = scan.unreadable;
       for (const location of scan.readable) {
-        const locations = this.locationsByEpoch.get(location.epochKey) ?? [];
+        const locations = this.locationsByEpoch.get(epochIdentity(location.epochKey)) ?? [];
         locations.push(location);
-        this.locationsByEpoch.set(location.epochKey, locations);
+        this.locationsByEpoch.set(epochIdentity(location.epochKey), locations);
       }
       this.locationsStamp = stamp;
     }
-    return (this.locationsByEpoch.get(epochKey) ?? []).map((location) => this.read(location.jobId) ?? location);
+    return (this.locationsByEpoch.get(epochIdentity(epochKey)) ?? []).map(
+      (location) => this.read(location.jobId) ?? location,
+    );
   }
 
   certify(epochKey: string, terminalHighWaterSeq: number): JobLocationCertificate | null {
@@ -813,7 +897,7 @@ export class JobLocationIndex {
     return certificate?.revision === revision ? certificate : null;
   }
 
-  resultsReleased(epochKey: string): boolean {
+  resultsReleased(epochKey: string, closedSource?: ResolvedStoreEpoch): boolean {
     const certificate = this.certificate(epochKey);
     if (certificate === null) return false;
     if (
@@ -824,8 +908,11 @@ export class JobLocationIndex {
       return true;
     try {
       return (
-        withTerminalSource(this.runtime, epochKey, (db) =>
-          certificate.jobIds.every((jobId) => this.resultDurable(jobId, db)),
+        withTerminalSource(
+          this.runtime,
+          epochKey,
+          (db) => certificate.jobIds.every((jobId) => this.resultDurable(jobId, db)),
+          closedSource,
         ) ?? certificate.jobIds.every((jobId) => this.resultDurable(jobId, null))
       );
     } catch {
@@ -897,8 +984,10 @@ export class JobLocationIndex {
         this.unknownLocationHolds().find((hold) => sameEpoch(hold.epochKey, epochKey))?.retryScheduled,
       prepareTerminal: (jobId) => this.prepareTerminal(jobId, db, epochKey, jobsRoot),
       location: (jobId) => this.read(jobId),
-      withSource: (jobId, read) => {
-        if (!sameEpoch(this.read(jobId)?.epochKey, epochKey))
+      publicationLocation: (jobId) => this.publicationLocation(jobId),
+      publicationUnchanged: (jobId, location) => this.publicationUnchanged(jobId, location),
+      withSource: (jobId, read, location) => {
+        if (!sameEpoch((location ?? this.read(jobId))?.epochKey, epochKey))
           throw new Error('Source epoch identity cannot be confirmed');
         return read(db, ctx);
       },

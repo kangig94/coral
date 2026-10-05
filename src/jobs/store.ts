@@ -547,8 +547,8 @@ export class JobStore implements JobProgressStore {
     return this.detail(jobId);
   }
 
-  readJobEvents(jobId: string, terminalOnly = false, afterSeq = 0) {
-    return readJobEvents(this.db, jobId, this, terminalOnly, afterSeq);
+  readJobEvents(jobId: string, terminalOnly = false, afterSeq = 0, window?: { tail?: number; limit?: number }) {
+    return readJobEvents(this.db, jobId, this, terminalOnly, afterSeq, window);
   }
 
   observeJobAbsence(jobId: string): boolean {
@@ -636,9 +636,16 @@ export class JobStore implements JobProgressStore {
           },
         };
       },
-      withSource: (jobId, read) => {
+      publicationLocation: (jobId) => this.exportLocations?.publicationLocation(jobId) ?? null,
+      ...(this.exportLocations
+        ? {
+            publicationUnchanged: (jobId: string, location: JobLocation) =>
+              this.exportLocations?.publicationUnchanged(jobId, location) === true,
+          }
+        : {}),
+      withSource: (jobId, read, snapshot) => {
         if (!this.exportLocations) return read(this.db, this);
-        const location = this.exportLocations.read(jobId);
+        const location = snapshot ?? this.exportLocations.read(jobId);
         return location ? withTerminalSource(this.runtime, location.epochKey, (db) => read(db, this)) : null;
       },
     });

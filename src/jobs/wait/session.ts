@@ -3,7 +3,15 @@ import type { JobDetailResponse, JobProgressEvent, JobTerminal } from '../record
 import type { ContinuitySnapshot } from '../../sessions/continuity.js';
 import type { ResultAvailability } from '../terminal/export.js';
 import type { WaitCursor, WaitCursorV3, WaitStreamEvent } from './contract.js';
-import { ACKNOWLEDGED_FLAG, ARTIFACT_PENDING_FLAG, UNRESOLVED_EPOCH, waitEpochToken, waitJobHash } from './cursor.js';
+import {
+  ACKNOWLEDGED_FLAG,
+  ARTIFACT_PENDING_FLAG,
+  TAIL_PENDING_FLAG,
+  UNRESOLVED_EPOCH,
+  waitEpochToken,
+  waitEpochPosition,
+  waitJobHash,
+} from './cursor.js';
 
 export type WaitDisposition =
   | 'admitted'
@@ -112,7 +120,10 @@ export class WaitSession {
   admissions: WaitAdmission[] = [];
   readonly notices: string[] = [];
   private readonly epochs = new Map<string, { token: string; watermark: number; lineOffset: number }>();
-  private readonly members = new Map<string, { epochKey?: string; acknowledged: boolean; artifactPending: boolean }>();
+  private readonly members = new Map<
+    string,
+    { epochKey?: string; acknowledged: boolean; artifactPending: boolean; tailPending: boolean }
+  >();
   private progressLines: WaitProgressLine[] | undefined;
   private progressHead = 0;
   private progressComplete = false;
@@ -246,10 +257,12 @@ export class WaitSession {
           legacy.afterSeq === 0 ||
           legacy.admittedJobIds === undefined ||
           legacy.admittedJobIds?.includes(jobId) === true));
+    const legacyPosition =
+      legacy?.version === 'jobs.wait.v2' ? waitEpochPosition(legacy.positions, epochKey) : undefined;
     const inputPosition =
       inputEpoch ??
-      (legacy?.version === 'jobs.wait.v2' && legacy.positions[epochKey] !== undefined
-        ? { watermark: legacy.positions[epochKey], lineOffset: 0 }
+      (legacyPosition !== undefined
+        ? { watermark: legacyPosition, lineOffset: 0 }
         : legacy?.version === undefined && legacy !== undefined
           ? { watermark: legacy.afterSeq, lineOffset: 0 }
           : undefined);
@@ -268,7 +281,7 @@ export class WaitSession {
       !unchanged &&
       ((this.epochs.get(epochKey)?.watermark ?? 0) > 0 ||
         (this.input?.version === 'jobs.wait.v3' && this.input.epochs.some((epoch) => epoch.token === token)) ||
-        (legacy?.version === 'jobs.wait.v2' && legacy.positions[epochKey] !== undefined) ||
+        (legacy?.version === 'jobs.wait.v2' && Object.keys(legacy.positions).some((key) => sameEpoch(key, epochKey))) ||
         (legacy?.version === undefined &&
           legacy !== undefined &&
           legacy.afterSeq > 0 &&
@@ -284,7 +297,16 @@ export class WaitSession {
   private reconcileMember(admission: WaitAdmission): void {
     const { jobId, epochKey, disposition } = admission;
     if ((disposition !== 'admitted' && disposition !== 'discovery-unknown') || epochKey === undefined) {
-      if (!this.members.has(jobId)) this.members.set(jobId, { acknowledged: false, artifactPending: false });
+      const saved =
+        this.input?.version === 'jobs.wait.v3'
+          ? this.input.jobs.find((job) => job.hash === waitJobHash(jobId))
+          : undefined;
+      if (!this.members.has(jobId))
+        this.members.set(jobId, {
+          acknowledged: false,
+          artifactPending: false,
+          tailPending: saved ? (saved.flags & TAIL_PENDING_FLAG) !== 0 : !this.input && !this.internal,
+        });
       return;
     }
     const previous = this.members.get(jobId);
@@ -294,6 +316,9 @@ export class WaitSession {
     const { inputJob, legacy } = input;
     this.members.set(jobId, {
       epochKey,
+      tailPending:
+        previous?.tailPending ??
+        (inputJob ? (inputJob.flags & TAIL_PENDING_FLAG) !== 0 : !this.input && !this.internal),
       acknowledged:
         (previous?.epochKey === undefined ? undefined : previous.acknowledged) ??
         (inputJob !== undefined
@@ -446,9 +471,10 @@ export class WaitSession {
     return result;
   }
 
-  tailProgress(count: number): WaitProgressLine[] {
+  tailProgress(count: number, epochKeys?: ReadonlySet<string>): WaitProgressLine[] {
     if (count === 0) return [];
     return this.admissions
+      .filter((job) => !epochKeys || (job.epochKey !== undefined && epochKeys.has(job.epochKey)))
       .flatMap((job) => [...this.jobProgress(job, count)].reverse())
       .sort((a, b) => a.epochKey.localeCompare(b.epochKey) || a.seq - b.seq || a.offset - b.offset);
   }
@@ -466,8 +492,13 @@ export class WaitSession {
     });
   }
 
-  selectTailProgress(count: number, maxLines: number, maxBytes: number): WaitProgressLine[] {
-    const available = this.tailProgress(Math.min(count, maxLines));
+  selectTailProgress(
+    count: number,
+    maxLines: number,
+    maxBytes: number,
+    epochKeys?: ReadonlySet<string>,
+  ): WaitProgressLine[] {
+    const available = this.tailProgress(Math.min(count, maxLines), epochKeys);
     const totals = new Map<string, number>();
     for (const line of available) totals.set(line.jobId, (totals.get(line.jobId) ?? 0) + 1);
     const select = (limit: number): WaitProgressLine[] => {
@@ -495,14 +526,49 @@ export class WaitSession {
 
   private tailDelivery = false;
   startAtTail(count: number, maxLines: number, maxBytes: number): void {
-    const tail = this.selectTailProgress(count, maxLines, maxBytes);
-    if (this.hasProgressBefore(tail)) this.notices.push('Earlier progress outside the selected tail was not shown.');
-    this.progressLines = tail;
+    const pending = new Set(
+      this.admissions.flatMap((job) =>
+        this.members.get(job.jobId)?.tailPending &&
+        job.epochKey &&
+        job.disposition === 'admitted' &&
+        sourceReadDisposition(job) === 'readable' &&
+        !this.progressHeld(job)
+          ? [job.epochKey]
+          : [],
+      ),
+    );
+    if (pending.size === 0) return;
+    const tail = this.selectTailProgress(count, maxLines, maxBytes, pending);
+    if (
+      this.hasProgressBefore(tail) &&
+      !this.notices.includes('Earlier progress outside the selected tail was not shown.')
+    )
+      this.notices.push('Earlier progress outside the selected tail was not shown.');
+    this.skipProgressBefore(tail);
+    for (const job of this.admissions) {
+      if (!job.epochKey || !pending.has(job.epochKey)) continue;
+      const member = this.members.get(job.jobId);
+      if (member) member.tailPending = false;
+      if (!tail.some((line) => line.epochKey === job.epochKey)) {
+        const position = this.epochs.get(job.epochKey);
+        if (!position) continue;
+        position.watermark = Math.max(position.watermark, job.detail?.events.at(-1)?.seq ?? 0);
+        position.lineOffset = 0;
+      }
+    }
+    const other = this.admissions.some((job) => job.epochKey && !pending.has(job.epochKey) && !this.progressHeld(job))
+      ? this.progress(501).filter((line) => !pending.has(line.epochKey))
+      : [];
+    this.progressLines = [...tail, ...other].sort(
+      (a, b) => a.epochKey.localeCompare(b.epochKey) || a.seq - b.seq || a.offset - b.offset,
+    );
     this.progressHead = 0;
     this.progressComplete = true;
     this.tailDelivery = true;
-    if (tail.length === 0) this.skipEarlierProgress();
-    else this.skipProgressBefore(tail);
+  }
+
+  resumeFromPrefix(): void {
+    for (const member of this.members.values()) member.tailPending = false;
   }
 
   hasProgress(): boolean {
@@ -609,7 +675,12 @@ export class WaitSession {
             epochs.push({ ...([...this.epochs.values()].find((position) => position.token === saved.token) ?? saved) });
           }
           jobs.push({ hash: inputJob.hash, epoch: ordinal, flags: inputJob.flags });
-        } else jobs.push({ hash: waitJobHash(jobId), epoch: UNRESOLVED_EPOCH, flags: 0 });
+        } else
+          jobs.push({
+            hash: waitJobHash(jobId),
+            epoch: UNRESOLVED_EPOCH,
+            flags: member?.tailPending ? TAIL_PENDING_FLAG : 0,
+          });
         continue;
       }
       if (!member?.epochKey) continue;
@@ -622,7 +693,10 @@ export class WaitSession {
       jobs.push({
         hash: waitJobHash(jobId),
         epoch: epochs.findIndex((epoch) => epoch.token === position.token),
-        flags: (member.acknowledged ? ACKNOWLEDGED_FLAG : 0) | (member.artifactPending ? ARTIFACT_PENDING_FLAG : 0),
+        flags:
+          (member.acknowledged ? ACKNOWLEDGED_FLAG : 0) |
+          (member.artifactPending ? ARTIFACT_PENDING_FLAG : 0) |
+          (member.tailPending ? TAIL_PENDING_FLAG : 0),
       });
     }
     return { version: 'jobs.wait.v3', epochs, jobs };

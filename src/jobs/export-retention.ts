@@ -18,6 +18,7 @@ import type { EventsRow } from '../store/schema.js';
 import { jobTerminalRecordedBodySchema } from './terminal/result.js';
 import { readJobTerminalAge } from './terminal-age.js';
 
+import type { JobTerminal } from './records.js';
 import type { JobLocation } from './location-index.js';
 import { validatedTerminal, sameTerminal } from './terminal/identity.js';
 import { readAcceptedTerminal } from './terminal/source.js';
@@ -52,6 +53,7 @@ export function terminalEligibility(
   location: JobLocation | null,
   withSource: <T>(read: (db: Database) => T) => T | null,
   observeSource = true,
+  sourceTerminal?: { accepted: EventsRow; terminal: JobTerminal },
 ): TerminalEligibility {
   const cutoff = trustedJobRetentionCutoff(runtime);
   const denied = {
@@ -89,12 +91,14 @@ export function terminalEligibility(
   if (observeSource && !(cutoff !== null && typeof age === 'number' && age < cutoff)) {
     try {
       withSource((db) => {
-        const accepted = readAcceptedTerminal(db, location.jobId);
+        const accepted = sourceTerminal?.accepted ?? readAcceptedTerminal(db, location.jobId);
         if (!accepted || accepted.seq !== terminal.seq || accepted.ts !== terminal.ts) {
           sourceContradictory = true;
           return;
         }
-        const body = jobTerminalRecordedBodySchema.parse(JSON.parse(Buffer.from(accepted.body).toString('utf8')));
+        const body = sourceTerminal
+          ? { terminal: sourceTerminal.terminal }
+          : jobTerminalRecordedBodySchema.parse(JSON.parse(Buffer.from(accepted.body).toString('utf8')));
         if (!sameTerminal(terminal.result, body.terminal)) {
           sourceContradictory = true;
           return;
@@ -117,7 +121,7 @@ export function terminalEligibility(
     sourceReadTransient,
     sourceContradictory,
     ageUnproven: location.terminalAge === undefined || (matches && saved.data.kind === 'unknown'),
-    ageDeferred: cutoff === null && location.terminalAge === undefined && sourceReadable,
+    ageDeferred: location.terminalAge === undefined && sourceReadable && (cutoff === null || age === 'regression'),
     cutoffTrusted: cutoff !== null,
     regressionAuthorized,
     publicationAuthorized: cutoff !== null && sourceReadable && (kind === 'inside' || regressionAuthorized),

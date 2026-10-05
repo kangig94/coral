@@ -1,6 +1,5 @@
-import { linkSync, symlinkSync, unlinkSync } from 'node:fs';
+import { linkSync, symlinkSync, unlinkSync, renameSync } from 'node:fs';
 import { observeProtectedEpoch } from '#src/store/epoch/protection.js';
-import { z } from 'zod';
 import { createStoreEpochSweepScheduler } from '#src/coordinator/composition/store-epoch-sweep-scheduler.js';
 import { settleStoreEpoch, retirementMintDisposition } from '#src/store/epoch/index.js';
 import { createHash } from 'node:crypto';
@@ -2752,11 +2751,16 @@ describe('historical maintenance budgets and retirement', () => {
     const epoch = { storeRoot: join(f.root, 'db'), epoch: '7', path: join(f.epochDir, 'store.db') };
     const key = encodeResolvedStoreEpoch(runtime, epoch);
     const index = new JobLocationIndex(runtime, join(f.root, 'state'));
-    let payloadBytes = 0;
+    const payloadSubjects = new Set<string>();
     const count = (value: unknown): void => {
-      if (value instanceof Uint8Array) payloadBytes += value.byteLength;
+      if (value instanceof Uint8Array) return;
       else if (Array.isArray(value)) value.forEach(count);
-      else if (value && typeof value === 'object') Object.values(value).forEach(count);
+      else if (value && typeof value === 'object') {
+        const row = value as Record<string, unknown>;
+        if (row.body !== undefined && (row.stream_id !== undefined || row.job_id !== undefined))
+          payloadSubjects.add(String(row.stream_id ?? row.job_id));
+        Object.values(value).forEach(count);
+      }
     };
     const open = storage.openSqliteDatabaseSync;
     const measured = {
@@ -2789,33 +2793,100 @@ describe('historical maintenance budgets and retirement', () => {
     seedHistoricalEpoch(runtime, index, epoch, key, FP0, join(f.root, 'results'), measured, [], false, {
       remaining: 1,
     });
-    expect(payloadBytes).toBeLessThan(4000);
+    expect(payloadSubjects).toEqual(new Set(['payload-0']));
     expect(index.read('payload-0')).not.toBeNull();
     expect(index.read('payload-1')).toBeNull();
   });
 
-  it('budgeted seed passes parse only their subjects and defer startup seeding', async () => {
+  it('charges one unit for each complete subject and defers startup seeding', () => {
     const f = fixture();
-    for (let i = 0; i < 300; i++) f.addJob(`job-${String(i).padStart(5, '0')}`);
+    for (let i = 0; i < 4; i++) f.addJob(`job-${i}`);
     f.db.close();
     const epoch = { storeRoot: join(f.root, 'db'), epoch: '7', path: join(f.epochDir, 'store.db') };
     const key = encodeResolvedStoreEpoch(runtime, epoch);
     const index = new JobLocationIndex(runtime, join(f.root, 'state'));
-    const parse = vi.spyOn(z.ZodObject.prototype, '_parse');
-    try {
-      seedHistoricalEpoch(runtime, index, epoch, key, FP0, join(f.root, 'results'), storage, [], false, {
-        remaining: 0,
-      });
-      for (let tick = 0; tick < 3; tick++) {
-        parse.mockClear();
-        seedHistoricalEpoch(runtime, index, epoch, key, FP0, join(f.root, 'results'), storage, [], false, {
-          remaining: 1,
-        });
-        expect(parse.mock.calls.length).toBeLessThan(40);
-      }
-    } finally {
-      parse.mockRestore();
+    const register = vi.spyOn(index, 'register');
+    seedHistoricalEpoch(runtime, index, epoch, key, FP0, join(f.root, 'results'), storage, [], false, { remaining: 0 });
+    expect(register).not.toHaveBeenCalled();
+    for (let tick = 0; tick < 3; tick++) {
+      register.mockClear();
+      const budget = { remaining: 1 };
+      seedHistoricalEpoch(runtime, index, epoch, key, FP0, join(f.root, 'results'), storage, [], false, budget);
+      expect(budget.remaining).toBe(0);
+      expect(new Set(register.mock.calls.map(([id]) => id))).toEqual(new Set([`job-${tick}`]));
+      expect(index.read(`job-${tick}`)?.disposition).toBe('terminal');
     }
+  });
+  it('answers non-members as absent after the first slice without trusting a changed source frontier', () => {
+    const f = fixture();
+    for (let i = 0; i < 4; i++) f.addJob(`job-${i}`);
+    f.db.close();
+    const epoch = { storeRoot: join(f.root, 'db'), epoch: '7', path: join(f.epochDir, 'store.db') };
+    const key = encodeResolvedStoreEpoch(runtime, epoch);
+    const index = new JobLocationIndex(runtime, join(f.root, 'state'));
+    const addressing = new JobAddressing(
+      index.readOnlyView(),
+      {
+        epochKey: () => 'active',
+        detail: () => null,
+        abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
+      },
+      () => false,
+      () => 'pending',
+      undefined,
+      () => ({ kind: 'available', resultPath: '/result.md' }),
+    );
+    const request = { jobIds: ['ghost', 'job-3'], supportsWaitV3: true };
+    seedHistoricalEpoch(runtime, index, epoch, key, FP0, join(f.root, 'results'), storage, [], false, { remaining: 0 });
+    expect(addressing.admitWait(request).map((job) => job.disposition)).toEqual([
+      'discovery-unknown',
+      'discovery-unknown',
+    ]);
+    seedHistoricalEpoch(runtime, index, epoch, key, FP0, join(f.root, 'results'), storage, [], false, { remaining: 1 });
+    expect(addressing.admitWait(request).map((job) => job.disposition)).toEqual(['missing', 'discovery-unknown']);
+    const changed = newRawDatabase(epoch.path);
+    changed.exec(
+      "INSERT INTO events (seq, ts, type, stream_kind, stream_id, body) SELECT (SELECT MAX(seq) + 1 FROM events), ts, type, stream_kind, 'ghost', body FROM events WHERE type = 'job.launch.requested' LIMIT 1",
+    );
+    changed.close();
+    expect(addressing.admitWait(request)[0].disposition).toBe('discovery-unknown');
+  });
+  it('a restart does not re-seed settled members of an epoch that cannot certify', () => {
+    const f = fixture();
+    for (const job of ['done-0', 'done-1', 'done-2', 'live']) f.addJob(job);
+    f.db.prepare("DELETE FROM events WHERE stream_id = 'live' AND type = 'job.terminal.recorded'").run();
+    f.db.prepare("UPDATE projection_jobs SET phase = 'running' WHERE job_id = 'live'").run();
+    f.db.close();
+    const epoch = { storeRoot: join(f.root, 'db'), epoch: '7', path: join(f.epochDir, 'store.db') };
+    const key = encodeResolvedStoreEpoch(runtime, epoch);
+    const index = new JobLocationIndex(runtime, join(f.root, 'state'));
+    seedHistoricalEpoch(runtime, index, epoch, key, FP0, join(f.root, 'results'), storage, [], true);
+    expect(index.certificate(key)).toBeNull();
+    const restarted = new JobLocationIndex(runtime, join(f.root, 'state'));
+    const register = vi.spyOn(restarted, 'register');
+    const budget = { remaining: 1 };
+    seedHistoricalEpoch(runtime, restarted, epoch, key, FP0, join(f.root, 'results'), storage, [], true, budget);
+    expect(register.mock.calls.map(([id]) => id)).toEqual(['live']);
+    expect(restarted.unknownLocationHold(key)).toBeNull();
+    expect(budget.remaining).toBe(0);
+  });
+  it('routes hydration hints through lineage identity across address spellings', () => {
+    const f = fixture();
+    f.addJob('live');
+    f.db.prepare("DELETE FROM events WHERE stream_id = 'live' AND type = 'job.terminal.recorded'").run();
+    f.db.prepare("UPDATE projection_jobs SET phase = 'running' WHERE job_id = 'live'").run();
+    f.db.close();
+    const epoch = { storeRoot: join(f.root, 'db'), epoch: '7', path: join(f.epochDir, 'store.db') };
+    const key = encodeResolvedStoreEpoch(runtime, epoch);
+    const index = new JobLocationIndex(runtime, join(f.root, 'state'));
+    seedHistoricalEpoch(runtime, index, epoch, key, FP0, join(f.root, 'results'), storage);
+    const alias = JSON.stringify({ ...JSON.parse(key), storeRoot: join(f.root, 'alias') });
+    vi.spyOn(index, 'read').mockReturnValue({ ...index.read('live')!, epochKey: alias });
+    const hint = vi.fn();
+    onHistoricalHydrationHint(index, hint);
+    hintHistoricalHydration(index, 'live');
+    expect(hint).toHaveBeenCalledExactlyOnceWith(alias);
+    onHistoricalHydrationHint(index, null);
   });
 });
 
@@ -2989,6 +3060,213 @@ it('observes journal progress when file stamps collide in one timestamp tick', (
       location?.detail.kind === 'recorded' &&
         location.detail.value.events.some((event) => event.type === 'progress' && event.message === 'after'),
     ).toBe(true);
+  } finally {
+    vi.restoreAllMocks();
+    f.close();
+  }
+});
+
+it('settles registration identity failures after three consecutive observations', () => {
+  const { root, epochDir, db } = fixture(fingerprints[0]);
+  db.close();
+  const epoch = { storeRoot: join(root, 'db'), epoch: '7', path: join(epochDir, 'store.db') };
+  const key = encodeResolvedStoreEpoch(runtime, epoch);
+  const index = new JobLocationIndex(runtime, join(root, 'state'));
+  writeFileSync(join(epochDir, '.coral-lineage.v1.json'), '{bad');
+  const entry = {
+    resolved: epoch,
+    epochKey: key,
+    epochJson: { kind: 'valid', value: { build: { storeFormatFingerprint: fingerprints[0] } } },
+  } as never;
+  for (let tick = 0; tick < 3; tick++)
+    registerPresentHistoricalEpochs(runtime, index, [entry], 'active', { remaining: 0 });
+  expect(index.unknownLocationHolds()).toEqual([
+    expect.objectContaining({ retryScheduled: false, reason: expect.stringContaining('next start') }),
+  ]);
+  expect(readHistoricalSource(index, key, ['unknown'])).toMatchObject({
+    kind: 'unreadable',
+    disposition: 'settled-unreadable',
+  });
+});
+
+it('registration publishes its pending hold before the first maintenance slice', () => {
+  const { root, epochDir, db } = fixture(fingerprints[0]);
+  db.close();
+  const epoch = { storeRoot: join(root, 'db'), epoch: '7', path: join(epochDir, 'store.db') };
+  const key = encodeResolvedStoreEpoch(runtime, epoch);
+  const index = new JobLocationIndex(runtime, join(root, 'state'));
+  registerPresentHistoricalEpochs(
+    runtime,
+    index,
+    [
+      {
+        resolved: epoch,
+        epochKey: key,
+        epochJson: { kind: 'valid', value: { build: { storeFormatFingerprint: fingerprints[0] } } },
+      },
+    ] as never,
+    'active',
+    { remaining: 0 },
+  );
+  expect(index.unknownLocationHolds()).toEqual([expect.objectContaining({ retryScheduled: true })]);
+});
+
+it('healthy source observations reset the consecutive failure allowance', async () => {
+  const { root, epochDir, db } = fixture(fingerprints[0]);
+  db.close();
+  const epoch = { storeRoot: join(root, 'db'), epoch: '7', path: join(epochDir, 'store.db') };
+  const key = encodeResolvedStoreEpoch(runtime, epoch);
+  const index = new JobLocationIndex(runtime, join(root, 'state'));
+  expect(
+    seedHistoricalEpoch(runtime, index, epoch, key, fingerprints[0], join(root, 'results'), storage, [], true).kind,
+  ).toBe('complete');
+  for (let round = 0; round < 3; round++) {
+    const observe = vi.spyOn(storage, 'lstatSync').mockImplementation(() => {
+      throw new Error('temporary observation failure');
+    });
+    await retryUnknownHistoricalEpochs(index);
+    observe.mockRestore();
+    await retryUnknownHistoricalEpochs(index);
+    await refreshHistoricalEpochs(index);
+    expect(index.unknownLocationHolds().some((hold) => !hold.retryScheduled)).toBe(false);
+  }
+});
+
+it('discharges an unknown-age legacy result from its proven closed reaping source', () => {
+  const f = createTerminalExportFixture('provider', true);
+  try {
+    f.complete({ terminalAt: TERMINAL_EXPORT_CUTOFF - 1000, precedingAt: TERMINAL_EXPORT_CUTOFF - 2000 });
+    const jobPath = join(f.root, 'job-locations.v1', 'jobs', `${Buffer.from(f.jobId).toString('base64url')}.json`);
+    const stored = JSON.parse(readFileSync(jobPath, 'utf8'));
+    delete stored.terminalAge;
+    writeFileSync(jobPath, JSON.stringify(stored));
+    f.index.certify(f.epochKey, f.index.read(f.jobId)!.terminalSeq!);
+    rmSync(dirname(f.resultPath), { recursive: true, force: true });
+    const reaping = join(f.epoch.storeRoot, '.reaping-closed-1');
+    renameSync(dirname(f.epoch.path), reaping);
+    const source = { ...f.epoch, path: join(reaping, 'store.db') };
+    expect(f.index.certificate(f.epochKey)).not.toBeNull();
+    expect(f.index.resultsReleased(f.epochKey, source)).toBe(true);
+    writeFileSync(
+      join(reaping, '.coral-lineage.v1.json'),
+      JSON.stringify({ version: 'v1', lineageId: '00000000-0000-4000-8000-000000000099' }),
+    );
+    expect(f.index.resultsReleased(f.epochKey, source)).toBe(false);
+  } finally {
+    f.close();
+  }
+});
+
+it.each(['symlink', 'linked'] as const)(
+  'refresh settles a certified source with a %s guard after three failures',
+  async (fault) => {
+    const f = createTerminalExportFixture('provider', true);
+    try {
+      seedHistoricalEpoch(
+        f.runtime,
+        f.index,
+        f.epoch,
+        f.epochKey,
+        currentCoralStoreFormat().fingerprint,
+        f.runtime.paths.coral.exports.jobsRoot,
+        f.runtime.storage,
+      );
+      expect(f.index.unknownLocationHolds()).toEqual([]);
+      const guard = join(f.epochDir, '.lock');
+      const other = join(f.root, 'other.lock');
+      if (fault === 'symlink') {
+        renameSync(guard, other);
+        symlinkSync(other, guard);
+      } else linkSync(guard, other);
+      for (let attempt = 0; attempt < 3; attempt++) await refreshHistoricalEpochs(f.index);
+      expect(f.index.unknownLocationHolds()).toMatchObject([{ retryScheduled: false }]);
+      expect(readHistoricalSource(f.index, f.epochKey, [f.jobId])).toMatchObject({
+        kind: 'unreadable',
+        disposition: 'settled-unreadable',
+      });
+    } finally {
+      f.close();
+    }
+  },
+);
+
+it('budgeted refresh advances past absent projection rows to the live subject', () => {
+  const f = createTerminalExportFixture('provider', true);
+  try {
+    seedHistoricalEpoch(
+      f.runtime,
+      f.index,
+      f.epoch,
+      f.epochKey,
+      currentCoralStoreFormat().fingerprint,
+      f.runtime.paths.coral.exports.jobsRoot,
+      f.runtime.storage,
+    );
+    f.index.markUncertified(f.jobId);
+    f.store.appendProgress(f.jobId, 'session-1', 'after absent rows');
+    const observed = vi.spyOn(f.index, 'recordObserved');
+    for (let slice = 0; slice < 3; slice++)
+      refreshHistoricalEpoch(f.index, f.epochKey, ['missing-first', 'missing-second', f.jobId], { remaining: 1 });
+    expect(observed.mock.calls.map(([jobId]) => jobId)).toEqual([f.jobId]);
+    expect(f.index.read(f.jobId)?.detail).toMatchObject({
+      kind: 'recorded',
+      value: {
+        events: expect.arrayContaining([expect.objectContaining({ type: 'progress', message: 'after absent rows' })]),
+      },
+    });
+  } finally {
+    f.close();
+  }
+});
+
+it('requires two absent observations before retiring an unregistered source', () => {
+  const root = mkdtempSync(join(tmpdir(), 'coral-unregistered-rename-'));
+  directories.push(root);
+  const index = new JobLocationIndex(runtime, root);
+  let observations = 0;
+  const view = {
+    ...index.readOnlyView(),
+    historicalSourceState: () => (++observations === 1 ? ('absent' as const) : ('present' as const)),
+  };
+  expect(readHistoricalSource(view, 'unregistered', ['job'])).toMatchObject({
+    kind: 'unreadable',
+    disposition: 'transient-unknown',
+  });
+  expect(observations).toBeGreaterThanOrEqual(2);
+  const absent = { ...index.readOnlyView(), historicalSourceState: () => 'absent' as const };
+  expect(readHistoricalSource(absent, 'unregistered', ['job'])).toMatchObject({
+    kind: 'unreadable',
+    disposition: 'retired',
+  });
+});
+
+it('a per-job transient read honours the source hold already settled by maintenance', () => {
+  const f = createTerminalExportFixture('provider', true);
+  try {
+    seedHistoricalEpoch(
+      f.runtime,
+      f.index,
+      f.epoch,
+      f.epochKey,
+      currentCoralStoreFormat().fingerprint,
+      f.runtime.paths.coral.exports.jobsRoot,
+      f.runtime.storage,
+    );
+    f.index.holdUnknownLocations(f.epochKey, 'Source maintenance settled; re-read at next start', false);
+    const open = f.runtime.storage.openSqliteDatabaseSync.bind(f.runtime.storage);
+    vi.spyOn(f.runtime.storage, 'openSqliteDatabaseSync').mockImplementation((path, options) => {
+      const db = open(path, options);
+      const prepare = db.prepare.bind(db);
+      db.prepare = ((sql: string) => {
+        if (sql === 'SELECT * FROM projection_jobs WHERE job_id = ?') throw new Error('database is locked');
+        return prepare(sql);
+      }) as typeof db.prepare;
+      return db;
+    });
+    const read = readHistoricalSource(f.index, f.epochKey, [f.jobId]);
+    expect(read.kind).toBe('read');
+    if (read.kind !== 'read') throw new Error('Expected an isolated per-job refusal');
+    expect(read.dispositions?.get(f.jobId)).toBe('settled-unreadable');
   } finally {
     vi.restoreAllMocks();
     f.close();

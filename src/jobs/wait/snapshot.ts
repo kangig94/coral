@@ -123,31 +123,23 @@ function selectSnapshotProgress(
   notices: string[],
   lines?: number,
 ): { count: number; resume: WaitCursorV3 } {
-  let resume = session.cursor();
-  const available =
-    lines === undefined
-      ? session.progress(WAIT_PROGRESS_LINES + 1)
-      : session.selectTailProgress(lines, WAIT_PROGRESS_LINES, WAIT_PROGRESS_BYTES);
-  let selected: typeof available;
-  if (lines !== undefined) {
-    selected = available;
-    if (session.hasProgressBefore(selected)) notices.push('Earlier progress outside the selected tail was not shown.');
-    session.skipProgressBefore(selected);
-    resume = session.cursor();
-    session.skipEarlierProgress();
-  } else {
-    let bytes = 0;
-    selected = [];
-    for (const raw of available) {
-      const line = { ...raw, text: shortenWaitLine(raw.text) };
-      if (selected.length === WAIT_PROGRESS_LINES || bytes + Buffer.byteLength(line.text) > WAIT_PROGRESS_BYTES) break;
-      selected.push(line);
-      bytes += Buffer.byteLength(line.text);
-      session.consume(raw);
-    }
-    if (selected.length < available.length)
-      notices.push('Progress truncated; run the continuation to collect the remaining lines.');
+  if (lines !== undefined) session.startAtTail(lines, WAIT_PROGRESS_LINES, WAIT_PROGRESS_BYTES);
+  else if (session.input?.version === 'jobs.wait.v3') session.startAtTail(20, WAIT_PROGRESS_LINES, WAIT_PROGRESS_BYTES);
+  else session.resumeFromPrefix();
+  for (const notice of session.notices) if (!notices.includes(notice)) notices.push(notice);
+  const resume = session.cursor();
+  const available = session.progress(WAIT_PROGRESS_LINES + 1);
+  let bytes = 0;
+  const selected = [];
+  for (const raw of available) {
+    const line = { ...raw, text: shortenWaitLine(raw.text) };
+    if (selected.length === WAIT_PROGRESS_LINES || bytes + Buffer.byteLength(line.text) > WAIT_PROGRESS_BYTES) break;
+    selected.push(line);
+    bytes += Buffer.byteLength(line.text);
+    session.consume(raw);
   }
+  if (selected.length < available.length)
+    notices.push('Progress truncated; run the continuation to collect the remaining lines.');
   for (const line of selected) jobs.find((job) => job.jobId === line.jobId)?.progress.push(shortenWaitLine(line.text));
   return { count: selected.length, resume };
 }

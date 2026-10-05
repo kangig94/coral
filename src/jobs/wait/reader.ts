@@ -72,7 +72,6 @@ export async function* readWaitSession(input: WaitReadInput): AsyncGenerator<Wai
   let observing = false;
   let lastObservation = -Infinity;
   let deadlineObserved = false;
-  let firstPoll = true;
   let crossedTimer = false;
   let unknownReadAttempts = 0;
   const retryDelays = [250, 1000, 5000];
@@ -82,14 +81,7 @@ export async function* readWaitSession(input: WaitReadInput): AsyncGenerator<Wai
       const deferred = new Set(admissions.filter((job) => job.observationDeferred).map((job) => job.jobId));
       session.reconcile(admissions);
       if (request.supportsWaitV3 !== true) validateLegacyAdmission(session);
-      if (
-        firstPoll &&
-        !request.cursor &&
-        !request.drainProgress &&
-        !input.internal &&
-        request.supportsWaitV3 === true
-      ) {
-        firstPoll = false;
+      if (!request.drainProgress && !input.internal && request.supportsWaitV3 === true) {
         session.startAtTail(20, WAIT_PROGRESS_LINES, WAIT_PROGRESS_BYTES);
       }
       const now = Number(time.monotonicNow());
@@ -116,6 +108,7 @@ export async function* readWaitSession(input: WaitReadInput): AsyncGenerator<Wai
             cursor: session.cursor([]),
             exitCode: session.exitCode(),
           };
+        else yield { type: 'waiting', waitingJobIds: [] };
         return;
       }
       const unknownRead = session.allRemainingProgressUnknown();
@@ -162,14 +155,6 @@ async function observeCarriers(input: WaitReadInput, session: WaitSession, signa
 
 function validateLegacyAdmission(session: WaitSession): void {
   session.requireLegacyReplaySupport();
-  const failed = session.admissions.find(
-    (job) => job.disposition === 'admitted' && job.availability?.kind === 'failed',
-  );
-  if (failed)
-    throw new WaitSessionError(
-      'wait_epoch_unsupported',
-      `Job ${failed.jobId}: result artifact failed. Read coral-cli jobs detail ${failed.jobId}.`,
-    );
   const missing = session.admissions.filter((job) => job.disposition === 'missing').map((job) => job.jobId);
   if (missing.length > 0)
     throw new WaitSessionError(
@@ -196,7 +181,13 @@ function* admissionEvents(
     if (state.notices.has(message)) continue;
     state.notices.add(message);
     if (request.supportsWaitV3 === true)
-      yield { type: 'notice', version: 'jobs.wait.v3', message, cursor: session.cursor(session.remaining()) };
+      yield {
+        type: 'notice',
+        version: 'jobs.wait.v3',
+        message,
+        cursor: session.cursor(session.remaining()),
+        exitCode: session.exitCode(),
+      };
   }
   for (const job of session.admissions) {
     if (job.disposition === 'admitted' && job.queued && !state.queuedReported.has(job.jobId)) {
@@ -220,6 +211,7 @@ function* memberAdmissionEvents(
         version: 'jobs.wait.v3',
         jobId: job.jobId,
         disposition: job.disposition,
+        exitCode: session.exitCode(),
         message: job.message,
         cursor: session.cursor(session.remaining()),
       };
@@ -268,6 +260,8 @@ function pendingTerminals(session: WaitSession, request: WaitStreamRequest): Wai
         `The legacy cursor cannot represent the uncollected outcome for ${hidden.jobId}. Run coral-cli jobs detail ${hidden.jobId}.`,
       );
   }
+  if (request.supportsWaitV3 !== true)
+    terminals.sort((a, b) => Number(a.availability?.kind === 'failed') - Number(b.availability?.kind === 'failed'));
   return terminals;
 }
 
@@ -280,13 +274,14 @@ function* progressEvents(
 ): Generator<WaitStreamEvent> {
   const versionless = request.supportsWaitV3 !== true && request.supportsWaitV2 !== true;
   const nextTerminal = terminals.find((job) => !session.acknowledged(job.jobId));
+  const terminalLimit = nextTerminal ? terminalSeq(nextTerminal) : Infinity;
   const unread = session
     .progress(
       !internal && request.supportsWaitV3 === true && request.drainProgress !== true
         ? WAIT_PROGRESS_LINES + 1
         : Infinity,
     )
-    .filter((line) => !versionless || !nextTerminal || line.seq <= terminalSeq(nextTerminal));
+    .filter((line) => !versionless || !nextTerminal || line.seq <= terminalLimit);
   for (let index = 0; index < unread.length; ) {
     const first = unread[index];
     const group = [first];
@@ -312,7 +307,12 @@ function* progressEvents(
     state.progressLines += group.length;
     state.progressBytes += bytes;
     index += group.length;
-    const cursor = eventCursor(session, request);
+    const next = unread[index];
+    const lastInBatch =
+      !next ||
+      state.progressLines + 1 > WAIT_PROGRESS_LINES ||
+      state.progressBytes + Buffer.byteLength(shortenWaitLine(next.text)) > WAIT_PROGRESS_BYTES;
+    const cursor = request.supportsWaitV3 === true && !lastInBatch ? undefined : eventCursor(session, request);
     yield {
       type: 'progress',
       jobId: first.jobId,
@@ -320,14 +320,14 @@ function* progressEvents(
       message: messages.join('\n'),
       timing: first.timing,
       ...(request.supportsWaitV3 === true
-        ? { version: 'jobs.wait.v3', epochKey: first.epochKey }
+        ? { version: 'jobs.wait.v3', epochKey: first.epochKey, exitCode: session.exitCode() }
         : request.supportsWaitV2 === true
           ? { version: 'jobs.wait.v2', epochKey: first.epochKey }
           : {}),
       ...(cursor?.version === undefined ? {} : { cursor }),
     };
   }
-  if (versionless && nextTerminal && session.progress().some((line) => line.seq <= terminalSeq(nextTerminal)))
+  if (versionless && nextTerminal && session.progress().some((line) => line.seq <= terminalLimit))
     throw new WaitSessionError(
       'wait_epoch_unsupported',
       `This progress backlog requires a V3 reader; run coral-cli jobs detail ${nextTerminal.jobId}.`,
@@ -357,7 +357,7 @@ function terminalEvent(
             .filter(
               (job) =>
                 job.disposition === 'discovery-unknown' ||
-                (job.disposition === 'admitted' && (!session.acknowledged(job.jobId) || session.progressHeld(job))),
+                (job.disposition === 'admitted' && !session.acknowledged(job.jobId)),
             )
             .map((job) => job.jobId),
     ...(availability?.kind === 'available' ? { resultPath: availability.resultPath } : {}),
@@ -392,6 +392,10 @@ function* terminalEvents(
       if (request.supportsWaitV2 !== true) return false;
       continue;
     }
+    if (session.acknowledged(job.jobId) && request.supportsWaitV3 !== true && availability?.kind !== 'repair-pending') {
+      session.settleArtifact(job.jobId);
+      continue;
+    }
     if (request.supportsWaitV3 !== true && availability?.kind !== 'available')
       throw new WaitSessionError(
         'wait_epoch_unsupported',
@@ -403,13 +407,13 @@ function* terminalEvents(
         if (request.supportsWaitV2 !== true && session.legacyCursor(false).afterSeq >= warningSeq)
           throw new WaitSessionError(
             'wait_epoch_unsupported',
-            `Earlier progress for ${job.jobId} is held. Run coral-cli jobs detail ${job.jobId} --full to inspect its retained outcome.`,
+            `Earlier progress for ${job.jobId} is held. Run coral-cli jobs detail ${job.jobId} to inspect its retained outcome.`,
           );
         yield {
           type: 'progress',
           jobId: job.jobId,
           seq: warningSeq,
-          message: `Earlier progress for ${job.jobId} is held and was not shown before this terminal. Run coral-cli jobs detail ${job.jobId} --full to inspect its retained outcome.`,
+          message: `Earlier progress for ${job.jobId} is held and was not shown before this terminal. Run coral-cli jobs detail ${job.jobId} to inspect its retained outcome.`,
           timing: {
             origin: 'runtime',
             originAt: job.detail.status.updatedAt,

@@ -264,7 +264,7 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
           process.stdout.write(output, (error) => (error ? reject(error) : resolve())),
         );
       try {
-        await (invocation ? invocation.writeSnapshotOutput(output, continuation) : write());
+        await (invocation ? invocation.writeSnapshotOutput(output, continuation, snapshot.exitCode) : write());
       } catch (error) {
         if (error instanceof WaitInvocationEnded) throw error;
         throw new WaitOutputError(

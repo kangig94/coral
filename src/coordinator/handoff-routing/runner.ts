@@ -1219,7 +1219,7 @@ function supportsWaitInvocation(
     const child = execFile(
       process.execPath,
       [target, WAIT_INVOCATION_CONTRACT_ARGUMENT],
-      { maxBuffer: 64 * 1024, env: { ...process.env, [CLI_HANDOFF_GUARD_ENV]: '1' } },
+      { maxBuffer: 64 * 1024, env: { ...runtime.env.fullSnapshot(), [CLI_HANDOFF_GUARD_ENV]: '1' } },
       (error, stdout) => {
         if (cancelling) return;
         if (error) return finish(typeof error.code === 'number' ? false : null);
@@ -1274,7 +1274,17 @@ function bindMonitorChild(
       typeof message.continuation === 'string' &&
       Buffer.byteLength(message.continuation) <= 1024 * 1024
     )
-      invocation.saveContinuation(message.continuation, message.complete === true, message.delivered === true);
+      invocation.saveContinuation(
+        message.continuation,
+        message.complete === true,
+        message.delivered === true,
+        typeof message.exitCode === 'number' &&
+          Number.isInteger(message.exitCode) &&
+          message.exitCode >= 0 &&
+          message.exitCode <= 255
+          ? message.exitCode
+          : undefined,
+      );
   };
   const cancel = () => {
     if (child.connected) child.send({ type: 'wait-cancel' }, () => {});

@@ -24,5 +24,5 @@ export interface WaitInvocationHandoff {
   monitorEnding?: Promise<unknown>;
   remainingMs(): number;
   cleanupRemainingMs(): number;
-  saveContinuation(text: string, complete?: boolean, delivered?: boolean): void;
+  saveContinuation(text: string, complete?: boolean, delivered?: boolean, exitCode?: number): void;
 }

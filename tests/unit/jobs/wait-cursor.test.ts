@@ -122,7 +122,7 @@ it('round trips unresolved entries and rejects malformed v3 flags, ordinals, len
   expect(waitCursorForJobs(cursor, ['u'])).toEqual({ version: 'jobs.wait.v3', epochs: [], jobs: [cursor.jobs[1]] });
   expect(waitCursorForJobs(cursor, ['a'])).toEqual({ ...cursor, jobs: [cursor.jobs[0]] });
   for (const bad of [
-    { ...cursor, jobs: [{ ...cursor.jobs[0], flags: 4 }] },
+    { ...cursor, jobs: [{ ...cursor.jobs[0], flags: 8 }] },
     { ...cursor, jobs: [{ ...cursor.jobs[1], flags: 1 }] },
     { ...cursor, jobs: [{ ...cursor.jobs[0], epoch: 1 }] },
     { ...cursor, jobs: [cursor.jobs[0], cursor.jobs[0]] },
@@ -182,4 +182,15 @@ it('versionless terminal delivery and suppression both advance afterSeq', () => 
   expect(first).toMatchObject({ cursor: { afterSeq: 10, deliveredJobIds: ['a'] }, shouldRender: true });
   const hidden = advanceWaitRenderCursor({ afterSeq: 4, deliveredJobIds: ['a'] }, event);
   expect(hidden).toMatchObject({ cursor: { afterSeq: 10 }, shouldRender: false });
+});
+
+it('uses lineage identity for V3 tokens and V2 positions across address spellings', async () => {
+  const { waitEpochToken, waitEpochPosition } = await import('#src/jobs/wait/cursor.js');
+  const original = JSON.stringify({ storeRoot: '/real/store', epoch: '7', lineageKey: 'lineage:7' });
+  const alias = JSON.stringify({ storeRoot: '/alias/store', epoch: '7', lineageKey: 'lineage:7' });
+  expect(waitEpochToken(original)).toBe(waitEpochToken(alias));
+  const cursor = { version: 'jobs.wait.v2' as const, locations: { job: alias }, positions: { [original]: 12 } };
+  expect(decodeWaitCursor(cursor).kind).toBe('decoded');
+  expect(waitEpochPosition(cursor.positions, alias)).toBe(12);
+  expect(waitCursorForJobs(cursor, ['job'])).toEqual(cursor);
 });

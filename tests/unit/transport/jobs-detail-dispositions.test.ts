@@ -327,7 +327,9 @@ it('answers a typo as discovery-unreadable with the permanent epoch caveat', asy
     statusCode: 409,
     body: {
       code: 'job_outcome_unreadable',
-      message: expect.stringContaining(`${waitEpochToken('permanently-lost')}: retained-store-root-missing`),
+      message: expect.stringContaining(
+        `${waitEpochToken('permanently-lost').slice(0, 8)}: Epoch maintenance cannot read this source; it re-reads it at the next coordinator start`,
+      ),
     },
   });
   expect(errorCodeToExit('job_outcome_unreadable', 409)).toBe(1);

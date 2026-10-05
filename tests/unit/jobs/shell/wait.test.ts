@@ -586,11 +586,21 @@ it('does not keep active history in a coordinator-lifetime cache when no session
 it('internal child wait reads its durable historical epoch', async () => {
   const f = fixture();
   f.deps.currentJobEpochKey = () => 'active';
-  f.deps.jobEpochKey = () => 'historical';
   f.deps.loadJobProjectionDetail = () => ({ status: null, launch: null, runtime: null, exit: null });
   f.deps.observeJobAbsence = () => true;
-  f.deps.historicalWaitAdmission = () => admitted('child', [], true, 'historical');
+  f.deps.internalWaitAdmissions = () => [admitted('child', [], true, 'historical')];
   const events = [];
   for await (const event of f.wait.waitForOutcomes({ jobIds: ['child'], timeoutSeconds: 0 })) events.push(event);
   expect(events.at(-1)).toMatchObject({ type: 'terminal', jobId: 'child', result: { content: 'child result' } });
+});
+
+it('isolates an unreadable active projection from its healthy sibling', () => {
+  const f = fixture();
+  f.deps.loadJobProjectionDetail = (jobId) => {
+    if (jobId === 'damaged') throw new Error('location read denied');
+    return { status: admitted('job-1', [], false).detail!.status, launch: null, runtime: null, exit: null };
+  };
+  const admissions = f.wait.readWaitAdmissions(['damaged', 'job-1'], 'epoch', {});
+  expect(admissions[0]).toMatchObject({ disposition: 'discovery-unknown', sourceRead: 'transient-unknown' });
+  expect(admissions[1]).toMatchObject({ jobId: 'job-1', disposition: 'admitted' });
 });

@@ -153,3 +153,41 @@ it.each(['preserved', 'garbage'] as const)('pre-bind startup registers %s histor
     f.close();
   }
 });
+
+it.each(['{damaged', '\0\0\0'])('isolates damaged preserved epoch identity %j at store open', (marker) => {
+  const historical = createTerminalExportFixture('provider', true);
+  const active = createTerminalExportFixture('provider', true);
+  const list = vi.spyOn(epochs, 'listStoreEpochs').mockReturnValue([
+    {
+      resolved: historical.epoch,
+      epochKey: null,
+      role: 'preserved',
+      epochJson: {
+        kind: 'valid',
+        value: { build: { storeFormatFingerprint: currentCoralStoreFormat().fingerprint } },
+      },
+    },
+  ] as never);
+  try {
+    const directory = historical.epoch.path.slice(0, historical.epoch.path.lastIndexOf('/'));
+    historical.runtime.storage.writeFileSync(directory + '/.coral-lineage.v1.json', marker);
+    historical.index.holdUnknownLocations(historical.epochKey, 'owned retry', true);
+    const observer = createLifecycleRecoveryDependencies({
+      runtime: historical.runtime,
+      identity: { instanceId: 'test', buildSetId: 'test', pluginRoot: historical.root },
+      jobLocationIndex: historical.index,
+      providerHostTransfer: {},
+      getProgressStore: () => historical.store,
+      readSuccessionJobs: () => [],
+      world: {},
+      onOpenedStore: vi.fn(),
+    } as unknown as Parameters<typeof createLifecycleRecoveryDependencies>[0]).onStoreOpened!;
+    expect(() => observer(active.epoch)).not.toThrow();
+    expect(historical.index.unknownLocationHolds().some((hold) => hold.retryScheduled)).toBe(true);
+    expect(historical.runtime.storage.readFileSync(directory + '/.coral-lineage.v1.json', 'utf-8')).toBe(marker);
+  } finally {
+    list.mockRestore();
+    active.close();
+    historical.close();
+  }
+});

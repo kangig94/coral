@@ -69,7 +69,7 @@ export function createStoreEpochSweepScheduler(input: {
                 { ...openStore, storeRoot: openStore.canonicalStoreRoot ?? openStore.storeRoot },
                 {
                   signal: controller.signal,
-                  resultsReleased: (epochKey) => jobLocationIndex.resultsReleased(epochKey),
+                  resultsReleased: (epochKey, closedSource) => jobLocationIndex.resultsReleased(epochKey, closedSource),
                 },
               ));
             }

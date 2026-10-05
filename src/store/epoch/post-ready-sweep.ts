@@ -167,7 +167,7 @@ function closedReapingDirectoryRemovable(
   dbDir: string,
   path: string,
   markerPath: string,
-  resultsReleased: (epochKey: string) => boolean,
+  resultsReleased: (epochKey: string, closedSource?: ResolvedStoreEpoch) => boolean,
 ): boolean {
   try {
     const marker = JSON.parse(runtime.storage.readFileSync(markerPath, 'utf-8')) as unknown;
@@ -182,7 +182,10 @@ function closedReapingDirectoryRemovable(
       ) ||
       observeStorePath(runtime.storage, epochDirectory(dbDir, marker.epoch)) !== 'absent' ||
       closureCapability(runtime, runtime.paths.coral.generation.dataRoot, marker.epochKey) === null ||
-      !resultsReleased(lineageJobEpochKey(dbDir, marker.epochKey))
+      !resultsReleased(lineageJobEpochKey(dbDir, marker.epochKey), {
+        ...resolvedStoreEpoch(dbDir, marker.epoch),
+        path: join(path, STORE_DATABASE_FILE_NAME),
+      })
     )
       return false;
     return true;
@@ -196,7 +199,7 @@ async function removeReapingStoreDirectory(
   dbDir: string,
   path: string,
   root: ProvenSweepDirectory,
-  resultsReleased: ((epochKey: string) => boolean) | undefined,
+  resultsReleased: ((epochKey: string, closedSource?: ResolvedStoreEpoch) => boolean) | undefined,
 ): Promise<AbandonedDirectoryRemoval> {
   const database = await observeContainedRegularFileAsync(
     runtime.storage,
@@ -243,7 +246,7 @@ async function removeAbandonedStoreDirectory(
   runtime: Runtime,
   dbDir: string,
   path: string,
-  resultsReleased?: (epochKey: string) => boolean,
+  resultsReleased?: (epochKey: string, closedSource?: ResolvedStoreEpoch) => boolean,
 ): Promise<AbandonedDirectoryRemoval> {
   const root = await observeContainedDirectoryAsync(runtime.storage, dbDir, path);
   if (root.kind === 'unobservable') return 'unobservable';
@@ -350,7 +353,7 @@ async function reapPostReadyStoreEpochEntries(
   entries: readonly string[],
   residueEntries: ReadonlySet<string>,
   mutations: PostReadySweepMutationState,
-  resultsReleased?: (epochKey: string) => boolean,
+  resultsReleased?: (epochKey: string, closedSource?: ResolvedStoreEpoch) => boolean,
 ): Promise<PostReadyEpochReapingResult> {
   const { runtime, dbDir, signal } = context;
   let complete = true;
@@ -442,7 +445,10 @@ async function preparePostReadyStoreEpochSweep(
 export async function sweepStoreEpochsPostReady(
   runtime: Runtime,
   openStore: ResolvedStoreEpoch,
-  options: { readonly signal?: AbortSignal; readonly resultsReleased?: (epochKey: string) => boolean } = {},
+  options: {
+    readonly signal?: AbortSignal;
+    readonly resultsReleased?: (epochKey: string, closedSource?: ResolvedStoreEpoch) => boolean;
+  } = {},
 ): Promise<StoreEpochSweepResult> {
   const context: PostReadyStoreEpochSweepContext = {
     runtime,

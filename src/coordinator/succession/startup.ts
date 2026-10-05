@@ -1096,8 +1096,16 @@ export async function prepareCommittedSuccessorRecovery(
   const holdOrAbandon = async (hold: SuccessionStartupHold): Promise<CommittedSuccessorRecovery> =>
     (await exhaustStartupPatience(runtime, identity.instanceId, hold)) ? { kind: 'none' } : { kind: 'hold', hold };
   const current = inspectCurrentStore(runtime);
-  if (current.kind !== 'current' || !sameEpoch(observeResolvedStoreEpochKey(runtime, current.epoch), receipt.epochKey))
-    return { kind: 'none' };
+  if (current.kind !== 'current') return { kind: 'none' };
+  const currentKey = observeResolvedStoreEpochKey(runtime, current.epoch);
+  if (currentKey === null)
+    return holdOrAbandon({
+      kind: 'committed-successor-unattributable',
+      attemptId: receipt.attemptId,
+      reason:
+        'current epoch identity is temporarily unreadable; startup recovery re-observes it within its bounded patience window',
+    });
+  if (!sameEpoch(currentKey, receipt.epochKey)) return { kind: 'none' };
   const serving = observeSuccessionServing(runtime, receipt.attemptId);
   const writer = observeSuccessionWriterGeneration(runtime);
   if (

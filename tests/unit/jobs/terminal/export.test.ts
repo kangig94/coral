@@ -22,7 +22,11 @@ import { JobLocationIndex } from '#src/jobs/location-index.js';
 import { deriveLaunchReadiness } from '#src/jobs/launch-readiness.js';
 import { commitJobTerminal } from '#tests/helpers/job-commits.js';
 import { initTestJob } from '#tests/helpers/session.js';
-import { createTerminalExportFixture, TERMINAL_EXPORT_CUTOFF } from '#tests/helpers/terminal-export.js';
+import {
+  TERMINAL_EXPORT_NOW,
+  createTerminalExportFixture,
+  TERMINAL_EXPORT_CUTOFF,
+} from '#tests/helpers/terminal-export.js';
 
 const fixtures: ReturnType<typeof createTerminalExportFixture>[] = [];
 function fixture(kind: 'provider' | 'workflow' = 'provider') {
@@ -942,4 +946,106 @@ it('retired source dominates a remembered repair failure', () => {
     cause: 'terminal-unusable',
     retryScheduled: false,
   });
+});
+
+it('a failed unhydrated repair dominates a transient source read', async () => {
+  const f = createTerminalExportFixture();
+  try {
+    f.complete();
+    f.index.markUncertified(f.jobId);
+    const failures = new Set<string>();
+    const owner = new TerminalResultExportOwner({
+      runtime: f.runtime,
+      jobsRoot: f.runtime.paths.coral.exports.jobsRoot,
+      failures,
+      location: (id) => f.index.read(id),
+      withSource: () => {
+        throw new Error('database is locked');
+      },
+    });
+    await owner.repairPass([f.jobId], { canContinue: () => true, record: () => {} });
+    expect(owner.observeResultAvailability(f.jobId)).toMatchObject({
+      kind: 'failed',
+      cause: 'repair-failed',
+      retryScheduled: true,
+    });
+  } finally {
+    f.close();
+  }
+});
+
+it('re-observes a regression deferred by clock distrust when trust returns', async () => {
+  const f = createTerminalExportFixture();
+  try {
+    expect(trustedJobRetentionCutoff(f.runtime)).not.toBeNull();
+    f.jump(-120_000);
+    f.complete({ terminalAt: TERMINAL_EXPORT_NOW - 120_000, precedingAt: TERMINAL_EXPORT_NOW });
+    const owner = f.store.getResultExportOwner();
+    owner.publishTerminalResult(f.jobId);
+    f.advance(301_000);
+    await owner.repairPass([f.jobId], { canContinue: () => true, record: () => {} });
+    expect(owner.observeResultAvailability(f.jobId)).toMatchObject({ kind: 'available' });
+    expect(f.index.read(f.jobId)?.terminalAge).toMatchObject({ kind: 'regression' });
+  } finally {
+    f.close();
+  }
+});
+
+it('first publication validates terminal content once and never renders during rename authorization', () => {
+  const f = createTerminalExportFixture();
+  try {
+    f.complete({ terminal: { content: 'x'.repeat(1024 * 1024), outcome: { kind: 'completed' }, durationMs: 1 } });
+    const parse = JSON.parse;
+    let bytes = 0;
+    const spy = vi.spyOn(JSON, 'parse').mockImplementation((value, reviver) => {
+      bytes += value.length;
+      return parse(value, reviver);
+    });
+    f.store.getResultExportOwner().publishTerminalResult(f.jobId);
+    spy.mockRestore();
+    expect(readFileSync(f.resultPath, 'utf8')).toHaveLength(1024 * 1024 + 1);
+    expect(bytes).toBeLessThan(6 * 1024 * 1024);
+  } finally {
+    f.close();
+  }
+});
+
+it('an evicted repair failure remains failed with bounded in-memory evidence', () => {
+  const f = fixture();
+  const owner = new TerminalResultExportOwner({
+    runtime: f.runtime,
+    jobsRoot: f.runtime.paths.coral.exports.jobsRoot,
+    location: () => null,
+    withSource: () => {
+      throw new Error('database is locked');
+    },
+    repairQueueLimit: 2,
+  });
+  for (const id of ['a', 'b', 'c']) expect(() => owner.ensureResultMarkdownArtifact(id)).toThrow();
+  expect((owner as unknown as { failures: Set<string> }).failures.size).toBe(2);
+  expect(owner.observeResultAvailability('a')).toMatchObject({
+    kind: 'failed',
+    cause: 'repair-failed',
+    retryScheduled: true,
+  });
+});
+
+it('reuses source eligibility when an evicted location view is decoded again', () => {
+  const f = fixture();
+  f.complete();
+  writeFileSync(f.epoch.path, 'source stamp');
+  const location = f.index.read(f.jobId)!;
+  const withSource = vi.fn((_jobId, read) => read(f.db, f.store));
+  const owner = new TerminalResultExportOwner({
+    runtime: f.runtime,
+    jobsRoot: f.runtime.paths.coral.exports.jobsRoot,
+    location: () => ({ ...location, storedIdentity: location.storedIdentity }),
+    withSource,
+  });
+  const session = {};
+  expect(owner.observeResultAvailability(f.jobId, session)).toMatchObject({ kind: 'repair-pending' });
+  const observations = withSource.mock.calls.length;
+  expect(observations).toBeGreaterThan(0);
+  expect(owner.observeResultAvailability(f.jobId, session)).toMatchObject({ kind: 'repair-pending' });
+  expect(withSource).toHaveBeenCalledTimes(observations);
 });

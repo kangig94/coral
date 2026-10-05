@@ -1,4 +1,4 @@
-import { waitJobHash, decodeWaitCursor } from './cursor.js';
+import { waitJobHash, decodeWaitCursor, waitEpochPosition } from './cursor.js';
 import { z } from 'zod';
 
 import { isRecord } from '../../infra/json.js';
@@ -46,7 +46,8 @@ export function advanceWaitRenderCursor(cursor: WaitCursor, event: WaitStreamEve
   if (cursor.version === 'jobs.wait.v3') return { cursor, shouldRender: true };
   if (event.type === 'progress' || event.type === 'terminal') {
     if (event.epochKey !== undefined && event.cursor?.version === 'jobs.wait.v2') {
-      const previous = cursor.version === 'jobs.wait.v2' ? (cursor.positions[event.epochKey] ?? 0) : 0;
+      const previous =
+        cursor.version === 'jobs.wait.v2' ? (waitEpochPosition(cursor.positions, event.epochKey) ?? 0) : 0;
       if (
         event.type === 'terminal' &&
         cursor.version === 'jobs.wait.v2' &&
@@ -62,7 +63,7 @@ export function advanceWaitRenderCursor(cursor: WaitCursor, event: WaitStreamEve
           positions: Object.fromEntries(
             Object.entries(event.cursor.positions).map(([key, seq]) => [
               key,
-              Math.max(seq, cursor.version === 'jobs.wait.v2' ? (cursor.positions[key] ?? 0) : 0),
+              Math.max(seq, cursor.version === 'jobs.wait.v2' ? (waitEpochPosition(cursor.positions, key) ?? 0) : 0),
             ]),
           ),
         },
@@ -99,6 +100,7 @@ function legacyRenderCursor(deliveredJobIds: readonly string[] | undefined): Ext
 const waitProgressEventSchema = z
   .object({
     type: z.literal('progress'),
+    exitCode: z.number().int().min(0).max(255).optional(),
     jobId: z.string(),
     seq: z.number().int().nonnegative(),
     message: z.string(),
@@ -229,6 +231,7 @@ const waitStreamEventSchema = z
     z
       .object({
         type: z.literal('disposition'),
+        exitCode: z.number().int().min(0).max(255).optional(),
         version: z.literal('jobs.wait.v3'),
         jobId: z.string().min(1),
         disposition: z.enum([
@@ -264,7 +267,7 @@ const waitStreamEventSchema = z
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'V3 event requires a V3 cursor' });
     if (
       generation === 'jobs.wait.v3' &&
-      (event.type === 'terminal' || event.type === 'progress' || event.type === 'waiting') &&
+      (event.type === 'terminal' || event.type === 'waiting') &&
       (!event.cursor || ((event.type === 'terminal' || event.type === 'waiting') && event.exitCode === undefined))
     )
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Incomplete V3 delivery contract' });

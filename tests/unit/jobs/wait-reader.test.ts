@@ -1,3 +1,6 @@
+import { createTerminalExportFixture } from '#tests/helpers/terminal-export.js';
+import { WaitCoordinator } from '#src/jobs/shell/wait.js';
+import { JobAddressing } from '#src/jobs/addressing.js';
 import { waitEpochToken, waitJobHash } from '#src/jobs/wait/cursor.js';
 import { describe } from 'vitest';
 import { loadReleasedWait } from '#tests/helpers/released-wait.js';
@@ -47,7 +50,7 @@ it('does not rebuild history for each delivered event cursor', async () => {
   }
 });
 
-it('drains a legacy terminal backlog before delivery and never emits empty waiting', async () => {
+it('drains a legacy terminal backlog and closes an acknowledged continuation with empty waiting', async () => {
   const job = admitted(
     'a',
     Array.from({ length: 600 }, (_, i) => [i + 1, `line-${i}`]),
@@ -64,7 +67,9 @@ it('drains a legacy terminal backlog before delivery and never emits empty waiti
   const first = await read();
   expect(first.filter((event) => event.type === 'progress')).toHaveLength(600);
   expect(first.at(-1)).toMatchObject({ type: 'terminal', remainingJobIds: [] });
-  expect(await read(first.find((event) => event.type === 'terminal')!.cursor)).toEqual([]);
+  expect(await read(first.find((event) => event.type === 'terminal')!.cursor)).toEqual([
+    expect.objectContaining({ type: 'waiting', waitingJobIds: [] }),
+  ]);
 });
 
 it('keeps completed live coverage when a later refresh outlives the deadline', async () => {
@@ -428,11 +433,12 @@ it('resets membership resolved during a bounded wait and preserves acknowledged 
     expect(waiting?.carrierUnknownJobIds).toBeUndefined();
   });
   it('downgrades coverage after a failed refresh', async () => {
+    const time = new VirtualTime();
     const job = admitted('live-job', [], false);
     let observations = 0;
     const stream = readWaitSession({
       request: { jobIds: ['live-job'], supportsWaitV3: true, timeoutSeconds: 0.3 },
-      time: createRealTimePort(),
+      time,
       activeEpochKey: 'epoch-E',
       read: () => [job],
       observe: (session) => {
@@ -440,8 +446,12 @@ it('resets membership resolved during a bounded wait and preserves acknowledged 
         else throw new Error('unobservable');
       },
     });
-    const events = [];
-    for await (const event of stream) events.push(event);
+    const result = collect(stream);
+    await flushMicrotasks(20);
+    time.tick(250);
+    await flushMicrotasks(20);
+    time.tick(50);
+    const events = await result;
     expect(events.at(-1)).toMatchObject({ type: 'waiting', carrierUnknownJobIds: ['live-job'] });
   });
   it('preserves input acknowledgement and artifact flags after an initial non-admission', () => {
@@ -590,7 +600,7 @@ it('crosses a timer boundary before returning an immediate internal deadline wit
   await stream.return(undefined);
 });
 
-it('refuses a failed artifact even after a legacy terminal was acknowledged', async () => {
+it('settles a retired artifact silently after a legacy terminal was acknowledged', async () => {
   const job = admitted('a');
   job.availability = { kind: 'failed', cause: 'source-epoch-retired', retryScheduled: false };
   await expect(
@@ -612,7 +622,7 @@ it('refuses a failed artifact even after a legacy terminal was acknowledged', as
         read: () => [job],
       }),
     ),
-  ).rejects.toMatchObject({ code: 'wait_epoch_unsupported', message: expect.stringContaining('jobs detail a') });
+  ).resolves.toEqual([expect.objectContaining({ type: 'waiting', waitingJobIds: [] })]);
 });
 
 it('retries an unknown historical read on a bounded schedule, then exits 75 unresolved', async () => {
@@ -1312,7 +1322,7 @@ it('cursorless snapshot omission retains the current tail watermark', () => {
   expect(snapshot.cursor.epochs[0].watermark).toBe(29);
 });
 
-it('a released acknowledged terminal still refuses a failed artifact', async () => {
+it('settles a failed artifact silently after a legacy terminal was acknowledged', async () => {
   const job = admitted('a');
   job.availability = { kind: 'failed', cause: 'cutoff-untrusted', retryScheduled: true };
   await expect(
@@ -1334,7 +1344,7 @@ it('a released acknowledged terminal still refuses a failed artifact', async () 
         read: () => [job],
       }),
     ),
-  ).rejects.toMatchObject({ code: 'wait_epoch_unsupported' });
+  ).resolves.toEqual([expect.objectContaining({ type: 'waiting', waitingJobIds: [] })]);
 });
 
 it('does not spend unknown-read retries on a deferred poll', async () => {
@@ -1368,5 +1378,294 @@ it('gives a legacy cursor without a warning sequence slot a runnable held-progre
         read: () => [job],
       }),
     ),
-  ).rejects.toMatchObject({ code: 'wait_epoch_unsupported', message: expect.stringContaining('jobs detail a --full') });
+  ).rejects.toMatchObject({
+    code: 'wait_epoch_unsupported',
+    message: expect.stringContaining('jobs detail a to inspect'),
+  });
+});
+
+it('carries the failed set code on the last progress batch before stream closure', async () => {
+  const events = await collect(
+    readWaitSession({
+      request: {
+        jobIds: ['a'],
+        supportsWaitV3: true,
+        timeoutSeconds: 0,
+        cursor: {
+          version: 'jobs.wait.v3',
+          epochs: [{ token: waitEpochToken('epoch-E'), watermark: 4, lineOffset: 0 }],
+          jobs: [{ hash: waitJobHash('a'), epoch: 0, flags: 1 }],
+        },
+      },
+      time: new VirtualTime(),
+      activeEpochKey: 'epoch-E',
+      read: () => [
+        admitted(
+          'a',
+          [
+            [3, 'old'],
+            [5, 'last'],
+          ],
+          true,
+          'epoch-E',
+          true,
+        ),
+      ],
+    }),
+  );
+  expect(events.find((event) => event.type === 'progress')).toMatchObject({ exitCode: 42, cursor: { jobs: [] } });
+});
+
+it('carries the refused set code before the completion notice', async () => {
+  const events = await collect(
+    readWaitSession({
+      request: { jobIds: ['ghost'], supportsWaitV3: true, timeoutSeconds: 0 },
+      time: new VirtualTime(),
+      activeEpochKey: 'epoch-E',
+      read: () => [{ jobId: 'ghost', disposition: 'missing' }],
+    }),
+  );
+  expect(events[0]).toMatchObject({ type: 'disposition', exitCode: 1 });
+});
+
+it('applies a cursorless tail when a member first becomes readable', async () => {
+  const time = new VirtualTime();
+  let polls = 0;
+  const stream = readWaitSession({
+    request: { jobIds: ['a'], supportsWaitV3: true, timeoutSeconds: 1 },
+    time,
+    activeEpochKey: 'epoch-E',
+    read: () =>
+      ++polls === 1
+        ? [{ jobId: 'a', disposition: 'discovery-unknown' }]
+        : [
+            admitted(
+              'a',
+              Array.from({ length: 3000 }, (_, i) => [i + 1, `line-${i + 1}`]),
+              false,
+            ),
+          ],
+  });
+  const result = collect(stream);
+  await flushMicrotasks(20);
+  time.tick(250);
+  await flushMicrotasks(20);
+  time.tick(1000);
+  const events = await result;
+  const progress = events.filter((event) => event.type === 'progress');
+  expect(progress).toHaveLength(20);
+  expect(progress[0]).toMatchObject({ message: 'line-2981' });
+});
+
+it('persists tail selection across a snapshot of a held epoch', () => {
+  const job = admitted(
+    'a',
+    Array.from({ length: 3000 }, (_, i) => [i + 1, `line-${i + 1}`]),
+    false,
+  );
+  const held = new WaitSession(['a']);
+  held.reconcile([{ ...job, sourceRead: 'transient-unknown' }]);
+  const snapshot = selectWaitSnapshot(held, 20);
+  const resumed = new WaitSession(['a'], snapshot.cursor);
+  resumed.reconcile([job]);
+  const readable = selectWaitSnapshot(resumed);
+  expect(readable.jobs[0].progress).toHaveLength(20);
+  expect(readable.jobs[0].progress[0]).toBe('line-2981');
+});
+
+it.each([false, true])('settles delivered legacy artifacts silently (v2=%s)', async (v2) => {
+  const time = new VirtualTime();
+  let polls = 0;
+  const result = collect(
+    readWaitSession({
+      request: {
+        jobIds: ['a', 'b'],
+        supportsWaitV2: v2,
+        timeoutSeconds: 1,
+        cursor: v2
+          ? {
+              version: 'jobs.wait.v2',
+              positions: { 'epoch-E': 0 },
+              locations: { a: 'epoch-E', b: 'epoch-E' },
+              deliveredJobIds: ['a'],
+            }
+          : { afterSeq: 0, deliveredJobIds: ['a'] },
+      },
+      time,
+      activeEpochKey: 'epoch-E',
+      read: () => {
+        const settled = ++polls > 1;
+        return [
+          {
+            ...admitted('a'),
+            availability: settled
+              ? { kind: 'available', resultPath: '/a.md' }
+              : { kind: 'repair-pending', ageUncertain: false },
+          },
+          admitted('b', [], settled),
+        ];
+      },
+    }),
+  );
+  await flushMicrotasks(20);
+  time.tick(250);
+  await flushMicrotasks(20);
+  time.tick(1000);
+  const events = await result;
+  expect(events.at(-1)).toMatchObject({ type: 'terminal', jobId: 'b', remainingJobIds: [] });
+});
+
+it('attaches a V3 cursor only to the last progress event in the batch', async () => {
+  const events = await collect(
+    readWaitSession({
+      request: { jobIds: ['a'], supportsWaitV3: true, timeoutSeconds: 0 },
+      time: new VirtualTime(),
+      activeEpochKey: 'epoch-E',
+      read: () => [
+        admitted(
+          'a',
+          [
+            [1, 'one'],
+            [2, 'two'],
+          ],
+          false,
+        ),
+      ],
+    }),
+  );
+  const progress = events.filter((event) => event.type === 'progress');
+  expect(progress[0]).not.toHaveProperty('cursor');
+  expect(progress.at(-1)).toHaveProperty('cursor');
+  expect(progress.every((event) => parseWaitStreamEventValue(event) !== null)).toBe(true);
+});
+
+it('bounds terminal-boundary searches independently of a versionless progress backlog', async () => {
+  const job = admitted(
+    'a',
+    Array.from({ length: 64 }, (_, i) => [i + 1, `line-${i}`]),
+  );
+  const find = vi.spyOn(job.detail!.events, 'find');
+  const events = await collect(
+    readWaitSession({
+      request: { jobIds: ['a'], timeoutSeconds: 0 },
+      time: new VirtualTime(),
+      activeEpochKey: 'epoch-E',
+      read: () => [job],
+    }),
+  );
+  expect(events.filter((event) => event.type === 'progress')).toHaveLength(64);
+  expect(find.mock.calls.length).toBeLessThanOrEqual(10);
+});
+
+it('shares stream admission and reads only a bounded tail or the requested epoch suffix', async () => {
+  const f = createTerminalExportFixture();
+  try {
+    for (let i = 0; i < 100; i++) f.store.appendProgress(f.jobId, 'session-1', `line-${i}`);
+    let rows = 0;
+    let reads = 0;
+    const coordinator = new WaitCoordinator({
+      sessionManager: { get: () => null } as never,
+      launchQueue: { reservationFor: () => null, getActiveJobIds: () => [] } as never,
+      eventBus: { on() {}, off() {} } as never,
+      time: f.runtime.time,
+      loadJobProjectionDetail: (id) => f.store.loadJobProjectionDetail(id),
+      readJobEvents: (id, after, window) => {
+        reads++;
+        const result = f.store.readJobEvents(id, false, after, window);
+        rows += result.length;
+        return result;
+      },
+      aggregateWorkflowUsage: () => undefined,
+      subscribeJobEvents: () => (async function* () {})(),
+      getCurrentJournalSeq: () => (f.db.prepare('SELECT MAX(seq) AS seq FROM events').get() as { seq: number }).seq,
+      currentJobEpochKey: () => f.epochKey,
+      resultJobsRoot: f.runtime.paths.coral.exports.jobsRoot,
+      observeResultAvailability: () => ({ kind: 'available', resultPath: '/x' }),
+    });
+    const addressing = new JobAddressing(
+      f.index.readOnlyView(),
+      {
+        epochKey: () => f.epochKey,
+        detail: () => null,
+        abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
+        readWaitAdmissions: (ids, key, session) => coordinator.readWaitAdmissions(ids, key, session),
+      },
+      () => false,
+      () => 'pending',
+      undefined,
+      () => ({ kind: 'available', resultPath: '/x' }),
+    );
+    const request = { jobIds: [f.jobId], supportsWaitV3: true, timeoutSeconds: 0 };
+    const admittedRequest = Object.assign(request, { admissions: addressing.admitWait(request) });
+    const events = await collect(addressing.waitStream(admittedRequest));
+    expect(reads).toBe(1);
+    expect(rows).toBeLessThanOrEqual(21);
+    const last = events.at(-1)!;
+    rows = 0;
+    const resumed = addressing.snapshot({ jobIds: [f.jobId], supportsWaitV3: true, cursor: last.cursor });
+    expect(resumed.jobs[0].progress).toEqual([]);
+    expect(rows).toBe(0);
+  } finally {
+    f.close();
+  }
+});
+
+it.each(['v0.10.15', 'v0.10.16', 'v0.10.17', 'v0.10.18'] as const)(
+  'gives %s runnable held-progress remediation without --full',
+  async (tag) => {
+    const directories: string[] = [];
+    const released = await loadReleasedWait(tag, directories);
+    const job = { ...admitted('a', [], true), sourceRead: 'transient-unknown' as const };
+    try {
+      const events = await collect(
+        readWaitSession({
+          request: { jobIds: ['a'], supportsWaitV2: tag !== 'v0.10.15', timeoutSeconds: 0 },
+          time: new VirtualTime(),
+          activeEpochKey: 'epoch-E',
+          read: () => [job],
+        }),
+      );
+      const text = events
+        .map((event) => released.parseWaitStreamEventValue(event))
+        .map((event) => (event && 'message' in event ? (event.message ?? '') : ''))
+        .join('\n');
+      expect(text).toContain('coral-cli jobs detail a');
+      expect(text).not.toContain('--full');
+    } finally {
+      for (const directory of directories) rmSync(directory, { recursive: true, force: true });
+    }
+  },
+);
+
+it.each([false, true])('a legacy failed artifact refuses only its affected job, v2=%s', async (v2) => {
+  const a = admitted('a');
+  const failed = {
+    ...admitted('b'),
+    availability: { kind: 'failed' as const, cause: 'repair-failed' as const, retryScheduled: true },
+  };
+  let cursor: WaitCursor | undefined;
+  const request = {
+    jobIds: ['a', 'b'],
+    supportsWaitV2: v2,
+    timeoutSeconds: 0,
+    onLegacyCursor: (next: WaitCursor) => {
+      cursor = next;
+    },
+  };
+  const events = await collect(
+    readWaitSession({ request, time: new VirtualTime(), activeEpochKey: 'epoch-E', read: () => [a, failed] }),
+  );
+  const terminal = events.find((event) => event.type === 'terminal')!;
+  cursor = terminal.cursor ?? cursor;
+  expect(terminal).toMatchObject({ jobId: 'a', remainingJobIds: ['b'] });
+  await expect(
+    collect(
+      readWaitSession({
+        request: { ...request, cursor },
+        time: new VirtualTime(),
+        activeEpochKey: 'epoch-E',
+        read: () => [a, failed],
+      }),
+    ),
+  ).rejects.toThrow('coral-cli jobs detail b');
 });

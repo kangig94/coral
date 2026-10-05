@@ -193,3 +193,51 @@ it('keeps repeated SIGINT cleanup alive until the owned monitor has ended', asyn
     invocation.dispose(true);
   }
 });
+
+it.each([0, 1, 42])('preserves snapshot exit %s when the watchdog fires during the final write', async (exitCode) => {
+  vi.useFakeTimers();
+  let finish!: () => void;
+  vi.spyOn(process.stdout, 'write').mockImplementation(((_text: unknown, callback?: () => void) => {
+    if (callback) finish = callback;
+    return true;
+  }) as typeof process.stdout.write);
+  const invocation = new WaitInvocation('snapshot', ['node', 'coral-cli', 'wait', 'jobs', 'a', '--now'], {
+    now: () => Date.now(),
+  });
+  try {
+    const write = invocation.writeSnapshotOutput('delivered snapshot', 'continuation', exitCode).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    await vi.advanceTimersByTimeAsync(30000);
+    finish();
+    expect(await write).toBeNull();
+    expect(invocation.completedExitCode).toBe(exitCode);
+    expect(() => invocation.check()).not.toThrow();
+    expect(vi.getTimerCount()).toBe(0);
+  } finally {
+    invocation.dispose(true);
+    vi.useRealTimers();
+  }
+});
+
+it.each(['signal', 'watchdog'])('describes an interrupted snapshot truthfully after %s', async (interrupt) => {
+  vi.useFakeTimers();
+  let output = '';
+  vi.spyOn(process.stdout, 'write').mockImplementation(((text: unknown, callback?: () => void) => {
+    output += String(text);
+    callback?.();
+    return true;
+  }) as typeof process.stdout.write);
+  const invocation = new WaitInvocation('snapshot', ['node', 'coral-cli', 'wait', 'jobs', 'a', '--now']);
+  try {
+    if (interrupt === 'signal') process.emit('SIGINT');
+    else await vi.advanceTimersByTimeAsync(30000);
+    invocation.flushContinuation(true);
+    expect(output).toContain('Snapshot monitoring ended before delivery completed.');
+    expect(output).not.toContain('not ready');
+  } finally {
+    invocation.dispose(true);
+    vi.useRealTimers();
+  }
+});

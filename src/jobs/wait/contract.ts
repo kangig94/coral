@@ -73,6 +73,7 @@ export type WaitStreamEvent =
       type: 'disposition';
       version: 'jobs.wait.v3';
       jobId: string;
+      exitCode?: number;
       disposition: Exclude<WaitAdmission['disposition'], 'admitted'>;
       message?: string;
       cursor?: WaitCursorV3;
@@ -88,6 +89,7 @@ export type WaitStreamEvent =
     }
   | {
       type: 'progress';
+      exitCode?: number;
       jobId: string;
       seq: number;
       message: string;

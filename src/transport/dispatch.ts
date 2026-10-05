@@ -1208,7 +1208,8 @@ async function executeJobsWaitCatalogRequest({
       400,
     );
   const admissions = rpcPorts.jobs.admitWait(waitRequest);
-  const cursorError = rpcPorts.jobs.validateWait({ ...waitRequest, admissions });
+  const admittedRequest: CanonicalWaitStreamRequest = Object.assign(waitRequest, { admissions });
+  const cursorError = rpcPorts.jobs.validateWait(admittedRequest);
   if (cursorError) {
     const status =
       cursorError.code === 'transient'
@@ -1226,7 +1227,7 @@ async function executeJobsWaitCatalogRequest({
     kind: 'subscription',
     notifications: withSuccessionHandover(
       withInterruptedGate(
-        rpcPorts.jobs.waitStream(withAbortSignal({ ...waitRequest, admissions }, abortSignal)),
+        rpcPorts.jobs.waitStream(withAbortSignal(admittedRequest, abortSignal)),
         waitRequest.supportsInterrupted,
       ),
       waitRequest.supportsHandover ? rpcPorts.jobs.waitHandoverSignal() : undefined,

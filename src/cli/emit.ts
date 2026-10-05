@@ -4,7 +4,8 @@ import type { Command } from 'commander';
 import { HandoffRunError } from '../coordinator/handoff-routing/runner.js';
 import { BackendToolHttpError } from '../transport/http/errors.js';
 import type { AcceptedLaunchResponse } from '../jobs/launch.js';
-import { buildErrorEnvelope } from './errors.js';
+import { getWaitInvocation } from './wait-invocation.js';
+import { WaitResumeError, buildErrorEnvelope } from './errors.js';
 import { formatErrorEnvelope } from './format/error.js';
 import { formatDetachedLaunchStatus, formatLaunchWaitHint } from './format/jobs.js';
 import { launchAndFollow } from './follow.js';
@@ -55,6 +56,7 @@ export function emitError(error: unknown): void {
   const { envelope, exitCode } = buildErrorEnvelope(originalError);
   const statusCode = originalError instanceof BackendToolHttpError ? originalError.statusCode : undefined;
   process.stderr.write(formatErrorEnvelope(envelope, statusCode) + '\n');
+  if (originalError instanceof WaitResumeError) getWaitInvocation()?.markContinuationPrinted();
   process.exitCode = exitCode;
 }
 

@@ -188,7 +188,6 @@ function createCoordinatorStartupRecoveryRunner({
     await workflowRecover.resumeAll({
       db,
       progressStore: recoveryProgressStore,
-      jobEpochKey: (jobId) => jobLocations.read(jobId)?.epochKey ?? null,
       loadJobDetails: loadJobProjectionDetails,
       getExecutionService: (ctx) => getExecutionService(ctx) as never,
       createInvocationContext,
@@ -918,8 +917,8 @@ export function createCoordinatorServer(options: CoordinatorServerOptions): Coor
           ...deps,
           coordinatorCommit,
           loadJobProjectionDetail: (jobId: string) => loadJobProjectionDetail(getQueryDb(), jobId, readCtx),
-          readJobEvents: (jobId: string, afterSeq?: number) =>
-            readJobEvents(getQueryDb(), jobId, readCtx, false, afterSeq),
+          readJobEvents: (jobId: string, afterSeq?: number, window?: { tail?: number; limit?: number }) =>
+            readJobEvents(getQueryDb(), jobId, readCtx, false, afterSeq, window),
           aggregateWorkflowUsage: (workflowJobId: string) => aggregateWorkflowUsage(getQueryDb(), workflowJobId),
           subscribeJobEvents,
           getCurrentJournalSeq,

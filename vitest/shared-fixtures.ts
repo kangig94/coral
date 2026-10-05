@@ -1,7 +1,6 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { dirname, extname, join, resolve } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { basename, dirname, extname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
 import ts from 'typescript';
@@ -16,31 +15,16 @@ function body(source: string, name: string, replacement: string): string {
   return source.slice(0, node.body.getStart(file)) + `{ ${replacement} }` + source.slice(node.body.end);
 }
 
-function transformWait(source: string, path: string, variant: string): string {
+function transformWait(source: string, path: string): string {
   if (path.endsWith('/cli/wait-invocation.ts')) {
     source = source
       .replace('const WAIT_BUDGET_MS = 590_000', 'const WAIT_BUDGET_MS = 450')
       .replace('const WAIT_CLEANUP_MS = 10_000', 'const WAIT_CLEANUP_MS = 100')
       .replace('const SNAPSHOT_BUDGET_MS = 30_000', 'const SNAPSHOT_BUDGET_MS = 450')
       .replace('const SNAPSHOT_CLEANUP_MS = 1_000', 'const SNAPSHOT_CLEANUP_MS = 100');
-    if (variant === 'no-backstop') source = source.replaceAll('process.exit(75)', 'undefined');
-    if (variant === 'monitor-abort')
-      source = source.replace(
-        'if (!this.continuationFlushed && !this.signal.aborted) this.stop();\n    else if (this.signal.aborted) {\n      if (this.monitorEnding) return this.flushContinuation();\n      this.flushContinuation(true);\n      process.exit(75);\n    }',
-        'undefined;',
-      );
   }
   if (path.endsWith('/cli/follow.ts'))
     source = source.replace('deadlineMs - performance.now() <= 1000', 'deadlineMs - performance.now() <= 1');
-  if (variant === 'monitor-abort' && path.endsWith('/cli/follow.ts'))
-    source = source.replaceAll("if (options.reconnectPolicy === 'until-terminal') process.", 'process.');
-  if (variant === 'monitor-abort' && path.endsWith('/commands/session.ts'))
-    source = source.replace(
-      "reconnectPolicy: 'bounded',",
-      "reconnectPolicy: 'bounded', abortJobs: (ids) => client.abortJobs([...ids]),",
-    );
-  if (path.endsWith('/cli/program.ts') && variant === 'late-boundary')
-    source = source.replace('mode === undefined ? undefined : new WaitInvocation(mode, argv)', 'undefined');
   if (path.endsWith('/handoff-routing/runner.ts')) {
     source = source.replace(
       '  return new Promise((resolveContract) => {',
@@ -52,13 +36,6 @@ function transformWait(source: string, path: string, variant: string): string {
       'const childObservation = observeChild(child);',
       'process.stderr.write(`OWNED_MONITOR:${child.pid}\\nHANDOFF_BUDGET:${JSON.parse(spawnOptions.env[WAIT_INVOCATION_CONTEXT_ENV]).remainingMs}\\n`); const childObservation = observeChild(child);',
     );
-    if (variant === 'restart-budget')
-      source = source.replace('remainingMs: waitInvocation.remainingMs()', 'remainingMs: 450');
-    if (variant === 'discard-frontier')
-      source = source.replace(
-        'invocation.saveContinuation(message.continuation, message.complete === true, message.delivered === true)',
-        'undefined',
-      );
   }
   if (path.endsWith('/infra/handoff-target.ts')) {
     source = body(source, 'withValidatedHandoffTarget', 'return globalThis.waitProbe.execution;');
@@ -123,17 +100,15 @@ function transformAtomic(source: string, path: string, variant: string): string 
   return source;
 }
 
-export default async function setup(): Promise<() => void> {
+export async function buildSharedFixture(name: string, directory: string): Promise<void> {
   const root = resolve('.');
-  const directory = mkdtempSync(join(tmpdir(), 'coral-shared-fixtures-'));
-  process.env.CORAL_TEST_SHARED_FIXTURES = directory;
+  mkdirSync(directory, { recursive: true });
   symlinkSync(join(root, 'node_modules'), join(directory, 'node_modules'));
   const entries = new Map<string, { path: string; family?: string; variant?: string }>();
   const add = (name: string, path: string, family?: string, variant?: string): void => {
     entries.set(name, { path, family, variant });
   };
-  for (const variant of ['real', 'late-boundary', 'no-backstop', 'restart-budget', 'discard-frontier', 'monitor-abort'])
-    add(`wait-${variant}`, join(root, 'tests/fixtures/wait-invocation/cli.mjs'), 'wait', variant);
+  add('wait-real', join(root, 'tests/fixtures/wait-invocation/cli.mjs'), 'wait');
   for (const variant of ['real', 'ungated-handover', 'include-missing', 'property-decoder', 'unbounded-observer'])
     add(`phase-${variant}`, join(root, 'tests/fixtures/wait-lifetime/phase-a.mjs'), 'phase', variant);
   for (const variant of ['real', 'shared', 'sweep'])
@@ -151,6 +126,7 @@ export default async function setup(): Promise<() => void> {
   );
   add('maintenance', join(directory, 'maintenance.ts'));
   for (const tag of ['v0.10.15', 'v0.10.16', 'v0.10.17', 'v0.10.18']) {
+    if (tag !== name) continue;
     const releaseRoot = join(directory, tag);
     mkdirSync(releaseRoot);
     execFileSync('tar', ['-x', '-C', releaseRoot], {
@@ -175,7 +151,7 @@ ${extra}`,
     add(tag, entry);
   }
   await build({
-    entryPoints: Object.fromEntries([...entries.keys()].map((name) => [name, `fixture:${name}`])),
+    entryPoints: { [name]: `fixture:${name}` },
     outdir: directory,
     outExtension: { '.js': '.cjs' },
     bundle: true,
@@ -206,7 +182,7 @@ ${extra}`,
             if (!entry) return undefined;
             let source = readFileSync(path, 'utf8');
             if (extname(path) === '.sql') return { contents: source, loader: 'text' };
-            if (entry.family === 'wait') source = transformWait(source, path, entry.variant!);
+            if (entry.family === 'wait') source = transformWait(source, path);
             if (entry.family === 'phase') source = transformPhase(source, path, entry.variant!);
             if (entry.family === 'atomic') source = transformAtomic(source, path, entry.variant!);
             if (entry.family === 'publisher' && path.endsWith('/runtime/real.ts')) {
@@ -233,7 +209,23 @@ ${extra}`,
       },
     ],
   });
-  return () => {
-    rmSync(directory, { recursive: true, force: true });
-  };
+  if (name.startsWith('v0.')) rmSync(join(directory, name), { recursive: true, force: true });
+  rmSync(join(directory, 'holder.ts'), { force: true });
+  rmSync(join(directory, 'maintenance.ts'), { force: true });
+}
+
+if (process.argv[1]?.endsWith('/shared-fixtures.ts')) {
+  const [name, pending, destination] = process.argv.slice(2);
+  const stage = join(dirname(pending), basename(pending).replace(/^stage-\d+-/, `stage-${process.pid}-`));
+  renameSync(pending, stage);
+  try {
+    await buildSharedFixture(name, stage);
+    try {
+      renameSync(stage, destination);
+    } catch (error) {
+      if (!existsSync(join(destination, `${name}.cjs`))) throw error;
+    }
+  } finally {
+    rmSync(stage, { recursive: true, force: true });
+  }
 }

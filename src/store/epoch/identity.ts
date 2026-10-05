@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-function epochIdentity(key: string): string {
+export function epochIdentity(key: string): string {
   if (!key.startsWith('{')) return key;
   try {
     const value: unknown = JSON.parse(key);

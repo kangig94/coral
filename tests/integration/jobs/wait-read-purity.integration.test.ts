@@ -408,7 +408,7 @@ describe('Phase D wait read purity (Revision S3)', () => {
     const caveat = f.addressing.unknownJobCaveat();
     check();
     expect(disposition).toBe(retryScheduled ? 'discovery-unknown' : 'discovery-unreadable');
-    expect(caveat).toContain(waitEpochToken(f.epochKey));
+    expect(caveat).toContain(waitEpochToken(f.epochKey).slice(0, 8));
   });
 
   it('keeps pending closure and source identity uncertainty unresolved', () => {

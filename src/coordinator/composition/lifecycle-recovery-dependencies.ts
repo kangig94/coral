@@ -12,6 +12,7 @@ import { readOrCreateEpochKey } from '../../store/epoch/index.js';
 import {
   decodeResolvedStoreEpoch,
   encodeResolvedStoreEpoch,
+  inspectResolvedStoreEpochKey,
   listStoreEpochs,
   type ResolvedStoreEpoch,
 } from '../../store/epoch/index.js';
@@ -83,14 +84,18 @@ function createStoreOpenedObserver(input: LifecycleRecoveryInput): NonNullable<L
       registerPresentHistoricalEpochs(runtime, jobLocationIndex, epochs, encodeResolvedStoreEpoch(runtime, openStore), {
         remaining: 0,
       });
-      const present = epochs.flatMap((epoch) =>
-        epoch.resolved ? [encodeResolvedStoreEpoch(runtime, epoch.resolved)] : [],
-      );
-      present.push(encodeResolvedStoreEpoch(runtime, openStore));
-      jobLocationIndex.reconcileUnknownLocationHolds(
-        present,
-        epochs.every((epoch) => epoch.resolved !== null),
-      );
+      const present: string[] = [encodeResolvedStoreEpoch(runtime, openStore)];
+      let inventoryComplete = true;
+      for (const epoch of epochs) {
+        try {
+          const key = epoch.epochKey ?? (epoch.resolved ? inspectResolvedStoreEpochKey(runtime, epoch.resolved) : null);
+          if (key) present.push(key);
+          else inventoryComplete = false;
+        } catch {
+          inventoryComplete = false;
+        }
+      }
+      jobLocationIndex.reconcileUnknownLocationHolds(present, inventoryComplete);
     }
   };
 }

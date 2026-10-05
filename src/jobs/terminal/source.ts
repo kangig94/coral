@@ -1,5 +1,5 @@
 import { sameEpoch } from '../../store/epoch/identity.js';
-import { STORE_LOCK_FILE_NAME } from '../../store/epoch/index.js';
+import { type ResolvedStoreEpoch, STORE_LOCK_FILE_NAME } from '../../store/epoch/index.js';
 import { dirname, join } from 'node:path';
 import type { Runtime } from '../../runtime/ports.js';
 import type { Database } from '../../store/db.js';
@@ -26,8 +26,9 @@ export function withTerminalSource<T>(
   runtime: Pick<Runtime, 'storage'>,
   epochKey: string,
   read: (db: Database) => T,
+  closedSource?: ResolvedStoreEpoch,
 ): T | null {
-  const epoch = observeResolvedStoreEpoch(runtime, epochKey);
+  const epoch = closedSource ?? observeResolvedStoreEpoch(runtime, epochKey);
   if (!epoch) throw new Error('Source epoch identity cannot be observed');
   const path = observeStorePath(runtime.storage, epoch.path);
   if (path === 'absent') return null;

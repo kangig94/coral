@@ -673,14 +673,23 @@ export function readJobEvents(
   ctx: StoreReadContext,
   terminalOnly = false,
   afterSeq = 0,
+  window?: { tail?: number; limit?: number },
 ): JobEvent[] {
   const rows = prepareCached<[string, number], EventsRow>(
     db,
     `SELECT * FROM events
      WHERE stream_id = ? AND seq > ?
        AND ${terminalOnly ? "type = 'job.terminal.recorded'" : "type IN ('job.progress.emitted', 'job.terminal.recorded')"}
-     ORDER BY seq ASC`,
+     ORDER BY seq ${window?.tail !== undefined ? 'DESC' : 'ASC'}${window ? ` LIMIT ${Math.max(1, Math.min(501, (window.tail ?? window.limit ?? 500) + 1))}` : ''}`,
   ).all(jobId, afterSeq);
+  if (window?.tail !== undefined) rows.reverse();
+  if (window && !terminalOnly && !rows.some((row) => row.type === 'job.terminal.recorded')) {
+    const terminal = prepareCached<[string], EventsRow>(
+      db,
+      "SELECT * FROM events WHERE stream_id = ? AND type = 'job.terminal.recorded' ORDER BY seq DESC LIMIT 1",
+    ).get(jobId);
+    if (terminal) rows.push(terminal);
+  }
 
   const projection = readProjectionRow(db, jobId);
   const sessionId = projection?.session_id ?? null;
