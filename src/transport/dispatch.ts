@@ -1185,8 +1185,6 @@ async function executeJobsWaitCatalogRequest({
   if (callerRoot === undefined) return unaryHttp(domainResultToHttp(invalidRequestResult()));
   const admissions = rpcPorts.jobs.admitWait(waitRequest);
   const admittedRequest: CanonicalWaitStreamRequest = Object.assign(waitRequest, { admissions });
-  const cursorError = rpcPorts.jobs.validateWait(admittedRequest);
-  if (cursorError) return unary(cursorError, 400);
   return {
     kind: 'subscription',
     notifications: withSuccessionHandover(

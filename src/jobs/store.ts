@@ -34,8 +34,6 @@ import { jobsDir } from './paths.js';
 import { TerminalResultExportOwner, resultPathFor, type WorkflowReportPort } from './terminal/export.js';
 import { type JobLocationIndex, type JobLocation } from './location-index.js';
 import { readAcceptedTerminal, withTerminalSource } from './terminal/source.js';
-import { readJobTerminalAge } from './terminal-age.js';
-import { trustedJobRetentionCutoff } from './retention-clock.js';
 import { deriveLaunchReadiness } from './launch-readiness.js';
 import type { DurableProcessExit } from '../runtime/durable-runtime.js';
 import { nowDate, nowIsoString } from '../infra/time.js';
@@ -72,7 +70,6 @@ import { writeDurableCliProvisionalProcessRuntimeMeta } from './runtime-meta-sto
 import type { DurableCliProvisionalProcessRuntimeMeta } from './runtime-meta.js';
 
 export type JobStoreOptions = {
-  terminalAgeCacheLimit?: number;
   eventBus?: JobEventBus;
   db: Database;
   reducers?: ComposedReducers;
@@ -437,7 +434,6 @@ export class JobStore implements JobProgressStore {
     options: JobStoreOptions,
   ) {
     this.namespace = namespace;
-    this.terminalAgeCacheLimit = options.terminalAgeCacheLimit ?? 1024;
     this.runtime = runtime;
     const { eventBus = createNoopJobEventBus(), db, reducers = composeReducers(jobsRegistry) } = options;
 
@@ -585,8 +581,6 @@ export class JobStore implements JobProgressStore {
   private resultExports: TerminalResultExportOwner | null = null;
   private exportLocations: JobLocationIndex | null = null;
   private workflowReport?: WorkflowReportPort;
-  private readonly terminalAgeCacheLimit: number;
-  private readonly localTerminalAges = new Map<string, unknown>();
 
   configureResultExports(locations: JobLocationIndex | null, workflowReport?: WorkflowReportPort): void {
     if (this.exportLocations === locations && this.workflowReport === (workflowReport ?? locations?.workflowReport))
@@ -614,7 +608,7 @@ export class JobStore implements JobProgressStore {
       prepareTerminal: (jobId, db) => {
         const index = this.exportLocations;
         const location = index?.read(jobId);
-        if (!index || !location || (hasReadableTerminalDetail(location) && location.terminalAge !== undefined)) return;
+        if (!index || !location || hasReadableTerminalDetail(location)) return;
         index.prepareTerminal(jobId, db, location.epochKey, this.runtime.paths.coral.exports.jobsRoot);
       },
       location: (jobId): JobLocation | null => {
@@ -623,19 +617,6 @@ export class JobStore implements JobProgressStore {
         if (!detail.status || !detail.exit) return null;
         const accepted = readAcceptedTerminal(this.db, jobId);
         if (!accepted) return null;
-        if (!this.localTerminalAges.has(jobId) && trustedJobRetentionCutoff(this.runtime) !== null) {
-          const age = readJobTerminalAge(this.db, accepted);
-          if (this.localTerminalAges.size >= this.terminalAgeCacheLimit) {
-            const oldest = this.localTerminalAges.keys().next().value;
-            if (oldest !== undefined) this.localTerminalAges.delete(oldest);
-          }
-          this.localTerminalAges.set(jobId, {
-            epochKey: ':memory:',
-            terminalSeq: accepted.seq,
-            terminalTimestamp: accepted.ts,
-            ...(typeof age === 'number' ? { kind: 'known', terminalAt: age } : { kind: age }),
-          });
-        }
         return {
           version: 'v1',
           jobId,
@@ -648,7 +629,6 @@ export class JobStore implements JobProgressStore {
             jobKind: detail.status.jobKind,
           },
           resultPath: resultPathFor(this.runtime.paths.coral.exports.jobsRoot, jobId),
-          terminalAge: this.localTerminalAges.get(jobId),
           detail: {
             kind: 'recorded',
             value: {
@@ -660,13 +640,6 @@ export class JobStore implements JobProgressStore {
           },
         };
       },
-      publicationLocation: (jobId) => this.exportLocations?.publicationLocation(jobId) ?? null,
-      ...(this.exportLocations
-        ? {
-            publicationUnchanged: (jobId: string, location: JobLocation) =>
-              this.exportLocations?.publicationUnchanged(jobId, location) === true,
-          }
-        : {}),
       withSource: (jobId, read, snapshot) => {
         if (!this.exportLocations) return read(this.db, this);
         const location = snapshot ?? this.exportLocations.read(jobId);

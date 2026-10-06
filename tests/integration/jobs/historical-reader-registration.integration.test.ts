@@ -47,7 +47,7 @@ it('a transient registration failure leaves a fallback-keyed retry hold that not
       () => false,
       () => 'decided',
       undefined,
-      () => ({ kind: 'failed', cause: 'terminal-unusable', retryScheduled: false }),
+      () => ({ kind: 'failed', reason: 'the retained terminal does not match its source journal' }),
     );
 
     expect(holds).toEqual([]);

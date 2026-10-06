@@ -1,7 +1,4 @@
-import type { ProgressPage, TailPage } from './wait/progress-page.js';
-import { progressPage, progressTail, type RawProgressRow } from './wait/progress-page.js';
-import type { ProgressSource, ProgressVisitResult } from './wait/contract.js';
-import { isCodeDefect, sourceReadFailureDisposition } from './source-read.js';
+import type { ProgressSource, ProgressVisitResult, WaitProgressRow } from './wait/contract.js';
 import type { Database } from '../store/db.js';
 import type { HostRef, UsageSummary } from '../providers/contract.js';
 
@@ -791,76 +788,41 @@ export function readJobEvents(
   return events;
 }
 
-function rawProgressRows(rows: readonly EventsRow[], ctx: StoreReadContext): RawProgressRow[] {
+function progressRows(rows: readonly EventsRow[], ctx: StoreReadContext): WaitProgressRow[] {
   return rows.map((row) => {
     rowToCoralEvent(row, null);
     const body = decodeBody(row, jobProgressBodySchema, ctx);
-    return {
-      seq: row.seq,
-      ...(body.kind === 'message' ? { progress: { seq: row.seq, message: body.message, timing: body.timing } } : {}),
-    };
+    return body.kind === 'message' ? { seq: row.seq, message: body.message, timing: body.timing } : { seq: row.seq };
   });
 }
 
-export function readJobProgressPage(
-  db: Database,
-  jobId: string,
-  ctx: StoreReadContext,
-  afterSeq: number,
-  rows: number,
-  sourceFrontier: number,
-): ProgressPage {
-  const raw = prepareCached<[string, number, number], EventsRow>(
-    db,
-    "SELECT * FROM events WHERE type = 'job.progress.emitted' AND stream_id = ? AND seq > ? ORDER BY seq LIMIT ?",
-  ).all(jobId, afterSeq, rows + 1);
-  return progressPage(rawProgressRows(raw, ctx), rows, sourceFrontier);
-}
-
-export function readJobProgressTail(
-  db: Database,
-  jobId: string,
-  ctx: StoreReadContext,
-  beforeSeq: number | null,
-  rows: number,
-  sourceFrontier: number,
-): TailPage {
-  const raw = prepareCached<[string, number, number], EventsRow>(
-    db,
-    "SELECT * FROM events WHERE type = 'job.progress.emitted' AND stream_id = ? AND seq < ? ORDER BY seq DESC LIMIT ?",
-  ).all(jobId, beforeSeq ?? Number.MAX_SAFE_INTEGER, rows + 1);
-  return progressTail(rawProgressRows(raw, ctx), rows, sourceFrontier);
-}
-
-/** Only opening is classified here: the read runs outside this source's error scope, so no failure can be misattributed. */
+/** A page shorter than requested is everything the job had when it was read; no frontier certifies more than that. */
 export function visitJobProgress<T>(
   db: Database,
   ctx: StoreReadContext,
   read: (source: ProgressSource) => T,
 ): ProgressVisitResult<T> {
-  const owned = !db.isTransaction;
-  let frontier: number;
-  try {
-    if (owned) db.exec('BEGIN');
-    frontier = db.prepare<[], { seq: number }>('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get()?.seq ?? 0;
-  } catch (error) {
-    if (owned && db.isTransaction) db.exec('ROLLBACK');
-    if (isCodeDefect(error)) throw error;
-    return {
-      kind: 'unreadable',
-      disposition: sourceReadFailureDisposition(error),
-      reason: 'The active journal cannot be read right now',
-    };
-  }
-  try {
-    return {
-      kind: 'read',
-      value: read({
-        after: (id, after, rows) => readJobProgressPage(db, id, ctx, after, rows, frontier),
-        before: (id, before, rows) => readJobProgressTail(db, id, ctx, before, rows, frontier),
-      }),
-    };
-  } finally {
-    if (owned) db.exec('ROLLBACK');
-  }
+  return {
+    kind: 'read',
+    value: read({
+      after: (jobId, afterSeq, rows) =>
+        progressRows(
+          prepareCached<[string, number, number], EventsRow>(
+            db,
+            "SELECT * FROM events WHERE type = 'job.progress.emitted' AND stream_id = ? AND seq > ? ORDER BY seq LIMIT ?",
+          ).all(jobId, afterSeq, rows),
+          ctx,
+        ),
+      newest: (jobId, rows) =>
+        progressRows(
+          prepareCached<[string, number], EventsRow>(
+            db,
+            "SELECT * FROM events WHERE type = 'job.progress.emitted' AND stream_id = ? ORDER BY seq DESC LIMIT ?",
+          )
+            .all(jobId, rows)
+            .reverse(),
+          ctx,
+        ),
+    }),
+  };
 }

@@ -10,7 +10,7 @@ it('sibling B keeps its unread prefix when unresolved U resolves into B epoch (c
   // Session 1: fresh snapshot, B running in E with 1..100, U unresolved.
   const s1 = new WaitSession(['b', 'u']);
   const b1 = admitted('b', lines(1, 100, 'b'), false, 'E');
-  const u1: WaitAdmission = { jobId: 'u', disposition: 'discovery-unknown', message: 'retry' };
+  const u1: WaitAdmission = { jobId: 'u', disposition: 'unknown', message: 'retry' };
   s1.reconcile([b1, u1]);
   const snap1 = selectWaitSnapshot(s1, 20);
 

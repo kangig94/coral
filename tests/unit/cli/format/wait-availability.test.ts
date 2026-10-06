@@ -6,14 +6,10 @@ import type { ResultAvailability } from '#src/jobs/terminal/export.js';
 it.each([
   [{ kind: 'available', resultPath: '/real/result.md' }, 'Result path: /real/result.md'],
   [{ kind: 'retained-away', retentionDays: 14 }, 'no longer kept: past the 14-day retention window'],
+  [{ kind: 'pending' }, 'Result file pending; Coral will attempt publication on its next maintenance pass.'],
   [
-    { kind: 'repair-pending', ageUncertain: false },
-    'Result file pending; Coral will attempt publication on its next maintenance pass.',
-  ],
-  [{ kind: 'failed', cause: 'repair-failed', retryScheduled: true }, 'Coral will retry on its next maintenance pass.'],
-  [
-    { kind: 'failed', cause: 'source-epoch-retired', retryScheduled: false },
-    'the source journal is no longer retained. Coral cannot repair this file automatically.',
+    { kind: 'failed', reason: 'the source journal is no longer retained' },
+    'Result file unavailable: the source journal is no longer retained. Coral cannot repair this file automatically.',
   ],
 ] as const)('prints truthful artifact state %j', (availability, text) => {
   const output = formatResultAvailability(availability as ResultAvailability);
@@ -36,9 +32,7 @@ it('renders a single exact cursor-aware continuation', () => {
   const output = formatWaitTerminal(terminal, 'saved', false);
   expect(output).toContain('coral-cli wait jobs b --cursor saved');
   expect(output.match(/Run coral-cli/g)).toHaveLength(1);
-  expect(formatResultAvailability({ kind: 'available', resultPath: '/settled' }, true)).toBe(
-    'result file now available\nResult path: /settled',
-  );
+  expect(formatResultAvailability({ kind: 'available', resultPath: '/settled' })).toBe('Result path: /settled');
 });
 
 it('keeps the waiting status, command, and cursor together when carrier coverage is unknown', () => {

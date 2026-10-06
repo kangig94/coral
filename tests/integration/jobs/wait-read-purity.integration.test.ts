@@ -50,10 +50,7 @@ function fixture(historical = false) {
   };
   const owner = f.store.getResultExportOwner();
   const wait = new WaitCoordinator({
-    visitProgress: progressVisitFromEvents(
-      (id) => f.store.readJobEvents(id),
-      () => f.db.prepare<[], { seq: number }>('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get()?.seq ?? 0,
-    ),
+    visitProgress: progressVisitFromEvents((id) => f.store.readJobEvents(id)),
     sessionManager: { get: () => null } as never,
     launchQueue: { reservationFor: () => null, getActiveJobIds: () => [] } as never,
     eventBus: f.store.getEventBus(),
@@ -79,13 +76,13 @@ function fixture(historical = false) {
       detail: historical ? () => null : detail,
       abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
       readWaitAdmission: (id, epochKey) => wait.readWaitAdmission(id, epochKey),
+      visitProgress: (epoch, read) => wait.visitProgress(epoch, read),
     },
     () => false,
     closure,
     reader,
     (id) => owner.observeResultAvailability(id),
     (id) => owner.hintRepair(id),
-    (id) => owner.progressRetentionExpired(id),
   );
   return { ...f, addressing, closure, reader, detail, owner };
 }
@@ -211,7 +208,7 @@ async function terminal(stream: AsyncGenerator<WaitStreamEvent>): Promise<WaitSt
 }
 
 describe('Phase D wait read purity (Revision S3)', () => {
-  it.each(['scopeCheck', 'detail', 'validateWait', 'waitStream', 'snapshot', 'detailFull'] as const)(
+  it.each(['scopeCheck', 'detail', 'waitStream', 'snapshot', 'detailFull'] as const)(
     'admits an unindexed active terminal through %s without registration',
     async (entry) => {
       const f = fixture();
@@ -234,7 +231,6 @@ describe('Phase D wait read purity (Revision S3)', () => {
         );
       if (entry === 'detail')
         expect(f.addressing.detail(f.jobId)).toMatchObject({ exit: { content: 'canonical result' } });
-      if (entry === 'validateWait') expect(f.addressing.validateWait({ jobIds: [f.jobId] })).toBeNull();
       if (entry === 'waitStream')
         expect(await terminal(f.addressing.waitStream({ jobIds: [f.jobId] }))).toMatchObject({
           type: 'terminal',
@@ -257,12 +253,12 @@ describe('Phase D wait read purity (Revision S3)', () => {
       result: { content: 'canonical result' },
     });
     check();
-    expect(observation).toHaveReturnedWith({ kind: 'repair-pending', ageUncertain: false });
+    expect(observation).toHaveReturnedWith({ kind: 'pending' });
     expect(hint).toHaveBeenCalledWith(f.jobId);
     expect(existsSync(f.resultPath)).toBe(false);
   });
 
-  it.each(['scopeCheck', 'detail', 'validateWait', 'waitStream', 'snapshot', 'detailFull'] as const)(
+  it.each(['scopeCheck', 'detail', 'waitStream', 'snapshot', 'detailFull'] as const)(
     'reads a historical terminal committed only in WAL through %s without hydration',
     async (entry) => {
       const f = fixture(true);
@@ -298,7 +294,6 @@ describe('Phase D wait read purity (Revision S3)', () => {
             expect.objectContaining({ type: 'terminal' }),
           ],
         });
-      if (entry === 'validateWait') expect(f.addressing.validateWait({ jobIds: [f.jobId] })).toBeNull();
       if (entry === 'waitStream')
         expect(await terminal(f.addressing.waitStream({ jobIds: [f.jobId] }))).toMatchObject({
           type: 'terminal',
@@ -321,17 +316,14 @@ describe('Phase D wait read purity (Revision S3)', () => {
       else writeFileSync(lock, 'malformed lock bytes');
       const check = measure(f);
       const detail = f.addressing.detail(f.jobId);
-      const unrecoverable = f.addressing.outcomeUnrecoverable([f.jobId]);
       check();
       expect(detail).toMatchObject({ kind: 'unresolved' });
-      expect(unrecoverable).toEqual([]);
     },
   );
 
   it('proves absence only after decided closure and a successful journal read', () => {
     const f = fixture(true);
     const check = measure(f);
-    expect(f.addressing.outcomeUnrecoverable([f.jobId])).toEqual([f.jobId]);
     expect(f.addressing.detail(f.jobId)).toMatchObject({ kind: 'outcome-unrecoverable' });
     check();
   });
@@ -380,7 +372,7 @@ describe('Phase D wait read purity (Revision S3)', () => {
       () => false,
       () => 'decided',
       undefined,
-      () => ({ kind: 'failed', cause: 'terminal-unusable', retryScheduled: false }),
+      () => ({ kind: 'failed', reason: 'the retained terminal does not match its source journal' }),
     );
     const check = measure(f);
     expect(addressing.detail(f.jobId)).toMatchObject({ exit: { content: 'never exported' } });
@@ -408,7 +400,6 @@ describe('Phase D wait read purity (Revision S3)', () => {
       'typo',
     ]);
     expect(f.addressing.detail('typo')).toBeNull();
-    expect(f.addressing.validateWait({ jobIds: ['typo'] })).toBeNull();
     const disposition = f.addressing.unknownJobDisposition();
     const caveat = f.addressing.unknownJobCaveat();
     check();
@@ -420,7 +411,7 @@ describe('Phase D wait read purity (Revision S3)', () => {
     const f = fixture(true);
     f.closure.mockReturnValue('pending');
     const check = measure(f);
-    expect(f.addressing.outcomeUnrecoverable([f.jobId])).toEqual([]);
+    expect(f.addressing.detail(f.jobId)).not.toMatchObject({ kind: 'outcome-unrecoverable' });
     check();
     f.closure.mockReturnValue('decided');
     const marker = join(f.epochDir, '.coral-lineage.v1.json');
@@ -446,13 +437,12 @@ describe('Phase D wait read purity (Revision S3)', () => {
       () => false,
       () => 'pending',
       undefined,
-      () => ({ kind: 'failed', cause: 'terminal-unusable', retryScheduled: false }),
+      () => ({ kind: 'failed', reason: 'the retained terminal does not match its source journal' }),
     );
     rmSync(f.locationPath);
     const check = measure(f);
     expect(addressing.scopeCheck([f.jobId], canonicalWorkDirWireSchema.parse(f.root), 'contains').missing).toEqual([]);
     expect(addressing.detail(f.jobId)).toMatchObject({ status: { jobKind: 'kb' } });
-    expect(addressing.validateWait({ jobIds: [f.jobId] })).toBeNull();
     check();
   });
 
@@ -466,7 +456,6 @@ describe('Phase D wait read purity (Revision S3)', () => {
       'resultPathFor',
       'time',
       'unknownLocationHolds',
-      'visitProgress',
     ]);
   });
 });
@@ -482,10 +471,7 @@ it.each(['missing', 'malformed'] as const)('maintenance repairs a %s guard after
   if (guard === 'missing') rmSync(lock);
   else writeFileSync(lock, 'malformed guard');
   let check = measure(f);
-  expect(f.addressing.admitWait({ jobIds: [f.jobId] })[0]).toMatchObject({
-    disposition: 'admitted',
-    sourceRead: 'transient-unknown',
-  });
+  expect(f.addressing.admitWait({ jobIds: [f.jobId] })[0]).toMatchObject({ disposition: 'unknown' });
   check();
   vi.restoreAllMocks();
   syncBuiltinESMExports();
@@ -494,7 +480,6 @@ it.each(['missing', 'malformed'] as const)('maintenance repairs a %s guard after
   check = measure(f);
   expect(f.addressing.admitWait({ jobIds: [f.jobId] })[0]).toMatchObject({
     disposition: 'admitted',
-    sourceRead: 'readable',
     detail: { exit: { content: 'journal terminal' } },
   });
   check();

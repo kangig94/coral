@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { InvocationContext } from '../../../src/runtime/invocation-context.js';
 import type { LaunchedAtom, WorkflowExecutionPort } from '../../../src/workflow/execution-contract.js';
 import { admitted } from '#tests/helpers/wait-session.js';
-import { waitEpochToken, waitJobHash } from '#src/jobs/wait/cursor.js';
+import { waitJobHash } from '#src/jobs/wait/cursor.js';
 import { JobAddressing } from '#src/jobs/addressing.js';
 import { WaitCoordinator } from '#src/jobs/shell/wait.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
@@ -12,7 +12,6 @@ import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { VirtualTime, flushMicrotasks } from '#tools/simulation/core/virtual-time.js';
 import { waitForAtoms } from '../../../src/workflow/wait.js';
 import type { ProgressVisit, WaitStreamEvent, WaitStreamRequest } from '../../../src/jobs/wait/contract.js';
-import { progressPage } from '#src/jobs/wait/progress-page.js';
 import { readWaitSession } from '#src/jobs/wait/reader.js';
 
 function atom(jobId: string, atomIndex: number): LaunchedAtom {
@@ -30,13 +29,7 @@ function atom(jobId: string, atomIndex: number): LaunchedAtom {
   };
 }
 
-const entry = (jobId: string, seq: number, epochKey: string) => ({
-  hash: waitJobHash(jobId),
-  epoch: waitEpochToken(epochKey),
-  seq,
-  lineOffset: 0,
-  flags: 0,
-});
+const entry = (jobId: string, seq: number) => ({ hash: waitJobHash(jobId), seq });
 
 function terminal(jobId: string, seq: number, epochKey: string, remainingJobIds: string[]): WaitStreamEvent {
   return {
@@ -48,7 +41,7 @@ function terminal(jobId: string, seq: number, epochKey: string, remainingJobIds:
     resultPath: `/tmp/${jobId}.md`,
     availability: { kind: 'available', resultPath: `/tmp/${jobId}.md` },
     result: { content: `${jobId} done`, outcome: { kind: 'completed' }, durationMs: 1 },
-    cursor: { jobs: remainingJobIds.includes('old') ? [entry('old', 3, 'lineage-old:7')] : [] },
+    cursor: { jobs: remainingJobIds.includes('old') ? [entry('old', 3)] : [] },
     exitCode: 0,
   };
 }
@@ -58,10 +51,7 @@ describe('workflow wait epoch cursor', () => {
     const runtime = new SimulationRuntime();
     const job = admitted('job-1');
     const wait = new WaitCoordinator({
-      visitProgress: progressVisitFromEvents(
-        () => job.detail.events,
-        () => 1000,
-      ),
+      visitProgress: progressVisitFromEvents(() => job.detail.events),
       time: runtime.time,
       eventBus: new TypedEventBus(),
       sessionManager: { get: () => null } as never,
@@ -76,7 +66,7 @@ describe('workflow wait epoch cursor', () => {
       aggregateWorkflowUsage: () => undefined,
       getCurrentJournalSeq: () => 1000,
       resultJobsRoot: '/results',
-      observeResultAvailability: () => ({ kind: 'repair-pending', ageUncertain: false }),
+      observeResultAvailability: () => ({ kind: 'pending' }),
       subscribeJobEvents: async function* () {},
     });
     const result = waitForAtoms(
@@ -116,7 +106,7 @@ describe('workflow wait epoch cursor', () => {
         drainDeadlineMs: 30_000,
         onProgress: () => {},
         initialState: {
-          cursor: { jobs: [entry('old', 3, 'lineage-old:7'), entry('newer', 5, 'lineage-new:8')] },
+          cursor: { jobs: [entry('old', 3), entry('newer', 5)] },
         },
       },
     );
@@ -130,7 +120,7 @@ describe('workflow wait epoch cursor', () => {
       2,
       expect.objectContaining({
         jobIds: ['old'],
-        cursor: { jobs: [entry('old', 3, 'lineage-old:7')] },
+        cursor: { jobs: [entry('old', 3)] },
       }),
     );
   });
@@ -159,11 +149,11 @@ it('resumes recovery through ExecutionService and the real WaitCoordinator using
         dispositions: new Map(jobIds.map((jobId) => [jobId, 'readable' as const])),
         locations: new Map(jobIds.map((jobId) => [jobId, f.index.read(jobId)!])),
       }),
-      () => ({ kind: 'failed', cause: 'repair-failed', retryScheduled: true }),
+      () => ({ kind: 'pending' }),
     );
     const ctx = { projectRoot: f.root } as InvocationContext;
     const service = new ExecutionService(ctx, {
-      visitProgress: progressVisitFromEvents(f.store.readJobEvents.bind(f.store), () => seq),
+      visitProgress: progressVisitFromEvents(f.store.readJobEvents.bind(f.store)),
       runtime: f.runtime,
       progressStore: f.store,
       backendNamespace: 'fixture',
@@ -182,7 +172,7 @@ it('resumes recovery through ExecutionService and the real WaitCoordinator using
         admissions: (_ids: readonly string[], request: WaitStreamRequest) => addressing.admitWait(request),
         visitProgress: addressing.visitProgress,
       },
-      observeResultAvailability: () => ({ kind: 'failed', cause: 'repair-failed', retryScheduled: true }),
+      observeResultAvailability: () => ({ kind: 'pending' }),
     } as unknown as ExecutionServiceDeps);
     const progress: string[] = [];
     const results = await waitForAtoms(
@@ -197,7 +187,7 @@ it('resumes recovery through ExecutionService and the real WaitCoordinator using
         drainDeadlineMs: 1000,
         onProgress: (text) => progress.push(text),
         initialState: {
-          cursor: { jobs: [entry(f.jobId, seq - 1, f.epochKey)] },
+          cursor: { jobs: [entry(f.jobId, seq - 1)] },
         },
       },
     );
@@ -215,10 +205,7 @@ it('a workflow child missing from the real reader fails its atom after one proje
     return { status: null, runtime: null, exit: null };
   });
   const wait = new WaitCoordinator({
-    visitProgress: progressVisitFromEvents(
-      () => [],
-      () => 0,
-    ),
+    visitProgress: progressVisitFromEvents(() => []),
     time: runtime.time,
     eventBus: new TypedEventBus(),
     sessionManager: { get: () => null } as never,
@@ -230,7 +217,10 @@ it('a workflow child missing from the real reader fails its atom after one proje
     aggregateWorkflowUsage: () => undefined,
     getCurrentJournalSeq: () => 0,
     currentJobEpochKey: () => 'real-epoch',
-    observeResultAvailability: () => ({ kind: 'failed', cause: 'terminal-unusable', retryScheduled: false }),
+    observeResultAvailability: () => ({
+      kind: 'failed',
+      reason: 'the retained terminal does not match its source journal',
+    }),
     resultJobsRoot: '/tmp/no-workflow-artifacts',
     subscribeJobEvents: async function* () {},
   });
@@ -356,7 +346,7 @@ it('yields a macrotask after a wait cycle that observed nothing', async () => {
   expect(cycles).toBe(2);
 });
 
-it('reads an internal child’s progress from the epoch it was admitted in', async () => {
+it('reads an internal child’s progress through the internal wait’s own source', async () => {
   const time = new VirtualTime();
   const child = admitted('child', [[3, 'historical line']], true, 'historical');
   const progress: string[] = [];
@@ -399,7 +389,7 @@ describe('a child the wait cannot read stays in the failure drain (F4)', () => {
   const refused: WaitStreamEvent = {
     type: 'disposition',
     jobId: 'child',
-    disposition: 'discovery-unreadable',
+    disposition: 'unreadable',
     message: 'Job location cannot be decoded by this build',
   };
   const run = (notFound: string[]) => {
@@ -435,7 +425,7 @@ describe('a child the wait cannot read stays in the failure drain (F4)', () => {
 
   it('aborts the unreadable child and holds its drain until the bounded deadline, pacing each refused cycle', async () => {
     const { result, abort, waitStream, sleeps } = run([]);
-    await expect(result).rejects.toThrow("Step 0, atom 'worker' could not be read: discovery-unreadable");
+    await expect(result).rejects.toThrow("Step 0, atom 'worker' could not be read: unreadable");
     expect(abort).toHaveBeenCalledExactlyOnceWith(['child']);
     expect(waitStream.mock.calls.every(([request]) => request.jobIds.includes('child'))).toBe(true);
     expect(sleeps.reduce((sum, ms) => sum + ms, 0)).toBe(5_000);
@@ -444,7 +434,7 @@ describe('a child the wait cannot read stays in the failure drain (F4)', () => {
 
   it('releases the unreadable child at once when the abort answers that no such job exists', async () => {
     const { result, abort, waitStream, sleeps } = run(['child']);
-    await expect(result).rejects.toThrow("Step 0, atom 'worker' could not be read: discovery-unreadable");
+    await expect(result).rejects.toThrow("Step 0, atom 'worker' could not be read: unreadable");
     expect(abort).toHaveBeenCalledExactlyOnceWith(['child']);
     expect(waitStream).toHaveBeenCalledOnce();
     expect(sleeps).toEqual([]);
@@ -473,15 +463,12 @@ it('ends the abort drain at its deadline while a refused live child keeps replen
       kind: 'read',
       value: read({
         after: (_id, after, count) =>
-          progressPage(
-            Array.from({ length: Math.min(count + 1, frontier - after) }, (_, i) => ({
-              seq: after + i + 1,
-              progress: { seq: after + i + 1, message: 'p', timing },
-            })),
-            count,
-            frontier,
-          ),
-        before: () => {
+          Array.from({ length: Math.max(0, Math.min(count, frontier - after)) }, (_, i) => ({
+            seq: after + i + 1,
+            message: 'p',
+            timing,
+          })),
+        newest: () => {
           throw new Error('an internal reader positions at origin');
         },
       }),

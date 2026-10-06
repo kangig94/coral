@@ -659,7 +659,7 @@ it('uses the remaining launch-follow invocation budget for its contract probe', 
   });
   mockState.spawn.mockImplementation(() => childThatExits(0, null));
   const result = runHandoff(
-    { kind: 'follow-job', jobId: 'a' },
+    { kind: 'wait-jobs', jobId: 'a', serializedCursor: 'AA' },
     {
       pluginRoot: '/plugin/root',
       waitProbeRemainingMs: () => 4200,
@@ -673,47 +673,18 @@ it('uses the remaining launch-follow invocation budget for its contract probe', 
   await expect(result).resolves.toMatchObject({ kind: 'delegated', outcome: { kind: 'handoff-success' } });
 });
 
-it('delegates a launch follow as wait jobs --follow and ends that child when its caller stops', async () => {
+it('delegates a launch follow as a wait jobs invocation carrying its cursor', async () => {
   mockState.execFile.mockImplementation((_file, _args, _options, callback) => {
     queueMicrotask(() => callback(null, JSON.stringify({ version: 1, monitorOnly: true })));
     return childThatExits(0, null);
   });
-  const kill = vi.fn();
-  const spawned = deferred();
-  mockState.spawn.mockImplementation(() => {
-    const child = childThatStaysAlive();
-    child.kill = kill.mockImplementation(() => {
-      queueMicrotask(() => {
-        child.emit('exit', null, 'SIGTERM');
-        child.emit('close', null, 'SIGTERM');
-      });
-      return true;
-    });
-    spawned.resolve();
-    return child;
-  });
-  const caller = new AbortController();
+  mockState.spawn.mockImplementation(() => childThatExits(75, null));
   const result = runHandoff(
-    { kind: 'follow-job', jobId: 'a', serializedCursor: 'saved-cursor' },
-    { pluginRoot: '/plugin/root', signal: caller.signal, waitProbeRemainingMs: () => 10_000 },
+    { kind: 'wait-jobs', jobId: 'a', serializedCursor: 'saved-cursor' },
+    { pluginRoot: '/plugin/root', waitProbeRemainingMs: () => 10_000 },
   );
-  await spawned.promise;
+  await expect(result).resolves.toMatchObject({ kind: 'delegated', outcome: { kind: 'handoff-exit', exitCode: 75 } });
   expect(mockState.spawn).toHaveBeenCalledOnce();
-  expect(mockState.spawn.mock.calls[0][1].slice(1)).toEqual([
-    'wait',
-    'jobs',
-    'a',
-    '--follow',
-    '--cursor',
-    'saved-cursor',
-  ]);
-  // The follow child has no budget; this channel is what ends it when the parent dies, by any signal.
-  expect(mockState.spawn.mock.calls[0][2].stdio).toEqual(['inherit', 'inherit', 'inherit', 'ipc']);
-  expect(kill).not.toHaveBeenCalled();
-  caller.abort();
-  await expect(result).resolves.toMatchObject({
-    kind: 'delegated',
-    outcome: { kind: 'handoff-signal', signal: 'SIGTERM' },
-  });
-  expect(kill).toHaveBeenCalledWith('SIGTERM');
+  expect(mockState.spawn.mock.calls[0][1].slice(1)).toEqual(['wait', 'jobs', 'a', '--cursor', 'saved-cursor']);
+  expect(mockState.spawn.mock.calls[0][2].stdio).toBe('inherit');
 });

@@ -35,7 +35,6 @@ it('one 16-subject sweep slice reads every retained location of an uncertified e
         { status: d.status!, events: f.store.readJobEvents(jobId), exit: d.exit, readiness: deriveLaunchReadiness(d) },
         f.index.resultPathFor(jobId),
         seq,
-        f.db,
       );
       ids.push(jobId);
     }

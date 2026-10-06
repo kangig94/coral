@@ -1,5 +1,5 @@
 import type { ProgressVisit } from '../wait/contract.js';
-import { epochIdentity, sameEpoch } from '../../store/epoch/identity.js';
+import { sameEpoch } from '../../store/epoch/identity.js';
 import { readWaitSession } from '../wait/reader.js';
 import { activeJournalReadFailure, type WaitAdmission } from '../wait/session.js';
 import { isTerminalPhase, type JobPhase } from '../phase.js';
@@ -71,7 +71,6 @@ export interface WaitCoordinatorDeps {
   loadJobWaitDetail: (jobId: string) => JobWaitDetail;
   /** The job's own projection sequence, which moves with every event of that job and with nothing else. */
   readJobLastSeq: (jobId: string) => number | null;
-
   visitProgress: ProgressVisit;
   aggregateWorkflowUsage: (workflowJobId: string) => UsageSummary | undefined;
   subscribeJobEvents: (options: {
@@ -112,8 +111,6 @@ export type CarrierWaitPlan = Readonly<{
 }>;
 
 const EMPTY_CARRIER_PLAN: CarrierWaitPlan = Object.freeze({ interrupted: [], unknownJobIds: [] });
-
-const TERMINAL_PROJECTION_LIMIT = 128;
 
 /**
  * Turns carrier verdicts into what the wait stream should say about them.
@@ -329,32 +326,9 @@ export class WaitCoordinator {
     return { ...observed, frontier: signal.aborted ? 0 : this.deps.getCurrentJournalSeq() };
   }
 
-  private readonly terminalProjections = new Map<string, JobWaitDetail>();
   private readonly metadataAdmissions = new WeakMap<object, Map<string, WaitAdmission>>();
 
   visitProgress: ProgressVisit = (epoch, read) => this.deps.visitProgress(epoch, read);
-
-  /**
-   * A terminal job's projection changes only with that job's own events, so one decoded projection serves every later
-   * request, whatever its content size, until the job's own last seq moves.
-   */
-  private loadWaitDetail(jobId: string, epochKey: string): JobWaitDetail {
-    const key = JSON.stringify([epochIdentity(epochKey), jobId]);
-    const retained = this.terminalProjections.get(key);
-    this.terminalProjections.delete(key);
-    const lastSeq = retained?.status?.lastSeq;
-    const projected =
-      retained !== undefined && lastSeq !== undefined && lastSeq === this.deps.readJobLastSeq(jobId)
-        ? retained
-        : this.deps.loadJobWaitDetail(jobId);
-    if (projected.status && projected.exit) {
-      this.terminalProjections.set(key, projected);
-      const oldest = this.terminalProjections.keys().next().value;
-      if (this.terminalProjections.size > TERMINAL_PROJECTION_LIMIT && oldest !== undefined)
-        this.terminalProjections.delete(oldest);
-    }
-    return projected;
-  }
 
   readWaitAdmission(jobId: string, epochKey: string, session?: object): WaitAdmission {
     const cache = (session ? this.metadataAdmissions.get(session) : undefined) ?? new Map<string, WaitAdmission>();
@@ -367,14 +341,19 @@ export class WaitCoordinator {
       return cached.queued ? { ...cached, queued: this.queuedWaitEvent(cached.detail.status) } : cached;
     if (cached?.detail?.exit) {
       const availability = this.deps.observeResultAvailability(jobId);
-      if (availability.kind === 'repair-pending') this.deps.hintResultRepair?.(jobId);
+      if (availability.kind === 'pending') this.deps.hintResultRepair?.(jobId);
       return { ...cached, availability };
     }
-    const projected = this.loadWaitDetail(jobId, epochKey);
+    const projected = this.deps.loadJobWaitDetail(jobId);
     if (!projected.status)
       return this.deps.observeJobAbsence?.(jobId) === true
-        ? { jobId, disposition: 'missing', sourceRead: 'readable' }
-        : { jobId, disposition: 'admitted', epochKey, sourceRead: 'transient-unknown' };
+        ? { jobId, disposition: 'missing' }
+        : {
+            jobId,
+            disposition: 'unknown',
+            epochKey,
+            message: 'The job is not yet readable in the active journal; this wait reads it again on its next poll',
+          };
     const terminal: JobTerminalEvent | undefined = projected.exit
       ? {
           type: 'terminal',
@@ -395,11 +374,10 @@ export class WaitCoordinator {
           }
         : null;
     const availability = exit ? this.deps.observeResultAvailability(jobId) : undefined;
-    if (availability?.kind === 'repair-pending') this.deps.hintResultRepair?.(jobId);
+    if (availability?.kind === 'pending') this.deps.hintResultRepair?.(jobId);
     const admission: WaitAdmission = {
       jobId,
       disposition: 'admitted',
-      sourceRead: 'readable',
       epochKey,
       detail: { status: projected.status, terminalSeq: projected.status.lastSeq, readiness: 'ready', exit },
       availability,
@@ -437,7 +415,7 @@ export class WaitCoordinator {
     for await (const event of this.waitForOutcomes({ jobIds: [jobId], timeoutSeconds: timeoutMs / 1000 })) {
       if (event.type === 'terminal')
         return { content: event.result.content, continuity: this.readQueryContinuity(jobId) };
-      if (event.type === 'disposition' && event.disposition !== 'discovery-unknown')
+      if (event.type === 'disposition' && event.disposition !== 'unknown')
         throw new Error(`Job ${jobId}: ${event.disposition}`);
     }
     throw new Error('Wait expired while job still running');

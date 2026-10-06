@@ -1,61 +1,37 @@
 import assert from 'node:assert/strict';
-import type { WaitProgressRow } from './progress-page.js';
-import { sameEpoch, epochIdentity } from '../../store/epoch/identity.js';
-import { isCodeDefect, sourceReadFailureDisposition } from '../source-read.js';
-import type { JobDetailResponse, JobProgressEvent, JobTerminal } from '../records.js';
+import { epochIdentity } from '../../store/epoch/identity.js';
+import { isCodeDefect, sourceReadFailureDisposition, type SourceReadDisposition } from '../source-read.js';
+import type { JobDetailResponse, JobTerminal } from '../records.js';
+import type { JobProgressTiming } from '../event-bodies.js';
 import type { ContinuitySnapshot } from '../../sessions/continuity.js';
 import type { ResultAvailability } from '../terminal/export.js';
-import type { WaitCursor, WaitCursorEntry, WaitStreamEvent, ProgressSource, ProgressVisit } from './contract.js';
 import {
-  ACKNOWLEDGED_FLAG,
-  ARTIFACT_PENDING_FLAG,
-  TAIL_SCAN_FLAG,
-  UNPOSITIONED_FLAG,
-  waitCursorEntry,
-  waitEpochToken,
-  waitJobHash,
-} from './cursor.js';
+  WAIT_PROGRESS_BYTES,
+  WAIT_PROGRESS_LINES,
+  type ProgressSource,
+  type ProgressVisit,
+  type WaitCursor,
+  type WaitProgressRow,
+  type WaitStreamEvent,
+} from './contract.js';
+import { waitJobHash } from './cursor.js';
 
-export type WaitDisposition =
-  | 'admitted'
-  | 'missing'
-  | 'discovery-unknown'
-  | 'pre-epoch-history'
-  | 'outcome-unrecoverable'
-  | 'outcome-unreadable'
-  | 'discovery-unreadable'
-  | 'scope-mismatch';
+/** `unknown` is retryable and stays in the continuation; `unreadable` is permanent and carries its reason. */
+export type WaitDisposition = 'admitted' | 'missing' | 'scope-mismatch' | 'unknown' | 'unreadable';
 
-/** Source reads settle per job; only a retryable observation holds an epoch prefix.
- * readable: observed success; transient-unknown: busy/lock contention or retryScheduled hold;
- * settled-unreadable: decode/parse, unsupported fingerprint or an owner-settled hold;
- * retired: observed source retirement.
- */
-export type SourceReadDisposition = 'readable' | 'transient-unknown' | 'settled-unreadable' | 'retired';
-
-export function sourceReadDisposition(job: WaitAdmission): SourceReadDisposition {
-  return job.sourceRead ?? 'readable';
-}
-
-type WaitAdmissionDetail = {
+export type WaitAdmission = {
   jobId: string;
+  disposition: WaitDisposition;
   message?: string;
   epochKey?: string;
+  /** Admitted from a store epoch other than the active one: its terminal is delivered and its progress is not read. */
+  historical?: boolean;
   detail?: Omit<JobDetailResponse, 'events'> & { terminalSeq?: number };
   availability?: ResultAvailability;
   continuity?: ContinuitySnapshot | null;
-  sourceRead?: SourceReadDisposition;
   observationDeferred?: boolean;
-  progressLost?: boolean;
-  progressUnknown?: boolean;
   queued?: Extract<WaitStreamEvent, { type: 'queued' }>;
 };
-
-export type WaitAdmission = WaitAdmissionDetail &
-  (
-    | { disposition: 'admitted'; sourceRead: SourceReadDisposition }
-    | { disposition: Exclude<WaitDisposition, 'admitted'> }
-  );
 
 /** An active-journal read that failed is uncertainty about that one job: decode failures settle it, others retry. */
 export function activeJournalReadFailure(jobId: string, epochKey: string, error: unknown): WaitAdmission {
@@ -63,31 +39,35 @@ export function activeJournalReadFailure(jobId: string, epochKey: string, error:
   return sourceReadFailureDisposition(error) === 'settled-unreadable'
     ? {
         jobId,
-        disposition: 'outcome-unreadable',
+        disposition: 'unreadable',
         epochKey,
-        sourceRead: 'settled-unreadable',
         message: "This build cannot decode this job's records in the active journal; no later read changes that",
       }
     : {
         jobId,
-        disposition: 'admitted',
+        disposition: 'unknown',
         epochKey,
-        sourceRead: 'transient-unknown',
         message: 'The active journal cannot be read right now; this wait reads it again on its next poll',
       };
 }
 
-export type WaitProgressLine = {
+/** One progress row as it is delivered, with the lines and bytes it spends from the budget. */
+export type WaitSelectedRow = Readonly<{
   jobId: string;
-  epochKey: string;
   seq: number;
-  offset: number;
-  last: boolean;
-  text: string;
-  timing: JobProgressEvent['timing'];
-  entryAfter: WaitCursorEntry;
-  progressAfter: 'exhausted' | 'unread';
-};
+  message: string;
+  lines: number;
+  bytes: number;
+  timing: JobProgressTiming;
+}>;
+export type WaitSelection = Readonly<{
+  rows: readonly WaitSelectedRow[];
+  /** The last row each read job consumed, faults included, and whether its read reached the job's newest row. */
+  reached: ReadonlyMap<string, Readonly<{ seq: number; exhausted: boolean }>>;
+  /** The budget stopped the selection before every readable row was taken. */
+  full: boolean;
+}>;
+export type WaitBudget = Readonly<{ lines: number; bytes: number }>;
 export type WaitTerminalSummary = {
   seq: number;
   outcomeKind: JobTerminal['outcome']['kind'];
@@ -102,13 +82,11 @@ export type WaitSnapshotJob = {
   jobId: string;
   disposition: WaitDisposition;
   message?: string;
-  epochToken?: string;
   phase?: string;
   alreadyCollected?: boolean;
   progress: string[];
   terminal?: WaitTerminalSummary;
   availability?: ResultAvailability;
-  artifactFollowUp?: boolean;
 };
 export type WaitSnapshot = {
   jobs: WaitSnapshotJob[];
@@ -140,83 +118,19 @@ export function waitTerminalExitCode(result: JobTerminal): number {
 }
 
 type ProgressState = 'exhausted' | 'unread' | 'unknown' | 'lost' | 'refused';
-type Member = { entry: WaitCursorEntry; progress: ProgressState };
+/** A job the cursor never positioned has no seq yet: its first readable visit reads its newest rows. */
+type Member = { seq: number | undefined; progress: ProgressState };
 
-/** A page read failed for one job of one epoch; only that source's members may be marked for it. */
-class ProgressSourceFault extends Error {
-  readonly epoch: string;
-  readonly jobId: string;
-  readonly disposition: 'transient-unknown' | 'settled-unreadable';
-  constructor(epoch: string, jobId: string, cause: unknown) {
-    super(cause instanceof Error ? cause.message : String(cause));
-    this.epoch = epoch;
-    this.jobId = jobId;
-    this.disposition = sourceReadFailureDisposition(cause);
-  }
-}
-
-/** A poll spent its raw-row allowance; the read it refused resumes on the next poll. */
-class ProgressRowsExhausted extends Error {}
-
-/**
- * What pages that yielded no line proved for one job: the position they reached and whether the last of them exhausted
- * the job. Both apply only once every line selected before them was consumed.
- */
-export type WaitSilentAdvance = Readonly<{ jobId: string; seq: number; exhausted: boolean; after?: WaitProgressLine }>;
-export type WaitSelection = {
-  lines: WaitProgressLine[];
-  advances: WaitSilentAdvance[];
-  /** The line or byte budget left no room for another line. */
-  full: boolean;
-  /** The poll's raw-row allowance ran out before every readable job was served; the rest resumes next poll. */
-  cut: boolean;
-};
-
-const TAIL_PAGE_ROWS = 32;
-/** A forward read starts with a page this size and doubles it, so a poll a few large rows fill discards few rows. */
-const FIRST_PAGE_ROWS = 32;
-/** Raw progress rows one poll may read, lookahead rows included, shared by positioning and selection. */
-const WAIT_PROGRESS_ROWS = 500;
-
-/** A backward scan for one job's tail; it outlives a cut poll so the next poll continues it instead of restarting. */
-type TailScan = {
-  /** Lines this session loaded, oldest first. */
-  lines: WaitProgressLine[];
-  sizes: number[];
-  bytes: number;
-  /** Lines an earlier request found at or above `before`; this session holds their count but not their positions. */
-  prior: number;
-  /** The lowest raw seq scanned; null before the first page. */
-  before: number | null;
-  reachedStart: boolean;
-  /**
-   * The highest seq up to which this session read every row of the job above its lines: the source frontier for a
-   * scan it began, or just below the boundary of a scan resumed from a cursor. Null before a begun scan's first page.
-   */
-  covered: number | null;
-};
-
-/**
- * Lines a tail scan read from a job's new position through `through`: every row of the job up to there was read, so
- * selection serves them without reading those rows again. `exhausted` holds only when `through` is the source frontier
- * this poll observed, so no row of the job lies above it.
- */
-type WaitPositionedTail = Readonly<{ lines: readonly WaitProgressLine[]; through: number; exhausted: boolean }>;
-export type WaitPositioned = ReadonlyMap<string, WaitPositionedTail>;
-
-/** Lines a tail read adds within `rows` raw rows, when each page of up to TAIL_PAGE_ROWS rows also reads a lookahead. */
-function tailLinesWithin(rows: number): number {
-  return rows <= 1 ? 0 : rows - Math.ceil(rows / (TAIL_PAGE_ROWS + 1));
-}
+/** A first read that cannot give each job this many bytes waits for a fresh budget instead of shortening to nothing. */
+const MIN_SHARE_BYTES = 128;
+const MAX_PAGE_ROWS = 500;
+const MARKER_ROOM = 96;
 
 export class WaitSession {
   admissions: WaitAdmission[] = [];
   readonly notices: string[] = [];
   private readonly members = new Map<string, Member>();
   private readonly coverage = new Map<string, { kind: 'live' | 'absent' | 'unknown'; frontier: number }>();
-  private readonly tails = new Map<string, TailScan>();
-  /** The raw-row allowance of the poll in progress, which positioning sizes its tails against. */
-  private allowance = { remaining: WAIT_PROGRESS_ROWS };
 
   readonly jobIds: readonly string[];
   readonly input?: WaitCursor;
@@ -225,48 +139,28 @@ export class WaitSession {
     this.jobIds = jobIds;
     this.input = input;
     this.internal = internal;
-    if (new Set(jobIds.map(waitJobHash)).size !== jobIds.length)
-      throw new WaitSessionError('wait_cursor_mismatch', 'Each job ID must appear only once.');
   }
 
   reconcile(admissions: WaitAdmission[]): void {
     const previous = new Map(this.admissions.map((job) => [job.jobId, job]));
-    const addresses = new Map<string, string>();
-    this.admissions = admissions.map((observed) => {
-      const job = observed.observationDeferred ? (previous.get(observed.jobId) ?? observed) : observed;
-      if (!job.epochKey) return job;
-      const identity = epochIdentity(job.epochKey);
-      const epochKey = addresses.get(identity) ?? job.epochKey;
-      addresses.set(identity, epochKey);
-      return epochKey === job.epochKey ? job : { ...job, epochKey };
-    });
+    this.admissions = admissions.map((observed) =>
+      observed.observationDeferred ? (previous.get(observed.jobId) ?? observed) : observed,
+    );
     for (const job of this.admissions) {
       let member = this.members.get(job.jobId);
       if (!member) {
-        member = { entry: waitCursorEntry(this.input, job), progress: 'unknown' };
+        const hash = waitJobHash(job.jobId);
+        member = { seq: this.input?.jobs.find((entry) => entry.hash === hash)?.seq, progress: 'unknown' };
         this.members.set(job.jobId, member);
       }
-      // A known location fixes the entry's epoch before any hold, so an acknowledgement never lands on a null epoch.
-      if (job.epochKey) {
-        const epoch = waitEpochToken(job.epochKey);
-        if (member.entry.epoch !== null && member.entry.epoch !== epoch)
-          throw new WaitSessionError('wait_cursor_mismatch', `Job ${job.jobId} changed epoch identity`);
-        if (member.entry.epoch === null) member.entry = { ...member.entry, epoch };
-      }
-      if (job.disposition !== 'admitted' && job.disposition !== 'discovery-unknown') {
-        member.progress = 'refused';
+      if (job.disposition !== 'admitted') {
+        member.progress = job.disposition === 'unknown' ? 'unknown' : 'refused';
         continue;
       }
-      if (job.sourceRead === 'transient-unknown' || job.disposition === 'discovery-unknown') {
-        member.progress = 'unknown';
-        if (job.epochKey || member.entry.epoch)
-          this.notice(
-            `Earlier progress for ${job.jobId} is held: source cannot be read right now; epoch maintenance observes every 5 s and settles after 3 failed probes${job.message ? ` (${job.message})` : ''}. Bounded waits retry after 250 ms, 1 s and 5 s, then exit 75 with a continuation. Snapshots return immediately with a continuation.`,
-          );
-        continue;
-      }
-      member.progress = job.sourceRead === 'retired' || job.sourceRead === 'settled-unreadable' ? 'lost' : 'unread';
-      if (job.sourceRead === 'retired' && !job.progressLost) this.notice(retiredNotice(job.jobId));
+      if (job.historical) {
+        member.progress = 'exhausted';
+        this.notice(`Progress from a previous store epoch is not shown for ${job.jobId}.`);
+      } else member.progress = 'unread';
       if (!job.detail?.exit && !this.coverage.has(job.jobId))
         this.coverage.set(job.jobId, { kind: 'unknown', frontier: 0 });
     }
@@ -282,81 +176,36 @@ export class WaitSession {
     if (!this.notices.includes(message)) this.notices.push(message);
   }
 
-  private readable(
-    job: WaitAdmission,
-    sources: ReadonlyMap<string, ProgressSource>,
-  ): job is WaitAdmission & {
-    epochKey: string;
-  } {
+  private readable(job: WaitAdmission): job is WaitAdmission & { epochKey: string } {
     return (
       job.disposition === 'admitted' &&
+      !job.historical &&
       job.epochKey !== undefined &&
-      sources.has(job.epochKey) &&
       this.member(job.jobId).progress === 'unread'
     );
   }
 
-  /** Each source is opened and classified once; position and selection then run outside every source's error scope. */
+  /** Each source is opened and classified once; selection then runs outside every source's error scope. */
   withProgress<T>(visit: ProgressVisit, read: (sources: ReadonlyMap<string, ProgressSource>) => T): T {
     const epochs = new Map<string, string>();
-    for (const job of this.admissions)
-      if (job.disposition === 'admitted' && job.epochKey && sourceReadDisposition(job) === 'readable')
-        epochs.set(epochIdentity(job.epochKey), job.epochKey);
-    const order = [...epochs.values()];
+    for (const job of this.admissions) if (this.readable(job)) epochs.set(epochIdentity(job.epochKey), job.epochKey);
+    const order = [...epochs];
     const sources = new Map<string, ProgressSource>();
-    const allowance = { remaining: WAIT_PROGRESS_ROWS };
-    this.allowance = allowance;
     const open = (index: number): T => {
-      const epoch = order[index];
-      if (epoch === undefined) return read(sources);
-      const result = visit(epoch, (source) => {
-        sources.set(epoch, this.attributed(epoch, source, allowance));
+      const next = order[index];
+      if (next === undefined) return read(sources);
+      const [identity, epochKey] = next;
+      const result = visit(epochKey, (source) => {
+        sources.set(identity, source);
         return open(index + 1);
       });
       if (result.kind === 'read') return result.value;
-      this.unreadableSource(epoch, result.disposition, result.reason);
+      for (const job of this.admissions)
+        if (this.readable(job) && epochIdentity(job.epochKey) === identity)
+          this.markUnreadable(job.jobId, result.disposition, result.reason);
       return open(index + 1);
     };
     return open(0);
-  }
-
-  /** Every raw row a poll reads, lookahead included, is charged to its one allowance before the read can exceed it. */
-  private attributed(epoch: string, source: ProgressSource, allowance: { remaining: number }): ProgressSource {
-    const guard = <P>(jobId: string, read: () => P): P => {
-      try {
-        return read();
-      } catch (error) {
-        if (error instanceof WaitSessionError || isCodeDefect(error)) throw error;
-        throw new ProgressSourceFault(epoch, jobId, error);
-      }
-    };
-    const affordable = (rows: number): number => {
-      if (allowance.remaining < 2) throw new ProgressRowsExhausted();
-      return Math.min(rows, allowance.remaining - 1);
-    };
-    const charge = <P extends { rawRows: number }>(page: P): P => {
-      allowance.remaining -= page.rawRows;
-      return page;
-    };
-    return {
-      after: (jobId, afterSeq, rows) => {
-        const limit = affordable(rows);
-        return charge(guard(jobId, () => source.after(jobId, afterSeq, limit)));
-      },
-      before: (jobId, beforeSeq, rows) => {
-        const limit = affordable(rows);
-        return charge(guard(jobId, () => source.before(jobId, beforeSeq, limit)));
-      },
-    };
-  }
-
-  private unreadableSource(
-    epoch: string,
-    disposition: Exclude<SourceReadDisposition, 'readable'>,
-    reason: string | undefined,
-  ): void {
-    for (const job of this.admissions.filter((job) => job.disposition === 'admitted' && sameEpoch(job.epochKey, epoch)))
-      this.markUnreadable(job.jobId, disposition, reason);
   }
 
   private markUnreadable(
@@ -366,418 +215,160 @@ export class WaitSession {
   ): void {
     const member = this.member(jobId);
     member.progress = disposition === 'transient-unknown' ? 'unknown' : 'lost';
-    if (disposition === 'retired') this.notice(retiredNotice(jobId));
+    if (disposition === 'retired') this.notice(`Earlier progress for ${jobId} is no longer kept: source retired.`);
     else
       this.notice(
         `Earlier progress for ${jobId} ${member.progress === 'unknown' ? 'is held' : 'cannot be read by this build'}${reason ? `: ${reason}` : '.'}`,
       );
   }
 
-  /** A transient page failure holds its epoch's members; a decode failure settles only the job whose row failed. */
-  private fault(fault: ProgressSourceFault): readonly string[] {
-    const affected =
-      fault.disposition === 'transient-unknown'
-        ? this.admissions
-            .filter((job) => job.disposition === 'admitted' && sameEpoch(job.epochKey, fault.epoch))
-            .map((job) => job.jobId)
-        : [fault.jobId];
-    const reason =
-      fault.disposition === 'transient-unknown'
-        ? 'source cannot be read right now; this read is retried on the next poll'
-        : 'a progress row cannot be decoded by this build';
-    for (const jobId of affected) this.markUnreadable(jobId, fault.disposition, reason);
-    return affected;
+  /** A failed page read is evidence about that job alone: decode failures settle its progress, others hold it. */
+  private readRows(jobId: string, read: () => readonly WaitProgressRow[]): readonly WaitProgressRow[] | null {
+    try {
+      return read();
+    } catch (error) {
+      if (error instanceof WaitSessionError || isCodeDefect(error)) throw error;
+      const disposition = sourceReadFailureDisposition(error);
+      this.markUnreadable(
+        jobId,
+        disposition,
+        disposition === 'transient-unknown'
+          ? 'source cannot be read right now; this read is retried on the next poll'
+          : 'a progress row cannot be decoded by this build',
+      );
+      return null;
+    }
   }
 
   /**
-   * A tail scan cut short by the row allowance keeps its job unpositioned and resumes from its boundary next poll;
-   * positioning never lands on a partial scan, which could skip older lines that belong in the tail.
+   * A job's first readable visit reads its newest rows, `tail` lines at most, within its share of the budget; with no
+   * `tail` it reads from its origin instead. Every later read takes the rows after its seq, oldest first across jobs,
+   * and the budget cuts only between rows. A budget nothing has been spent from always admits one row, shortened.
    */
-  position(
-    sources: ReadonlyMap<string, ProgressSource>,
-    count: number | null,
-    budget: number,
-    maxBytes: number,
-  ): WaitPositioned {
-    const positioned = new Map<string, WaitPositionedTail>();
-    let pending = this.admissions.filter(
+  select(sources: ReadonlyMap<string, ProgressSource>, budget: WaitBudget, tail: number | null): WaitSelection {
+    const readable = this.admissions.filter(
       (job): job is WaitAdmission & { epochKey: string } =>
-        this.readable(job, sources) && (this.member(job.jobId).entry.flags & UNPOSITIONED_FLAG) !== 0,
+        this.readable(job) && sources.has(epochIdentity(job.epochKey)),
     );
-    for (const jobId of this.tails.keys()) if (!pending.some((job) => job.jobId === jobId)) this.tails.delete(jobId);
-    if (pending.length === 0) return positioned;
-    if (count === null) {
-      for (const job of pending) {
-        const member = this.member(job.jobId);
-        member.entry = {
-          ...member.entry,
-          flags: member.entry.flags & ~(UNPOSITIONED_FLAG | TAIL_SCAN_FLAG),
-          seq: 0,
-          lineOffset: 0,
-        };
-        this.tails.delete(job.jobId);
-      }
-      return positioned;
-    }
-    const tailFor = (jobId: string): TailScan => {
-      const tail = this.tails.get(jobId);
-      assert(tail);
-      return tail;
+    const source = (job: WaitAdmission & { epochKey: string }): ProgressSource =>
+      sources.get(epochIdentity(job.epochKey)) as ProgressSource;
+    const rows: WaitSelectedRow[] = [];
+    const reached = new Map<string, { seq: number; exhausted: boolean }>();
+    const fresh = budget.lines === WAIT_PROGRESS_LINES && budget.bytes === WAIT_PROGRESS_BYTES;
+    let lines = budget.lines;
+    let bytes = budget.bytes;
+    let full = false;
+    const spend = (row: WaitSelectedRow): void => {
+      rows.push(row);
+      lines -= row.lines;
+      bytes -= row.bytes;
     };
-    const found = (tail: TailScan): number => tail.prior + tail.lines.length;
-    /** The source frontier each scan observed in this poll's transaction. */
-    const frontiers = new Map<string, number>();
-    // Loading stops once the loaded tail alone exceeds the byte budget: no level can then select past it.
-    const load = (job: WaitAdmission & { epochKey: string }, size: number): void => {
-      const source = sources.get(job.epochKey) as ProgressSource;
-      const { entry } = this.member(job.jobId);
-      const resumed = (entry.flags & TAIL_SCAN_FLAG) !== 0;
-      let tail = this.tails.get(job.jobId);
-      if (tail === undefined) {
-        tail = {
-          lines: [],
-          sizes: [],
-          bytes: 0,
-          prior: resumed ? entry.lineOffset : 0,
-          before: resumed ? entry.seq : null,
-          reachedStart: false,
-          covered: resumed ? entry.seq - 1 : null,
-        };
-        this.tails.set(job.jobId, tail);
-      }
-      while (found(tail) < size && !tail.reachedStart && tail.bytes <= maxBytes) {
-        const page = source.before(job.jobId, tail.before, Math.min(size - found(tail), TAIL_PAGE_ROWS));
-        if (tail.before === null) tail.covered = page.frontier;
-        frontiers.set(job.jobId, page.frontier);
-        tail.reachedStart = page.reachedStart;
-        if (page.rawRows > 0) tail.before = page.through;
-        const lines = page.rows.flatMap((row) => this.lines(job, row));
-        const sizes = lines.map((line) => Buffer.byteLength(shortenWaitLine(line.text)));
-        tail.lines = [...lines, ...tail.lines];
-        tail.sizes = [...sizes, ...tail.sizes];
-        tail.bytes += sizes.reduce((sum, size) => sum + size, 0);
-      }
-    };
-    const loadedTo = (job: WaitAdmission, size: number): boolean => {
-      const tail = this.tails.get(job.jobId);
-      return tail !== undefined && (found(tail) >= size || tail.reachedStart || tail.bytes > maxBytes);
-    };
-    /** Whether the row allowance cut the load short; a source fault drops only its own jobs. */
-    const loadAll = (size: number): boolean => {
-      for (const job of [...pending]) {
-        if (!pending.includes(job)) continue;
-        try {
-          load(job, size);
-        } catch (error) {
-          if (error instanceof ProgressRowsExhausted) return true;
-          if (!(error instanceof ProgressSourceFault)) throw error;
-          const affected = this.fault(error);
-          pending = pending.filter((member) => !affected.includes(member.jobId));
-          for (const jobId of affected) this.tails.delete(jobId);
+
+    const unpositioned = tail === null ? [] : readable.filter((job) => this.member(job.jobId).seq === undefined);
+    if (unpositioned.length > 0) {
+      const lineShare = Math.floor(budget.lines / readable.length);
+      const byteShare = Math.floor(budget.bytes / readable.length);
+      const target = Math.min(tail ?? lineShare, lineShare);
+      if (target < 1 || byteShare < MIN_SHARE_BYTES) full = true;
+      else {
+        const omitted: string[] = [];
+        for (const job of unpositioned) {
+          const newest = this.readRows(job.jobId, () => source(job).newest(job.jobId, target + 1));
+          if (newest === null) continue;
+          const candidates = newest.slice(-target);
+          const room = { lines: target, bytes: byteShare };
+          const chosen: WaitSelectedRow[] = [];
+          let index = candidates.length - 1;
+          for (; index >= 0; index--) {
+            const selected = this.fit(job.jobId, candidates[index], room, chosen.length === 0);
+            if (selected === undefined) continue;
+            if (selected === null) break;
+            chosen.unshift(selected);
+            room.lines -= selected.lines;
+            room.bytes -= selected.bytes;
+          }
+          chosen.forEach(spend);
+          if (index >= 0 || newest.length > target) omitted.push(job.jobId);
+          reached.set(job.jobId, { seq: newest.at(-1)?.seq ?? 0, exhausted: true });
         }
+        if (omitted.length > 0)
+          this.notice(`Earlier progress for ${omitted.join(', ')} was not shown; showing the most recent lines.`);
       }
-      return false;
-    };
-    // A level's rows are its lines plus one lookahead row per tail page, all drawn from the poll's one allowance.
-    let level = Math.min(
-      count,
-      Math.floor(budget / pending.length),
-      tailLinesWithin(Math.floor(this.allowance.remaining / pending.length)),
-    );
-    for (;;) {
-      if (loadAll(Math.max(1, level))) {
-        // Only scans the allowance cut short wait for the next poll; every finished tail is positioned at this level.
-        const cut = pending.filter((job) => !loadedTo(job, Math.max(1, level)));
-        this.holdTailScans(cut);
-        pending = pending.filter((job) => !cut.includes(job));
-        break;
-      }
-      if (pending.length === 0) return positioned;
-      const short = pending.filter((job) => tailFor(job.jobId).reachedStart && found(tailFor(job.jobId)) <= level);
-      const longCount = pending.length - short.length;
-      const used = short.reduce((sum, job) => sum + found(tailFor(job.jobId)), 0);
-      const next =
-        longCount === 0
-          ? level
-          : Math.min(
-              count,
-              Math.floor((budget - used) / longCount),
-              level + tailLinesWithin(Math.floor(this.allowance.remaining / longCount)),
-            );
-      if (next <= level) break;
-      level = next;
     }
-    if (pending.length === 0) return positioned;
-    // Lines an earlier request found have no size here; selection still enforces the byte budget on delivery.
-    const suffixes = pending.map((job) => {
-      const { sizes, prior } = tailFor(job.jobId);
-      const suffix = [0];
-      for (let index = sizes.length - 1; index >= 0; index--) suffix.push(suffix[suffix.length - 1] + sizes[index]);
-      return { suffix, prior };
-    });
-    const bytes = (k: number): number =>
-      suffixes.reduce((sum, { suffix, prior }) => sum + suffix[Math.min(Math.max(0, k - prior), suffix.length - 1)], 0);
-    let fits = 0;
-    let over = level + 1;
-    while (over - fits > 1) {
-      const middle = Math.floor((fits + over) / 2);
-      if (bytes(middle) <= maxBytes) fits = middle;
-      else over = middle;
-    }
-    level = fits;
-    const omitted: string[] = [];
-    for (const job of pending) {
-      const tail = tailFor(job.jobId);
-      const shown = Math.min(level, found(tail));
-      const first = shown > tail.prior ? tail.lines[tail.lines.length - (shown - tail.prior)] : undefined;
-      const boundary = (tail.before ?? 1) - 1;
-      const member = this.member(job.jobId);
-      member.entry = {
-        ...member.entry,
-        flags: member.entry.flags & ~(UNPOSITIONED_FLAG | TAIL_SCAN_FLAG),
-        // A line an earlier request found cannot be located again, so the tail then starts where this session's
-        // reading began, below which every line is older than the shown window.
-        seq: first ? first.seq - Number(first.offset === 0) : (tail.covered ?? boundary),
-        lineOffset: first?.offset ?? 0,
-      };
-      if (first && tail.covered !== null)
-        positioned.set(job.jobId, {
-          lines: tail.lines.slice(-(shown - tail.prior)),
-          through: tail.covered,
-          exhausted: frontiers.get(job.jobId) === tail.covered,
-        });
-      this.tails.delete(job.jobId);
-      if (!tail.reachedStart || found(tail) > shown) omitted.push(job.jobId);
-    }
-    if (omitted.length)
-      this.notice(`Earlier progress for ${omitted.join(', ')} was not shown; showing the most recent lines.`);
-    return positioned;
-  }
 
-  /** A cut scan is recorded on its entry, so a cursor taken at this cut resumes the scan instead of restarting it. */
-  private holdTailScans(pending: readonly WaitAdmission[]): void {
-    for (const job of pending) {
-      const tail = this.tails.get(job.jobId);
-      if (tail?.before === null || tail?.before === undefined) continue;
-      const member = this.member(job.jobId);
-      member.entry = {
-        ...member.entry,
-        flags: member.entry.flags | UNPOSITIONED_FLAG | TAIL_SCAN_FLAG,
-        seq: tail.before,
-        lineOffset: tail.prior + tail.lines.length,
-      };
-    }
-  }
-
-  private lines(job: WaitAdmission, row: WaitProgressRow): WaitProgressLine[] {
-    const parts = splitWaitProgress(row.message);
-    const entry = this.member(job.jobId).entry;
-    return parts.map((text, offset) => ({
-      jobId: job.jobId,
-      epochKey: job.epochKey as string,
-      seq: row.seq,
-      offset,
-      last: offset === parts.length - 1,
-      text,
-      timing: row.timing,
-      entryAfter: { ...entry, seq: row.seq, lineOffset: offset === parts.length - 1 ? 0 : offset + 1 },
-      progressAfter: 'unread' as const,
-    }));
-  }
-
-  /** Epochs take turns one row at a time, so no epoch's backlog can starve another's within one budget. */
-  select(
-    sources: ReadonlyMap<string, ProgressSource>,
-    budget: number,
-    maxBytes: number,
-    positioned: WaitPositioned = new Map(),
-  ): WaitSelection {
-    const selected: WaitProgressLine[] = [];
-    const advances = new Map<string, WaitSilentAdvance>();
-    const readable = this.admissions.filter((job): job is WaitAdmission & { epochKey: string } =>
-      this.readable(job, sources),
+    const later = readable.filter(
+      (job) => !reached.has(job.jobId) && (tail === null || this.member(job.jobId).seq !== undefined),
     );
-    const jobs = readable.filter((job) => (this.member(job.jobId).entry.flags & UNPOSITIONED_FLAG) === 0);
-    let cut = jobs.length < readable.length;
-    // Each job's first page, lookahead included, fits the poll's allowance, so no job waits on another's backlog.
-    const perJob = Math.max(1, jobs.length);
-    const rows = Math.max(
-      1,
-      Math.min(FIRST_PAGE_ROWS, Math.ceil(budget / perJob) + 1, Math.floor(WAIT_PROGRESS_ROWS / perJob) - 1),
-    );
-    type Head = { jobId: string; iterator: Generator<WaitProgressLine>; next: IteratorResult<WaitProgressLine> };
-    const epochs = new Map<string, Head[]>();
-    const drop = (jobIds: readonly string[]): void => {
-      for (const [identity, heads] of epochs) {
-        const kept = heads.filter((head) => !jobIds.includes(head.jobId));
-        if (kept.length) epochs.set(identity, kept);
-        else epochs.delete(identity);
-      }
-      for (const jobId of jobIds) advances.delete(jobId);
-      for (let index = selected.length - 1; index >= 0; index--)
-        if (jobIds.includes(selected[index].jobId)) selected.splice(index, 1);
-    };
-    const alive = (head: Head): boolean => [...epochs.values()].some((heads) => heads.includes(head));
-    const pull = (head: Head): void => {
-      try {
-        head.next = head.iterator.next();
-      } catch (error) {
-        head.next = { done: true, value: undefined };
-        if (error instanceof ProgressRowsExhausted) {
-          cut = true;
-          return;
+    if (later.length > 0 && lines <= 0) full = true;
+    else if (later.length > 0) {
+      const pageRows = Math.max(1, Math.min(MAX_PAGE_ROWS, Math.ceil(lines / later.length)));
+      const order = new Map(later.map((job, index) => [job.jobId, index]));
+      const pages = later.flatMap((job) => {
+        const page = this.readRows(job.jobId, () =>
+          source(job).after(job.jobId, this.member(job.jobId).seq ?? 0, pageRows),
+        );
+        return page === null ? [] : [{ jobId: job.jobId, page }];
+      });
+      const queue = pages
+        .flatMap(({ jobId, page }) => page.map((row) => ({ jobId, row })))
+        .sort((a, b) => a.row.seq - b.row.seq || (order.get(a.jobId) ?? 0) - (order.get(b.jobId) ?? 0));
+      const walked = new Map<string, number>();
+      for (const { jobId, row } of queue) {
+        const selected = this.fit(jobId, row, { lines, bytes }, fresh && rows.length === 0);
+        if (selected === null) {
+          full = true;
+          break;
         }
-        if (!(error instanceof ProgressSourceFault)) throw error;
-        drop(this.fault(error));
+        if (selected !== undefined) spend(selected);
+        reached.set(jobId, { seq: row.seq, exhausted: false });
+        walked.set(jobId, (walked.get(jobId) ?? 0) + 1);
       }
-    };
-    for (const job of jobs) {
-      const identity = epochIdentity(job.epochKey);
-      const head: Head = {
-        jobId: job.jobId,
-        iterator: this.selectJob(
-          job,
-          sources.get(job.epochKey) as ProgressSource,
-          rows,
-          advances,
-          () => Math.max(0, budget - selected.length),
-          positioned.get(job.jobId),
-        ),
-        next: { done: true, value: undefined },
-      };
-      epochs.set(identity, [...(epochs.get(identity) ?? []), head]);
+      for (const { jobId, page } of pages)
+        if ((walked.get(jobId) ?? 0) === page.length)
+          reached.set(jobId, {
+            seq: page.at(-1)?.seq ?? this.member(jobId).seq ?? 0,
+            exhausted: page.length < pageRows,
+          });
     }
-    for (const heads of [...epochs.values()]) for (const head of heads) if (alive(head)) pull(head);
-    let bytes = 0;
-    let turn = 0;
-    while (selected.length < budget && epochs.size > 0) {
-      const identities = [...epochs.keys()];
-      const identity = identities[turn++ % identities.length];
-      let chosen: Head | undefined;
-      for (const head of epochs.get(identity) ?? []) {
-        if (head.next.done) continue;
-        const prior = chosen?.next.value as WaitProgressLine | undefined;
-        if (
-          !prior ||
-          head.next.value.seq < prior.seq ||
-          (head.next.value.seq === prior.seq && head.next.value.offset < prior.offset)
-        )
-          chosen = head;
-      }
-      if (!chosen) {
-        epochs.delete(identity);
-        continue;
-      }
-      const row = (chosen.next as IteratorYieldResult<WaitProgressLine>).value.seq;
-      const rowStart = selected.length;
-      while (!chosen.next.done && chosen.next.value.seq === row) {
-        const line = chosen.next.value;
-        const size = Buffer.byteLength(shortenWaitLine(line.text));
-        // An internal reader's consumer acts on whole messages, so a row it has begun is never split.
-        const begun = this.internal && selected.length > rowStart;
-        if (!begun && selected.length >= budget) break;
-        if (!begun && bytes + size > maxBytes)
-          return { lines: selected, advances: [...advances.values()], full: true, cut };
-        selected.push(line);
-        bytes += size;
-        pull(chosen);
+    return { rows, reached, full };
+  }
+
+  /** A fault row is skipped (undefined); a row the room cannot hold is refused (null) unless it is forced in, shortened. */
+  private fit(
+    jobId: string,
+    row: WaitProgressRow,
+    room: WaitBudget,
+    force: boolean,
+  ): WaitSelectedRow | null | undefined {
+    if (row.message === undefined || row.timing === undefined) return undefined;
+    let shown = splitWaitProgress(row.message).map((line) => shortenWaitLine(line));
+    let size = byteLength(shown);
+    if (shown.length > room.lines || size > room.bytes) {
+      if (!force) return null;
+      if (!this.internal) {
+        shown = fitWaitEvent(shown, room.lines, room.bytes);
+        size = byteLength(shown);
       }
     }
     return {
-      lines: selected,
-      advances: [...advances.values()],
-      full: selected.length >= budget,
-      cut,
+      jobId,
+      seq: row.seq,
+      message: this.internal ? row.message : shown.join('\n'),
+      lines: shown.length,
+      bytes: size,
+      timing: row.timing,
     };
   }
 
-  private *selectJob(
-    job: WaitAdmission,
-    source: ProgressSource,
-    rows: number,
-    advances: Map<string, WaitSilentAdvance>,
-    remaining: () => number,
-    positioned?: WaitPositionedTail,
-  ): Generator<WaitProgressLine> {
-    if (positioned) {
-      const last = positioned.lines.length - 1;
-      for (let index = 0; index < last; index++) yield positioned.lines[index];
-      const line = positioned.lines[last];
-      yield {
-        ...line,
-        entryAfter: { ...line.entryAfter, seq: positioned.through, lineOffset: 0 },
-        progressAfter: positioned.exhausted ? 'exhausted' : 'unread',
-      };
-      return;
-    }
-    const member = this.member(job.jobId);
-    let entry = member.entry;
-    let previous: WaitProgressLine | undefined;
-    for (;;) {
-      const page = source.after(job.jobId, Math.max(0, entry.seq - Number(entry.lineOffset > 0)), rows);
-      let yielded = false;
-      for (let index = 0; index < page.rows.length; index++) {
-        const lines = this.lines(job, page.rows[index]).filter(
-          (line) =>
-            line.seq > entry.seq || (line.seq === entry.seq && entry.lineOffset > 0 && line.offset >= entry.lineOffset),
-        );
-        const last = lines.at(-1);
-        if (last && index === page.rows.length - 1) {
-          last.entryAfter = { ...last.entryAfter, seq: page.through, lineOffset: 0 };
-          last.progressAfter = page.exhausted ? 'exhausted' : 'unread';
-        }
-        for (const line of lines) {
-          if (!yielded) advances.delete(job.jobId);
-          yielded = true;
-          previous = line;
-          yield line;
-        }
-      }
-      const moved = page.through > entry.seq && (page.faultRows > 0 || page.rows.length > 0);
-      if (!yielded && (moved || page.exhausted))
-        advances.set(job.jobId, {
-          jobId: job.jobId,
-          seq: moved ? page.through : entry.seq,
-          exhausted: page.exhausted,
-          ...(previous ? { after: previous } : {}),
-        });
-      if (page.exhausted) return;
-      entry = { ...entry, seq: page.through, lineOffset: 0 };
-      rows = Math.max(1, Math.min(500, remaining() + 1, rows * 2));
+  /** Applies a selection once every row it selected was delivered: each read job moves to the last row it consumed. */
+  commit(selection: WaitSelection): void {
+    for (const [jobId, reached] of selection.reached) {
+      const member = this.member(jobId);
+      member.seq = Math.max(member.seq ?? 0, reached.seq);
+      if (member.progress === 'unread' && reached.exhausted) member.progress = 'exhausted';
     }
   }
 
-  /**
-   * Pages that yielded no line move or exhaust a job only behind lines already consumed, and never emit a message: a
-   * selected line that was not delivered keeps its job unread at its entry.
-   */
-  advanceSilently(advances: readonly WaitSilentAdvance[]): void {
-    for (const advance of advances) {
-      const member = this.member(advance.jobId);
-      const consumed =
-        advance.after === undefined ||
-        (member.entry.seq === advance.after.entryAfter.seq &&
-          member.entry.lineOffset === advance.after.entryAfter.lineOffset);
-      if (!consumed) continue;
-      if (member.entry.seq < advance.seq) member.entry = { ...member.entry, seq: advance.seq, lineOffset: 0 };
-      if (advance.exhausted && member.progress === 'unread') member.progress = 'exhausted';
-    }
-  }
-
-  preview(): WaitSession {
-    const copy = new WaitSession(this.jobIds, this.input, this.internal);
-    copy.admissions = this.admissions;
-    copy.notices.push(...this.notices);
-    for (const [id, member] of this.members) copy.members.set(id, { ...member });
-    for (const [id, coverage] of this.coverage) copy.coverage.set(id, coverage);
-    return copy;
-  }
-
-  consume(line: WaitProgressLine): void {
-    const member = this.member(line.jobId);
-    member.entry = { ...line.entryAfter, flags: member.entry.flags };
-    member.progress = line.progressAfter;
-  }
   hasProgress(): boolean {
     return this.admissions.some(
       (job) => job.disposition === 'admitted' && this.member(job.jobId).progress === 'unread',
@@ -786,62 +377,57 @@ export class WaitSession {
   progressState(jobId: string): ProgressState {
     return this.members.get(jobId)?.progress ?? 'unknown';
   }
-  positioning(jobId: string): boolean {
-    return (this.member(jobId).entry.flags & UNPOSITIONED_FLAG) !== 0;
+  private terminalSeq(job: WaitAdmission): number {
+    return job.detail?.terminalSeq ?? job.detail?.status.lastSeq ?? 0;
   }
-  entry(jobId: string): WaitCursorEntry {
-    return this.member(jobId).entry;
+  /** A job whose seq has reached its terminal's seq has had its outcome collected. */
+  collected(job: WaitAdmission): boolean {
+    const { seq } = this.member(job.jobId);
+    return seq !== undefined && seq >= this.terminalSeq(job);
   }
-  acknowledged(jobId: string): boolean {
-    return (this.member(jobId).entry.flags & ACKNOWLEDGED_FLAG) !== 0;
+  /** A terminal follows every progress row of its job that can still be read, so nothing it reads follows the outcome. */
+  terminalDeliverable(job: WaitAdmission): boolean {
+    const progress = this.progressState(job.jobId);
+    return (
+      job.disposition === 'admitted' && Boolean(job.detail?.exit) && progress !== 'unread' && progress !== 'unknown'
+    );
   }
-  artifactPending(jobId: string): boolean {
-    return (this.member(jobId).entry.flags & ARTIFACT_PENDING_FLAG) !== 0;
-  }
-  acknowledge(job: WaitAdmission): void {
+  collect(job: WaitAdmission): void {
     const member = this.member(job.jobId);
-    member.entry = {
-      ...member.entry,
-      flags:
-        member.entry.flags |
-        ACKNOWLEDGED_FLAG |
-        (!this.internal && job.availability?.kind === 'repair-pending' ? ARTIFACT_PENDING_FLAG : 0),
-    };
+    member.seq = Math.max(member.seq ?? 0, this.terminalSeq(job));
   }
-  settleArtifact(jobId: string): void {
-    const member = this.member(jobId);
-    member.entry = { ...member.entry, flags: member.entry.flags & ~ARTIFACT_PENDING_FLAG };
+  /** A collected job stays in the continuation while its artifact is still pending. */
+  artifactPending(job: WaitAdmission): boolean {
+    return !this.internal && job.availability?.kind === 'pending';
+  }
+  unknown(jobId: string): boolean {
+    return this.progressState(jobId) === 'unknown';
   }
   remaining(): string[] {
     return this.admissions
       .filter(
         (job) =>
-          job.disposition === 'discovery-unknown' ||
-          (job.disposition === 'admitted' &&
-            (!job.detail?.exit ||
-              !this.acknowledged(job.jobId) ||
-              this.artifactPending(job.jobId) ||
-              this.progressState(job.jobId) === 'unread' ||
-              this.progressState(job.jobId) === 'unknown')),
+          job.disposition === 'unknown' ||
+          (job.disposition === 'admitted' && (!job.detail?.exit || !this.collected(job) || this.artifactPending(job))),
       )
       .map((job) => job.jobId);
   }
   exitCode(): number {
     for (const job of this.admissions)
-      if (job.detail?.exit && this.acknowledged(job.jobId)) {
+      if (job.disposition === 'admitted' && job.detail?.exit && this.collected(job)) {
         const code = waitTerminalExitCode(job.detail.exit);
         if (code !== 0) return code;
       }
-    if (this.admissions.some((job) => job.disposition !== 'admitted' && job.disposition !== 'discovery-unknown'))
-      return 1;
+    if (this.admissions.some((job) => job.disposition !== 'admitted' && job.disposition !== 'unknown')) return 1;
     return this.remaining().length || this.unknownCarriers().length ? 75 : 0;
   }
   cursor(jobIds: readonly string[] = this.jobIds): WaitCursor {
     return {
       jobs: jobIds.flatMap((id) => {
         const job = this.admissions.find((job) => job.jobId === id);
-        return job && (job.disposition === 'admitted' || job.disposition === 'discovery-unknown')
-          ? [this.member(id).entry]
+        const seq = this.members.get(id)?.seq;
+        return job && (job.disposition === 'admitted' || job.disposition === 'unknown') && seq !== undefined
+          ? [{ hash: waitJobHash(id), seq }]
           : [];
       }),
     };
@@ -869,8 +455,8 @@ export class WaitSession {
   }
 }
 
-function retiredNotice(jobId: string): string {
-  return `Earlier progress for ${jobId} is no longer kept: source retired. Its retained outcome remains available.`;
+function byteLength(lines: readonly string[]): number {
+  return lines.reduce((sum, line) => sum + Buffer.byteLength(line), 0);
 }
 
 export function splitWaitProgress(message: string): string[] {
@@ -878,6 +464,7 @@ export function splitWaitProgress(message: string): string[] {
   if (message.endsWith('\n')) lines.pop();
   return lines.length === 0 ? [''] : lines;
 }
+
 export function shortenWaitLine(line: string): string {
   const bytes = Buffer.byteLength(line);
   if (bytes <= 4096) return line;
@@ -885,4 +472,25 @@ export function shortenWaitLine(line: string): string {
   let end = 4000;
   while ((buffer[end] & 0xc0) === 0x80) end--;
   return `${buffer.subarray(0, end).toString('utf8')}[line shortened: ${bytes - end} bytes omitted]`;
+}
+
+/** A row larger than the budget keeps its leading lines; the last line it keeps says how many bytes were cut. */
+function fitWaitEvent(lines: readonly string[], maxLines: number, maxBytes: number): string[] {
+  const kept: string[] = [];
+  let used = 0;
+  for (const [index, line] of lines.entries()) {
+    const size = Buffer.byteLength(line);
+    if (kept.length < maxLines - 1 && used + size + MARKER_ROOM <= maxBytes) {
+      kept.push(line);
+      used += size;
+      continue;
+    }
+    const omitted = byteLength(lines.slice(index));
+    const buffer = Buffer.from(line);
+    let end = Math.max(0, Math.min(size, 4000, maxBytes - used - MARKER_ROOM));
+    while (end > 0 && (buffer[end] & 0xc0) === 0x80) end--;
+    kept.push(`${buffer.subarray(0, end).toString('utf8')}[line shortened: ${omitted - end} bytes omitted]`);
+    break;
+  }
+  return kept;
 }

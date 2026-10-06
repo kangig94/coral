@@ -1,11 +1,5 @@
 import type { JobDetailResponse } from '../records.js';
 
-/** Both refusals are soft: the client drops its cursor and starts a fresh collection. */
-export type WaitCursorError = Readonly<{
-  code: 'wait_cursor_mismatch' | 'wait_cursor_malformed';
-  message: string;
-}>;
-
 export type JobDetailLookup =
   | JobDetailResponse
   | Readonly<{

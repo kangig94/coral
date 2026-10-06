@@ -10,9 +10,7 @@ import { JobAddressing } from '../../../src/jobs/addressing.js';
 import { createRealRuntime } from '../../../src/runtime/real.js';
 import { JobLocationIndex } from '../../../src/jobs/location-index.js';
 
-import type { ProgressVisit, WaitCursor, WaitStreamEvent } from '../../../src/jobs/wait/contract.js';
-import { progressPage, progressTail } from '#src/jobs/wait/progress-page.js';
-import { formatWaitSnapshot } from '#src/cli/format/wait.js';
+import type { WaitCursor, WaitStreamEvent } from '../../../src/jobs/wait/contract.js';
 import { savedCursor } from '#tests/helpers/wait-session.js';
 import { nextDelivered, nextFinal } from '#tests/helpers/wait-stream.js';
 import { canonicalWorkDirWireSchema } from '../../../src/runtime/canonical-work-dir.js';
@@ -82,7 +80,7 @@ it('describes unreadable addresses without exposing storage paths or raw errors'
     throw failure;
   };
   const job = historicalAddressing(index).admitWait({ jobIds: ['job'] })[0];
-  expect(job.disposition).toBe('discovery-unknown');
+  expect(job.disposition).toBe('unknown');
   expect(job.message).toContain('250 ms, 1 s and 5 s');
   expect(job.message).not.toContain('/secret');
   expect(job.message).not.toContain('EACCES');
@@ -108,7 +106,7 @@ it('uses a short epoch label for a settled historical source', () => {
     () => false,
     () => 'pending',
     () => ({ kind: 'unreadable', disposition: 'settled-unreadable' }),
-    () => ({ kind: 'failed', cause: 'terminal-unusable', retryScheduled: false }),
+    () => ({ kind: 'failed', reason: 'the retained terminal does not match its source journal' }),
   );
   const job = addressing.admitWait({ jobIds: ['job'] })[0];
   expect(job.message).toMatch(/^Epoch [0-9a-f]{8}:/);
@@ -146,7 +144,7 @@ it.each([
       () => false,
       () => 'pending',
       () => ({ kind: 'unreadable', disposition, reason }),
-      () => ({ kind: 'failed', cause: 'terminal-unusable', retryScheduled: false }),
+      () => ({ kind: 'failed', reason: 'the retained terminal does not match its source journal' }),
     );
     const job = addressing.admitWait({ jobIds: ['known'] })[0];
     expect(job.message).toContain('Epoch maintenance');
@@ -187,9 +185,8 @@ describe('job addressing', () => {
     });
     index.recordTerminal('old', detail('old', 'completed'), resultPath, 12);
     const addressing = historicalAddressing(index);
-    const cursor: WaitCursor = savedCursor({ old: 0 }, 'lineage-old:7');
+    const cursor: WaitCursor = savedCursor({ old: 0 });
     expect(addressing.detail('old')).toMatchObject({ epochKey: 'lineage-old:7' });
-    expect(addressing.validateWait({ jobIds: ['old'], cursor })).toBeNull();
     const stream = addressing.waitStream({ jobIds: ['old'], cursor });
     expect((await nextFinal(stream)).value).toMatchObject({
       type: 'terminal',
@@ -255,7 +252,7 @@ it('keeps retryable unknown IDs in a direct continuation and re-admits them afte
   expect((await nextDelivered(waiting)).value).toMatchObject({
     type: 'disposition',
     jobId: 'unknown',
-    disposition: 'discovery-unknown',
+    disposition: 'unknown',
   });
   expect((await nextFinal(waiting)).value).toMatchObject({ type: 'waiting', waitingJobIds: ['unknown'] });
   await waiting.return(undefined);
@@ -289,96 +286,14 @@ it('holds an unaccepted active launch until write-owned recovery observes its ex
     () => false,
     () => 'pending',
     undefined,
-    () => ({ kind: 'failed', cause: 'terminal-unusable', retryScheduled: false }),
+    () => ({ kind: 'failed', reason: 'the retained terminal does not match its source journal' }),
   );
   const snapshot = addressing.snapshot({ jobIds: ['never-accepted'] });
-  expect(snapshot.jobs[0].disposition).toBe('admitted');
+  expect(snapshot.jobs[0].disposition).toBe('unknown');
   expect(snapshot.remainingJobIds).toEqual(['never-accepted']);
   expect(snapshot.exitCode).toBe(75);
   index.retireNeverAccepted('never-accepted', 'active');
   expect(addressing.snapshot({ jobIds: ['never-accepted'] })).toMatchObject({ remainingJobIds: [], exitCode: 1 });
-});
-
-it('keeps an unreadable historical progress backlog pending and recovers it on the continuation', () => {
-  const { index } = fixture();
-  const jobId = 'historical';
-  const epochKey = 'old';
-  index.register(jobId, epochKey, {
-    projectRoot: '/workspace/project',
-    workDir: '/workspace/project',
-    jobKind: 'provider',
-  });
-  const retained = detail(jobId, 'completed');
-  index.recordTerminal(jobId, retained, '/result', 12);
-  let readable = false;
-  const addressing = new JobAddressing(
-    {
-      ...index.readOnlyView(),
-      visitProgress: progressVisitFromDetails(() => ({
-        ...retained,
-        events: [
-          {
-            type: 'progress',
-            jobId,
-            sessionId: null,
-            seq: 3,
-            ts: '',
-            message: 'unread backlog',
-            timing: { origin: 'runtime', originAt: '', emittedAt: '', elapsedMs: 0 },
-          },
-        ],
-      })),
-    },
-    {
-      visitProgress: progressVisitFromDetails(() => null),
-      epochKey: () => 'active',
-      detail: () => null,
-      abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
-    },
-    () => false,
-    () => 'decided',
-    () => {
-      if (!readable) return { kind: 'unreadable', disposition: 'transient-unknown' };
-      const location = index.read(jobId);
-      if (!location) throw new Error('missing fixture location');
-      const progress = {
-        type: 'progress' as const,
-        jobId,
-        sessionId: 'session-1',
-        seq: 3,
-        ts: retained.status.updatedAt,
-        message: 'unread backlog',
-        timing: {
-          origin: 'runtime' as const,
-          originAt: retained.status.updatedAt,
-          emittedAt: retained.status.updatedAt,
-          elapsedMs: 0,
-        },
-      };
-      return {
-        kind: 'read',
-        dispositions: new Map([[jobId, 'readable']]),
-        locations: new Map([
-          [
-            jobId,
-            {
-              ...location,
-              detail: { kind: 'recorded', value: { ...retained, epochKey, events: [progress, ...retained.events] } },
-            },
-          ],
-        ]),
-      };
-    },
-    () => ({ kind: 'available', resultPath: '/result' }),
-  );
-  const first = addressing.snapshot({ jobIds: [jobId] });
-  expect(first.remainingJobIds).toEqual([jobId]);
-  expect(first.notices.join('\n')).toContain('Earlier progress for historical is held');
-  readable = true;
-  const second = addressing.snapshot({ jobIds: [jobId], cursor: first.cursor });
-  expect(second.jobs[0].progress).toEqual(['unread backlog']);
-  expect(second.jobs[0].terminal).toBeUndefined();
-  expect(second.remainingJobIds).toEqual([]);
 });
 
 it.each([false, true])(
@@ -413,7 +328,6 @@ it.each([false, true])(
       epochKey: 'active',
       detail: { status: { phase: 'running' } },
     });
-    expect(addressing.validateWait(request)).toBeNull();
   },
 );
 
@@ -446,101 +360,9 @@ it('reclassifies the previous active epoch after a proven selection change withi
   expect(addressing.admitWait(request)[0]).toMatchObject({ disposition: 'admitted', epochKey: 'previous' });
   expect(historicalReads).toEqual([]);
   epoch = 'successor';
-  expect(addressing.admitWait(request)[0]).toMatchObject({
-    disposition: 'outcome-unreadable',
-    epochKey: 'previous',
-    sourceRead: 'settled-unreadable',
-  });
+  expect(addressing.admitWait(request)[0]).toMatchObject({ disposition: 'unreadable' });
   expect(historicalReads).toEqual(['previous']);
 });
-
-it.each(['readable', 'transient-unknown', 'settled-unreadable', 'retired'] as const)(
-  'carries %s through historical admission, remaining work and snapshot with an epoch sibling',
-  (sourceRead) => {
-    const { root, index } = fixture();
-    for (const id of ['A', 'U']) {
-      index.register(id, 'historical', {
-        projectRoot: '/workspace/project',
-        workDir: '/workspace/project',
-        jobKind: 'provider',
-      });
-      const retained = detail(id, 'completed');
-      index.recordTerminal(id, retained, join(root, `${id}.md`), 12);
-    }
-    const a = index.read('A');
-    const u = index.read('U');
-    if (!a || !u) throw new Error('missing fixture');
-    const observedA =
-      a.detail.kind === 'recorded'
-        ? {
-            ...a,
-            detail: {
-              kind: 'recorded' as const,
-              value: {
-                ...a.detail.value,
-                events: [
-                  {
-                    type: 'progress' as const,
-                    jobId: 'A',
-                    sessionId: null,
-                    seq: 10,
-                    ts: '',
-                    message: 'sibling backlog',
-                    timing: { origin: 'runtime' as const, originAt: '', emittedAt: '', elapsedMs: 0 },
-                  },
-                  ...a.detail.value.events,
-                ],
-              },
-            },
-          }
-        : a;
-    const addressing = new JobAddressing(
-      {
-        ...index.readOnlyView(),
-        visitProgress: progressVisitFromDetails((id) => {
-          const location = id === 'A' ? observedA : u;
-          return location.detail.kind === 'recorded' ? location.detail.value : null;
-        }),
-      },
-      {
-        visitProgress: progressVisitFromDetails(() => null),
-        epochKey: () => 'current',
-        detail: () => null,
-        abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
-      },
-      () => false,
-      () => 'pending',
-      () => ({
-        kind: 'read',
-        locations: new Map([
-          ['A', observedA],
-          ['U', u],
-        ]),
-        dispositions: new Map([
-          ['A', 'readable'],
-          ['U', sourceRead],
-        ]),
-      }),
-      (id) => ({ kind: 'available', resultPath: join(root, `${id}.md`) }),
-      undefined,
-      () => sourceRead === 'retired',
-    );
-    const admissions = addressing.admitWait({ jobIds: ['A', 'U'] });
-    expect(admissions[1].sourceRead).toBe(sourceRead);
-    const snapshot = addressing.snapshot({ jobIds: ['A', 'U'] });
-    expect(snapshot.remainingJobIds).toEqual(sourceRead === 'transient-unknown' ? ['U'] : []);
-    expect(snapshot.jobs[0].progress).toEqual(['sibling backlog']);
-    if (sourceRead === 'transient-unknown') {
-      expect(snapshot.notices.join(' ')).toContain('Earlier progress for U is held');
-      expect(snapshot.notices.join(' ')).toContain('Snapshots return immediately with a continuation');
-    }
-    if (sourceRead === 'settled-unreadable') {
-      expect(snapshot.notices.join(' ')).toContain('cannot be read by this build');
-      expect(snapshot.notices.join(' ')).not.toContain('no longer kept');
-    }
-    if (sourceRead === 'retired') expect(snapshot.notices.join(' ')).toContain('no longer kept');
-  },
-);
 
 it('historical maintenance never settles an active recovery hold', () => {
   const { index } = fixture();
@@ -558,7 +380,7 @@ it('historical maintenance never settles an active recovery hold', () => {
     () => false,
     () => 'pending',
     undefined,
-    () => ({ kind: 'repair-pending', ageUncertain: true }),
+    () => ({ kind: 'pending' }),
   );
   for (let i = 0; i < 50; i++) retryUnknownHistoricalEpochs(index);
   expect(index.unknownLocationHolds()).toEqual(before);
@@ -586,9 +408,9 @@ it.each(['pending', 'decided'] as const)(
       () => false,
       () => closure,
       () => ({ kind: 'unreadable', disposition: 'settled-unreadable', reason: 'bounded attempts exhausted' }),
-      () => ({ kind: 'repair-pending', ageUncertain: true }),
+      () => ({ kind: 'pending' }),
     );
-    expect(addressing.admitWait({ jobIds: ['U'] })).toMatchObject([{ disposition: 'outcome-unreadable' }]);
+    expect(addressing.admitWait({ jobIds: ['U'] })).toMatchObject([{ disposition: 'unreadable' }]);
     expect(addressing.detail('U')).toMatchObject({ kind: 'outcome-unreadable' });
     const snapshot = addressing.snapshot({ jobIds: ['U'] });
     expect(snapshot.exitCode).toBe(1);
@@ -621,7 +443,7 @@ it('isolates a schema-incompatible location from readable siblings', () => {
     () => ({ kind: 'available', resultPath: '/r.md' }),
   );
   const admissions = addressing.admitWait({ jobIds: ['good', 'bad'] });
-  expect(admissions).toMatchObject([{ disposition: 'admitted' }, { disposition: 'discovery-unreadable' }]);
+  expect(admissions).toMatchObject([{ disposition: 'admitted' }, { disposition: 'unreadable' }]);
   expect(addressing.snapshot({ jobIds: ['good', 'bad'] })).toMatchObject({ exitCode: 1, remainingJobIds: [] });
 });
 
@@ -637,7 +459,7 @@ it.each([true, false])('abort shares unknown discovery classification when retry
 });
 
 import { admitted } from '#tests/helpers/wait-session.js';
-import { ACKNOWLEDGED_FLAG, waitEpochToken, waitJobHash } from '#src/jobs/wait/cursor.js';
+import { waitJobHash } from '#src/jobs/wait/cursor.js';
 
 it.each([false, true])('first poll observes every member without false holds, terminal=%s', async (terminal) => {
   const { index } = fixture();
@@ -669,22 +491,17 @@ it.each([false, true])('first poll observes every member without false holds, te
   const jobIds = terminal ? [...ids.slice(0, 50), 'typo', ...ids.slice(50)] : ids;
   const cursor: WaitCursor | undefined = terminal
     ? {
-        jobs: ids.map((id) => ({
-          hash: waitJobHash(id),
-          epoch: waitEpochToken('epoch-E'),
-          seq: 100_000,
-          lineOffset: 0,
-          flags: ACKNOWLEDGED_FLAG,
-        })),
+        jobs: ids.map((id) => ({ hash: waitJobHash(id), seq: 100_000 })),
       }
     : undefined;
   const request = { jobIds, timeoutSeconds: 0, cursor };
   const admissions = addressing.admitWait(request);
   const events: WaitStreamEvent[] = [];
   for await (const event of addressing.waitStream({ ...request, admissions })) events.push(event);
-  expect(events.filter((e) => e.type === 'disposition' && e.disposition === 'discovery-unknown')).toEqual([]);
+  expect(events.filter((e) => e.type === 'disposition' && e.disposition === 'unknown')).toEqual([]);
   expect(events.filter((e) => e.type === 'notice' && e.message.includes('held'))).toEqual([]);
-  if (terminal) expect(events.at(-1)).toMatchObject({ type: 'waiting', exitCode: 1, cursor: { jobs: [] } });
+  if (terminal)
+    expect(events.at(-1)).toMatchObject({ type: 'terminal', remainingJobIds: [], exitCode: 1, cursor: { jobs: [] } });
   else {
     const progress = events.filter((e) => e.type === 'progress');
     expect(progress.length).toBeGreaterThan(0);
@@ -710,7 +527,7 @@ it('resolves unknown IDs through one session read per held epoch, never an uncac
       reads.push({ epochKey, session });
       return { kind: 'read', locations: new Map(), dispositions: new Map() };
     },
-    () => ({ kind: 'failed', cause: 'terminal-unusable', retryScheduled: false }),
+    () => ({ kind: 'failed', reason: 'the retained terminal does not match its source journal' }),
   );
   addressing.admitWait({ jobIds: ['u1', 'u2', 'u3', 'u4'] });
   expect(reads.map((read) => read.epochKey).sort()).toEqual(['held-1', 'held-2', 'held-3']);
@@ -741,12 +558,12 @@ it('keeps an active job whose detail read fails from failing its siblings, and p
     () => false,
     () => 'pending',
     undefined,
-    () => ({ kind: 'failed', cause: 'terminal-unusable', retryScheduled: false }),
+    () => ({ kind: 'failed', reason: 'the retained terminal does not match its source journal' }),
   );
   expect(addressing.admitWait({ jobIds: ['busy', 'undecodable', 'healthy'] })).toMatchObject([
-    { jobId: 'busy', disposition: 'admitted', sourceRead: 'transient-unknown' },
-    { jobId: 'undecodable', disposition: 'outcome-unreadable', sourceRead: 'settled-unreadable' },
-    { jobId: 'healthy', disposition: 'admitted', sourceRead: 'readable' },
+    { jobId: 'busy', disposition: 'unknown' },
+    { jobId: 'undecodable', disposition: 'unreadable' },
+    { jobId: 'healthy', disposition: 'admitted' },
   ]);
   expect(() => addressing.admitWait({ jobIds: ['defect', 'healthy'] })).toThrow(TypeError);
 });
@@ -757,68 +574,4 @@ it('propagates a code defect from a location read instead of reporting discovery
     throw new TypeError('defect');
   };
   expect(() => historicalAddressing(index).admitWait({ jobIds: ['job'] })).toThrow(TypeError);
-});
-
-it('keeps undelivered progress in the continuation when 127 unknown IDs repeat 121 held-epoch caveats past the fit', () => {
-  const job = admitted('a');
-  const timing = { origin: 'runtime' as const, originAt: '', emittedAt: '', elapsedMs: 0 };
-  const raw = [
-    ...Array.from({ length: 40 }, (_, i) => ({
-      seq: i + 1,
-      progress: { seq: i + 1, message: `p${i + 1} ${'x'.repeat(1600)}`, timing },
-    })),
-    ...Array.from({ length: 100 }, (_, i) => ({ seq: i + 41 })),
-  ];
-  const visitProgress: ProgressVisit = (_epoch, read) => ({
-    kind: 'read',
-    value: read({
-      after: (_id, after, rows) => progressPage(raw.filter((row) => row.seq > after).slice(0, rows + 1), rows, 1000),
-      before: (_id, before, rows) =>
-        progressTail(
-          raw
-            .filter((row) => before === null || row.seq < before)
-            .reverse()
-            .slice(0, rows + 1),
-          rows,
-          1000,
-        ),
-    }),
-  });
-  const holds = Array.from({ length: 121 }, (_, i) => ({
-    epochKey: `historical-${i}`,
-    reason:
-      'Store fingerprint cannot be read by this build; this coordinator will not re-read it before its next start',
-    retryScheduled: false,
-  }));
-  const addressing = new JobAddressing(
-    {
-      time: { monotonicNow: () => 0n, now: () => 0 },
-      read: (id: string) =>
-        id === 'a'
-          ? { epochKey: 'epoch-E', subject: { projectRoot: '/tmp', workDir: '/tmp', jobKind: 'provider' } }
-          : null,
-      unknownLocationHolds: () => holds,
-      resultPathFor: () => '/results/a',
-    } as never,
-    {
-      epochKey: () => 'epoch-E',
-      detail: (id: string) => (id === 'a' ? job.detail : null),
-      readWaitAdmissions: () => [job],
-      visitProgress,
-    } as never,
-    () => false,
-    () => 'pending',
-    undefined,
-    () => ({ kind: 'available', resultPath: '/results/a' }),
-  );
-  const snapshot = addressing.snapshot({
-    jobIds: ['a', ...Array.from({ length: 127 }, (_, i) => `ghost-${i}`)],
-    cursor: savedCursor({ a: 0 }),
-  });
-  expect(snapshot.jobs[1].disposition).toBe('discovery-unreadable');
-  expect(snapshot.notices).toContain('Progress omitted to fit the complete response; run the continuation.');
-  expect(snapshot.jobs[0].progress).toEqual([]);
-  expect(snapshot.remainingJobIds).toEqual(['a']);
-  expect(snapshot.cursor.jobs).toMatchObject([{ seq: 0, lineOffset: 0 }]);
-  expect(formatWaitSnapshot(snapshot)).toContain('Run coral-cli wait jobs a --now --cursor ');
 });

@@ -1,22 +1,16 @@
 import type { ProgressVisit } from './wait/contract.js';
 import { epochIdentity, sameEpoch } from '../store/epoch/identity.js';
-import { isCodeDefect, sourceReadFailureDisposition } from './source-read.js';
+import { isCodeDefect, sourceReadFailureDisposition, type SourceReadDisposition } from './source-read.js';
 import { waitEpochToken } from './wait/cursor.js';
-import {
-  activeJournalReadFailure,
-  WaitSession,
-  WaitSessionError,
-  type WaitAdmission,
-  type WaitSnapshot,
-} from './wait/session.js';
+import { activeJournalReadFailure, WaitSession, type WaitAdmission, type WaitSnapshot } from './wait/session.js';
 import { selectWaitSnapshot } from './wait/snapshot.js';
 import { readWaitSession } from './wait/reader.js';
 import { canonicalWorkDirWireSchema, type CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
 import type { AbortDecision } from './contracts/abort-registry.js';
-import type { JobDetailLookup, WaitCursorError } from './contracts/addressing.js';
+import type { JobDetailLookup } from './contracts/addressing.js';
 import { type HistoricalSourceRead, type HistoricalSourceReader } from './historical-reader.js';
 import { LocationObservationDeferred, type JobLocationView, type JobLocation } from './location-index.js';
-import { hasObservedTerminalDetail } from './terminal/identity.js';
+import { hasReadableTerminalDetail } from './terminal/identity.js';
 import { jobInCallerScope, type JobScopeRelation, type ScopeCheckResult } from './scope.js';
 import type { JobDetailResponse } from './records.js';
 import { type ResultAvailability } from './terminal/export.js';
@@ -52,9 +46,12 @@ export type HistoricalClosureProbe = (epochKey: string) => 'pending' | 'decided'
 type HistoricalDisposition = Readonly<{
   kind: 'admitted' | 'outcome-unrecoverable' | 'outcome-unreadable';
   location: JobLocation;
-  sourceRead: NonNullable<WaitAdmission['sourceRead']>;
+  sourceRead: SourceReadDisposition;
   message?: string;
 }>;
+
+const PRE_EPOCH_HISTORY_MESSAGE =
+  'A job that ran before store epochs has no details this build can read; another id may never have been a job';
 
 function epochHoldReason(reason: string, retryScheduled: boolean): string {
   if (/\s/.test(reason) && !reason.includes('/') && !reason.includes('Error:') && !/^[A-Z_]+:/.test(reason))
@@ -77,14 +74,14 @@ function historicalDisposition(
       : (read.dispositions?.get(jobId) ?? (read.unreadableJobs?.has(jobId) ? 'settled-unreadable' : 'readable'));
   const observed = read.kind === 'read' ? read.locations.get(jobId) : null;
   const location =
-    (!fullHistory || !observed) && hasObservedTerminalDetail(retained)
+    (!fullHistory || !observed) && hasReadableTerminalDetail(retained)
       ? retained
       : (observed ?? { ...retained, disposition: 'unresolved' as const, detail: { kind: 'absent' as const } });
   const message =
     read.kind === 'unreadable' && read.reason !== undefined
       ? epochHoldReason(read.reason, sourceRead === 'transient-unknown')
       : undefined;
-  if (hasObservedTerminalDetail(location)) return { kind: 'admitted', location, sourceRead, message };
+  if (hasReadableTerminalDetail(location)) return { kind: 'admitted', location, sourceRead, message };
   if (sourceRead === 'settled-unreadable' || sourceRead === 'retired')
     return {
       kind: 'outcome-unreadable',
@@ -96,7 +93,12 @@ function historicalDisposition(
           : `Epoch ${waitEpochToken(retained.epochKey).slice(0, 8)}: ${message ?? "this build cannot decode this job's journal; epoch maintenance re-reads it at the next coordinator start"}`,
     };
   if (closure === 'decided' && sourceRead === 'readable' && read.kind === 'read' && read.locations.has(jobId))
-    return { kind: 'outcome-unrecoverable', location, sourceRead, message: 'No terminal was recorded before closure' };
+    return {
+      kind: 'outcome-unrecoverable',
+      location,
+      sourceRead,
+      message: 'No terminal was recorded before its store epoch closed, so no outcome will ever be recorded',
+    };
   return { kind: 'admitted', location, sourceRead, message };
 }
 
@@ -105,7 +107,6 @@ export class JobAddressing {
   private readonly locations: JobLocationView;
   private readonly readHistorical: HistoricalSourceReader;
   private readonly observeResultAvailability: (jobId: string) => ResultAvailability;
-  private readonly progressRetentionExpired?: (jobId: string, session?: object) => boolean | undefined;
   private readonly hintRepair?: (jobId: string) => void;
   private readonly active: ActiveJobAccess;
   private readonly preEpochHistoryExists: PreEpochHistoryProbe;
@@ -124,7 +125,6 @@ export class JobAddressing {
       },
     observeResultAvailability: (jobId: string) => ResultAvailability,
     hintRepair?: (jobId: string) => void,
-    progressRetentionExpired?: (jobId: string, session?: object) => boolean | undefined,
   ) {
     this.locations = locations;
     this.active = active;
@@ -133,7 +133,6 @@ export class JobAddressing {
     this.readHistorical = readHistorical;
     this.observeResultAvailability = observeResultAvailability;
     this.hintRepair = hintRepair;
-    this.progressRetentionExpired = progressRetentionExpired;
   }
 
   unknownJobDisposition(
@@ -164,20 +163,6 @@ export class JobAddressing {
       retained.jobId,
       fullHistory,
     );
-  }
-
-  private outcomeUnrecoverableLocation(location: JobLocation): boolean {
-    return (
-      !sameEpoch(location.epochKey, this.active.epochKey() ?? ':memory:') &&
-      this.historicalLocation(location).kind === 'outcome-unrecoverable'
-    );
-  }
-
-  outcomeUnrecoverable(jobIds: readonly string[]): string[] {
-    return jobIds.filter((jobId) => {
-      const location = this.location(jobId);
-      return location !== null && this.outcomeUnrecoverableLocation(location);
-    });
   }
 
   /** A wait poll resolves unknown IDs through its own session-cached hold reads, so it skips the uncached hold scan. */
@@ -287,7 +272,7 @@ export class JobAddressing {
       if (location !== null) historical.set(jobId, this.historicalLocation(location));
     }
     const historicalTerminal = [...historical]
-      .filter(([, classified]) => hasObservedTerminalDetail(classified.location))
+      .filter(([, classified]) => hasReadableTerminalDetail(classified.location))
       .map(([jobId]) => jobId);
     const unrecoverable = historicalIds.filter((jobId) => historical.get(jobId)?.kind === 'outcome-unrecoverable');
     const unreadable = historicalIds.filter((jobId) => historical.get(jobId)?.kind === 'outcome-unreadable');
@@ -359,7 +344,7 @@ export class JobAddressing {
 
   private availability(jobId: string): ResultAvailability {
     const availability = this.observeResultAvailability(jobId);
-    if (availability.kind === 'repair-pending') this.hintRepair?.(jobId);
+    if (availability.kind === 'pending') this.hintRepair?.(jobId);
     return availability;
   }
 
@@ -403,9 +388,8 @@ export class JobAddressing {
           const sourceRead = sourceReadFailureDisposition(error);
           failures.set(jobId, {
             jobId,
-            sourceRead,
             observationDeferred: error instanceof LocationObservationDeferred,
-            disposition: sourceRead === 'settled-unreadable' ? 'discovery-unreadable' : 'discovery-unknown',
+            disposition: sourceRead === 'settled-unreadable' ? 'unreadable' : 'unknown',
             message:
               error instanceof LocationObservationDeferred
                 ? 'Location observation was deferred; this wait reads it on the next bounded poll'
@@ -475,10 +459,13 @@ export class JobAddressing {
           return source?.kind !== 'read' || !source.absentJobs?.has(jobId);
         });
         const unknown = this.unknownJobDisposition(unresolvedHolds);
+        const message = this.unknownJobCaveat(unresolvedHolds) || undefined;
+        if (unknown === 'not-found') return { jobId, disposition: 'missing', message };
+        if (unknown === 'discovery-unknown') return { jobId, disposition: 'unknown', message };
         return {
           jobId,
-          disposition: unknown === 'not-found' ? 'missing' : unknown,
-          message: this.unknownJobCaveat(unresolvedHolds) || undefined,
+          disposition: 'unreadable',
+          message: unknown === 'pre-epoch-history' ? PRE_EPOCH_HISTORY_MESSAGE : message,
         };
       }
       if (
@@ -509,39 +496,35 @@ export class JobAddressing {
       const source = historical.get(epochIdentity(location.epochKey));
       if (!source) throw new Error(`Missing historical read for epoch ${location.epochKey}`);
       const classified = historicalDisposition(location, closure ?? 'pending', source, jobId);
-      const { sourceRead, message } = classified;
+      const { message } = classified;
       const accepted = classified.location;
       if (classified.kind !== 'admitted')
-        return {
-          jobId,
-          disposition: classified.kind,
-          epochKey: location.epochKey,
-          sourceRead,
-          message,
-        };
-      if (!hasObservedTerminalDetail(accepted))
-        return {
-          jobId,
-          disposition: 'admitted',
-          epochKey: location.epochKey,
-          sourceRead,
-          message,
-          ...(accepted.detail.kind === 'recorded' ? { detail: waitDetail(accepted.detail.value) } : {}),
-          progressUnknown: sourceRead === 'transient-unknown',
-          progressLost: false,
-        };
+        return { jobId, disposition: 'unreadable', epochKey: location.epochKey, message };
+      if (!hasReadableTerminalDetail(accepted))
+        return classified.sourceRead === 'transient-unknown'
+          ? {
+              jobId,
+              disposition: 'unknown',
+              epochKey: location.epochKey,
+              message:
+                message ??
+                'Its store epoch cannot be read right now; epoch maintenance re-reads it every 5 s and settles after 3 failed probes',
+            }
+          : {
+              jobId,
+              disposition: 'admitted',
+              epochKey: location.epochKey,
+              historical: true,
+              ...(accepted.detail.kind === 'recorded' ? { detail: waitDetail(accepted.detail.value) } : {}),
+            };
       const detail = accepted.detail.kind === 'recorded' ? accepted.detail.value : undefined;
-      const availability = this.availability(jobId);
       return {
         jobId,
         disposition: 'admitted',
         epochKey: location.epochKey,
+        historical: true,
         ...(detail ? { detail: waitDetail(detail) } : {}),
-        availability,
-        sourceRead,
-        message,
-        progressUnknown: sourceRead === 'transient-unknown',
-        progressLost: this.progressRetentionExpired?.(jobId, request) === true,
+        availability: this.availability(jobId),
       };
     });
   }
@@ -556,53 +539,35 @@ export class JobAddressing {
     const detail = admission?.detail ?? this.active.detail(jobId);
     if (admission && admission.disposition !== 'admitted') return admission;
     if (!detail && !admission?.queued)
-      return { jobId, disposition: 'admitted', epochKey, sourceRead: 'transient-unknown' };
-    const availability = detail?.exit ? (admission?.availability ?? this.availability(jobId)) : undefined;
+      return {
+        jobId,
+        disposition: 'unknown',
+        epochKey,
+        message: 'The job is not yet readable in the active journal; this wait reads it again on its next poll',
+      };
     return {
       ...admission,
       jobId,
       disposition: 'admitted',
-      sourceRead: admission?.sourceRead ?? 'readable',
       epochKey,
       ...(detail === null || detail === undefined ? {} : { detail: waitDetail(detail) }),
-      ...(detail?.exit
-        ? {
-            availability,
-            progressLost: this.progressRetentionExpired?.(jobId, request) === true,
-          }
-        : {}),
+      ...(detail?.exit ? { availability: admission?.availability ?? this.availability(jobId) } : {}),
     };
   }
 
-  validateWait(request: WaitStreamRequest): WaitCursorError | null {
-    const admissions = request.admissions ?? this.admitWait(request);
-    try {
-      new WaitSession(request.jobIds, request.cursor).reconcile(admissions);
-    } catch (error) {
-      if (error instanceof WaitSessionError) return { code: 'wait_cursor_mismatch', message: error.message };
-      throw error;
-    }
-    return null;
-  }
-
-  /** Every reader of a job's progress goes to the job's admitted epoch, active or retained. */
+  /** Progress is read from the active epoch only; a job admitted from another epoch delivers its terminal alone. */
   readonly visitProgress: ProgressVisit = (epoch, read) =>
     sameEpoch(epoch, this.active.epochKey() ?? ':memory:')
       ? (this.active.visitProgress?.(epoch, read) ?? { kind: 'unreadable', disposition: 'transient-unknown' })
-      : (this.locations.visitProgress?.(epoch, read) ?? { kind: 'unreadable', disposition: 'transient-unknown' });
+      : { kind: 'unreadable', disposition: 'transient-unknown' };
 
   snapshot(request: WaitSnapshotRequest): WaitSnapshot {
-    const admissions = this.admitWait(request, false);
-    const error = this.validateWait({ ...request, admissions });
-    if (error) throw new WaitSessionError(error.code, error.message);
     const session = new WaitSession(request.jobIds, request.cursor);
-    session.reconcile(admissions);
+    session.reconcile(this.admitWait(request, false));
     return selectWaitSnapshot(session, request.lines ?? 20, this.visitProgress);
   }
 
   async *waitStream(request: WaitStreamRequest): AsyncGenerator<WaitStreamEvent> {
-    const error = this.validateWait(request);
-    if (error) throw new WaitSessionError(error.code, error.message);
     const activeEpochKey = this.waitEpoch(request);
     let firstRead = true;
     yield* readWaitSession({

@@ -80,7 +80,6 @@ export function createCoordinatorRequestPorts(input: {
       hintHistoricalHydration(jobLocationIndex, jobId);
       getProgressStore().getResultExportOwner().hintRepair(jobId);
     },
-    (jobId, session) => getProgressStore().getResultExportOwner().progressRetentionExpired(jobId, session),
   );
 
   const rpcPorts = createCoordinatorRpcPorts({

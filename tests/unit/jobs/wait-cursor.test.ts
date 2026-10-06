@@ -11,13 +11,7 @@ import type { WaitCursor, WaitStreamEvent } from '#src/jobs/wait/contract.js';
 import { advanceWaitRenderCursor } from '#src/jobs/wait/stream-event.js';
 
 const timing = { origin: 'runtime', originAt: '', emittedAt: '', elapsedMs: 0 } as const;
-const entry = (jobId: string, seq: number, epochKey = 'epoch-E') => ({
-  hash: waitJobHash(jobId),
-  epoch: waitEpochToken(epochKey),
-  seq,
-  lineOffset: 0,
-  flags: 0,
-});
+const entry = (jobId: string, seq: number) => ({ hash: waitJobHash(jobId), seq });
 
 describe('wait cursor codec', () => {
   it.each([
@@ -29,7 +23,9 @@ describe('wait cursor codec', () => {
       ).toString('base64url'),
     ],
     ['prefixed', `jobs.wait.v3:${serializeWaitCursor({ jobs: [entry('a', 3)] })}`],
-  ])('refuses a %s token from an older build instead of translating it', (_shape, token) => {
+    // An earlier layout of this build: two count bytes, epoch tokens, then 22 bytes per job.
+    ['flagged', Buffer.concat([Buffer.from([1, 1]), Buffer.alloc(16), Buffer.alloc(22)]).toString('base64url')],
+  ])('refuses a %s token from another build instead of translating it', (_shape, token) => {
     expect(decodeSerializedWaitCursor(token)).toMatchObject({
       kind: 'rejected',
       error: { code: 'wait_cursor_malformed' },
@@ -40,83 +36,35 @@ describe('wait cursor codec', () => {
     { afterSeq: 0 },
     { version: 'jobs.wait.v2', locations: {}, positions: {} },
     { version: 'jobs.wait.v3', jobs: [] },
+    { jobs: [{ hash: waitJobHash('a'), epoch: null, seq: 0, lineOffset: 0, flags: 4 }] },
   ])('refuses a cursor object in another shape: %j', (cursor) => {
     expect(decodeWaitCursor(cursor).kind).toBe('rejected');
   });
 
-  it.each([64, 128])('encodes %i jobs at maximum frontiers under the authenticated header budget', (count) => {
-    for (const shared of [true, false]) {
-      const cursor = {
-        jobs: Array.from({ length: count }, (_, i) => ({
-          hash: waitJobHash(`job-${i}`),
-          epoch: waitEpochToken(`/absolute/epoch/${shared ? 0 : i}`),
-          seq: Number.MAX_SAFE_INTEGER,
-          lineOffset: 0xffffffff,
-          flags: 3,
-        })),
-      };
-      const encoded = serializeWaitCursor(cursor);
-      expect(Buffer.byteLength(encoded)).toBeLessThanOrEqual(8192);
-      expect(encoded).not.toContain('/absolute');
-      expect(decodeSerializedWaitCursor(encoded)).toEqual({ kind: 'decoded', cursor });
-      const headers = `POST /jobs/wait HTTP/1.1\r\nHost: 127.0.0.1:49152\r\nAuthorization: Bearer ${'a'.repeat(256)}\r\nContent-Type: application/json\r\nLast-Event-ID: ${encoded}\r\nContent-Length: 4096\r\nConnection: keep-alive\r\n\r\n`;
-      expect(Buffer.byteLength(headers)).toBeLessThanOrEqual(12288);
-    }
-  });
-
-  it('round trips unresolved entries and rejects malformed flags, ordinals, lengths and duplicates', () => {
-    const cursor = {
-      jobs: [
-        { hash: waitJobHash('a'), epoch: waitEpochToken('e'), seq: 17, lineOffset: 3, flags: 3 },
-        { hash: waitJobHash('u'), epoch: null, seq: 0, lineOffset: 0, flags: 4 },
-      ],
-    };
+  it('round trips {hash, seq} entries and rejects malformed seqs, lengths and duplicates', () => {
+    const cursor = { jobs: [entry('a', 17), entry('u', 0)] };
     expect(decodeSerializedWaitCursor(serializeWaitCursor(cursor))).toEqual({ kind: 'decoded', cursor });
     expect(waitCursorForJobs(cursor, ['u'])).toEqual({ jobs: [cursor.jobs[1]] });
     expect(waitCursorForJobs(cursor, ['a'])).toEqual({ jobs: [cursor.jobs[0]] });
     for (const bad of [
-      { jobs: [{ ...cursor.jobs[0], flags: 8 }] },
-      { jobs: [{ ...cursor.jobs[1], flags: 1 }] },
-      { jobs: [{ ...cursor.jobs[0], epoch: 1 }] },
       { jobs: [cursor.jobs[0], cursor.jobs[0]] },
-      { jobs: [{ ...cursor.jobs[0], flags: 2 }] },
       { jobs: [{ ...cursor.jobs[0], seq: Number.MAX_SAFE_INTEGER + 1 }] },
-      { jobs: [{ ...cursor.jobs[0], seq: 1, lineOffset: 0, flags: 4 }] },
+      { jobs: [{ ...cursor.jobs[0], seq: -1 }] },
+      { jobs: [{ ...cursor.jobs[0], hash: 'not-a-hash' }] },
     ])
       expect(decodeWaitCursor(bad).kind).toBe('rejected');
     expect(decodeSerializedWaitCursor(serializeWaitCursor(cursor).slice(0, -1)).kind).toBe('rejected');
   });
 
-  it('round trips an interrupted tail scan and rejects one without unpositioning, an epoch or a boundary', () => {
-    const scan = { hash: waitJobHash('s'), epoch: waitEpochToken('e'), seq: 9454, lineOffset: 5, flags: 12 };
-    const acknowledged = { ...scan, hash: waitJobHash('t'), flags: 13 };
-    const cursor = { jobs: [scan, acknowledged] };
-    expect(decodeSerializedWaitCursor(serializeWaitCursor(cursor))).toEqual({ kind: 'decoded', cursor });
-    for (const bad of [
-      { ...scan, flags: 8 },
-      { ...scan, epoch: null },
-      { ...scan, seq: 0 },
-      { ...scan, flags: 16 },
-    ])
-      expect(decodeWaitCursor({ jobs: [bad] }).kind).toBe('rejected');
-  });
-
-  it('uses the exact layout bound with no version header', () => {
+  it('encodes 128 jobs at maximum frontiers in 16 bytes each, under the authenticated header budget', () => {
     const cursor = {
-      jobs: Array.from({ length: 128 }, (_, i) => ({
-        hash: waitJobHash('j' + i),
-        epoch: waitEpochToken('e' + i),
-        seq: Number.MAX_SAFE_INTEGER,
-        lineOffset: 0xffffffff,
-        flags: 3,
-      })),
+      jobs: Array.from({ length: 128 }, (_, i) => ({ hash: waitJobHash(`job-${i}`), seq: Number.MAX_SAFE_INTEGER })),
     };
-    expect(serializeWaitCursor(cursor)).toHaveLength(6488);
-    const shared = { jobs: cursor.jobs.map((job) => ({ ...job, epoch: cursor.jobs[0].epoch })) };
-    expect(Buffer.from(serializeWaitCursor(shared), 'base64url')).toHaveLength(2834);
-    const bytes = Buffer.from(serializeWaitCursor(cursor), 'base64url');
-    bytes[1] = 0;
-    expect(decodeSerializedWaitCursor(bytes.toString('base64url')).kind).toBe('rejected');
+    const encoded = serializeWaitCursor(cursor);
+    expect(Buffer.from(encoded, 'base64url')).toHaveLength(1 + 128 * 16);
+    expect(decodeSerializedWaitCursor(encoded)).toEqual({ kind: 'decoded', cursor });
+    const headers = `POST /jobs/wait HTTP/1.1\r\nHost: 127.0.0.1:49152\r\nAuthorization: Bearer ${'a'.repeat(256)}\r\nContent-Type: application/json\r\nLast-Event-ID: ${encoded}\r\nContent-Length: 4096\r\nConnection: keep-alive\r\n\r\n`;
+    expect(Buffer.byteLength(headers)).toBeLessThanOrEqual(12288);
   });
 
   it('uses lineage identity for epoch tokens across address spellings', () => {

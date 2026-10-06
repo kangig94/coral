@@ -35,7 +35,6 @@ import { renderHandoffNotice, renderHandoffPublicationIncidents } from './handof
 import { mapWaitSubscriptionError, SOFT_CURSOR_REFUSALS } from './wait-stream-error.js';
 import {
   formatWaitProgress,
-  formatWaitContinuation,
   formatWaitQueued,
   formatWaitTerminal,
   formatWaitCarrierInterrupted,
@@ -43,7 +42,6 @@ import {
   renderWaitLine,
   type WaitRenderContext,
 } from './format/wait.js';
-import { formatResultAvailability } from './format/result-availability.js';
 
 /**
  * A bounded wait has to finish inside the Bash tool's hard ceiling, which `clients/hooks/bash-rewrite.mjs`
@@ -203,9 +201,6 @@ function emitWaitEvent(
     case 'disposition':
       line = `Job ${event.jobId}: ${event.disposition}${event.message ? ` — ${event.message}` : ''}`;
       break;
-    case 'artifact':
-      line = `Job ${event.jobId}: ${formatResultAvailability(event.availability, true)}\n${formatWaitContinuation(event.remainingJobIds, cursor)}`;
-      break;
     case 'progress':
       line = formatWaitProgress(event, jobLabels?.get(event.jobId)?.stream);
       break;
@@ -233,9 +228,7 @@ function emitWaitEvent(
   }
 
   const trailingNewline =
-    renderOptions.isTTY && ['terminal', 'waiting', 'notice', 'disposition', 'artifact'].includes(event.type)
-      ? '\n'
-      : '';
+    renderOptions.isTTY && ['terminal', 'waiting', 'notice', 'disposition'].includes(event.type) ? '\n' : '';
   return new Promise<void>((resolve, reject) => {
     process.stdout.write(renderWaitLine(line, renderOptions) + trailingNewline, (error) => {
       if (error) reject(error);
@@ -441,7 +434,7 @@ async function finishDelegatedFollow(
     renderHandoffNotice(outcome);
     return { kind: 'exit', code: 0 };
   }
-  // A delegated follow already ran to its own end; its 75 may be a provider terminal's code, so it is never retried.
+  // A delegated wait already ran to its own end; its 75 may be a provider terminal's code, so it is never retried.
   if (outcome.kind === 'handoff-exit') return { kind: 'exit', code: normalizeExitCode(outcome.exitCode) };
   if (outcome.signal === 'SIGINT' && state.sigintCount === 1) return { kind: 'retry' };
   options.emitError(
@@ -467,9 +460,9 @@ type FollowContext = {
 };
 
 function eventRemainingJobs(event: WaitStreamEvent, current: readonly string[]): string[] {
-  if (event.type === 'terminal' || event.type === 'artifact') return [...event.remainingJobIds];
+  if (event.type === 'terminal') return [...event.remainingJobIds];
   if (event.type === 'waiting') return [...event.waitingJobIds];
-  if (event.type === 'disposition' && event.disposition !== 'discovery-unknown')
+  if (event.type === 'disposition' && event.disposition !== 'unknown')
     return current.filter((id) => id !== event.jobId);
   return [...current];
 }
@@ -485,7 +478,6 @@ function deliveredFollowExitCode(event: WaitStreamEvent, context: FollowContext)
   // Following a launch ends at its terminal with the outcome's code; a pending artifact is reported, not awaited.
   if (event.type === 'terminal')
     return options.reconnectPolicy === 'until-terminal' ? toExitCode(event.result) : event.exitCode;
-  if (event.type === 'artifact') return event.exitCode;
   // An empty set is final under either policy, and a refused member makes it a failure that must not read as success.
   if (event.type === 'waiting')
     return options.reconnectPolicy === 'bounded' || event.waitingJobIds.length === 0 ? event.exitCode : undefined;
@@ -552,10 +544,6 @@ async function deliverFollowEvent(event: WaitStreamEvent, context: FollowContext
 function followEventDecision(event: WaitStreamEvent, context: FollowContext): FollowStep | { kind: 'continue' } {
   const { state } = context;
   if (!isFinalWaitEvent(event)) return { kind: 'continue' };
-  if (event.type === 'artifact') {
-    state.remainingJobIds = event.remainingJobIds;
-    return { kind: 'exit', code: event.exitCode };
-  }
   if (event.type === 'terminal') {
     const exitCode = deliveredFollowExitCode(event, context) ?? 75;
     if (exitCode !== 0) return { kind: 'exit', code: exitCode };
@@ -704,16 +692,15 @@ function installFollowSignals(context: FollowContext, allJobIds: string[]): () =
   const { options, state, controller, abortState } = context;
   const onInvocationEnd = () => controller.abort();
   const onSigint = () => {
-    // A follower that cannot abort is a delegated one: its delegating parent prompts, aborts and ends it.
-    if (state.remainingJobIds.length === 0 || options.abortJobs === undefined) return;
+    const abortJobs = options.abortJobs;
+    if (state.remainingJobIds.length === 0 || abortJobs === undefined) return;
     state.sigintCount += 1;
     if (state.sigintCount === 1) {
       process.stderr.write('\nPress Ctrl+C again to abort the job.\n');
       return;
     }
-    if (abortState.promise !== null || options.abortJobs === undefined) return;
+    if (abortState.promise !== null) return;
     controller.abort();
-    const abortJobs = options.abortJobs;
     abortState.promise = Promise.resolve()
       .then(() => abortJobs(allJobIds))
       .then(classifyAbortResult, (error): AbortAttempt => ({ kind: 'request-failed', error }));
@@ -849,12 +836,11 @@ export async function launchAndFollow(options: FollowOptions): Promise<number> {
       let backend;
       try {
         backend = await ensure('jobs.wait', options.pluginRoot);
-        // The delegated build follows with this policy itself: it drains and reconnects until the terminal.
         const result = await runHandoff(
           {
-            kind: 'follow-job',
+            kind: 'wait-jobs',
             jobId: options.launchResult.jobId,
-            ...(cursor ? { serializedCursor: serializeWaitCursor(cursor) } : {}),
+            serializedCursor: serializeWaitCursor(cursor ?? { jobs: [] }),
           },
           {
             pluginRoot: options.pluginRoot,

@@ -1,7 +1,7 @@
 import { readRetentionCursor } from '../../store/retention-meta.js';
 import { errorMessage } from '../../infra/error-format.js';
 import type { TimerHandle } from '../../infra/port-types.js';
-import { pruneJobExports, readExportJobState } from '../../jobs/export-retention.js';
+import { pruneJobExports, readExportJobState, resolveJobRetentionMs } from '../../jobs/export-retention.js';
 import { pruneJobProgress } from '../../jobs/progress-retention.js';
 import type { JobLocationIndex } from '../../jobs/location-index.js';
 import type { JobStore } from '../../jobs/store.js';
@@ -16,13 +16,13 @@ import {
   type RetentionRunStatus,
 } from '../../store/retention-outcome.js';
 import { vacuumRetainedJournal } from '../../store/retention-vacuum.js';
-import { trustedJobRetentionCutoff } from '../../jobs/retention-clock.js';
 import { pruneCustodyLedger } from '../../store/custody-ledger.js';
 import { reconcileFinishedCustody } from '../services/recovery/custody-reconciliation.js';
 
 const DAILY_MS = 24 * 60 * 60 * 1000;
 const BACKLOG_DELAY_MS = 5 * 60 * 1000;
 const OWNER_BUDGET_MS = 5000;
+const CLOCK_JUMP_TOLERANCE_MS = 1000;
 
 export function createStorageRetentionScheduler(input: {
   runtime: Runtime;
@@ -40,11 +40,10 @@ export function createStorageRetentionScheduler(input: {
   let running = Promise.resolve();
   const outstandingOwners = new Map<string, Promise<void>>();
   let started = false;
+  let previous: { wall: number; monotonic: bigint } | null = null;
   let hintOwner: ReturnType<JobStore['getResultExportOwner']> | undefined;
   let repairHinted = false;
   let lastRepairRun = -1000n;
-  /** An untrusted clock settles over five minutes, so no hint may bring a run before that window has passed. */
-  let clockHeldUntil = 0n;
   const owners = new Map<string, { dailyDue: bigint; fastDue: bigint | null; outcomes: RetentionOutcome[] }>(
     [
       'exports',
@@ -67,6 +66,7 @@ export function createStorageRetentionScheduler(input: {
     }
     return Math.max(0, Number(due - now));
   };
+  const retentionMs = resolveJobRetentionMs(runtime.env.get('CORAL_JOBS_RETENTION_DAYS'));
   const statusAtStart = (): RetentionRunStatus & {
     deletedByOwner: NonNullable<RetentionRunStatus['deletedByOwner']>;
   } => ({
@@ -146,17 +146,19 @@ export function createStorageRetentionScheduler(input: {
         partial = true;
         record({ kind: 'kept', subject: 'storage-retention', reason: 'selected-store-unavailable' });
       } else {
-        const cutoff = trustedJobRetentionCutoff(runtime);
-        if (cutoff === null) {
+        const now = { wall: status.startedAt, monotonic: runtime.time.monotonicNow() };
+        const jump = previous === null ? 0 : now.wall - previous.wall - Number(now.monotonic - previous.monotonic);
+        previous = now;
+        if (jump > CLOCK_JUMP_TOLERANCE_MS) {
           partial = true;
           record({ kind: 'kept', subject: 'storage-retention', reason: 'wall-clock-age-unknown' });
-          clockHeldUntil = runtime.time.monotonicNow() + BigInt(BACKLOG_DELAY_MS);
         } else {
           const db = progressStore.getDb();
           const writer = joinSuccessionWriterGeneration(runtime, {
             storeRoot: epoch.canonicalStoreRoot ?? epoch.storeRoot,
             epoch: epoch.epoch,
           });
+          const cutoff = now.wall - retentionMs;
           const step = async (
             subject: string,
             operation: (
@@ -280,7 +282,6 @@ export function createStorageRetentionScheduler(input: {
               db,
               runtime,
               cutoff,
-              eligibility: (id) => input.jobLocations.exportDeletionEligibility(id),
               afterId: readCursor('exports', mutate),
               budget,
               jobState: (id) => readExportJobState(db, progressStore, id),
@@ -409,9 +410,7 @@ export function createStorageRetentionScheduler(input: {
           const owner = owners.get('result-repair');
           if (!owner) return;
           const now = runtime.time.monotonicNow();
-          const hintedDue = [now, lastRepairRun + 1000n, clockHeldUntil].reduce((latest, due) =>
-            due > latest ? due : latest,
-          );
+          const hintedDue = now > lastRepairRun + 1000n ? now : lastRepairRun + 1000n;
           owner.fastDue = owner.fastDue === null || hintedDue < owner.fastDue ? hintedDue : owner.fastDue;
           repairHinted = true;
           if (timer !== null) {
@@ -423,7 +422,7 @@ export function createStorageRetentionScheduler(input: {
       }
       if (started) return;
       started = true;
-      trustedJobRetentionCutoff(runtime);
+      previous = { wall: runtime.time.now(), monotonic: runtime.time.monotonicNow() };
       schedule(0);
     },
     stop: async () => {

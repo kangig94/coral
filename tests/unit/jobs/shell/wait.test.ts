@@ -9,15 +9,13 @@ import type { JobEvent, JobStatus, JobTerminalEvent } from '#src/jobs/records.js
 import { WaitCoordinator } from '#src/jobs/shell/wait.js';
 import type { WaitCoordinatorDeps } from '#src/jobs/shell/wait.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
-import { admitted } from '#tests/helpers/wait-session.js';
+import { admitted, savedCursor } from '#tests/helpers/wait-session.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { flushMicrotasks } from '#tools/simulation/core/virtual-time.js';
 import { JobAddressing } from '#src/jobs/addressing.js';
 import { JobLocationIndex } from '#src/jobs/location-index.js';
-import { waitEpochToken, waitJobHash } from '#src/jobs/wait/cursor.js';
 import type { WaitStreamRequest } from '#src/jobs/wait/contract.js';
-import { createTerminalExportFixture } from '#tests/helpers/terminal-export.js';
 
 function fixture() {
   const runtime = new SimulationRuntime();
@@ -44,10 +42,7 @@ function fixture() {
     return handle;
   });
   const deps: WaitCoordinatorDeps = {
-    visitProgress: progressVisitFromEvents(
-      () => journal,
-      () => journal.at(-1)?.seq ?? 0,
-    ),
+    visitProgress: progressVisitFromEvents(() => journal),
     time: runtime.time,
     eventBus,
     sessionManager: { get: () => ({ activeJobId, state: 'pending', providerContinuity: null }) } as never,
@@ -92,7 +87,7 @@ function fixture() {
     () => false,
     () => 'pending',
     undefined,
-    () => ({ kind: 'failed', cause: 'terminal-unusable', retryScheduled: false }),
+    () => ({ kind: 'failed', reason: 'the retained terminal does not match its source journal' }),
   );
   return {
     wait,
@@ -154,14 +149,12 @@ describe('WaitCoordinator', () => {
       () => false,
       () => 'pending',
       undefined,
-      () => ({ kind: 'failed', cause: 'terminal-unusable', retryScheduled: false }),
+      () => ({ kind: 'failed', reason: 'the retained terminal does not match its source journal' }),
     );
     const stream = addressing.waitStream({
       jobIds: ['job-1'],
       timeoutSeconds: 1,
-      cursor: {
-        jobs: [{ hash: waitJobHash('job-1'), epoch: waitEpochToken('epoch'), seq: 501, lineOffset: 0, flags: 0 }],
-      },
+      cursor: savedCursor({ 'job-1': 501 }),
     });
     const next = nextDelivered(stream);
     await flushMicrotasks(40);
@@ -236,7 +229,6 @@ describe('WaitCoordinator', () => {
       const frozen = committed;
       const source = progressVisitFromEvents(
         (id) => admitted(id, frozen ? [[id === 'a' ? 1 : 2, `${id} committed`]] : [], false).detail.events,
-        () => (frozen ? 2 : 0),
       );
       const result = source('epoch', visit);
       committed = true;
@@ -260,7 +252,7 @@ describe('WaitCoordinator', () => {
   });
   it('delivers an internal terminal without claiming an unavailable artifact', async () => {
     const f = fixture();
-    f.deps.observeResultAvailability = () => ({ kind: 'repair-pending', ageUncertain: false });
+    f.deps.observeResultAvailability = () => ({ kind: 'pending' });
     f.journal.push(f.terminal());
     const event = (await nextDelivered(f.wait.waitForOutcomes({ jobIds: ['job-1'] }))).value;
     expect(event).toMatchObject({ type: 'terminal' });
@@ -285,7 +277,7 @@ describe('WaitCoordinator', () => {
 
   it('collects an internal outcome while the result artifact is pending', async () => {
     const f = fixture();
-    f.deps.observeResultAvailability = () => ({ kind: 'repair-pending', ageUncertain: false });
+    f.deps.observeResultAvailability = () => ({ kind: 'pending' });
     f.journal.push(f.terminal());
     await expect(f.wait.waitStreamOnce('job-1')).resolves.toMatchObject({ content: 'done' });
   });
@@ -416,10 +408,7 @@ describe('WaitCoordinator', () => {
       };
       const journal: JobEvent[] = [terminal];
       const deps: WaitCoordinatorDeps = {
-        visitProgress: progressVisitFromEvents(
-          () => journal,
-          () => 1,
-        ),
+        visitProgress: progressVisitFromEvents(() => journal),
         time: runtime.time,
         eventBus: new TypedEventBus(),
         sessionManager: {
@@ -437,7 +426,7 @@ describe('WaitCoordinator', () => {
         aggregateWorkflowUsage: () => undefined,
         getCurrentJournalSeq: () => 1,
         resultJobsRoot: '/results',
-        observeResultAvailability: () => ({ kind: 'failed', cause: 'cutoff-untrusted', retryScheduled: true }),
+        observeResultAvailability: () => ({ kind: 'pending' }),
         subscribeJobEvents: () => ({ async *[Symbol.asyncIterator]() {} }),
       };
       const wait = new WaitCoordinator(deps);
@@ -516,7 +505,7 @@ it('observes availability once per terminal poll and emits one repair hint', () 
   const f = fixture();
   f.journal.push(f.terminal());
   f.terminalize();
-  const observe = vi.fn(() => ({ kind: 'repair-pending' as const, ageUncertain: false }));
+  const observe = vi.fn(() => ({ kind: 'pending' as const }));
   const hint = vi.fn();
   f.deps.observeResultAvailability = observe;
   f.deps.hintResultRepair = hint;
@@ -563,8 +552,7 @@ it.each([false, true])('internal waits answer missing only after explicit absenc
   f.deps.loadJobWaitDetail = () => ({ status: null, runtime: null, exit: null });
   f.deps.observeJobAbsence = () => explicitAbsence;
   const admission = f.wait.readWaitAdmission('transferred', 'new-epoch', {});
-  expect(admission.disposition).toBe(explicitAbsence ? 'missing' : 'admitted');
-  if (!explicitAbsence) expect(admission.sourceRead).toBe('transient-unknown');
+  expect(admission.disposition).toBe(explicitAbsence ? 'missing' : 'unknown');
 });
 
 it('does not keep active history in a coordinator-lifetime cache when no session is supplied', () => {
@@ -596,11 +584,11 @@ it('isolates an unreadable active projection from its healthy sibling', () => {
     return { status: admitted('job-1', [], false).detail.status, runtime: null, exit: null };
   };
   const admissions = f.wait.readWaitAdmissions(['damaged', 'job-1'], 'epoch', {});
-  expect(admissions[0]).toMatchObject({ disposition: 'admitted', sourceRead: 'transient-unknown' });
+  expect(admissions[0]).toMatchObject({ disposition: 'unknown' });
   expect(admissions[1]).toMatchObject({ jobId: 'job-1', disposition: 'admitted' });
 });
 
-it("reuses a terminal body across requests while unrelated journal writes advance, until the job's own seq moves", () => {
+it('reuses a terminal body within one request while unrelated journal writes advance, and reads it again for the next', () => {
   const f = fixture();
   f.journal.push(f.terminal());
   f.terminalize();
@@ -616,64 +604,8 @@ it("reuses a terminal body across requests while unrelated journal writes advanc
   }
   expect(projection).toHaveBeenCalledTimes(1);
   expect(availability).toHaveBeenCalledTimes(31);
-  for (let request = 0; request < 5; request++)
-    expect(f.wait.readWaitAdmission('job-1', 'epoch', {}).detail?.exit).toEqual(first.detail?.exit);
-  expect(projection).toHaveBeenCalledTimes(1);
-  expect(availability).toHaveBeenCalledTimes(36);
-  f.wait.readWaitAdmission('job-1', 'other-epoch', {});
+  expect(f.wait.readWaitAdmission('job-1', 'epoch', {}).detail?.exit).toEqual(first.detail?.exit);
   expect(projection).toHaveBeenCalledTimes(2);
-  f.journal.push({ ...f.terminal(), seq: 2 });
-  f.wait.readWaitAdmission('job-1', 'epoch', {});
-  expect(projection).toHaveBeenCalledTimes(3);
-});
-
-it('parses the same amount for a fresh snapshot of a 5 KB or a 20 KB terminal once its projection is decoded', () => {
-  const measured = [5_000, 20_000].map((size) => {
-    const f = createTerminalExportFixture();
-    try {
-      f.complete({ terminal: { content: 'R'.repeat(size), outcome: { kind: 'completed' }, durationMs: 1 } });
-      f.store.publishTerminalResult(f.jobId);
-      const owner = f.store.getResultExportOwner();
-      const wait = new WaitCoordinator({
-        time: f.runtime.time,
-        sessionManager: { get: () => null },
-        loadJobWaitDetail: (id: string) => f.store.loadJobWaitDetail(id),
-        readJobLastSeq: (id: string) => f.store.readJobLastSeq(id),
-        observeResultAvailability: (id: string) => owner.observeResultAvailability(id),
-        aggregateWorkflowUsage: () => undefined,
-      } as never);
-      const addressing = new JobAddressing(
-        f.index.readOnlyView(),
-        {
-          epochKey: () => f.epochKey,
-          detail: () => null,
-          readWaitAdmissions: (ids, epoch, session) => wait.readWaitAdmissions(ids, epoch, session),
-          visitProgress: (_epoch, read) => f.store.visitProgress(read),
-          abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
-        },
-        () => false,
-        () => 'pending',
-        undefined,
-        (id) => owner.observeResultAvailability(id),
-      );
-      addressing.snapshot({ jobIds: [f.jobId] });
-      const parse = vi.spyOn(JSON, 'parse');
-      try {
-        const responses = Array.from({ length: 3 }, () => addressing.snapshot({ jobIds: [f.jobId] }));
-        expect(responses.every((response) => response.jobs[0].terminal?.contentOmitted === true)).toBe(true);
-        return {
-          parsed: parse.mock.calls.map(([input]) => (typeof input === 'string' ? input.length : 0)),
-          responseBytes: responses.map((response) => Buffer.byteLength(JSON.stringify(response))),
-        };
-      } finally {
-        parse.mockRestore();
-      }
-    } finally {
-      f.close();
-    }
-  });
-  expect(measured[0]).toEqual(measured[1]);
-  expect(Math.max(...measured[0].parsed)).toBeLessThan(5_000);
 });
 
 it('settles an active-journal decode failure as unreadable and propagates a code defect', () => {
@@ -684,7 +616,7 @@ it('settles an active-journal decode failure as unreadable and propagates a code
     return { status: admitted(jobId, [], false).detail.status, runtime: null, exit: null };
   };
   expect(f.wait.readWaitAdmissions(['undecodable', 'job-1'], 'epoch', {})).toMatchObject([
-    { jobId: 'undecodable', disposition: 'outcome-unreadable', sourceRead: 'settled-unreadable' },
+    { jobId: 'undecodable', disposition: 'unreadable' },
     { jobId: 'job-1', disposition: 'admitted' },
   ]);
   expect(() => f.wait.readWaitAdmissions(['defect'], 'epoch', {})).toThrow(TypeError);

@@ -28,7 +28,7 @@ import type {
 } from '../../recovery/unreadable-provider-operation.js';
 import type { JobScopeRelation, ScopeCheckResult } from '../../jobs/scope.js';
 import type { JobsListFilters } from '../../jobs/read-queries.js';
-import type { JobDetailLookup, WaitCursorError } from '../../jobs/contracts/addressing.js';
+import type { JobDetailLookup } from '../../jobs/contracts/addressing.js';
 
 type SessionStartInput = Pick<
   JobLaunchRequest,
@@ -62,7 +62,6 @@ interface JobsRequestPort {
   snapshot(req: WaitSnapshotRequest): WaitSnapshot;
   scopeCheck(jobIds: string[], callerRoot: CanonicalWorkDir, relation: JobScopeRelation): ScopeCheckResult;
   abort(jobIds: string[]): AbortDecision;
-  validateWait(req: CanonicalWaitStreamRequest): WaitCursorError | null;
   waitStream(req: CanonicalWaitStreamRequest): AsyncGenerator<WaitStreamEvent>;
 
   waitHandoverSignal(): AbortSignal;

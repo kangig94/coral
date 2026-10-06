@@ -49,7 +49,7 @@ import {
 import { DEFAULT_STALE_ABORT_TIMEOUT_MS, recoverStaleAtom, STALE_RESUME_PROMPT } from './stale-recovery.js';
 
 import { waitForAtoms } from './wait.js';
-import { waitEpochToken, waitJobHash } from '../jobs/wait/cursor.js';
+import { waitJobHash } from '../jobs/wait/cursor.js';
 import type { WaitCursorEntry } from '../jobs/wait/contract.js';
 import type { WorkflowFinalizationIntent } from './finalization.js';
 import {
@@ -907,16 +907,11 @@ function buildWaitRecoveryPlan(deps: ResumeWorkflowDeps, snapshot: RecoverySnaps
       continue;
     }
 
-    // A child whose location is unknown stays unpositioned, so the recovered wait delivers it from its origin.
-    const epochKey = deps.jobEpochKey?.(slot.jobId) ?? null;
-    if (epochKey !== null)
-      entries.push({
-        hash: waitJobHash(slot.jobId),
-        epoch: waitEpochToken(epochKey),
-        seq: projectionsByJob.get(slot.jobId)?.last_seq ?? 0,
-        lineOffset: 0,
-        flags: 0,
-      });
+    // A child whose location is unknown stays unpositioned, so the recovered wait delivers it from its origin. A
+    // terminal is its job's last event, so a seq one below it leaves that terminal still to be delivered.
+    const lastSeq = projectionsByJob.get(slot.jobId)?.last_seq ?? 0;
+    if ((deps.jobEpochKey?.(slot.jobId) ?? null) !== null)
+      entries.push({ hash: waitJobHash(slot.jobId), seq: detail.exit ? Math.max(0, lastSeq - 1) : lastSeq });
   }
 
   const failure = firstTerminalFailure(snapshot.compiledSlots, drain, snapshot.slotDetailsByJob);

@@ -26,7 +26,7 @@ function program() {
 }
 
 it('commits only a complete validated snapshot, preserves --now, and cannot acknowledge a malformed response', async () => {
-  const a = admitted('a', [[1, Array.from({ length: 501 }, (_, i) => `${i}`).join('\n')]]);
+  const a = admitted('a', [[1, Array.from({ length: 501 }, (_, i) => `${i}`).join('\n')]], false);
   const session = new WaitSession(['a'], prefixCursor([a]));
   session.reconcile([a]);
   const snapshot = selectWaitSnapshot(session, 501);

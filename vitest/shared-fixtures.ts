@@ -68,8 +68,8 @@ function transformPhase(source: string, path: string, variant: string): string {
   if (variant === 'include-missing' && path.endsWith('/jobs/wait/session.ts'))
     source = replaceLiteral(
       source,
-      "job.disposition === 'discovery-unknown' ||",
-      "job.disposition === 'missing' || job.disposition === 'discovery-unknown' ||",
+      "job.disposition === 'unknown' ||",
+      "job.disposition === 'missing' || job.disposition === 'unknown' ||",
     );
   if (variant === 'property-decoder' && path.endsWith('/jobs/wait/cursor.ts'))
     source = replaceLiteral(

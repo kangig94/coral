@@ -148,7 +148,6 @@ export function createCoordinatorRpcPorts({
       snapshot: (request) => jobAddressing.snapshot(request),
       scopeCheck: (jobIds, callerRoot, relation) => jobAddressing.scopeCheck(jobIds, callerRoot, relation),
       abort: (jobIds) => jobAddressing.abort(jobIds),
-      validateWait: (request) => jobAddressing.validateWait(request),
       waitStream: (request) => jobAddressing.waitStream(request),
       waitHandoverSignal,
       list: createCoordinatorJobLister(getProgressStore),

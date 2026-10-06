@@ -93,7 +93,6 @@ export function recoverJobLocations(index: JobLocationIndex, epochKey: string, s
           },
           resultPath,
           terminal.seq,
-          db,
         );
         try {
           store.ensureResultArtifact(row.stream_id);

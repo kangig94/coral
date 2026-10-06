@@ -4,7 +4,13 @@ import { dirname, join } from 'node:path';
 import type { StoragePort } from '../infra/port-types.js';
 import { STORE_LOCK_FILE_NAME } from '../store/epoch/index.js';
 import { StoreCodecError, StoreDecodeError } from '../store/body-codec.js';
-import type { SourceReadDisposition } from './wait/session.js';
+
+/** Source reads settle per job.
+ * readable: observed success; transient-unknown: busy/lock contention or a retry-scheduled hold;
+ * settled-unreadable: decode/parse, unsupported fingerprint or an owner-settled hold;
+ * retired: observed source retirement.
+ */
+export type SourceReadDisposition = 'readable' | 'transient-unknown' | 'settled-unreadable' | 'retired';
 
 export class HistoricalDecodeError extends Error {}
 
@@ -27,25 +33,6 @@ export function isCodeDefect(error: unknown): boolean {
     error instanceof ReferenceError ||
     error instanceof AssertionError
   );
-}
-
-/** A source's own identity: appends and checkpoints change its contents, while retirement or replacement changes this. */
-export function sourcePresenceStamp(storage: StoragePort, path: string): string | null {
-  try {
-    return [path, join(dirname(path), '.coral-lineage.v1.json')]
-      .map((file) => {
-        try {
-          const stat = storage.lstatSync(file, { bigint: true });
-          return `${file}:${stat.dev}:${stat.ino}:${stat.birthtimeNs}`;
-        } catch (error) {
-          if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return `${file}:absent`;
-          throw error;
-        }
-      })
-      .join('|');
-  } catch {
-    return null;
-  }
 }
 
 /** Cache only an observed read in its session, and invalidate on journal, guard or identity replacement. */

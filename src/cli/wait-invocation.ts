@@ -49,8 +49,6 @@ export function waitInvocationMode(program: Command, argv: readonly string[]): W
   let mode: WaitInvocationMode | undefined;
   jobsParser.action(() => {
     validateWaitJobsOptions(jobsParser.opts());
-    // A delegated launch follow runs until its terminal, so no wait budget applies to it.
-    if (jobsParser.opts().follow === true) return;
     mode = jobsParser.opts().now === true ? 'snapshot' : 'bounded';
   });
   try {
@@ -280,27 +278,6 @@ export class WaitInvocation implements WaitInvocationHandoff {
   }
 }
 
-type DelegatingParentLink = {
-  readonly channel?: unknown;
-  once(event: 'disconnect', listener: () => void): unknown;
-  off(event: 'disconnect', listener: () => void): unknown;
-  exit(code: number): unknown;
-};
-
-/**
- * A delegated follow has no budget of its own, so it may not outlive the parent that delegated it: the parent's
- * channel closes however that parent ends, a SIGKILL included. The returned release must run once the follow ends,
- * since a listener left on the channel keeps this process alive.
- */
-export function endWithDelegatingParent(link: DelegatingParentLink = process): () => void {
-  if (link.channel === undefined || link.channel === null) return () => {};
-  const end = (): void => {
-    link.exit(75);
-  };
-  link.once('disconnect', end);
-  return () => link.off('disconnect', end);
-}
-
 export function getWaitInvocation(): WaitInvocation | undefined {
   return currentInvocation;
 }
@@ -315,10 +292,7 @@ export function validateWaitJobsOptions(opts: {
   cursor?: string;
   embed?: boolean;
   verbose?: boolean;
-  follow?: boolean;
 }): number | undefined {
-  if (opts.follow && opts.now)
-    throw new UsageError('--follow cannot be used with --now. Remove --follow for an immediate snapshot.');
   if (opts.now && (opts.embed || opts.verbose))
     throw new UsageError(
       `--now cannot be used with --embed or --verbose. Remove ${[opts.embed ? '--embed' : '', opts.verbose ? '--verbose' : ''].filter(Boolean).join(' and ')} for an immediate snapshot, or remove --now for a streaming wait. Use coral-cli jobs detail <jobId> --full for full content.`,

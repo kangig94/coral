@@ -1,11 +1,9 @@
-import { progressVisitFromDetails } from '#tests/helpers/wait-progress.js';
 import { loadReleasedBuild } from '#tests/helpers/released-build.js';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { JobAddressing } from '#src/jobs/addressing.js';
 import { JobLocationIndex } from '#src/jobs/location-index.js';
 import type { JobDetailResponse } from '#src/jobs/records.js';
 import { createRealRuntime } from '#src/runtime/real.js';
@@ -208,6 +206,28 @@ describe('job location additive records', () => {
     expect(index.certify(epochKey, 2)).toBeNull();
     expect(index.resultsReleased(epochKey)).toBe(false);
   });
+});
+
+it('reads, certifies and rewrites a terminal record that carries a terminalAge key another build wrote', () => {
+  const { root, index } = fixture();
+  const epochKey = 'lineage-1:1';
+  const jobId = 'job-1';
+  const resultPath = join(root, 'result.md');
+  writeFileSync(resultPath, 'done\n');
+  index.register(jobId, epochKey, {
+    projectRoot: '/workspace/project',
+    workDir: '/workspace/project',
+    jobKind: 'provider',
+  });
+  index.recordTerminal(jobId, terminalDetail(jobId), resultPath, 2);
+  const path = join(root, 'job-locations.v1', 'jobs', `${Buffer.from(jobId).toString('base64url')}.json`);
+  const terminalAge = { kind: 'known', terminalAt: 1, epochKey };
+  writeFileSync(path, `${JSON.stringify({ ...JSON.parse(readFileSync(path, 'utf-8')), terminalAge })}\n`);
+  expect(index.read(jobId)).toMatchObject({ disposition: 'terminal', detail: { kind: 'recorded' } });
+  expect(index.certify(epochKey, 2)).not.toBeNull();
+  expect(index.resultsReleased(epochKey)).toBe(true);
+  index.recordTerminal(jobId, { ...terminalDetail(jobId), readiness: 'error' }, resultPath, 2);
+  expect(JSON.parse(readFileSync(path, 'utf-8')).terminalAge).toEqual(terminalAge);
 });
 
 it.each(['revision', 'terminalHighWaterSeq'])('rejects an unsafe job-location certificate %s', (field) => {
@@ -534,66 +554,6 @@ it('retains incremental nonterminal progress for the real rolled-back v0.10.17 r
   });
 });
 
-import { createTerminalExportFixture as cacheFixture } from '#tests/helpers/terminal-export.js';
-const cacheFixtures: ReturnType<typeof cacheFixture>[] = [];
-afterEach(() => {
-  for (const f of cacheFixtures.splice(0)) f.close();
-});
-describe('bounded location cache', () => {
-  it('a full maintenance-style scan retains at most 128 terminal records', () => {
-    const f = cacheFixture();
-    cacheFixtures.push(f);
-    f.complete({ terminal: { content: 'x'.repeat(100_000), outcome: { kind: 'completed' }, durationMs: 1 } });
-    const template = readFileSync(f.locationPath, 'utf8');
-    const dir = dirname(f.locationPath);
-    const N = 300;
-    for (let i = 0; i < N; i++) {
-      const id = `bulk-${i}`;
-      writeFileSync(
-        join(dir, `${Buffer.from(id).toString('base64url')}.json`),
-        template.replaceAll('"job-1"', JSON.stringify(id)),
-      );
-    }
-    const index = new JobLocationIndex(f.runtime, f.root);
-    global.gc?.();
-    const before = process.memoryUsage().heapUsed;
-    let terminal = 0;
-    for (const id of index.jobIds()) if (index.read(id)?.disposition === 'terminal') terminal++;
-    global.gc?.();
-    const after = process.memoryUsage().heapUsed;
-    const cached = (index as unknown as { storedLocations: Map<string, unknown> }).storedLocations.size;
-    console.log(
-      JSON.stringify({
-        records: N + 1,
-        terminal,
-        cached,
-        heapDeltaMB: Math.round((after - before) / 1e6),
-        recordKB: Math.round(template.length / 1000),
-      }),
-    );
-    expect(cached).toBeLessThanOrEqual(128);
-  });
-});
-
-it('reuses a read observation when the entire stored stat stamp is unchanged', () => {
-  const { root, index } = fixture();
-  const jobId = 'coarse-stamp';
-  index.register(jobId, 'lineage-1:1', {
-    projectRoot: '/workspace/first',
-    workDir: '/workspace/first',
-    jobKind: 'provider',
-  });
-  const path = join(root, 'job-locations.v1', 'jobs', `${Buffer.from(jobId).toString('base64url')}.json`);
-  const stamp = runtime.storage.lstatSync(path, { bigint: true });
-  const lstat = runtime.storage.lstatSync.bind(runtime.storage);
-  vi.spyOn(runtime.storage, 'lstatSync').mockImplementation((file, options) =>
-    file === path ? stamp : lstat(file, options),
-  );
-  expect(index.read(jobId)?.subject.projectRoot).toBe('/workspace/first');
-  writeFileSync(path, readFileSync(path, 'utf8').replaceAll('/workspace/first', '/workspace/other'));
-  expect(index.read(jobId)?.subject.projectRoot).toBe('/workspace/first');
-});
-
 it('imports terminal readability only from its owner', async () => {
   expect(await import('#src/jobs/location-index.js')).not.toHaveProperty('hasReadableTerminalDetail');
 });
@@ -619,85 +579,6 @@ it('resolves the hold and revision through the identity shared by lineage encodi
   expect(restarted.locationsFor(alias).map((job) => job.jobId)).toEqual(['job']);
   restarted.clearUnknownLocations(alias);
   expect(index.unknownLocationHold(full)).toBeNull();
-});
-
-it('reuses validated retained copies for a maximum snapshot and admission set until the stamp changes', () => {
-  const { root, index } = fixture();
-  const detail = terminalDetail('retained-0');
-  const directory = join(root, 'job-locations.v1', 'jobs');
-  runtime.storage.mkdirSync(directory, { recursive: true });
-  const ids = Array.from({ length: 128 }, (_, i) => `retained-${i}`);
-  for (const jobId of ids) {
-    const value = JSON.parse(JSON.stringify(detail).replaceAll('retained-0', jobId));
-    writeFileSync(
-      join(directory, `${Buffer.from(jobId).toString('base64url')}.json`),
-      JSON.stringify({
-        version: 'v1',
-        jobId,
-        epochKey: 'retired',
-        terminalSeq: 2,
-        disposition: 'terminal',
-        subject: { projectRoot: '/workspace/project', workDir: '/workspace/project', jobKind: 'provider' },
-        detail: value,
-      }),
-    );
-    expect(index.read(jobId)?.detail.kind).toBe('recorded');
-  }
-  const addressing = new JobAddressing(
-    index.readOnlyView(),
-    {
-      visitProgress: progressVisitFromDetails(() => null),
-      epochKey: () => 'active',
-      detail: () => null,
-      abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
-    },
-    () => false,
-    () => 'decided',
-    () => ({ kind: 'unreadable', disposition: 'retired' }),
-    () => ({ kind: 'retained-away', retentionDays: 14 }),
-  );
-  const read = vi.spyOn(runtime.storage, 'readFileSync');
-  const parse = vi.spyOn(JSON, 'parse');
-  const location = index.read(ids[0])!;
-  if (location.detail.kind !== 'recorded') throw new Error('Expected retained detail');
-  const exit = location.detail.value.exit!;
-  const text = exit.content;
-  Object.defineProperty(exit, 'content', { configurable: true, get: () => text });
-  const content = vi.spyOn(exit, 'content', 'get');
-  // An accessor counts full-copy validation independently of file reads.
-  try {
-    for (let request = 0; request < 2; request++) {
-      expect(addressing.snapshot({ jobIds: ids, projectRoot: '/workspace/project' }).jobs).toHaveLength(128);
-      expect(
-        addressing
-          .admitWait({ jobIds: ids, projectRoot: '/workspace/project' })
-          .every((job) => job.disposition === 'admitted'),
-      ).toBe(true);
-    }
-    expect(read.mock.calls.filter(([file]) => String(file).startsWith(directory))).toHaveLength(0);
-    expect(parse).not.toHaveBeenCalled();
-    expect(content).toHaveBeenCalledTimes(2);
-  } finally {
-    content.mockRestore();
-  }
-  const path = join(directory, `${Buffer.from(ids[0]).toString('base64url')}.json`);
-  const stored = JSON.parse(readFileSync(path, 'utf8'));
-  stored.detail.exit.content = 'changed and contradictory';
-  writeFileSync(path, JSON.stringify(stored));
-  expect(index.read(ids[0])?.detail.kind).toBe('unreadable');
-});
-
-it('maintenance inventory reads cannot evict the wait location cache', () => {
-  const f = fixture();
-  const view = f.index.readOnlyView();
-  f.index.register('waited', 'epoch', { projectRoot: f.root, workDir: f.root, jobKind: 'provider' });
-  const waited = view.read('waited');
-  for (let index = 0; index < 140; index++)
-    f.index.register(`maintenance-${index}`, 'epoch', { projectRoot: f.root, workDir: f.root, jobKind: 'provider' });
-  for (let index = 0; index < 140; index++) f.index.read(`maintenance-${index}`);
-  const read = vi.spyOn(runtime.storage, 'readFileSync');
-  expect(view.read('waited')).toBe(waited);
-  expect(read).not.toHaveBeenCalled();
 });
 
 it('finds a released alias directory created after an empty epoch lookup', () => {

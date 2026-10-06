@@ -43,7 +43,7 @@ it('cursorless bounded wait: progress appended between polls beyond the tail win
   const readJobEvents: (id: string, after?: number) => JobEvent[] = (_id, after = 0) =>
     journal.filter((event) => event.seq > after);
   const deps: WaitCoordinatorDeps = {
-    visitProgress: progressVisitFromEvents(readJobEvents, () => seq),
+    visitProgress: progressVisitFromEvents(readJobEvents),
     time: runtime.time,
     eventBus: new TypedEventBus(),
     sessionManager: { get: () => null } as never,

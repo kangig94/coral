@@ -18,7 +18,6 @@ const KNOWN_WAIT_STREAM_EVENT_TYPES = new Set<string>([
   'waiting',
   'notice',
   'disposition',
-  'artifact',
   'cursor',
 ]);
 const waitCursorSchema = z.custom<WaitCursor>((value) => decodeWaitCursor(value).kind === 'decoded');
@@ -39,7 +38,6 @@ export function advanceWaitRenderCursor(cursor: WaitCursor | undefined, event: W
       // An entry is meaningful only against a complete frontier, which the server sends before any progress.
       return { cursor: cursor ? upsertWaitCursorEntry(cursor, event.entry) : cursor, shouldRender: true };
     case 'terminal':
-    case 'artifact':
     case 'waiting':
       return { cursor: event.cursor, shouldRender: true };
     default:
@@ -86,24 +84,8 @@ const waitQueuedEventSchema = z.discriminatedUnion('jobKind', [
 export const resultAvailabilitySchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('available'), resultPath: z.string().min(1) }).strip(),
   z.object({ kind: z.literal('retained-away'), retentionDays: z.number().positive() }).strip(),
-  z.object({ kind: z.literal('repair-pending'), ageUncertain: z.boolean() }).strip(),
-  z
-    .object({
-      kind: z.literal('failed'),
-      cause: z.enum([
-        'repair-failed',
-        'workflow-facts-unavailable',
-        'source-epoch-retired',
-        'terminal-age-unknown',
-        'terminal-clock-regression',
-        'cutoff-untrusted',
-        'terminal-unusable',
-      ]),
-      retryScheduled: z.boolean(),
-      ageUncertain: z.boolean().optional(),
-      unverifiedResultPath: z.string().min(1).optional(),
-    })
-    .strip(),
+  z.object({ kind: z.literal('pending') }).strip(),
+  z.object({ kind: z.literal('failed'), reason: z.string().min(1) }).strip(),
 ]);
 
 const waitTerminalEventSchema = z
@@ -165,26 +147,9 @@ const waitDispositionSchema = z
   .object({
     type: z.literal('disposition'),
     jobId: z.string().min(1),
-    disposition: z.enum([
-      'missing',
-      'discovery-unknown',
-      'pre-epoch-history',
-      'outcome-unrecoverable',
-      'outcome-unreadable',
-      'discovery-unreadable',
-      'scope-mismatch',
-    ]),
+    disposition: z.enum(['missing', 'scope-mismatch', 'unknown', 'unreadable']),
     message: z.string().optional(),
     ...nonFinalFields,
-  })
-  .strip();
-const waitArtifactSchema = z
-  .object({
-    ...finalFields,
-    type: z.literal('artifact'),
-    jobId: z.string().min(1),
-    availability: resultAvailabilitySchema,
-    remainingJobIds: z.array(z.string()).max(MAX_WAIT_JOB_IDS),
   })
   .strip();
 const waitStreamEventSchema = z
@@ -196,7 +161,6 @@ const waitStreamEventSchema = z
     waitNoticeSchema,
     waitCursorFrameSchema,
     waitDispositionSchema,
-    waitArtifactSchema,
     waitQueuedEventSchema,
   ])
   .superRefine((event, ctx) => {

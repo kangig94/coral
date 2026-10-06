@@ -94,16 +94,13 @@ async function execute(method: 'jobs.wait' | 'jobs.abort', body: object, jobs: o
     () => unknown === 'pre-epoch-history',
     () => 'decided',
     () => ({ kind: 'read', dispositions: new Map(), locations: new Map(unrecoverable.map((id) => [id, null])) }),
-    () => ({ kind: 'failed', cause: 'terminal-unusable', retryScheduled: false }),
+    () => ({ kind: 'failed', reason: 'the retained terminal does not match its source journal' }),
   );
-  const validateWait = vi.isMockFunction(supplied.validateWait)
-    ? vi.mocked(supplied.validateWait).mockImplementation(owner.validateWait.bind(owner))
-    : owner.validateWait.bind(owner);
   const ports = {
     identity: { pluginRoot: '/plugin' },
     coralEnvSnapshot: {},
     admin: { isLaunchFenceActive: () => false },
-    jobs: method === 'jobs.wait' ? { ...supplied, admitWait: owner.admitWait.bind(owner), validateWait } : supplied,
+    jobs: method === 'jobs.wait' ? { ...supplied, admitWait: owner.admitWait.bind(owner) } : supplied,
   } as unknown as HttpHandlerPorts;
   const request = spec.requestSchema.parse({ ...body, projectRoot: PROJECT_ROOT });
   return executeCatalogRequest(spec, request, ports, testProjectPrincipal(PROJECT_ROOT));
@@ -214,8 +211,7 @@ describe('jobs.detail retained-epoch dispositions', () => {
 });
 
 it('maps jobs-owned admission without filtering the request or its saved cursor', async () => {
-  const validateWait = vi.fn(() => null);
-  const cursor = savedCursor({ known: 12, ghost: 9 }, 'e');
+  const cursor = savedCursor({ known: 12, ghost: 9 });
   const waitStream = vi.fn(async function* (request: WaitStreamRequest) {
     yield {
       type: 'waiting' as const,
@@ -231,13 +227,12 @@ it('maps jobs-owned admission without filtering the request or its saved cursor'
       scopeCheck: () => ({ valid: ['known', 'ghost'], mismatch: [], missing: ['ghost'] }),
       unknownJobDisposition: () => 'not-found',
       outcomeUnrecoverable: () => [],
-      validateWait,
       waitStream,
       waitHandoverSignal: () => new AbortController().signal,
     },
   );
   expect(result).toMatchObject({ kind: 'subscription' });
-  expect(validateWait).toHaveBeenCalledWith(
+  expect(waitStream).toHaveBeenCalledWith(
     expect.objectContaining({
       jobIds: ['known', 'ghost'],
       cursor,

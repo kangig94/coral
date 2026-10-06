@@ -21,7 +21,7 @@ import { initTestJob } from '#tests/helpers/session.js';
 import { commitJobTerminal } from '#tests/helpers/job-commits.js';
 import { deriveLaunchReadiness } from '#src/jobs/launch-readiness.js';
 import { parseWaitSnapshot } from '#src/jobs/wait/snapshot.js';
-import { serializeWaitCursor } from '#src/jobs/wait/cursor.js';
+import { serializeWaitCursor, waitJobHash } from '#src/jobs/wait/cursor.js';
 import { formatWaitSnapshot } from '#src/cli/format/wait.js';
 import { formatJobDetail, renderJobsOperatorCommand } from '#src/cli/format/jobs.js';
 import { WaitSession } from '#src/jobs/wait/session.js';
@@ -75,7 +75,6 @@ function ports(addressing?: JobAddressing): HttpHandlerPorts {
     jobs: addressing
       ? {
           scopeCheck: addressing.scopeCheck.bind(addressing),
-          validateWait: addressing.validateWait.bind(addressing),
           admitWait: addressing.admitWait.bind(addressing),
           snapshot: addressing.snapshot.bind(addressing),
           waitStream: addressing.waitStream.bind(addressing),
@@ -185,7 +184,6 @@ describe('actual wait carriage', () => {
         { status: d.status!, exit: d.exit, events: f.store.readJobEvents(jobId), readiness: deriveLaunchReadiness(d) },
         f.index.resultPathFor(jobId),
         seq,
-        f.db,
       );
     }
     f.advance(15 * 86400000);
@@ -256,7 +254,7 @@ describe('actual wait carriage', () => {
     expect(resumed.jobs).toHaveLength(2);
     const acknowledged = new WaitSession(ids);
     acknowledged.reconcile(addressing.admitWait({ jobIds: ids, projectRoot: f.root }));
-    for (const job of acknowledged.admissions) acknowledged.acknowledge(job);
+    for (const job of acknowledged.admissions) acknowledged.collect(job);
     const collected = parseWaitSnapshot(
       await client.request('jobs.wait.snapshot', {
         jobIds: ids,
@@ -312,21 +310,15 @@ describe('actual wait carriage', () => {
   }, 30000);
 
   it.each([64, 128])(
-    'real authenticated HTTP accepts %i-epoch cursors and reassembles complete SSE frames without 431',
+    'real authenticated HTTP accepts %i-job cursors and reassembles complete SSE frames without 431',
     async (count) => {
       const jobs = Array.from({ length: count }, (_, i) => admitted(`j${i}`, [], false, `/tmp/epoch-${i}`));
-      const session = new WaitSession(jobs.map((job) => job.jobId));
-      session.reconcile(jobs);
       const cursor = {
-        ...session.cursor(),
-        jobs: session
-          .cursor()
-          .jobs.map((entry) => ({ ...entry, flags: 0, seq: Number.MAX_SAFE_INTEGER, lineOffset: 0xffffffff })),
+        jobs: jobs.map((job) => ({ hash: waitJobHash(job.jobId), seq: Number.MAX_SAFE_INTEGER })),
       };
       const p = ports();
       p.jobs.scopeCheck = () => ({ valid: jobs.map((job) => job.jobId), missing: [], mismatch: [] });
       p.jobs.admitWait = () => jobs;
-      p.jobs.validateWait = () => null;
       p.jobs.waitStream = async function* () {
         yield {
           type: 'waiting',
@@ -391,7 +383,6 @@ describe('actual wait carriage', () => {
     session.reconcile([job]);
     p.jobs.scopeCheck = () => ({ valid: ['a'], missing: [], mismatch: [] });
     p.jobs.admitWait = () => [job];
-    p.jobs.validateWait = () => null;
     let clock = 0;
     vi.spyOn(performance, 'now').mockImplementation(() => clock);
     p.jobs.waitStream = async function* () {
@@ -475,24 +466,24 @@ describe('actual wait carriage', () => {
 
   it('validates snapshot admission, artifact and continuation contracts', async () => {
     const a = admitted('a');
-    a.availability = { kind: 'repair-pending', ageUncertain: false };
+    a.availability = { kind: 'pending' };
     const admissions = [
       a,
       { jobId: 'ghost', disposition: 'missing' as const },
-      { jobId: 'u', disposition: 'discovery-unknown' as const },
+      { jobId: 'u', disposition: 'unknown' as const },
     ];
     const addressing = new JobAddressing(
       { time: createRealTimePort() } as never,
-      { epochKey: () => 'epoch-E' } as never,
+      { epochKey: () => 'epoch-E', visitProgress: progressVisitFromDetails(() => a.detail) } as never,
       () => false,
       () => 'pending',
       undefined,
-      () => ({ kind: 'failed', cause: 'terminal-unusable', retryScheduled: false }),
+      () => ({ kind: 'failed', reason: 'the retained terminal does not match its source journal' }),
     );
     vi.spyOn(addressing, 'admitWait').mockReturnValue(admissions);
     const complete = ports(addressing);
     const snapshot = parseWaitSnapshot(complete.jobs.snapshot({ jobIds: ['a', 'ghost', 'u'], projectRoot: '/tmp' }));
-    expect(snapshot.jobs[0].availability?.kind).toBe('repair-pending');
+    expect(snapshot.jobs[0].availability?.kind).toBe('pending');
     expect(snapshot.remainingJobIds).toEqual(['a', 'u']);
     expect(snapshot.exitCode).toBe(1);
     for await (const event of complete.jobs.waitStream({
@@ -502,7 +493,7 @@ describe('actual wait carriage', () => {
     }))
       expect(parseWaitStreamEventValue(event)).toEqual(event);
   });
-  it('collects a cross-process maintenance export after an acknowledged snapshot without replaying its outcome', async () => {
+  it('delivers the terminal again with its settled path once a cross-process maintenance export follows a snapshot', async () => {
     const f = createTerminalExportFixture('provider', true);
     cleanup.push(f.close);
     f.complete();
@@ -534,8 +525,8 @@ describe('actual wait carriage', () => {
       (id) => hints.add(id),
     );
     const snapshot = addressing.snapshot({ jobIds: [f.jobId], projectRoot: f.root });
-    expect(snapshot.jobs[0].availability?.kind).toBe('repair-pending');
-    expect(snapshot.cursor.jobs[0].flags).toBe(3);
+    expect(snapshot.jobs[0].availability?.kind).toBe('pending');
+    expect(snapshot.cursor.jobs).toEqual([{ hash: waitJobHash(f.jobId), seq: snapshot.jobs[0].terminal!.seq }]);
     expect(hints.has(f.jobId)).toBe(true);
     const outfile = sharedFixture('maintenance');
     const childHome = join(f.root, 'maintenance-home');
@@ -555,7 +546,7 @@ describe('actual wait carriage', () => {
     expect(events).toEqual([
       { type: 'cursor', cursor: snapshot.cursor },
       expect.objectContaining({
-        type: 'artifact',
+        type: 'terminal',
         availability: { kind: 'available', resultPath: f.resultPath },
         remainingJobIds: [],
         exitCode: 0,
@@ -574,10 +565,9 @@ it('HTTP sends a typed mid-stream error and canonicalizes the admission scope', 
   const session = new WaitSession(['a']);
   session.reconcile([admitted('a', [], false)]);
   p.jobs.admitWait = vi.fn(() => session.admissions);
-  p.jobs.validateWait = () => null;
   p.jobs.waitStream = async function* () {
     yield { type: 'waiting', waitingJobIds: ['a'], cursor: session.cursor(), exitCode: 75 };
-    throw new WaitSessionError('wait_cursor_mismatch', 'Run coral-cli jobs detail a --full.');
+    throw new WaitSessionError('wait_snapshot_malformed', 'Run coral-cli jobs detail a --full.');
   };
   const handler = createHttpHandler(p);
   const server = createServer((req, res) => void handler(req, res));
@@ -612,7 +602,7 @@ it('HTTP sends a typed mid-stream error and canonicalizes the admission scope', 
     req.end(JSON.stringify({ jobIds: ['a'], projectRoot: alias }));
   });
   expect(body).toContain('event: error');
-  expect(body).toContain('wait_cursor_mismatch');
+  expect(body).toContain('wait_snapshot_malformed');
   expect(p.jobs.admitWait).toHaveBeenCalledWith(expect.objectContaining({ projectRoot: f.root }));
 });
 

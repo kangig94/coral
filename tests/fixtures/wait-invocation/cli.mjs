@@ -3,7 +3,7 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import { getWaitInvocation } from '#src/cli/wait-invocation.js';
 import { IpcRequestTimeout } from '#src/transport/ipc/client.js';
 import { dirname } from 'node:path';
-import { waitEpochToken, waitJobHash } from '#src/jobs/wait/cursor.js';
+import { waitJobHash } from '#src/jobs/wait/cursor.js';
 
 const scenario = process.env.WAIT_PROBE_SCENARIO;
 const delegated = process.env.CORAL_CLI_HANDOFF_DELEGATED === '1';
@@ -14,7 +14,7 @@ if (delegated && scenario === 'late-child-output') {
     if (message?.type === 'wait-cancel') process.stdout.write('late child output\n');
   });
 }
-const entry = (seq) => ({ hash: waitJobHash('a'), epoch: waitEpochToken('epoch'), seq, lineOffset: 0, flags: 0 });
+const entry = (seq) => ({ hash: waitJobHash('a'), seq });
 const cursor = { jobs: [entry(42)] };
 const timing = { origin: 'runtime', originAt: '2026-10-04T00:00:00Z', emittedAt: '2026-10-04T00:00:00Z', elapsedMs: 0 };
 

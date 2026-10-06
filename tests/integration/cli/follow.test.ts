@@ -1,14 +1,9 @@
-import { observeWaitRead, progressVisitFromDetails, testProgressVisit } from '#tests/helpers/wait-progress.js';
-import { Command } from 'commander';
-import { registerSessionCommands } from '#src/cli/commands/session.js';
-import { createBuiltInProviderRegistry } from '#src/providers/bootstrap.js';
-import * as dispatch from '#src/cli/dispatch.js';
-import { readWaitSession } from '#src/jobs/wait/reader.js';
+import { progressVisitFromDetails } from '#tests/helpers/wait-progress.js';
 import { JobAddressing } from '#src/jobs/addressing.js';
 import { admitted } from '#tests/helpers/wait-session.js';
 import { createRealTimePort } from '#src/infra/time.js';
 import { jobsWaitRequest, jobWaitSchema } from '#src/transport/rpc/jobs.js';
-import { decodeWaitCursor, waitEpochToken, waitJobHash } from '#src/jobs/wait/cursor.js';
+import { decodeWaitCursor, serializeWaitCursor, waitJobHash } from '#src/jobs/wait/cursor.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AbortResult } from '#src/jobs/contracts/abort-registry.js';
@@ -64,13 +59,7 @@ const waitTiming = {
   elapsedMs: 2_000,
 } as const;
 
-const entry = (seq: number) => ({
-  hash: waitJobHash('job-1'),
-  epoch: waitEpochToken('epoch-E'),
-  seq,
-  lineOffset: 0,
-  flags: 0,
-});
+const entry = (seq: number) => ({ hash: waitJobHash('job-1'), seq });
 
 function makeProgressEvent(message = 'Still running'): Extract<WaitStreamEvent, { type: 'progress' }> {
   return {
@@ -210,7 +199,7 @@ describe('cli follow', () => {
     vi.unstubAllEnvs();
   });
 
-  it('starts launch-follow without a synthetic cursor and derives its probe budget after readiness', async () => {
+  it('starts launch-follow from an empty cursor and derives its probe budget after readiness', async () => {
     const { launchAndFollow } = await loadFollowModule();
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     let clock = 0;
@@ -225,7 +214,11 @@ describe('cli follow', () => {
       }),
     );
     await expect(launchAndFollow(makeOptions())).resolves.toBe(0);
-    expect(mockState.runHandoff.mock.calls[0][0]).toEqual({ kind: 'follow-job', jobId: 'job-1' });
+    expect(mockState.runHandoff.mock.calls[0][0]).toEqual({
+      kind: 'wait-jobs',
+      jobId: 'job-1',
+      serializedCursor: serializeWaitCursor({ jobs: [] }),
+    });
     expect(mockState.runHandoff.mock.calls[0][1].waitProbeRemainingMs()).toBe(588800);
     expect(mockState.subscribe.mock.calls[0][1]).toMatchObject({ cursor: { jobs: [] } });
   });
@@ -350,7 +343,7 @@ it.each(['pending', 'burst', 'failed'] as const)(
       undefined,
       () =>
         scenario === 'pending' || scenario === 'failed'
-          ? { kind: 'repair-pending', ageUncertain: false }
+          ? { kind: 'pending' }
           : { kind: 'available', resultPath: '/r.md' },
     );
     let stdout = '';
@@ -404,108 +397,3 @@ it.each(['pending', 'burst', 'failed'] as const)(
     }
   },
 );
-
-it('a delegated follow over 100 existing messages drains every line and returns only at the terminal', async () => {
-  const messages = Array.from({ length: 100 }, (_, i) => [i + 1, `delegated-line-${i + 1}`] as [number, string]);
-  const running = admitted('a', messages, false, 'active-epoch');
-  const finished = admitted('a', messages, true, 'active-epoch');
-  let connections = 0;
-  const requests: Array<Record<string, unknown>> = [];
-  let mono = 0n;
-  const time = {
-    ...createRealTimePort(),
-    monotonicNow: () => mono,
-    sleep: async (ms: number) => {
-      mono += BigInt(ms);
-    },
-  };
-  const subscribeJobsWait = vi.fn(async (fields: Record<string, unknown>) => {
-    requests.push(fields);
-    const job = ++connections === 1 ? running : finished;
-    const stream = readWaitSession({
-      request: fields as never,
-      time,
-      read: observeWaitRead(() => [job]),
-      visit: testProgressVisit,
-    });
-    return {
-      close: async () => {
-        await stream.return(undefined);
-      },
-      [Symbol.asyncIterator]: () => stream,
-    };
-  });
-  vi.spyOn(dispatch, 'makeClient').mockReturnValue({ subscribeJobsWait } as never);
-  let stdout = '';
-  vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: string | Uint8Array, callback?: () => void) => {
-    stdout += toText(chunk);
-    callback?.();
-    return true;
-  }) as typeof process.stdout.write);
-  const program = new Command();
-  registerSessionCommands(program, createBuiltInProviderRegistry());
-  try {
-    await program.parseAsync(['node', 'coral-cli', 'wait', 'jobs', 'a', '--follow']);
-    expect(requests.every((request) => request.drainProgress === true)).toBe(true);
-    expect(requests).toHaveLength(2);
-    const lines = stdout.split('\n').filter((line) => line.includes('delegated-line-'));
-    expect(lines.map((line) => /delegated-line-\d+/.exec(line)?.[0])).toEqual(messages.map(([, text]) => text));
-    expect(stdout.indexOf('Job a completed')).toBeGreaterThan(stdout.indexOf('delegated-line-100'));
-    expect(process.exitCode).toBe(0);
-  } finally {
-    process.exitCode = undefined;
-    vi.restoreAllMocks();
-  }
-});
-
-it('a delegated follow ends when the channel to the parent that delegated it closes, and only while following', async () => {
-  let opened = createDeferred();
-  let finish = createDeferred();
-  const subscribeJobsWait = vi.fn(async () => {
-    opened.resolve();
-    const finished = finish.promise;
-    return {
-      close: async () => {},
-      async *[Symbol.asyncIterator]() {
-        await finished;
-        yield { type: 'waiting', waitingJobIds: [], cursor: { jobs: [] }, exitCode: 0 };
-      },
-    };
-  });
-  vi.spyOn(dispatch, 'makeClient').mockReturnValue({ subscribeJobsWait } as never);
-  vi.spyOn(process.stdout, 'write').mockImplementation(((_chunk: unknown, callback?: () => void) => {
-    callback?.();
-    return true;
-  }) as typeof process.stdout.write);
-  const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
-  const listeners = process.listenerCount('disconnect');
-  const follow = () => {
-    const program = new Command();
-    registerSessionCommands(program, createBuiltInProviderRegistry());
-    return program.parseAsync(['node', 'coral-cli', 'wait', 'jobs', 'a', '--follow']);
-  };
-  try {
-    // This worker is a forked child, so it has a parent channel just as a delegated follow child does.
-    expect(process.channel).toBeDefined();
-    const completed = follow();
-    await opened.promise;
-    expect(process.listenerCount('disconnect')).toBe(listeners + 1);
-    finish.resolve();
-    await completed;
-    // A follow that ended on its own leaves nothing on the channel to keep this process alive.
-    expect(process.listenerCount('disconnect')).toBe(listeners);
-    expect(exit).not.toHaveBeenCalled();
-
-    opened = createDeferred();
-    finish = createDeferred();
-    const orphaned = follow();
-    await opened.promise;
-    process.emit('disconnect');
-    expect(exit).toHaveBeenCalledExactlyOnceWith(75);
-    finish.resolve();
-    await orphaned;
-  } finally {
-    process.exitCode = undefined;
-    vi.restoreAllMocks();
-  }
-});

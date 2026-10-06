@@ -1,9 +1,8 @@
 import type { WaitCursor } from '#src/jobs/wait/contract.js';
-import { waitJobHash, waitEpochToken } from '#src/jobs/wait/cursor.js';
+import { waitJobHash } from '#src/jobs/wait/cursor.js';
 import type { JobDetailResponse, JobEvent } from '#src/jobs/records.js';
 import type { WaitAdmission, WaitSession } from '#src/jobs/wait/session.js';
-import type { ProgressVisit } from '#src/jobs/wait/contract.js';
-import { progressPage, progressTail } from '#src/jobs/wait/progress-page.js';
+import type { ProgressVisit, WaitProgressRow } from '#src/jobs/wait/contract.js';
 import { selectWaitSnapshot as snapshot } from '#src/jobs/wait/snapshot.js';
 
 const observed = new Map<string, readonly JobEvent[]>();
@@ -18,41 +17,20 @@ export function observeWaitRead(read: () => WaitAdmission[]): () => WaitAdmissio
   };
 }
 
-export function progressVisitFromEvents(
-  read: (jobId: string) => readonly JobEvent[],
-  frontier?: () => number,
-): ProgressVisit {
+export function progressVisitFromEvents(read: (jobId: string) => readonly JobEvent[]): ProgressVisit {
   return (_epoch, visit) => {
-    const raw = (id: string) =>
-      read(id)
-        .filter((event) => event.type === 'progress')
-        .map((event) => ({
-          seq: event.seq,
-          ...(event.type === 'progress'
-            ? { progress: { seq: event.seq, message: event.message, timing: event.timing } }
-            : {}),
-        }));
-    const max = (id: string) => frontier?.() ?? read(id).reduce((seq, event) => Math.max(seq, event.seq), 0);
+    const rows = (id: string): WaitProgressRow[] =>
+      read(id).flatMap((event) =>
+        event.type === 'progress' ? [{ seq: event.seq, message: event.message, timing: event.timing }] : [],
+      );
     return {
       kind: 'read',
       value: visit({
-        after: (id, after, rows) =>
-          progressPage(
-            raw(id)
-              .filter((row) => row.seq > after)
-              .slice(0, rows + 1),
-            rows,
-            max(id),
-          ),
-        before: (id, before, rows) =>
-          progressTail(
-            raw(id)
-              .filter((row) => before === null || row.seq < before)
-              .reverse()
-              .slice(0, rows + 1),
-            rows,
-            max(id),
-          ),
+        after: (id, after, limit) =>
+          rows(id)
+            .filter((row) => row.seq > after)
+            .slice(0, limit),
+        newest: (id, limit) => rows(id).slice(-limit),
       }),
     };
   };
@@ -64,10 +42,9 @@ export function progressVisitFromDetails(read: (jobId: string) => JobDetailRespo
 export function selectTestProgress(session: WaitSession, limit = Infinity) {
   observeWaitRead(() => session.admissions)();
   return session.withProgress(testProgressVisit, (sources) => {
-    session.position(sources, null, 500, 65536);
-    const selected = session.select(sources, limit, Infinity);
-    session.advanceSilently(selected.advances);
-    return selected.lines;
+    const selected = session.select(sources, { lines: limit, bytes: Infinity }, null);
+    session.commit(selected);
+    return selected.rows;
   });
 }
 export function selectWaitSnapshot(session: WaitSession, lines = 20) {
@@ -75,14 +52,7 @@ export function selectWaitSnapshot(session: WaitSession, lines = 20) {
   return snapshot(session, lines, testProgressVisit);
 }
 
+/** A cursor positioning every located job at its origin; an unlocated job has no entry and reads its tail. */
 export function prefixCursor(jobs: readonly WaitAdmission[]): WaitCursor {
-  return {
-    jobs: jobs.map((job) => ({
-      hash: waitJobHash(job.jobId),
-      epoch: job.epochKey ? waitEpochToken(job.epochKey) : null,
-      seq: 0,
-      lineOffset: 0,
-      flags: job.epochKey ? 0 : 4,
-    })),
-  };
+  return { jobs: jobs.filter((job) => job.epochKey).map((job) => ({ hash: waitJobHash(job.jobId), seq: 0 })) };
 }

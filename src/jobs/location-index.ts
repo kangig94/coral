@@ -1,5 +1,3 @@
-import type { ProgressVisit } from './wait/contract.js';
-import { visitHistoricalProgress } from './historical-reader.js';
 import { createHash } from 'node:crypto';
 import { sameEpoch, epochHoldDirectory, epochIdentity } from '../store/epoch/identity.js';
 import { dirname, join } from 'node:path';
@@ -18,7 +16,7 @@ import { jobProgressTimingSchema } from './event-bodies.js';
 import { jobLaunchRequestBodySchema } from './launch.js';
 import { jobPhaseSchema } from './phase.js';
 import { jobKindSchema, type JobDetailResponse, type JobKind } from './records.js';
-import { jobDiagnosticsSchema, jobTerminalSchema, jobTerminalRecordedBodySchema } from './terminal/result.js';
+import { jobDiagnosticsSchema, jobTerminalSchema } from './terminal/result.js';
 import { type ResolvedStoreEpoch } from '../store/epoch/types.js';
 import { observeResolvedStoreEpoch } from '../store/epoch/observation.js';
 import { observeStorePath } from '../store/path-observation.js';
@@ -29,15 +27,8 @@ import {
   resultRepairFailuresFor,
   type WorkflowReportPort,
 } from './terminal/export.js';
-import {
-  hasObservedTerminalDetail,
-  hasReadableTerminalDetail,
-  sameTerminal,
-  validatedTerminal,
-} from './terminal/identity.js';
-import { readAcceptedTerminal, withTerminalSource } from './terminal/source.js';
-import { readJobTerminalAge } from './terminal-age.js';
-import { trustedJobRetentionCutoff } from './retention-clock.js';
+import { hasReadableTerminalDetail, validatedTerminal } from './terminal/identity.js';
+import { withTerminalSource } from './terminal/source.js';
 import { isCodeDefect } from './source-read.js';
 import { composeReducers } from '../store/reducers.js';
 import { createEventBodyCodec } from '../store/event-body-codec.js';
@@ -77,9 +68,7 @@ const locationIdentitySchema = z.object({
   terminalSeq: z.number().int().safe().nonnegative().optional(),
   resultPath: z.string().optional(),
 });
-const locationSchema = locationIdentitySchema
-  .extend({ detail: z.unknown().optional(), terminalAge: z.unknown().optional() })
-  .passthrough();
+const locationSchema = locationIdentitySchema.extend({ detail: z.unknown().optional() }).passthrough();
 const jobEventBaseSchema = z.object({
   jobId: z.string(),
   sessionId: z.string().nullable(),
@@ -178,12 +167,7 @@ export type JobLocationDetail =
   | Readonly<{ kind: 'absent' }>
   | Readonly<{ kind: 'unreadable' }>;
 
-export type JobLocation = z.infer<typeof locationIdentitySchema> & {
-  detail: JobLocationDetail;
-  terminalAge?: unknown;
-  storedIdentity?: string;
-  storedStamp?: string;
-};
+export type JobLocation = z.infer<typeof locationIdentitySchema> & { detail: JobLocationDetail };
 
 export type UnknownLocationHold = Readonly<
   { reason: string; retryScheduled: boolean } & (
@@ -196,7 +180,6 @@ export class LocationObservationDeferred extends Error {}
 
 export interface JobLocationView {
   readHistorical?: HistoricalSourceReader;
-  visitProgress?: ProgressVisit;
   historicalSourceState?(epochKey: string): 'present' | 'absent' | 'unobservable';
   readonly time: TimePort;
   read(jobId: string): JobLocation | null;
@@ -216,7 +199,7 @@ function viewLocation(stored: StoredJobLocation): JobLocation {
     parsed.data.exit !== null ||
     parsed.data.status.result !== undefined ||
     parsed.data.events.some((event) => event.type === 'terminal');
-  return terminalPresent && !hasObservedTerminalDetail(location)
+  return terminalPresent && !hasReadableTerminalDetail(location)
     ? { ...identity, detail: { kind: 'unreadable' } }
     : location;
 }
@@ -290,14 +273,6 @@ function optionalJson<T>(runtime: Runtime, path: string, schema: z.ZodType<T>): 
   }
 }
 
-/** Nothing stands for an export only when its directory is absent, or is a real directory without the file. */
-function exportEntryAbsent(storage: Runtime['storage'], path: string): boolean {
-  if (observeStorePath(storage, dirname(path)) === 'absent') return true;
-  // A symlink in the export's place may stand for content Coral cannot see.
-  if (!storage.lstatSync(dirname(path)).isDirectory()) return false;
-  return observeStorePath(storage, path) === 'absent';
-}
-
 export class JobLocationIndex {
   get resultRepairFailures(): Set<string> {
     return resultRepairFailuresFor(this);
@@ -305,13 +280,6 @@ export class JobLocationIndex {
   readonly time: TimePort;
   private readonly root: string;
   private locationsStamp: string | undefined;
-  /**
-   * Read validation follows the stat stamp; same-tick, same-size inode reuse can defeat it.
-   * The LRU holds one maximum wait set (128 records); eviction requires a fresh observation.
-   * Publication and repair retain their full terminal comparisons.
-   */
-  private readonly storedLocations = new Map<string, { stamp: string; stored: StoredJobLocation; view: JobLocation }>();
-  private readonly waitLocations = new Map<string, { stamp: string; stored: StoredJobLocation; view: JobLocation }>();
   private readonly epochRevisions = new Map<string, number>();
   private readonly certificates = new Map<string, { stamp: string; value: JobLocationCertificate | null }>();
   private locationsUnreadable: Array<{ file: string; epochKey: string | null }> = [];
@@ -446,81 +414,21 @@ export class JobLocationIndex {
     }
   }
 
-  private readStored(jobId: string, cache = this.storedLocations): StoredJobLocation | null {
+  private readStored(jobId: string): StoredJobLocation | null {
     if (this.pollReads?.has(jobId)) return this.pollReads.get(jobId) ?? null;
     if (this.pollReads && !this.livePollJobs.has(jobId)) {
       if (this.pollReadCount >= 32)
         throw new LocationObservationDeferred('Location observation deferred to the next bounded poll');
       this.pollReadCount++;
     }
-    const stored = this.observeStored(jobId, cache);
+    const stored = optionalJson(this.runtime, this.jobPath(jobId), locationSchema);
     this.pollReads?.set(jobId, stored);
     return stored;
   }
 
-  private observeStored(jobId: string, cache = this.storedLocations): StoredJobLocation | null {
-    const path = this.jobPath(jobId);
-    try {
-      const stat = this.runtime.storage.lstatSync(path, { bigint: true });
-      const stamp = `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}:${stat.birthtimeNs}`;
-      const cached = cache.get(jobId) ?? (cache === this.waitLocations ? this.storedLocations.get(jobId) : undefined);
-      if (cached?.stamp === stamp) {
-        cache.delete(jobId);
-        cache.set(jobId, cached);
-        const oldest = cache.keys().next().value;
-        if (cache.size > 128 && oldest !== undefined) cache.delete(oldest);
-        return cached.stored;
-      }
-      const raw = this.runtime.storage.readFileSync(path, 'utf-8');
-      const stored = locationSchema.parse(JSON.parse(raw));
-      if (stored) {
-        cache.delete(jobId);
-        cache.set(jobId, {
-          stamp,
-          stored,
-          view: Object.defineProperties(viewLocation(stored), {
-            storedIdentity: { value: createHash('sha256').update(raw).digest('hex') },
-            storedStamp: { value: stamp },
-          }),
-        });
-        const oldest = cache.keys().next().value;
-        if (cache.size > 128 && oldest !== undefined) cache.delete(oldest);
-      }
-      return stored;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        cache.delete(jobId);
-        return null;
-      }
-      throw error;
-    }
-  }
-
   read(jobId: string): JobLocation | null {
-    return this.readCached(jobId, this.storedLocations);
-  }
-
-  private readCached(jobId: string, cache: typeof this.storedLocations): JobLocation | null {
-    const stored = this.readStored(jobId, cache);
-    return stored === null ? null : (cache.get(jobId)?.view ?? viewLocation(stored));
-  }
-
-  publicationUnchanged(jobId: string, location: JobLocation): boolean {
-    if (!location.storedStamp) return false;
-    try {
-      const stat = this.runtime.storage.lstatSync(this.jobPath(jobId), { bigint: true });
-      return (
-        location.storedStamp ===
-        `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}:${stat.birthtimeNs}`
-      );
-    } catch {
-      return false;
-    }
-  }
-
-  publicationLocation(jobId: string): JobLocation | null {
-    const cached = this.storedLocations.get(jobId)?.view;
-    return cached && this.publicationUnchanged(jobId, cached) ? cached : this.read(jobId);
+    const stored = this.readStored(jobId);
+    return stored === null ? null : viewLocation(stored);
   }
 
   historicalSourceState(epochKey: string): 'present' | 'absent' | 'unobservable' {
@@ -531,8 +439,6 @@ export class JobLocationIndex {
       return 'unobservable';
     }
   }
-
-  visitProgress: ProgressVisit = (epoch, read) => visitHistoricalProgress(this, epoch, read);
 
   readHistorical(
     epochKey: string,
@@ -546,11 +452,10 @@ export class JobLocationIndex {
   readOnlyView(): JobLocationView {
     return {
       time: this.time,
-      read: (jobId) => this.readCached(jobId, this.waitLocations),
+      read: (jobId) => this.read(jobId),
       observePoll: (read, liveJobIds) => this.observePoll(read, liveJobIds),
       resultPathFor: (jobId) => this.resultPathFor(jobId),
       unknownLocationHolds: () => this.unknownLocationHolds(),
-      visitProgress: this.visitProgress,
       readHistorical: (epochKey, jobIds, session, fullHistory) =>
         this.readHistorical(epochKey, jobIds, session, fullHistory),
       historicalSourceState: (epochKey) => this.historicalSourceState(epochKey),
@@ -612,52 +517,15 @@ export class JobLocationIndex {
     });
   }
 
-  /** Post-commit recording and later hydration classify one terminal by the same rule, so its age is decided once. */
-  recordTerminal(
-    jobId: string,
-    detail: JobDetailResponse,
-    resultPath: string,
-    terminalSeq: number,
-    sourceDb?: Database,
-  ): JobLocation {
+  /** A terminal is recorded only when the copies its detail carries agree; readers trust the record after that. */
+  recordTerminal(jobId: string, detail: JobDetailResponse, resultPath: string, terminalSeq: number): JobLocation {
     const existing = this.readStored(jobId);
     if (existing === null) throw new Error(`Terminal has no durable job location: ${jobId}`);
     const terminal = validatedTerminal(detail, jobId, existing.epochKey, terminalSeq);
     if (terminal === null) throw new Error(`Terminal detail disagrees: ${jobId}`);
-    const capture = (db: Database): unknown => {
-      const accepted = readAcceptedTerminal(db, jobId);
-      if (!accepted || accepted.seq !== terminalSeq || accepted.ts !== terminal.ts)
-        throw new Error(`Source terminal identity disagrees: ${jobId}`);
-      const sourceTerminal = jobTerminalRecordedBodySchema.parse(
-        JSON.parse(Buffer.from(accepted.body).toString('utf8')),
-      ).terminal;
-      if (!sameTerminal(sourceTerminal, terminal.result))
-        throw new Error(`Source terminal content disagrees: ${jobId}`);
-      if (trustedJobRetentionCutoff(this.runtime) === null) return undefined;
-      const age = readJobTerminalAge(db, accepted);
-      return {
-        epochKey: existing.epochKey,
-        terminalSeq,
-        terminalTimestamp: accepted.ts,
-        ...(typeof age === 'number' ? { kind: 'known', terminalAt: age } : { kind: age }),
-      };
-    };
-    let terminalAge = existing.terminalAge;
-    const captured = sourceDb && existing.terminalAge === undefined ? capture(sourceDb) : undefined;
-    if (existing.terminalAge === undefined) {
-      if (sourceDb) terminalAge = captured;
-      else {
-        try {
-          terminalAge = withTerminalSource(this.runtime, existing.epochKey, capture) ?? terminalAge;
-        } catch {
-          terminalAge = undefined;
-        }
-      }
-    }
     return this.withRevisionLock(existing.epochKey, () => {
       const current = this.readStored(jobId);
       if (current === null) throw new Error(`Terminal has no durable job location: ${jobId}`);
-      const retainedAge = current.terminalAge ?? terminalAge;
       const location: StoredJobLocation = {
         ...current,
         subject: {
@@ -669,20 +537,10 @@ export class JobLocationIndex {
         disposition: 'terminal',
         terminalSeq,
         resultPath,
-        ...(retainedAge === undefined ? {} : { terminalAge: retainedAge }),
         detail: preserveStoredDetail(current.detail, { ...detail, events: [terminal] }),
       };
       if (!isDeepStrictEqual(current, location)) {
-        const raw = atomicJson(this.runtime, this.jobPath(jobId), location);
-        const stat = this.runtime.storage.lstatSync(this.jobPath(jobId), { bigint: true });
-        const stamp = `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}:${stat.birthtimeNs}`;
-        const view = Object.defineProperties(viewLocation(location), {
-          storedIdentity: { value: createHash('sha256').update(raw).digest('hex') },
-          storedStamp: { value: stamp },
-        });
-        this.storedLocations.set(jobId, { stamp, stored: location, view });
-        const oldest = this.storedLocations.keys().next().value;
-        if (this.storedLocations.size > 128 && oldest !== undefined) this.storedLocations.delete(oldest);
+        atomicJson(this.runtime, this.jobPath(jobId), location);
         this.advanceRevision(current.epochKey);
       }
       return viewLocation(location);
@@ -990,12 +848,6 @@ export class JobLocationIndex {
     try {
       const certificate = this.certificate(epochKey);
       if (certificate === null) return false;
-      if (
-        certificate.jobIds.every(
-          (jobId) => terminalEligibility(this.runtime, this.read(jobId), () => null, false).kind === 'expired',
-        )
-      )
-        return true;
       try {
         return (
           withTerminalSource(
@@ -1014,7 +866,10 @@ export class JobLocationIndex {
     }
   }
 
-  /** Proves the retained artifact for one job independently of other jobs in its epoch. */
+  /**
+   * Proves the retained artifact for one job independently of other jobs in its epoch: a known expired age, read from
+   * the job's intact source, discharges it without a file; anything else needs a durable nonempty file.
+   */
   resultDurable(jobId: string, source?: Database | null): boolean {
     const location = this.read(jobId);
     if (location === null || !hasReadableTerminalDetail(location)) {
@@ -1024,26 +879,7 @@ export class JobLocationIndex {
       source === undefined
         ? this.terminalEligibility(jobId)
         : terminalEligibility(this.runtime, location, (read) => (source === null ? null : read(source)));
-    if (eligibility.kind === 'expired') return true;
-    if (
-      eligibility.age === 'unknown' &&
-      eligibility.ageUnproven &&
-      eligibility.cutoffTrusted &&
-      location.terminalAge === undefined &&
-      eligibility.sourceReadable &&
-      !eligibility.sourceReadFailed
-    ) {
-      try {
-        const path = location.resultPath ?? this.resultPathFor(jobId);
-        if (exportEntryAbsent(this.runtime.storage, path)) return true;
-        const artifact = this.runtime.storage.lstatSync(path, { bigint: true });
-        // A symlink or directory may stand for content Coral cannot see: it is held to the durability rule below,
-        // which the post-ready sweep re-applies every cycle until the entry is absent, empty, or a durable result.
-        if (artifact.isFile() && artifact.size === 0n) return true;
-      } catch {
-        return false;
-      }
-    }
+    if (eligibility.age === 'expired') return true;
     if (location.resultPath === undefined) return false;
     try {
       const fd = this.runtime.storage.openSync(location.resultPath, 'r');
@@ -1080,8 +916,6 @@ export class JobLocationIndex {
         this.unknownLocationHolds().find((hold) => sameEpoch(hold.epochKey, epochKey))?.retryScheduled,
       prepareTerminal: (jobId) => this.prepareTerminal(jobId, db, epochKey, jobsRoot),
       location: (jobId) => this.read(jobId),
-      publicationLocation: (jobId) => this.publicationLocation(jobId),
-      publicationUnchanged: (jobId, location) => this.publicationUnchanged(jobId, location),
       withSource: (jobId, read, location) => {
         if (!sameEpoch((location ?? this.read(jobId))?.epochKey, epochKey))
           throw new Error('Source epoch identity cannot be confirmed');
@@ -1092,26 +926,11 @@ export class JobLocationIndex {
 
   prepareTerminal(jobId: string, db: Database, epochKey: string, jobsRoot: string): void {
     const current = this.read(jobId);
-    if (
-      !current ||
-      !sameEpoch(current.epochKey, epochKey) ||
-      (hasReadableTerminalDetail(current) && current.terminalAge !== undefined)
-    )
-      return;
+    if (!current || !sameEpoch(current.epochKey, epochKey) || hasReadableTerminalDetail(current)) return;
     const detail = readHistoricalJobDetail(db, jobId);
     const terminal = detail?.events.find((event) => event.type === 'terminal');
     if (!detail?.exit || !terminal) return;
-    this.recordTerminal(jobId, detail, current.resultPath ?? resultPathFor(jobsRoot, jobId), terminal.seq, db);
-  }
-
-  exportDeletionEligibility(jobId: string): TerminalEligibility | undefined {
-    const location = this.read(jobId);
-    if (
-      location === null ||
-      (location.terminalAge === undefined && this.historicalSourceState(location.epochKey) === 'absent')
-    )
-      return undefined;
-    return this.terminalEligibility(jobId);
+    this.recordTerminal(jobId, detail, current.resultPath ?? resultPathFor(jobsRoot, jobId), terminal.seq);
   }
 
   terminalEligibility(jobId: string): TerminalEligibility {

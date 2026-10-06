@@ -3,7 +3,6 @@ import { createStorageRetentionScheduler } from '#src/coordinator/composition/st
 import { JobLocationIndex } from '#src/jobs/location-index.js';
 import type { RetentionOutcome, RetentionRunBudget, RetentionRunStatus } from '#src/store/retention-outcome.js';
 import { createRetentionFixture } from '#tests/helpers/storage-retention.js';
-import { trustedJobRetentionCutoff } from '#src/jobs/retention-clock.js';
 
 const owners = vi.hoisted(() => ({
   exports: vi.fn(async (_input?: { budget: RetentionRunBudget }) => ''),
@@ -69,11 +68,6 @@ afterEach(async () => {
 });
 function fixture(f = createRetentionFixture(), getProgressStore: () => typeof f.store | null = () => f.store) {
   if (!fixtures.includes(f)) fixtures.push(f);
-  const fixedWall = f.runtime.time.now;
-  const originalMonotonic = f.runtime.time.monotonicNow;
-  const start = originalMonotonic();
-  f.runtime.time.now = () =>
-    fixedWall() + (f.runtime.time.monotonicNow === originalMonotonic ? Number(originalMonotonic() - start) : 0);
   const statuses: RetentionRunStatus[] = [];
   const scheduler = createStorageRetentionScheduler({
     runtime: f.runtime,
@@ -115,18 +109,17 @@ describe('storage retention schedule', () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(owners.progress).toHaveBeenLastCalledWith(
       expect.objectContaining({
-        cutoff: first.f.runtime.time.now() - 14 * 86_400_000 - 60_000,
+        cutoff: first.f.runtime.time.now() - 14 * 86_400_000,
       }),
     );
     await first.scheduler.stop();
     first.f.setNow(first.f.runtime.time.now() + 86_400_000);
-    first.f.runtime.time = { ...first.f.runtime.time };
     const second = fixture(first.f);
     second.scheduler.start();
     await vi.advanceTimersByTimeAsync(0);
     expect(owners.progress).toHaveBeenLastCalledWith(
       expect.objectContaining({
-        cutoff: first.f.runtime.time.now() - 14 * 86_400_000 - 60_000,
+        cutoff: first.f.runtime.time.now() - 14 * 86_400_000,
       }),
     );
   });
@@ -172,7 +165,6 @@ describe('storage retention schedule', () => {
     first.scheduler.start();
     await vi.advanceTimersByTimeAsync(0);
     await first.scheduler.stop();
-    first.f.runtime.time = { ...first.f.runtime.time };
     const second = fixture(first.f);
     second.scheduler.start();
     await vi.advanceTimersByTimeAsync(0);
@@ -182,12 +174,10 @@ describe('storage retention schedule', () => {
     const { f, scheduler, statuses } = fixture();
     scheduler.start();
     await vi.advanceTimersByTimeAsync(0);
-    await vi.advanceTimersByTimeAsync(86_400_000 - 1);
-    trustedJobRetentionCutoff(f.runtime);
     owners.exports.mockClear();
     owners.progress.mockClear();
     f.setNow(f.runtime.time.now() + 15 * 86_400_000);
-    await vi.advanceTimersByTimeAsync(1);
+    await vi.advanceTimersByTimeAsync(86_400_000);
     expect(owners.exports).not.toHaveBeenCalled();
     expect(owners.progress).not.toHaveBeenCalled();
     expect(statuses.at(-1)?.phase).toBe('partial');
@@ -723,93 +713,6 @@ describe('hints survive backlog scheduling', () => {
   });
 });
 
-describe('due owners always advance time', () => {
-  describe('probe: storage retention scheduler with an untrusted clock and a pending repair hint', () => {
-    it('does not spin while the clock settles', async () => {
-      const f = createRetentionFixture();
-      const base = Date.now();
-      let jump = 0;
-      f.runtime.time = {
-        ...f.runtime.time,
-        now: () => Date.now() + jump,
-        monotonicNow: () => BigInt(Date.now() - base),
-      };
-      const statuses: RetentionRunStatus[] = [];
-      const log = vi.fn();
-      const scheduler = createStorageRetentionScheduler({
-        runtime: f.runtime,
-        getProgressStore: () => f.store,
-        openEpoch: () => ({
-          storeRoot: f.runtime.paths.coral.store.dbDir,
-          epoch: '1',
-          path: '/tmp/fixture/epoch-1/store.db',
-        }),
-        activeEpochKey: () => 'active',
-        jobLocations: new JobLocationIndex(f.runtime, f.runtime.paths.coral.generation.dataRoot),
-        log,
-        publish: (status) => statuses.push(status),
-        cleanupScratch: async () => {},
-      });
-      scheduler.start();
-      await vi.advanceTimersByTimeAsync(10);
-      jump = 2 * 60 * 60 * 1000; // wall clock steps forward 2 h (e.g. host resume)
-      await vi.advanceTimersByTimeAsync(2_000);
-      f.store.getResultExportOwner().hintRepair('job-x');
-      const before = statuses.length;
-      await vi.advanceTimersByTimeAsync(3_000);
-      const runs = (statuses.length - before) / 2;
-
-      await scheduler.stop();
-      f.close();
-      expect(runs).toBeLessThan(5);
-    });
-
-    it('bounds backlog retries while the clock is untrusted', async () => {
-      const f = createRetentionFixture();
-      const base = Date.now();
-      let jump = 0;
-      f.runtime.time = {
-        ...f.runtime.time,
-        now: () => Date.now() + jump,
-        monotonicNow: () => BigInt(Date.now() - base),
-      };
-      const statuses: RetentionRunStatus[] = [];
-      const log = vi.fn();
-      const scheduler = createStorageRetentionScheduler({
-        runtime: f.runtime,
-        getProgressStore: () => f.store,
-        openEpoch: () => ({
-          storeRoot: f.runtime.paths.coral.store.dbDir,
-          epoch: '1',
-          path: '/tmp/fixture/epoch-1/store.db',
-        }),
-        activeEpochKey: () => 'active',
-        jobLocations: new JobLocationIndex(f.runtime, f.runtime.paths.coral.generation.dataRoot),
-        log,
-        publish: (status) => statuses.push(status),
-        cleanupScratch: async (_signal, budget) => {
-          // A real backlog: progress made, more remains -> the owner asks for a 5-minute fast retry.
-          budget.record({ kind: 'deleted', subject: 'scratch', count: 1 });
-          budget.record({ kind: 'kept', subject: 'scratch', reason: 'scan-pending' });
-        },
-      });
-      scheduler.start();
-      await vi.advanceTimersByTimeAsync(10);
-      await vi.advanceTimersByTimeAsync(4 * 60_000);
-      jump = 2 * 60 * 60 * 1000; // host resume steps the wall clock forward
-      await vi.advanceTimersByTimeAsync(30_000); // some unrelated trusted-cutoff observation detects it
-      f.store.getResultExportOwner().observeResultAvailability('nothing'); // any eligibility read detects the jump
-      const before = statuses.length;
-      await vi.advanceTimersByTimeAsync(40_000); // the 5-minute backlog retry falls due inside the 5-minute settle window
-      const runs = (statuses.length - before) / 2;
-
-      await scheduler.stop();
-      f.close();
-      expect(runs).toBeLessThan(5);
-    });
-  });
-});
-
 it('bounds a hinted owner while the selected store is unavailable', async () => {
   const f = createRetentionFixture();
   let available = true;
@@ -826,23 +729,4 @@ it('bounds a hinted owner while the selected store is unavailable', async () => 
   available = true;
   await vi.advanceTimersByTimeAsync(300_000);
   expect(repair).toHaveBeenCalledTimes(2);
-});
-
-it('waits five minutes after a run the untrusted clock skipped, however many jobs hint repair meanwhile', async () => {
-  const { f, scheduler, statuses } = fixture();
-  scheduler.start();
-  await vi.advanceTimersByTimeAsync(0);
-  trustedJobRetentionCutoff(f.runtime);
-  f.setNow(f.runtime.time.now() + 15 * 86_400_000);
-  const runs = (): RetentionRunStatus[] => statuses.filter((status) => status.phase !== 'running');
-  const before = runs().length;
-  for (let second = 0; second < 240; second++) {
-    f.store.getResultExportOwner().hintRepair(`newly-read-${second}`);
-    await vi.advanceTimersByTimeAsync(1000);
-  }
-  const held = runs().slice(before);
-  expect(held).toHaveLength(1);
-  expect(held[0].outcomes).toContainEqual(expect.objectContaining({ reason: 'wall-clock-age-unknown' }));
-  await vi.advanceTimersByTimeAsync(61_000);
-  expect(runs().length - before).toBe(2);
 });

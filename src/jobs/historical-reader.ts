@@ -1,12 +1,14 @@
-import type { ProgressPage, TailPage } from './wait/progress-page.js';
 import { waitEpochToken } from './wait/cursor.js';
-import type { ProgressSource, ProgressVisitResult } from './wait/contract.js';
-import { progressPage, progressTail, type RawProgressRow } from './wait/progress-page.js';
 import { epochHoldDirectory, epochIdentity, sameEpoch, sameEpochOrFallbackAddress } from '../store/epoch/identity.js';
 import { setImmediate } from 'node:timers/promises';
-import { hasObservedTerminalDetail, hasReadableTerminalDetail } from './terminal/identity.js';
-import type { SourceReadDisposition } from './wait/session.js';
-import { HistoricalDecodeError, isCodeDefect, sourceReadFailureDisposition, sourceReadStamp } from './source-read.js';
+import { hasReadableTerminalDetail } from './terminal/identity.js';
+import {
+  HistoricalDecodeError,
+  isCodeDefect,
+  sourceReadFailureDisposition,
+  sourceReadStamp,
+  type SourceReadDisposition,
+} from './source-read.js';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
 
@@ -22,7 +24,7 @@ import {
   inspectResolvedStoreEpochKey,
 } from '../store/epoch/index.js';
 import { inspectEpochKey } from '../store/epoch/key.js';
-import { jobProgressTimingSchema, jobProgressBodySchema } from './event-bodies.js';
+import { jobProgressTimingSchema } from './event-bodies.js';
 import {
   type JobLocationIndex,
   type JobLocationSubject,
@@ -772,7 +774,7 @@ export function seedHistoricalEpoch(
           index.markUnresolved(jobId);
           continue;
         }
-        index.recordTerminal(jobId, detail, resultPathFor(jobsRoot, jobId), terminal.seq, db as Database);
+        index.recordTerminal(jobId, detail, resultPathFor(jobsRoot, jobId), terminal.seq);
         try {
           index.resultExportOwnerForSource(db as Database, epochKey, jobsRoot).ensureResultMarkdownArtifact(jobId);
         } catch {
@@ -988,7 +990,7 @@ export function readHistoricalSource(
             : { terminalSeq: terminal.seq, resultPath: resultPathFor(source.jobsRoot, jobId) }),
           detail: { kind: 'recorded', value: { ...detail, epochKey } },
         };
-        if (terminal !== undefined && !hasObservedTerminalDetail(location))
+        if (terminal !== undefined && !hasReadableTerminalDetail(location))
           throw new HistoricalDecodeError('Historical job terminal cannot be decoded');
         locations.set(jobId, location);
         if (!fullHistory) {
@@ -1216,7 +1218,7 @@ export function refreshHistoricalEpoch(
         }
         const resultPath = resultPathFor(source.jobsRoot, row.job_id);
         try {
-          index.recordTerminal(row.job_id, detail, resultPath, terminal.seq, db as Database);
+          index.recordTerminal(row.job_id, detail, resultPath, terminal.seq);
         } catch {
           failed = true;
           requested.add(jobId);
@@ -1253,95 +1255,5 @@ export function refreshHistoricalEpoch(
   } finally {
     db?.close();
     releaseLock?.();
-  }
-}
-
-function historicalRawProgress(rows: readonly unknown[]): RawProgressRow[] {
-  return rows.map((raw) => {
-    const row = eventSchema.parse(raw);
-    const body = parseBody(row.body);
-    const message = progressBodySchema.safeParse(body);
-    if (
-      !message.success &&
-      !jobProgressBodySchema.safeParse(body).success &&
-      !jobProgressFaultSchema.safeParse(body).success
-    )
-      throw new HistoricalDecodeError('Historical progress cannot be decoded');
-    return { seq: row.seq, ...(message.success ? { progress: { seq: row.seq, ...message.data } } : {}) };
-  });
-}
-
-export function readHistoricalProgressPage(
-  db: SqliteDatabasePort,
-  jobId: string,
-  afterSeq: number,
-  rows: number,
-  sourceFrontier: number,
-): ProgressPage {
-  const raw = db
-    .prepare(
-      "SELECT seq, ts, type, body FROM events WHERE type = 'job.progress.emitted' AND stream_id = ? AND seq > ? ORDER BY seq LIMIT ?",
-    )
-    .all(jobId, afterSeq, rows + 1);
-  return progressPage(historicalRawProgress(raw), rows, sourceFrontier);
-}
-
-export function readHistoricalProgressTail(
-  db: SqliteDatabasePort,
-  jobId: string,
-  beforeSeq: number | null,
-  rows: number,
-  sourceFrontier: number,
-): TailPage {
-  const raw = db
-    .prepare(
-      "SELECT seq, ts, type, body FROM events WHERE type = 'job.progress.emitted' AND stream_id = ? AND seq < ? ORDER BY seq DESC LIMIT ?",
-    )
-    .all(jobId, beforeSeq ?? Number.MAX_SAFE_INTEGER, rows + 1);
-  return progressTail(historicalRawProgress(raw), rows, sourceFrontier);
-}
-
-/** Only opening is classified here: the read runs outside this source's error scope, so no failure can be misattributed. */
-export function visitHistoricalProgress<T>(
-  view: JobLocationView,
-  epochKey: string,
-  read: (source: ProgressSource) => T,
-): ProgressVisitResult<T> {
-  const source = historicalSources.get(view)?.get(epochIdentity(epochKey));
-  if (!source || source.retired)
-    return { kind: 'unreadable', disposition: source?.retired ? 'retired' : 'transient-unknown' };
-  if (!readers[source.fingerprint]) return { kind: 'unreadable', disposition: 'settled-unreadable' };
-  let release: (() => void) | null = null;
-  let db: SqliteDatabasePort | null = null;
-  try {
-    let frontier: number;
-    try {
-      const epoch = resolveHistoricalAddress(source, epochKey);
-      if (observeHistoricalPath(source, epochKey, epoch) === 'absent')
-        return { kind: 'unreadable', disposition: 'retired' };
-      release = acquireSharedFileLockNoRepairSync(join(dirname(epoch.path), STORE_LOCK_FILE_NAME));
-      verifyHistoricalIdentity(source, epochKey, epoch);
-      db = source.storage.openSqliteDatabaseSync(epoch.path, { readOnly: true });
-      db.exec('BEGIN');
-      frontier = (db.prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get() as { seq: number }).seq;
-    } catch (error) {
-      if (isCodeDefect(error)) throw error;
-      return {
-        kind: 'unreadable',
-        disposition: sourceReadFailureDisposition(error),
-        reason: 'Historical progress cannot be observed',
-      };
-    }
-    const opened = db;
-    return {
-      kind: 'read',
-      value: read({
-        after: (id, after, rows) => readHistoricalProgressPage(opened, id, after, rows, frontier),
-        before: (id, before, rows) => readHistoricalProgressTail(opened, id, before, rows, frontier),
-      }),
-    };
-  } finally {
-    db?.close();
-    release?.();
   }
 }

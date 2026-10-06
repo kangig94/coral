@@ -5,7 +5,7 @@ import { admitted } from '#tests/helpers/wait-session.js';
 
 const lines = (from: number, to: number, prefix: string): Array<[number, string]> =>
   Array.from({ length: to - from + 1 }, (_, i) => [from + i, `${prefix}${from + i}`]);
-const unknown = (jobId: string): WaitAdmission => ({ jobId, disposition: 'discovery-unknown', message: 'retry' });
+const unknown = (jobId: string): WaitAdmission => ({ jobId, disposition: 'unknown', message: 'retry' });
 
 it('a resolved member in another epoch keeps its unread lines when two unresolved members resolve together', () => {
   const s1 = new WaitSession(['u', 'v', 'a']);

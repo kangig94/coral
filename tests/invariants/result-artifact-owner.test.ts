@@ -46,7 +46,7 @@ it('keeps jobs independent of the workflow domain through the injected report po
 it.each<[string, string[]]>([
   ['src/jobs/wait/contract.ts', ['./cursor.js', './session.js']],
   ['src/cli/format/wait.ts', ['./result-availability.js']],
-  ['src/coordinator/lifecycle.ts', ['../jobs/retention-clock.js']],
+  ['src/coordinator/lifecycle.ts', ['../jobs/export-retention.js']],
 ])('keeps owner-specific APIs out of foreign re-exports in %s', (path, owners) => {
   const source = parsed.get(resolve(root, path))!;
   const reexports = source.statements.flatMap((node) =>

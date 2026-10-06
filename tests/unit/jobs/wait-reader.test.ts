@@ -3,7 +3,7 @@ import { testProgressVisit, observeWaitRead } from '#tests/helpers/wait-progress
 import { createTerminalExportFixture } from '#tests/helpers/terminal-export.js';
 import { WaitCoordinator } from '#src/jobs/shell/wait.js';
 import { JobAddressing } from '#src/jobs/addressing.js';
-import { waitEpochToken, waitJobHash } from '#src/jobs/wait/cursor.js';
+import { waitJobHash } from '#src/jobs/wait/cursor.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { readWaitSession } from '#src/jobs/wait/reader.js';
@@ -18,8 +18,7 @@ import { admitted, savedCursor } from '#tests/helpers/wait-session.js';
 import type { WaitStreamEvent, WaitCursor } from '#src/jobs/wait/contract.js';
 
 import { advanceWaitRenderCursor, parseWaitStreamEventValue } from '#src/jobs/wait/stream-event.js';
-import { isFinalWaitEvent, type ProgressVisit } from '#src/jobs/wait/contract.js';
-import { progressPage, progressTail } from '#src/jobs/wait/progress-page.js';
+import { isFinalWaitEvent, type ProgressVisit, type WaitProgressRow } from '#src/jobs/wait/contract.js';
 import { waitCursorForJobs } from '#src/jobs/wait/cursor.js';
 import { progressVisitFromEvents } from '#tests/helpers/wait-progress.js';
 import { serializeWaitCursor } from '#src/jobs/wait/cursor.js';
@@ -158,8 +157,8 @@ it.each(['snapshot-to-stream', 'stream-to-snapshot'])(
   'exchanges real %s readers when unresolved U joins below A frontier',
   async (direction) => {
     const a = admitted('a', [[100, 'a100']]);
-    a.availability = { kind: 'repair-pending', ageUncertain: false };
-    const unresolved: WaitAdmission[] = [a, { jobId: 'u', disposition: 'discovery-unknown' }];
+    a.availability = { kind: 'pending' };
+    const unresolved: WaitAdmission[] = [a, { jobId: 'u', disposition: 'unknown' }];
     let cursor: WaitCursor;
     if (direction === 'snapshot-to-stream') {
       const session = new WaitSession(['a', 'u']);
@@ -208,19 +207,17 @@ it.each(['snapshot-to-stream', 'stream-to-snapshot'])(
       expect(snapshot.notices.some((notice) => notice.includes('membership changed'))).toBe(false);
       cursor = snapshot.cursor;
     }
-    expect(cursor.jobs.some((job) => job.flags === 3)).toBe(true);
+    expect(cursor.jobs).toContainEqual({ hash: waitJobHash('a'), seq: 1000 });
   },
 );
 
-it('delivers a second terminal after an acknowledged sibling and returns the set failure code while draining progress', async () => {
+it('delivers a second terminal after a collected sibling and returns the set failure code', async () => {
   const a = admitted('a', [[1, 'older']], true, 'epoch-E', true);
+  a.availability = { kind: 'pending' };
   const b = admitted('b', [[2, 'other']]);
-  const session = new WaitSession(['a', 'b']);
-  session.reconcile([a, b]);
-  session.acknowledge(a);
   const events = await collect(
     readWaitSession({
-      request: { jobIds: ['a', 'b'], cursor: session.cursor() },
+      request: { jobIds: ['a', 'b'], cursor: savedCursor({ a: 1000 }) },
       time: new VirtualTime(),
       read: observeWaitRead(() => [a, b]),
       visit: testProgressVisit,
@@ -229,7 +226,7 @@ it('delivers a second terminal after an acknowledged sibling and returns the set
   expect(events.filter((event) => event.type === 'terminal')).toEqual([
     expect.objectContaining({ jobId: 'b', exitCode: 42 }),
   ]);
-  expect(events.filter((event) => event.type === 'progress')).toHaveLength(2);
+  expect(events.filter((event) => event.type === 'progress').map((event) => event.message)).toEqual(['other']);
 });
 
 it.each(['delayed', 'throws'])(
@@ -259,16 +256,12 @@ it.each(['delayed', 'throws'])(
   },
 );
 
-it('returns artifact settlement without replaying the terminal and re-evaluates mid-wait dispositions', async () => {
+it('delivers a collected terminal again once its artifact settles and re-evaluates mid-wait dispositions', async () => {
   const a = admitted('a');
-  a.availability = { kind: 'repair-pending', ageUncertain: false };
-  const session = new WaitSession(['a']);
-  session.reconcile([a]);
-  session.acknowledge(a);
   a.availability = { kind: 'available', resultPath: '/settled/a' };
   const events = await collect(
     readWaitSession({
-      request: { jobIds: ['a'], cursor: session.cursor() },
+      request: { jobIds: ['a'], cursor: savedCursor({ a: 1000 }) },
       time: new VirtualTime(),
       read: observeWaitRead(() => [a]),
       visit: testProgressVisit,
@@ -276,7 +269,7 @@ it('returns artifact settlement without replaying the terminal and re-evaluates 
   );
   expect(events).toEqual([
     expect.objectContaining({
-      type: 'artifact',
+      type: 'terminal',
       availability: { kind: 'available', resultPath: '/settled/a' },
       exitCode: 0,
       remainingJobIds: [],
@@ -288,7 +281,9 @@ it('returns artifact settlement without replaying the terminal and re-evaluates 
     request: { jobIds: ['u'], timeoutSeconds: 1 },
     time,
     read: observeWaitRead(() =>
-      closure ? [{ jobId: 'u', disposition: 'outcome-unrecoverable' }] : [admitted('u', [], false, 'old-epoch')],
+      closure
+        ? [{ jobId: 'u', disposition: 'unreadable', message: 'No terminal was recorded' }]
+        : [admitted('u', [], false, 'old-epoch')],
     ),
     visit: testProgressVisit,
   });
@@ -297,18 +292,18 @@ it('returns artifact settlement without replaying the terminal and re-evaluates 
   closure = true;
   time.tick(250);
   await flushMicrotasks(20);
-  await expect(next).resolves.toMatchObject({ value: { type: 'disposition', disposition: 'outcome-unrecoverable' } });
+  await expect(next).resolves.toMatchObject({ value: { type: 'disposition', disposition: 'unreadable' } });
   await expect(nextDelivered(stream)).resolves.toMatchObject({
     value: { type: 'waiting', waitingJobIds: [], exitCode: 1 },
   });
   await stream.return(undefined);
 });
 
-it('resets membership resolved during a bounded wait and preserves acknowledged artifact state', async () => {
+it('positions a member resolved during a bounded wait and keeps a collected pending sibling', async () => {
   const a = admitted('a', [[100, 'a100']]);
-  a.availability = { kind: 'repair-pending', ageUncertain: false };
+  a.availability = { kind: 'pending' };
   const previous = new WaitSession(['a', 'u']);
-  previous.reconcile([a, { jobId: 'u', disposition: 'discovery-unknown' }]);
+  previous.reconcile([a, { jobId: 'u', disposition: 'unknown' }]);
   const saved = selectWaitSnapshot(previous, 20).cursor;
   const time = new VirtualTime();
   let resolved = false;
@@ -317,11 +312,11 @@ it('resets membership resolved during a bounded wait and preserves acknowledged 
     time,
     read: observeWaitRead(() => [
       a,
-      resolved ? admitted('u', [[2, 'u2']], false) : { jobId: 'u', disposition: 'discovery-unknown' },
+      resolved ? admitted('u', [[2, 'u2']], false) : { jobId: 'u', disposition: 'unknown' },
     ]),
     visit: testProgressVisit,
   });
-  expect((await nextDelivered(stream)).value).toMatchObject({ type: 'disposition', disposition: 'discovery-unknown' });
+  expect((await nextDelivered(stream)).value).toMatchObject({ type: 'disposition', disposition: 'unknown' });
   const next = nextDelivered(stream);
   await flushMicrotasks(20);
   resolved = true;
@@ -333,7 +328,12 @@ it('resets membership resolved during a bounded wait and preserves acknowledged 
   time.tick(1000);
   expect((await final).value).toMatchObject({
     type: 'waiting',
-    cursor: { jobs: [expect.objectContaining({ flags: 3 }), expect.objectContaining({ flags: 0 })] },
+    cursor: {
+      jobs: [
+        { hash: waitJobHash('a'), seq: 1000 },
+        { hash: waitJobHash('u'), seq: 2 },
+      ],
+    },
   });
   await stream.return(undefined);
 });
@@ -417,17 +417,14 @@ it('resets membership resolved during a bounded wait and preserves acknowledged 
     const events = await result;
     expect(events.at(-1)).toMatchObject({ type: 'waiting', carrierUnknownJobIds: ['live-job'] });
   });
-  it('preserves input acknowledgement and artifact flags after an initial non-admission', () => {
+  it('keeps an input collection after an initial non-admission', () => {
     const job = admitted('a');
-    job.availability = { kind: 'repair-pending', ageUncertain: false };
-    const first = new WaitSession(['a']);
-    first.reconcile([job]);
-    first.acknowledge(job);
-    const resumed = new WaitSession(['a'], first.cursor());
-    resumed.reconcile([{ jobId: 'a', disposition: 'discovery-unknown' }]);
+    job.availability = { kind: 'pending' };
+    const resumed = new WaitSession(['a'], savedCursor({ a: 1000 }));
+    resumed.reconcile([{ jobId: 'a', disposition: 'unknown' }]);
     resumed.reconcile([job]);
-    expect(resumed.acknowledged('a')).toBe(true);
-    expect(resumed.artifactPending('a')).toBe(true);
+    expect(resumed.collected(job)).toBe(true);
+    expect(resumed.remaining()).toEqual(['a']);
   });
   it('does not report an undelivered sibling failure in a terminal event', async () => {
     const jobs = [admitted('a'), admitted('b', [], true, 'epoch-E', true)];
@@ -445,19 +442,16 @@ it('resets membership resolved during a bounded wait and preserves acknowledged 
     });
     await stream.return(undefined);
   });
-  it('settles an all-collected stream without an empty waiting continuation', async () => {
+  it('settles an all-collected stream by delivering its settled terminal again, never an empty continuation', async () => {
     const job = admitted('a');
-    const first = new WaitSession(['a']);
-    first.reconcile([job]);
-    first.acknowledge(job);
     const stream = readWaitSession({
-      request: { jobIds: ['a'], cursor: first.cursor() },
+      request: { jobIds: ['a'], cursor: savedCursor({ a: 1000 }) },
       time: new VirtualTime(),
       read: observeWaitRead(() => [job]),
       visit: testProgressVisit,
     });
     const events = await collect(stream);
-    expect(events).toEqual([expect.objectContaining({ type: 'waiting', waitingJobIds: [], exitCode: 0 })]);
+    expect(events).toEqual([expect.objectContaining({ type: 'terminal', remainingJobIds: [], exitCode: 0 })]);
     expect(formatWaitWaiting({ type: 'waiting', waitingJobIds: [] }, 'invalid')).toBe('Wait complete; no jobs remain.');
   });
   it('accepts additive coordinator response fields while rejecting terminal data on carrier interruptions', () => {
@@ -504,9 +498,7 @@ it('resets membership resolved during a bounded wait and preserves acknowledged 
     ).toContain('\n> Result path: forged');
   });
   it('names a runnable smaller snapshot retry with the unchanged input cursor', () => {
-    const input = {
-      jobs: [{ hash: waitJobHash('a'), epoch: waitEpochToken('epoch-E'), seq: 7, lineOffset: 0, flags: 0 }],
-    };
+    const input = savedCursor({ a: 7 });
     const session = new WaitSession(['a', 'b'], input);
     session.reconcile([
       { jobId: 'a', disposition: 'missing', message: 'x'.repeat(2 * 1024 * 1024) },
@@ -560,9 +552,7 @@ it('crosses a timer boundary before returning an immediate internal deadline wit
 });
 
 it('retries an unknown historical read on a bounded schedule, then exits 75 unresolved', async () => {
-  const a = admitted('a', [], false);
-  a.sourceRead = 'transient-unknown';
-  a.progressUnknown = true;
+  const a: WaitAdmission = { jobId: 'a', disposition: 'unknown', epochKey: 'epoch-H', message: 'source busy' };
   let monotonic = 0n;
   const sleep = vi.fn(async (ms: number) => {
     monotonic += BigInt(ms);
@@ -579,8 +569,9 @@ it('retries an unknown historical read on a bounded schedule, then exits 75 unre
   expect(sleep.mock.calls.map(([ms]) => ms)).toEqual([250, 1000, 5000]);
   expect(read).toHaveBeenCalledTimes(4);
   expect(events.at(-1)).toMatchObject({ type: 'waiting', exitCode: 75, waitingJobIds: ['a'] });
-  expect(events.find((event) => event.type === 'notice')).toMatchObject({
-    message: expect.stringContaining('exit 75'),
+  expect(events.find((event) => event.type === 'disposition')).toMatchObject({
+    disposition: 'unknown',
+    message: 'source busy',
   });
 });
 
@@ -610,12 +601,7 @@ it('preserves a terminal sibling backlog across a transient epoch hold in stream
     true,
     'epoch-H',
   );
-  const u = {
-    ...admitted('U', [], false, 'epoch-H'),
-    detail: undefined,
-    sourceRead: 'transient-unknown' as const,
-    progressUnknown: true,
-  };
+  const u: WaitAdmission = { jobId: 'U', disposition: 'unknown', epochKey: 'epoch-H', message: 'held' };
   const events = await collect(
     readWaitSession({
       request: { jobIds: ['A', 'U'], timeoutSeconds: 0 },
@@ -625,26 +611,18 @@ it('preserves a terminal sibling backlog across a transient epoch hold in stream
     }),
   );
   expect(events.find((event) => event.type === 'terminal')).toMatchObject({ remainingJobIds: ['U'] });
-  expect(
-    events.some((event) => event.type === 'notice' && event.message.includes('U') && event.message.includes('is held')),
-  ).toBe(true);
+  expect(events).toContainEqual(expect.objectContaining({ type: 'disposition', jobId: 'U', disposition: 'unknown' }));
   const session = new WaitSession(['A', 'U']);
   session.reconcile([a, u]);
   const snapshot = selectWaitSnapshot(session, 20);
   expect(snapshot.remainingJobIds).toEqual(['U']);
-  expect(snapshot.notices.some((notice) => notice.includes('U') && notice.includes('is held'))).toBe(true);
+  expect(snapshot.jobs[1]).toMatchObject({ disposition: 'unknown', message: 'held' });
 });
 
 it('does not shorten a live sibling window after transient source retries', async () => {
   let mono = 0n;
   const live = admitted('LIVE', [], false, 'epoch-A');
-  const unknown: WaitAdmission = {
-    jobId: 'X',
-    disposition: 'admitted',
-    epochKey: 'epoch-H',
-    sourceRead: 'transient-unknown',
-    progressUnknown: true,
-  };
+  const unknown: WaitAdmission = { jobId: 'X', disposition: 'unknown', epochKey: 'epoch-H' };
   const events = await collect(
     readWaitSession({
       request: { jobIds: ['LIVE', 'X'], timeoutSeconds: 589 },
@@ -664,12 +642,8 @@ it('does not shorten a live sibling window after transient source retries', asyn
   expect(events.at(-1)).toMatchObject({ type: 'waiting', waitingJobIds: ['LIVE', 'X'] });
 });
 
-it('settles a permanently unreadable retained outcome after delivery instead of keeping it in every continuation', async () => {
-  const job = {
-    ...admitted('h', [], true, 'epoch-OLD'),
-    sourceRead: 'settled-unreadable' as const,
-    progressUnknown: true,
-  };
+it('settles a retained outcome from a previous store epoch after delivery instead of keeping it in every continuation', async () => {
+  const job: WaitAdmission = { ...admitted('h', [], true, 'epoch-OLD'), historical: true };
   const first = await collect(
     readWaitSession({
       request: { jobIds: ['h'], timeoutSeconds: 0 },
@@ -683,14 +657,11 @@ it('settles a permanently unreadable retained outcome after delivery instead of 
   session.reconcile([job]);
   const snapshot = selectWaitSnapshot(session);
   expect(snapshot).toMatchObject({ exitCode: 0, remainingJobIds: [] });
-  expect(snapshot.notices.join(' ')).toContain('cannot be read by this build');
-  expect(snapshot.notices.join(' ')).not.toContain('no longer kept');
+  expect(snapshot.notices).toEqual(['Progress from a previous store epoch is not shown for h.']);
 });
 
 it('a settled source ends a wait on the first poll without a continuation', async () => {
-  const read = vi.fn((): WaitAdmission[] => [
-    { jobId: 'U', disposition: 'outcome-unreadable', sourceRead: 'settled-unreadable' },
-  ]);
+  const read = vi.fn((): WaitAdmission[] => [{ jobId: 'U', disposition: 'unreadable', message: 'cannot decode' }]);
   const events = await collect(
     readWaitSession({
       request: { jobIds: ['U'] },
@@ -724,13 +695,11 @@ it('rate limits idle carrier observation across forty polls', async () => {
   await stream.return(undefined);
 });
 
-it('admitted, unknown, admitted retains one acknowledged terminal in a resumed stream', async () => {
+it('admitted, unknown, admitted retains one collected terminal in a resumed stream', async () => {
   const a = admitted('a');
-  const first = new WaitSession(['a']);
-  first.reconcile([a]);
-  first.acknowledge(a);
-  const middle = new WaitSession(['a'], first.cursor());
-  middle.reconcile([{ jobId: 'a', disposition: 'discovery-unknown' }]);
+  a.availability = { kind: 'pending' };
+  const middle = new WaitSession(['a'], savedCursor({ a: 1000 }));
+  middle.reconcile([{ jobId: 'a', disposition: 'unknown' }]);
   const events = await collect(
     readWaitSession({
       request: { jobIds: ['a'], cursor: middle.cursor(), timeoutSeconds: 0 },
@@ -740,7 +709,7 @@ it('admitted, unknown, admitted retains one acknowledged terminal in a resumed s
     }),
   );
   expect(events.filter((event) => event.type === 'terminal')).toEqual([]);
-  expect(events.at(-1)).toMatchObject({ type: 'waiting', exitCode: 0 });
+  expect(events.at(-1)).toMatchObject({ type: 'waiting', exitCode: 75, waitingJobIds: ['a'] });
 });
 
 it('a fresh bounded poll selects every job tail across a shared epoch without intervening backlog', async () => {
@@ -779,12 +748,7 @@ describe('discovery retry preserves interleaved progress', () => {
   }
 
   it('preserves unread progress after one transient member read failure', async () => {
-    const cursor: WaitCursor = {
-      jobs: [
-        { hash: waitJobHash('a'), epoch: waitEpochToken('epoch-E'), seq: 4, lineOffset: 0, flags: 0 },
-        { hash: waitJobHash('b'), epoch: waitEpochToken('epoch-E'), seq: 4, lineOffset: 0, flags: 0 },
-      ],
-    };
+    const cursor: WaitCursor = savedCursor({ a: 4, b: 4 });
     let poll = 0;
     const a = admitted(
       'a',
@@ -802,12 +766,7 @@ describe('discovery retry preserves interleaved progress', () => {
       ],
       false,
     );
-    const bUnknown: WaitAdmission = {
-      jobId: 'b',
-      disposition: 'discovery-unknown',
-      sourceRead: 'transient-unknown',
-      message: 'EMFILE',
-    };
+    const bUnknown: WaitAdmission = { jobId: 'b', disposition: 'unknown', message: 'EMFILE' };
     const events = await collect(
       readWaitSession({
         request: { jobIds: ['a', 'b'], timeoutSeconds: 2, cursor },
@@ -830,12 +789,7 @@ describe('unknown first member preserves continuation', () => {
   }
 
   it('uses live epoch positions when the first member is transiently unknown', async () => {
-    const cursor: WaitCursor = {
-      jobs: [
-        { hash: waitJobHash('u'), epoch: waitEpochToken('epoch-E'), seq: 4, lineOffset: 0, flags: 0 },
-        { hash: waitJobHash('a'), epoch: waitEpochToken('epoch-E'), seq: 4, lineOffset: 0, flags: 0 },
-      ],
-    };
+    const cursor: WaitCursor = savedCursor({ u: 4, a: 4 });
     const a = admitted(
       'a',
       [
@@ -844,12 +798,7 @@ describe('unknown first member preserves continuation', () => {
       ],
       false,
     );
-    const u: WaitAdmission = {
-      jobId: 'u',
-      disposition: 'discovery-unknown',
-      sourceRead: 'transient-unknown',
-      message: 'EIO',
-    } as never;
+    const u: WaitAdmission = { jobId: 'u', disposition: 'unknown', message: 'EIO' };
     const run = async (c: WaitCursor) =>
       collect(
         readWaitSession({
@@ -977,23 +926,6 @@ function advancingTime() {
   };
 }
 
-it('cursorless snapshot omission retains the current tail watermark', () => {
-  const job = admitted(
-    'a',
-    [
-      [1, 'old'],
-      [30, 'x'.repeat(4000)],
-    ],
-    false,
-  );
-  job.message = 'm'.repeat(2 * 1024 * 1024 - 2300);
-  const session = new WaitSession(['a']);
-  session.reconcile([job]);
-  const snapshot = selectWaitSnapshot(session, 1);
-  expect(snapshot.jobs[0].progress).toEqual([]);
-  expect(snapshot.cursor.jobs[0].seq).toBe(29);
-});
-
 it('does not spend unknown-read retries on a deferred poll', async () => {
   let poll = 0;
   const events = await collect(
@@ -1002,8 +934,8 @@ it('does not spend unknown-read retries on a deferred poll', async () => {
       time: advancingTime(),
       read: observeWaitRead(() => {
         poll++;
-        if (poll === 1) return [{ jobId: 'a', disposition: 'discovery-unknown' }];
-        if (poll < 5) return [{ jobId: 'a', disposition: 'discovery-unknown', observationDeferred: true }];
+        if (poll === 1) return [{ jobId: 'a', disposition: 'unknown' }];
+        if (poll < 5) return [{ jobId: 'a', disposition: 'unknown', observationDeferred: true }];
         return [admitted('a')];
       }),
       visit: testProgressVisit,
@@ -1013,16 +945,10 @@ it('does not spend unknown-read retries on a deferred poll', async () => {
   expect(poll).toBe(5);
 });
 
-it('carries the failed set code on the last progress batch before stream closure', async () => {
+it('carries the failed set code on the terminal that follows the last progress', async () => {
   const events = await collect(
     readWaitSession({
-      request: {
-        jobIds: ['a'],
-        timeoutSeconds: 0,
-        cursor: {
-          jobs: [{ hash: waitJobHash('a'), epoch: waitEpochToken('epoch-E'), seq: 4, lineOffset: 0, flags: 1 }],
-        },
-      },
+      request: { jobIds: ['a'], timeoutSeconds: 0, cursor: savedCursor({ a: 4 }) },
       time: new VirtualTime(),
       read: observeWaitRead(() => [
         admitted(
@@ -1039,8 +965,9 @@ it('carries the failed set code on the last progress batch before stream closure
       visit: testProgressVisit,
     }),
   );
+  expect(events.find((event) => event.type === 'progress')).toMatchObject({ message: 'last' });
   expect(events.find((event) => event.type === 'progress')).not.toHaveProperty('exitCode');
-  expect(events.at(-1)).toMatchObject({ type: 'waiting', exitCode: 42, cursor: { jobs: [] } });
+  expect(events.at(-1)).toMatchObject({ type: 'terminal', exitCode: 42, cursor: { jobs: [] } });
 });
 
 it('carries the refused set code before the completion notice', async () => {
@@ -1065,7 +992,7 @@ it('applies a cursorless tail when a member first becomes readable', async () =>
     time,
     read: observeWaitRead(() =>
       ++polls === 1
-        ? [{ jobId: 'a', disposition: 'discovery-unknown' }]
+        ? [{ jobId: 'a', disposition: 'unknown' }]
         : [
             admitted(
               'a',
@@ -1094,7 +1021,7 @@ it('persists tail selection across a snapshot of a held epoch', () => {
     false,
   );
   const held = new WaitSession(['a']);
-  held.reconcile([{ ...job, sourceRead: 'transient-unknown' }]);
+  held.reconcile([{ jobId: 'a', disposition: 'unknown' }]);
   const snapshot = selectWaitSnapshot(held, 20);
   const resumed = new WaitSession(['a'], snapshot.cursor);
   resumed.reconcile([job]);
@@ -1141,12 +1068,12 @@ it('shares stream admission and reads only a bounded tail or the requested epoch
           visit({
             after: (id, after, count) => {
               const page = source.after(id, after, count);
-              rows += page.rows.length;
+              rows += page.length;
               return page;
             },
-            before: (id, before, count) => {
-              const page = source.before(id, before, count);
-              rows += page.rows.length;
+            newest: (id, count) => {
+              const page = source.newest(id, count);
+              rows += page.length;
               return page;
             },
           }),
@@ -1184,7 +1111,7 @@ it('shares stream admission and reads only a bounded tail or the requested epoch
     const admittedRequest = Object.assign(request, { admissions: addressing.admitWait(request) });
     const events = await collect(addressing.waitStream(admittedRequest));
     expect(reads).toBe(1);
-    expect(rows).toBeLessThanOrEqual(41);
+    expect(rows).toBeLessThanOrEqual(21);
     const last = events.at(-1)!;
     rows = 0;
     const resumed = addressing.snapshot({
@@ -1198,7 +1125,7 @@ it('shares stream admission and reads only a bounded tail or the requested epoch
   }
 });
 
-it.each(['terminal', 'artifact', 'budget', 'deadline', 'all-refused', 'all-done'] as const)(
+it.each(['terminal', 'budget', 'deadline', 'all-refused', 'all-done'] as const)(
   '%s stream has exactly one final event, last, and non-final events carry no completion fields',
   async (kind) => {
     const job = admitted(
@@ -1206,19 +1133,7 @@ it.each(['terminal', 'artifact', 'budget', 'deadline', 'all-refused', 'all-done'
       kind === 'budget' ? Array.from({ length: 600 }, (_, index) => [index + 1, `line-${index}`]) : [],
       kind !== 'deadline' && kind !== 'budget',
     );
-    let cursor: WaitCursor | undefined;
-    if (kind === 'artifact' || kind === 'all-done')
-      cursor = {
-        jobs: [
-          {
-            hash: waitJobHash('a'),
-            epoch: waitEpochToken('epoch-E'),
-            seq: 0,
-            lineOffset: 0,
-            flags: kind === 'artifact' ? 3 : 1,
-          },
-        ],
-      };
+    const cursor: WaitCursor | undefined = kind === 'all-done' ? savedCursor({ a: 1000 }) : undefined;
     const events = await collectWithFrames(
       readWaitSession({
         request: { jobIds: ['a'], timeoutSeconds: 0, drainProgress: true, cursor },
@@ -1234,12 +1149,12 @@ it.each(['terminal', 'artifact', 'budget', 'deadline', 'all-refused', 'all-done'
       expect(event).not.toHaveProperty('exitCode');
       if (event.type !== 'cursor') expect(event).not.toHaveProperty('cursor');
     }
-    expect(events.at(-1)?.type).toBe(kind === 'terminal' ? 'terminal' : kind === 'artifact' ? 'artifact' : 'waiting');
+    expect(events.at(-1)?.type).toBe(kind === 'terminal' || kind === 'all-done' ? 'terminal' : 'waiting');
   },
 );
 
 it('rejects completion fields on progress and notices, and incomplete finals', () => {
-  const entry = { hash: waitJobHash('a'), epoch: waitEpochToken('epoch-E'), seq: 1, lineOffset: 0, flags: 0 };
+  const entry = { hash: waitJobHash('a'), seq: 1 };
   const progress = {
     type: 'progress',
     jobId: 'a',
@@ -1275,11 +1190,7 @@ it('an internal discuss-style waiter survives the bounded transient retry schedu
       request: { jobIds: ['a'], timeoutSeconds: 20 },
       internal: true,
       time,
-      read: observeWaitRead(() =>
-        readable
-          ? [admitted('a')]
-          : [{ jobId: 'a', disposition: 'discovery-unknown', sourceRead: 'transient-unknown' }],
-      ),
+      read: observeWaitRead(() => (readable ? [admitted('a')] : [{ jobId: 'a', disposition: 'unknown' }])),
       visit: testProgressVisit,
     }))
       events.push(event);
@@ -1305,8 +1216,6 @@ describe('a frontier the client holds is complete at every cut (K1)', () => {
   type Jobs = Record<string, ReturnType<typeof admitted>>;
   const jobsWith = (events: Record<string, Array<[number, string]>>): Jobs =>
     Object.fromEntries(Object.entries(events).map(([id, messages]) => [id, admitted(id, messages, false)]));
-  const frontierOf = (jobs: Jobs) =>
-    Math.max(0, ...Object.values(jobs).flatMap((job) => job.detail.events.map((event) => event.seq)));
 
   async function cutRun(jobs: Jobs, cursor: WaitCursor | undefined, cut: (event: WaitStreamEvent) => boolean) {
     const ids = Object.keys(jobs);
@@ -1316,10 +1225,7 @@ describe('a frontier the client holds is complete at every cut (K1)', () => {
       request: { jobIds: ids, timeoutSeconds: 0, ...(cursor ? { cursor: waitCursorForJobs(cursor, ids) } : {}) },
       time: new VirtualTime(),
       read: () => Object.values(jobs),
-      visit: progressVisitFromEvents(
-        (id) => jobs[id].detail.events,
-        () => frontierOf(jobs),
-      ),
+      visit: progressVisitFromEvents((id) => jobs[id].detail.events),
     })) {
       const event = parseWaitStreamEventValue(JSON.parse(JSON.stringify(raw))) as WaitStreamEvent;
       if (cut(event)) break;
@@ -1402,45 +1308,12 @@ describe('a frontier the client holds is complete at every cut (K1)', () => {
       afterQueued = event.type === 'queued';
       return false;
     });
-    expect(first.client).not.toHaveProperty('afterSeq');
-    expect(first.client?.jobs.map((entry) => entry.hash).sort()).toEqual([waitJobHash('Q'), waitJobHash('R')].sort());
+    expect(first.client).toEqual({ jobs: [] });
     const second = await cutRun(jobs, first.client, () => false);
     expect(delivered(second.shown, 'R')).toEqual(history.slice(-20).map(([, message]) => `R:${message}`));
   });
 
-  it('acknowledges a terminal only on an entry that names its epoch, in stream and snapshot', async () => {
-    const time = new VirtualTime();
-    let poll = 0;
-    const read = (): WaitAdmission[] =>
-      ++poll === 1
-        ? [{ jobId: 'u', disposition: 'discovery-unknown', sourceRead: 'transient-unknown', message: 'held' }]
-        : [{ ...admitted('u', [], true, 'epoch-H'), sourceRead: 'transient-unknown', progressUnknown: true }];
-    const events: WaitStreamEvent[] = [];
-    const run = (async () => {
-      for await (const event of readWaitSession({
-        request: { jobIds: ['u'], timeoutSeconds: 60 },
-        time,
-        read: observeWaitRead(read),
-        visit: testProgressVisit,
-      }))
-        events.push(event);
-    })();
-    await flushMicrotasks(20);
-    time.tick(300);
-    await flushMicrotasks(50);
-    await run;
-    const terminal = events.find((event) => event.type === 'terminal');
-    if (terminal?.type !== 'terminal') throw new Error('expected a terminal');
-    expect(terminal.cursor.jobs[0].epoch).toBe(waitEpochToken('epoch-H'));
-    expect(terminal.cursor.jobs[0].flags & 1).toBe(1);
-    expect(() => parseWaitStreamEventValue(JSON.parse(JSON.stringify(terminal)))).not.toThrow();
-    expect(() => serializeWaitCursor(terminal.cursor)).not.toThrow();
-    const session = new WaitSession(['u']);
-    session.reconcile(read());
-    expect(parseWaitSnapshot(selectWaitSnapshot(session)).jobs[0].epochToken).toBe(waitEpochToken('epoch-H'));
-  });
-
-  it('carries a silent fault-page advance in a cursor frame and emits no message for it', async () => {
+  it('carries a fault-row advance in a cursor frame and emits no message for it', async () => {
     const events = await collectWithFrames(
       readWaitSession({
         request: { jobIds: ['a'], timeoutSeconds: 0, cursor: savedCursor({ a: 5 }) },
@@ -1450,12 +1323,11 @@ describe('a frontier the client holds is complete at every cut (K1)', () => {
           kind: 'read',
           value: read({
             after: (_id, after, rows) =>
-              progressPage(
-                [51, 52, 53].filter((seq) => seq > after).map((seq) => ({ seq })),
-                rows,
-                53,
-              ),
-            before: (_id, _before, rows) => progressTail([], rows, 53),
+              [51, 52, 53]
+                .filter((seq) => seq > after)
+                .slice(0, rows)
+                .map((seq) => ({ seq })),
+            newest: () => [],
           }),
         }),
       }),
@@ -1493,6 +1365,10 @@ it('drains an internal backlog page by page, never a whole history in one synchr
   const job = admitted(
     'a',
     Array.from({ length: 1200 }, (_, index) => [index + 1, `line ${index}`]),
+    true,
+    'epoch-E',
+    false,
+    1201,
   );
   const observed = progressVisitFromEvents(() => job.detail.events);
   let rows = 0;
@@ -1503,10 +1379,10 @@ it('drains an internal backlog page by page, never a whole history in one synchr
       read({
         after: (id, after, count) => {
           const page = source.after(id, after, count);
-          rows += page.rows.length;
+          rows += page.length;
           return page;
         },
-        before: (id, before, count) => source.before(id, before, count),
+        newest: (id, count) => source.newest(id, count),
       }),
     );
     largestVisit = Math.max(largestVisit, rows);
@@ -1523,15 +1399,15 @@ it('drains an internal backlog page by page, never a whole history in one synchr
   );
   expect(events.filter((event) => event.type === 'progress')).toHaveLength(1200);
   expect(events.at(-1)?.type).toBe('terminal');
-  expect(largestVisit).toBeLessThanOrEqual(501);
+  expect(largestVisit).toBeLessThanOrEqual(500);
 });
 
-describe('every poll reads within one raw-row allowance (F1)', () => {
+describe('each poll reads one page of rows per job', () => {
   const timing = { origin: 'runtime' as const, originAt: '', emittedAt: '', elapsedMs: 0 };
-  type Raw = { seq: number; progress?: { seq: number; message: string; timing: typeof timing } };
-  const message = (seq: number, text: string): Raw => ({ seq, progress: { seq, message: text, timing } });
-  const faults = (from: number, count: number): Raw[] => Array.from({ length: count }, (_, i) => ({ seq: from + i }));
-  const above = (raw: readonly Raw[], seq: number): number => {
+  const message = (seq: number, text: string): WaitProgressRow => ({ seq, message: text, timing });
+  const faults = (from: number, count: number): WaitProgressRow[] =>
+    Array.from({ length: count }, (_, i) => ({ seq: from + i }));
+  const above = (raw: readonly WaitProgressRow[], seq: number): number => {
     let low = 0;
     let high = raw.length;
     while (low < high) {
@@ -1541,8 +1417,8 @@ describe('every poll reads within one raw-row allowance (F1)', () => {
     }
     return low;
   };
-  /** Records the raw rows each poll reads, and whether a macrotask ran since the previous poll. */
-  function rowSource(rows: Record<string, readonly Raw[]>, frontier: number) {
+  /** Records the rows each poll reads, and whether a macrotask ran since the previous poll. */
+  function rowSource(rows: Record<string, readonly WaitProgressRow[]>) {
     const polls: { rows: number; afterMacrotask: boolean }[] = [];
     let macrotask = false;
     const visit: ProgressVisit = (_epoch, read) => {
@@ -1557,15 +1433,14 @@ describe('every poll reads within one raw-row allowance (F1)', () => {
         value: read({
           after: (id, after, count) => {
             const start = above(rows[id], after);
-            const raw = rows[id].slice(start, start + count + 1);
+            const raw = rows[id].slice(start, start + count);
             poll.rows += raw.length;
-            return progressPage(raw, count, frontier);
+            return raw;
           },
-          before: (id, before, count) => {
-            const end = before === null ? rows[id].length : above(rows[id], before - 1);
-            const raw = rows[id].slice(Math.max(0, end - count - 1), end).reverse();
+          newest: (id, count) => {
+            const raw = rows[id].slice(-count);
             poll.rows += raw.length;
-            return progressTail(raw, count, frontier);
+            return raw;
           },
         }),
       };
@@ -1583,13 +1458,13 @@ describe('every poll reads within one raw-row allowance (F1)', () => {
     };
   };
 
-  it('delivers first within 500 raw rows over 100,000 fault rows and yields a macrotask between slices', async () => {
-    const { visit, polls } = rowSource({ a: faults(1, 100_000) }, 100_001);
+  it('skips 100,000 fault rows in 500-row pages, yielding a macrotask between pages', async () => {
+    const { visit, polls } = rowSource({ a: faults(1, 100_000) });
     const stream = readWaitSession({
-      request: { jobIds: ['a'], timeoutSeconds: 0, cursor: savedCursor({ a: 0 }, 'E') },
+      request: { jobIds: ['a'], timeoutSeconds: 0, cursor: savedCursor({ a: 0 }) },
       internal: true,
       time: new VirtualTime(),
-      read: () => [admitted('a', [], true, 'E')],
+      read: () => [admitted('a', [], true, 'E', false, 100_001)],
       visit,
     });
     const first = await stream.next();
@@ -1602,73 +1477,18 @@ describe('every poll reads within one raw-row allowance (F1)', () => {
     expect(polls.slice(1).every((poll) => poll.afterMacrotask)).toBe(true);
     expect(events.filter((event) => event.type === 'progress')).toEqual([]);
     const frames = events.filter((event) => event.type === 'cursor');
-    expect(frames.at(-1)).toMatchObject({ cursor: savedCursor({ a: 100_001 }, 'E') });
+    expect(frames.at(-1)).toMatchObject({ cursor: savedCursor({ a: 100_000 }) });
     expect(events.at(-1)).toMatchObject({ type: 'terminal', jobId: 'a' });
-  });
-
-  it('positions a cursorless tail over a fault-dense history in bounded slices and lands on the true tail', async () => {
-    const lines = Array.from({ length: 40 }, (_, i) => message(i + 1, `line-${i + 1}`));
-    const { visit, polls } = rowSource({ a: [...lines, ...faults(41, 30_000)] }, 30_040);
-    const events = await collectWithFrames(
-      readWaitSession({
-        request: { jobIds: ['a'], timeoutSeconds: 60 },
-        time: steppedTime(),
-        read: () => [admitted('a', [], true, 'E')],
-        visit,
-      }),
-    );
-    expect(events.filter((event) => event.type === 'progress').map((event) => event.message)).toEqual(
-      Array.from({ length: 20 }, (_, i) => `line-${i + 21}`),
-    );
-    expect(events).toContainEqual({
-      type: 'notice',
-      message: 'Earlier progress for a was not shown; showing the most recent lines.',
-    });
-    expect(events.at(-1)).toMatchObject({ type: 'terminal', jobId: 'a', remainingJobIds: [] });
-    expect(polls.length).toBeGreaterThan(60);
-    expect(polls.every((poll) => poll.rows <= 500)).toBe(true);
-  });
-
-  it('reads each row of a fault-dense tail once when its scan resumes across the polls of one stream', async () => {
-    const lines = Array.from({ length: 40 }, (_, i) => message(i + 1, `line-${i + 1}`));
-    const { visit, polls } = rowSource({ a: [...lines, ...faults(41, 30_000)] }, 30_040);
-    await collectWithFrames(
-      readWaitSession({
-        request: { jobIds: ['a'], timeoutSeconds: 60 },
-        time: steppedTime(),
-        read: () => [admitted('a', [], true, 'E')],
-        visit,
-      }),
-    );
-    // One backward pass reads the 30,040 rows plus a lookahead row per 32-row page; the tail it found is never re-read.
-    expect(polls.reduce((sum, poll) => sum + poll.rows, 0)).toBeLessThan(32_000);
-  });
-
-  it('reads few rows it then discards when a few large rows fill each poll', async () => {
-    const large = 'x'.repeat(8 * 1024);
-    const rows = Array.from({ length: 600 }, (_, i) => message(i + 1, `${i + 1} ${large}`));
-    const { visit, polls } = rowSource({ a: rows }, 600);
-    const events = await collectWithFrames(
-      readWaitSession({
-        request: { jobIds: ['a'], timeoutSeconds: 60, cursor: savedCursor({ a: 0 }, 'E') },
-        internal: true,
-        time: steppedTime(),
-        read: () => [admitted('a', [], true, 'E')],
-        visit,
-      }),
-    );
-    expect(events.filter((event) => event.type === 'progress')).toHaveLength(600);
-    expect(polls.reduce((sum, poll) => sum + poll.rows, 0)).toBeLessThan(3 * 600);
   });
 
   it.each([
     ['700 lines', Array.from({ length: 700 }, (_, i) => `line-${i}`).join('\n')],
     ['100 KiB of lines', Array.from({ length: 100 }, (_, i) => `${i} ${'y'.repeat(1024)}`).join('\n')],
   ])('delivers a row of %s to an internal reader as one message', async (_label, text) => {
-    const { visit } = rowSource({ a: [message(1, text)] }, 1);
+    const { visit } = rowSource({ a: [message(1, text)] });
     const events = await collectWithFrames(
       readWaitSession({
-        request: { jobIds: ['a'], timeoutSeconds: 60, cursor: savedCursor({ a: 0 }, 'E') },
+        request: { jobIds: ['a'], timeoutSeconds: 60, cursor: savedCursor({ a: 0 }) },
         internal: true,
         time: steppedTime(),
         read: () => [admitted('a', [], true, 'E')],
@@ -1678,8 +1498,8 @@ describe('every poll reads within one raw-row allowance (F1)', () => {
     expect(events.filter((event) => event.type === 'progress').map((event) => event.message)).toEqual([text]);
   });
 
-  it('delivers every line exactly once when a stream is cut at any event across slices', async () => {
-    const history: Record<string, Raw[]> = {
+  it('delivers every line at least once, and nothing else, when a stream is cut at any event', async () => {
+    const history: Record<string, WaitProgressRow[]> = {
       a: [0, 1, 2, 3, 4].flatMap((i) => [
         message(1 + i * 701, i === 2 ? 'a-2a\na-2b' : `a-${i}`),
         ...faults(2 + i * 701, 700),
@@ -1692,10 +1512,14 @@ describe('every poll reads within one raw-row allowance (F1)', () => {
       b: ['b-0', 'b-1', 'b-2'],
       c: ['c-0', 'c-1', 'c-2', 'c-3', 'c-4'],
     };
-    const jobs = [admitted('a', [], true, 'E1'), admitted('b', [], true, 'E1'), admitted('c', [], true, 'E2')];
+    const jobs = [
+      admitted('a', [], true, 'E1', false, 20_000),
+      admitted('b', [], true, 'E1', false, 20_000),
+      admitted('c', [], true, 'E2', false, 20_000),
+    ];
     const run = async (cut: number) => {
-      const { visit } = rowSource(history, 10_405);
-      let cursor: WaitCursor | undefined = savedCursor({ a: 0, b: 0 }, 'E1');
+      const { visit } = rowSource(history);
+      let cursor: WaitCursor | undefined = savedCursor({ a: 0, b: 0, c: 0 });
       let ids = ['a', 'b', 'c'];
       let events = 0;
       const printed: Record<string, string[]> = { a: [], b: [], c: [] };
@@ -1728,7 +1552,10 @@ describe('every poll reads within one raw-row allowance (F1)', () => {
     expect(uncut.ids).toEqual([]);
     for (let cut = 0; cut <= uncut.events; cut++) {
       const result = await run(cut);
-      expect({ cut, printed: result.printed, ids: result.ids }).toEqual({ cut, printed: expected, ids: [] });
+      expect(result.ids).toEqual([]);
+      for (const [jobId, lines] of Object.entries(expected)) {
+        expect(new Set(result.printed[jobId])).toEqual(new Set(lines));
+      }
     }
   });
 });
@@ -1737,7 +1564,7 @@ it('opens a continuation from a positioned cursor with a frame, so a fold that s
   let client: WaitCursor | undefined;
   const types: string[] = [];
   for await (const event of readWaitSession({
-    request: { jobIds: ['j'], cursor: savedCursor({ j: 0 }, 'E'), timeoutSeconds: 1, drainProgress: true },
+    request: { jobIds: ['j'], cursor: savedCursor({ j: 0 }), timeoutSeconds: 1, drainProgress: true },
     time: new VirtualTime(),
     read: observeWaitRead(() => [
       admitted(
@@ -1757,5 +1584,5 @@ it('opens a continuation from a positioned cursor with a frame, so a fold that s
     if (event.type === 'progress') break;
   }
   expect(types).toEqual(['cursor', 'progress']);
-  expect(client).toEqual(savedCursor({ j: 1 }, 'E'));
+  expect(client).toEqual(savedCursor({ j: 1 }));
 });

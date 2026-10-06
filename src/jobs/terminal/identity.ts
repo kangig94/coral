@@ -5,6 +5,7 @@ import { jobTerminalSchema } from './result.js';
 import { isDeepStrictEqual } from 'node:util';
 import type { JobDetailResponse, JobTerminal, JobTerminalEvent } from '../records.js';
 import { phaseForOutcome } from '../outcome.js';
+import { isTerminalPhase } from '../phase.js';
 
 function commonSchema(schema: z.ZodTypeAny): z.ZodTypeAny {
   if (schema instanceof z.ZodObject)
@@ -41,7 +42,7 @@ export function sameTerminal(left: JobTerminal, right: JobTerminal): boolean {
   );
 }
 
-/** A retained outcome must agree with every present copy before it is delivered. */
+/** A terminal is recorded only when every copy its detail carries agrees with it. */
 export function validatedTerminal(
   detail: JobDetailResponse,
   jobId: string,
@@ -77,41 +78,20 @@ export function validatedTerminal(
   return terminal;
 }
 
-export function hasReadableTerminalDetail(location: JobLocation): boolean {
-  if (
-    location.disposition !== 'terminal' ||
-    location.terminalSeq === undefined ||
-    location.detail.kind !== 'recorded'
-  ) {
-    return false;
-  }
-  const detail = location.detail.value;
+/** A record's retained terminal, read structurally: its copies were checked against each other when it was recorded. */
+export function retainedTerminal(location: JobLocation): JobTerminalEvent | null {
+  if (location.disposition !== 'terminal' || location.terminalSeq === undefined || location.detail.kind !== 'recorded')
+    return null;
+  const { status, events, exit } = location.detail.value;
+  if (status.jobId !== location.jobId || !isTerminalPhase(status.phase) || exit === null) return null;
   return (
-    detail.status.projectRoot === location.subject.projectRoot &&
-    detail.status.workDir === location.subject.workDir &&
-    detail.status.jobKind === location.subject.jobKind &&
-    validatedTerminal(detail, location.jobId, location.epochKey, location.terminalSeq) !== null
+    events.find(
+      (event): event is JobTerminalEvent =>
+        event.type === 'terminal' && event.jobId === location.jobId && event.seq === location.terminalSeq,
+    ) ?? null
   );
 }
 
-const observedTerminals = new WeakMap<JobLocation, JobTerminalEvent | null>();
-
-/** Read observations live only as long as the stored location view that owns them. */
-export function readRetainedTerminal(location: JobLocation): JobTerminalEvent | null {
-  if (observedTerminals.has(location)) return observedTerminals.get(location) ?? null;
-  const terminal =
-    location.disposition === 'terminal' &&
-    location.terminalSeq !== undefined &&
-    location.detail.kind === 'recorded' &&
-    location.detail.value.status.projectRoot === location.subject.projectRoot &&
-    location.detail.value.status.workDir === location.subject.workDir &&
-    location.detail.value.status.jobKind === location.subject.jobKind
-      ? validatedTerminal(location.detail.value, location.jobId, location.epochKey, location.terminalSeq)
-      : null;
-  observedTerminals.set(location, terminal);
-  return terminal;
-}
-
-export function hasObservedTerminalDetail(location: JobLocation): boolean {
-  return readRetainedTerminal(location) !== null;
+export function hasReadableTerminalDetail(location: JobLocation): boolean {
+  return retainedTerminal(location) !== null;
 }

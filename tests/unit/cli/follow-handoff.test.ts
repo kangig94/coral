@@ -5,16 +5,10 @@ import type * as HandoffNoticeModule from '#src/cli/handoff-notice.js';
 import type * as HandoffRunnerModule from '#src/coordinator/handoff-routing/runner.js';
 import type { AcceptedLaunchResponse } from '#src/jobs/launch.js';
 import { type WaitStreamEvent } from '#src/jobs/wait/contract.js';
-import { serializeWaitCursor, waitEpochToken, waitJobHash } from '#src/jobs/wait/cursor.js';
+import { serializeWaitCursor, waitJobHash } from '#src/jobs/wait/cursor.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 
-const entry = (seq: number) => ({
-  hash: waitJobHash('job-1'),
-  epoch: waitEpochToken('epoch-E'),
-  seq,
-  lineOffset: 0,
-  flags: 0,
-});
+const entry = (seq: number) => ({ hash: waitJobHash('job-1'), seq });
 const frame: WaitStreamEvent = { type: 'cursor', cursor: { jobs: [entry(3)] } };
 
 const mockState = vi.hoisted(() => ({
@@ -179,7 +173,7 @@ describe('cli follow handoff', () => {
         secondRunStarted.resolve();
         expect(progressAcknowledged).toBe(false);
         expect(operation).toEqual({
-          kind: 'follow-job',
+          kind: 'wait-jobs',
           jobId: 'job-1',
           serializedCursor: serializeWaitCursor({ jobs: [entry(4)] }),
         });
@@ -438,7 +432,7 @@ describe('cli follow handoff', () => {
     expect(text).not.toContain('Aborted jobs: job-1');
   });
 
-  it('mirrors a delegated follow ending 75 after a Ctrl+C without retrying, since a terminal may carry 75', async () => {
+  it('mirrors a delegated wait ending 75 after a Ctrl+C without retrying, since a terminal may carry 75', async () => {
     const handoff = createDeferred<HandoffRunnerModule.HandoffRunResult>();
     const runStarted = createDeferred<void>();
     vi.spyOn(process.stdout, 'write').mockImplementation(((
@@ -457,7 +451,11 @@ describe('cli follow handoff', () => {
     const { launchAndFollow } = await import('#src/cli/follow.js');
     const follow = launchAndFollow(makeOptions());
     await runStarted.promise;
-    expect(mockState.runHandoff.mock.calls[0][0]).toEqual({ kind: 'follow-job', jobId: 'job-1' });
+    expect(mockState.runHandoff.mock.calls[0][0]).toEqual({
+      kind: 'wait-jobs',
+      jobId: 'job-1',
+      serializedCursor: serializeWaitCursor({ jobs: [] }),
+    });
 
     sigintHandler?.();
     handoff.resolve(recorded({ kind: 'delegated', version: '2.0.0', outcome: { kind: 'handoff-exit', exitCode: 75 } }));

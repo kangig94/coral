@@ -412,7 +412,6 @@ function createCoordinatorJournalAssembly({
         },
         resultPathFor(runtime.paths.coral.exports.jobsRoot, jobId),
         seq,
-        progressStore.getDb(),
       );
     },
   );

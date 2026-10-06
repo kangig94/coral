@@ -6,7 +6,7 @@ import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
 import { admitted } from '#tests/helpers/wait-session.js';
 
 it('fresh stream: CLI render decisions keep every line of a multi-line message', async () => {
-  let cursor: any = { afterSeq: 0 };
+  let cursor: WaitCursor | undefined;
   const rendered: string[] = [];
   for await (const event of readWaitSession({
     request: { jobIds: ['a'], timeoutSeconds: 0 },
@@ -27,19 +27,18 @@ it('fresh stream: CLI render decisions keep every line of a multi-line message',
   })) {
     const d = advanceWaitRenderCursor(cursor, event);
     cursor = d.cursor;
-    if (d.shouldRender && event.type === 'progress') rendered.push(event.message);
+    if (d.shouldRender && event.type === 'progress') rendered.push(...event.message.split('\n'));
   }
 
   expect(rendered).toEqual(['one', 'two-a', 'two-b', 'two-c', 'three']);
 });
 
-import type { WaitCursor, ProgressVisit, WaitStreamEvent } from '#src/jobs/wait/contract.js';
+import type { WaitCursor, ProgressVisit, WaitProgressRow, WaitStreamEvent } from '#src/jobs/wait/contract.js';
 import { isFinalWaitEvent } from '#src/jobs/wait/contract.js';
-import { progressPage, progressTail, type RawProgressRow } from '#src/jobs/wait/progress-page.js';
 import { prefixCursor } from '#tests/helpers/wait-progress.js';
 
-it.each([0, 1, 250, 499, 500, 501, 630])(
-  'resumes exactly after cut %i across jobs, epochs, multiline rows and faults',
+it.each([0, 1, 100, 199, 200, 201, 209])(
+  'resumes after cut %i across jobs, epochs, multiline rows and faults, losing and inventing no line',
   async (cut) => {
     const timing = { origin: 'runtime' as const, originAt: '', emittedAt: '', elapsedMs: 0 };
     const messages = new Map([
@@ -63,11 +62,11 @@ it.each([0, 1, 250, 499, 500, 501, 630])(
       ...admitted(id, rows, true, id === 'c' ? 'E2' : 'E1'),
       detail: { ...admitted(id, rows, true, id === 'c' ? 'E2' : 'E1').detail, terminalSeq: 2000 },
     }));
-    const raw = new Map<string, RawProgressRow[]>(
+    const raw = new Map<string, WaitProgressRow[]>(
       [...messages].map(([id, rows]) => [
         id,
         rows
-          .flatMap(([seq, message]) => [{ seq, progress: { seq, message, timing } }, { seq: seq + 1 }])
+          .flatMap(([seq, message]): WaitProgressRow[] => [{ seq, message, timing }, { seq: seq + 1 }])
           .sort((a, b) => a.seq - b.seq),
       ]),
     );
@@ -75,25 +74,11 @@ it.each([0, 1, 250, 499, 500, 501, 630])(
       kind: 'read',
       value: read({
         after: (id, after, count) =>
-          progressPage(
-            raw
-              .get(id)!
-              .filter((row) => row.seq > after)
-              .slice(0, count + 1),
-            count,
-            2000,
-          ),
-        before: (id, before, count) =>
-          progressTail(
-            raw
-              .get(id)!
-              .filter((row) => before === null || row.seq < before)
-              .slice()
-              .reverse()
-              .slice(0, count + 1),
-            count,
-            2000,
-          ),
+          raw
+            .get(id)!
+            .filter((row) => row.seq > after)
+            .slice(0, count),
+        newest: (id, count) => raw.get(id)!.slice(-count),
       }),
     });
     let cursor: WaitCursor | undefined = prefixCursor(jobs);
@@ -102,7 +87,8 @@ it.each([0, 1, 250, 499, 500, 501, 630])(
     const fold = (event: WaitStreamEvent) => {
       const decision = advanceWaitRenderCursor(cursor, event);
       cursor = decision.cursor;
-      if (event.type === 'progress' && decision.shouldRender) printed.get(event.jobId)!.push(event.message);
+      if (event.type === 'progress' && decision.shouldRender)
+        printed.get(event.jobId)!.push(...event.message.split('\n'));
       if (isFinalWaitEvent(event)) ids = event.type === 'waiting' ? event.waitingJobIds : event.remainingJobIds;
     };
     const stream = () =>
@@ -122,7 +108,7 @@ it.each([0, 1, 250, 499, 500, 501, 630])(
     for (let requests = 0; ids.length && requests < 10; requests++) for await (const event of stream()) fold(event);
     expect(ids).toEqual([]);
     for (const [id, rows] of messages)
-      expect(printed.get(id)).toEqual(rows.flatMap(([, message]) => message.split('\n')));
+      expect(new Set(printed.get(id))).toEqual(new Set(rows.flatMap(([, message]) => message.split('\n'))));
   },
 );
 
@@ -134,7 +120,7 @@ it('delivering a readable member preserves a transient sibling frontier for its 
       request: { jobIds: ['a', 'b'], timeoutSeconds: 0, cursor },
       time: new VirtualTime(),
       read: observeWaitRead(() =>
-        jobs.map((job) => (job.jobId === 'b' && held ? { ...job, sourceRead: 'transient-unknown' as const } : job)),
+        jobs.map((job) => (job.jobId === 'b' && held ? { jobId: 'b', disposition: 'unknown' as const } : job)),
       ),
       visit: testProgressVisit,
     }))

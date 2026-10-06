@@ -226,10 +226,9 @@ function handleWaitEvent(
       state.cursor = advanceWaitRenderCursor(state.cursor, event).cursor;
       return 'handled';
     case 'notice':
-    case 'artifact':
       return 'handled';
     case 'disposition': {
-      if (event.disposition === 'discovery-unknown') return 'handled';
+      if (event.disposition === 'unknown') return 'handled';
       const atom = state.pending.get(event.jobId);
       if (!atom) return 'handled';
       // The refused child stays pending, so the abort includes it and its drain obligation outlives this refusal.

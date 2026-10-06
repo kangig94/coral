@@ -1,5 +1,4 @@
-import type { SourceReadDisposition } from './session.js';
-import type { ProgressPage, TailPage } from './progress-page.js';
+import type { SourceReadDisposition } from '../source-read.js';
 import type { JobTerminal } from '../records.js';
 import type { ContinuitySnapshot } from '../../sessions/continuity.js';
 import type { JobProgressTiming } from '../event-bodies.js';
@@ -9,16 +8,14 @@ import type { WaitAdmission } from './session.js';
 import type { UsageSummary } from '../../providers/contract.js';
 
 export const WAIT_SNAPSHOT_BYTES = 2 * 1024 * 1024;
+/** The progress budget one bounded request, one snapshot, or one unbounded poll delivers at most. */
+export const WAIT_PROGRESS_LINES = 500;
+export const WAIT_PROGRESS_BYTES = 64 * 1024;
 
 export const WAIT_FOR_JOB_TERMINAL_TIMEOUT_MS = 30_000;
 
-export type WaitCursorEntry = Readonly<{
-  hash: string;
-  epoch: string | null;
-  seq: number;
-  lineOffset: number;
-  flags: number;
-}>;
+/** A job's seq is the last of its rows fully consumed; a seq at or past its terminal means the outcome was collected. */
+export type WaitCursorEntry = Readonly<{ hash: string; seq: number }>;
 /** The one wait frontier shape: an entry per job and no version tag. Any other shape is refused, never translated. */
 export type WaitCursor = Readonly<{ jobs: readonly WaitCursorEntry[] }>;
 
@@ -81,7 +78,6 @@ export type WaitStreamEvent =
       disposition: Exclude<WaitAdmission['disposition'], 'admitted'>;
       message?: string;
     }
-  | (Final & { type: 'artifact'; jobId: string; availability: ResultAvailability; remainingJobIds: string[] })
   | (ProgressWaitEvent & { entry: WaitCursorEntry })
   | (QueuedWaitEventBase & { jobKind: 'provider'; sessionId: string })
   | (QueuedWaitEventBase & { jobKind: 'workflow'; workflowId: string })
@@ -92,8 +88,8 @@ export type WaitStreamEvent =
 
 export function isFinalWaitEvent(
   event: WaitStreamEvent,
-): event is Extract<WaitStreamEvent, { type: 'terminal' | 'artifact' | 'waiting' }> {
-  return event.type === 'terminal' || event.type === 'artifact' || event.type === 'waiting';
+): event is Extract<WaitStreamEvent, { type: 'terminal' | 'waiting' }> {
+  return event.type === 'terminal' || event.type === 'waiting';
 }
 
 /** A handover notice tells the subscriber the clean end that follows is not final; it reconnects to the successor. */
@@ -127,9 +123,14 @@ export interface JobWaitPort {
   waitStreamOnce(jobId: string, timeoutMs?: number): Promise<WaitStreamOnceResult>;
 }
 
+/** A progress row without a message is a fault row: a reader skips it in order, past it like any consumed row. */
+export type WaitProgressRow = Readonly<{ seq: number; message?: string; timing?: JobProgressTiming }>;
+
 export interface ProgressSource {
-  after(jobId: string, afterSeq: number, rows: number): ProgressPage;
-  before(jobId: string, beforeSeq: number | null, rows: number): TailPage;
+  /** The job's rows after `afterSeq`, oldest first, at most `rows` of them. */
+  after(jobId: string, afterSeq: number, rows: number): readonly WaitProgressRow[];
+  /** The job's newest `rows` rows, oldest first. */
+  newest(jobId: string, rows: number): readonly WaitProgressRow[];
 }
 export type ProgressVisitResult<T> =
   | { kind: 'read'; value: T }

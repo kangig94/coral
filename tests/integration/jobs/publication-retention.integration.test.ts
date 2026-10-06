@@ -2,18 +2,16 @@ import { sharedFixture } from '#tests/helpers/shared-fixtures.js';
 import { fork, type ChildProcess } from 'node:child_process';
 import { existsSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { createRequire } from 'node:module';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   createTerminalExportFixture,
   TERMINAL_EXPORT_CUTOFF,
   TERMINAL_EXPORT_NOW,
 } from '#tests/helpers/terminal-export.js';
-import { pruneJobExports } from '#src/jobs/export-retention.js';
+import { pruneJobExports, readExportJobState } from '#src/jobs/export-retention.js';
 import { seedHistoricalEpoch } from '#src/jobs/historical-reader.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { JobLocationIndex } from '#src/jobs/location-index.js';
-import type { JobLocation } from '#src/jobs/location-index.js';
 import { initTestJob } from '#tests/helpers/session.js';
 import { commitJobTerminal } from '#tests/helpers/job-commits.js';
 import { aggregateWorkflowUsage } from '#src/jobs/workflow-usage.js';
@@ -22,14 +20,6 @@ const fixtures: ReturnType<typeof createTerminalExportFixture>[] = [];
 const children: ChildProcess[] = [];
 let publisher: string;
 let kbBundle: string;
-const releasedReaders = new Map<
-  string,
-  {
-    JobLocationIndex: new (...args: ConstructorParameters<typeof JobLocationIndex>) => {
-      read(id: string): JobLocation | null;
-    };
-  }
->();
 function fixture(kind: 'provider' | 'workflow' = 'provider') {
   const f = createTerminalExportFixture(kind, true);
   fixtures.push(f);
@@ -40,8 +30,6 @@ beforeAll(() => {
   fixture();
   publisher = sharedFixture('publisher');
   kbBundle = sharedFixture('kb-host');
-  for (const version of ['v0.10.16', 'v0.10.17', 'v0.10.18'])
-    releasedReaders.set(version, createRequire(import.meta.url)(sharedFixture(version)));
 });
 
 afterAll(() => {
@@ -65,8 +53,7 @@ async function prune(f: ReturnType<typeof fixture>) {
     cutoff: Number(readFileSync(join(f.root, 'clock'), 'utf8')) - 14 * 86_400_000,
     afterId: '',
     budget: { canContinue: () => true, record: () => {} },
-    jobState: () => ({ kind: 'absent' }),
-    eligibility: (id) => f.index.terminalEligibility(id),
+    jobState: (id) => readExportJobState(f.db, f.store, id),
     resultHold: () => 'released',
     mutate: (operation) => operation(),
   });
@@ -128,8 +115,8 @@ describe('publication and retention under Revision S1', () => {
     const f = fixture();
     f.complete({ terminalAt: TERMINAL_EXPORT_CUTOFF });
     f.store.publishTerminalResult(f.jobId);
-    utimesSync(f.resultPath, new Date(TERMINAL_EXPORT_NOW - 1), new Date(TERMINAL_EXPORT_NOW - 1));
-    utimesSync(dirname(f.resultPath), new Date(TERMINAL_EXPORT_NOW - 1), new Date(TERMINAL_EXPORT_NOW - 1));
+    utimesSync(f.resultPath, new Date(TERMINAL_EXPORT_CUTOFF), new Date(TERMINAL_EXPORT_CUTOFF));
+    utimesSync(dirname(f.resultPath), new Date(TERMINAL_EXPORT_CUTOFF), new Date(TERMINAL_EXPORT_CUTOFF));
     f.advance(1);
     writeFileSync(join(f.root, 'clock'), String(TERMINAL_EXPORT_NOW + 1));
     await prune(f);
@@ -147,9 +134,11 @@ describe('publication and retention under Revision S1', () => {
     expect(existsSync(f.resultPath)).toBe(false);
     expect(f.index.resultDurable(f.jobId)).toBe(true);
     f.removeSource();
+    // A retired source leaves only the retained timestamp, which chooses the label and never discharges by age.
     const restarted = new JobLocationIndex(f.runtime, f.root);
-    expect(restarted.resultDurable(f.jobId)).toBe(true);
-    expect(restarted.terminalEligibility(f.jobId).kind).toBe('expired');
+    expect(restarted.terminalEligibility(f.jobId)).toEqual({ source: 'absent', age: 'unknown' });
+    f.store.configureResultExports(restarted);
+    expect(f.store.getResultExportOwner().observeResultAvailability(f.jobId).kind).toBe('retained-away');
   });
 
   it('hydrates canonical workflow outcome, diagnostics and active-policy usage despite export failure and stale projection', () => {
@@ -177,7 +166,6 @@ describe('publication and retention under Revision S1', () => {
       .run(JSON.stringify({ progressFaults: [], warnings: ['stale projection'] }), f.jobId);
     const sourceLocation = JSON.parse(readFileSync(f.locationPath, 'utf8'));
     delete sourceLocation.detail;
-    delete sourceLocation.terminalAge;
     sourceLocation.disposition = 'unresolved';
     writeFileSync(f.locationPath, JSON.stringify(sourceLocation));
     const write = f.runtime.storage.writeAtomicDurableSync;
@@ -195,14 +183,10 @@ describe('publication and retention under Revision S1', () => {
         f.runtime.storage,
       ).kind,
     ).toBe('uncertified');
-    expect(f.store.getResultExportOwner().observeResultAvailability(f.jobId)).toMatchObject({
-      kind: 'failed',
-      cause: 'repair-failed',
-      retryScheduled: true,
-    });
+    expect(f.store.getResultExportOwner().observeResultAvailability(f.jobId)).toEqual({ kind: 'pending' });
     const restarted = new JobLocationIndex(f.runtime, f.root, f.index.workflowReport);
     f.store.configureResultExports(restarted);
-    expect(f.store.getResultExportOwner().observeResultAvailability(f.jobId).kind).toBe('repair-pending');
+    expect(f.store.getResultExportOwner().observeResultAvailability(f.jobId).kind).toBe('pending');
     f.store.configureResultExports(f.index);
     const location = f.index.read(f.jobId);
     expect(location?.detail.kind).toBe('recorded');
@@ -210,7 +194,6 @@ describe('publication and retention under Revision S1', () => {
     expect(location.detail.value.status.phase).toBe('completed');
     expect(location.detail.value.exit?.diagnostics.warnings).toBeUndefined();
     expect(location.detail.value.exit?.diagnostics.usage).toEqual(expected);
-    expect(location.terminalAge).toMatchObject({ kind: 'known' });
     expect(f.index.read('child-1')?.detail.kind).toBe('recorded');
     expect(existsSync(f.index.resultPathFor('child-1'))).toBe(true);
     vi.restoreAllMocks();
@@ -227,43 +210,5 @@ describe('publication and retention under Revision S1', () => {
       f.runtime.storage,
     );
     expect(readFileSync(f.resultPath, 'utf8')).toContain('middle output');
-  });
-
-  it('preserves identical-timestamp known versus regressed evidence through pruning, compaction, source loss and released readers', async () => {
-    const known = fixture();
-    const regressed = fixture();
-    known.complete({ terminalAt: TERMINAL_EXPORT_CUTOFF - 1, precedingAt: TERMINAL_EXPORT_CUTOFF - 2 });
-    regressed.complete({ terminalAt: TERMINAL_EXPORT_CUTOFF - 1, precedingAt: TERMINAL_EXPORT_CUTOFF + 1 });
-    for (const f of [known, regressed]) {
-      f.db.prepare('DELETE FROM events WHERE seq = 1').run();
-      const record = JSON.parse(readFileSync(f.locationPath, 'utf8'));
-      record.detail.events.unshift({
-        type: 'progress',
-        jobId: f.jobId,
-        sessionId: 'session-1',
-        seq: 1,
-        ts: record.detail.exit.endTime,
-        message: 'old',
-        timing: {
-          elapsedMs: 0,
-          origin: 'launch',
-          originAt: record.detail.exit.endTime,
-          emittedAt: record.detail.exit.endTime,
-        },
-      });
-      writeFileSync(f.locationPath, JSON.stringify(record));
-      await f.index.compactTerminalRecords('', { canContinue: () => true, record: () => {} }, (operation) =>
-        operation(),
-      );
-      expect(f.index.read(f.jobId)?.terminalAge).toEqual(record.terminalAge);
-      expect(f.index.terminalEligibility(f.jobId).age).toBe(
-        record.terminalAge.kind === 'known' ? record.terminalAge.terminalAt : 'regression',
-      );
-      for (const reader of releasedReaders.values())
-        expect(new reader.JobLocationIndex(f.runtime, f.root).read(f.jobId)?.detail.kind).toBe('recorded');
-      f.removeSource();
-    }
-    expect(new JobLocationIndex(known.runtime, known.root).resultDurable(known.jobId)).toBe(true);
-    expect(new JobLocationIndex(regressed.runtime, regressed.root).resultDurable(regressed.jobId)).toBe(false);
   });
 });

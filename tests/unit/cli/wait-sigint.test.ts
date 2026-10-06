@@ -3,10 +3,9 @@ import { Command } from 'commander';
 import { afterEach, expect, it, vi } from 'vitest';
 import { followJobs } from '#src/cli/follow.js';
 import { WaitInvocation, waitInvocationMode } from '#src/cli/wait-invocation.js';
-import { decodeSerializedWaitCursor, serializeWaitCursor } from '#src/jobs/wait/cursor.js';
+import { serializeWaitCursor } from '#src/jobs/wait/cursor.js';
 import { readWaitSession } from '#src/jobs/wait/reader.js';
-import { progressPage, progressTail, type RawProgressRow } from '#src/jobs/wait/progress-page.js';
-import type { ProgressVisit, WaitCursor } from '#src/jobs/wait/contract.js';
+import type { ProgressVisit, WaitCursor, WaitProgressRow } from '#src/jobs/wait/contract.js';
 import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
 import { admitted } from '#tests/helpers/wait-session.js';
 import { IpcRequestTimeout } from '#src/transport/ipc/client.js';
@@ -427,7 +426,7 @@ it('keeps a failed terminal exit when the budget ends while that final event is 
             jobId: 'a',
             seq: 9,
             remainingJobIds: [],
-            availability: { kind: 'repair-pending', ageUncertain: false },
+            availability: { kind: 'pending' },
             result: { content: 'boom', outcome: { kind: 'provider_exit', code: 3 }, durationMs: 1 },
             cursor: { jobs: [] },
             exitCode: 3,
@@ -448,7 +447,7 @@ it('keeps a failed terminal exit when the budget ends while that final event is 
 it('terminates a repeated cursor-reset refusal after retrying without the cursor once', async () => {
   capture();
   const budget = invocation();
-  const error = new Error('bad cursor', { cause: { code: 'wait_cursor_mismatch', message: 'bad cursor' } });
+  const error = new Error('bad cursor', { cause: { code: 'wait_cursor_malformed', message: 'bad cursor' } });
   const connect = vi.fn(async () => {
     if (connect.mock.calls.length > 3) throw new Error('cursor reset did not converge');
     throw error;
@@ -508,28 +507,20 @@ it('does not print a second continuation when a snapshot write callback crosses 
   expect(output.match(/Run coral-cli/g)).toHaveLength(1);
 });
 
-it('resumes from a cursor frame cut before the first rendered line, delivering lines 81-120 exactly once', async () => {
+it('prints a cursorless continuation for a cut before the first rendered line, which reads the newest lines again', async () => {
   const stdout = capture();
   const budget = invocation();
   const timing = { origin: 'runtime' as const, originAt: '', emittedAt: '', elapsedMs: 0 };
-  const raw: RawProgressRow[] = Array.from({ length: 100 }, (_, i) => ({
+  const raw: WaitProgressRow[] = Array.from({ length: 100 }, (_, i) => ({
     seq: i + 1,
-    progress: { seq: i + 1, message: `line-${i + 1}`, timing },
+    message: `line-${i + 1}`,
+    timing,
   }));
   const visit: ProgressVisit = (_epoch, read) => ({
     kind: 'read',
     value: read({
-      after: (_id, after, rows) =>
-        progressPage(raw.filter((row) => row.seq > after).slice(0, rows + 1), rows, raw.length),
-      before: (_id, before, rows) =>
-        progressTail(
-          raw
-            .filter((row) => before === null || row.seq < before)
-            .reverse()
-            .slice(0, rows + 1),
-          rows,
-          raw.length,
-        ),
+      after: (_id, after, rows) => raw.filter((row) => row.seq > after).slice(0, rows),
+      newest: (_id, rows) => raw.slice(-rows),
     }),
   });
   const read = () => [admitted('a', [], false, 'E')];
@@ -553,7 +544,7 @@ it('resumes from a cursor frame cut before the first rendered line, delivering l
         close: async () => {},
         async *[Symbol.asyncIterator]() {
           const first = await stream().next();
-          expect(first.value).toMatchObject({ type: 'cursor', cursor: { jobs: [{ seq: 80 }] } });
+          expect(first.value).toMatchObject({ type: 'cursor', cursor: { jobs: [] } });
           yield first.value;
           process.emit('SIGINT');
           await new Promise<void>(() => {});
@@ -562,17 +553,9 @@ it('resumes from a cursor frame cut before the first rendered line, delivering l
     }),
   });
   expect(code).toBe(75);
-  const printed = /--cursor (\S+) to continue/.exec(stdout())?.[1];
-  expect(printed).toBeDefined();
-  const decoded = decodeSerializedWaitCursor(printed as string);
-  if (decoded.kind !== 'decoded') throw new Error('expected the printed frame cursor');
-  raw.push(
-    ...Array.from({ length: 20 }, (_, i) => ({
-      seq: i + 101,
-      progress: { seq: i + 101, message: `line-${i + 101}`, timing },
-    })),
-  );
+  expect(stdout()).toContain('Run coral-cli wait jobs a to continue waiting.');
+  raw.push(...Array.from({ length: 20 }, (_, i) => ({ seq: i + 101, message: `line-${i + 101}`, timing })));
   const resumed: string[] = [];
-  for await (const event of stream(decoded.cursor)) if (event.type === 'progress') resumed.push(event.message);
-  expect(resumed).toEqual(Array.from({ length: 40 }, (_, i) => `line-${i + 81}`));
+  for await (const event of stream()) if (event.type === 'progress') resumed.push(event.message);
+  expect(resumed).toEqual(Array.from({ length: 20 }, (_, i) => `line-${i + 101}`));
 });

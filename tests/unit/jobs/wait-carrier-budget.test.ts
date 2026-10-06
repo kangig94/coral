@@ -1,6 +1,6 @@
 import { testProgressVisit, observeWaitRead } from '#tests/helpers/wait-progress.js';
 import { it, expect } from 'vitest';
-import { waitEpochToken, waitJobHash } from '#src/jobs/wait/cursor.js';
+import { waitJobHash } from '#src/jobs/wait/cursor.js';
 import { readWaitSession } from '#src/jobs/wait/reader.js';
 import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
 import { admitted } from '#tests/helpers/wait-session.js';
@@ -10,9 +10,7 @@ const lines = (from: number, to: number, prefix: string): Array<[number, string]
 
 it('a live job with a >500-line backlog is reported carrier-unconfirmed on a continuation', async () => {
   // Earlier wait consumed through seq 10.
-  const cursor = {
-    jobs: [{ hash: waitJobHash('a'), epoch: waitEpochToken('E'), seq: 10, lineOffset: 0, flags: 0 }],
-  };
+  const cursor = { jobs: [{ hash: waitJobHash('a'), seq: 10 }] };
   const events: unknown[] = [];
   for await (const event of readWaitSession({
     request: { jobIds: ['a'], cursor, timeoutSeconds: 3 },

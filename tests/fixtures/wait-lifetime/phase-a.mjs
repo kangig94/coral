@@ -4,11 +4,10 @@ import { createConnection } from 'node:net';
 import { join } from 'node:path';
 import { createHttpHandler } from '#src/transport/http/handler.js';
 import { createIpcServer, closeIpcServer } from '#src/transport/ipc/server.js';
-import { decodeWaitCursor, waitEpochToken, waitJobHash } from '#src/jobs/wait/cursor.js';
+import { decodeWaitCursor, waitJobHash } from '#src/jobs/wait/cursor.js';
 import { serializeWaitCursor, waitCursorForJobs } from '#src/jobs/wait/cursor.js';
 import { formatWaitWaiting } from '#src/cli/format/wait.js';
 import { WaitSession } from '#src/jobs/wait/session.js';
-import { progressPage, progressTail } from '#src/jobs/wait/progress-page.js';
 import { WaitCoordinator } from '#src/jobs/shell/wait.js';
 import { VirtualTime, flushMicrotasks } from '#tools/simulation/core/virtual-time.js';
 
@@ -23,7 +22,7 @@ if (scenario === 'observer') {
     launchQueue: { reservationFor: () => null, getActiveJobIds: () => [] },
     loadJobWaitDetail: () => ({ status: { jobId: 'known', phase: 'running' }, runtime: null, exit: null }),
     readJobLastSeq: () => null,
-    visitProgress: (_epoch, read) => ({kind: 'read', value: read({after: () => progressPage([], 500, 0), before: () => progressTail([], 20, 0)})}),
+    visitProgress: (_epoch, read) => ({ kind: 'read', value: read({ after: () => [], newest: () => [] }) }),
     aggregateWorkflowUsage: () => undefined,
     getCurrentJournalSeq: () => 0,
     resultJobsRoot: '/unused',
@@ -34,7 +33,7 @@ if (scenario === 'observer') {
   const nextFinal = async () => {
     for (;;) {
       const next = await stream.next();
-      if (next.done || ['terminal', 'artifact', 'waiting'].includes(next.value.type)) return next;
+      if (next.done || ['terminal', 'waiting'].includes(next.value.type)) return next;
     }
   };
   const first = nextFinal();
@@ -62,7 +61,7 @@ const hold = new Promise((resolve) => {
 });
 const noOp = () => {};
 const stub = new Proxy({}, { get: () => noOp });
-const entry = (jobId) => ({ hash: waitJobHash(jobId), epoch: waitEpochToken('epoch'), seq: 42, lineOffset: 0, flags: 0 });
+const entry = (jobId) => ({ hash: waitJobHash(jobId), seq: 42 });
 const cursor = { jobs: [entry('known'), entry('ghost')] };
 const ports = {
   identity: {
@@ -93,7 +92,6 @@ const ports = {
   jobs: {
     unknownJobDisposition: () => 'not-found',
     admitWait: (req) => req.jobIds.map((jobId) => ({ jobId, epochKey: 'epoch', disposition: scenario === 'missing' && jobId === 'ghost' ? 'missing' : 'admitted' })),
-    validateWait: () => null,
     scopeCheck: () => ({ valid: ['known'], missing: scenario === 'missing' ? ['ghost'] : [], mismatch: [] }),
     waitHandoverSignal: () => handover.signal,
     async *waitStream(req) {

@@ -1,6 +1,4 @@
-import { WAIT_SNAPSHOT_BYTES, type ProgressVisit, type WaitCursor } from '#src/jobs/wait/contract.js';
-import { progressPage, progressTail } from '#src/jobs/wait/progress-page.js';
-import { ACKNOWLEDGED_FLAG, TAIL_SCAN_FLAG } from '#src/jobs/wait/cursor.js';
+import type { ProgressVisit, WaitCursor } from '#src/jobs/wait/contract.js';
 import { prefixCursor } from '#tests/helpers/wait-progress.js';
 import { describe, expect, it, vi } from 'vitest';
 import { WaitSession } from '#src/jobs/wait/session.js';
@@ -8,7 +6,7 @@ import { parseWaitSnapshot, selectWaitSnapshot as selectWaitSnapshotFrom } from 
 import { selectWaitSnapshot } from '#tests/helpers/wait-progress.js';
 import { formatJobDetail } from '#src/cli/format/jobs.js';
 import { formatWaitSnapshot } from '#src/cli/format/wait.js';
-import { admitted, savedCursor } from '#tests/helpers/wait-session.js';
+import { admitted } from '#tests/helpers/wait-session.js';
 
 function collect(jobs: ReturnType<typeof admitted>[], lines?: number) {
   const session = new WaitSession(
@@ -20,26 +18,25 @@ function collect(jobs: ReturnType<typeof admitted>[], lines?: number) {
 }
 
 describe('wait snapshot', () => {
-  it('keeps first-read tail positioning when a terminal is acknowledged during a transient progress read', () => {
+  it('holds a terminal behind a transient progress read and keeps its first-read tail for the next read', () => {
     const job = admitted(
       'held',
       Array.from({ length: 30 }, (_, i) => [i + 1, `line${i + 1}`]),
     );
-    job.sourceRead = 'transient-unknown';
+    const busy: ProgressVisit = () => ({ kind: 'unreadable', disposition: 'transient-unknown' });
     const firstSession = new WaitSession(['held']);
     firstSession.reconcile([job]);
-    const first = selectWaitSnapshot(firstSession);
-    expect(first.jobs[0].terminal).toBeDefined();
+    const first = selectWaitSnapshotFrom(firstSession, 20, busy);
+    expect(first.jobs[0].terminal).toBeUndefined();
     expect(first.jobs[0].progress).toEqual([]);
     expect(first.remainingJobIds).toEqual(['held']);
-    expect(first.cursor.jobs[0]).toMatchObject({ seq: 0, lineOffset: 0, flags: 5 });
+    expect(first.cursor.jobs).toEqual([]);
 
-    job.sourceRead = 'readable';
     const resumed = new WaitSession(['held'], first.cursor);
     resumed.reconcile([job]);
     const second = selectWaitSnapshot(resumed);
     expect(second.jobs[0].progress).toEqual(Array.from({ length: 20 }, (_, i) => `line${i + 11}`));
-    expect(second.jobs[0].terminal).toBeUndefined();
+    expect(second.jobs[0].terminal).toBeDefined();
     expect(second.remainingJobIds).toEqual([]);
   });
 
@@ -51,29 +48,24 @@ describe('wait snapshot', () => {
         false,
       ),
     );
-    // 128 tails of two lines and a lookahead row each fit the 500-row allowance; a third line would not.
+    // 128 tails share 500 lines, so each shows three.
     const snapshot = collect(jobs, 20);
-    expect(snapshot.jobs.every((job) => job.progress.length === 2)).toBe(true);
+    expect(snapshot.jobs.every((job) => job.progress.length === 3)).toBe(true);
     expect(snapshot.notices).toEqual(expect.arrayContaining([expect.stringContaining('was not shown')]));
-    expect(snapshot.jobs[0].progress).toEqual(['line6', 'line7']);
+    expect(snapshot.jobs[0].progress).toEqual(['line5', 'line6', 'line7']);
     expect(snapshot.exitCode).toBe(75);
   });
 
-  it('delivers one terminal summary with 500 lines, then exactly line 501 without outcome replay', () => {
+  it('cuts one row larger than the whole budget to it, marks the cut, and collects the outcome after it', () => {
     const a = admitted('a', [[1, Array.from({ length: 501 }, (_, i) => `${i + 1}`).join('\n')]]);
     const session = new WaitSession(['a'], prefixCursor([a]));
     session.reconcile([a]);
     const first = selectWaitSnapshot(session);
     expect(first.jobs[0].progress).toHaveLength(500);
+    expect(first.jobs[0].progress.at(-1)).toMatch(/^500\[line shortened: \d+ bytes omitted\]$/);
     expect(first.jobs[0].terminal).toBeDefined();
-    expect(first.remainingJobIds).toEqual(['a']);
-    const resumed = new WaitSession(['a'], first.cursor);
-    resumed.reconcile([a]);
-    const second = selectWaitSnapshot(resumed);
-    expect(second.jobs[0].progress).toEqual(['501']);
-    expect(second.jobs[0].terminal).toBeUndefined();
-    expect(second.jobs[0].alreadyCollected).toBe(true);
-    expect(second.exitCode).toBe(0);
+    expect(first.remainingJobIds).toEqual([]);
+    expect(first.exitCode).toBe(0);
   });
 
   it('shares the seq prefix between interleaved jobs and respects LF, empties, and byte budgets', () => {
@@ -89,11 +81,12 @@ describe('wait snapshot', () => {
     expect(Buffer.byteLength(snapshot.jobs[0].progress[3])).toBeLessThanOrEqual(4096);
     const limited = collect([admitted('a', [[1, Array.from({ length: 500 }, () => 'x'.repeat(4096)).join('\n')]])]);
     expect(limited.jobs[0].progress).toHaveLength(16);
-    expect(limited.remainingJobIds).toEqual(['a']);
+    expect(limited.jobs[0].progress.reduce((sum, line) => sum + Buffer.byteLength(line), 0)).toBeLessThanOrEqual(65536);
+    expect(limited.remainingJobIds).toEqual([]);
   });
 
-  it('shares a 500-line prefix across terminal siblings, then collects only the unread sibling without replaying outcomes', () => {
-    // Two lines per row reach the 500-line budget within the 500-row allowance; line501 is the one left over.
+  it('shares a 500-line budget across terminal siblings, then collects only the unread sibling', () => {
+    // Two lines per row reach the 500-line budget; line501 is the one left over.
     const messages = Array.from(
       { length: 251 },
       (_, i) => [i + 1, i === 250 ? 'line501' : `line${2 * i + 1}\nline${2 * i + 2}`] as [number, string],
@@ -113,7 +106,7 @@ describe('wait snapshot', () => {
     resumed.reconcile([a]);
     const second = selectWaitSnapshot(resumed);
     expect(second.jobs[0].progress).toEqual(['line501']);
-    expect(second.jobs[0].terminal).toBeUndefined();
+    expect(second.jobs[0].terminal).toBeDefined();
     expect(second.exitCode).toBe(0);
   });
 
@@ -136,7 +129,7 @@ describe('wait snapshot', () => {
     const a = admitted('a', [[1, 'line']], true, 'epoch-E', true);
     const session = new WaitSession(['a'], prefixCursor([a]));
     session.reconcile([a]);
-    session.acknowledge(a);
+    session.collect(a);
     expect(selectWaitSnapshot(session).exitCode).toBe(42);
   });
 
@@ -145,7 +138,7 @@ describe('wait snapshot', () => {
       const a = admitted(`j${i}`);
       a.detail.exit!.content = '🙂\\\"\n'.repeat(2000) + 'BEYOND_10000_MARKER\nTRAILING_CONTENT\n';
       a.detail.exit!.diagnostics.warnings = ['full diagnostic '.repeat(500)];
-      a.availability = { kind: 'failed', cause: 'source-epoch-retired', retryScheduled: false };
+      a.availability = { kind: 'failed', reason: 'the source journal is no longer retained' };
       return a;
     });
     const snapshot = collect(jobs);
@@ -166,73 +159,6 @@ describe('wait snapshot', () => {
     expect(formatJobDetail(jobs[0].detail)).not.toContain('BEYOND_10000_MARKER');
   });
 
-  it('keeps all omitted --lines progress resumable when 128 large rows exhaust the envelope', () => {
-    const jobs = Array.from({ length: 128 }, (_, i) => admitted(`j${i}`, [[i + 1, 'x'.repeat(500)]]));
-    const empty = collect(jobs.map((job) => ({ ...job, detail: { ...job.detail, events: [] } })));
-    const overhead = Buffer.byteLength(JSON.stringify({ jsonrpc: '2.0', id: 'x'.repeat(1024), result: empty }));
-    const messageBytes = Math.floor((2 * 1024 * 1024 - 20000 - overhead) / jobs.length);
-    for (const job of jobs) job.message = 'm'.repeat(messageBytes);
-    const snapshot = collect(jobs, 1);
-    expect(snapshot.jobs.every((job) => job.progress.length === 0)).toBe(true);
-    expect(snapshot.notices).toContain('Progress omitted to fit the complete response; run the continuation.');
-    expect(snapshot.remainingJobIds).toEqual(jobs.map((job) => job.jobId));
-    expect(parseWaitSnapshot(snapshot)).toEqual(snapshot);
-    const resumed = new WaitSession(snapshot.remainingJobIds, snapshot.cursor);
-    resumed.reconcile(jobs.map(({ message: _message, ...job }) => job));
-    const continuation = selectWaitSnapshot(resumed);
-    expect(continuation.jobs.every((job) => job.progress.length === 1 && !job.terminal)).toBe(true);
-    expect(continuation.remainingJobIds).toEqual([]);
-    expect(continuation.exitCode).toBe(0);
-  });
-
-  it('keeps a terminal job unread and in the continuation when size fitting omits progress a fault-only page exhausted', () => {
-    const timing = { origin: 'runtime' as const, originAt: '', emittedAt: '', elapsedMs: 0 };
-    const lines = Array.from({ length: 12 }, (_, i) => `line ${i} ${'L'.repeat(3990)}`);
-    const raw = [
-      { seq: 1, progress: { seq: 1, message: lines.join('\n'), timing } },
-      ...Array.from({ length: 40 }, (_, i) => ({ seq: i + 2 })),
-    ];
-    const visit: ProgressVisit = (_epoch, read) => ({
-      kind: 'read',
-      value: read({
-        after: (_id, after, rows) => progressPage(raw.filter((row) => row.seq > after).slice(0, rows + 1), rows, 1000),
-        before: (_id, before, rows) =>
-          progressTail(
-            raw
-              .filter((row) => before === null || row.seq < before)
-              .reverse()
-              .slice(0, rows + 1),
-            rows,
-            1000,
-          ),
-      }),
-    });
-    const a = admitted('a');
-    const ghost = {
-      jobId: 'ghost',
-      disposition: 'discovery-unreadable' as const,
-      message: 'm'.repeat(WAIT_SNAPSHOT_BYTES - 30_000),
-    };
-    const input = savedCursor({ a: 0 });
-    const session = new WaitSession(['a', 'ghost'], input);
-    session.reconcile([a, ghost]);
-    const snapshot = selectWaitSnapshotFrom(session, 20, visit);
-    expect(snapshot.jobs[0].progress).toEqual([]);
-    expect(snapshot.notices).toContain('Progress omitted to fit the complete response; run the continuation.');
-    expect(snapshot.remainingJobIds).toEqual(['a']);
-    expect(snapshot.cursor.jobs).toEqual([{ ...input.jobs[0], flags: ACKNOWLEDGED_FLAG }]);
-    expect(formatWaitSnapshot(snapshot)).toContain('Run coral-cli wait jobs a --now --cursor ');
-
-    const resumed = new WaitSession(['a'], snapshot.cursor);
-    resumed.reconcile([a]);
-    const continuation = selectWaitSnapshotFrom(resumed, 20, visit);
-    expect(continuation.jobs[0].progress.map((line) => line.slice(0, 7))).toEqual(
-      lines.map((line) => line.slice(0, 7)),
-    );
-    expect(continuation.jobs[0].alreadyCollected).toBe(true);
-    expect(continuation.remainingJobIds).toEqual([]);
-  });
-
   it('refuses oversized mandatory identities without changing the input collection cursor', () => {
     const a = admitted('a');
     a.availability = { kind: 'available', resultPath: '/'.repeat(2 * 1024 * 1024) };
@@ -244,20 +170,23 @@ describe('wait snapshot', () => {
     request.reconcile([a]);
     expect(() => selectWaitSnapshot(request)).toThrow('Snapshot exceeds the response size budget');
     expect(JSON.stringify(cursor)).toBe(before);
-    expect(input.acknowledged('a')).toBe(false);
+    expect(input.collected(a)).toBe(false);
   });
 
-  it('preserves artifact follow-up without outcome replay', () => {
+  it('keeps a pending artifact in the continuation and reports its settled path without replaying the outcome', () => {
     const a = admitted('a');
-    a.availability = { kind: 'repair-pending', ageUncertain: false };
+    a.availability = { kind: 'pending' };
     const first = collect([a]);
+    expect(first.jobs[0].terminal).toBeDefined();
     expect(first.remainingJobIds).toEqual(['a']);
+    expect(first.exitCode).toBe(75);
     a.availability = { kind: 'available', resultPath: '/result/a' };
     const resumed = new WaitSession(['a'], first.cursor);
     resumed.reconcile([a]);
     const second = selectWaitSnapshot(resumed);
     expect(second.jobs[0].terminal).toBeUndefined();
-    expect(formatWaitSnapshot(second)).toContain('result file now available\nResult path: /result/a');
+    expect(formatWaitSnapshot(second)).toContain('terminal/already collected\nResult path: /result/a');
+    expect(second.remainingJobIds).toEqual([]);
     expect(second.exitCode).toBe(0);
   });
 });
@@ -287,8 +216,8 @@ it('bounds --lines selection passes independently of the requested history size'
   const filter = vi.spyOn(Array.prototype, 'filter');
   try {
     const snapshot = collect(jobs, 500);
-    expect(snapshot.jobs.every((job) => job.progress.length === 2)).toBe(true);
-    expect(snapshot.jobs.flatMap((job) => job.progress)).toHaveLength(256);
+    expect(snapshot.jobs.every((job) => job.progress.length === 3)).toBe(true);
+    expect(snapshot.jobs.flatMap((job) => job.progress)).toHaveLength(384);
   } finally {
     filter.mockRestore();
   }
@@ -348,15 +277,15 @@ it('continuations inspect only their unread page and never rebuild the backlog',
     false,
   );
   let cursor: WaitCursor | undefined = prefixCursor([job]);
-  // Pages doubling from 32 rows, each with its lookahead row, spend one poll's 500-row allowance on 495 lines.
   for (let page = 0; page < 3; page++) {
     const session: WaitSession = new WaitSession(['a'], cursor);
     session.reconcile([job]);
     const split = vi.spyOn(String.prototype, 'split');
     try {
       const snapshot = selectWaitSnapshot(session);
-      expect(snapshot.jobs[0].progress[0]).toBe(`line${page * 495}`);
-      expect(split.mock.calls.length).toBeLessThanOrEqual(502);
+      expect(snapshot.jobs[0].progress[0]).toBe(`line${page * 500}`);
+      // Each delivered row is split once to select it and once to lay it out; no consumed row is read again.
+      expect(split.mock.calls.length).toBeLessThanOrEqual(1002);
       cursor = snapshot.cursor;
     } finally {
       split.mockRestore();
@@ -454,80 +383,45 @@ it('reports complete previews without omission and rejects the old exact-count s
   ).toThrow();
 });
 
-describe('first snapshot positioning within the raw-row allowance', () => {
+describe('first snapshot tails', () => {
   const dense = (jobId: string, base: number, lines: number) =>
     admitted(
       jobId,
       Array.from({ length: lines }, (_, n) => [base + n + 1, `${jobId}-${n + 1}`] as [number, string]),
       false,
     );
-  const first = (jobs: ReturnType<typeof admitted>[], lines: number) => {
-    const session = new WaitSession(jobs.map((job) => job.jobId));
-    session.reconcile(jobs);
-    return selectWaitSnapshot(session, lines);
-  };
 
   it.each([
-    [1, 500, 484],
-    [3, 200, 160],
-  ])('shows %i dense tails asked for %i lines each their full row share at once', (count, lines, shown) => {
-    // Each line is a row and each 32-row tail page a lookahead row, so 500 rows carry 484 lines for one tail.
-    const snapshot = first(
-      Array.from({ length: count }, (_, j) => dense(`d${j}`, j * 600, 600)),
-      lines,
-    );
+    [1, 500, 500],
+    [3, 200, 166],
+  ])('shows %i dense tails asked for %i lines each at most their equal share of the budget', (count, lines, shown) => {
+    const jobs = Array.from({ length: count }, (_, j) => dense(`d${j}`, j * 600, 600));
+    const session = new WaitSession(jobs.map((job) => job.jobId));
+    session.reconcile(jobs);
+    const snapshot = selectWaitSnapshot(session, lines);
     expect(snapshot.jobs.map((job) => job.progress.length)).toEqual(Array.from({ length: count }, () => shown));
     expect(snapshot.notices).not.toContainEqual(expect.stringContaining('Progress truncated'));
   });
+});
 
-  it('gives a long tail the rows a short sibling leaves, up to the lines asked for', () => {
-    const snapshot = first([dense('A', 0, 3), dense('B', 100, 1000)], 400);
-    expect(snapshot.jobs.map((job) => job.progress.length)).toEqual([3, 400]);
-    expect(snapshot.jobs[1].progress.at(-1)).toBe('B-1000');
-  });
-
-  it("positions a healthy tail at once while a fault-dense sibling's cut scan waits for the next poll", () => {
-    const timing = { origin: 'runtime' as const, originAt: '', emittedAt: '', elapsedMs: 0 };
-    const rows: Record<string, Array<{ seq: number; message?: string }>> = {
-      F: [
-        ...Array.from({ length: 5 }, (_, i) => ({ seq: i + 1, message: `F-${i + 1}` })),
-        ...Array.from({ length: 3000 }, (_, i) => ({ seq: 100 + i })),
-      ],
-      H: Array.from({ length: 10 }, (_, i) => ({ seq: 10 + i, message: `H-${i + 1}` })),
-    };
-    const raw = (id: string) =>
-      rows[id].map((row) => ({
-        seq: row.seq,
-        ...(row.message === undefined ? {} : { progress: { seq: row.seq, message: row.message, timing } }),
-      }));
-    const visit: ProgressVisit = (_epoch, read) => ({
-      kind: 'read',
-      value: read({
-        after: (id, after, count) =>
-          progressPage(
-            raw(id)
-              .filter((row) => row.seq > after)
-              .slice(0, count + 1),
-            count,
-            3099,
-          ),
-        before: (id, before, count) =>
-          progressTail(
-            raw(id)
-              .filter((row) => before === null || row.seq < before)
-              .reverse()
-              .slice(0, count + 1),
-            count,
-            3099,
-          ),
-      }),
-    });
-    const jobs = [admitted('H', [], false), admitted('F', [], false)];
-    const session = new WaitSession(['H', 'F']);
-    session.reconcile(jobs);
-    const snapshot = selectWaitSnapshotFrom(session, 20, visit);
-    expect(snapshot.jobs[0].progress).toEqual(Array.from({ length: 10 }, (_, i) => `H-${i + 1}`));
-    expect(snapshot.jobs[1].progress).toEqual([]);
-    expect(snapshot.cursor.jobs[1].flags & TAIL_SCAN_FLAG).toBe(TAIL_SCAN_FLAG);
-  });
+it('collects every remaining line after a budget cut, tolerating lines the next read repeats', () => {
+  const job = admitted(
+    'a',
+    Array.from({ length: 900 }, (_, i) => [i + 1, `line${i}`]),
+  );
+  const seen = new Set<string>();
+  let cursor: WaitCursor | undefined = prefixCursor([job]);
+  let snapshot;
+  for (let read = 0; read < 4; read++) {
+    const session = new WaitSession(['a'], cursor);
+    session.reconcile([job]);
+    snapshot = selectWaitSnapshot(session);
+    for (const line of snapshot.jobs[0].progress) seen.add(line);
+    cursor = snapshot.cursor;
+    if (snapshot.remainingJobIds.length === 0) break;
+  }
+  expect(seen).toEqual(
+    new Set(job.detail.events.flatMap((event) => (event.type === 'progress' ? [event.message] : []))),
+  );
+  expect(snapshot?.jobs[0].terminal).toBeDefined();
 });

@@ -32,7 +32,7 @@ it('admits an unindexed historical job read-only before maintenance hydration', 
       () => false,
       () => 'decided',
       undefined,
-      () => ({ kind: 'failed', cause: 'terminal-unusable', retryScheduled: false }),
+      () => ({ kind: 'failed', reason: 'the retained terminal does not match its source journal' }),
     );
     const admitted = addressing.admitWait({ jobIds: [f.jobId] } as never);
 

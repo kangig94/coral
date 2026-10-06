@@ -1,13 +1,17 @@
 import { setImmediate } from 'node:timers/promises';
-import type { WaitProgressLine } from './session.js';
-import type { ProgressVisit, WaitCursorEntry } from './contract.js';
-import { sameEpoch } from '../../store/epoch/identity.js';
 import { raceWithSignal } from '../../infra/promise-signal.js';
 import type { TimePort } from '../../infra/port-types.js';
-import type { WaitAdmission } from './session.js';
-import { shortenWaitLine, WaitSession } from './session.js';
-import { WAIT_PROGRESS_BYTES, WAIT_PROGRESS_LINES } from './snapshot.js';
-import { type WaitStreamEvent, type WaitStreamRequest } from './contract.js';
+import { waitJobHash } from './cursor.js';
+import type { WaitAdmission, WaitSelection } from './session.js';
+import { WaitSession } from './session.js';
+import {
+  WAIT_PROGRESS_BYTES,
+  WAIT_PROGRESS_LINES,
+  type ProgressVisit,
+  type WaitCursorEntry,
+  type WaitStreamEvent,
+  type WaitStreamRequest,
+} from './contract.js';
 
 type WaitReadInput = {
   request: WaitStreamRequest;
@@ -29,12 +33,10 @@ type DeliveryState = {
   queuedReported: Set<string>;
   notices: Set<string>;
   absentReported: Set<string>;
-  progressLost: Set<string>;
 };
 
 type FinalPayload =
   | Omit<Extract<WaitStreamEvent, { type: 'terminal' }>, 'cursor' | 'exitCode'>
-  | Omit<Extract<WaitStreamEvent, { type: 'artifact' }>, 'cursor' | 'exitCode'>
   | { type: 'waiting'; waitingJobIds: string[]; carrierUnknownJobIds?: string[] };
 
 function finalWaitEvent(session: WaitSession, payload: FinalPayload): WaitStreamEvent {
@@ -68,7 +70,6 @@ export async function* readWaitSession(input: WaitReadInput): AsyncGenerator<Wai
     queuedReported: new Set(),
     notices: new Set(),
     absentReported: new Set(),
-    progressLost: new Set(),
   };
   let observing = false;
   let observation: Promise<void> | undefined;
@@ -82,16 +83,16 @@ export async function* readWaitSession(input: WaitReadInput): AsyncGenerator<Wai
       const admissions = read();
       const deferred = new Set(admissions.filter((job) => job.observationDeferred).map((job) => job.jobId));
       session.reconcile(admissions);
-      // Drain and internal reads deliver a backlog page by page, never a whole history in one synchronous pass.
-      const progress = session.withProgress(input.visit, (sources) => {
-        const positioned = session.position(sources, bounded ? 20 : null, WAIT_PROGRESS_LINES, WAIT_PROGRESS_BYTES);
-        return session.select(
+      // A bounded read spends one budget over the whole request; drain and internal reads spend one per poll.
+      const progress = session.withProgress(input.visit, (sources) =>
+        session.select(
           sources,
-          bounded ? WAIT_PROGRESS_LINES - state.progressLines : WAIT_PROGRESS_LINES,
-          bounded ? WAIT_PROGRESS_BYTES - state.progressBytes : WAIT_PROGRESS_BYTES,
-          positioned,
-        );
-      });
+          bounded
+            ? { lines: WAIT_PROGRESS_LINES - state.progressLines, bytes: WAIT_PROGRESS_BYTES - state.progressBytes }
+            : { lines: WAIT_PROGRESS_LINES, bytes: WAIT_PROGRESS_BYTES },
+          bounded ? 20 : null,
+        ),
+      );
       const now = Number(time.monotonicNow());
       const nearDeadline: boolean = now >= deadline - 250 && !deadlineObserved;
       if (!observing && (now - lastObservation >= 5000 || nearDeadline) && now < deadline) {
@@ -104,32 +105,31 @@ export async function* readWaitSession(input: WaitReadInput): AsyncGenerator<Wai
       }
       yield* cursorFrame(session, state);
       yield* admissionEvents(session, state);
-      yield* progressEvents(session, state, bounded, internal, progress.lines);
-      session.advanceSilently(progress.advances);
+      yield* progressEvents(progress, state);
+      session.commit(progress);
       yield* cursorFrame(session, state);
-      const sliced = progress.cut && !progress.full;
-      if (yield* terminalEvents(session, bounded, sliced)) return;
+      if (yield* terminalEvents(session)) return;
       yield* carrierEvents(session, state.absentReported);
       if (session.remaining().length === 0) {
         yield waitingEvent(session);
         return;
       }
-      // A poll cut short by its row allowance resumes after a macrotask; only a spent output budget or the deadline ends it.
-      if (sliced && (internal || Number(time.monotonicNow()) < deadline)) {
-        await setImmediate();
-        continue;
+      if (session.hasProgress()) {
+        if (bounded && progress.full) {
+          yield waitingEvent(session);
+          return;
+        }
+        // A backlog is read page by page after a macrotask; a client read still stops at its deadline.
+        if (internal || Number(time.monotonicNow()) < deadline) {
+          await setImmediate();
+          continue;
+        }
       }
-      // An internal reader drains its backlog before its deadline answers; a client drain stops at its deadline.
-      if (!bounded && session.hasProgress() && (internal || Number(time.monotonicNow()) < deadline)) {
-        await setImmediate();
-        continue;
-      }
-      const unknownRead = session.remaining().every((id) => session.progressState(id) === 'unknown');
+      const unknownRead = session.remaining().every((id) => session.unknown(id));
       const observedUnknown = unknownRead && session.remaining().some((jobId) => !deferred.has(jobId));
       if (!unknownRead) unknownReadAttempts = 0;
       if (
         (!internal && observedUnknown && unknownReadAttempts === retryDelays.length) ||
-        (bounded && session.hasProgress()) ||
         Number(time.monotonicNow()) >= deadline
       ) {
         if (internal && !crossedTimer) await time.sleep(0, { signal });
@@ -180,16 +180,7 @@ async function observeCarriers(input: WaitReadInput, session: WaitSession, signa
 /** Any entry the client does not already hold, however it changed, reaches the client before the next cut. */
 function* cursorFrame(session: WaitSession, state: DeliveryState): Generator<WaitStreamEvent> {
   const cursor = session.cursor();
-  const held = (entry: WaitCursorEntry): boolean => {
-    const client = state.frontier.get(entry.hash);
-    return (
-      client !== undefined &&
-      client.epoch === entry.epoch &&
-      client.seq === entry.seq &&
-      client.lineOffset === entry.lineOffset &&
-      client.flags === entry.flags
-    );
-  };
+  const held = (entry: WaitCursorEntry): boolean => state.frontier.get(entry.hash)?.seq === entry.seq;
   if (state.framed && cursor.jobs.length === state.frontier.size && cursor.jobs.every(held)) return;
   state.framed = true;
   state.frontier = new Map(cursor.jobs.map((entry) => [entry.hash, entry]));
@@ -197,7 +188,11 @@ function* cursorFrame(session: WaitSession, state: DeliveryState): Generator<Wai
 }
 
 function* admissionEvents(session: WaitSession, state: DeliveryState): Generator<WaitStreamEvent> {
-  for (const job of session.admissions) yield* memberAdmissionEvents(job, state);
+  for (const job of session.admissions) {
+    if (job.disposition === 'admitted' || state.dispositions.get(job.jobId) === job.disposition) continue;
+    state.dispositions.set(job.jobId, job.disposition);
+    yield { type: 'disposition', jobId: job.jobId, disposition: job.disposition, message: job.message };
+  }
   for (const message of session.notices) {
     if (state.notices.has(message)) continue;
     state.notices.add(message);
@@ -211,67 +206,14 @@ function* admissionEvents(session: WaitSession, state: DeliveryState): Generator
   }
 }
 
-function* memberAdmissionEvents(job: WaitAdmission, state: DeliveryState): Generator<WaitStreamEvent> {
-  if (job.disposition !== 'admitted' && state.dispositions.get(job.jobId) !== job.disposition) {
-    state.dispositions.set(job.jobId, job.disposition);
-    yield { type: 'disposition', jobId: job.jobId, disposition: job.disposition, message: job.message };
-  }
-  if (job.sourceRead === 'settled-unreadable' && !state.notices.has(`unreadable:${job.jobId}`)) {
-    state.notices.add(`unreadable:${job.jobId}`);
-    yield {
-      type: 'notice',
-      message: `Earlier progress for ${job.jobId} cannot be read by this build. ${job.message ?? 'This build cannot read its source; this job leaves the continuation after its retained outcome is delivered.'} Inspect coral-cli jobs detail ${job.jobId} --full.`,
-    };
-  }
-  if (job.progressLost && !state.progressLost.has(job.jobId)) {
-    state.progressLost.add(job.jobId);
-    yield { type: 'notice', message: `earlier progress for ${job.jobId} is no longer kept` };
-  }
-}
-
-function terminalSeq(job: WaitAdmission): number {
-  return job.detail?.terminalSeq ?? job.detail?.status.lastSeq ?? 0;
-}
-
-/** An internal reader receives each row whole, since its consumer acts on messages rather than lines. */
-function* progressEvents(
-  session: WaitSession,
-  state: DeliveryState,
-  bounded: boolean,
-  internal: boolean,
-  selected: WaitProgressLine[],
-): Generator<WaitStreamEvent> {
-  for (let index = 0; index < selected.length; ) {
-    const first = selected[index];
-    const group = [first];
-    if (internal) {
-      while (index + group.length < selected.length) {
-        const next = selected[index + group.length];
-        if (next.jobId !== first.jobId || !sameEpoch(next.epochKey, first.epochKey) || next.seq !== first.seq) break;
-        group.push(next);
-      }
-    }
-    const messages = group.map((line) => (internal ? line.text : shortenWaitLine(line.text)));
-    const bytes = messages.reduce((sum, text) => sum + Buffer.byteLength(text), 0);
-    if (
-      bounded &&
-      (state.progressLines + group.length > WAIT_PROGRESS_LINES || state.progressBytes + bytes > WAIT_PROGRESS_BYTES)
-    )
-      break;
-    for (const line of group) session.consume(line);
-    state.progressLines += group.length;
-    state.progressBytes += bytes;
-    index += group.length;
-    const entry = session.entry(first.jobId);
+/** Each delivered row carries the entry it establishes, so a cut after any row resumes after that row. */
+function* progressEvents(selection: WaitSelection, state: DeliveryState): Generator<WaitStreamEvent> {
+  for (const row of selection.rows) {
+    const entry = { hash: waitJobHash(row.jobId), seq: row.seq };
+    state.progressLines += row.lines;
+    state.progressBytes += row.bytes;
     state.frontier.set(entry.hash, entry);
-    yield {
-      type: 'progress',
-      jobId: first.jobId,
-      seq: first.seq,
-      message: messages.join('\n'),
-      timing: first.timing,
-      entry,
-    };
+    yield { type: 'progress', jobId: row.jobId, seq: row.seq, message: row.message, timing: row.timing, entry };
   }
 }
 
@@ -280,12 +222,15 @@ function terminalEvent(
   job: WaitAdmission,
   result: NonNullable<NonNullable<WaitAdmission['detail']>['exit']>,
 ): WaitStreamEvent {
-  const availability = job.availability ?? { kind: 'failed', cause: 'terminal-unusable', retryScheduled: false };
+  const availability = job.availability ?? {
+    kind: 'failed',
+    reason: 'the retained terminal outcome could not be validated',
+  };
   const { content, outcome, durationMs } = result;
   return finalWaitEvent(session, {
     type: 'terminal',
     jobId: job.jobId,
-    seq: terminalSeq(job),
+    seq: job.detail?.terminalSeq ?? job.detail?.status.lastSeq ?? 0,
     result: { content, outcome, durationMs },
     usage: result.diagnostics.usage,
     continuity: job.continuity ?? null,
@@ -297,30 +242,17 @@ function terminalEvent(
 }
 
 /**
- * An unbounded reader delivers a job's terminal only after its progress, so nothing it reads follows the outcome. A
- * bounded reader holds it while the job's tail is unpositioned or its poll was cut short by the row allowance, so
- * progress the next slice can still deliver within this request never follows the outcome.
+ * A collected job is requested again only while its artifact was pending; once that settles, its terminal is
+ * delivered again with the settled availability.
  */
-function* terminalEvents(session: WaitSession, bounded: boolean, sliced: boolean): Generator<WaitStreamEvent, boolean> {
+function* terminalEvents(session: WaitSession): Generator<WaitStreamEvent, boolean> {
   for (const job of session.admissions) {
-    if (job.disposition !== 'admitted' || !job.detail?.exit) continue;
-    if (session.progressState(job.jobId) === 'unread' && (!bounded || sliced || session.positioning(job.jobId)))
-      continue;
-    if (!session.acknowledged(job.jobId)) {
-      session.acknowledge(job);
-      yield terminalEvent(session, job, job.detail.exit);
-      return true;
-    }
-    if (session.artifactPending(job.jobId) && job.availability && job.availability.kind !== 'repair-pending') {
-      session.settleArtifact(job.jobId);
-      yield finalWaitEvent(session, {
-        type: 'artifact',
-        jobId: job.jobId,
-        availability: job.availability,
-        remainingJobIds: session.remaining(),
-      });
-      return true;
-    }
+    if (!job.detail?.exit || !session.terminalDeliverable(job)) continue;
+    const collected = session.collected(job);
+    if (collected && session.artifactPending(job)) continue;
+    if (!collected) session.collect(job);
+    yield terminalEvent(session, job, job.detail.exit);
+    return true;
   }
   return false;
 }

@@ -4,7 +4,6 @@ import { encodeResolvedStoreEpoch } from '#src/store/epoch/observation.js';
 import { protectStoreEpoch, protectedStoreEpochRoot } from '#src/store/epoch/protection.js';
 import { openSettledTestStoreDb } from '#tests/helpers/store-db.js';
 import type { Runtime } from '#src/runtime/ports.js';
-import type { RetentionOutcome } from '#src/store/retention-outcome.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   existsSync,
@@ -12,7 +11,6 @@ import {
   lutimesSync,
   mkdirSync,
   readdirSync,
-  readFileSync,
   renameSync,
   unlinkSync,
   symlinkSync,
@@ -957,197 +955,45 @@ it('retires small expired residues in bounded fenced turns while preserving iden
 import { terminalEligibility } from '#src/jobs/export-retention.js';
 import { createTerminalExportFixture, TERMINAL_EXPORT_CUTOFF } from '#tests/helpers/terminal-export.js';
 
-it.each(['saved expired', 'source absent', 'source throws', 'source contradicts', 'inside', 'untrusted'])(
-  'classifies terminal eligibility evidence: %s',
-  (scenario) => {
-    const f = createTerminalExportFixture();
-    try {
-      f.complete({ terminalAt: scenario === 'saved expired' ? TERMINAL_EXPORT_CUTOFF - 1000 : undefined });
-      const location = f.index.read(f.jobId)!;
-      if (scenario === 'untrusted') f.jump(120_000);
-      const source = vi.fn((read: (db: typeof f.db) => unknown) => {
-        if (scenario === 'source throws') throw new Error('transient');
-        if (scenario === 'source absent') return null;
-        if (scenario === 'source contradicts')
-          f.db.prepare("DELETE FROM events WHERE type = 'job.terminal.recorded'").run();
-        return read(f.db);
-      });
-      const eligibility = terminalEligibility(f.runtime, location, source as never);
-      expect(eligibility.kind).toBe(
-        scenario === 'saved expired' ? 'expired' : scenario === 'untrusted' ? 'unknown' : 'inside',
-      );
-      expect(eligibility.sourceReadFailed).toBe(scenario === 'source throws');
-      expect(eligibility.sourceContradictory).toBe(scenario === 'source contradicts');
-      expect(eligibility.publicationAuthorized).toBe(scenario === 'inside');
-      expect(source).toHaveBeenCalledTimes(scenario === 'saved expired' ? 0 : 1);
-    } finally {
-      f.close();
-    }
-  },
-);
-
 it.each([
-  'no location',
-  'nonterminal location',
-  'absent detail',
-  'absent sequence',
-  'invalid retained terminal',
-  'saved unknown',
-  'saved regression',
-  'legacy age',
-  'legacy source absent',
-  'source timestamp mismatch',
-  'source outcome mismatch',
-  'source body corrupt',
-  'source observation suppressed',
-])('classifies terminal eligibility return path: %s', (scenario) => {
+  ['expired', { source: 'readable', age: 'expired' }],
+  ['inside', { source: 'readable', age: 'inside' }],
+  ['regressed', { source: 'readable', age: 'unknown' }],
+  ['source absent', { source: 'absent', age: 'unknown' }],
+  ['source busy', { source: 'transient', age: 'unknown' }],
+  ['source contradicts', { source: 'unusable', age: 'unknown' }],
+  ['source body corrupt', { source: 'unusable', age: 'unknown' }],
+  ['no location', { source: 'unusable', age: 'unknown' }],
+  ['nonterminal location', { source: 'unusable', age: 'unknown' }],
+  ['absent detail', { source: 'unusable', age: 'unknown' }],
+] as const)('classifies terminal eligibility from the intact source only: %s', (scenario, expected) => {
   const f = createTerminalExportFixture();
   try {
-    f.complete();
+    f.complete(
+      scenario === 'expired'
+        ? { terminalAt: TERMINAL_EXPORT_CUTOFF - 1000 }
+        : scenario === 'regressed'
+          ? { terminalAt: TERMINAL_EXPORT_CUTOFF - 1000, precedingAt: TERMINAL_EXPORT_CUTOFF + 1000 }
+          : {},
+    );
     let location = f.index.read(f.jobId);
     if (!location) throw new Error('missing fixture location');
     if (scenario === 'nonterminal location') location = { ...location, disposition: 'unresolved' };
     if (scenario === 'absent detail') location = { ...location, detail: { kind: 'absent' } };
-    if (scenario === 'absent sequence') location = { ...location, terminalSeq: undefined };
-    if (scenario === 'invalid retained terminal' && location.detail.kind === 'recorded')
-      location = {
-        ...location,
-        detail: {
-          kind: 'recorded',
-          value: { ...location.detail.value, status: { ...location.detail.value.status, updatedAt: 'invalid' } },
-        },
-      };
-    if (scenario === 'saved unknown' || scenario === 'saved regression')
-      location = {
-        ...location,
-        terminalAge: { ...location.terminalAge!, kind: scenario === 'saved unknown' ? 'unknown' : 'regression' },
-      };
-    if (scenario.startsWith('legacy')) location = { ...location, terminalAge: undefined };
-    if (scenario === 'source timestamp mismatch')
+    if (scenario === 'source contradicts')
       f.db.prepare("UPDATE events SET ts = '2099-01-01T00:00:00Z' WHERE type = 'job.terminal.recorded'").run();
-    if (scenario === 'source outcome mismatch' || scenario === 'source body corrupt') {
-      const row = f.db.prepare("SELECT body FROM events WHERE type = 'job.terminal.recorded'").get() as {
-        body: Uint8Array;
-      };
-      const body = JSON.parse(Buffer.from(row.body).toString('utf8'));
-      body.terminal.content = 'different content';
-      f.db
-        .prepare("UPDATE events SET body = ? WHERE type = 'job.terminal.recorded'")
-        .run(Buffer.from(scenario === 'source body corrupt' ? '{' : JSON.stringify(body)));
-    }
-    const source = vi.fn((read: (db: typeof f.db) => unknown) =>
-      scenario === 'legacy source absent' ? null : read(f.db),
-    );
-    const eligibility = terminalEligibility(
-      f.runtime,
-      scenario === 'no location' ? null : location,
-      source as never,
-      scenario !== 'source observation suppressed',
-    );
-    const denied = [
-      'no location',
-      'nonterminal location',
-      'absent detail',
-      'absent sequence',
-      'invalid retained terminal',
-    ].includes(scenario);
-    expect(source).toHaveBeenCalledTimes(denied || scenario === 'source observation suppressed' ? 0 : 1);
-    expect(eligibility.kind).toBe(
-      denied || scenario === 'saved unknown' || scenario === 'legacy source absent'
-        ? 'unknown'
-        : scenario === 'saved regression'
-          ? 'regression'
-          : 'inside',
-    );
-    expect(eligibility.publicationAuthorized).toBe(['saved regression', 'legacy age'].includes(scenario));
-    expect(eligibility.sourceReadFailed === true).toBe(scenario === 'source body corrupt');
-    expect(eligibility.sourceContradictory === true).toBe(
-      scenario === 'source timestamp mismatch' || scenario === 'source outcome mismatch',
+    if (scenario === 'source body corrupt')
+      f.db.prepare("UPDATE events SET body = ? WHERE type = 'job.terminal.recorded'").run(Buffer.from('{'));
+    const source = (read: (db: typeof f.db) => unknown) => {
+      if (scenario === 'source busy') throw Object.assign(new Error('database is locked'), { code: 'SQLITE_BUSY' });
+      return scenario === 'source absent' ? null : read(f.db);
+    };
+    expect(terminalEligibility(f.runtime, scenario === 'no location' ? null : location, source as never)).toEqual(
+      expected,
     );
   } finally {
     f.close();
   }
-});
-
-describe('deletion authority is read again at every deletion mutation', () => {
-  const retire = async (
-    f: ReturnType<typeof createTerminalExportFixture>,
-    storage: Runtime['storage'],
-    outcomes: RetentionOutcome[],
-  ) =>
-    pruneJobExports({
-      db: f.db,
-      runtime: { ...f.runtime, storage },
-      cutoff: TERMINAL_EXPORT_CUTOFF,
-      afterId: '',
-      budget: { canContinue: () => true, canMutate: () => true, record: (outcome) => outcomes.push(outcome) },
-      jobState: () => ({ kind: 'terminal', terminalAt: TERMINAL_EXPORT_CUTOFF - 1000 }),
-      resultHold: (id) => f.index.exportResultRetention(id, f.epochKey),
-      eligibility: (id) => f.index.exportDeletionEligibility(id),
-      mutate: (operation) => operation(),
-    });
-  const expiredExport = (files: number) => {
-    const f = createTerminalExportFixture();
-    f.complete({ terminalAt: TERMINAL_EXPORT_CUTOFF - 1000, precedingAt: TERMINAL_EXPORT_CUTOFF - 1000 });
-    const directory = dirname(f.resultPath);
-    mkdirSync(directory, { recursive: true });
-    writeFileSync(f.resultPath, 'original canonical result');
-    for (let i = 1; i < files; i++) writeFileSync(join(directory, `artifact-${i}`), 'artifact');
-    for (const name of readdirSync(directory))
-      utimesSync(
-        join(directory, name),
-        new Date(TERMINAL_EXPORT_CUTOFF - 2000),
-        new Date(TERMINAL_EXPORT_CUTOFF - 2000),
-      );
-    return f;
-  };
-
-  it('keeps the export when the clock steps back during the deletion batch’s own directory read', async () => {
-    const f = expiredExport(1);
-    try {
-      const read = f.runtime.storage.readdir.bind(f.runtime.storage);
-      let retiringReads = 0;
-      const storage = {
-        ...f.runtime.storage,
-        readdir: async (path: string) => {
-          // The second read of the retired directory is the deletion batch's, after every check made before it.
-          if (path.includes('/.retiring-') && ++retiringReads === 2) f.jump(-120_000);
-          return read(path);
-        },
-      };
-      const outcomes: RetentionOutcome[] = [];
-      await retire(f, storage, outcomes);
-      expect(retiringReads).toBeGreaterThanOrEqual(2);
-      expect(f.index.exportDeletionEligibility(f.jobId)?.kind).toBe('unknown');
-      expect(existsSync(f.resultPath) && readFileSync(f.resultPath, 'utf8')).toBe('original canonical result');
-      expect(readdirSync(f.runtime.paths.coral.exports.jobsRoot)).toEqual([f.jobId]);
-      expect(outcomes).toEqual([expect.objectContaining({ kind: 'kept', reason: 'terminal-eligibility-changed' })]);
-    } finally {
-      f.close();
-    }
-  });
-
-  it('stops before the next batch when the clock steps back after the first leaf, keeping the retirement', async () => {
-    const f = expiredExport(20);
-    try {
-      let unlinks = 0;
-      const storage = {
-        ...f.runtime.storage,
-        unlinkSync: (path: string) => {
-          f.runtime.storage.unlinkSync(path);
-          if (++unlinks === 1) f.jump(-120_000);
-        },
-      };
-      const outcomes: RetentionOutcome[] = [];
-      await retire(f, storage, outcomes);
-      expect(unlinks).toBe(1);
-      expect(readdirSync(f.runtime.paths.coral.exports.jobsRoot)).toEqual([f.jobId]);
-      expect(readdirSync(dirname(f.resultPath))).toHaveLength(19);
-      expect(outcomes).toEqual([expect.objectContaining({ kind: 'kept', reason: 'terminal-eligibility-changed' })]);
-    } finally {
-      f.close();
-    }
-  });
 });
 
 describe('retired legacy exports', () => {
@@ -1173,14 +1019,14 @@ describe('retired legacy exports', () => {
     } as JobDetailResponse;
   }
 
-  async function run(useAuthority: boolean) {
+  async function run() {
     const f = createRetentionFixture();
     fixtures.push(f);
     const index = new JobLocationIndex(f.runtime, f.runtime.paths.coral.generation.dataRoot);
     const storeRoot = join(f.baseDir, 'store');
     const retiredKey = JSON.stringify({ storeRoot, epoch: '1', path: join(storeRoot, 'epoch-1', 'store.db') });
     const jobId = 'legacy-job';
-    // a v0.10.15-17 terminal location record (no terminalAge) whose epoch has since retired
+    // a v0.10.15-17 terminal location record whose epoch has since retired
     index.register(jobId, retiredKey, { projectRoot: '/w/p', workDir: '/w/p', jobKind: 'provider' });
     index.recordTerminal(
       jobId,
@@ -1203,29 +1049,11 @@ describe('retired legacy exports', () => {
         jobState: () => ({ kind: 'absent' }),
         resultHold: (id) => index.exportResultRetention(id, null),
         mutate: (op) => op(),
-        ...(useAuthority
-          ? { eligibility: (id: string) => (index.read(id) === null ? undefined : index.exportDeletionEligibility(id)) }
-          : {}),
       });
     return existsSync(path);
   }
 
   it('a retired-epoch legacy export (terminal ~9 months old) is eventually reclaimed', async () => {
-    const base = await run(false);
-    const branch = await run(true);
-    expect(base).toBe(false);
-    expect(branch).toBe(false);
+    expect(await run()).toBe(false);
   });
-});
-
-it('never accepts a saved age earlier than its terminal timestamp', () => {
-  const f = createTerminalExportFixture();
-  try {
-    f.complete({ terminalAt: TERMINAL_EXPORT_CUTOFF + 1000 });
-    const location = f.index.read(f.jobId)!;
-    const forged = { ...location, terminalAge: { ...location.terminalAge!, kind: 'known', terminalAt: 0 } };
-    expect(terminalEligibility(f.runtime, forged as never, () => null, false).kind).not.toBe('expired');
-  } finally {
-    f.close();
-  }
 });

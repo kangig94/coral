@@ -179,10 +179,7 @@ describe('wait SSE reconnect', () => {
     appendProgress('progress-1');
 
     const coordinator = new WaitCoordinator({
-      visitProgress: progressVisitFromEvents(
-        (targetJobId) => readJobEvents(db, targetJobId, progressStore),
-        () => (db.prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get() as { seq: number }).seq,
-      ),
+      visitProgress: progressVisitFromEvents((targetJobId) => readJobEvents(db, targetJobId, progressStore)),
       sessionManager: missingSessionManager,
       launchQueue: launchCoordinator,
       eventBus,
@@ -380,17 +377,14 @@ describe('wait SSE reconnect', () => {
 
     let terminalInjected = false;
     const coordinator = new WaitCoordinator({
-      visitProgress: progressVisitFromEvents(
-        (targetJobId) => {
-          const events = readJobEvents(db, targetJobId, progressStore);
-          if (!terminalInjected) {
-            terminalInjected = true;
-            commitTerminal();
-          }
-          return events;
-        },
-        () => (db.prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get() as { seq: number }).seq,
-      ),
+      visitProgress: progressVisitFromEvents((targetJobId) => {
+        const events = readJobEvents(db, targetJobId, progressStore);
+        if (!terminalInjected) {
+          terminalInjected = true;
+          commitTerminal();
+        }
+        return events;
+      }),
       sessionManager: missingSessionManager,
       launchQueue: launchCoordinator,
       eventBus,

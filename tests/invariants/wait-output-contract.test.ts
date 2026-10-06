@@ -33,10 +33,6 @@ function waitPorts(observed: unknown[]): HttpHandlerPorts {
         observed.push(request);
         return [admitted('a')];
       },
-      validateWait: (request: unknown) => {
-        observed.push(request);
-        return null;
-      },
       waitStream: async function* (request: unknown) {
         observed.push(request);
       },
@@ -57,7 +53,7 @@ it('canonicalizes a current wait request, which always states its frontier, befo
   expect(result.kind).toBe('subscription');
   if (result.kind !== 'subscription') throw new Error('Wait refused');
   await result.notifications[Symbol.asyncIterator]().next();
-  expect(observed).toHaveLength(3);
+  expect(observed).toHaveLength(2);
   for (const request of observed) {
     expect(request).toMatchObject({ jobIds: ['a'], cursor: { jobs: [] }, drainProgress: false });
     expect(Object.keys(request as object).filter((key) => key.startsWith('supports'))).toEqual([]);
@@ -153,7 +149,7 @@ it('M2 help and exit documentation preserve failure precedence even with sibling
   const pending = admitted('b', [], false);
   const session = new WaitSession(['a', 'b']);
   session.reconcile([failed, pending]);
-  session.acknowledge(failed);
+  session.collect(failed);
   expect(session.exitCode()).toBe(42);
   session.reconcile([admitted('a'), pending]);
   expect(session.exitCode()).toBe(75);
@@ -208,8 +204,7 @@ it.each(['docs/architecture.md', 'docs/core-modules.md'])('F11 and owner contrac
     'JobLocationIndex.resultDurable',
   ])
     expect(text).toContain(owner);
-  for (const state of ['available', 'retained-away', 'repair-pending', 'failed'])
-    expect(text).toContain(`\`${state}\``);
+  for (const state of ['available', 'retained-away', 'pending', 'failed']) expect(text).toContain(`\`${state}\``);
   expect(text).toContain('current provider session');
   expect(text).toContain('historical wait continuity is null');
   expect(text).toContain('terminalAt < cutoff');
@@ -217,12 +212,17 @@ it.each(['docs/architecture.md', 'docs/core-modules.md'])('F11 and owner contrac
   expect(text).not.toContain('object construction is owned by `jobs/store.ts`');
 });
 
-it('progress holds name maintenance cadence and its bound without instructions', () => {
-  const a = { ...admitted('a'), sourceRead: 'transient-unknown' as const };
+it('progress holds name their retry without instructions', () => {
   const session = new WaitSession(['a']);
-  session.reconcile([a]);
+  session.reconcile([admitted('a', [], false)]);
+  const busy = (): never => {
+    throw new Error('database is locked');
+  };
+  session.withProgress(
+    (_epoch, read) => ({ kind: 'read', value: read({ after: busy, newest: busy }) }),
+    (sources) => session.select(sources, { lines: 500, bytes: 64 * 1024 }, 20),
+  );
   const notice = session.notices.join(' ');
-  expect(notice).toContain('every 5 s');
-  expect(notice).toContain('3 failed probes');
+  expect(notice).toContain('retried on the next poll');
   expect(notice).not.toMatch(/retry the continuation|repair|restore/i);
 });

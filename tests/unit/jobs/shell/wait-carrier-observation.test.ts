@@ -60,10 +60,7 @@ it.each(['initial', 'poll', 'throw'])('the stream deadline bounds %s carrier obs
   const stuck = new Promise<never>(() => {});
   let calls = 0;
   const wait = new WaitCoordinator({
-    visitProgress: progressVisitFromEvents(
-      () => [],
-      () => 0,
-    ),
+    visitProgress: progressVisitFromEvents(() => []),
     time,
     eventBus: { on: () => {}, off: () => {} },
     sessionManager: { get: () => null },

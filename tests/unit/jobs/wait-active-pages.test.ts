@@ -4,7 +4,7 @@ import { createTerminalExportFixture } from '#tests/helpers/terminal-export.js';
 import { JobAddressing } from '#src/jobs/addressing.js';
 import { WaitCoordinator } from '#src/jobs/shell/wait.js';
 import { deriveLaunchReadiness } from '#src/jobs/launch-readiness.js';
-import { waitEpochToken, waitJobHash } from '#src/jobs/wait/cursor.js';
+import { waitJobHash } from '#src/jobs/wait/cursor.js';
 import { buildJobEventRefs } from '#src/jobs/refs.js';
 
 function setup() {
@@ -48,12 +48,11 @@ function setup() {
     undefined,
     (id) => owner.observeResultAvailability(id),
     () => {},
-    () => false,
   );
   return { f, addressing };
 }
 
-it('a 501-row window with one non-message progress row loses rows past the window', () => {
+it('resumes after a budget cut through the active journal, skipping a fault row and losing no line', () => {
   const { f, addressing } = setup();
   try {
     const launchSeq = f.db.prepare<[], { seq: number }>('SELECT MAX(seq) AS seq FROM events').get()!.seq;
@@ -72,18 +71,16 @@ it('a 501-row window with one non-message progress row loses rows past the windo
     for (let i = 1; i < 600; i++) f.store.appendProgress(f.jobId, 'session-1', `line ${i}`);
     f.complete({ terminal: { content: 'done', outcome: { kind: 'completed' }, durationMs: 1 } });
     f.store.publishTerminalResult(f.jobId);
-    const cursor = {
-      jobs: [
-        { hash: waitJobHash(f.jobId), epoch: waitEpochToken(f.epochKey), seq: launchSeq, lineOffset: 0, flags: 0 },
-      ],
-    };
-    const snap = addressing.snapshot({ jobIds: [f.jobId], cursor } as never);
-
-    // Pages doubling from 32 rows, with their lookahead rows, spend the poll's allowance on 495 rows, one the fault row.
-    expect(snap.jobs[0].progress).toEqual(Array.from({ length: 494 }, (_, i) => `line ${i}`));
-    expect(snap.remainingJobIds).toEqual([f.jobId]);
-    const second = addressing.snapshot({ jobIds: [f.jobId], cursor: snap.cursor });
-    expect(second.jobs[0].progress).toEqual(Array.from({ length: 106 }, (_, i) => `line ${i + 494}`));
+    const cursor = { jobs: [{ hash: waitJobHash(f.jobId), seq: launchSeq }] };
+    const first = addressing.snapshot({ jobIds: [f.jobId], cursor });
+    // A 500-row page holds the fault row and 499 lines; the budget cut leaves the rest for the continuation.
+    expect(first.jobs[0].progress).toEqual(Array.from({ length: 499 }, (_, i) => `line ${i}`));
+    expect(first.jobs[0].terminal).toBeUndefined();
+    expect(first.remainingJobIds).toEqual([f.jobId]);
+    const second = addressing.snapshot({ jobIds: [f.jobId], cursor: first.cursor });
+    const delivered = new Set([...first.jobs[0].progress, ...second.jobs[0].progress]);
+    expect(delivered).toEqual(new Set(Array.from({ length: 600 }, (_, i) => `line ${i}`)));
+    expect(second.jobs[0].terminal).toBeDefined();
     expect(second.remainingJobIds).toEqual([]);
   } finally {
     f.close();

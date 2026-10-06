@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { followJobs } from '#src/cli/follow.js';
 import { WaitInvocation } from '#src/cli/wait-invocation.js';
-import { waitEpochToken, waitJobHash, serializeWaitCursor } from '#src/jobs/wait/cursor.js';
+import { waitJobHash, serializeWaitCursor } from '#src/jobs/wait/cursor.js';
 
 import { JobAddressing } from '#src/jobs/addressing.js';
 import { JobLocationIndex } from '#src/jobs/location-index.js';
@@ -65,9 +65,7 @@ import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
     });
     return { budget, out, result, allDelivered, save };
   }
-  const cursor = {
-    jobs: [{ hash: waitJobHash('live-job'), epoch: waitEpochToken('epoch'), seq: 7, lineOffset: 0, flags: 0 }],
-  };
+  const cursor = savedCursor({ 'live-job': 7 });
   describe('CLI watchdog flush (server waiting event arrives after the 590 s CLI deadline)', () => {
     it('clears omitted coverage on a server waiting event', async () => {
       const r = run([
@@ -216,7 +214,7 @@ import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
         () => false,
         () => 'pending',
         undefined,
-        () => ({ kind: 'failed', cause: 'terminal-unusable', retryScheduled: false }),
+        () => ({ kind: 'failed', reason: 'the retained terminal does not match its source journal' }),
       );
       const events: unknown[] = [];
       for await (const event of addressing.waitStream({ jobIds: ['ghost'], timeoutSeconds: 5 })) events.push(event);
@@ -281,12 +279,7 @@ import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
     emittedAt: '2026-10-04T00:00:01.000Z',
     elapsedMs: 1000,
   };
-  const cursor = (ack: number) => ({
-    jobs:
-      ack < 0
-        ? []
-        : [{ hash: waitJobHash('job-1'), epoch: waitEpochToken('epoch'), seq: 7, lineOffset: 0, flags: ack }],
-  });
+  const cursor = (positioned: boolean) => (positioned ? savedCursor({ 'job-1': 7 }) : { jobs: [] });
 
   it('launch-and-follow (until-terminal) keeps following across a waiting event', async () => {
     let out = '';
@@ -319,10 +312,10 @@ import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
                   seq: 7,
                   message: 'line',
                   timing,
-                  entry: cursor(0).jobs[0],
+                  entry: cursor(true).jobs[0],
                 },
                 // what readWaitSession sends at its deadline or once the 500-line/64 KiB progress budget is spent
-                { type: 'waiting', waitingJobIds: ['job-1'], cursor: cursor(0), exitCode: 75 },
+                { type: 'waiting', waitingJobIds: ['job-1'], cursor: cursor(true), exitCode: 75 },
               ]
             : [
                 {
@@ -334,7 +327,7 @@ import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
                   availability: { kind: 'available', resultPath: '/r.md' },
                   resultPath: '/r.md',
                   epochKey: 'epoch',
-                  cursor: cursor(-1),
+                  cursor: cursor(false),
                   exitCode: 0,
                 },
               ];
@@ -354,7 +347,7 @@ import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
     expect(code).toBe(0);
   });
 
-  it.each(['scope-mismatch', 'missing', 'outcome-unrecoverable', 'discovery-unreadable'] as const)(
+  it.each(['scope-mismatch', 'missing', 'unreadable'] as const)(
     'launch-and-follow of a job refused as %s exits with the refusal, never as success',
     async (disposition) => {
       let out = '';
@@ -401,7 +394,7 @@ import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
   );
 }
 
-it('separates TTY notice, disposition and artifact lines with trailing newlines', async () => {
+it('separates TTY notice and disposition lines with trailing newlines', async () => {
   const writes: string[] = [];
   vi.spyOn(process.stdout, 'write').mockImplementation(((
     chunk: string | Uint8Array,
@@ -427,14 +420,6 @@ it('separates TTY notice, disposition and artifact lines with trailing newlines'
               yield { type: 'notice', message: 'notice text' };
               yield { type: 'disposition', jobId: 'a', disposition: 'missing' };
               yield {
-                type: 'artifact',
-                jobId: 'a',
-                availability: { kind: 'failed', cause: 'repair-failed', retryScheduled: true },
-                remainingJobIds: [],
-                cursor: { jobs: [] },
-                exitCode: 1,
-              };
-              yield {
                 type: 'waiting',
                 waitingJobIds: [],
                 cursor: { jobs: [] },
@@ -445,9 +430,9 @@ it('separates TTY notice, disposition and artifact lines with trailing newlines'
         }),
       }),
     ).toBe(1);
-    for (const fragment of writes.filter((text) => /notice text|Job a: missing|Result file unavailable/.test(text)))
+    for (const fragment of writes.filter((text) => /notice text|Job a: missing/.test(text)))
       expect(fragment.endsWith('\n')).toBe(true);
-    expect(writes.filter((text) => /notice text|Job a: missing|Result file unavailable/.test(text))).toHaveLength(3);
+    expect(writes.filter((text) => /notice text|Job a: missing/.test(text))).toHaveLength(2);
   } finally {
     vi.restoreAllMocks();
   }
@@ -494,39 +479,6 @@ it('keeps launch abort reachable while a delegated follow runs and ends that fol
     expect(connects).toBe(1);
     expect(abortJobs).toHaveBeenCalledExactlyOnceWith(['job-1']);
     expect(code).toBe(1);
-  } finally {
-    vi.restoreAllMocks();
-  }
-});
-
-it('leaves the Ctrl+C prompt to the delegating parent when a delegated follower cannot abort', async () => {
-  let sigint: (() => void) | undefined;
-  const originalOn = process.on.bind(process);
-  vi.spyOn(process, 'on').mockImplementation(((event: string, listener: () => void) => {
-    if (event === 'SIGINT') sigint = listener;
-    return originalOn(event, listener);
-  }) as typeof process.on);
-  vi.spyOn(process.stdout, 'write').mockImplementation(((_c: unknown, cb?: () => void) => {
-    cb?.();
-    return true;
-  }) as typeof process.stdout.write);
-  const stderr = vi.spyOn(process.stderr, 'write').mockImplementation((() => true) as typeof process.stderr.write);
-  try {
-    const code = await followJobs({
-      start: { kind: 'jobs', jobIds: ['job-1'] },
-      reconnectPolicy: 'until-terminal',
-      projectRoot: '/project',
-      render: { isTTY: false, columns: 80, embed: false, verbose: false },
-      emitError: vi.fn(),
-      connect: async ({ signal }) => {
-        sigint?.();
-        sigint?.();
-        expect(signal.aborted).toBe(false);
-        return { kind: 'delegated', version: '9.9.9', outcome: { kind: 'handoff-exit', exitCode: 0 } };
-      },
-    });
-    expect(code).toBe(0);
-    expect(stderr).not.toHaveBeenCalledWith('\nPress Ctrl+C again to abort the job.\n');
   } finally {
     vi.restoreAllMocks();
   }
@@ -623,9 +575,7 @@ it('resets a cursor rejected mid-stream and completes the reconnect', async () =
     callback?.();
     return true;
   }) as typeof process.stdout.write);
-  const cursor = {
-    jobs: [{ hash: waitJobHash('job'), epoch: waitEpochToken('e'), seq: 1, lineOffset: 0, flags: 0 }],
-  };
+  const cursor = savedCursor({ job: 1 });
   const emitError = vi.fn();
   const cursors: unknown[] = [];
   try {
@@ -644,7 +594,7 @@ it('resets a cursor rejected mid-stream and completes the reconnect', async () =
           subscription: {
             close: async () => {},
             async *[Symbol.asyncIterator]() {
-              if (first) throw new BackendToolHttpError('cursor rejected', 400, { code: 'wait_cursor_mismatch' });
+              if (first) throw new BackendToolHttpError('cursor rejected', 400, { code: 'wait_cursor_malformed' });
               yield {
                 type: 'waiting',
                 waitingJobIds: [],
@@ -693,11 +643,9 @@ it('launch-and-follow prints a continuation for an accepted outcome awaiting its
               jobId: 'job',
               seq: 2,
               result: { content: 'done', durationMs: 1, outcome: { kind: 'completed' } },
-              availability: { kind: 'repair-pending', ageUncertain: false },
+              availability: { kind: 'pending' },
               remainingJobIds: ['job'],
-              cursor: {
-                jobs: [{ hash: waitJobHash('job'), epoch: waitEpochToken('e'), seq: 2, lineOffset: 0, flags: 3 }],
-              },
+              cursor: { jobs: [{ hash: waitJobHash('job'), seq: 2 }] },
               exitCode: 75,
             };
           },

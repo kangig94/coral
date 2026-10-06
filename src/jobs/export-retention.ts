@@ -1,4 +1,3 @@
-import { sameEpoch } from '../store/epoch/identity.js';
 import type { StorageBigIntStat } from '../infra/port-types.js';
 import { isRetentionChildName, readRetentionMeta } from '../store/retention-meta.js';
 import { dirname, join } from 'node:path';
@@ -17,130 +16,63 @@ import { decodeBody, type StoreReadContext } from '../store/body-codec.js';
 import type { EventsRow } from '../store/schema.js';
 import { jobTerminalRecordedBodySchema } from './terminal/result.js';
 import { readJobTerminalAge } from './terminal-age.js';
-
-import type { JobTerminal, JobTerminalEvent } from './records.js';
+import type { JobTerminal } from './records.js';
 import type { JobLocation } from './location-index.js';
-import { readRetainedTerminal, validatedTerminal, sameTerminal } from './terminal/identity.js';
+import { retainedTerminal, sameTerminal } from './terminal/identity.js';
 import { readAcceptedTerminal } from './terminal/source.js';
 import { sourceReadFailureDisposition } from './source-read.js';
-import { trustedJobRetentionCutoff } from './retention-clock.js';
 
-const terminalAgeSchema = z.object({
-  epochKey: z.string(),
-  terminalSeq: z.number().int().safe().nonnegative(),
-  terminalTimestamp: z.string(),
-  kind: z.enum(['known', 'unknown', 'regression']),
-  terminalAt: z.number().finite().optional(),
-});
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+export function resolveJobRetentionMs(raw: string | undefined): number {
+  const days = raw === undefined ? NaN : Number(raw);
+  return (Number.isSafeInteger(days) && days > 0 ? days : 14) * DAY_MS;
+}
+
+export function jobRetentionCutoff(runtime: Pick<Runtime, 'time' | 'env'>): number {
+  return runtime.time.now() - resolveJobRetentionMs(runtime.env.get('CORAL_JOBS_RETENTION_DAYS'));
+}
+
+/**
+ * Only the job's own intact source can prove its terminal's age: a retained timestamp alone never authorizes expiry.
+ * `absent` is a source epoch that is gone; `unusable` is one that cannot be decoded or disagrees with the retained
+ * terminal.
+ */
 export type TerminalEligibility = Readonly<{
-  kind: 'expired' | 'inside' | 'unknown' | 'regression';
-  age: number | 'unknown' | 'regression';
-  sourceReadable: boolean;
-  sourceReadFailed?: boolean;
-  sourceReadTransient?: boolean;
-  sourceContradictory?: boolean;
-  ageUnproven?: boolean;
-  ageDeferred?: boolean;
-  publicationAuthorized: boolean;
-  regressionAuthorized?: boolean;
-  cutoffTrusted: boolean;
+  source: 'readable' | 'absent' | 'transient' | 'unusable';
+  age: 'expired' | 'inside' | 'unknown';
 }>;
 
-/** A timestamp alone never authorizes expiry or reconstruction of a recorded job. */
 export function terminalEligibility(
   runtime: Pick<Runtime, 'time' | 'env'>,
   location: JobLocation | null,
   withSource: <T>(read: (db: Database) => T) => T | null,
-  observeSource = true,
   sourceTerminal?: { accepted: EventsRow; terminal: JobTerminal },
-  readOnly = false,
 ): TerminalEligibility {
-  const cutoff = trustedJobRetentionCutoff(runtime);
-  const denied = {
-    kind: 'unknown',
-    age: 'unknown',
-    sourceReadable: false,
-    publicationAuthorized: false,
-    cutoffTrusted: cutoff !== null,
-  } as const;
-  if (
-    !location ||
-    location.disposition !== 'terminal' ||
-    location.detail.kind !== 'recorded' ||
-    location.terminalSeq === undefined
-  )
-    return denied;
-  const terminal = readOnly
-    ? readRetainedTerminal(location)
-    : validatedTerminal(location.detail.value, location.jobId, location.epochKey, location.terminalSeq);
-  if (!terminal) return denied;
-  const saved = savedTerminalAge(location, terminal);
-  let age: number | 'unknown' | 'regression' = saved ?? 'unknown';
-  let sourceReadable = false;
-  let sourceReadFailed = false;
-  let sourceReadTransient = false;
-  let sourceContradictory = false;
-  if (observeSource && !(cutoff !== null && typeof age === 'number' && age < cutoff)) {
-    try {
-      withSource((db) => {
-        const accepted = sourceTerminal?.accepted ?? readAcceptedTerminal(db, location.jobId);
-        if (!accepted || accepted.seq !== terminal.seq || accepted.ts !== terminal.ts) {
-          sourceContradictory = true;
-          return;
-        }
-        const body = sourceTerminal
-          ? { terminal: sourceTerminal.terminal }
-          : jobTerminalRecordedBodySchema.parse(JSON.parse(Buffer.from(accepted.body).toString('utf8')));
-        if (!sameTerminal(terminal.result, body.terminal)) {
-          sourceContradictory = true;
-          return;
-        }
-        sourceReadable = true;
-        if (location.terminalAge === undefined) age = cutoff === null ? 'unknown' : readJobTerminalAge(db, accepted);
-      });
-    } catch (error) {
-      sourceReadFailed = true;
-      sourceReadTransient = sourceReadFailureDisposition(error) === 'transient-unknown';
-    }
+  const terminal = location === null ? null : retainedTerminal(location);
+  if (location === null || terminal === null) return { source: 'unusable', age: 'unknown' };
+  let observed: ReturnType<typeof readJobTerminalAge> | 'disagrees' | null;
+  try {
+    observed = withSource((db) => {
+      const accepted = sourceTerminal?.accepted ?? readAcceptedTerminal(db, location.jobId);
+      if (!accepted || accepted.seq !== terminal.seq || accepted.ts !== terminal.ts) return 'disagrees';
+      const body = sourceTerminal
+        ? { terminal: sourceTerminal.terminal }
+        : jobTerminalRecordedBodySchema.parse(JSON.parse(Buffer.from(accepted.body).toString('utf8')));
+      return sameTerminal(terminal.result, body.terminal) ? readJobTerminalAge(db, accepted) : 'disagrees';
+    });
+  } catch (error) {
+    return {
+      source: sourceReadFailureDisposition(error) === 'transient-unknown' ? 'transient' : 'unusable',
+      age: 'unknown',
+    };
   }
-  const kind = cutoff === null ? 'unknown' : typeof age === 'number' ? (age < cutoff ? 'expired' : 'inside') : age;
-  const regressionAuthorized = saved === 'regression' && sourceReadable;
+  if (observed === null) return { source: 'absent', age: 'unknown' };
+  if (observed === 'disagrees') return { source: 'unusable', age: 'unknown' };
   return {
-    kind,
-    age,
-    sourceReadable,
-    sourceReadFailed,
-    sourceReadTransient,
-    sourceContradictory,
-    ageUnproven: location.terminalAge === undefined || saved === 'unknown',
-    ageDeferred: location.terminalAge === undefined && sourceReadable && (cutoff === null || age === 'regression'),
-    cutoffTrusted: cutoff !== null,
-    regressionAuthorized,
-    publicationAuthorized: cutoff !== null && sourceReadable && (kind === 'inside' || regressionAuthorized),
+    source: 'readable',
+    age: typeof observed !== 'number' ? 'unknown' : observed < jobRetentionCutoff(runtime) ? 'expired' : 'inside',
   };
-}
-
-/** The age an owner captured for exactly this retained terminal; one bound to any other terminal is no age at all. */
-function savedTerminalAge(
-  location: JobLocation,
-  terminal: JobTerminalEvent,
-): number | 'unknown' | 'regression' | undefined {
-  const saved = terminalAgeSchema.safeParse(location.terminalAge);
-  if (
-    !saved.success ||
-    !sameEpoch(saved.data.epochKey, location.epochKey) ||
-    saved.data.terminalSeq !== terminal.seq ||
-    saved.data.terminalTimestamp !== terminal.ts
-  )
-    return undefined;
-  if (saved.data.kind !== 'known') return saved.data.kind;
-  return saved.data.terminalAt === Date.parse(terminal.ts) ? saved.data.terminalAt : undefined;
-}
-
-/** The captured age of a location's validated retained terminal, read without opening its source. */
-export function capturedTerminalAge(location: JobLocation): number | 'unknown' | 'regression' | undefined {
-  const terminal = readRetainedTerminal(location);
-  return terminal === null ? undefined : savedTerminalAge(location, terminal);
 }
 
 export type ExportJobRetentionState =
@@ -383,9 +315,6 @@ function deleteExportEntry(
   });
 }
 
-/** A deletion mutation found the authority its retirement was decided on no longer holds. */
-class DeletionAuthorityChanged extends Error {}
-
 function retiringJobId(name: string): string | null {
   const match =
     /^(?:\.retiring-|kept-retiring-)(.+)-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.exec(name);
@@ -409,7 +338,6 @@ export async function pruneJobExports(input: {
   resultHold(jobId: string): 'released' | 'required' | 'unknown';
   mutate<T>(operation: () => T): T;
   checkpoint?(nextId: string): void;
-  eligibility?(jobId: string): TerminalEligibility | undefined;
 }): Promise<string> {
   const { runtime, cutoff, budget } = input;
   let mutating = false;
@@ -510,28 +438,7 @@ export async function pruneJobExports(input: {
     try {
       const entry = runtime.storage.lstatSync(path, { bigint: true });
       if (budget.canMutate?.() === false) return false;
-      const authority = input.eligibility?.(jobId);
-      const state: ExportJobRetentionState =
-        authority === undefined
-          ? input.jobState(jobId)
-          : authority.kind === 'expired' || authority.kind === 'inside'
-            ? { kind: 'terminal', terminalAt: authority.age as number }
-            : { kind: authority.kind };
-      // Awaits separate the decision from each deletion, so every deletion mutation reads its authority again.
-      const deletionAuthorized = (): boolean => {
-        if (input.resultHold(jobId) !== 'released') return false;
-        const current = input.eligibility?.(jobId);
-        if (authority !== undefined) return current?.kind === 'expired';
-        if (current !== undefined) return false;
-        const now = input.jobState(jobId);
-        return now.kind === state.kind && (now.kind !== 'terminal' || now.terminalAt < cutoff);
-      };
-      const deletionMutate = <T>(operation: () => T): T =>
-        mutate(() => {
-          if (!deletionAuthorized()) throw new DeletionAuthorityChanged();
-          return operation();
-        });
-
+      const state = input.jobState(jobId);
       if (!entry.isDirectory()) outcome = { kind: 'kept', subject: path, reason: 'export-directory-unproven' };
       else if (state.kind === 'regression')
         outcome = { kind: 'kept', subject: recovering ? keepRetirement() : path, reason: 'terminal-clock-regression' };
@@ -542,12 +449,7 @@ export async function pruneJobExports(input: {
           reason: state.kind,
           pending: state.kind === 'unknown',
         };
-      else if (
-        state.kind === 'terminal' &&
-        (authority !== undefined
-          ? authority.kind !== 'expired'
-          : !Number.isFinite(state.terminalAt) || state.terminalAt >= cutoff)
-      )
+      else if (state.kind === 'terminal' && (!Number.isFinite(state.terminalAt) || state.terminalAt >= cutoff))
         outcome = {
           kind: 'kept',
           subject: recovering ? keepRetirement() : path,
@@ -575,12 +477,11 @@ export async function pruneJobExports(input: {
         }
         if (recovering && evidence !== null && evidence.cutoff <= cutoff) admittedCutoff = evidence.cutoff;
         const ageCutoff = keptRetirement ? cutoff : (admittedCutoff ?? cutoff);
-        const treeCutoff = authority === undefined ? ageCutoff : runtime.time.now();
         const mtimes = !keptRetirement && evidence !== null && evidence.cutoff === ageCutoff ? evidence.mtimes : {};
         const directories = new Map<string, StorageBigIntStat>();
         const expired =
           recovering || keptRetirement
-            ? await exportTreeExpired(runtime, path, treeCutoff, mtimes, treeCutoff, directories)
+            ? await exportTreeExpired(runtime, path, ageCutoff, mtimes, ageCutoff, directories)
             : state.kind !== 'absent' || admittedCutoff !== null || (await exportTreeExpired(runtime, path, cutoff));
         if (budget.canMutate?.() === false) return false;
         if (!expired) {
@@ -621,9 +522,6 @@ export async function pruneJobExports(input: {
               const current = runtime.storage.lstatSync(path, { bigint: true });
               if (!current.isDirectory() || current.dev !== entry.dev || current.ino !== entry.ino)
                 throw new Error('export-directory-identity-changed');
-              if (authority !== undefined && input.eligibility?.(jobId)?.kind !== 'expired')
-                throw new Error('terminal-eligibility-changed');
-              if (input.resultHold(jobId) !== 'released') throw new Error('result-hold-changed');
               runtime.storage.renameSync(path, retired);
               workId = retiredId;
               path = retired;
@@ -639,7 +537,7 @@ export async function pruneJobExports(input: {
             const expiredAfterRename = await exportTreeExpired(
               runtime,
               path,
-              treeCutoff,
+              ageCutoff,
               mtimes,
               renameTime,
               directories,
@@ -680,58 +578,44 @@ export async function pruneJobExports(input: {
             else delete mtimes[top];
             saveEvidence();
           };
+          const batch = await startExportDeletionBatch(
+            runtime,
+            path,
+            deletionBudget,
+            directories,
+            mutate,
+            changed,
+            ageCutoff,
+          );
           let deleted: boolean;
-          try {
-            const batch = await startExportDeletionBatch(
-              runtime,
-              path,
-              deletionBudget,
-              directories,
-              deletionMutate,
-              changed,
-              treeCutoff,
-            );
-            if (batch.kind === 'changed') deleted = false;
-            else if (batch.kind === 'large')
-              deleted = await deleteExportTree(
-                runtime,
-                path,
-                deletionBudget,
-                deletionMutate,
-                changed,
-                directories,
-                treeCutoff,
-              );
-            else {
-              const result = deletionMutate(() => {
-                try {
-                  for (const item of batch.entries)
-                    if (
-                      !deleteExportEntry(
-                        runtime,
-                        item.path,
-                        deletionBudget,
-                        (operation) => operation(),
-                        changed,
-                        directories,
-                        treeCutoff,
-                        item.top,
-                        item.entry.isDirectory() ? undefined : item.entry,
-                      )
+          if (batch.kind === 'changed') deleted = false;
+          else if (batch.kind === 'large')
+            deleted = await deleteExportTree(runtime, path, deletionBudget, mutate, changed, directories, ageCutoff);
+          else {
+            const result = mutate(() => {
+              try {
+                for (const item of batch.entries)
+                  if (
+                    !deleteExportEntry(
+                      runtime,
+                      item.path,
+                      deletionBudget,
+                      (operation) => operation(),
+                      changed,
+                      directories,
+                      ageCutoff,
+                      item.top,
+                      item.entry.isDirectory() ? undefined : item.entry,
                     )
-                      return { deleted: false };
-                  return { deleted: true };
-                } catch (error: unknown) {
-                  return { deleted: false, error };
-                }
-              });
-              if ('error' in result) throw result.error;
-              deleted = result.deleted;
-            }
-          } catch (error: unknown) {
-            if (!(error instanceof DeletionAuthorityChanged)) throw error;
-            budget.record({ kind: 'kept', subject: keepRetirement(), reason: 'terminal-eligibility-changed' });
-            return true;
+                  )
+                    return { deleted: false };
+                return { deleted: true };
+              } catch (error: unknown) {
+                return { deleted: false, error };
+              }
+            });
+            if ('error' in result) throw result.error;
+            deleted = result.deleted;
           }
           if (!deleted) {
             outcome = { kind: 'kept', subject: keepRetirement(), reason: 'residue-recent-or-unobservable' };

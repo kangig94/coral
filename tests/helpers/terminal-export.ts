@@ -19,7 +19,7 @@ import { TerminalResultExportOwner } from '#src/jobs/terminal/export.js';
 import type { JobTerminal } from '#src/jobs/records.js';
 
 export const TERMINAL_EXPORT_NOW = Date.parse('2026-10-04T00:00:00.000Z');
-export const TERMINAL_EXPORT_CUTOFF = TERMINAL_EXPORT_NOW - 14 * 86_400_000 - 60_000;
+export const TERMINAL_EXPORT_CUTOFF = TERMINAL_EXPORT_NOW - 14 * 86_400_000;
 
 export function createTerminalExportFixture(jobKind: 'provider' | 'workflow' = 'provider', fileDatabase = false) {
   const root = mkdtempSync(join(tmpdir(), 'coral-terminal-export-'));
@@ -96,7 +96,6 @@ export function createTerminalExportFixture(jobKind: 'provider' | 'workflow' = '
             },
             locations.resultPathFor(id),
             terminal.seq,
-            db,
           );
         },
         location: (id) => locations.read(id),
@@ -169,16 +168,12 @@ export function createTerminalExportFixture(jobKind: 'provider' | 'workflow' = '
         },
         index.resultPathFor(jobId),
         seq,
-        db,
       );
       return seq;
     },
     advance: (ms: number) => {
       wall += ms;
       monotonic += BigInt(ms);
-    },
-    jump: (ms: number) => {
-      wall += ms;
     },
     removeSource: () => {
       db.close();

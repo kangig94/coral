@@ -20,10 +20,7 @@ it.each(['direct', 'v2', 'live'])(
     const time = createRealTimePort();
     const pollTimer = vi.spyOn(time, 'setTimeout');
     const wait = new WaitCoordinator({
-      visitProgress: progressVisitFromEvents(
-        () => [],
-        () => 0,
-      ),
+      visitProgress: progressVisitFromEvents(() => []),
       time,
       eventBus: { on: () => {}, off: () => {} },
       sessionManager: { get: () => null },
@@ -69,7 +66,7 @@ it.each(['direct', 'v2', 'live'])(
       () => false,
       () => 'pending',
       undefined,
-      () => ({ kind: 'failed', cause: 'terminal-unusable', retryScheduled: false }),
+      () => ({ kind: 'failed', reason: 'the retained terminal does not match its source journal' }),
     );
     const stream = mode !== 'v2' ? wait.waitForOutcomes(request) : addressing.waitStream(request);
     const pending = nextDelivered(stream);
