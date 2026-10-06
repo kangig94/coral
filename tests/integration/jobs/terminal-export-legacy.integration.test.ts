@@ -44,14 +44,17 @@ for (const variant of ['zero-byte', 'missing-file-in-dir', 'absent-dir'] as cons
   });
 }
 
-it('keeps a regressed legacy terminal expired after hydration captures its newest surviving timestamp', () => {
+it('keeps a regressed legacy terminal regressed: its export is kept and age never discharges it', () => {
   const f = createTerminalExportFixture('provider', true);
   try {
     const seq = f.complete({ terminalAt: TERMINAL_EXPORT_CUTOFF - 1000, precedingAt: TERMINAL_EXPORT_CUTOFF - 500 });
     const stored = JSON.parse(readFileSync(f.locationPath, 'utf8'));
     delete stored.terminalAge;
     writeFileSync(f.locationPath, JSON.stringify(stored) + '\n');
-    expect(f.index.terminalEligibility(f.jobId).kind).toBe('expired');
+    rmSync(dirname(f.resultPath), { recursive: true, force: true });
+    // The newest earlier row only bounds the terminal's real time from below, so its expiry cannot be proven.
+    expect(f.index.terminalEligibility(f.jobId)).toMatchObject({ kind: 'regression', age: 'regression' });
+    expect(f.index.resultDurable(f.jobId)).toBe(false);
     const detail = f.store.loadJobProjectionDetail(f.jobId);
     f.index.recordTerminal(
       f.jobId,
@@ -65,10 +68,15 @@ it('keeps a regressed legacy terminal expired after hydration captures its newes
       seq,
       f.db,
     );
-    const captured = JSON.parse(readFileSync(f.locationPath, 'utf8')).terminalAge;
-    expect(captured).toMatchObject({ kind: 'known', terminalAt: TERMINAL_EXPORT_CUTOFF - 500 });
-    expect(f.index.terminalEligibility(f.jobId)).toMatchObject({ kind: 'expired', age: TERMINAL_EXPORT_CUTOFF - 500 });
-    expect(f.store.getResultExportOwner().observeResultAvailability(f.jobId).kind).toBe('retained-away');
+    expect(JSON.parse(readFileSync(f.locationPath, 'utf8')).terminalAge).toMatchObject({ kind: 'regression' });
+    expect(f.index.terminalEligibility(f.jobId)).toMatchObject({ kind: 'regression', regressionAuthorized: true });
+    // Retention keeps a regressed export under its own reason; only the published file can retire the job.
+    expect(f.index.exportDeletionEligibility(f.jobId)?.kind).toBe('regression');
+    expect(f.index.resultDurable(f.jobId)).toBe(false);
+    f.store.ensureResultArtifact(f.jobId);
+    expect(existsSync(f.resultPath)).toBe(true);
+    expect(f.index.resultDurable(f.jobId)).toBe(true);
+    expect(f.store.getResultExportOwner().observeResultAvailability(f.jobId).kind).toBe('available');
   } finally {
     f.close();
   }
@@ -79,6 +87,8 @@ it.each([
   ['a zero-byte file', true],
   ['a dangling symlink', false],
   ['a directory', false],
+  ['an export directory symlinked to an empty directory', false],
+  ['a dangling export directory symlink', false],
 ] as const)('discharges an unknown-age legacy terminal whose result path holds %s: %s', (entry, discharged) => {
   const f = createTerminalExportFixture('provider', true);
   try {
@@ -88,7 +98,13 @@ it.each([
     delete stored.terminalAge;
     writeFileSync(f.locationPath, JSON.stringify(stored) + '\n');
     rmSync(dirname(f.resultPath), { recursive: true, force: true });
-    if (entry !== 'an absent directory') mkdirSync(dirname(f.resultPath), { recursive: true });
+    if (entry === 'an export directory symlinked to an empty directory') {
+      mkdirSync(`${dirname(f.resultPath)}.elsewhere`, { recursive: true });
+      symlinkSync(`${dirname(f.resultPath)}.elsewhere`, dirname(f.resultPath));
+    } else if (entry === 'a dangling export directory symlink') {
+      mkdirSync(dirname(dirname(f.resultPath)), { recursive: true });
+      symlinkSync(`${dirname(f.resultPath)}.missing`, dirname(f.resultPath));
+    } else if (entry !== 'an absent directory') mkdirSync(dirname(f.resultPath), { recursive: true });
     if (entry === 'a zero-byte file') writeFileSync(f.resultPath, '');
     if (entry === 'a dangling symlink') symlinkSync(`${f.resultPath}.missing`, f.resultPath);
     if (entry === 'a directory') mkdirSync(f.resultPath);

@@ -16,6 +16,7 @@ import { flushMicrotasks } from '#tools/simulation/core/virtual-time.js';
 import { JobAddressing } from '#src/jobs/addressing.js';
 import { JobLocationIndex } from '#src/jobs/location-index.js';
 import { waitEpochToken, waitJobHash } from '#src/jobs/wait/cursor.js';
+import type { WaitStreamRequest } from '#src/jobs/wait/contract.js';
 
 function fixture() {
   const runtime = new SimulationRuntime();
@@ -50,15 +51,15 @@ function fixture() {
     eventBus,
     sessionManager: { get: () => ({ activeJobId, state: 'pending', providerContinuity: null }) } as never,
     launchQueue: { reservationFor: () => null, getActiveJobIds: () => [] } as never,
-    loadJobProjectionDetail: () => {
+    loadJobWaitDetail: () => {
       const terminal = journal.find((event): event is JobTerminalEvent => event.type === 'terminal');
       return {
-        status: { ...status, lastSeq: terminal?.seq },
-        launch: null,
+        status: { ...status, lastSeq: journal.at(-1)?.seq ?? 0 },
         runtime: null,
         exit: terminal ? { ...terminal.result, endTime: terminal.ts, diagnostics: { progressFaults: [] } } : null,
       };
     },
+    readJobLastSeq: () => journal.at(-1)?.seq ?? 0,
 
     aggregateWorkflowUsage: () => undefined,
     getCurrentJournalSeq: () => journal.at(-1)?.seq ?? 0,
@@ -72,8 +73,29 @@ function fixture() {
       },
     }),
   };
+  const wait = new WaitCoordinator(deps);
+  const index = new JobLocationIndex(runtime, '/coral');
+  for (const jobId of ['job-1', 'a', 'b'])
+    index.register(jobId, 'epoch', { projectRoot: '/project', workDir: '/project', jobKind: 'provider' });
+  // A client wait reaches this coordinator through job addressing, as production composes it.
+  const addressing = new JobAddressing(
+    index.readOnlyView(),
+    {
+      visitProgress: wait.visitProgress,
+      epochKey: () => 'epoch',
+      detail: () => null,
+      readWaitAdmissions: (ids, epoch, session) => wait.readWaitAdmissions(ids, epoch, session),
+      observeWaitCarriers: (ids, signal) => wait.observeWaitCarriers(ids, signal),
+      abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
+    },
+    () => false,
+    () => 'pending',
+    undefined,
+    () => ({ kind: 'failed', cause: 'terminal-unusable', retryScheduled: false }),
+  );
   return {
-    wait: new WaitCoordinator(deps),
+    wait,
+    clientWait: (request: WaitStreamRequest) => addressing.waitStream(request),
     deps,
     runtime,
     eventBus,
@@ -204,9 +226,8 @@ describe('WaitCoordinator', () => {
     let committed = false;
     let frontier = 0;
     f.deps.getCurrentJournalSeq = () => frontier;
-    f.deps.loadJobProjectionDetail = (id) => ({
+    f.deps.loadJobWaitDetail = (id) => ({
       status: { ...admitted(id, [], false).detail.status },
-      launch: null,
       runtime: null,
       exit: null,
     });
@@ -222,10 +243,10 @@ describe('WaitCoordinator', () => {
       return result;
     };
     const events = [];
-    for await (const event of f.wait.waitForJobs({ jobIds: ['a', 'b'], timeoutSeconds: 0 })) events.push(event);
+    for await (const event of f.clientWait({ jobIds: ['a', 'b'], timeoutSeconds: 0 })) events.push(event);
     const last = events.at(-1)!;
     const cursor = 'cursor' in last ? last.cursor : undefined;
-    for await (const event of f.wait.waitForJobs({
+    for await (const event of f.clientWait({
       jobIds: ['a', 'b'],
       timeoutSeconds: 0,
       cursor,
@@ -240,16 +261,16 @@ describe('WaitCoordinator', () => {
     const f = fixture();
     f.deps.observeResultAvailability = () => ({ kind: 'repair-pending', ageUncertain: false });
     f.journal.push(f.terminal());
-    const event = (await nextDelivered(f.wait.waitForJobs({ jobIds: ['job-1'] }))).value;
+    const event = (await nextDelivered(f.wait.waitForOutcomes({ jobIds: ['job-1'] }))).value;
     expect(event).toMatchObject({ type: 'terminal' });
     expect(event).not.toHaveProperty('resultPath');
   });
 
   it('preserves queued activity when the shared reader has no journal progress', async () => {
     const f = fixture();
-    const projected = f.deps.loadJobProjectionDetail('job-1');
-    f.deps.loadJobProjectionDetail = () => ({ ...projected, status: { ...projected.status!, phase: 'queued' } });
-    const stream = f.wait.waitForJobs({ jobIds: ['job-1'], timeoutSeconds: 0 });
+    const projected = f.deps.loadJobWaitDetail('job-1');
+    f.deps.loadJobWaitDetail = () => ({ ...projected, status: { ...projected.status!, phase: 'queued' } });
+    const stream = f.clientWait({ jobIds: ['job-1'], timeoutSeconds: 0 });
     expect((await nextDelivered(stream)).value).toMatchObject({
       type: 'queued',
       jobId: 'job-1',
@@ -281,9 +302,8 @@ describe('WaitCoordinator', () => {
         providerContinuity: null,
       }),
     } as never;
-    f.deps.loadJobProjectionDetail = () => ({
+    f.deps.loadJobWaitDetail = () => ({
       status: { ...detail.status, jobKind: 'workflow', provider: 'codex', sessionId: 'session-1' },
-      launch: null,
       runtime: null,
       exit: detail.exit,
     });
@@ -320,7 +340,7 @@ describe('WaitCoordinator', () => {
 
   it('catches up from the durable journal after a missed notification', async () => {
     const f = fixture();
-    const stream = f.wait.waitForJobs({ jobIds: ['job-1'], timeoutSeconds: 1 });
+    const stream = f.clientWait({ jobIds: ['job-1'], timeoutSeconds: 1 });
     const next = nextDelivered(stream);
     await f.pollStarted;
     f.journal.push(f.terminal());
@@ -333,7 +353,7 @@ describe('WaitCoordinator', () => {
     const f = fixture();
     f.terminalize();
     f.releaseClaim();
-    const stream = f.wait.waitForJobs({ jobIds: ['job-1'], timeoutSeconds: 1 });
+    const stream = f.clientWait({ jobIds: ['job-1'], timeoutSeconds: 1 });
     const next = nextDelivered(stream);
     await f.pollStarted;
     f.runtime.time.tick(1001);
@@ -348,7 +368,7 @@ describe('WaitCoordinator', () => {
   it('replays a terminal arriving after timeout on the next request with the unchanged cursor', async () => {
     const f = fixture();
     const cursor = { jobs: [] };
-    const stream = f.wait.waitForJobs({ jobIds: ['job-1'], timeoutSeconds: 1, cursor });
+    const stream = f.clientWait({ jobIds: ['job-1'], timeoutSeconds: 1, cursor });
     const next = nextFinal(stream);
     await f.pollStarted;
     f.runtime.time.tick(1001);
@@ -360,7 +380,7 @@ describe('WaitCoordinator', () => {
     await stream.return(undefined);
     f.journal.push(f.terminal());
     expect(cursor).toEqual({ jobs: [] });
-    const resumed = f.wait.waitForJobs({ jobIds: ['job-1'], cursor });
+    const resumed = f.clientWait({ jobIds: ['job-1'], cursor });
     expect((await nextFinal(resumed)).value).toMatchObject({ type: 'terminal', seq: 1 });
     await resumed.return(undefined);
   });
@@ -405,10 +425,10 @@ describe('WaitCoordinator', () => {
           get: () => ({ activeJobId: undefined, state: 'pending', providerContinuity: null }),
         } as never,
         launchQueue: { reservationFor: () => null, getActiveJobIds: () => [] } as never,
-        loadJobProjectionDetail: () =>
+        readJobLastSeq: () => 1,
+        loadJobWaitDetail: () =>
           ({
             status,
-            launch: null,
             runtime: null,
             exit: { ...terminal.result, endTime: terminal.ts, diagnostics: { progressFaults: [] } },
           }) as never,
@@ -423,7 +443,7 @@ describe('WaitCoordinator', () => {
       let thrown: unknown;
       const events: unknown[] = [];
       try {
-        for await (const event of wait.waitForJobs({ jobIds: ['job-1'], timeoutSeconds: 1 })) {
+        for await (const event of wait.waitForOutcomes({ jobIds: ['job-1'], timeoutSeconds: 1 })) {
           events.push(event);
         }
       } catch (error) {
@@ -442,8 +462,8 @@ describe('WaitCoordinator', () => {
 
 it('a missing internal job is a failed outcome after one read, without re-entering the reader', async () => {
   const f = fixture();
-  const load = vi.fn(() => ({ status: null, launch: null, runtime: null, exit: null }));
-  f.deps.loadJobProjectionDetail = load;
+  const load = vi.fn(() => ({ status: null, runtime: null, exit: null }));
+  f.deps.loadJobWaitDetail = load;
   f.deps.observeJobAbsence = () => true;
   const wait = new WaitCoordinator(f.deps);
   await expect(wait.waitStreamOnce('missing', 1000)).rejects.toThrow('missing');
@@ -524,7 +544,7 @@ it('observes availability once per terminal poll and emits one repair hint', () 
 
 it('reads projection and history once per unchanged admission frontier and preserves prior arrays', () => {
   const f = fixture();
-  const projection = vi.spyOn(f.deps, 'loadJobProjectionDetail');
+  const projection = vi.spyOn(f.deps, 'loadJobWaitDetail');
   const events = vi.spyOn(f.deps, 'visitProgress');
   const session = {};
   const first = f.wait.readWaitAdmission('job-1', 'epoch', session);
@@ -539,7 +559,7 @@ it('reads projection and history once per unchanged admission frontier and prese
 
 it.each([false, true])('internal waits answer missing only after explicit absence: %s', (explicitAbsence) => {
   const f = fixture();
-  f.deps.loadJobProjectionDetail = () => ({ status: null, launch: null, runtime: null, exit: null });
+  f.deps.loadJobWaitDetail = () => ({ status: null, runtime: null, exit: null });
   f.deps.observeJobAbsence = () => explicitAbsence;
   const admission = f.wait.readWaitAdmission('transferred', 'new-epoch', {});
   expect(admission.disposition).toBe(explicitAbsence ? 'missing' : 'admitted');
@@ -557,7 +577,7 @@ it('does not keep active history in a coordinator-lifetime cache when no session
 it('internal child wait reads its durable historical epoch', async () => {
   const f = fixture();
   f.deps.currentJobEpochKey = () => 'active';
-  f.deps.loadJobProjectionDetail = () => ({ status: null, launch: null, runtime: null, exit: null });
+  f.deps.loadJobWaitDetail = () => ({ status: null, runtime: null, exit: null });
   f.deps.observeJobAbsence = () => true;
   f.deps.internalWait = {
     admissions: () => [admitted('child', [], true, 'historical')],
@@ -570,9 +590,9 @@ it('internal child wait reads its durable historical epoch', async () => {
 
 it('isolates an unreadable active projection from its healthy sibling', () => {
   const f = fixture();
-  f.deps.loadJobProjectionDetail = (jobId) => {
+  f.deps.loadJobWaitDetail = (jobId) => {
     if (jobId === 'damaged') throw new Error('location read denied');
-    return { status: admitted('job-1', [], false).detail.status, launch: null, runtime: null, exit: null };
+    return { status: admitted('job-1', [], false).detail.status, runtime: null, exit: null };
   };
   const admissions = f.wait.readWaitAdmissions(['damaged', 'job-1'], 'epoch', {});
   expect(admissions[0]).toMatchObject({ disposition: 'admitted', sourceRead: 'transient-unknown' });
@@ -585,7 +605,7 @@ it('caches a terminal body per request while unrelated journal writes advance', 
   f.terminalize();
   let frontier = 1;
   f.deps.getCurrentJournalSeq = () => frontier;
-  const projection = vi.spyOn(f.deps, 'loadJobProjectionDetail');
+  const projection = vi.spyOn(f.deps, 'loadJobWaitDetail');
   const availability = vi.spyOn(f.deps, 'observeResultAvailability');
   const session = {};
   const first = f.wait.readWaitAdmission('job-1', 'epoch', session);
@@ -601,14 +621,52 @@ it('caches a terminal body per request while unrelated journal writes advance', 
 
 it('settles an active-journal decode failure as unreadable and propagates a code defect', () => {
   const f = fixture();
-  f.deps.loadJobProjectionDetail = (jobId) => {
+  f.deps.loadJobWaitDetail = (jobId) => {
     if (jobId === 'undecodable') throw new StoreCodecError('Current codec rejected stored event', {});
     if (jobId === 'defect') throw new TypeError('defect');
-    return { status: admitted(jobId, [], false).detail.status, launch: null, runtime: null, exit: null };
+    return { status: admitted(jobId, [], false).detail.status, runtime: null, exit: null };
   };
   expect(f.wait.readWaitAdmissions(['undecodable', 'job-1'], 'epoch', {})).toMatchObject([
     { jobId: 'undecodable', disposition: 'outcome-unreadable', sourceRead: 'settled-unreadable' },
     { jobId: 'job-1', disposition: 'admitted' },
   ]);
   expect(() => f.wait.readWaitAdmissions(['defect'], 'epoch', {})).toThrow(TypeError);
+});
+
+it("reloads a pending admission only when that job's own last seq moves, never on another job's append", () => {
+  const f = fixture();
+  let frontier = 1;
+  let ownLastSeq = 1;
+  f.deps.getCurrentJournalSeq = () => frontier;
+  f.deps.readJobLastSeq = () => ownLastSeq;
+  f.deps.loadJobWaitDetail = () => ({
+    status: { ...admitted('job-1', [], false).detail.status, lastSeq: ownLastSeq },
+    runtime: null,
+    exit: null,
+  });
+  const load = vi.spyOn(f.deps, 'loadJobWaitDetail');
+  const session = {};
+  for (let poll = 0; poll < 10; poll++) {
+    frontier++;
+    f.wait.readWaitAdmission('job-1', 'epoch', session);
+  }
+  expect(load).toHaveBeenCalledTimes(1);
+  ownLastSeq = frontier;
+  expect(f.wait.readWaitAdmission('job-1', 'epoch', session).detail?.status.lastSeq).toBe(frontier);
+  expect(load).toHaveBeenCalledTimes(2);
+});
+
+it('reads the queue again for a cached queued admission, since other jobs move its position', () => {
+  const f = fixture();
+  let position = 3;
+  f.deps.launchQueue = {
+    reservationFor: () => ({ kind: 'queued', position, pool: 'default' }),
+    getActiveJobIds: () => [],
+  } as never;
+  const projected = f.deps.loadJobWaitDetail('job-1');
+  f.deps.loadJobWaitDetail = () => ({ ...projected, status: { ...projected.status!, phase: 'queued' } });
+  const session = {};
+  expect(f.wait.readWaitAdmission('job-1', 'epoch', session).queued).toMatchObject({ queuePosition: 3 });
+  position = 1;
+  expect(f.wait.readWaitAdmission('job-1', 'epoch', session).queued).toMatchObject({ queuePosition: 1 });
 });

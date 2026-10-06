@@ -112,7 +112,6 @@ describe('terminal export owner', () => {
           f.index.resultPathFor(jobId),
           seq,
           f.db,
-          true,
         );
       }
       const owner = f.store.getResultExportOwner();
@@ -549,7 +548,7 @@ it('recording failure does not skip publication after an accepted terminal commi
     publish,
     record,
   )([{ stream: { kind: 'job', id: 'accepted' }, type: 'job.terminal.recorded', seq: 42 }] as never);
-  expect(publish).toHaveBeenCalledWith('accepted', 42);
+  expect(publish).toHaveBeenCalledWith('accepted');
 });
 
 it('a known saved expiry outranks a later source read failure', () => {
@@ -1156,4 +1155,67 @@ it('settles a readable terminal whose owner cannot capture it without a repair l
   await owner.repairPass([], { canContinue: () => true, record: vi.fn() }, true);
   expect(prepare).toHaveBeenCalledOnce();
   expect(existsSync(f.resultPath)).toBe(false);
+});
+
+it.each([
+  ['an expired known', TERMINAL_EXPORT_CUTOFF - 1000, TERMINAL_EXPORT_CUTOFF - 2000, true],
+  ['an inside-window known', TERMINAL_EXPORT_CUTOFF + 1000, TERMINAL_EXPORT_CUTOFF, false],
+  ['a regressed', TERMINAL_EXPORT_CUTOFF - 1000, TERMINAL_EXPORT_CUTOFF - 500, false],
+] as const)(
+  'decides progress retention from %s captured age without reading the job history',
+  (_label, terminalAt, precedingAt, expired) => {
+    const f = fixture();
+    f.complete({ terminalAt, precedingAt });
+    // With its history gone, only the captured age on the location can still answer.
+    f.db.prepare('DELETE FROM events WHERE stream_id = ?').run(f.jobId);
+    expect(f.store.getResultExportOwner().progressRetentionExpired(f.jobId, {})).toBe(expired);
+  },
+);
+
+it('classifies a regressed terminal once: post-commit and hydration both capture regression, and age never discharges it', () => {
+  const f = fixture();
+  // The terminal is committed now while the wall clock stepped back past the job's last progress row.
+  const seq = f.complete({
+    terminalAt: TERMINAL_EXPORT_NOW - 30 * 86_400_000,
+    precedingAt: TERMINAL_EXPORT_NOW - 20 * 86_400_000,
+  });
+  const postCommit = JSON.parse(readFileSync(f.locationPath, 'utf8')).terminalAge;
+  expect(postCommit).toMatchObject({ kind: 'regression' });
+  const stored = JSON.parse(readFileSync(f.locationPath, 'utf8'));
+  delete stored.terminalAge;
+  writeFileSync(f.locationPath, JSON.stringify(stored) + '\n');
+  expect(f.index.terminalEligibility(f.jobId).kind).not.toBe('expired');
+  const detail = f.store.loadJobProjectionDetail(f.jobId);
+  f.index.recordTerminal(
+    f.jobId,
+    {
+      status: detail.status!,
+      events: f.store.readJobEvents(f.jobId),
+      exit: detail.exit,
+      readiness: deriveLaunchReadiness(detail),
+    },
+    f.index.resultPathFor(f.jobId),
+    seq,
+    f.db,
+  );
+  expect(JSON.parse(readFileSync(f.locationPath, 'utf8')).terminalAge).toEqual(postCommit);
+  expect(f.index.terminalEligibility(f.jobId)).toMatchObject({ kind: 'regression', age: 'regression' });
+  rmSync(dirname(f.resultPath), { recursive: true, force: true });
+  expect(f.index.exportDeletionEligibility(f.jobId)?.kind).not.toBe('expired');
+  expect(f.index.resultDurable(f.jobId)).toBe(false);
+  expect(f.store.getResultExportOwner().observeResultAvailability(f.jobId).kind).not.toBe('retained-away');
+});
+
+it("treats a saved known age other than its terminal's own timestamp as no age, even a later one", () => {
+  const f = fixture();
+  const terminalAt = TERMINAL_EXPORT_CUTOFF - 1000;
+  f.complete({ terminalAt });
+  const record = JSON.parse(readFileSync(f.locationPath, 'utf8'));
+  writeFileSync(
+    f.locationPath,
+    JSON.stringify({ ...record, terminalAge: { ...record.terminalAge, kind: 'known', terminalAt: terminalAt + 500 } }),
+  );
+  rmSync(dirname(f.resultPath), { recursive: true, force: true });
+  expect(f.index.terminalEligibility(f.jobId).kind).not.toBe('expired');
+  expect(f.index.resultDurable(f.jobId)).toBe(false);
 });

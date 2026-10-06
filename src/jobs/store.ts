@@ -21,13 +21,20 @@ import {
 import type { ResolvableCoralEventInput } from '../store/envelope.js';
 import type { EventBodyCodec } from '../store/event-body-codec.js';
 import { composeReducers, type ComposedReducers } from '../store/reducers.js';
-import { listJobProjections, loadJobProjectionDetail, readJobEvents } from './read-queries.js';
+import {
+  listJobProjections,
+  loadJobProjectionDetail,
+  loadJobWaitDetail,
+  readJobEvents,
+  readJobLastSeq,
+  type JobWaitDetail,
+} from './read-queries.js';
 import type { Runtime } from '../runtime/ports.js';
 import { jobsDir } from './paths.js';
 import { TerminalResultExportOwner, resultPathFor, type WorkflowReportPort } from './terminal/export.js';
 import { type JobLocationIndex, type JobLocation } from './location-index.js';
 import { readAcceptedTerminal, withTerminalSource } from './terminal/source.js';
-import { readIntactJobTerminalAge } from './terminal-age.js';
+import { readJobTerminalAge } from './terminal-age.js';
 import { trustedJobRetentionCutoff } from './retention-clock.js';
 import { deriveLaunchReadiness } from './launch-readiness.js';
 import type { DurableProcessExit } from '../runtime/durable-runtime.js';
@@ -549,6 +556,17 @@ export class JobStore implements JobProgressStore {
     return this.detail(jobId);
   }
 
+  loadJobWaitDetail(jobId: string): JobWaitDetail {
+    const detail = loadJobWaitDetail(this.db, jobId, this);
+    return detail.status === null
+      ? detail
+      : { ...detail, status: this.applyNamespaceOverrideToStatus(jobId, detail.status) };
+  }
+
+  readJobLastSeq(jobId: string): number | null {
+    return readJobLastSeq(this.db, jobId);
+  }
+
   readJobEvents(jobId: string, terminalOnly = false, afterSeq = 0) {
     return readJobEvents(this.db, jobId, this, terminalOnly, afterSeq);
   }
@@ -606,7 +624,7 @@ export class JobStore implements JobProgressStore {
         const accepted = readAcceptedTerminal(this.db, jobId);
         if (!accepted) return null;
         if (!this.localTerminalAges.has(jobId) && trustedJobRetentionCutoff(this.runtime) !== null) {
-          const age = readIntactJobTerminalAge(this.db, accepted, trustedJobRetentionCutoff(this.runtime));
+          const age = readJobTerminalAge(this.db, accepted);
           if (this.localTerminalAges.size >= this.terminalAgeCacheLimit) {
             const oldest = this.localTerminalAges.keys().next().value;
             if (oldest !== undefined) this.localTerminalAges.delete(oldest);
@@ -658,8 +676,8 @@ export class JobStore implements JobProgressStore {
     return this.resultExports;
   }
 
-  publishTerminalResult(jobId: string, newlyAppendedSeq?: number): string {
-    return this.getResultExportOwner().publishTerminalResult(jobId, newlyAppendedSeq);
+  publishTerminalResult(jobId: string): string {
+    return this.getResultExportOwner().publishTerminalResult(jobId);
   }
 
   ensureResultArtifact(jobId: string): string {

@@ -1,8 +1,7 @@
 import type { ProgressVisit } from '../wait/contract.js';
-import { isCodeDefect, sourceReadFailureDisposition } from '../source-read.js';
 import { epochIdentity, sameEpoch } from '../../store/epoch/identity.js';
 import { readWaitSession } from '../wait/reader.js';
-import type { WaitAdmission } from '../wait/session.js';
+import { activeJournalReadFailure, type WaitAdmission } from '../wait/session.js';
 import { isTerminalPhase, type JobPhase } from '../phase.js';
 import type { CarrierLiveness } from '../carrier-observation.js';
 import {
@@ -24,7 +23,7 @@ import type { JobEventBus } from '../event-bus.js';
 import { queuedProgressTiming } from '../progress-timing.js';
 import type { TimePort } from '../../infra/port-types.js';
 import type { SessionJobReadPort } from '../../sessions/contracts.js';
-import type { JobProjectionDetail } from '../read-queries.js';
+import type { JobWaitDetail } from '../read-queries.js';
 import { errorMessage } from '../../infra/error-format.js';
 import { backendLog } from '../../infra/backend-log.js';
 import type { ResultAvailability } from '../terminal/export.js';
@@ -36,7 +35,7 @@ import {
   readProviderHostUnserviceableTerminalWarning,
 } from '../../providers/host-admission.js';
 
-function surfaceProviderHostRecovery(event: JobTerminalEvent, detail: JobProjectionDetail): JobTerminal {
+function surfaceProviderHostRecovery(event: JobTerminalEvent, detail: JobWaitDetail): JobTerminal {
   const outcome = event.result.outcome;
   const runtime = detail.runtime;
   const warnings = detail.exit?.diagnostics.warnings ?? [];
@@ -69,7 +68,9 @@ export interface WaitCoordinatorDeps {
   launchQueue: JobQueueReadPort;
   eventBus: JobEventBus;
   time: TimePort;
-  loadJobProjectionDetail: (jobId: string) => JobProjectionDetail;
+  loadJobWaitDetail: (jobId: string) => JobWaitDetail;
+  /** The job's own projection sequence, which moves with every event of that job and with nothing else. */
+  readJobLastSeq: (jobId: string) => number | null;
 
   visitProgress: ProgressVisit;
   aggregateWorkflowUsage: (workflowJobId: string) => UsageSummary | undefined;
@@ -159,7 +160,7 @@ export class WaitCoordinator {
   }
 
   private readQueryStatus(jobId: string): JobStatus | null {
-    return this.deps.loadJobProjectionDetail(jobId).status;
+    return this.deps.loadJobWaitDetail(jobId).status;
   }
 
   private readQueryContinuity(jobId: string, status = this.readQueryStatus(jobId)): ContinuitySnapshot | null {
@@ -312,27 +313,11 @@ export class WaitCoordinator {
   }
 
   readWaitAdmissions(jobIds: readonly string[], epochKey: string, session?: object): WaitAdmission[] {
-    const frontier = this.deps.getCurrentJournalSeq();
     return jobIds.map((jobId): WaitAdmission => {
       try {
-        return this.readWaitAdmission(jobId, epochKey, session, frontier);
+        return this.readWaitAdmission(jobId, epochKey, session);
       } catch (error) {
-        if (isCodeDefect(error)) throw error;
-        return sourceReadFailureDisposition(error) === 'settled-unreadable'
-          ? {
-              jobId,
-              disposition: 'outcome-unreadable',
-              epochKey,
-              sourceRead: 'settled-unreadable',
-              message: "This build cannot decode this job's records in the active journal; no later read changes that",
-            }
-          : {
-              jobId,
-              disposition: 'admitted',
-              epochKey,
-              sourceRead: 'transient-unknown',
-              message: 'The active journal cannot be read right now; this wait reads it again on its next poll',
-            };
+        return activeJournalReadFailure(jobId, epochKey, error);
       }
     });
   }
@@ -343,27 +328,20 @@ export class WaitCoordinator {
   }
 
   private readonly terminalBodies = new WeakMap<object, Map<string, NonNullable<WaitAdmission['detail']>>>();
-  private readonly metadataAdmissions = new WeakMap<
-    object,
-    Map<string, { frontier: number; admission: WaitAdmission }>
-  >();
+  private readonly metadataAdmissions = new WeakMap<object, Map<string, WaitAdmission>>();
 
   visitProgress: ProgressVisit = (epoch, read) => this.deps.visitProgress(epoch, read);
 
-  readWaitAdmission(
-    jobId: string,
-    epochKey: string,
-    session?: object,
-    frontier = this.deps.getCurrentJournalSeq(),
-  ): WaitAdmission {
-    const cache =
-      (session ? this.metadataAdmissions.get(session) : undefined) ??
-      new Map<string, { frontier: number; admission: WaitAdmission }>();
+  readWaitAdmission(jobId: string, epochKey: string, session?: object): WaitAdmission {
+    const cache = (session ? this.metadataAdmissions.get(session) : undefined) ?? new Map<string, WaitAdmission>();
     if (session) this.metadataAdmissions.set(session, cache);
     const saved = cache.get(jobId);
-    const cached = saved?.admission;
-    if (cached && sameEpoch(cached.epochKey, epochKey) && (cached.detail?.exit || saved?.frontier === frontier)) {
-      if (!cached.detail?.exit) return cached;
+    const cached = saved && sameEpoch(saved.epochKey, epochKey) ? saved : undefined;
+    // A pending job's admission changes only with that job's own events, so another job's append never reloads it;
+    // its queue position moves with other jobs, so a queued admission reads the queue again.
+    if (cached?.detail && !cached.detail.exit && cached.detail.status.lastSeq === this.deps.readJobLastSeq(jobId))
+      return cached.queued ? { ...cached, queued: this.queuedWaitEvent(cached.detail.status) } : cached;
+    if (cached?.detail?.exit) {
       const availability = this.deps.observeResultAvailability(jobId, session);
       if (availability.kind === 'repair-pending') this.deps.hintResultRepair?.(jobId);
       const key = JSON.stringify([epochIdentity(epochKey), jobId, cached.detail.terminalSeq]);
@@ -373,7 +351,7 @@ export class WaitCoordinator {
         availability,
       };
     }
-    const projected = this.deps.loadJobProjectionDetail(jobId);
+    const projected = this.deps.loadJobWaitDetail(jobId);
     if (!projected.status)
       return this.deps.observeJobAbsence?.(jobId) === true
         ? { jobId, disposition: 'missing', sourceRead: 'readable' }
@@ -414,24 +392,17 @@ export class WaitCoordinator {
       bodies.set(JSON.stringify([epochIdentity(epochKey), jobId, admission.detail.terminalSeq]), admission.detail);
       this.terminalBodies.set(session, bodies);
     }
-    cache.set(jobId, { frontier, admission });
+    cache.set(jobId, admission);
     return admission;
   }
 
-  async *waitForJobs(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent> {
-    yield* this.readWait(req, false);
-  }
-
+  /** Client waits are addressed through job addressing; this reader serves internal outcome waits only. */
   async *waitForOutcomes(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent> {
-    yield* this.readWait(req, true);
-  }
-
-  private async *readWait(req: WaitStreamRequest, internal: boolean): AsyncGenerator<WaitStreamEvent> {
     const epochKey = this.deps.currentJobEpochKey?.() ?? ':memory:';
-    const addressed = internal ? this.deps.internalWait : undefined;
+    const addressed = this.deps.internalWait;
     yield* readWaitSession({
       request: req,
-      internal,
+      internal: true,
       time: this.deps.time,
       visit: addressed?.visitProgress ?? this.deps.visitProgress,
       read: () =>
@@ -443,7 +414,6 @@ export class WaitCoordinator {
         const observed = await this.observeWaitCarriers(pending, signal);
         if (signal.aborted) return;
         session.observeCoverage(pending, observed.unknownJobIds, observed.frontier);
-        req.onCoverage?.(pending, observed.unknownJobIds, observed.frontier);
         for (const event of observed.interrupted) session.observeAbsent(event.jobId, event.observedMaxJournalSeq);
       },
     });

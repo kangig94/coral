@@ -18,11 +18,10 @@ import type { EventsRow } from '../store/schema.js';
 import { jobTerminalRecordedBodySchema } from './terminal/result.js';
 import { readJobTerminalAge } from './terminal-age.js';
 
-import type { JobTerminal } from './records.js';
+import type { JobTerminal, JobTerminalEvent } from './records.js';
 import type { JobLocation } from './location-index.js';
 import { readRetainedTerminal, validatedTerminal, sameTerminal } from './terminal/identity.js';
 import { readAcceptedTerminal } from './terminal/source.js';
-import { readIntactJobTerminalAge } from './terminal-age.js';
 import { sourceReadFailureDisposition } from './source-read.js';
 import { trustedJobRetentionCutoff } from './retention-clock.js';
 
@@ -75,23 +74,8 @@ export function terminalEligibility(
     ? readRetainedTerminal(location)
     : validatedTerminal(location.detail.value, location.jobId, location.epochKey, location.terminalSeq);
   if (!terminal) return denied;
-  const saved = terminalAgeSchema.safeParse(location.terminalAge);
-  const matches =
-    saved.success &&
-    sameEpoch(saved.data.epochKey, location.epochKey) &&
-    saved.data.terminalSeq === terminal.seq &&
-    saved.data.terminalTimestamp === terminal.ts;
-  // A saved age may be later than its terminal's own timestamp (a regressed legacy terminal is aged by its newest
-  // surviving row) but never earlier, which would expire the terminal before its own timestamp allows.
-  let age: number | 'unknown' | 'regression' =
-    matches &&
-    saved.data.kind === 'known' &&
-    saved.data.terminalAt !== undefined &&
-    saved.data.terminalAt >= Date.parse(terminal.ts)
-      ? saved.data.terminalAt
-      : matches && saved.data.kind === 'regression'
-        ? 'regression'
-        : 'unknown';
+  const saved = savedTerminalAge(location, terminal);
+  let age: number | 'unknown' | 'regression' = saved ?? 'unknown';
   let sourceReadable = false;
   let sourceReadFailed = false;
   let sourceReadTransient = false;
@@ -112,7 +96,7 @@ export function terminalEligibility(
           return;
         }
         sourceReadable = true;
-        if (location.terminalAge === undefined) age = readIntactJobTerminalAge(db, accepted, cutoff);
+        if (location.terminalAge === undefined) age = cutoff === null ? 'unknown' : readJobTerminalAge(db, accepted);
       });
     } catch (error) {
       sourceReadFailed = true;
@@ -120,7 +104,7 @@ export function terminalEligibility(
     }
   }
   const kind = cutoff === null ? 'unknown' : typeof age === 'number' ? (age < cutoff ? 'expired' : 'inside') : age;
-  const regressionAuthorized = age === 'regression' && matches && saved.data.kind === 'regression' && sourceReadable;
+  const regressionAuthorized = saved === 'regression' && sourceReadable;
   return {
     kind,
     age,
@@ -128,12 +112,35 @@ export function terminalEligibility(
     sourceReadFailed,
     sourceReadTransient,
     sourceContradictory,
-    ageUnproven: location.terminalAge === undefined || (matches && saved.data.kind === 'unknown'),
+    ageUnproven: location.terminalAge === undefined || saved === 'unknown',
     ageDeferred: location.terminalAge === undefined && sourceReadable && (cutoff === null || age === 'regression'),
     cutoffTrusted: cutoff !== null,
     regressionAuthorized,
     publicationAuthorized: cutoff !== null && sourceReadable && (kind === 'inside' || regressionAuthorized),
   };
+}
+
+/** The age an owner captured for exactly this retained terminal; one bound to any other terminal is no age at all. */
+function savedTerminalAge(
+  location: JobLocation,
+  terminal: JobTerminalEvent,
+): number | 'unknown' | 'regression' | undefined {
+  const saved = terminalAgeSchema.safeParse(location.terminalAge);
+  if (
+    !saved.success ||
+    !sameEpoch(saved.data.epochKey, location.epochKey) ||
+    saved.data.terminalSeq !== terminal.seq ||
+    saved.data.terminalTimestamp !== terminal.ts
+  )
+    return undefined;
+  if (saved.data.kind !== 'known') return saved.data.kind;
+  return saved.data.terminalAt === Date.parse(terminal.ts) ? saved.data.terminalAt : undefined;
+}
+
+/** The captured age of a location's validated retained terminal, read without opening its source. */
+export function capturedTerminalAge(location: JobLocation): number | 'unknown' | 'regression' | undefined {
+  const terminal = readRetainedTerminal(location);
+  return terminal === null ? undefined : savedTerminalAge(location, terminal);
 }
 
 export type ExportJobRetentionState =

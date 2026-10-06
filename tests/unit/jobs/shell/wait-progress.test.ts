@@ -48,11 +48,11 @@ it('cursorless bounded wait: progress appended between polls beyond the tail win
     eventBus: new TypedEventBus(),
     sessionManager: { get: () => null } as never,
     launchQueue: { reservationFor: () => null, getActiveJobIds: () => [] } as never,
-    loadJobProjectionDetail: () => {
+    readJobLastSeq: () => null,
+    loadJobWaitDetail: () => {
       const terminal = journal.find((e): e is JobTerminalEvent => e.type === 'terminal');
       return {
         status,
-        launch: null,
         runtime: null,
         exit: terminal ? { ...terminal.result, endTime: terminal.ts, diagnostics: { progressFaults: [] } } : null,
       };

@@ -64,9 +64,9 @@ describe('workflow wait epoch cursor', () => {
       eventBus: new TypedEventBus(),
       sessionManager: { get: () => null } as never,
       launchQueue: { reservationFor: () => null, getActiveJobIds: () => [] } as never,
-      loadJobProjectionDetail: () => ({
+      readJobLastSeq: () => null,
+      loadJobWaitDetail: () => ({
         status: job.detail.status,
-        launch: null,
         runtime: null,
         exit: { ...job.detail.exit!, endTime: '' },
       }),
@@ -79,7 +79,7 @@ describe('workflow wait epoch cursor', () => {
     });
     const result = waitForAtoms(
       [atom('job-1', 0)],
-      { waitStream: (request) => wait.waitForJobs(request) } as WorkflowExecutionPort,
+      { waitStream: (request) => wait.waitForOutcomes(request) } as WorkflowExecutionPort,
       {} as InvocationContext,
       {
         time: runtime.time,
@@ -169,6 +169,8 @@ it('resumes recovery through ExecutionService and the real WaitCoordinator using
       eventBus: new TypedEventBus(),
       coordinatorCommit: f.store.commit.bind(f.store),
       loadJobProjectionDetail: f.store.loadJobProjectionDetail.bind(f.store),
+      loadJobWaitDetail: f.store.loadJobWaitDetail.bind(f.store),
+      readJobLastSeq: f.store.readJobLastSeq.bind(f.store),
 
       aggregateWorkflowUsage: () => undefined,
       subscribeJobEvents: async function* () {},
@@ -208,7 +210,7 @@ it('a workflow child missing from the real reader fails its atom after one proje
   const runtime = new SimulationRuntime();
   const load = vi.fn(() => {
     if (load.mock.calls.length > 1000) throw new Error('reader did not yield a disposition');
-    return { status: null, launch: null, runtime: null, exit: null };
+    return { status: null, runtime: null, exit: null };
   });
   const wait = new WaitCoordinator({
     visitProgress: progressVisitFromEvents(
@@ -219,7 +221,8 @@ it('a workflow child missing from the real reader fails its atom after one proje
     eventBus: new TypedEventBus(),
     sessionManager: { get: () => null } as never,
     launchQueue: { reservationFor: () => null, getActiveJobIds: () => [] } as never,
-    loadJobProjectionDetail: load,
+    readJobLastSeq: () => null,
+    loadJobWaitDetail: load,
 
     observeJobAbsence: () => true,
     aggregateWorkflowUsage: () => undefined,
@@ -260,11 +263,11 @@ it('drains aborted atoms through the wait after a pipeline abort without starvin
     eventBus: new TypedEventBus(),
     sessionManager: { get: () => null } as never,
     launchQueue: { reservationFor: () => null, getActiveJobIds: () => [] } as never,
-    loadJobProjectionDetail: () =>
+    readJobLastSeq: () => null,
+    loadJobWaitDetail: () =>
       terminalNow
         ? ({
             status: { ...job.detail.status, phase: 'aborted' },
-            launch: null,
             runtime: null,
             exit: {
               content: '',
@@ -274,7 +277,7 @@ it('drains aborted atoms through the wait after a pipeline abort without starvin
               endTime: '',
             },
           } as never)
-        : ({ status: job.detail.status, launch: null, runtime: null, exit: null } as never),
+        : ({ status: job.detail.status, runtime: null, exit: null } as never),
     aggregateWorkflowUsage: () => undefined,
     getCurrentJournalSeq: () => (terminalNow ? 1001 : 1000),
     resultJobsRoot: '/results',
@@ -365,7 +368,8 @@ it('reads an internal child’s progress from the epoch it was admitted in', asy
     eventBus: new TypedEventBus(),
     sessionManager: { get: () => null } as never,
     launchQueue: { reservationFor: () => null, getActiveJobIds: () => [] } as never,
-    loadJobProjectionDetail: () => ({ status: null, launch: null, runtime: null, exit: null }),
+    readJobLastSeq: () => null,
+    loadJobWaitDetail: () => ({ status: null, runtime: null, exit: null }),
     aggregateWorkflowUsage: () => undefined,
     getCurrentJournalSeq: () => 0,
     currentJobEpochKey: () => 'active',

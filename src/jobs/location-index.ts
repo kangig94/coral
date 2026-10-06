@@ -36,8 +36,9 @@ import {
   validatedTerminal,
 } from './terminal/identity.js';
 import { readAcceptedTerminal, withTerminalSource } from './terminal/source.js';
-import { readIntactJobTerminalAge, readJobTerminalAge } from './terminal-age.js';
+import { readJobTerminalAge } from './terminal-age.js';
 import { trustedJobRetentionCutoff } from './retention-clock.js';
+import { isCodeDefect } from './source-read.js';
 import { composeReducers } from '../store/reducers.js';
 import { createEventBodyCodec } from '../store/event-body-codec.js';
 import { jobsRegistry } from './events.js';
@@ -47,6 +48,7 @@ import {
   type HistoricalSourceRead,
   readHistoricalJobDetail,
   readHistoricalSource,
+  registeredHistoricalEpoch,
   type HistoricalSourceReader,
 } from './historical-reader.js';
 import type { RetentionRunBudget } from '../store/retention-outcome.js';
@@ -288,6 +290,14 @@ function optionalJson<T>(runtime: Runtime, path: string, schema: z.ZodType<T>): 
   }
 }
 
+/** Nothing stands for an export only when its directory is absent, or is a real directory without the file. */
+function exportEntryAbsent(storage: Runtime['storage'], path: string): boolean {
+  if (observeStorePath(storage, dirname(path)) === 'absent') return true;
+  // A symlink in the export's place may stand for content Coral cannot see.
+  if (!storage.lstatSync(dirname(path)).isDirectory()) return false;
+  return observeStorePath(storage, path) === 'absent';
+}
+
 export class JobLocationIndex {
   get resultRepairFailures(): Set<string> {
     return resultRepairFailuresFor(this);
@@ -336,19 +346,9 @@ export class JobLocationIndex {
     let directory = this.epochDirectories.get(identity);
     if (!directory) {
       directory = epochHoldDirectory(epochKey);
-      if (this.runtime.storage.existsSync(root)) {
+      if (this.runtime.storage.existsSync(root) && !this.runtime.storage.existsSync(join(root, directory))) {
         for (const candidate of this.runtime.storage.readdirSync(root)) {
-          const matches = ['revision.v1.json', 'certificate.v1.json', 'unknown-locations.v1.json'].some((file) => {
-            try {
-              const stored = z
-                .object({ epochKey: z.string() })
-                .safeParse(JSON.parse(this.runtime.storage.readFileSync(join(root, candidate, file), 'utf-8')));
-              return stored.success && sameEpoch(stored.data.epochKey, epochKey);
-            } catch {
-              return false;
-            }
-          });
-          if (matches) {
+          if (this.directoryEpochKeys(root, candidate).some((named) => sameEpoch(named, epochKey))) {
             directory = candidate;
             break;
           }
@@ -357,6 +357,33 @@ export class JobLocationIndex {
       this.epochDirectories.set(identity, directory);
     }
     return join(this.root, 'epochs', directory, name);
+  }
+
+  private readonly namedDirectories = new Map<string, { stamp: string; epochKeys: string[] }>();
+
+  /** The epoch keys a directory's records name, parsed again only after that directory's own entries change. */
+  private directoryEpochKeys(root: string, candidate: string): string[] {
+    let stamp: string;
+    try {
+      const stat = this.runtime.storage.lstatSync(join(root, candidate), { bigint: true });
+      stamp = `${stat.dev}:${stat.ino}:${stat.mtimeNs}:${stat.ctimeNs}`;
+    } catch {
+      return [];
+    }
+    const cached = this.namedDirectories.get(candidate);
+    if (cached?.stamp === stamp) return cached.epochKeys;
+    const epochKeys = ['revision.v1.json', 'certificate.v1.json', 'unknown-locations.v1.json'].flatMap((file) => {
+      try {
+        const stored = z
+          .object({ epochKey: z.string() })
+          .safeParse(JSON.parse(this.runtime.storage.readFileSync(join(root, candidate, file), 'utf-8')));
+        return stored.success ? [stored.data.epochKey] : [];
+      } catch {
+        return [];
+      }
+    });
+    this.namedDirectories.set(candidate, { stamp, epochKeys });
+    return epochKeys;
   }
 
   private withRevisionLock<T>(epochKey: string, action: () => T): T {
@@ -566,14 +593,13 @@ export class JobLocationIndex {
     });
   }
 
-  /** Only synchronous post-commit observers may assert newlyAppended; later hydration verifies the retained source. */
+  /** Post-commit recording and later hydration classify one terminal by the same rule, so its age is decided once. */
   recordTerminal(
     jobId: string,
     detail: JobDetailResponse,
     resultPath: string,
     terminalSeq: number,
     sourceDb?: Database,
-    newlyAppended = false,
   ): JobLocation {
     const existing = this.readStored(jobId);
     if (existing === null) throw new Error(`Terminal has no durable job location: ${jobId}`);
@@ -588,9 +614,8 @@ export class JobLocationIndex {
       ).terminal;
       if (!sameTerminal(sourceTerminal, terminal.result))
         throw new Error(`Source terminal content disagrees: ${jobId}`);
-      const cutoff = trustedJobRetentionCutoff(this.runtime);
-      if (cutoff === null) return undefined;
-      const age = newlyAppended ? readJobTerminalAge(db, accepted) : readIntactJobTerminalAge(db, accepted, cutoff);
+      if (trustedJobRetentionCutoff(this.runtime) === null) return undefined;
+      const age = readJobTerminalAge(db, accepted);
       return {
         epochKey: existing.epochKey,
         terminalSeq,
@@ -743,17 +768,18 @@ export class JobLocationIndex {
   private readUnknownLocationHold(path: string, identity: string, directory = false): UnknownLocationHold | null {
     try {
       const hold = optionalJson(this.runtime, path, unknownHoldSchema);
-      return hold === null
-        ? null
-        : {
-            ...(hold.epochKey
-              ? { epochKey: hold.epochKey }
-              : directory
-                ? { directory: identity }
-                : { epochKey: identity }),
-            reason: hold.reason,
-            retryScheduled: hold.retryScheduled === true,
-          };
+      if (hold === null) return null;
+      if (hold.retryScheduled === undefined) {
+        // A v0.10.16-18 hold names neither its key nor a retry; a present epoch's registered source still retries it.
+        const owner = registeredHistoricalEpoch(this, directory ? identity : epochHoldDirectory(identity));
+        if (owner !== undefined && this.historicalSourceState(owner) === 'present')
+          return { epochKey: owner, reason: hold.reason, retryScheduled: true };
+      }
+      return {
+        ...(hold.epochKey ? { epochKey: hold.epochKey } : directory ? { directory: identity } : { epochKey: identity }),
+        reason: hold.reason,
+        retryScheduled: hold.retryScheduled === true,
+      };
     } catch {
       return {
         ...(directory ? { directory: identity } : { epochKey: identity }),
@@ -940,26 +966,32 @@ export class JobLocationIndex {
     return certificate?.revision === revision ? certificate : null;
   }
 
+  /** A record that cannot be read proves nothing, so release then stays unproven rather than failing its caller. */
   resultsReleased(epochKey: string, closedSource?: ResolvedStoreEpoch): boolean {
-    const certificate = this.certificate(epochKey);
-    if (certificate === null) return false;
-    if (
-      certificate.jobIds.every(
-        (jobId) => terminalEligibility(this.runtime, this.read(jobId), () => null, false).kind === 'expired',
-      )
-    )
-      return true;
     try {
-      return (
-        withTerminalSource(
-          this.runtime,
-          epochKey,
-          (db) => certificate.jobIds.every((jobId) => this.resultDurable(jobId, db)),
-          closedSource,
-        ) ?? certificate.jobIds.every((jobId) => this.resultDurable(jobId, null))
-      );
-    } catch {
-      return certificate.jobIds.every((jobId) => this.resultDurable(jobId, null));
+      const certificate = this.certificate(epochKey);
+      if (certificate === null) return false;
+      if (
+        certificate.jobIds.every(
+          (jobId) => terminalEligibility(this.runtime, this.read(jobId), () => null, false).kind === 'expired',
+        )
+      )
+        return true;
+      try {
+        return (
+          withTerminalSource(
+            this.runtime,
+            epochKey,
+            (db) => certificate.jobIds.every((jobId) => this.resultDurable(jobId, db)),
+            closedSource,
+          ) ?? certificate.jobIds.every((jobId) => this.resultDurable(jobId, null))
+        );
+      } catch {
+        return certificate.jobIds.every((jobId) => this.resultDurable(jobId, null));
+      }
+    } catch (error) {
+      if (isCodeDefect(error)) throw error;
+      return false;
     }
   }
 
@@ -984,7 +1016,7 @@ export class JobLocationIndex {
     ) {
       try {
         const path = location.resultPath ?? this.resultPathFor(jobId);
-        if (observeStorePath(this.runtime.storage, path) === 'absent') return true;
+        if (exportEntryAbsent(this.runtime.storage, path)) return true;
         const artifact = this.runtime.storage.lstatSync(path, { bigint: true });
         // A symlink or directory may stand for content Coral cannot see: it is held to the durability rule below,
         // which the post-ready sweep re-applies every cycle until the entry is absent, empty, or a durable result.

@@ -3,7 +3,8 @@ import type { ProcessIncarnation } from '../../infra/node-process.js';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { z, type ZodError } from 'zod';
-import { type WaitStreamEvent } from '../../jobs/wait/contract.js';
+import { type WaitCursor, type WaitStreamEvent } from '../../jobs/wait/contract.js';
+import { advanceWaitRenderCursor } from '../../jobs/wait/stream-event.js';
 import { serializeWaitCursor } from '../../jobs/wait/cursor.js';
 import { decodeSerializedWaitCursor } from '../../jobs/wait/cursor.js';
 import { performance } from 'node:perf_hooks';
@@ -779,11 +780,11 @@ async function handleCatalogUnaryRoute(
 async function writeWaitSseEvent(
   res: ServerResponse,
   event: WaitStreamEvent | { type: 'handover'; code: string; message: string },
+  id: string | undefined,
   deadline: number,
   signal: AbortSignal,
 ): Promise<boolean> {
-  const cursor = 'cursor' in event ? serializeWaitCursor(event.cursor) : undefined;
-  if (writeSseEvent(res, event.type, event, cursor)) return true;
+  if (writeSseEvent(res, event.type, event, id)) return true;
   if (res.destroyed || res.writableEnded || signal.aborted) return false;
   const budget = Math.min(1000, Math.max(0, deadline - performance.now()));
   return new Promise<boolean>((resolve) => {
@@ -865,6 +866,7 @@ async function handleJobsWaitSubscription(
   res.flushHeaders?.();
 
   let closed = false;
+  let folded: WaitCursor | undefined;
   const iterator = execution.notifications[Symbol.asyncIterator]();
   const close = () => {
     if (closed) {
@@ -883,7 +885,13 @@ async function handleJobsWaitSubscription(
     while (true) {
       const next = await iterator.next();
       if (!next.done && (next.value as { type?: unknown }).type === 'handover') {
-        await writeWaitSseEvent(res, { type: 'handover', ...lifecycleRefusalResult }, deadline, controller.signal);
+        await writeWaitSseEvent(
+          res,
+          { type: 'handover', ...lifecycleRefusalResult },
+          undefined,
+          deadline,
+          controller.signal,
+        );
         break;
       }
       if (next.done || closed || res.writableEnded || res.destroyed) {
@@ -891,7 +899,11 @@ async function handleJobsWaitSubscription(
       }
 
       const event = next.value as WaitStreamEvent;
-      if (!(await writeWaitSseEvent(res, event, deadline, controller.signal))) {
+      // Last-Event-ID resumes from the frontier a client has folded, so every event that moves it carries it.
+      const fold = advanceWaitRenderCursor(folded, event);
+      const id = fold.cursor !== folded && fold.cursor !== undefined ? serializeWaitCursor(fold.cursor) : undefined;
+      folded = fold.cursor;
+      if (!(await writeWaitSseEvent(res, event, id, deadline, controller.signal))) {
         if (!res.destroyed && !res.writableEnded)
           writeSseEvent(res, 'error', {
             code: 'transient',

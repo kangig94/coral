@@ -14,7 +14,7 @@ import { JobStore } from '#src/jobs/store.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
-import { readJobEvents, loadJobProjectionDetail } from '#src/jobs/read-queries.js';
+import { readJobEvents, loadJobWaitDetail, readJobLastSeq } from '#src/jobs/read-queries.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { jobsRegistry } from '#src/jobs/events.js';
@@ -187,7 +187,8 @@ describe('wait SSE reconnect', () => {
       launchQueue: launchCoordinator,
       eventBus,
       time: runtime.time,
-      loadJobProjectionDetail: (targetJobId) => loadJobProjectionDetail(db, targetJobId, progressStore),
+      loadJobWaitDetail: (targetJobId) => loadJobWaitDetail(db, targetJobId, progressStore),
+      readJobLastSeq: (targetJobId) => readJobLastSeq(db, targetJobId),
 
       aggregateWorkflowUsage: (workflowJobId) => aggregateWorkflowUsage(db, workflowJobId),
       subscribeJobEvents,
@@ -200,7 +201,7 @@ describe('wait SSE reconnect', () => {
       }),
     });
 
-    const firstIterator = coordinator.waitForJobs({ jobIds: [jobId], timeoutSeconds: 5 })[Symbol.asyncIterator]();
+    const firstIterator = coordinator.waitForOutcomes({ jobIds: [jobId], timeoutSeconds: 5 })[Symbol.asyncIterator]();
     let clientCursor: WaitCursor | undefined;
     let first = await firstIterator.next();
     while (!first.done && first.value.type === 'cursor') {
@@ -220,7 +221,7 @@ describe('wait SSE reconnect', () => {
     appendProgress('progress-2');
 
     const reconnectIterator = coordinator
-      .waitForJobs({
+      .waitForOutcomes({
         jobIds: [jobId],
         timeoutSeconds: 5,
         cursor: clientCursor,
@@ -394,7 +395,8 @@ describe('wait SSE reconnect', () => {
       launchQueue: launchCoordinator,
       eventBus,
       time: runtime.time,
-      loadJobProjectionDetail: (targetJobId) => loadJobProjectionDetail(db, targetJobId, progressStore),
+      loadJobWaitDetail: (targetJobId) => loadJobWaitDetail(db, targetJobId, progressStore),
+      readJobLastSeq: (targetJobId) => readJobLastSeq(db, targetJobId),
 
       aggregateWorkflowUsage: (workflowJobId) => aggregateWorkflowUsage(db, workflowJobId),
       subscribeJobEvents,
@@ -407,7 +409,7 @@ describe('wait SSE reconnect', () => {
       }),
     });
 
-    const iterator = coordinator.waitForJobs({ jobIds: [jobId], timeoutSeconds: 1 })[Symbol.asyncIterator]();
+    const iterator = coordinator.waitForOutcomes({ jobIds: [jobId], timeoutSeconds: 1 })[Symbol.asyncIterator]();
     const progress = await nextDelivered(iterator);
     expect(progress.done).toBe(false);
     expect(progress.value).toMatchObject({

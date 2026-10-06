@@ -43,6 +43,9 @@ export type JobProjectionDetail = {
   exit: JobExit | null;
 };
 
+/** What a wait reads of a job: its launch body, which can be arbitrarily large, is never part of it. */
+export type JobWaitDetail = Omit<JobProjectionDetail, 'launch'>;
+
 type JobLaunchProjection = JobLaunch;
 
 type JobCliRuntimeProjection = {
@@ -489,7 +492,7 @@ function projectionRowToStatus(
   rejected: EventRow | null,
   runtime: EventRow | null,
   terminal: EventRow | null,
-  requested: EventRow | null,
+  requestedAt: string | null,
   ctx: StoreReadContext,
 ): JobStatus {
   const terminalRecord = decodeTerminalRecord(terminal, ctx);
@@ -517,9 +520,40 @@ function projectionRowToStatus(
       ? {}
       : { replacesWorkflowJobId: projection.replaces_workflow_job_id }),
     phase: projection.phase,
-    updatedAt: terminal?.ts ?? runtime?.ts ?? rejected?.ts ?? requested?.ts ?? projection.created_at,
+    updatedAt: terminal?.ts ?? runtime?.ts ?? rejected?.ts ?? requestedAt ?? projection.created_at,
     lastSeq: projection.last_seq,
     ...(terminalRecord ? { result: terminalRecord.record } : {}),
+  };
+}
+
+function hydrateJobWaitDetail(
+  jobId: string,
+  projection: ProjectionRow | null,
+  requestedAt: string | null,
+  rejected: EventRow | null,
+  runtime: EventRow | null,
+  terminal: EventRow | null,
+  ctx: StoreReadContext,
+  workflowUsage?: UsageSummary,
+): JobWaitDetail {
+  const terminalRecord = decodeTerminalRecord(terminal, ctx);
+  const terminalDiagnostics =
+    terminalRecord === null
+      ? decodeProjectionDiagnostics(projection)
+      : mergeDiagnostics(decodeProjectionDiagnostics(projection), terminalRecord.diagnostics);
+  const diagnostics = isWorkflowJobKind(projection?.job_kind)
+    ? applyWorkflowUsage(terminalDiagnostics, workflowUsage)
+    : terminalDiagnostics;
+  const exit = terminal && terminalRecord ? toJobExitProjection(terminal, terminalRecord, diagnostics) : null;
+
+  const status = projection
+    ? projectionRowToStatus(jobId, projection, rejected, runtime, terminal, requestedAt, ctx)
+    : null;
+
+  return {
+    status,
+    runtime: runtime ? jobRuntimeBodyFromEvent(runtime, ctx) : null,
+    exit,
   };
 }
 
@@ -534,26 +568,17 @@ function hydrateJobProjectionDetail(
   workflowUsage?: UsageSummary,
 ): JobProjectionDetail {
   const launch = decodeLaunch(jobId, requested, ctx);
-  const terminalRecord = decodeTerminalRecord(terminal, ctx);
-  const terminalDiagnostics =
-    terminalRecord === null
-      ? decodeProjectionDiagnostics(projection)
-      : mergeDiagnostics(decodeProjectionDiagnostics(projection), terminalRecord.diagnostics);
-  const diagnostics = isWorkflowJobKind(projection?.job_kind)
-    ? applyWorkflowUsage(terminalDiagnostics, workflowUsage)
-    : terminalDiagnostics;
-  const exit = terminal && terminalRecord ? toJobExitProjection(terminal, terminalRecord, diagnostics) : null;
-
-  const status = projection
-    ? projectionRowToStatus(jobId, projection, rejected, runtime, terminal, requested, ctx)
-    : null;
-
-  return {
-    status,
-    launch,
-    runtime: runtime ? jobRuntimeBodyFromEvent(runtime, ctx) : null,
-    exit,
-  };
+  const detail = hydrateJobWaitDetail(
+    jobId,
+    projection,
+    requested?.ts ?? null,
+    rejected,
+    runtime,
+    terminal,
+    ctx,
+    workflowUsage,
+  );
+  return { status: detail.status, launch, runtime: detail.runtime, exit: detail.exit };
 }
 
 export function loadJobProjectionDetail(db: Database, jobId: string, ctx: StoreReadContext): JobProjectionDetail {
@@ -564,6 +589,31 @@ export function loadJobProjectionDetail(db: Database, jobId: string, ctx: StoreR
   const terminal = readLatestEvent(db, jobId, 'job.terminal.recorded');
   const workflowUsage = isWorkflowJobKind(projection?.job_kind) ? aggregateWorkflowUsage(db, jobId) : undefined;
   return hydrateJobProjectionDetail(jobId, projection, requested, rejected, runtime, terminal, ctx, workflowUsage);
+}
+
+/** The job's own projection sequence: every event of that job moves it, and nothing else does. */
+export function readJobLastSeq(db: Database, jobId: string): number | null {
+  return (
+    prepareCached<[string], { last_seq: number }>(db, 'SELECT last_seq FROM projection_jobs WHERE job_id = ?').get(
+      jobId,
+    )?.last_seq ?? null
+  );
+}
+
+/** A job's status, runtime and exit; workflow usage is aggregated only once there is a terminal to carry it. */
+export function loadJobWaitDetail(db: Database, jobId: string, ctx: StoreReadContext): JobWaitDetail {
+  const projection = readProjectionRow(db, jobId);
+  const requestedAt =
+    prepareCached<[string], { ts: string }>(
+      db,
+      `SELECT ts FROM events WHERE stream_id = ? AND type = 'job.launch.requested' ORDER BY seq DESC LIMIT 1`,
+    ).get(jobId)?.ts ?? null;
+  const rejected = readLatestEvent(db, jobId, 'job.launch.rejected');
+  const runtime = readLatestEvent(db, jobId, 'job.runtime.started');
+  const terminal = readLatestEvent(db, jobId, 'job.terminal.recorded');
+  const workflowUsage =
+    terminal !== null && isWorkflowJobKind(projection?.job_kind) ? aggregateWorkflowUsage(db, jobId) : undefined;
+  return hydrateJobWaitDetail(jobId, projection, requestedAt, rejected, runtime, terminal, ctx, workflowUsage);
 }
 
 export function loadJobProjectionDetails(

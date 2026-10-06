@@ -9,6 +9,8 @@ import { waitEpochToken, waitJobHash, serializeWaitCursor } from '#src/jobs/wait
 import { JobAddressing } from '#src/jobs/addressing.js';
 import { JobLocationIndex } from '#src/jobs/location-index.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
+import { readWaitSession } from '#src/jobs/wait/reader.js';
+import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
 
 {
   const invocations: WaitInvocation[] = [];
@@ -351,6 +353,52 @@ import { SimulationRuntime } from '#tools/simulation/runtime.js';
     expect(connects).toBe(2);
     expect(code).toBe(0);
   });
+
+  it.each(['scope-mismatch', 'missing', 'outcome-unrecoverable', 'discovery-unreadable'] as const)(
+    'launch-and-follow of a job refused as %s exits with the refusal, never as success',
+    async (disposition) => {
+      let out = '';
+      vi.spyOn(process.stdout, 'write').mockImplementation(((
+        c: string | Uint8Array,
+        cb?: (e?: Error | null) => void,
+      ) => {
+        out += c.toString();
+        cb?.();
+        return true;
+      }) as typeof process.stdout.write);
+      const code = await followJobs({
+        start: {
+          kind: 'launch',
+          launchResult: { kind: 'accepted', jobId: 'job-w', sessionId: 's', provider: 'codex' } as never,
+        },
+        reconnectPolicy: 'until-terminal',
+        projectRoot: '/project',
+        render: { isTTY: false, columns: 80, embed: false, verbose: false },
+        emitError: (e) => {
+          out += `ERR ${String(e)}\n`;
+        },
+        abortJobs: async () => ({ aborted: [], notFound: [] }),
+        connect: async ({ jobIds, cursor, drainProgress, timeoutSeconds }) => ({
+          kind: 'subscription',
+          subscription: {
+            close: async () => {},
+            async *[Symbol.asyncIterator]() {
+              // The reader's own events for this admission, as the coordinator streams them.
+              for await (const event of readWaitSession({
+                request: { jobIds: [...jobIds], cursor: cursor ?? { jobs: [] }, drainProgress, timeoutSeconds },
+                time: new VirtualTime(),
+                read: () => [{ jobId: 'job-w', disposition, message: 'refused' }],
+                visit: () => ({ kind: 'unreadable', disposition: 'transient-unknown' }),
+              }))
+                yield JSON.parse(JSON.stringify(event)) as unknown;
+            },
+          },
+        }),
+      });
+      expect(out).toContain(`Job job-w: ${disposition}`);
+      expect(code).toBe(1);
+    },
+  );
 }
 
 it('separates TTY notice, disposition and artifact lines with trailing newlines', async () => {

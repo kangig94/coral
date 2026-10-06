@@ -156,6 +156,8 @@ export class WaitInvocation implements WaitInvocationHandoff {
     this.continuationFlushed ||= complete;
     if (complete && exitCode !== undefined) {
       this.completedExitCode = exitCode;
+      // A final event whose write lands after the budget or Ctrl+C already ended the invocation still decides its exit.
+      process.exitCode = exitCode;
       if (this.mode === 'snapshot') {
         clearTimeout(this.watchdog);
         clearTimeout(this.backstop);
@@ -276,6 +278,27 @@ export class WaitInvocation implements WaitInvocationHandoff {
     process.off('SIGINT', this.onSigint);
     clearTimeout(this.backstop);
   }
+}
+
+type DelegatingParentLink = {
+  readonly channel?: unknown;
+  once(event: 'disconnect', listener: () => void): unknown;
+  off(event: 'disconnect', listener: () => void): unknown;
+  exit(code: number): unknown;
+};
+
+/**
+ * A delegated follow has no budget of its own, so it may not outlive the parent that delegated it: the parent's
+ * channel closes however that parent ends, a SIGKILL included. The returned release must run once the follow ends,
+ * since a listener left on the channel keeps this process alive.
+ */
+export function endWithDelegatingParent(link: DelegatingParentLink = process): () => void {
+  if (link.channel === undefined || link.channel === null) return () => {};
+  const end = (): void => {
+    link.exit(75);
+  };
+  link.once('disconnect', end);
+  return () => link.off('disconnect', end);
 }
 
 export function getWaitInvocation(): WaitInvocation | undefined {

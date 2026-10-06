@@ -68,9 +68,9 @@ it.each(['initial', 'poll', 'throw'])('the stream deadline bounds %s carrier obs
     eventBus: { on: () => {}, off: () => {} },
     sessionManager: { get: () => null },
     launchQueue: { reservationFor: () => null, getActiveJobIds: () => [] },
-    loadJobProjectionDetail: () => ({
+    readJobLastSeq: () => null,
+    loadJobWaitDetail: () => ({
       status: { jobId: JOB_A, phase: 'running' },
-      launch: null,
       runtime: null,
       exit: null,
     }),
@@ -89,7 +89,7 @@ it.each(['initial', 'poll', 'throw'])('the stream deadline bounds %s carrier obs
       return stall === 'poll' && calls === 1 ? [observation(JOB_A, 'unknown')] : stuck;
     },
   } as never);
-  const stream = wait.waitForJobs({ jobIds: [JOB_A], timeoutSeconds: 1 });
+  const stream = wait.waitForOutcomes({ jobIds: [JOB_A], timeoutSeconds: 1 });
   const next = nextDelivered(stream);
   await flushMicrotasks(20);
   for (let i = 0; i < 4; i++) {

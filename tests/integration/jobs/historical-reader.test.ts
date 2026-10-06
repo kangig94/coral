@@ -3555,6 +3555,118 @@ describe('per-job failures stay per-job (F4)', () => {
       f.close();
     }
   });
+
+  it('answers a session read from its cache only for jobs read at the frontier its stamp vouches for', () => {
+    const f = createTerminalExportFixture('provider', true);
+    try {
+      initTestJob(f.store, {
+        jobId: 'job-2',
+        sessionId: 'session-2',
+        provider: 'claude',
+        projectRoot: f.root,
+        backendNamespace: 'fixture',
+      });
+      f.store.appendProgress(f.jobId, 'session-1', 'running');
+      seedFixture(f);
+      const session = {};
+      const disposition = (jobIds: string[], jobId: string) => {
+        const read = readHistoricalSource(f.index, f.epochKey, jobIds, session);
+        return read.kind === 'read' ? read.locations.get(jobId)?.disposition : read.kind;
+      };
+      expect(disposition([f.jobId], f.jobId)).toBe('unresolved');
+      commitJobTerminal(f.store, f.jobId, 'session-1', {
+        content: 'done',
+        outcome: { kind: 'completed' },
+        durationMs: 1,
+      });
+      // This read takes the newer stamp for job-2 alone; job-1's cached answer still belongs to the older frontier.
+      expect(disposition(['job-2'], 'job-2')).toBe('unresolved');
+      expect(disposition([f.jobId, 'job-2'], f.jobId)).toBe('terminal');
+    } finally {
+      f.close();
+    }
+  });
+
+  it('propagates a code defect from a per-job historical read instead of holding the job', () => {
+    const f = createTerminalExportFixture('provider', true);
+    try {
+      let defect = false;
+      const storagePort = {
+        ...f.runtime.storage,
+        openSqliteDatabaseSync: (...args: Parameters<typeof f.runtime.storage.openSqliteDatabaseSync>) => {
+          const db = f.runtime.storage.openSqliteDatabaseSync(...args);
+          return new Proxy(db, {
+            get: (target, key) => {
+              const value: unknown = Reflect.get(target, key);
+              if (key !== 'prepare') return typeof value === 'function' ? value.bind(target) : value;
+              return (sql: string) => {
+                if (defect && sql === 'SELECT * FROM projection_jobs WHERE job_id = ?') throw new TypeError('defect');
+                return target.prepare(sql);
+              };
+            },
+          });
+        },
+      };
+      seedFixture(f, storagePort);
+      defect = true;
+      expect(() => readHistoricalSource(f.index, f.epochKey, [f.jobId], {})).toThrow(TypeError);
+    } finally {
+      f.close();
+    }
+  });
+
+  it("decodes a running job's metadata again only after that job's own events, never after another job's", () => {
+    const f = createTerminalExportFixture('provider', true);
+    try {
+      initTestJob(f.store, {
+        jobId: 'job-2',
+        sessionId: 'session-2',
+        provider: 'claude',
+        projectRoot: f.root,
+        backendNamespace: 'fixture',
+      });
+      f.store.appendProgress(f.jobId, 'session-1', 'running');
+      let metadataReads = 0;
+      const storagePort = {
+        ...f.runtime.storage,
+        openSqliteDatabaseSync: (...args: Parameters<typeof f.runtime.storage.openSqliteDatabaseSync>) => {
+          const db = f.runtime.storage.openSqliteDatabaseSync(...args);
+          return new Proxy(db, {
+            get: (target, key) => {
+              const value: unknown = Reflect.get(target, key);
+              if (key !== 'prepare') return typeof value === 'function' ? value.bind(target) : value;
+              return (sql: string) => {
+                if (sql.includes('GROUP BY type')) metadataReads += 1;
+                return target.prepare(sql);
+              };
+            },
+          });
+        },
+      };
+      seedFixture(f, storagePort);
+      const session = {};
+      const disposition = () => {
+        const read = readHistoricalSource(f.index, f.epochKey, [f.jobId], session);
+        return read.kind === 'read' ? read.locations.get(f.jobId)?.disposition : read.kind;
+      };
+      expect(disposition()).toBe('unresolved');
+      const decoded = metadataReads;
+      for (let poll = 0; poll < 5; poll++) {
+        f.store.appendProgress('job-2', 'session-2', `another job ${poll}`);
+        expect(disposition()).toBe('unresolved');
+      }
+      expect(metadataReads).toBe(decoded);
+      commitJobTerminal(f.store, f.jobId, 'session-1', {
+        content: 'done',
+        outcome: { kind: 'completed' },
+        durationMs: 1,
+      });
+      expect(disposition()).toBe('terminal');
+      expect(metadataReads).toBe(decoded + 1);
+    } finally {
+      f.close();
+    }
+  });
 });
 
 it('reads the seed inventory once per seed and the job high-water mark only at completion', () => {
@@ -3613,6 +3725,40 @@ it('reads the seed inventory once per seed and the job high-water mark only at c
     ).toHaveLength(1);
     for (let i = 0; i < 4; i++) expect(f.index.read(`inventory-${i}`)).toMatchObject({ jobId: `inventory-${i}` });
   } finally {
+    f.close();
+  }
+});
+
+it("hints a registered epoch's hydration without reading any other epoch's hold record", () => {
+  const f = createTerminalExportFixture('provider', true);
+  try {
+    seedHistoricalEpoch(
+      f.runtime,
+      f.index,
+      f.epoch,
+      f.epochKey,
+      currentCoralStoreFormat().fingerprint,
+      f.runtime.paths.coral.exports.jobsRoot,
+      f.runtime.storage,
+    );
+    for (let epoch = 0; epoch < 50; epoch++) {
+      const key = JSON.stringify({ storeRoot: '/old', epoch: String(epoch), path: `/old/epoch-${epoch}/store.db` });
+      const directory = join(f.root, 'job-locations.v1', 'epochs', createHash('sha256').update(key).digest('hex'));
+      mkdirSync(directory, { recursive: true });
+      writeFileSync(
+        join(directory, 'unknown-locations.v1.json'),
+        JSON.stringify({ version: 'v1', epochKey: key, reason: 'other', retryScheduled: true }),
+      );
+    }
+    const hinted = vi.fn();
+    onHistoricalHydrationHint(f.index, hinted);
+    hintHistoricalHydration(f.index, f.jobId);
+    const read = vi.spyOn(f.runtime.storage, 'readFileSync');
+    for (let poll = 0; poll < 3; poll++) hintHistoricalHydration(f.index, f.jobId);
+    expect(read).not.toHaveBeenCalled();
+    expect(hinted).toHaveBeenCalledTimes(4);
+  } finally {
+    vi.restoreAllMocks();
     f.close();
   }
 });

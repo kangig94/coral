@@ -14,6 +14,7 @@ const doubles = vi.hoisted(() => ({
   list: vi.fn(),
   stat: vi.fn(),
   rm: vi.fn(),
+  touch: vi.fn(),
 }));
 vi.mock('node:child_process', async (importOriginal) => ({
   ...(await importOriginal<typeof ChildProcessModule>()),
@@ -26,6 +27,7 @@ vi.mock('node:fs', async (importOriginal) => ({
   readdirSync: doubles.list,
   statSync: doubles.stat,
   rmSync: doubles.rm,
+  utimesSync: doubles.touch,
   mkdirSync: vi.fn(),
 }));
 afterEach(() => {
@@ -48,6 +50,28 @@ it('keys released fixtures by tag and builder without reading the working source
   expect(sharedFixture(tag)).toBe(join(tmpdir(), 'coral-shared-fixtures-cache', key, `${tag}.cjs`));
   expect(sharedFixture(tag)).toBe(join(tmpdir(), 'coral-shared-fixtures-cache', key, `${tag}.cjs`));
   expect(fs.readFileSync).toHaveBeenCalledTimes(2);
+  // Each hit marks its entry used, which is the order reaping keeps entries by.
+  expect(doubles.touch.mock.calls.map(([path]) => path)).toEqual(
+    Array.from({ length: 2 }, () => join(tmpdir(), 'coral-shared-fixtures-cache', key)),
+  );
+});
+
+it('keeps only the most recently used built entries, however many source states keyed them', () => {
+  const cache = join(tmpdir(), 'coral-shared-fixtures-cache');
+  const entries = Array.from({ length: 70 }, (_, index) => `entry-${index}`);
+  doubles.exists.mockReturnValue(true);
+  doubles.list.mockReturnValue([...entries].reverse());
+  // entry-0 was used last; each later index was used a minute earlier.
+  doubles.stat.mockImplementation((path: string) => ({
+    mtimeMs: Date.now() - Number(/entry-(\d+)$/.exec(path)?.[1]) * 60_000,
+  }));
+  reapSharedFixtureStages();
+  expect(doubles.rm.mock.calls.map(([path]) => path).sort()).toEqual(
+    entries
+      .slice(64)
+      .map((entry) => join(cache, entry))
+      .sort(),
+  );
 });
 
 it('reclaims stale artifacts while keeping fresh artifacts and live build stages', () => {

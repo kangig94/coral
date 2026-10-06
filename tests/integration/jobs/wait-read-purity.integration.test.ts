@@ -58,7 +58,8 @@ function fixture(historical = false) {
     launchQueue: { reservationFor: () => null, getActiveJobIds: () => [] } as never,
     eventBus: f.store.getEventBus(),
     time: f.runtime.time,
-    loadJobProjectionDetail: (id) => f.store.loadJobProjectionDetail(id),
+    loadJobWaitDetail: (id) => f.store.loadJobWaitDetail(id),
+    readJobLastSeq: (id) => f.store.readJobLastSeq(id),
 
     aggregateWorkflowUsage: () => undefined,
     subscribeJobEvents: () => ({ async *[Symbol.asyncIterator]() {} }),

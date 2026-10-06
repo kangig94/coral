@@ -1183,11 +1183,6 @@ async function executeJobsWaitCatalogRequest({
   };
   const callerRoot = canonicalRequest.projectRoot;
   if (callerRoot === undefined) return unaryHttp(domainResultToHttp(invalidRequestResult()));
-  if (!rpcPorts.jobs.admitWait)
-    return unary(
-      { code: 'wait_epoch_unsupported', message: 'Wait admission is unavailable on this coordinator.' },
-      400,
-    );
   const admissions = rpcPorts.jobs.admitWait(waitRequest);
   const admittedRequest: CanonicalWaitStreamRequest = Object.assign(waitRequest, { admissions });
   const cursorError = rpcPorts.jobs.validateWait(admittedRequest);
@@ -1217,8 +1212,6 @@ function executeJobsCatalogRequest(context: AuthorizedCatalogRequest): Promise<C
     case 'jobs.detail':
       return executeJobsDetailCatalogRequest(context);
     case 'jobs.wait.snapshot': {
-      if (!context.rpcPorts.jobs.snapshot)
-        return Promise.resolve(unary({ code: 'unknown_method', message: 'This coordinator predates --now.' }, 400));
       const snapshot = snapshotRequest(context.request);
       if ('code' in snapshot) return Promise.resolve(unary(snapshot, 400));
       return Promise.resolve(unary(context.rpcPorts.jobs.snapshot(withAbortSignal(snapshot, context.abortSignal))));

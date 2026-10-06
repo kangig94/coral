@@ -1,6 +1,8 @@
 import type { JobDetailResponse } from '#src/jobs/records.js';
 import { expect, it, vi } from 'vitest';
-import type { ProgressVisit } from '#src/jobs/wait/contract.js';
+import type { ProgressVisit, WaitCursor } from '#src/jobs/wait/contract.js';
+import { selectWaitSnapshot as selectWaitSnapshotFrom } from '#src/jobs/wait/snapshot.js';
+import { admitted } from '#tests/helpers/wait-session.js';
 import { progressVisitFromEvents } from '#tests/helpers/wait-progress.js';
 import { WaitSession, type WaitAdmission } from '#src/jobs/wait/session.js';
 import { selectWaitSnapshot } from '#tests/helpers/wait-progress.js';
@@ -132,4 +134,97 @@ it('keeps a cut tail scan unpositioned in its entry and finishes it from that cu
     cursor = later.cursor();
   }
   expect(cursor.jobs[0]).toMatchObject({ seq: 10, lineOffset: 0, flags: 0 });
+});
+
+it("serves a resumed scan's own lines without reading again the rows it scanned below the cursor's boundary", () => {
+  const raw: RawProgressRow[] = [
+    ...Array.from({ length: 30 }, (_, i) => ({
+      seq: i + 1,
+      progress: { seq: i + 1, message: `line-${i + 1}`, timing },
+    })),
+    ...Array.from({ length: 2000 }, (_, i) => ({ seq: i + 31 })),
+  ];
+  const reads: number[] = [];
+  const visit: ProgressVisit = (_epoch, read) => ({
+    kind: 'read',
+    value: read({
+      after: (_id, after, count) => {
+        const page = raw.filter((row) => row.seq > after).slice(0, count + 1);
+        reads.push(...page.map((row) => row.seq));
+        return progressPage(page, count, 2030);
+      },
+      before: (_id, before, count) =>
+        progressTail(
+          raw
+            .filter((row) => before === null || row.seq < before)
+            .reverse()
+            .slice(0, count + 1),
+          count,
+          2030,
+        ),
+    }),
+  });
+  const job = admission('a', []);
+  let cursor = (() => {
+    const first = new WaitSession(['a']);
+    first.reconcile([job]);
+    first.withProgress(visit, (sources) => first.position(sources, 20, 500, 65536));
+    return first.cursor();
+  })();
+  for (let polls = 0; polls < 5; polls++) {
+    const boundary = cursor.jobs[0].seq;
+    const later = new WaitSession(['a'], cursor);
+    later.reconcile([job]);
+    reads.length = 0;
+    const lines = later.withProgress(visit, (sources) =>
+      later.select(sources, 500, 65536, later.position(sources, 20, 500, 65536)).lines.map((line) => line.text),
+    );
+    cursor = later.cursor();
+    if ((cursor.jobs[0].flags & UNPOSITIONED_FLAG) !== 0) continue;
+    expect(lines).toEqual(Array.from({ length: 20 }, (_, i) => `line-${i + 11}`));
+    expect(reads.every((seq) => seq >= boundary)).toBe(true);
+    return;
+  }
+  expect.unreachable('the scan never finished');
+});
+
+it("delivers the lines an earlier request's scan found after a resumed scan positions the job, before its outcome", () => {
+  const message = (seq: number): RawProgressRow => ({ seq, progress: { seq, message: `line-${seq}`, timing } });
+  const raw: RawProgressRow[] = [
+    ...Array.from({ length: 30 }, (_, i) => message(i + 1)),
+    ...Array.from({ length: 970 }, (_, i) => ({ seq: i + 31 })),
+    ...Array.from({ length: 5 }, (_, i) => message(i + 1001)),
+    ...Array.from({ length: 1995 }, (_, i) => ({ seq: i + 1006 })),
+  ];
+  const visit: ProgressVisit = (_epoch, read) => ({
+    kind: 'read',
+    value: read({
+      after: (_id, after, count) => progressPage(raw.filter((row) => row.seq > after).slice(0, count + 1), count, 3000),
+      before: (_id, before, count) =>
+        progressTail(
+          raw
+            .filter((row) => before === null || row.seq < before)
+            .reverse()
+            .slice(0, count + 1),
+          count,
+          3000,
+        ),
+    }),
+  });
+  const job = { ...admitted('a', [], true, E) };
+  const delivered: string[] = [];
+  let cursor: WaitCursor | undefined;
+  for (let call = 0; call < 20; call++) {
+    const session = new WaitSession(['a'], cursor);
+    session.reconcile([job]);
+    const snapshot = selectWaitSnapshotFrom(session, 20, visit);
+    delivered.push(...snapshot.jobs[0].progress);
+    cursor = snapshot.cursor;
+    if (snapshot.remainingJobIds.length === 0) break;
+  }
+  expect(cursor?.jobs).toEqual([]);
+  expect(delivered).toEqual([
+    ...Array.from({ length: 15 }, (_, i) => `line-${i + 16}`),
+    ...Array.from({ length: 5 }, (_, i) => `line-${i + 1001}`),
+  ]);
 });

@@ -827,3 +827,22 @@ it('bounds a hinted owner while the selected store is unavailable', async () => 
   await vi.advanceTimersByTimeAsync(300_000);
   expect(repair).toHaveBeenCalledTimes(2);
 });
+
+it('waits five minutes after a run the untrusted clock skipped, however many jobs hint repair meanwhile', async () => {
+  const { f, scheduler, statuses } = fixture();
+  scheduler.start();
+  await vi.advanceTimersByTimeAsync(0);
+  trustedJobRetentionCutoff(f.runtime);
+  f.setNow(f.runtime.time.now() + 15 * 86_400_000);
+  const runs = (): RetentionRunStatus[] => statuses.filter((status) => status.phase !== 'running');
+  const before = runs().length;
+  for (let second = 0; second < 240; second++) {
+    f.store.getResultExportOwner().hintRepair(`newly-read-${second}`);
+    await vi.advanceTimersByTimeAsync(1000);
+  }
+  const held = runs().slice(before);
+  expect(held).toHaveLength(1);
+  expect(held[0].outcomes).toContainEqual(expect.objectContaining({ reason: 'wall-clock-age-unknown' }));
+  await vi.advanceTimersByTimeAsync(61_000);
+  expect(runs().length - before).toBe(2);
+});

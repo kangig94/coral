@@ -58,8 +58,8 @@ interface SessionRequestPort {
 }
 
 interface JobsRequestPort {
-  admitWait?(req: CanonicalWaitStreamRequest): WaitAdmission[];
-  snapshot?(req: WaitSnapshotRequest): WaitSnapshot;
+  admitWait(req: CanonicalWaitStreamRequest): WaitAdmission[];
+  snapshot(req: WaitSnapshotRequest): WaitSnapshot;
   scopeCheck(jobIds: string[], callerRoot: CanonicalWorkDir, relation: JobScopeRelation): ScopeCheckResult;
   abort(jobIds: string[]): AbortDecision;
   validateWait(req: CanonicalWaitStreamRequest): WaitCursorError | null;

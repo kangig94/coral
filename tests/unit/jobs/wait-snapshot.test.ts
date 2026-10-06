@@ -1,8 +1,10 @@
-import type { WaitCursor } from '#src/jobs/wait/contract.js';
+import type { ProgressVisit, WaitCursor } from '#src/jobs/wait/contract.js';
+import { progressPage, progressTail } from '#src/jobs/wait/progress-page.js';
+import { TAIL_SCAN_FLAG } from '#src/jobs/wait/cursor.js';
 import { prefixCursor } from '#tests/helpers/wait-progress.js';
 import { describe, expect, it, vi } from 'vitest';
 import { WaitSession } from '#src/jobs/wait/session.js';
-import { parseWaitSnapshot } from '#src/jobs/wait/snapshot.js';
+import { parseWaitSnapshot, selectWaitSnapshot as selectWaitSnapshotFrom } from '#src/jobs/wait/snapshot.js';
 import { selectWaitSnapshot } from '#tests/helpers/wait-progress.js';
 import { formatJobDetail } from '#src/cli/format/jobs.js';
 import { formatWaitSnapshot } from '#src/cli/format/wait.js';
@@ -298,14 +300,14 @@ it('continuations inspect only their unread page and never rebuild the backlog',
     false,
   );
   let cursor: WaitCursor | undefined = prefixCursor([job]);
-  // A 499-row page and its lookahead row spend one poll's 500-row allowance.
+  // Pages doubling from 32 rows, each with its lookahead row, spend one poll's 500-row allowance on 495 lines.
   for (let page = 0; page < 3; page++) {
     const session: WaitSession = new WaitSession(['a'], cursor);
     session.reconcile([job]);
     const split = vi.spyOn(String.prototype, 'split');
     try {
       const snapshot = selectWaitSnapshot(session);
-      expect(snapshot.jobs[0].progress[0]).toBe(`line${page * 499}`);
+      expect(snapshot.jobs[0].progress[0]).toBe(`line${page * 495}`);
       expect(split.mock.calls.length).toBeLessThanOrEqual(502);
       cursor = snapshot.cursor;
     } finally {
@@ -402,4 +404,82 @@ it('reports complete previews without omission and rejects the old exact-count s
       ],
     }),
   ).toThrow();
+});
+
+describe('first snapshot positioning within the raw-row allowance', () => {
+  const dense = (jobId: string, base: number, lines: number) =>
+    admitted(
+      jobId,
+      Array.from({ length: lines }, (_, n) => [base + n + 1, `${jobId}-${n + 1}`] as [number, string]),
+      false,
+    );
+  const first = (jobs: ReturnType<typeof admitted>[], lines: number) => {
+    const session = new WaitSession(jobs.map((job) => job.jobId));
+    session.reconcile(jobs);
+    return selectWaitSnapshot(session, lines);
+  };
+
+  it.each([
+    [1, 500, 484],
+    [3, 200, 160],
+  ])('shows %i dense tails asked for %i lines each their full row share at once', (count, lines, shown) => {
+    // Each line is a row and each 32-row tail page a lookahead row, so 500 rows carry 484 lines for one tail.
+    const snapshot = first(
+      Array.from({ length: count }, (_, j) => dense(`d${j}`, j * 600, 600)),
+      lines,
+    );
+    expect(snapshot.jobs.map((job) => job.progress.length)).toEqual(Array.from({ length: count }, () => shown));
+    expect(snapshot.notices).not.toContainEqual(expect.stringContaining('Progress truncated'));
+  });
+
+  it('gives a long tail the rows a short sibling leaves, up to the lines asked for', () => {
+    const snapshot = first([dense('A', 0, 3), dense('B', 100, 1000)], 400);
+    expect(snapshot.jobs.map((job) => job.progress.length)).toEqual([3, 400]);
+    expect(snapshot.jobs[1].progress.at(-1)).toBe('B-1000');
+  });
+
+  it("positions a healthy tail at once while a fault-dense sibling's cut scan waits for the next poll", () => {
+    const timing = { origin: 'runtime' as const, originAt: '', emittedAt: '', elapsedMs: 0 };
+    const rows: Record<string, Array<{ seq: number; message?: string }>> = {
+      F: [
+        ...Array.from({ length: 5 }, (_, i) => ({ seq: i + 1, message: `F-${i + 1}` })),
+        ...Array.from({ length: 3000 }, (_, i) => ({ seq: 100 + i })),
+      ],
+      H: Array.from({ length: 10 }, (_, i) => ({ seq: 10 + i, message: `H-${i + 1}` })),
+    };
+    const raw = (id: string) =>
+      rows[id].map((row) => ({
+        seq: row.seq,
+        ...(row.message === undefined ? {} : { progress: { seq: row.seq, message: row.message, timing } }),
+      }));
+    const visit: ProgressVisit = (_epoch, read) => ({
+      kind: 'read',
+      value: read({
+        after: (id, after, count) =>
+          progressPage(
+            raw(id)
+              .filter((row) => row.seq > after)
+              .slice(0, count + 1),
+            count,
+            3099,
+          ),
+        before: (id, before, count) =>
+          progressTail(
+            raw(id)
+              .filter((row) => before === null || row.seq < before)
+              .reverse()
+              .slice(0, count + 1),
+            count,
+            3099,
+          ),
+      }),
+    });
+    const jobs = [admitted('H', [], false), admitted('F', [], false)];
+    const session = new WaitSession(['H', 'F']);
+    session.reconcile(jobs);
+    const snapshot = selectWaitSnapshotFrom(session, 20, visit);
+    expect(snapshot.jobs[0].progress).toEqual(Array.from({ length: 10 }, (_, i) => `H-${i + 1}`));
+    expect(snapshot.jobs[1].progress).toEqual([]);
+    expect(snapshot.cursor.jobs[1].flags & TAIL_SCAN_FLAG).toBe(TAIL_SCAN_FLAG);
+  });
 });

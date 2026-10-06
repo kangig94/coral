@@ -3,11 +3,33 @@ import {
   CLI_HANDOFF_GUARD_ENV,
   WAIT_INVOCATION_CONTEXT_ENV,
 } from '#src/coordinator/handoff-routing/wait-invocation.js';
-import { WaitInvocation } from '#src/cli/wait-invocation.js';
+import { endWithDelegatingParent, WaitInvocation } from '#src/cli/wait-invocation.js';
+import { EventEmitter } from 'node:events';
 
 afterEach(() => {
   vi.restoreAllMocks();
   process.exitCode = undefined;
+});
+
+it('ends a delegated follow when the channel to its parent closes, and holds the channel only while following', () => {
+  const parentLink = (channel: object | undefined) =>
+    Object.assign(new EventEmitter(), { channel, exit: vi.fn<(code?: number) => never>() });
+  const linked = parentLink({});
+  const release = endWithDelegatingParent(linked);
+  expect(linked.listenerCount('disconnect')).toBe(1);
+  linked.emit('disconnect');
+  expect(linked.exit).toHaveBeenCalledExactlyOnceWith(75);
+  release();
+
+  const finished = parentLink({});
+  endWithDelegatingParent(finished)();
+  expect(finished.listenerCount('disconnect')).toBe(0);
+  finished.emit('disconnect');
+  expect(finished.exit).not.toHaveBeenCalled();
+
+  const unlinked = parentLink(undefined);
+  endWithDelegatingParent(unlinked);
+  expect(unlinked.listenerCount('disconnect')).toBe(0);
 });
 
 it('removes delegated IPC listeners after an abort while retaining the bounded SIGINT guard', () => {

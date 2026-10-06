@@ -457,3 +457,55 @@ it('a delegated follow over 100 existing messages drains every line and returns 
     vi.restoreAllMocks();
   }
 });
+
+it('a delegated follow ends when the channel to the parent that delegated it closes, and only while following', async () => {
+  let opened = createDeferred();
+  let finish = createDeferred();
+  const subscribeJobsWait = vi.fn(async () => {
+    opened.resolve();
+    const finished = finish.promise;
+    return {
+      close: async () => {},
+      async *[Symbol.asyncIterator]() {
+        await finished;
+        yield { type: 'waiting', waitingJobIds: [], cursor: { jobs: [] }, exitCode: 0 };
+      },
+    };
+  });
+  vi.spyOn(dispatch, 'makeClient').mockReturnValue({ subscribeJobsWait } as never);
+  vi.spyOn(process.stdout, 'write').mockImplementation(((_chunk: unknown, callback?: () => void) => {
+    callback?.();
+    return true;
+  }) as typeof process.stdout.write);
+  const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+  const listeners = process.listenerCount('disconnect');
+  const follow = () => {
+    const program = new Command();
+    registerSessionCommands(program, createBuiltInProviderRegistry());
+    return program.parseAsync(['node', 'coral-cli', 'wait', 'jobs', 'a', '--follow']);
+  };
+  try {
+    // This worker is a forked child, so it has a parent channel just as a delegated follow child does.
+    expect(process.channel).toBeDefined();
+    const completed = follow();
+    await opened.promise;
+    expect(process.listenerCount('disconnect')).toBe(listeners + 1);
+    finish.resolve();
+    await completed;
+    // A follow that ended on its own leaves nothing on the channel to keep this process alive.
+    expect(process.listenerCount('disconnect')).toBe(listeners);
+    expect(exit).not.toHaveBeenCalled();
+
+    opened = createDeferred();
+    finish = createDeferred();
+    const orphaned = follow();
+    await opened.promise;
+    process.emit('disconnect');
+    expect(exit).toHaveBeenCalledExactlyOnceWith(75);
+    finish.resolve();
+    await orphaned;
+  } finally {
+    process.exitCode = undefined;
+    vi.restoreAllMocks();
+  }
+});

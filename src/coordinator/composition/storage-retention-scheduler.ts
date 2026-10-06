@@ -43,6 +43,8 @@ export function createStorageRetentionScheduler(input: {
   let hintOwner: ReturnType<JobStore['getResultExportOwner']> | undefined;
   let repairHinted = false;
   let lastRepairRun = -1000n;
+  /** An untrusted clock settles over five minutes, so no hint may bring a run before that window has passed. */
+  let clockHeldUntil = 0n;
   const owners = new Map<string, { dailyDue: bigint; fastDue: bigint | null; outcomes: RetentionOutcome[] }>(
     [
       'exports',
@@ -148,6 +150,7 @@ export function createStorageRetentionScheduler(input: {
         if (cutoff === null) {
           partial = true;
           record({ kind: 'kept', subject: 'storage-retention', reason: 'wall-clock-age-unknown' });
+          clockHeldUntil = runtime.time.monotonicNow() + BigInt(BACKLOG_DELAY_MS);
         } else {
           const db = progressStore.getDb();
           const writer = joinSuccessionWriterGeneration(runtime, {
@@ -406,7 +409,9 @@ export function createStorageRetentionScheduler(input: {
           const owner = owners.get('result-repair');
           if (!owner) return;
           const now = runtime.time.monotonicNow();
-          const hintedDue = now > lastRepairRun + 1000n ? now : lastRepairRun + 1000n;
+          const hintedDue = [now, lastRepairRun + 1000n, clockHeldUntil].reduce((latest, due) =>
+            due > latest ? due : latest,
+          );
           owner.fastDue = owner.fastDue === null || hintedDue < owner.fastDue ? hintedDue : owner.fastDue;
           repairHinted = true;
           if (timer !== null) {

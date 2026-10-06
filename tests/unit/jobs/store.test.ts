@@ -171,3 +171,22 @@ it('proves a registered but never accepted active job absent from the live journ
   store.getDb().prepare('DELETE FROM projection_jobs WHERE job_id = ?').run('accepted');
   expect(store.observeJobAbsence('accepted')).toBe(false);
 });
+
+it("reads a job's wait detail without its launch body, and the job's last seq moves only with its own events", () => {
+  const { store } = createStore();
+  initProviderJob(store, 'waited', 'session-waited');
+  initProviderJob(store, 'other', 'session-other');
+  const lastSeq = store.readJobLastSeq('waited');
+  store.appendProgress('other', 'session-other', 'another job');
+  expect(store.readJobLastSeq('waited')).toBe(lastSeq);
+  store.appendProgress('waited', 'session-waited', 'its own progress');
+  expect(store.readJobLastSeq('waited')).toBeGreaterThan(lastSeq!);
+  expect(store.readJobLastSeq('never-launched')).toBeNull();
+  // A wait never needs the launch body, so an undecodable one cannot reach it.
+  store
+    .getDb()
+    .prepare("UPDATE events SET body = ? WHERE stream_id = 'waited' AND type = 'job.launch.requested'")
+    .run(Buffer.from('{"undecodable":true}'));
+  expect(() => store.loadJobProjectionDetail('waited')).toThrow();
+  expect(store.loadJobWaitDetail('waited')).toMatchObject({ status: { jobId: 'waited' }, exit: null });
+});

@@ -399,6 +399,52 @@ it('flushes acknowledged completion at the deadline without changing its exit to
   expect(process.exitCode).not.toBe(75);
 });
 
+it('keeps a failed terminal exit when the budget ends while that final event is still being written', async () => {
+  const budget = invocation();
+  let output = '';
+  const callbacks: Array<() => void> = [];
+  vi.spyOn(process.stdout, 'write').mockImplementation(((text: string, callback?: () => void) => {
+    output += text;
+    // A pipe completes writes in order and later; the budget ends inside the terminal's write.
+    callbacks.push(() => callback?.());
+    if (text.startsWith('Job a provider exited')) budget.stop();
+    return true;
+  }) as never);
+  const ended = followJobs({
+    start: { kind: 'jobs', jobIds: ['a'] },
+    reconnectPolicy: 'bounded',
+    invocation: budget,
+    projectRoot: '/project',
+    render: { isTTY: false, columns: 80, embed: false, verbose: false },
+    emitError: () => {},
+    connect: async () => ({
+      kind: 'subscription',
+      subscription: {
+        close: async () => {},
+        async *[Symbol.asyncIterator]() {
+          yield {
+            type: 'terminal',
+            jobId: 'a',
+            seq: 9,
+            remainingJobIds: [],
+            availability: { kind: 'repair-pending', ageUncertain: false },
+            result: { content: 'boom', outcome: { kind: 'provider_exit', code: 3 }, durationMs: 1 },
+            cursor: { jobs: [] },
+            exitCode: 3,
+          };
+        },
+      },
+    }),
+  });
+  // The command stores whatever the follow returns, before the pending write lands.
+  process.exitCode = await ended;
+  for (const callback of callbacks.splice(0)) callback();
+  for (const callback of callbacks.splice(0)) callback();
+  expect(output.match(/Job a provider exited 3/g)).toHaveLength(1);
+  expect(output).not.toContain('Still waiting');
+  expect(process.exitCode).toBe(3);
+});
+
 it('terminates a repeated cursor-reset refusal after retrying without the cursor once', async () => {
   capture();
   const budget = invocation();

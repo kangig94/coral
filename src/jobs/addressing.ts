@@ -1,8 +1,14 @@
 import type { ProgressVisit } from './wait/contract.js';
 import { epochIdentity, sameEpoch } from '../store/epoch/identity.js';
-import { sourceReadFailureDisposition } from './source-read.js';
+import { isCodeDefect, sourceReadFailureDisposition } from './source-read.js';
 import { waitEpochToken } from './wait/cursor.js';
-import { WaitSession, WaitSessionError, type WaitAdmission, type WaitSnapshot } from './wait/session.js';
+import {
+  activeJournalReadFailure,
+  WaitSession,
+  WaitSessionError,
+  type WaitAdmission,
+  type WaitSnapshot,
+} from './wait/session.js';
 import { selectWaitSnapshot } from './wait/snapshot.js';
 import { readWaitSession } from './wait/reader.js';
 import { canonicalWorkDirWireSchema, type CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
@@ -393,6 +399,7 @@ export class JobAddressing {
         try {
           return [jobId, this.location(jobId, activeEpochKey, false)] as const;
         } catch (error) {
+          if (isCodeDefect(error)) throw error;
           const sourceRead = sourceReadFailureDisposition(error);
           failures.set(jobId, {
             jobId,
@@ -492,27 +499,11 @@ export class JobAddressing {
           message: 'Change cwd to the job work directory; coral-cli jobs --all includes terminal jobs.',
         };
       if (sameEpoch(location.epochKey, activeEpochKey)) {
-        const admission =
-          activeAdmissions.get(jobId) ?? this.active.readWaitAdmission?.(jobId, location.epochKey, request);
-        const detail = admission?.detail ?? this.active.detail(jobId);
-        if (admission && admission.disposition !== 'admitted') return admission;
-        if (!detail && !admission?.queued)
-          return { jobId, disposition: 'admitted', epochKey: location.epochKey, sourceRead: 'transient-unknown' };
-        const availability = detail?.exit ? (admission?.availability ?? this.availability(jobId, request)) : undefined;
-        return {
-          ...admission,
-          jobId,
-          disposition: 'admitted',
-          sourceRead: admission?.sourceRead ?? 'readable',
-          epochKey: location.epochKey,
-          ...(detail === null || detail === undefined ? {} : { detail: waitDetail(detail) }),
-          ...(detail?.exit
-            ? {
-                availability,
-                progressLost: this.progressRetentionExpired?.(jobId, request) === true,
-              }
-            : {}),
-        };
+        try {
+          return this.activeAdmission(jobId, location.epochKey, activeAdmissions.get(jobId), request);
+        } catch (error) {
+          return activeJournalReadFailure(jobId, location.epochKey, error);
+        }
       }
       const closure = closures.get(epochIdentity(location.epochKey));
       const source = historical.get(epochIdentity(location.epochKey));
@@ -553,6 +544,34 @@ export class JobAddressing {
         progressLost: this.progressRetentionExpired?.(jobId, request) === true,
       };
     });
+  }
+
+  private activeAdmission(
+    jobId: string,
+    epochKey: string,
+    read: WaitAdmission | undefined,
+    request: WaitStreamRequest,
+  ): WaitAdmission {
+    const admission = read ?? this.active.readWaitAdmission?.(jobId, epochKey, request);
+    const detail = admission?.detail ?? this.active.detail(jobId);
+    if (admission && admission.disposition !== 'admitted') return admission;
+    if (!detail && !admission?.queued)
+      return { jobId, disposition: 'admitted', epochKey, sourceRead: 'transient-unknown' };
+    const availability = detail?.exit ? (admission?.availability ?? this.availability(jobId, request)) : undefined;
+    return {
+      ...admission,
+      jobId,
+      disposition: 'admitted',
+      sourceRead: admission?.sourceRead ?? 'readable',
+      epochKey,
+      ...(detail === null || detail === undefined ? {} : { detail: waitDetail(detail) }),
+      ...(detail?.exit
+        ? {
+            availability,
+            progressLost: this.progressRetentionExpired?.(jobId, request) === true,
+          }
+        : {}),
+    };
   }
 
   validateWait(request: WaitStreamRequest): WaitCursorError | null {

@@ -170,7 +170,6 @@ export function createTerminalExportFixture(jobKind: 'provider' | 'workflow' = '
         index.resultPathFor(jobId),
         seq,
         db,
-        true,
       );
       return seq;
     },

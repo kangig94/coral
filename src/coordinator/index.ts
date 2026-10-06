@@ -396,7 +396,7 @@ function createCoordinatorJournalAssembly({
 }) {
   const { getStoreServices, getStoreDb, getQueryDb, getConsumerDriver } = createCoordinatorStoreAccess(readCore);
   const exportTerminalResults = observeTerminalResultExports(
-    (jobId, seq) => getStoreServices().progressStore.publishTerminalResult(jobId, seq),
+    (jobId) => getStoreServices().progressStore.publishTerminalResult(jobId),
     (jobId, seq) => {
       const progressStore = getStoreServices().progressStore;
       progressStore.configureResultExports(jobLocations);
@@ -413,7 +413,6 @@ function createCoordinatorJournalAssembly({
         resultPathFor(runtime.paths.coral.exports.jobsRoot, jobId),
         seq,
         progressStore.getDb(),
-        true,
       );
     },
   );

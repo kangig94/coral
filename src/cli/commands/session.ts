@@ -8,7 +8,12 @@ import { mapWaitSubscriptionError, SOFT_CURSOR_REFUSALS } from '../wait-stream-e
 import { MAX_WAIT_JOB_IDS } from '../../jobs/wait/stream-event.js';
 import { BackendToolHttpError } from '../../transport/http/errors.js';
 import { isRecord } from '../../infra/json.js';
-import { getWaitInvocation, WaitInvocationEnded, validateWaitJobsOptions } from '../wait-invocation.js';
+import {
+  endWithDelegatingParent,
+  getWaitInvocation,
+  WaitInvocationEnded,
+  validateWaitJobsOptions,
+} from '../wait-invocation.js';
 import { Option, type Command } from 'commander';
 import { z } from 'zod';
 
@@ -284,25 +289,30 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
     }
 
     // --follow is a launch follow delegated to this build: it drains and reconnects until the terminal.
-    process.exitCode = await followJobs({
-      start: { kind: 'jobs', jobIds, ...(opts.cursor === undefined ? {} : { serializedCursor: opts.cursor }) },
-      reconnectPolicy: opts.follow === true ? 'until-terminal' : 'bounded',
-      invocation: getWaitInvocation(),
-      projectRoot,
-      emitError,
-      render: {
-        ...getTerminalContext(),
-        embed: opts.embed === true,
-        verbose: opts.verbose === true,
-      },
-      connect: async ({ jobIds: activeJobIds, cursor, timeoutSeconds, signal, drainProgress }) => ({
-        kind: 'subscription',
-        subscription: await client.subscribeJobsWait(
-          { jobIds: activeJobIds, timeoutSeconds, projectRoot, drainProgress, ...(cursor ? { cursor } : {}) },
-          { signal },
-        ),
-      }),
-    });
+    const releaseParent = opts.follow === true ? endWithDelegatingParent() : undefined;
+    try {
+      process.exitCode = await followJobs({
+        start: { kind: 'jobs', jobIds, ...(opts.cursor === undefined ? {} : { serializedCursor: opts.cursor }) },
+        reconnectPolicy: opts.follow === true ? 'until-terminal' : 'bounded',
+        invocation: getWaitInvocation(),
+        projectRoot,
+        emitError,
+        render: {
+          ...getTerminalContext(),
+          embed: opts.embed === true,
+          verbose: opts.verbose === true,
+        },
+        connect: async ({ jobIds: activeJobIds, cursor, timeoutSeconds, signal, drainProgress }) => ({
+          kind: 'subscription',
+          subscription: await client.subscribeJobsWait(
+            { jobIds: activeJobIds, timeoutSeconds, projectRoot, drainProgress, ...(cursor ? { cursor } : {}) },
+            { signal },
+          ),
+        }),
+      });
+    } finally {
+      releaseParent?.();
+    }
   }
 
   const waitCommand = program.command('wait');

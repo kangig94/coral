@@ -33,7 +33,6 @@ export interface WaitStreamRequest extends WaitRequest {
   abortSignal?: AbortSignal;
   drainProgress?: boolean;
   admissions?: WaitAdmission[];
-  onCoverage?: (jobIds: readonly string[], unknownJobIds: readonly string[], frontier: number) => void;
 }
 
 export type CanonicalWaitStreamRequest = WaitStreamRequest & { drainProgress: boolean };
@@ -124,8 +123,7 @@ export interface JobWaitPort {
   observeWaitCarriers?(jobIds: readonly string[], signal: AbortSignal): Promise<WaitCarrierCoverage>;
   readWaitAdmission?(jobId: string, epochKey: string, session?: object): WaitAdmission | null;
   waitForJobTerminal(jobId: string, timeoutMs?: number): Promise<void>;
-  waitForJobs(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent>;
-  waitForOutcomes?(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent>;
+  waitForOutcomes(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent>;
   waitStreamOnce(jobId: string, timeoutMs?: number): Promise<WaitStreamOnceResult>;
 }
 

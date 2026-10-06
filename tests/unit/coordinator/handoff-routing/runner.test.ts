@@ -700,6 +700,8 @@ it('delegates a launch follow as wait jobs --follow and ends that child when its
     '--cursor',
     'saved-cursor',
   ]);
+  // The follow child has no budget; this channel is what ends it when the parent dies, by any signal.
+  expect(mockState.spawn.mock.calls[0][2].stdio).toEqual(['inherit', 'inherit', 'inherit', 'ipc']);
   expect(kill).not.toHaveBeenCalled();
   caller.abort();
   await expect(result).resolves.toMatchObject({

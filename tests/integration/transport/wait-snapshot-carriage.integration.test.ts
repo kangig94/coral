@@ -186,7 +186,6 @@ describe('actual wait carriage', () => {
         f.index.resultPathFor(jobId),
         seq,
         f.db,
-        true,
       );
     }
     f.advance(15 * 86400000);
@@ -492,7 +491,7 @@ describe('actual wait carriage', () => {
     );
     vi.spyOn(addressing, 'admitWait').mockReturnValue(admissions);
     const complete = ports(addressing);
-    const snapshot = parseWaitSnapshot(complete.jobs.snapshot!({ jobIds: ['a', 'ghost', 'u'], projectRoot: '/tmp' }));
+    const snapshot = parseWaitSnapshot(complete.jobs.snapshot({ jobIds: ['a', 'ghost', 'u'], projectRoot: '/tmp' }));
     expect(snapshot.jobs[0].availability?.kind).toBe('repair-pending');
     expect(snapshot.remainingJobIds).toEqual(['a', 'u']);
     expect(snapshot.exitCode).toBe(1);
@@ -578,7 +577,7 @@ it('HTTP sends a typed mid-stream error and canonicalizes the admission scope', 
   p.jobs.validateWait = () => null;
   p.jobs.waitStream = async function* () {
     yield { type: 'waiting', waitingJobIds: ['a'], cursor: session.cursor(), exitCode: 75 };
-    throw new WaitSessionError('wait_epoch_unsupported', 'Run coral-cli jobs detail a --full.');
+    throw new WaitSessionError('wait_cursor_mismatch', 'Run coral-cli jobs detail a --full.');
   };
   const handler = createHttpHandler(p);
   const server = createServer((req, res) => void handler(req, res));
@@ -613,7 +612,7 @@ it('HTTP sends a typed mid-stream error and canonicalizes the admission scope', 
     req.end(JSON.stringify({ jobIds: ['a'], projectRoot: alias }));
   });
   expect(body).toContain('event: error');
-  expect(body).toContain('wait_epoch_unsupported');
+  expect(body).toContain('wait_cursor_mismatch');
   expect(p.jobs.admitWait).toHaveBeenCalledWith(expect.objectContaining({ projectRoot: f.root }));
 });
 

@@ -1,6 +1,6 @@
 import { progressVisitFromDetails } from '#tests/helpers/wait-progress.js';
 import { loadReleasedBuild } from '#tests/helpers/released-build.js';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -711,4 +711,49 @@ it('finds a released alias directory created after an empty epoch lookup', () =>
   expect(index.revision(full)).toBe(7);
   index.holdUnknownLocations(full, 'recovered alias', true);
   expect(new JobLocationIndex(runtime, root).unknownLocationHold(alias)).toBe('recovered alias');
+});
+
+it("resolves an epoch's records without parsing other epochs' certificates again until their directories change", () => {
+  const { root, index } = fixture();
+  const epochs = join(root, 'job-locations.v1', 'epochs');
+  for (let epoch = 0; epoch < 20; epoch++) {
+    const key = JSON.stringify({ storeRoot: '/old', epoch: String(epoch), path: `/old/epoch-${epoch}/store.db` });
+    const directory = join(epochs, `other-${epoch}`);
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(
+      join(directory, 'certificate.v1.json'),
+      JSON.stringify({ version: 'v1', epochKey: key, revision: 1, jobIds: ['a', 'b'], terminalHighWaterSeq: 1 }),
+    );
+  }
+  const read = vi.spyOn(runtime.storage, 'readFileSync');
+  const certificates = () => read.mock.calls.filter(([path]) => String(path).endsWith('certificate.v1.json')).length;
+  index.certificate('{"storeRoot":"/new","epoch":"1","path":"/new/epoch-1/store.db"}');
+  const first = certificates();
+  // A new epoch directory changes the root and drops resolved identities, but no other directory's records.
+  mkdirSync(join(epochs, 'fresh'));
+  index.certificate('{"storeRoot":"/new","epoch":"2","path":"/new/epoch-2/store.db"}');
+  expect(first).toBeGreaterThanOrEqual(20);
+  expect(certificates() - first).toBeLessThanOrEqual(2);
+});
+
+it('leaves release unproven when a certified job record cannot be read, and propagates a code defect', () => {
+  const { root, index } = fixture();
+  const epochKey = 'lineage-1:1';
+  const resultPath = join(root, 'result.md');
+  writeFileSync(resultPath, 'done\n');
+  index.register('job-1', epochKey, {
+    projectRoot: '/workspace/project',
+    workDir: '/workspace/project',
+    jobKind: 'provider',
+  });
+  index.recordTerminal('job-1', terminalDetail('job-1'), resultPath, 2);
+  expect(index.certify(epochKey, 2)).not.toBeNull();
+  const read = vi.spyOn(index, 'read').mockImplementation(() => {
+    throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+  });
+  expect(index.resultsReleased(epochKey)).toBe(false);
+  read.mockImplementation(() => {
+    throw new TypeError('defect');
+  });
+  expect(() => index.resultsReleased(epochKey)).toThrow(TypeError);
 });

@@ -486,10 +486,9 @@ function deliveredFollowExitCode(event: WaitStreamEvent, context: FollowContext)
   if (event.type === 'terminal')
     return options.reconnectPolicy === 'until-terminal' ? toExitCode(event.result) : event.exitCode;
   if (event.type === 'artifact') return event.exitCode;
-  if (event.type === 'waiting') {
-    if (options.reconnectPolicy === 'bounded') return event.exitCode;
-    return event.waitingJobIds.length === 0 ? 0 : undefined;
-  }
+  // An empty set is final under either policy, and a refused member makes it a failure that must not read as success.
+  if (event.type === 'waiting')
+    return options.reconnectPolicy === 'bounded' || event.waitingJobIds.length === 0 ? event.exitCode : undefined;
   return undefined;
 }
 

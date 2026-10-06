@@ -10,7 +10,7 @@ import type {
 import type { LaunchCoordinatorPort, SettlementRefusalRecorder } from '../jobs/contracts/admission.js';
 import type { ProviderDurableSpawner } from '../providers/cli-runner.js';
 import type { JobProgressStore } from '../jobs/contracts/job-store.js';
-import type { JobProjectionDetail } from '../jobs/read-queries.js';
+import type { JobProjectionDetail, JobWaitDetail } from '../jobs/read-queries.js';
 import type { JobEvent, LaunchReadiness } from '../jobs/records.js';
 import type { JobPhase } from '../jobs/phase.js';
 import type {
@@ -97,6 +97,8 @@ export type ExecutionServiceDeps = {
   };
   coordinatorCommit: CommitEventsFn;
   loadJobProjectionDetail: (jobId: string) => JobProjectionDetail;
+  loadJobWaitDetail: (jobId: string) => JobWaitDetail;
+  readJobLastSeq: (jobId: string) => number | null;
   visitProgress: ProgressVisit;
 
   aggregateWorkflowUsage: (workflowJobId: string) => UsageSummary | undefined;

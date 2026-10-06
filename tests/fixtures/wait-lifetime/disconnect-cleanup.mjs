@@ -20,8 +20,8 @@ const time = {
 const deps = {
   time,
   getCurrentJournalSeq: () => 0,
-  readJobEvents: () => [],
-  loadJobProjectionDetail: () => ({ status: null }),
+  loadJobWaitDetail: () => ({ status: null }),
+  readJobLastSeq: () => null,
   launchQueue: {},
   async *subscribeJobEvents({ abortSignal }) {
     yield {
@@ -52,7 +52,7 @@ class DisconnectOnWrite extends EventEmitter {
   }
 }
 const controller = new AbortController();
-const upstream = new WaitCoordinator(deps).waitForJobs({
+const upstream = new WaitCoordinator(deps).waitForOutcomes({
   jobIds: ['job-1'],
   timeoutSeconds: 600,
   abortSignal: controller.signal,

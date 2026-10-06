@@ -437,7 +437,7 @@ function createKbDaemonProgressStore({
   progressStore.configureResultExports(jobLocations, renderWorkflowReport);
   if (jobLocations !== null) {
     observeTerminalExports = observeTerminalResultExports(
-      (jobId, seq) => progressStore.publishTerminalResult(jobId, seq),
+      (jobId) => progressStore.publishTerminalResult(jobId),
       (jobId, seq) => {
         const detail = progressStore.loadJobProjectionDetail(jobId);
         if (detail.status === null) throw new Error(`Terminal has no job status: ${jobId}`);
@@ -452,7 +452,6 @@ function createKbDaemonProgressStore({
           resultPathFor(runtime.paths.coral.exports.jobsRoot, jobId),
           seq,
           progressStore.getDb(),
-          true,
         );
       },
     );

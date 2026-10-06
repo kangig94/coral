@@ -2,7 +2,7 @@ import type { ProgressPage, TailPage } from './wait/progress-page.js';
 import { waitEpochToken } from './wait/cursor.js';
 import type { ProgressSource, ProgressVisitResult } from './wait/contract.js';
 import { progressPage, progressTail, type RawProgressRow } from './wait/progress-page.js';
-import { epochIdentity, sameEpoch, sameEpochOrFallbackAddress } from '../store/epoch/identity.js';
+import { epochHoldDirectory, epochIdentity, sameEpoch, sameEpochOrFallbackAddress } from '../store/epoch/identity.js';
 import { setImmediate } from 'node:timers/promises';
 import { hasObservedTerminalDetail, hasReadableTerminalDetail } from './terminal/identity.js';
 import type { SourceReadDisposition } from './wait/session.js';
@@ -110,12 +110,18 @@ const launchBodySchema = z.discriminatedUnion('jobKind', [
 
 type Projection = z.infer<typeof olderProjectionSchema> & { work_dir?: string | null };
 type HistoricalReader = (db: SqliteDatabasePort) => unknown[];
-type HistoricalReadFrontier = { frontier: number; location: JobLocation | null; absent?: boolean };
+type HistoricalReadFrontier = {
+  frontier: number;
+  location: JobLocation | null;
+  absent?: boolean;
+  /** The job's own projection `last_seq` at the read; its location holds only while that is unchanged. */
+  jobSeq?: number;
+};
 type HistoricalReadCache = {
   jobs: Map<string, HistoricalReadFrontier>;
   terminals: Map<string, JobLocation>;
-  /** The source stamp observed before this session's last opened read; unchanged, the cached answers still hold. */
-  observed?: { path: string; stamp: string };
+  /** The source stamp and frontier of this session's last opened read; it vouches only for answers taken there. */
+  observed?: { path: string; stamp: string; frontier: number };
 };
 
 type HistoricalEpochSource = {
@@ -160,9 +166,18 @@ export function onHistoricalHydrationHint(
 
 export function hintHistoricalHydration(index: JobLocationIndex, jobId: string): void {
   const location = index.read(jobId);
-  if (!location || hasReadableTerminalDetail(location) || index.unknownLocationHold(location.epochKey)) return;
+  if (!location || hasReadableTerminalDetail(location)) return;
+  // Only a registered source hydrates, and it owns its hold under its own key, so no other hold needs to be read here.
   if (!historicalSources.get(index)?.has(epochIdentity(location.epochKey))) return;
+  if (index.ownsUnknownLocationHold(location.epochKey)) return;
   hydrationListeners.get(index)?.(location.epochKey);
+}
+
+/** The registered, unretired source whose epoch owns this hold directory; only it can retry that hold. */
+export function registeredHistoricalEpoch(view: JobLocationView, directory: string): string | undefined {
+  for (const source of historicalSources.get(view)?.values() ?? [])
+    if (!source.retired && epochHoldDirectory(source.epochKey) === directory) return source.epochKey;
+  return undefined;
 }
 
 function holdSourceFailure(
@@ -534,14 +549,23 @@ export function registerPresentHistoricalEpochs(
     } catch {
       const count = (attempts.get(address) ?? 0) + 1;
       attempts.set(address, count);
+      const retrying = count < 3;
+      const reason = retrying
+        ? `Source identity unreadable; epoch maintenance retries every 5 s and settles after 3 consecutive failures (attempt ${count} of 3)`
+        : 'Source identity unreadable; epoch maintenance settled after 3 consecutive failures; re-read at next start';
       try {
-        index.holdUnknownLocations(
-          fallback,
-          count < 3
-            ? `Source identity unreadable; epoch maintenance retries every 5 s and settles after 3 consecutive failures (attempt ${count} of 3)`
-            : 'Source identity unreadable; epoch maintenance settled after 3 consecutive failures; re-read at next start',
-          count < 3,
-        );
+        index.holdUnknownLocations(fallback, reason, retrying);
+        // A hold an earlier owner wrote under this address's full key has no owner while only the address registers,
+        // so it follows the address's own retry and settlement instead of promising a retry nobody runs.
+        for (const hold of index.unknownLocationHolds())
+          if (
+            hold.epochKey !== undefined &&
+            hold.epochKey !== fallback &&
+            sameEpochOrFallbackAddress(fallback, hold.epochKey) &&
+            !historicalSources.get(index)?.has(epochIdentity(hold.epochKey)) &&
+            hold.retryScheduled !== retrying
+          )
+            index.holdUnknownLocations(hold.epochKey, reason, retrying);
       } catch {
         /* An unobservable entry must not stop registration of other epochs. */
       }
@@ -873,9 +897,16 @@ export function readHistoricalSource(
         'This build cannot read the retained source format; epoch maintenance re-reads it at the next coordinator start',
     };
   const observed = session && !fullHistory ? source.readCache?.get(session) : undefined;
+  const vouched = (jobId: string): boolean => {
+    const cached = observed?.jobs.get(jobId);
+    return (
+      cached !== undefined &&
+      (cached.frontier === observed?.observed?.frontier || cached.location?.disposition === 'terminal')
+    );
+  };
   if (
     observed?.observed &&
-    jobIds.every((jobId) => observed.jobs.has(jobId)) &&
+    jobIds.every(vouched) &&
     sourceReadStamp(source.storage, observed.observed.path) === observed.observed.stamp
   )
     return cachedHistoricalRead(observed, epochKey, jobIds);
@@ -921,6 +952,13 @@ export function readHistoricalSource(
           continue;
         }
         const raw = db.prepare('SELECT * FROM projection_jobs WHERE job_id = ?').get(jobId);
+        // A running job's location changes only with its own events, so another job's append never decodes it again.
+        const jobSeq = typeof raw === 'object' && raw !== null && 'last_seq' in raw ? raw.last_seq : undefined;
+        if (cached?.jobSeq !== undefined && cached.jobSeq === jobSeq) {
+          readCache.jobs.set(jobId, { ...cached, frontier });
+          locations.set(jobId, cached.location);
+          continue;
+        }
         const events = fullHistory ? readEvents(db, jobId) : readMetadata(db, jobId);
         if (raw === undefined) {
           if (events.some((event) => event.type === 'job.terminal.recorded'))
@@ -954,11 +992,12 @@ export function readHistoricalSource(
           throw new HistoricalDecodeError('Historical job terminal cannot be decoded');
         locations.set(jobId, location);
         if (!fullHistory) {
-          readCache.jobs.set(jobId, { frontier, location });
+          readCache.jobs.set(jobId, { frontier, location, jobSeq: row.last_seq });
           if (terminal)
             readCache.terminals.set(JSON.stringify([epochIdentity(epochKey), jobId, terminal.seq]), location);
         }
       } catch (error) {
+        if (isCodeDefect(error)) throw error;
         // The stamp published below certifies only answers this observation produced, so a failed read keeps none.
         readCache.jobs.delete(jobId);
         dispositions.set(
@@ -970,10 +1009,12 @@ export function readHistoricalSource(
         unreadableJobs.add(jobId);
       }
     }
-    if (session && !fullHistory) readCache.observed = stamp === null ? undefined : { path: epoch.path, stamp };
+    if (session && !fullHistory)
+      readCache.observed = stamp === null ? undefined : { path: epoch.path, stamp, frontier };
     const result = { kind: 'read', locations, dispositions, unreadableJobs, absentJobs } as const;
     return result;
   } catch (error) {
+    if (isCodeDefect(error)) throw error;
     const hold = view.unknownLocationHolds().find((hold) => sameEpoch(hold.epochKey, epochKey));
     return {
       kind: 'unreadable',

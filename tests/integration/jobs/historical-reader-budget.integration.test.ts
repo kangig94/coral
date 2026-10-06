@@ -36,7 +36,6 @@ it('one 16-subject sweep slice reads every retained location of an uncertified e
         f.index.resultPathFor(jobId),
         seq,
         f.db,
-        true,
       );
       ids.push(jobId);
     }

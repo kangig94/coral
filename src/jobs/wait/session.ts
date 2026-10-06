@@ -57,6 +57,26 @@ export type WaitAdmission = WaitAdmissionDetail &
     | { disposition: Exclude<WaitDisposition, 'admitted'> }
   );
 
+/** An active-journal read that failed is uncertainty about that one job: decode failures settle it, others retry. */
+export function activeJournalReadFailure(jobId: string, epochKey: string, error: unknown): WaitAdmission {
+  if (isCodeDefect(error)) throw error;
+  return sourceReadFailureDisposition(error) === 'settled-unreadable'
+    ? {
+        jobId,
+        disposition: 'outcome-unreadable',
+        epochKey,
+        sourceRead: 'settled-unreadable',
+        message: "This build cannot decode this job's records in the active journal; no later read changes that",
+      }
+    : {
+        jobId,
+        disposition: 'admitted',
+        epochKey,
+        sourceRead: 'transient-unknown',
+        message: 'The active journal cannot be read right now; this wait reads it again on its next poll',
+      };
+}
+
 export type WaitProgressLine = {
   jobId: string;
   epochKey: string;
@@ -151,6 +171,8 @@ export type WaitSelection = {
 };
 
 const TAIL_PAGE_ROWS = 32;
+/** A forward read starts with a page this size and doubles it, so a poll a few large rows fill discards few rows. */
+const FIRST_PAGE_ROWS = 32;
 /** Raw progress rows one poll may read, lookahead rows included, shared by positioning and selection. */
 const WAIT_PROGRESS_ROWS = 500;
 
@@ -165,15 +187,25 @@ type TailScan = {
   /** The lowest raw seq scanned; null before the first page. */
   before: number | null;
   reachedStart: boolean;
-  /** The source frontier when this session began the scan; null for a scan resumed from a cursor. */
-  top: number | null;
+  /**
+   * The highest seq up to which this session read every row of the job above its lines: the source frontier for a
+   * scan it began, or just below the boundary of a scan resumed from a cursor. Null before a begun scan's first page.
+   */
+  covered: number | null;
 };
 
 /**
- * Lines a tail scan read in this poll's transaction from a job's new position through the source frontier: the scan
- * covered every row of the job up to that frontier, so selection serves them without reading those rows again.
+ * Lines a tail scan read from a job's new position through `through`: every row of the job up to there was read, so
+ * selection serves them without reading those rows again. `exhausted` holds only when `through` is the source frontier
+ * this poll observed, so no row of the job lies above it.
  */
-export type WaitPositioned = ReadonlyMap<string, Readonly<{ lines: readonly WaitProgressLine[]; through: number }>>;
+type WaitPositionedTail = Readonly<{ lines: readonly WaitProgressLine[]; through: number; exhausted: boolean }>;
+export type WaitPositioned = ReadonlyMap<string, WaitPositionedTail>;
+
+/** Lines a tail read adds within `rows` raw rows, when each page of up to TAIL_PAGE_ROWS rows also reads a lookahead. */
+function tailLinesWithin(rows: number): number {
+  return rows <= 1 ? 0 : rows - Math.ceil(rows / (TAIL_PAGE_ROWS + 1));
+}
 
 export class WaitSession {
   admissions: WaitAdmission[] = [];
@@ -181,6 +213,8 @@ export class WaitSession {
   private readonly members = new Map<string, Member>();
   private readonly coverage = new Map<string, { kind: 'live' | 'absent' | 'unknown'; frontier: number }>();
   private readonly tails = new Map<string, TailScan>();
+  /** The raw-row allowance of the poll in progress, which positioning sizes its tails against. */
+  private allowance = { remaining: WAIT_PROGRESS_ROWS };
 
   readonly jobIds: readonly string[];
   readonly input?: WaitCursor;
@@ -269,6 +303,7 @@ export class WaitSession {
     const order = [...epochs.values()];
     const sources = new Map<string, ProgressSource>();
     const allowance = { remaining: WAIT_PROGRESS_ROWS };
+    this.allowance = allowance;
     const open = (index: number): T => {
       const epoch = order[index];
       if (epoch === undefined) return read(sources);
@@ -362,7 +397,7 @@ export class WaitSession {
     budget: number,
     maxBytes: number,
   ): WaitPositioned {
-    const positioned = new Map<string, { lines: readonly WaitProgressLine[]; through: number }>();
+    const positioned = new Map<string, WaitPositionedTail>();
     let pending = this.admissions.filter(
       (job): job is WaitAdmission & { epochKey: string } =>
         this.readable(job, sources) && (this.member(job.jobId).entry.flags & UNPOSITIONED_FLAG) !== 0,
@@ -388,7 +423,8 @@ export class WaitSession {
       return tail;
     };
     const found = (tail: TailScan): number => tail.prior + tail.lines.length;
-    const fresh = new Set<string>();
+    /** The source frontier each scan observed in this poll's transaction. */
+    const frontiers = new Map<string, number>();
     // Loading stops once the loaded tail alone exceeds the byte budget: no level can then select past it.
     const load = (job: WaitAdmission & { epochKey: string }, size: number): void => {
       const source = sources.get(job.epochKey) as ProgressSource;
@@ -403,14 +439,14 @@ export class WaitSession {
           prior: resumed ? entry.lineOffset : 0,
           before: resumed ? entry.seq : null,
           reachedStart: false,
-          top: null,
+          covered: resumed ? entry.seq - 1 : null,
         };
         this.tails.set(job.jobId, tail);
-        fresh.add(job.jobId);
       }
       while (found(tail) < size && !tail.reachedStart && tail.bytes <= maxBytes) {
         const page = source.before(job.jobId, tail.before, Math.min(size - found(tail), TAIL_PAGE_ROWS));
-        if (tail.before === null) tail.top = page.frontier;
+        if (tail.before === null) tail.covered = page.frontier;
+        frontiers.set(job.jobId, page.frontier);
         tail.reachedStart = page.reachedStart;
         if (page.rawRows > 0) tail.before = page.through;
         const lines = page.rows.flatMap((row) => this.lines(job, row));
@@ -420,37 +456,56 @@ export class WaitSession {
         tail.bytes += sizes.reduce((sum, size) => sum + size, 0);
       }
     };
-    const loadAll = (size: number): 'loaded' | 'cut' => {
+    const loadedTo = (job: WaitAdmission, size: number): boolean => {
+      const tail = this.tails.get(job.jobId);
+      return tail !== undefined && (found(tail) >= size || tail.reachedStart || tail.bytes > maxBytes);
+    };
+    /** Whether the row allowance cut the load short; a source fault drops only its own jobs. */
+    const loadAll = (size: number): boolean => {
       for (const job of [...pending]) {
         if (!pending.includes(job)) continue;
         try {
           load(job, size);
         } catch (error) {
-          if (error instanceof ProgressRowsExhausted) return 'cut';
+          if (error instanceof ProgressRowsExhausted) return true;
           if (!(error instanceof ProgressSourceFault)) throw error;
           const affected = this.fault(error);
           pending = pending.filter((member) => !affected.includes(member.jobId));
           for (const jobId of affected) this.tails.delete(jobId);
         }
       }
-      return 'loaded';
+      return false;
     };
-    // Each level line costs a row and each tail its lookahead row, so the row allowance caps the level too.
-    const rowLevel = Math.floor(WAIT_PROGRESS_ROWS / pending.length) - 1;
-    let level = Math.min(count, Math.floor(budget / pending.length), rowLevel);
+    // A level's rows are its lines plus one lookahead row per tail page, all drawn from the poll's one allowance.
+    let level = Math.min(
+      count,
+      Math.floor(budget / pending.length),
+      tailLinesWithin(Math.floor(this.allowance.remaining / pending.length)),
+    );
     for (;;) {
-      if (loadAll(Math.max(1, level)) === 'cut') {
-        this.holdTailScans(pending);
-        return positioned;
+      if (loadAll(Math.max(1, level))) {
+        // Only scans the allowance cut short wait for the next poll; every finished tail is positioned at this level.
+        const cut = pending.filter((job) => !loadedTo(job, Math.max(1, level)));
+        this.holdTailScans(cut);
+        pending = pending.filter((job) => !cut.includes(job));
+        break;
       }
       if (pending.length === 0) return positioned;
       const short = pending.filter((job) => tailFor(job.jobId).reachedStart && found(tailFor(job.jobId)) <= level);
       const longCount = pending.length - short.length;
       const used = short.reduce((sum, job) => sum + found(tailFor(job.jobId)), 0);
-      const next = longCount === 0 ? level : Math.min(count, Math.floor((budget - used) / longCount), rowLevel);
+      const next =
+        longCount === 0
+          ? level
+          : Math.min(
+              count,
+              Math.floor((budget - used) / longCount),
+              level + tailLinesWithin(Math.floor(this.allowance.remaining / longCount)),
+            );
       if (next <= level) break;
       level = next;
     }
+    if (pending.length === 0) return positioned;
     // Lines an earlier request found have no size here; selection still enforces the byte budget on delivery.
     const suffixes = pending.map((job) => {
       const { sizes, prior } = tailFor(job.jobId);
@@ -478,12 +533,17 @@ export class WaitSession {
       member.entry = {
         ...member.entry,
         flags: member.entry.flags & ~(UNPOSITIONED_FLAG | TAIL_SCAN_FLAG),
-        // A line an earlier request found cannot be located again, so the tail then starts at that scan's boundary.
-        seq: first ? first.seq - Number(first.offset === 0) : tail.prior > 0 ? boundary : (tail.top ?? boundary),
+        // A line an earlier request found cannot be located again, so the tail then starts where this session's
+        // reading began, below which every line is older than the shown window.
+        seq: first ? first.seq - Number(first.offset === 0) : (tail.covered ?? boundary),
         lineOffset: first?.offset ?? 0,
       };
-      if (first && fresh.has(job.jobId) && tail.top !== null)
-        positioned.set(job.jobId, { lines: tail.lines.slice(-shown), through: tail.top });
+      if (first && tail.covered !== null)
+        positioned.set(job.jobId, {
+          lines: tail.lines.slice(-(shown - tail.prior)),
+          through: tail.covered,
+          exhausted: frontiers.get(job.jobId) === tail.covered,
+        });
       this.tails.delete(job.jobId);
       if (!tail.reachedStart || found(tail) > shown) omitted.push(job.jobId);
     }
@@ -542,7 +602,7 @@ export class WaitSession {
     const perJob = Math.max(1, jobs.length);
     const rows = Math.max(
       1,
-      Math.min(500, Math.ceil(budget / perJob) + 1, Math.floor(WAIT_PROGRESS_ROWS / perJob) - 1),
+      Math.min(FIRST_PAGE_ROWS, Math.ceil(budget / perJob) + 1, Math.floor(WAIT_PROGRESS_ROWS / perJob) - 1),
     );
     type Head = { jobId: string; iterator: Generator<WaitProgressLine>; next: IteratorResult<WaitProgressLine> };
     const epochs = new Map<string, Head[]>();
@@ -609,10 +669,14 @@ export class WaitSession {
         continue;
       }
       const row = (chosen.next as IteratorYieldResult<WaitProgressLine>).value.seq;
-      while (!chosen.next.done && chosen.next.value.seq === row && selected.length < budget) {
+      const rowStart = selected.length;
+      while (!chosen.next.done && chosen.next.value.seq === row) {
         const line = chosen.next.value;
         const size = Buffer.byteLength(shortenWaitLine(line.text));
-        if (bytes + size > maxBytes)
+        // An internal reader's consumer acts on whole messages, so a row it has begun is never split.
+        const begun = this.internal && selected.length > rowStart;
+        if (!begun && selected.length >= budget) break;
+        if (!begun && bytes + size > maxBytes)
           return { lines: selected, exhaustedJobIds, advances: [...advances.values()], full: true, cut };
         selected.push(line);
         bytes += size;
@@ -635,7 +699,7 @@ export class WaitSession {
     exhaustedJobIds: string[],
     advances: Map<string, WaitSilentAdvance>,
     remaining: () => number,
-    positioned?: Readonly<{ lines: readonly WaitProgressLine[]; through: number }>,
+    positioned?: WaitPositionedTail,
   ): Generator<WaitProgressLine> {
     if (positioned) {
       const last = positioned.lines.length - 1;
@@ -644,7 +708,7 @@ export class WaitSession {
       yield {
         ...line,
         entryAfter: { ...line.entryAfter, seq: positioned.through, lineOffset: 0 },
-        progressAfter: 'exhausted',
+        progressAfter: positioned.exhausted ? 'exhausted' : 'unread',
       };
       return;
     }
@@ -678,7 +742,7 @@ export class WaitSession {
         return;
       }
       entry = { ...entry, seq: page.through, lineOffset: 0 };
-      rows = Math.max(1, Math.min(500, remaining() + 1));
+      rows = Math.max(1, Math.min(500, remaining() + 1, rows * 2));
     }
   }
 

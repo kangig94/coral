@@ -15,6 +15,7 @@ import { savedCursor } from '#tests/helpers/wait-session.js';
 import { nextDelivered, nextFinal } from '#tests/helpers/wait-stream.js';
 import { canonicalWorkDirWireSchema } from '../../../src/runtime/canonical-work-dir.js';
 import type { JobDetailResponse } from '../../../src/jobs/records.js';
+import { StoreCodecError } from '#src/store/body-codec.js';
 
 const directories: string[] = [];
 const runtime = createRealRuntime('prod', { baseDir: tmpdir() });
@@ -712,4 +713,46 @@ it('resolves unknown IDs through one session read per held epoch, never an uncac
   addressing.admitWait({ jobIds: ['u1', 'u2', 'u3', 'u4'] });
   expect(reads.map((read) => read.epochKey).sort()).toEqual(['held-1', 'held-2', 'held-3']);
   expect(reads.every((read) => read.session !== undefined)).toBe(true);
+});
+
+it('keeps an active job whose detail read fails from failing its siblings, and propagates a code defect', () => {
+  const { index } = fixture();
+  for (const jobId of ['busy', 'undecodable', 'healthy', 'defect'])
+    index.register(jobId, 'active:1', {
+      projectRoot: '/workspace/project',
+      workDir: '/workspace/project',
+      jobKind: 'provider',
+    });
+  const addressing = new JobAddressing(
+    index.readOnlyView(),
+    {
+      visitProgress: progressVisitFromDetails(() => null),
+      epochKey: () => 'active:1',
+      detail: (jobId) => {
+        if (jobId === 'busy') throw Object.assign(new Error('database is locked'), { code: 'SQLITE_BUSY' });
+        if (jobId === 'undecodable') throw new StoreCodecError('Current codec rejected stored event', {});
+        if (jobId === 'defect') throw new TypeError('defect');
+        return detail(jobId, 'running');
+      },
+      abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
+    },
+    () => false,
+    () => 'pending',
+    undefined,
+    () => ({ kind: 'failed', cause: 'terminal-unusable', retryScheduled: false }),
+  );
+  expect(addressing.admitWait({ jobIds: ['busy', 'undecodable', 'healthy'] })).toMatchObject([
+    { jobId: 'busy', disposition: 'admitted', sourceRead: 'transient-unknown' },
+    { jobId: 'undecodable', disposition: 'outcome-unreadable', sourceRead: 'settled-unreadable' },
+    { jobId: 'healthy', disposition: 'admitted', sourceRead: 'readable' },
+  ]);
+  expect(() => addressing.admitWait({ jobIds: ['defect', 'healthy'] })).toThrow(TypeError);
+});
+
+it('propagates a code defect from a location read instead of reporting discovery uncertainty', () => {
+  const { index } = fixture();
+  index.read = () => {
+    throw new TypeError('defect');
+  };
+  expect(() => historicalAddressing(index).admitWait({ jobIds: ['job'] })).toThrow(TypeError);
 });

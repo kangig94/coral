@@ -28,9 +28,9 @@ it.each(['direct', 'v2', 'live'])(
       eventBus: { on: () => {}, off: () => {} },
       sessionManager: { get: () => null },
       launchQueue: { reservationFor: () => null, getActiveJobIds: () => [] },
-      loadJobProjectionDetail: () => ({
+      readJobLastSeq: () => null,
+      loadJobWaitDetail: () => ({
         status: { jobId: 'job-1', phase: 'running' },
-        launch: null,
         runtime: null,
         exit: null,
       }),
@@ -71,7 +71,7 @@ it.each(['direct', 'v2', 'live'])(
       undefined,
       () => ({ kind: 'failed', cause: 'terminal-unusable', retryScheduled: false }),
     );
-    const stream = mode !== 'v2' ? wait.waitForJobs(request) : addressing.waitStream(request);
+    const stream = mode !== 'v2' ? wait.waitForOutcomes(request) : addressing.waitStream(request);
     const pending = nextDelivered(stream);
     await started;
     if (mode === 'live') {

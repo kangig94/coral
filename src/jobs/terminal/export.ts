@@ -1,7 +1,7 @@
 import { jobProgressRetentionExpired } from '../progress-retention.js';
 import { observeResolvedStoreEpoch } from '../../store/epoch/index.js';
 import { epochIdentity } from '../../store/epoch/identity.js';
-import { sourceReadFailureDisposition, sourceReadStamp } from '../source-read.js';
+import { sourceReadFailureDisposition, sourcePresenceStamp } from '../source-read.js';
 import { dirname, join } from 'node:path';
 
 import type { Database } from '../../store/db.js';
@@ -24,7 +24,7 @@ import type { JobTerminal } from '../records.js';
 import type { JobLocation } from '../location-index.js';
 import { hasObservedTerminalDetail, hasReadableTerminalDetail, sameTerminal } from './identity.js';
 import { readAcceptedTerminal } from './source.js';
-import { terminalEligibility, type TerminalEligibility } from '../export-retention.js';
+import { capturedTerminalAge, terminalEligibility, type TerminalEligibility } from '../export-retention.js';
 import { trustedJobRetentionCutoff, resolveJobRetentionMs } from '../retention-clock.js';
 import type { RetentionRunBudget } from '../../store/retention-outcome.js';
 
@@ -55,6 +55,16 @@ function unavailableForEligibility(eligibility: TerminalEligibility, retentionDa
     return { kind: 'failed', cause: 'terminal-clock-regression', retryScheduled: false, ageUncertain: true };
   if (!eligibility.cutoffTrusted) return { kind: 'failed', cause: 'cutoff-untrusted', retryScheduled: true };
   return null;
+}
+
+const SOURCE_OBSERVATION_LIMIT = 1024;
+
+/** A coordinator-lifetime observation cache stays bounded; an evicted identity is simply verified again. */
+function remember<V>(cache: Map<string, V>, key: string, value: V): void {
+  cache.delete(key);
+  cache.set(key, value);
+  const oldest = cache.keys().next().value;
+  if (cache.size > SOURCE_OBSERVATION_LIMIT && oldest !== undefined) cache.delete(oldest);
 }
 
 export function resultPathFor(jobsRoot: string, jobId: string): string {
@@ -334,6 +344,9 @@ export class TerminalResultExportOwner {
     const cutoff = trustedJobRetentionCutoff(this.input.runtime);
     if (cutoff === null) return undefined;
     const location = this.input.location(jobId);
+    // A captured age decides without the source: only a known age before the cutoff lets the progress go.
+    const captured = location ? capturedTerminalAge(location) : undefined;
+    if (captured !== undefined) return typeof captured === 'number' && captured < cutoff;
     const identity =
       session && location?.terminalSeq !== undefined
         ? JSON.stringify([epochIdentity(location.epochKey), jobId, location.terminalSeq])
@@ -359,21 +372,27 @@ export class TerminalResultExportOwner {
     return expired;
   }
 
-  private readonly observedEligibility = new Map<
-    string,
-    { stamp: string; identity: string | undefined; eligibility: TerminalEligibility }
-  >();
+  private readonly observedEligibility = new Map<string, { presence: string; eligibility: TerminalEligibility }>();
+  private readonly acceptedTerminals = new Map<string, string>();
 
+  /** The source's presence, read from its own identity, never its journal: an append cannot invalidate it. */
+  private sourcePresence(location: JobLocation | null): string | null {
+    const epoch = location ? observeResolvedStoreEpoch(this.input.runtime, location.epochKey) : undefined;
+    return epoch ? sourcePresenceStamp(this.input.runtime.storage, epoch.path) : null;
+  }
+
+  /** Agreement with the source is verified once per stored terminal identity; later polls check only its presence. */
   private observeEligibility(jobId: string): TerminalEligibility {
     const location = this.input.location(jobId);
-    const epoch = location ? observeResolvedStoreEpoch(this.input.runtime, location.epochKey) : undefined;
-    const stamp = epoch ? sourceReadStamp(this.input.runtime.storage, epoch.path) : null;
-    const previous = this.observedEligibility.get(jobId);
+    const presence = this.sourcePresence(location);
+    const identity =
+      location?.storedIdentity !== undefined && location.terminalSeq !== undefined
+        ? JSON.stringify([epochIdentity(location.epochKey), jobId, location.terminalSeq, location.storedIdentity])
+        : undefined;
+    const previous = identity === undefined ? undefined : this.observedEligibility.get(identity);
     if (
-      stamp !== null &&
-      previous?.stamp === stamp &&
-      location?.storedIdentity !== undefined &&
-      previous.identity === location.storedIdentity &&
+      presence !== null &&
+      previous?.presence === presence &&
       (!previous.eligibility.ageDeferred || trustedJobRetentionCutoff(this.input.runtime) === null)
     ) {
       const current = this.eligibility(jobId, false, true);
@@ -399,13 +418,20 @@ export class TerminalResultExportOwner {
       };
     }
     const eligibility = this.eligibility(jobId, true, true);
-    if (location && stamp !== null && !eligibility.sourceReadFailed) {
-      this.observedEligibility.delete(jobId);
-      this.observedEligibility.set(jobId, { stamp, identity: location.storedIdentity, eligibility });
-      const oldest = this.observedEligibility.keys().next().value;
-      if (this.observedEligibility.size > 128 && oldest !== undefined) this.observedEligibility.delete(oldest);
-    }
+    if (identity !== undefined && presence !== null && !eligibility.sourceReadFailed)
+      remember(this.observedEligibility, identity, { presence, eligibility });
     return eligibility;
+  }
+
+  /** An accepted terminal never leaves its source, so once seen it is read again only after the source changes. */
+  private sourceHasTerminal(jobId: string, location: JobLocation | null): boolean | null {
+    const presence = this.sourcePresence(location);
+    const identity = location ? JSON.stringify([epochIdentity(location.epochKey), jobId]) : undefined;
+    if (identity !== undefined && presence !== null && this.acceptedTerminals.get(identity) === presence) return true;
+    const found = this.withSource(jobId, (db) => readAcceptedTerminal(db, jobId) !== null);
+    if (found === true && identity !== undefined && presence !== null)
+      remember(this.acceptedTerminals, identity, presence);
+    return found;
   }
 
   observeResultAvailability(jobId: string, session?: object): ResultAvailability {
@@ -416,7 +442,7 @@ export class TerminalResultExportOwner {
       const path = location?.resultPath ?? resultPathFor(this.input.jobsRoot, jobId);
       const unverifiedResultPath = this.readableFile(path) ? path : undefined;
       try {
-        const terminal = this.withSource(jobId, (db) => readAcceptedTerminal(db, jobId) !== null);
+        const terminal = this.sourceHasTerminal(jobId, location);
         if (terminal === null)
           return { kind: 'failed', cause: 'terminal-unusable', retryScheduled: false, unverifiedResultPath };
         if (terminal)
@@ -464,7 +490,7 @@ export class TerminalResultExportOwner {
   }
 
   /** Callers supply identity; all publication bytes come from the accepted source terminal. */
-  publishTerminalResult(jobId: string, _newlyAppendedSeq?: number): string {
+  publishTerminalResult(jobId: string): string {
     return this.publish(jobId, false);
   }
 
@@ -651,7 +677,7 @@ function writeResultArtifact(
 }
 
 export function observeTerminalResultExports(
-  ensureResultArtifact: (jobId: string, newlyAppendedSeq: number) => string,
+  ensureResultArtifact: (jobId: string) => string,
   recordTerminal?: (jobId: string, seq: number) => void,
 ): PostCommitObserver {
   return (appended: readonly AppendedEvent[]): void => {
@@ -665,7 +691,7 @@ export function observeTerminalResultExports(
         backendLog.warn(`Recording terminal location failed for ${event.stream.id}: ${errorMessage(error)}`);
       }
       try {
-        ensureResultArtifact(event.stream.id, event.seq);
+        ensureResultArtifact(event.stream.id);
       } catch (error: unknown) {
         backendLog.warn(`Writing terminal export failed for ${event.stream.id}: ${errorMessage(error)}`);
       }

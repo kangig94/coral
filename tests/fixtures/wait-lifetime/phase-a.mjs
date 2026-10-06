@@ -21,21 +21,16 @@ if (scenario === 'observer') {
     eventBus: { on() {}, off() {} },
     sessionManager: { get: () => null },
     launchQueue: { reservationFor: () => null, getActiveJobIds: () => [] },
-    loadJobProjectionDetail: () => ({
-      status: { jobId: 'known', phase: 'running' },
-      launch: null,
-      runtime: null,
-      exit: null,
-    }),
+    loadJobWaitDetail: () => ({ status: { jobId: 'known', phase: 'running' }, runtime: null, exit: null }),
+    readJobLastSeq: () => null,
     visitProgress: (_epoch, read) => ({kind: 'read', value: read({after: () => progressPage([], 500, 0), before: () => progressTail([], 20, 0)})}),
-    readJobEvents: () => [],
     aggregateWorkflowUsage: () => undefined,
     getCurrentJournalSeq: () => 0,
     resultJobsRoot: '/unused',
     subscribeJobEvents: () => ({ [Symbol.asyncIterator]: () => ({ next: () => stuck, return: () => stuck }) }),
     observeCarriers: () => stuck,
   });
-  const stream = wait.waitForJobs({ jobIds: ['known'], timeoutSeconds: 1 });
+  const stream = wait.waitForOutcomes({ jobIds: ['known'], timeoutSeconds: 1 });
   const nextFinal = async () => {
     for (;;) {
       const next = await stream.next();

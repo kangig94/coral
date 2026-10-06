@@ -115,7 +115,8 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
       launchQueue: deps.launchCoordinator,
       eventBus: this.eventBus,
       time: this.runtime.time,
-      loadJobProjectionDetail: deps.loadJobProjectionDetail,
+      loadJobWaitDetail: deps.loadJobWaitDetail,
+      readJobLastSeq: deps.readJobLastSeq,
 
       visitProgress: deps.visitProgress,
       aggregateWorkflowUsage: deps.aggregateWorkflowUsage,

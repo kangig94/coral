@@ -29,6 +29,25 @@ export function isCodeDefect(error: unknown): boolean {
   );
 }
 
+/** A source's own identity: appends and checkpoints change its contents, while retirement or replacement changes this. */
+export function sourcePresenceStamp(storage: StoragePort, path: string): string | null {
+  try {
+    return [path, join(dirname(path), '.coral-lineage.v1.json')]
+      .map((file) => {
+        try {
+          const stat = storage.lstatSync(file, { bigint: true });
+          return `${file}:${stat.dev}:${stat.ino}:${stat.birthtimeNs}`;
+        } catch (error) {
+          if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return `${file}:absent`;
+          throw error;
+        }
+      })
+      .join('|');
+  } catch {
+    return null;
+  }
+}
+
 /** Cache only an observed read in its session, and invalidate on journal, guard or identity replacement. */
 export function sourceReadStamp(storage: StoragePort, path: string): string | null {
   try {

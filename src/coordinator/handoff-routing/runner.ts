@@ -1435,7 +1435,11 @@ async function executeResolvedHandoff(
           ...(startup === undefined ? {} : { CORAL_STARTUP_ATTEMPT_ID: startup.expectedAttemptId }),
           ...(startup === undefined ? {} : { CORAL_SENTINEL_RUN_DIR: runtime.paths.coral.coordinator.runDir }),
         },
-        stdio: waitInvocation === undefined ? 'inherit' : ['inherit', 'inherit', 'inherit', 'ipc'],
+        // A delegated follow has no budget, so its channel is how it learns that this process is gone.
+        stdio:
+          waitInvocation === undefined && operation.kind !== 'follow-job'
+            ? 'inherit'
+            : ['inherit', 'inherit', 'inherit', 'ipc'],
         ...(operation.kind === 'backend-startup' ? { detached: true } : {}),
       };
 

@@ -58,11 +58,11 @@ it('historical: a 501-row window with a non-message row hides later progress', (
       ],
     };
     const snap = addressing.snapshot({ jobIds: [f.jobId], cursor });
-    // A 499-row page and its lookahead row spend one poll's 500-row allowance; the fault row is one of those 499.
-    expect(snap.jobs[0].progress).toEqual(Array.from({ length: 498 }, (_, index) => `line ${index}`));
+    // Pages doubling from 32 rows, with their lookahead rows, spend the allowance on 495 rows, one the fault row.
+    expect(snap.jobs[0].progress).toEqual(Array.from({ length: 494 }, (_, index) => `line ${index}`));
     expect(snap.remainingJobIds).toEqual([f.jobId]);
     const next = addressing.snapshot({ jobIds: [f.jobId], cursor: snap.cursor });
-    expect(next.jobs[0].progress).toEqual(Array.from({ length: 102 }, (_, index) => `line ${index + 498}`));
+    expect(next.jobs[0].progress).toEqual(Array.from({ length: 106 }, (_, index) => `line ${index + 494}`));
     expect(next.remainingJobIds).toEqual([]);
   } finally {
     f.close();

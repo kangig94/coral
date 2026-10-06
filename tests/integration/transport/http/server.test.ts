@@ -925,7 +925,7 @@ describe('execution backend server', () => {
       }
     });
 
-    it('gives every SSE event that carries a cursor that cursor as its id', async () => {
+    it('gives every SSE event that moves the folded frontier that frontier as its id', async () => {
       const { deps } = createHttpHandlerDeps();
       const started = await startHttpHandlerServer(deps);
       try {
@@ -937,8 +937,10 @@ describe('execution backend server', () => {
         const text = await response.text();
         expect(response.status).toBe(200);
         const ids = [...text.matchAll(/^id: (.+)$/gm)].map((match) => decodeSerializedWaitCursor(match[1]));
+        // A progress event's id folds its entry into the frame, so a reconnect resumes past every delivered line.
         expect(ids).toEqual([
           { kind: 'decoded', cursor: savedCursor({ 'job-1': 6 }) },
+          { kind: 'decoded', cursor: savedCursor({ 'job-1': 7 }) },
           { kind: 'decoded', cursor: { jobs: [] } },
         ]);
       } finally {

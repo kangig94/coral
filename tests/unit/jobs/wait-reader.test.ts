@@ -1156,7 +1156,8 @@ it('shares stream admission and reads only a bounded tail or the requested epoch
       launchQueue: { reservationFor: () => null, getActiveJobIds: () => [] } as never,
       eventBus: { on() {}, off() {} } as never,
       time: f.runtime.time,
-      loadJobProjectionDetail: (id) => f.store.loadJobProjectionDetail(id),
+      loadJobWaitDetail: (id) => f.store.loadJobWaitDetail(id),
+      readJobLastSeq: (id) => f.store.readJobLastSeq(id),
 
       aggregateWorkflowUsage: () => undefined,
       subscribeJobEvents: () => (async function* () {})(),
@@ -1626,6 +1627,55 @@ describe('every poll reads within one raw-row allowance (F1)', () => {
     expect(events.at(-1)).toMatchObject({ type: 'terminal', jobId: 'a', remainingJobIds: [] });
     expect(polls.length).toBeGreaterThan(60);
     expect(polls.every((poll) => poll.rows <= 500)).toBe(true);
+  });
+
+  it('reads each row of a fault-dense tail once when its scan resumes across the polls of one stream', async () => {
+    const lines = Array.from({ length: 40 }, (_, i) => message(i + 1, `line-${i + 1}`));
+    const { visit, polls } = rowSource({ a: [...lines, ...faults(41, 30_000)] }, 30_040);
+    await collectWithFrames(
+      readWaitSession({
+        request: { jobIds: ['a'], timeoutSeconds: 60 },
+        time: steppedTime(),
+        read: () => [admitted('a', [], true, 'E')],
+        visit,
+      }),
+    );
+    // One backward pass reads the 30,040 rows plus a lookahead row per 32-row page; the tail it found is never re-read.
+    expect(polls.reduce((sum, poll) => sum + poll.rows, 0)).toBeLessThan(32_000);
+  });
+
+  it('reads few rows it then discards when a few large rows fill each poll', async () => {
+    const large = 'x'.repeat(8 * 1024);
+    const rows = Array.from({ length: 600 }, (_, i) => message(i + 1, `${i + 1} ${large}`));
+    const { visit, polls } = rowSource({ a: rows }, 600);
+    const events = await collectWithFrames(
+      readWaitSession({
+        request: { jobIds: ['a'], timeoutSeconds: 60, cursor: savedCursor({ a: 0 }, 'E') },
+        internal: true,
+        time: steppedTime(),
+        read: () => [admitted('a', [], true, 'E')],
+        visit,
+      }),
+    );
+    expect(events.filter((event) => event.type === 'progress')).toHaveLength(600);
+    expect(polls.reduce((sum, poll) => sum + poll.rows, 0)).toBeLessThan(3 * 600);
+  });
+
+  it.each([
+    ['700 lines', Array.from({ length: 700 }, (_, i) => `line-${i}`).join('\n')],
+    ['100 KiB of lines', Array.from({ length: 100 }, (_, i) => `${i} ${'y'.repeat(1024)}`).join('\n')],
+  ])('delivers a row of %s to an internal reader as one message', async (_label, text) => {
+    const { visit } = rowSource({ a: [message(1, text)] }, 1);
+    const events = await collectWithFrames(
+      readWaitSession({
+        request: { jobIds: ['a'], timeoutSeconds: 60, cursor: savedCursor({ a: 0 }, 'E') },
+        internal: true,
+        time: steppedTime(),
+        read: () => [admitted('a', [], true, 'E')],
+        visit,
+      }),
+    );
+    expect(events.filter((event) => event.type === 'progress').map((event) => event.message)).toEqual([text]);
   });
 
   it('delivers every line exactly once when a stream is cut at any event across slices', async () => {

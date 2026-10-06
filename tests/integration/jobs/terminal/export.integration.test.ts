@@ -197,11 +197,11 @@ import { createStorageRetentionScheduler } from '#src/coordinator/composition/st
     try {
       trustedJobRetentionCutoff(f.runtime);
       f.jump(86400000);
-      const seq = f.complete();
+      f.complete();
       const owner = f.store.getResultExportOwner();
       const wake = vi.fn();
       owner.onRepairHint(wake);
-      owner.publishTerminalResult(f.jobId, seq);
+      owner.publishTerminalResult(f.jobId);
       expect(existsSync(f.resultPath)).toBe(false);
       const observation = {};
       const availability = owner.observeResultAvailability(f.jobId, observation);
@@ -262,8 +262,8 @@ import { createStorageRetentionScheduler } from '#src/coordinator/composition/st
     try {
       trustedJobRetentionCutoff(f.runtime);
       f.jump(-86400000);
-      const seq = f.complete();
-      f.store.getResultExportOwner().publishTerminalResult(f.jobId, seq);
+      f.complete();
+      f.store.getResultExportOwner().publishTerminalResult(f.jobId);
       expect(existsSync(f.resultPath)).toBe(false);
       expect(f.store.getResultExportOwner().observeResultAvailability(f.jobId)).toMatchObject({
         kind: 'failed',
@@ -271,7 +271,7 @@ import { createStorageRetentionScheduler } from '#src/coordinator/composition/st
         retryScheduled: true,
       });
       f.advance(300_001);
-      f.store.getResultExportOwner().publishTerminalResult(f.jobId, seq);
+      f.store.getResultExportOwner().publishTerminalResult(f.jobId);
       expect(existsSync(f.resultPath)).toBe(true);
     } finally {
       f.close();
@@ -355,7 +355,7 @@ import { createStorageRetentionScheduler } from '#src/coordinator/composition/st
       f.close();
     }
   });
-  it("opens a provider source for availability and applies the progress owner's predicate", () => {
+  it('opens a provider source for availability and decides progress retention from the captured age', () => {
     const f = createTerminalExportFixture('provider', true);
     try {
       f.complete();
@@ -363,7 +363,7 @@ import { createStorageRetentionScheduler } from '#src/coordinator/composition/st
       const open = vi.spyOn(f.runtime.storage, 'openSqliteDatabaseSync');
       expect(owner.observeResultAvailability(f.jobId).kind).toBe('repair-pending');
       expect(owner.progressRetentionExpired(f.jobId)).toBe(false);
-      expect(open).toHaveBeenCalledTimes(2);
+      expect(open).toHaveBeenCalledTimes(1);
     } finally {
       vi.restoreAllMocks();
       f.close();
@@ -673,4 +673,49 @@ it('decides progress retention once per request for an unchanged terminal', () =
   } finally {
     f.close();
   }
+});
+
+it('verifies an unavailable terminal against its source once, however many appends follow, until the source leaves', () => {
+  const f = createTerminalExportFixture('provider', true);
+  closeFixtures.push(f);
+  f.complete();
+  initTestJob(f.store, {
+    jobId: 'other',
+    sessionId: 'other',
+    provider: 'claude',
+    projectRoot: f.root,
+    backendNamespace: 'fixture',
+  });
+  const open = vi.spyOn(f.runtime.storage, 'openSqliteDatabaseSync');
+  const owner = f.store.getResultExportOwner();
+  for (let poll = 0; poll < 10; poll++) {
+    expect(owner.observeResultAvailability(f.jobId, {}).kind).toBe('repair-pending');
+    f.store.appendProgress('other', 'other', `tick ${poll}`);
+  }
+  expect(open).toHaveBeenCalledTimes(1);
+  f.removeSource();
+  expect(owner.observeResultAvailability(f.jobId, {})).toMatchObject({ kind: 'failed', retryScheduled: false });
+});
+
+it('reads a terminal its location does not yet record from the source once, until the source leaves', () => {
+  const f = createTerminalExportFixture('provider', true);
+  closeFixtures.push(f);
+  commitJobTerminal(f.store, f.jobId, 'session-1', { content: 'done', outcome: { kind: 'completed' }, durationMs: 1 });
+  expect(f.index.read(f.jobId)?.disposition).not.toBe('terminal');
+  initTestJob(f.store, {
+    jobId: 'other',
+    sessionId: 'other',
+    provider: 'claude',
+    projectRoot: f.root,
+    backendNamespace: 'fixture',
+  });
+  const open = vi.spyOn(f.runtime.storage, 'openSqliteDatabaseSync');
+  const owner = f.store.getResultExportOwner();
+  for (let poll = 0; poll < 10; poll++) {
+    expect(owner.observeResultAvailability(f.jobId, {}).kind).toBe('repair-pending');
+    f.store.appendProgress('other', 'other', `tick ${poll}`);
+  }
+  expect(open).toHaveBeenCalledTimes(1);
+  f.removeSource();
+  expect(owner.observeResultAvailability(f.jobId, {}).kind).not.toBe('repair-pending');
 });

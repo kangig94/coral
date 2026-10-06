@@ -91,6 +91,7 @@ function createPorts(): HttpHandlerPorts {
       admitWait: vi.fn((req: { jobIds: string[] }) =>
         req.jobIds.map((jobId) => ({ jobId, disposition: 'admitted' as const, sourceRead: 'readable' as const })),
       ),
+      snapshot: vi.fn(),
       validateWait: vi.fn(() => null),
       waitHandoverSignal: vi.fn(() => new AbortController().signal),
       waitStream: vi.fn(),
