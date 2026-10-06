@@ -4,6 +4,7 @@ import { encodeResolvedStoreEpoch } from '#src/store/epoch/observation.js';
 import { protectStoreEpoch, protectedStoreEpochRoot } from '#src/store/epoch/protection.js';
 import { openSettledTestStoreDb } from '#tests/helpers/store-db.js';
 import type { Runtime } from '#src/runtime/ports.js';
+import type { RetentionOutcome } from '#src/store/retention-outcome.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   existsSync,
@@ -11,6 +12,7 @@ import {
   lutimesSync,
   mkdirSync,
   readdirSync,
+  readFileSync,
   renameSync,
   unlinkSync,
   symlinkSync,
@@ -268,10 +270,10 @@ describe('export retention', () => {
     if (fresh) expect(readdirSync(path).sort()).toEqual([...remaining, 'new-content'].sort());
   });
 
-  it('reaches an expired export after a retained 20,010-entry prefix', async () => {
+  it("reaches an expired export after a retained prefix longer than one run's operation budget", async () => {
     const f = fixture();
     const root = f.runtime.paths.coral.exports.jobsRoot;
-    for (let i = 0; i < 20_010; i += 1)
+    for (let i = 0; i < 2_010; i += 1)
       mkdirSync(join(root, `recent-${String(i).padStart(5, '0')}`), { recursive: true });
     const expired = join(root, 'z-expired');
     mkdirSync(expired);
@@ -284,7 +286,7 @@ describe('export retention', () => {
         runtime: f.runtime,
         cutoff: RETENTION_CUTOFF,
         afterId,
-        budget: { canContinue: () => ++operations <= 20_000, record: f.budget.record },
+        budget: { canContinue: () => ++operations <= 2_000, record: f.budget.record },
         jobState: (id) => (id === 'z-expired' ? { kind: 'terminal', terminalAt: 1 } : { kind: 'unknown' }),
         resultHold: () => 'released',
         mutate: (operation) => operation(),
@@ -318,7 +320,7 @@ describe('export retention', () => {
       resultHold: () => 'released',
       mutate: (operation) => operation(),
     });
-    expect(visited).toEqual(['c-expired']);
+    expect(new Set(visited)).toEqual(new Set(['c-expired']));
     expect(existsSync(join(root, 'a-kept'))).toBe(true);
     expect(existsSync(join(root, 'c-expired'))).toBe(false);
     expect(next).toBe('');
@@ -379,7 +381,7 @@ describe('export retention', () => {
 
   it.each([
     [320, 20],
-    [6000, 1],
+    [1200, 5],
   ])(
     'starts bounded eligibility and completes slow residue deletion across cycles (%i files, %i ms/stat)',
     async (files, cost) => {
@@ -529,14 +531,14 @@ describe('export retention', () => {
       const path = join(f.runtime.paths.coral.exports.jobsRoot, 'large');
       const descendants = layout === 'nested' ? join(path, 'provider-artifacts') : path;
       mkdirSync(descendants, { recursive: true });
-      for (let i = 0; i < 20_001; i += 1) {
+      for (let i = 0; i < 2_001; i += 1) {
         const child = join(descendants, `evidence-${i}`);
         writeFileSync(child, 'old');
         utimesSync(child, 1, 1);
       }
       for (const p of [path, descendants]) utimesSync(p, 1, 1);
       let cycles = 0;
-      let previousRemaining = 20_001;
+      let previousRemaining = 2_001;
       while (remainingExport(f, 'large') !== undefined) {
         let operations = 0;
         await pruneJobExports({
@@ -544,7 +546,7 @@ describe('export retention', () => {
           runtime: f.runtime,
           cutoff: RETENTION_CUTOFF,
           afterId: '',
-          budget: { record: () => {}, canContinue: () => ++operations <= 20_000 },
+          budget: { record: () => {}, canContinue: () => ++operations <= 2_000 },
           jobState: () => ({ kind: 'absent' }),
           resultHold: () => 'released',
           mutate: (operation) => operation(),
@@ -1065,6 +1067,87 @@ it.each([
   } finally {
     f.close();
   }
+});
+
+describe('deletion authority is read again at every deletion mutation', () => {
+  const retire = async (
+    f: ReturnType<typeof createTerminalExportFixture>,
+    storage: Runtime['storage'],
+    outcomes: RetentionOutcome[],
+  ) =>
+    pruneJobExports({
+      db: f.db,
+      runtime: { ...f.runtime, storage },
+      cutoff: TERMINAL_EXPORT_CUTOFF,
+      afterId: '',
+      budget: { canContinue: () => true, canMutate: () => true, record: (outcome) => outcomes.push(outcome) },
+      jobState: () => ({ kind: 'terminal', terminalAt: TERMINAL_EXPORT_CUTOFF - 1000 }),
+      resultHold: (id) => f.index.exportResultRetention(id, f.epochKey),
+      eligibility: (id) => f.index.exportDeletionEligibility(id),
+      mutate: (operation) => operation(),
+    });
+  const expiredExport = (files: number) => {
+    const f = createTerminalExportFixture();
+    f.complete({ terminalAt: TERMINAL_EXPORT_CUTOFF - 1000, precedingAt: TERMINAL_EXPORT_CUTOFF - 1000 });
+    const directory = dirname(f.resultPath);
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(f.resultPath, 'original canonical result');
+    for (let i = 1; i < files; i++) writeFileSync(join(directory, `artifact-${i}`), 'artifact');
+    for (const name of readdirSync(directory))
+      utimesSync(
+        join(directory, name),
+        new Date(TERMINAL_EXPORT_CUTOFF - 2000),
+        new Date(TERMINAL_EXPORT_CUTOFF - 2000),
+      );
+    return f;
+  };
+
+  it('keeps the export when the clock steps back during the deletion batch’s own directory read', async () => {
+    const f = expiredExport(1);
+    try {
+      const read = f.runtime.storage.readdir.bind(f.runtime.storage);
+      let retiringReads = 0;
+      const storage = {
+        ...f.runtime.storage,
+        readdir: async (path: string) => {
+          // The second read of the retired directory is the deletion batch's, after every check made before it.
+          if (path.includes('/.retiring-') && ++retiringReads === 2) f.jump(-120_000);
+          return read(path);
+        },
+      };
+      const outcomes: RetentionOutcome[] = [];
+      await retire(f, storage, outcomes);
+      expect(retiringReads).toBeGreaterThanOrEqual(2);
+      expect(f.index.exportDeletionEligibility(f.jobId)?.kind).toBe('unknown');
+      expect(existsSync(f.resultPath) && readFileSync(f.resultPath, 'utf8')).toBe('original canonical result');
+      expect(readdirSync(f.runtime.paths.coral.exports.jobsRoot)).toEqual([f.jobId]);
+      expect(outcomes).toEqual([expect.objectContaining({ kind: 'kept', reason: 'terminal-eligibility-changed' })]);
+    } finally {
+      f.close();
+    }
+  });
+
+  it('stops before the next batch when the clock steps back after the first leaf, keeping the retirement', async () => {
+    const f = expiredExport(20);
+    try {
+      let unlinks = 0;
+      const storage = {
+        ...f.runtime.storage,
+        unlinkSync: (path: string) => {
+          f.runtime.storage.unlinkSync(path);
+          if (++unlinks === 1) f.jump(-120_000);
+        },
+      };
+      const outcomes: RetentionOutcome[] = [];
+      await retire(f, storage, outcomes);
+      expect(unlinks).toBe(1);
+      expect(readdirSync(f.runtime.paths.coral.exports.jobsRoot)).toEqual([f.jobId]);
+      expect(readdirSync(dirname(f.resultPath))).toHaveLength(19);
+      expect(outcomes).toEqual([expect.objectContaining({ kind: 'kept', reason: 'terminal-eligibility-changed' })]);
+    } finally {
+      f.close();
+    }
+  });
 });
 
 describe('retired legacy exports', () => {

@@ -2,7 +2,7 @@ import { ZodError } from 'zod';
 import { BackendToolHttpError } from '../transport/http/errors.js';
 import { TransientHttpError } from '../infra/http-errors.js';
 import { isRecord } from '../infra/json.js';
-import { WaitBuildMismatchError } from './errors.js';
+import { WaitBuildMismatchError } from '../coordinator/handoff-routing/wait-invocation.js';
 import { WAIT_BUILD_MISMATCH } from '../transport/rpc/jobs.js';
 import { IpcRpcError } from '../transport/ipc/client.js';
 import type { WaitCursorError } from '../jobs/contracts/addressing.js';

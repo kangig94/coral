@@ -383,6 +383,9 @@ function deleteExportEntry(
   });
 }
 
+/** A deletion mutation found the authority its retirement was decided on no longer holds. */
+class DeletionAuthorityChanged extends Error {}
+
 function retiringJobId(name: string): string | null {
   const match =
     /^(?:\.retiring-|kept-retiring-)(.+)-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.exec(name);
@@ -514,6 +517,20 @@ export async function pruneJobExports(input: {
           : authority.kind === 'expired' || authority.kind === 'inside'
             ? { kind: 'terminal', terminalAt: authority.age as number }
             : { kind: authority.kind };
+      // Awaits separate the decision from each deletion, so every deletion mutation reads its authority again.
+      const deletionAuthorized = (): boolean => {
+        if (input.resultHold(jobId) !== 'released') return false;
+        const current = input.eligibility?.(jobId);
+        if (authority !== undefined) return current?.kind === 'expired';
+        if (current !== undefined) return false;
+        const now = input.jobState(jobId);
+        return now.kind === state.kind && (now.kind !== 'terminal' || now.terminalAt < cutoff);
+      };
+      const deletionMutate = <T>(operation: () => T): T =>
+        mutate(() => {
+          if (!deletionAuthorized()) throw new DeletionAuthorityChanged();
+          return operation();
+        });
 
       if (!entry.isDirectory()) outcome = { kind: 'kept', subject: path, reason: 'export-directory-unproven' };
       else if (state.kind === 'regression')
@@ -663,51 +680,58 @@ export async function pruneJobExports(input: {
             else delete mtimes[top];
             saveEvidence();
           };
-          if (
-            authority !== undefined &&
-            (input.eligibility?.(jobId)?.kind !== 'expired' || input.resultHold(jobId) !== 'released')
-          ) {
+          let deleted: boolean;
+          try {
+            const batch = await startExportDeletionBatch(
+              runtime,
+              path,
+              deletionBudget,
+              directories,
+              deletionMutate,
+              changed,
+              treeCutoff,
+            );
+            if (batch.kind === 'changed') deleted = false;
+            else if (batch.kind === 'large')
+              deleted = await deleteExportTree(
+                runtime,
+                path,
+                deletionBudget,
+                deletionMutate,
+                changed,
+                directories,
+                treeCutoff,
+              );
+            else {
+              const result = deletionMutate(() => {
+                try {
+                  for (const item of batch.entries)
+                    if (
+                      !deleteExportEntry(
+                        runtime,
+                        item.path,
+                        deletionBudget,
+                        (operation) => operation(),
+                        changed,
+                        directories,
+                        treeCutoff,
+                        item.top,
+                        item.entry.isDirectory() ? undefined : item.entry,
+                      )
+                    )
+                      return { deleted: false };
+                  return { deleted: true };
+                } catch (error: unknown) {
+                  return { deleted: false, error };
+                }
+              });
+              if ('error' in result) throw result.error;
+              deleted = result.deleted;
+            }
+          } catch (error: unknown) {
+            if (!(error instanceof DeletionAuthorityChanged)) throw error;
             budget.record({ kind: 'kept', subject: keepRetirement(), reason: 'terminal-eligibility-changed' });
             return true;
-          }
-          const batch = await startExportDeletionBatch(
-            runtime,
-            path,
-            deletionBudget,
-            directories,
-            mutate,
-            changed,
-            treeCutoff,
-          );
-          let deleted: boolean;
-          if (batch.kind === 'changed') deleted = false;
-          else if (batch.kind === 'large')
-            deleted = await deleteExportTree(runtime, path, deletionBudget, mutate, changed, directories, treeCutoff);
-          else {
-            const result = mutate(() => {
-              try {
-                for (const item of batch.entries)
-                  if (
-                    !deleteExportEntry(
-                      runtime,
-                      item.path,
-                      deletionBudget,
-                      (operation) => operation(),
-                      changed,
-                      directories,
-                      treeCutoff,
-                      item.top,
-                      item.entry.isDirectory() ? undefined : item.entry,
-                    )
-                  )
-                    return { deleted: false };
-                return { deleted: true };
-              } catch (error: unknown) {
-                return { deleted: false, error };
-              }
-            });
-            if ('error' in result) throw result.error;
-            deleted = result.deleted;
           }
           if (!deleted) {
             outcome = { kind: 'kept', subject: keepRetirement(), reason: 'residue-recent-or-unobservable' };

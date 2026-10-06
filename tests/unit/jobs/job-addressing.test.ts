@@ -10,7 +10,9 @@ import { JobAddressing } from '../../../src/jobs/addressing.js';
 import { createRealRuntime } from '../../../src/runtime/real.js';
 import { JobLocationIndex } from '../../../src/jobs/location-index.js';
 
-import type { WaitCursor, WaitStreamEvent } from '../../../src/jobs/wait/contract.js';
+import type { ProgressVisit, WaitCursor, WaitStreamEvent } from '../../../src/jobs/wait/contract.js';
+import { progressPage, progressTail } from '#src/jobs/wait/progress-page.js';
+import { formatWaitSnapshot } from '#src/cli/format/wait.js';
 import { savedCursor } from '#tests/helpers/wait-session.js';
 import { nextDelivered, nextFinal } from '#tests/helpers/wait-stream.js';
 import { canonicalWorkDirWireSchema } from '../../../src/runtime/canonical-work-dir.js';
@@ -755,4 +757,68 @@ it('propagates a code defect from a location read instead of reporting discovery
     throw new TypeError('defect');
   };
   expect(() => historicalAddressing(index).admitWait({ jobIds: ['job'] })).toThrow(TypeError);
+});
+
+it('keeps undelivered progress in the continuation when 127 unknown IDs repeat 121 held-epoch caveats past the fit', () => {
+  const job = admitted('a');
+  const timing = { origin: 'runtime' as const, originAt: '', emittedAt: '', elapsedMs: 0 };
+  const raw = [
+    ...Array.from({ length: 40 }, (_, i) => ({
+      seq: i + 1,
+      progress: { seq: i + 1, message: `p${i + 1} ${'x'.repeat(1600)}`, timing },
+    })),
+    ...Array.from({ length: 100 }, (_, i) => ({ seq: i + 41 })),
+  ];
+  const visitProgress: ProgressVisit = (_epoch, read) => ({
+    kind: 'read',
+    value: read({
+      after: (_id, after, rows) => progressPage(raw.filter((row) => row.seq > after).slice(0, rows + 1), rows, 1000),
+      before: (_id, before, rows) =>
+        progressTail(
+          raw
+            .filter((row) => before === null || row.seq < before)
+            .reverse()
+            .slice(0, rows + 1),
+          rows,
+          1000,
+        ),
+    }),
+  });
+  const holds = Array.from({ length: 121 }, (_, i) => ({
+    epochKey: `historical-${i}`,
+    reason:
+      'Store fingerprint cannot be read by this build; this coordinator will not re-read it before its next start',
+    retryScheduled: false,
+  }));
+  const addressing = new JobAddressing(
+    {
+      time: { monotonicNow: () => 0n, now: () => 0 },
+      read: (id: string) =>
+        id === 'a'
+          ? { epochKey: 'epoch-E', subject: { projectRoot: '/tmp', workDir: '/tmp', jobKind: 'provider' } }
+          : null,
+      unknownLocationHolds: () => holds,
+      resultPathFor: () => '/results/a',
+    } as never,
+    {
+      epochKey: () => 'epoch-E',
+      detail: (id: string) => (id === 'a' ? job.detail : null),
+      readWaitAdmissions: () => [job],
+      visitProgress,
+    } as never,
+    () => false,
+    () => 'pending',
+    undefined,
+    () => ({ kind: 'available', resultPath: '/results/a' }),
+  );
+  const snapshot = addressing.snapshot({
+    jobIds: ['a', ...Array.from({ length: 127 }, (_, i) => `ghost-${i}`)],
+    cursor: savedCursor({ a: 0 }),
+  });
+  expect(snapshot.jobs[1].disposition).toBe('discovery-unreadable');
+  expect(snapshot.notices).toContain('Progress omitted to fit the complete response; run the continuation.');
+  expect(snapshot.jobs[0].progress).toEqual([]);
+  expect(snapshot.remainingJobIds).toEqual(['a']);
+  expect(snapshot.cursor.jobs).toMatchObject([{ seq: 0, lineOffset: 0 }]);
+  expect(formatWaitSnapshot(snapshot)).toContain('Run coral-cli wait jobs a --now --cursor ');
 });

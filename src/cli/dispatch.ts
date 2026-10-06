@@ -1,7 +1,7 @@
 import { isRecord } from '../infra/json.js';
 import type { WaitSnapshotRequest } from '../jobs/wait/contract.js';
 import type { WaitSnapshot } from '../jobs/wait/session.js';
-import { WaitBuildMismatchError } from './errors.js';
+import { WaitBuildMismatchError } from '../coordinator/handoff-routing/wait-invocation.js';
 import { getWaitInvocation } from './wait-invocation.js';
 import type { Command } from 'commander';
 import { readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';

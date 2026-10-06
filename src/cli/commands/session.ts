@@ -25,13 +25,8 @@ import { getProviderNames, makeClient, type AbortOptions } from '../dispatch.js'
 import { emitError, getTerminalContext } from '../emit.js';
 import { parseJobIds } from '../flags.js';
 import { flushPendingReadStoreNote } from '../read-store.js';
-import {
-  UsageError,
-  WaitBuildMismatchError,
-  WaitOutputError,
-  WaitSnapshotResponseError,
-  normalizeUsageError,
-} from '../errors.js';
+import { UsageError, WaitOutputError, WaitSnapshotResponseError, normalizeUsageError } from '../errors.js';
+import { WaitBuildMismatchError } from '../../coordinator/handoff-routing/wait-invocation.js';
 import { formatAbortResult, formatJobDetail, formatJobsList, renderJobsList } from '../format/jobs.js';
 import { openCliCauseRefRenderer } from '../cause-renderer.js';
 import { ABORT_REFUSED_EXIT_CODE, followJobs } from '../follow.js';

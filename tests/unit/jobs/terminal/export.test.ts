@@ -698,30 +698,77 @@ it.each(['absent-dir', 'missing-file', 'zero-byte'])(
   },
 );
 
-it('unchanged workflow availability polls render the report once per read session', () => {
+it('validates unchanged workflow facts once per terminal and source identity, across read sessions', () => {
   const f = fixture('workflow');
   f.complete();
   writeFileSync(f.epoch.path, 'source stamp');
   const owner = f.store.getResultExportOwner();
   const input = (owner as unknown as { input: { workflowReport: WorkflowReportPort } }).input;
   const report = vi.spyOn(input, 'workflowReport');
-  const session = {};
-  for (let i = 0; i < 40; i++) owner.observeResultAvailability(f.jobId, session);
+  for (let i = 0; i < 40; i++) owner.observeResultAvailability(f.jobId);
   expect(report).toHaveBeenCalledTimes(1);
+  rmSync(f.epoch.path);
+  writeFileSync(f.epoch.path, 'replaced source');
+  owner.observeResultAvailability(f.jobId);
+  expect(report).toHaveBeenCalledTimes(2);
 });
 
-it('unrelated journal appends do not render a repair-pending workflow report again within a read session', () => {
+it('unrelated journal appends do not validate a repair-pending workflow report again in a later read session', () => {
   const f = fixture('workflow');
   f.complete();
   const owner = f.store.getResultExportOwner();
   const input = (owner as unknown as { input: { workflowReport: WorkflowReportPort } }).input;
   const report = vi.spyOn(input, 'workflowReport');
-  const session = {};
   for (let i = 0; i < 4; i++) {
     writeFileSync(f.epoch.path, `unrelated append ${i}`);
-    expect(owner.observeResultAvailability(f.jobId, session)).toMatchObject({ kind: 'repair-pending' });
+    expect(owner.observeResultAvailability(f.jobId)).toMatchObject({ kind: 'repair-pending' });
   }
   expect(report).toHaveBeenCalledTimes(1);
+});
+
+it('observes workflow availability without serializing the report, which only publication does', () => {
+  const f = fixture('workflow');
+  f.complete({ steps: [{ stepIndex: 0, atomIndex: 0, label: 'final', output: 'final output' }] });
+  const owner = f.store.getResultExportOwner();
+  const input = (owner as unknown as { input: { workflowReport: WorkflowReportPort } }).input;
+  const serialized = vi.fn();
+  vi.spyOn(input, 'workflowReport').mockImplementation((facts) => {
+    const report = renderWorkflowReport(facts);
+    return (
+      report &&
+      (() => {
+        serialized();
+        return report();
+      })
+    );
+  });
+  for (let i = 0; i < 4; i++)
+    expect(owner.observeResultAvailability(f.jobId)).toMatchObject({ kind: 'repair-pending' });
+  expect(serialized).not.toHaveBeenCalled();
+  owner.publishTerminalResult(f.jobId);
+  expect(serialized).toHaveBeenCalledOnce();
+  expect(readFileSync(f.resultPath, 'utf8')).toContain('final output');
+});
+
+it('parses the same amount for a fresh admission of a small or a large workflow once its facts are validated', () => {
+  const measured = [100, 10_000].map((size) => {
+    const f = fixture('workflow');
+    f.complete({
+      terminal: { content: 'R'.repeat(size), outcome: { kind: 'completed' }, durationMs: 1 },
+      steps: [{ stepIndex: 0, atomIndex: 0, label: 'step', output: 'S'.repeat(size) }],
+    });
+    const owner = f.store.getResultExportOwner();
+    expect(owner.observeResultAvailability(f.jobId)).toMatchObject({ kind: 'repair-pending' });
+    const parse = vi.spyOn(JSON, 'parse');
+    try {
+      for (let i = 0; i < 3; i++) owner.observeResultAvailability(f.jobId);
+      return parse.mock.calls.map(([text]) => (typeof text === 'string' ? text.length : 0));
+    } finally {
+      parse.mockRestore();
+    }
+  });
+  expect(measured[0]).toEqual(measured[1]);
+  expect(Math.max(0, ...measured[1])).toBeLessThan(10_000);
 });
 
 it('a repair scan skips terminal preparation for already recorded age evidence', async () => {
@@ -738,17 +785,16 @@ it('rechecks clock trust without forgetting cached source facts', () => {
   const f = fixture();
   f.complete();
   writeFileSync(f.epoch.path, 'source stamp');
-  const session = {};
   const owner = f.store.getResultExportOwner();
-  expect(owner.observeResultAvailability(f.jobId, session)).toMatchObject({ kind: 'repair-pending' });
+  expect(owner.observeResultAvailability(f.jobId)).toMatchObject({ kind: 'repair-pending' });
   f.jump(60001);
-  expect(owner.observeResultAvailability(f.jobId, session)).toMatchObject({
+  expect(owner.observeResultAvailability(f.jobId)).toMatchObject({
     kind: 'failed',
     cause: 'cutoff-untrusted',
     retryScheduled: true,
   });
   f.advance(300000);
-  expect(owner.observeResultAvailability(f.jobId, session)).toMatchObject({ kind: 'repair-pending' });
+  expect(owner.observeResultAvailability(f.jobId)).toMatchObject({ kind: 'repair-pending' });
 });
 
 it('rechecks a deferred source age after clock trust returns and the terminal expires', () => {
@@ -757,16 +803,15 @@ it('rechecks a deferred source age after clock trust returns and the terminal ex
   writeFileSync(f.epoch.path, 'source stamp');
   const location = f.index.read(f.jobId)!;
   vi.spyOn(f.index, 'read').mockReturnValue({ ...location, terminalAge: undefined });
-  const session = {};
   const owner = f.store.getResultExportOwner();
   f.jump(60001);
-  expect(owner.observeResultAvailability(f.jobId, session)).toMatchObject({
+  expect(owner.observeResultAvailability(f.jobId)).toMatchObject({
     kind: 'failed',
     cause: 'cutoff-untrusted',
     retryScheduled: true,
   });
   f.advance(30 * 86_400_000);
-  expect(owner.observeResultAvailability(f.jobId, session)).toMatchObject({
+  expect(owner.observeResultAvailability(f.jobId)).toMatchObject({
     kind: 'retained-away',
   });
 });
@@ -1106,11 +1151,10 @@ it('reuses source eligibility when an evicted location view is decoded again', (
     location: () => ({ ...location, storedIdentity: location.storedIdentity }),
     withSource,
   });
-  const session = {};
-  expect(owner.observeResultAvailability(f.jobId, session)).toMatchObject({ kind: 'repair-pending' });
+  expect(owner.observeResultAvailability(f.jobId)).toMatchObject({ kind: 'repair-pending' });
   const observations = withSource.mock.calls.length;
   expect(observations).toBeGreaterThan(0);
-  expect(owner.observeResultAvailability(f.jobId, session)).toMatchObject({ kind: 'repair-pending' });
+  expect(owner.observeResultAvailability(f.jobId)).toMatchObject({ kind: 'repair-pending' });
   expect(withSource).toHaveBeenCalledTimes(observations);
 });
 

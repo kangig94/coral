@@ -320,6 +320,7 @@ describe('cli follow handoff', () => {
   it('should preserve double Ctrl-C abort semantics while delegated waits are active', async () => {
     const firstHandoff = createDeferred<HandoffRunnerModule.HandoffRunResult>();
     const secondHandoff = createDeferred<HandoffRunnerModule.HandoffRunResult>();
+    const firstRunStarted = createDeferred<void>();
     const secondRunStarted = createDeferred<void>();
     const abortJob = vi.fn().mockResolvedValue({ aborted: ['job-1'], notFound: [] });
     vi.spyOn(process.stdout, 'write').mockImplementation(((
@@ -330,14 +331,19 @@ describe('cli follow handoff', () => {
       return true;
     }) as typeof process.stdout.write);
     mockState.ensure.mockResolvedValue(makeBackend());
-    mockState.runHandoff.mockReturnValueOnce(firstHandoff.promise).mockImplementationOnce(async () => {
-      secondRunStarted.resolve();
-      return secondHandoff.promise;
-    });
+    mockState.runHandoff
+      .mockImplementationOnce(async () => {
+        firstRunStarted.resolve();
+        return firstHandoff.promise;
+      })
+      .mockImplementationOnce(async () => {
+        secondRunStarted.resolve();
+        return secondHandoff.promise;
+      });
 
     const { launchAndFollow } = await import('#src/cli/follow.js');
     const follow = launchAndFollow(makeOptions({ abortJob }));
-    await vi.waitFor(() => expect(mockState.runHandoff).toHaveBeenCalledTimes(1));
+    await firstRunStarted.promise;
 
     sigintHandler?.();
     expect(abortJob).not.toHaveBeenCalled();
@@ -359,6 +365,7 @@ describe('cli follow handoff', () => {
 
   it('mirrors a delegated follow ending 75 after a Ctrl+C without retrying, since a terminal may carry 75', async () => {
     const handoff = createDeferred<HandoffRunnerModule.HandoffRunResult>();
+    const runStarted = createDeferred<void>();
     vi.spyOn(process.stdout, 'write').mockImplementation(((
       _chunk: string | Uint8Array,
       callback?: (error?: Error | null) => void,
@@ -367,11 +374,14 @@ describe('cli follow handoff', () => {
       return true;
     }) as typeof process.stdout.write);
     mockState.ensure.mockResolvedValue(makeBackend());
-    mockState.runHandoff.mockReturnValueOnce(handoff.promise);
+    mockState.runHandoff.mockImplementationOnce(async () => {
+      runStarted.resolve();
+      return handoff.promise;
+    });
 
     const { launchAndFollow } = await import('#src/cli/follow.js');
     const follow = launchAndFollow(makeOptions());
-    await vi.waitFor(() => expect(mockState.runHandoff).toHaveBeenCalledTimes(1));
+    await runStarted.promise;
     expect(mockState.runHandoff.mock.calls[0][0]).toEqual({ kind: 'follow-job', jobId: 'job-1' });
 
     sigintHandler?.();

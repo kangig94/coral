@@ -1,6 +1,6 @@
-import type { ProgressVisit, WaitCursor } from '#src/jobs/wait/contract.js';
+import { WAIT_SNAPSHOT_BYTES, type ProgressVisit, type WaitCursor } from '#src/jobs/wait/contract.js';
 import { progressPage, progressTail } from '#src/jobs/wait/progress-page.js';
-import { TAIL_SCAN_FLAG } from '#src/jobs/wait/cursor.js';
+import { ACKNOWLEDGED_FLAG, TAIL_SCAN_FLAG } from '#src/jobs/wait/cursor.js';
 import { prefixCursor } from '#tests/helpers/wait-progress.js';
 import { describe, expect, it, vi } from 'vitest';
 import { WaitSession } from '#src/jobs/wait/session.js';
@@ -8,7 +8,7 @@ import { parseWaitSnapshot, selectWaitSnapshot as selectWaitSnapshotFrom } from 
 import { selectWaitSnapshot } from '#tests/helpers/wait-progress.js';
 import { formatJobDetail } from '#src/cli/format/jobs.js';
 import { formatWaitSnapshot } from '#src/cli/format/wait.js';
-import { admitted } from '#tests/helpers/wait-session.js';
+import { admitted, savedCursor } from '#tests/helpers/wait-session.js';
 
 function collect(jobs: ReturnType<typeof admitted>[], lines?: number) {
   const session = new WaitSession(
@@ -183,6 +183,54 @@ describe('wait snapshot', () => {
     expect(continuation.jobs.every((job) => job.progress.length === 1 && !job.terminal)).toBe(true);
     expect(continuation.remainingJobIds).toEqual([]);
     expect(continuation.exitCode).toBe(0);
+  });
+
+  it('keeps a terminal job unread and in the continuation when size fitting omits progress a fault-only page exhausted', () => {
+    const timing = { origin: 'runtime' as const, originAt: '', emittedAt: '', elapsedMs: 0 };
+    const lines = Array.from({ length: 12 }, (_, i) => `line ${i} ${'L'.repeat(3990)}`);
+    const raw = [
+      { seq: 1, progress: { seq: 1, message: lines.join('\n'), timing } },
+      ...Array.from({ length: 40 }, (_, i) => ({ seq: i + 2 })),
+    ];
+    const visit: ProgressVisit = (_epoch, read) => ({
+      kind: 'read',
+      value: read({
+        after: (_id, after, rows) => progressPage(raw.filter((row) => row.seq > after).slice(0, rows + 1), rows, 1000),
+        before: (_id, before, rows) =>
+          progressTail(
+            raw
+              .filter((row) => before === null || row.seq < before)
+              .reverse()
+              .slice(0, rows + 1),
+            rows,
+            1000,
+          ),
+      }),
+    });
+    const a = admitted('a');
+    const ghost = {
+      jobId: 'ghost',
+      disposition: 'discovery-unreadable' as const,
+      message: 'm'.repeat(WAIT_SNAPSHOT_BYTES - 30_000),
+    };
+    const input = savedCursor({ a: 0 });
+    const session = new WaitSession(['a', 'ghost'], input);
+    session.reconcile([a, ghost]);
+    const snapshot = selectWaitSnapshotFrom(session, 20, visit);
+    expect(snapshot.jobs[0].progress).toEqual([]);
+    expect(snapshot.notices).toContain('Progress omitted to fit the complete response; run the continuation.');
+    expect(snapshot.remainingJobIds).toEqual(['a']);
+    expect(snapshot.cursor.jobs).toEqual([{ ...input.jobs[0], flags: ACKNOWLEDGED_FLAG }]);
+    expect(formatWaitSnapshot(snapshot)).toContain('Run coral-cli wait jobs a --now --cursor ');
+
+    const resumed = new WaitSession(['a'], snapshot.cursor);
+    resumed.reconcile([a]);
+    const continuation = selectWaitSnapshotFrom(resumed, 20, visit);
+    expect(continuation.jobs[0].progress.map((line) => line.slice(0, 7))).toEqual(
+      lines.map((line) => line.slice(0, 7)),
+    );
+    expect(continuation.jobs[0].alreadyCollected).toBe(true);
+    expect(continuation.remainingJobIds).toEqual([]);
   });
 
   it('refuses oversized mandatory identities without changing the input collection cursor', () => {

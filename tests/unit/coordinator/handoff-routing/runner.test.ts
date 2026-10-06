@@ -14,6 +14,7 @@ import {
   type HandoffRunResult,
   type RunHandoffOptions,
 } from '#src/coordinator/handoff-routing/runner.js';
+import { WaitBuildMismatchError } from '#src/coordinator/handoff-routing/wait-invocation.js';
 import type * as BackendDiscoveryMod from '#src/infra/backend-discovery.js';
 import type { ValidatedHandoffTarget } from '#src/infra/handoff-target.js';
 import type * as BundleManifestMod from '#src/infra/bundle-manifest.js';
@@ -517,12 +518,12 @@ describe('handoff-routing/runner', () => {
   });
 });
 
-it('writes no shared routing record when a newer target fails the wait contract probe', async () => {
+it('refuses a wait whose newer target fails the wait contract probe, writing no shared routing record', async () => {
   mockState.execFile.mockImplementation((_file, _args, _options, callback) => {
     queueMicrotask(() => callback(Object.assign(new Error('unsupported contract'), { code: 2 }), ''));
     return childThatExits(2, null);
   });
-  const result = await runHandoffResult(cliOperation('wait', 'jobs', 'a'), {
+  const result = runHandoffResult(cliOperation('wait', 'jobs', 'a'), {
     pluginRoot: '/plugin/root',
     waitInvocation: {
       mode: 'bounded',
@@ -533,13 +534,9 @@ it('writes no shared routing record when a newer target fails the wait contract 
       saveContinuation: vi.fn(),
     },
   });
-  expect(result).toMatchObject({
-    kind: 'recording-not-applicable',
-    continuationWithoutRecording: {
-      kind: 'run-current',
-      reason: { kind: 'handoff-abandoned', reason: 'wait-contract-unsupported' },
-    },
-  });
+  await expect(result).rejects.toBeInstanceOf(WaitBuildMismatchError);
+  await expect(result).rejects.toMatchObject({ code: 'wait_build_mismatch', exitCode: 1 });
+  expect(mockState.spawn).not.toHaveBeenCalled();
   expect(mockState.execFile.mock.calls[0][2].env).toEqual({
     CORAL_BASE_ENV: 'preserved',
     CORAL_CLI_HANDOFF_DELEGATED: '1',
@@ -617,13 +614,13 @@ it('keeps the monitor IPC listener through close when delivery follows exit', as
   expect(save).toHaveBeenCalledExactlyOnceWith('exact continuation', true, true, 42);
 });
 
-it('does not execute a released CLI preflight when its source has no contract flag', async () => {
+it('refuses a wait routed to a released CLI without the contract flag before any dispatch, and never runs it here', async () => {
   vi.spyOn(runtime.storage, 'readFileSync').mockReturnValue('released CLI without a monitor contract');
   mockState.execFile.mockImplementation((_file, _args, _options, callback) => {
     queueMicrotask(() => callback(null, '{}'));
     return childThatExits(0, null);
   });
-  const result = await runHandoff(cliOperation('wait', 'jobs', 'a'), {
+  const result = runHandoff(cliOperation('wait', 'jobs', 'a'), {
     pluginRoot: '/plugin/root',
     waitInvocation: {
       mode: 'bounded',
@@ -634,13 +631,20 @@ it('does not execute a released CLI preflight when its source has no contract fl
       saveContinuation: vi.fn(),
     },
   });
-  expect(result).toMatchObject({
-    kind: 'run-current',
-    reason: { kind: 'handoff-abandoned', reason: 'wait-contract-unsupported' },
+  await expect(result).rejects.toBeInstanceOf(WaitBuildMismatchError);
+  await expect(result).rejects.toMatchObject({
+    remediation: 'Restart the session so the current Coral plugin loads; the coordinator follows the installed build.',
   });
   expect(mockState.execFile).not.toHaveBeenCalled();
   expect(mockState.spawn).not.toHaveBeenCalled();
   expect(mockState.publishGenerationCoordinatedHandoffRoutingTransitions).not.toHaveBeenCalled();
+
+  mockState.spawn.mockImplementation(() => childThatExits(0, null));
+  await expect(runHandoff(cliOperation('jobs', 'list'), { pluginRoot: '/plugin/root' })).resolves.toMatchObject({
+    kind: 'delegated',
+  });
+  expect(mockState.execFile).not.toHaveBeenCalled();
+  expect(mockState.spawn).toHaveBeenCalledOnce();
 });
 
 it('uses the remaining launch-follow invocation budget for its contract probe', async () => {
@@ -675,6 +679,7 @@ it('delegates a launch follow as wait jobs --follow and ends that child when its
     return childThatExits(0, null);
   });
   const kill = vi.fn();
+  const spawned = deferred();
   mockState.spawn.mockImplementation(() => {
     const child = childThatStaysAlive();
     child.kill = kill.mockImplementation(() => {
@@ -684,6 +689,7 @@ it('delegates a launch follow as wait jobs --follow and ends that child when its
       });
       return true;
     });
+    spawned.resolve();
     return child;
   });
   const caller = new AbortController();
@@ -691,7 +697,8 @@ it('delegates a launch follow as wait jobs --follow and ends that child when its
     { kind: 'follow-job', jobId: 'a', serializedCursor: 'saved-cursor' },
     { pluginRoot: '/plugin/root', signal: caller.signal, waitProbeRemainingMs: () => 10_000 },
   );
-  await vi.waitFor(() => expect(mockState.spawn).toHaveBeenCalledOnce());
+  await spawned.promise;
+  expect(mockState.spawn).toHaveBeenCalledOnce();
   expect(mockState.spawn.mock.calls[0][1].slice(1)).toEqual([
     'wait',
     'jobs',

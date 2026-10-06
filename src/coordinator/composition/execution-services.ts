@@ -157,8 +157,7 @@ function createExecutionServiceRegistry(input: {
       currentJobEpochKey: input.deps.currentJobEpochKey,
       internalWait: input.deps.internalWait,
       observeJobAbsence: input.deps.observeJobAbsence,
-      observeResultAvailability: (jobId, session) =>
-        getProgressStore().getResultExportOwner().observeResultAvailability(jobId, session),
+      observeResultAvailability: (jobId) => getProgressStore().getResultExportOwner().observeResultAvailability(jobId),
       hintResultRepair: (jobId) => getProgressStore().getResultExportOwner().hintRepair(jobId),
       appServerProxyRoute: createAppServerProxyRoute({
         hostManager: world.providerHostManager,

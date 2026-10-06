@@ -66,7 +66,7 @@ export function selectTestProgress(session: WaitSession, limit = Infinity) {
   return session.withProgress(testProgressVisit, (sources) => {
     session.position(sources, null, 500, 65536);
     const selected = session.select(sources, limit, Infinity);
-    session.observeEmpty(selected.exhaustedJobIds);
+    session.advanceSilently(selected.advances);
     return selected.lines;
   });
 }

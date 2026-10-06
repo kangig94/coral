@@ -104,7 +104,7 @@ export class JobAddressing {
   private readonly activeEpochs = new WeakMap<object, string>();
   private readonly locations: JobLocationView;
   private readonly readHistorical: HistoricalSourceReader;
-  private readonly observeResultAvailability: (jobId: string, session?: object) => ResultAvailability;
+  private readonly observeResultAvailability: (jobId: string) => ResultAvailability;
   private readonly progressRetentionExpired?: (jobId: string, session?: object) => boolean | undefined;
   private readonly hintRepair?: (jobId: string) => void;
   private readonly active: ActiveJobAccess;
@@ -122,7 +122,7 @@ export class JobAddressing {
         disposition: 'transient-unknown',
         reason: 'Source observation is unavailable; retry when its owner becomes reachable',
       },
-    observeResultAvailability: (jobId: string, session?: object) => ResultAvailability,
+    observeResultAvailability: (jobId: string) => ResultAvailability,
     hintRepair?: (jobId: string) => void,
     progressRetentionExpired?: (jobId: string, session?: object) => boolean | undefined,
   ) {
@@ -357,8 +357,8 @@ export class JobAddressing {
     };
   }
 
-  private availability(jobId: string, session?: object): ResultAvailability {
-    const availability = this.observeResultAvailability(jobId, session);
+  private availability(jobId: string): ResultAvailability {
+    const availability = this.observeResultAvailability(jobId);
     if (availability.kind === 'repair-pending') this.hintRepair?.(jobId);
     return availability;
   }
@@ -531,7 +531,7 @@ export class JobAddressing {
           progressLost: false,
         };
       const detail = accepted.detail.kind === 'recorded' ? accepted.detail.value : undefined;
-      const availability = this.availability(jobId, request);
+      const availability = this.availability(jobId);
       return {
         jobId,
         disposition: 'admitted',
@@ -557,7 +557,7 @@ export class JobAddressing {
     if (admission && admission.disposition !== 'admitted') return admission;
     if (!detail && !admission?.queued)
       return { jobId, disposition: 'admitted', epochKey, sourceRead: 'transient-unknown' };
-    const availability = detail?.exit ? (admission?.availability ?? this.availability(jobId, request)) : undefined;
+    const availability = detail?.exit ? (admission?.availability ?? this.availability(jobId)) : undefined;
     return {
       ...admission,
       jobId,

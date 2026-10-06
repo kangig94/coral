@@ -41,15 +41,13 @@ export function selectWaitSnapshot(session: WaitSession, lines = 20, visit: Prog
       job.progress.push(shortenWaitLine(line.text));
     }
     const deliver = (target: WaitSession, includeProgress: boolean): void => {
-      target.observeEmpty(selection.exhaustedJobIds);
       for (const job of target.admissions) {
         if (job.disposition !== 'admitted' || !job.detail?.exit) continue;
         if (!target.acknowledged(job.jobId)) target.acknowledge(job);
         else if (target.artifactPending(job.jobId) && job.availability?.kind !== 'repair-pending')
           target.settleArtifact(job.jobId);
       }
-      if (!includeProgress) return;
-      for (const line of selection.lines) target.consume(line);
+      if (includeProgress) for (const line of selection.lines) target.consume(line);
       target.advanceSilently(selection.advances);
     };
     const outcome = (includeProgress: boolean) => {

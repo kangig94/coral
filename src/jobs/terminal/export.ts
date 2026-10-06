@@ -156,6 +156,7 @@ function workflowIdentityMarkdown(db: Database, jobId: string): string {
   return `${lines.join('\n')}\n\n`;
 }
 
+/** Validates a workflow's report facts against its accepted terminal; the returned function serializes the report. */
 export type WorkflowReportPort = (
   input: Readonly<{
     db: Database;
@@ -164,7 +165,7 @@ export type WorkflowReportPort = (
     accepted: EventsRow;
     terminal: JobTerminal;
   }>,
-) => string | null;
+) => (() => string) | null;
 
 export type ResultAvailability =
   | Readonly<{ kind: 'available'; resultPath: string }>
@@ -287,21 +288,34 @@ export class TerminalResultExportOwner {
     return this.readableFile(location.resultPath);
   }
 
-  private readonly observedWorkflowReports = new WeakMap<object, Map<string, boolean>>();
+  private readonly observedWorkflowReports = new Map<string, boolean>();
 
-  /** A terminal's workflow facts precede it in its own stream, so unrelated appends cannot change its readability. */
-  private workflowReadable(jobId: string, session?: object): boolean {
+  /**
+   * A terminal's workflow facts precede it in its own stream, so only its stored identity or its source's identity can
+   * change its readability; observing it validates the facts and leaves serializing the report to publication.
+   */
+  private workflowReadable(jobId: string): boolean {
     const location = this.input.location(jobId);
+    const presence = this.sourcePresence(location);
     const identity =
-      session && location?.terminalSeq !== undefined && location.storedIdentity !== undefined
-        ? JSON.stringify([epochIdentity(location.epochKey), jobId, location.terminalSeq, location.storedIdentity])
+      presence !== null && location?.terminalSeq !== undefined && location.storedIdentity !== undefined
+        ? JSON.stringify([
+            epochIdentity(location.epochKey),
+            jobId,
+            location.terminalSeq,
+            location.storedIdentity,
+            presence,
+          ])
         : undefined;
-    const observed = session ? this.observedWorkflowReports.get(session) : undefined;
-    const cached = identity === undefined ? undefined : observed?.get(identity);
+    const cached = identity === undefined ? undefined : this.observedWorkflowReports.get(identity);
     if (cached !== undefined) return cached;
-    const readable = this.render(jobId) !== null;
-    if (session && identity !== undefined)
-      this.observedWorkflowReports.set(session, (observed ?? new Map<string, boolean>()).set(identity, readable));
+    const readable =
+      this.withAgreedTerminal(
+        jobId,
+        (db, _ctx, agreed, accepted, terminal) =>
+          this.input.workflowReport?.({ db, epochKey: agreed.epochKey, jobId, accepted, terminal }) ?? null,
+      ) !== null;
+    if (identity !== undefined) remember(this.observedWorkflowReports, identity, readable);
     return readable;
   }
 
@@ -310,7 +324,11 @@ export class TerminalResultExportOwner {
     this.input.prepareTerminal?.(jobId, db);
   }
 
-  private render(jobId: string): string | null {
+  /** Reads, in one source session, the accepted terminal only when it agrees with the terminal its location retains. */
+  private withAgreedTerminal<T>(
+    jobId: string,
+    read: (db: Database, ctx: StoreReadContext, location: JobLocation, accepted: EventsRow, terminal: JobTerminal) => T,
+  ): T | null {
     const location = this.publicationLocation ?? this.input.location(jobId);
     if (!location || !hasReadableTerminalDetail(location)) return null;
     return this.withSource(jobId, (db, ctx) => {
@@ -325,15 +343,17 @@ export class TerminalResultExportOwner {
         !sameTerminal(body.terminal, location.detail.value.exit)
       )
         return null;
-      if (location.subject.jobKind === 'workflow') {
-        return (
-          this.input.workflowReport?.({ db, epochKey: location.epochKey, jobId, accepted, terminal: body.terminal }) ??
-          null
-        );
-      }
+      return read(db, ctx, location, accepted, body.terminal);
+    });
+  }
+
+  private render(jobId: string): string | null {
+    return this.withAgreedTerminal(jobId, (db, ctx, location, accepted, terminal) => {
+      if (location.subject.jobKind === 'workflow')
+        return this.input.workflowReport?.({ db, epochKey: location.epochKey, jobId, accepted, terminal })?.() ?? null;
       const identity = workflowIdentityMarkdown(db, jobId);
-      const content = body.terminal.content.trimEnd();
-      return `${identity}${content || describeTerminalOutcome(body.terminal.outcome, { describeCauseRef: (ref) => describeResolvedCauseRef(db, ctx, ref) })}\n`;
+      const content = terminal.content.trimEnd();
+      return `${identity}${content || describeTerminalOutcome(terminal.outcome, { describeCauseRef: (ref) => describeResolvedCauseRef(db, ctx, ref) })}\n`;
     });
   }
 
@@ -434,7 +454,7 @@ export class TerminalResultExportOwner {
     return found;
   }
 
-  observeResultAvailability(jobId: string, session?: object): ResultAvailability {
+  observeResultAvailability(jobId: string): ResultAvailability {
     const location = this.input.location(jobId);
     if (!location || location.disposition !== 'terminal') {
       if (this.uncaptured.has(jobId) && this.input.hydrationRetry?.(jobId) !== true)
@@ -478,7 +498,7 @@ export class TerminalResultExportOwner {
     if (unavailable) return unavailable;
     if (this.failures.has(jobId)) return { kind: 'failed', cause: 'repair-failed', retryScheduled: true };
     try {
-      if (location.subject.jobKind === 'workflow' && !this.workflowReadable(jobId, session))
+      if (location.subject.jobKind === 'workflow' && !this.workflowReadable(jobId))
         return { kind: 'failed', cause: 'workflow-facts-unavailable', retryScheduled: false };
     } catch {
       return { kind: 'repair-pending', ageUncertain: true };

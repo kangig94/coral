@@ -326,13 +326,19 @@ function handleWaitEvent(
   }
 }
 
+type DrainingState = AwaitStepState & { failureDrain: NonNullable<AwaitStepState['failureDrain']> };
+
+function failureDrainEnded(state: AwaitStepState, drainDeadlineMs: number): state is DrainingState {
+  return state.failureDrain !== null && (state.pending.size === 0 || state.observedDrainMs >= drainDeadlineMs);
+}
+
 async function awaitWaitCycle(
   state: AwaitStepState,
   executionSvc: WorkflowExecutionPort,
   ctx: InvocationContext,
   options: WaitForAtomsOptions,
   buildPartialStepDetailsForCycle: () => StepDetail[],
-): Promise<'stream-ended' | 'stream-empty' | 'stale-recovered'> {
+): Promise<'stream-ended' | 'stream-empty' | 'stale-recovered' | 'drain-ended'> {
   const timeoutSeconds = waitTimeoutSeconds(options.staleTimeoutMs, options.staleCheckIntervalMs);
   const observedCadenceMs = timeoutSeconds * 1_000;
   let events = 0;
@@ -347,6 +353,9 @@ async function awaitWaitCycle(
     events++;
     advanceObservedWaitTime(state, options.time.monotonicNow(), observedCadenceMs);
     const eventOutcome = handleWaitEvent(event, state, executionSvc, options);
+    // A refused live child can replenish the internal reader's backlog forever, so the drain bound holds per event,
+    // never only once the stream ends; leaving the loop closes the stream.
+    if (failureDrainEnded(state, options.drainDeadlineMs)) return 'drain-ended';
     if (eventOutcome !== 'check-stale') continue;
     if (state.failureDrain !== null || options.staleTimeoutMs <= 0 || !options.recoverStaleAtom) continue;
 
@@ -408,7 +417,7 @@ async function awaitStepCompletion(
       await options.time.sleep(Math.max(0, Math.min(cadenceMs, options.drainDeadlineMs - state.observedDrainMs)));
     advanceObservedWaitTime(state, options.time.monotonicNow(), cadenceMs);
 
-    if (state.failureDrain !== null && (state.pending.size === 0 || state.observedDrainMs >= options.drainDeadlineMs)) {
+    if (failureDrainEnded(state, options.drainDeadlineMs)) {
       throw createWorkflowExecutionError(
         state.failureDrain.firstFailure.message,
         state.failureDrain.firstFailure.aborted,

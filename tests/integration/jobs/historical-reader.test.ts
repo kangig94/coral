@@ -2752,12 +2752,12 @@ describe('historical maintenance budgets and retirement', () => {
           session.position(sources, 20, 500, 64 * 1024);
           return session.select(sources, 500, 64 * 1024);
         });
-        session.observeEmpty(selection.exhaustedJobIds);
         for (const line of selection.lines) {
           delivered.add(line.jobId);
           deliveredLines++;
           session.consume(line);
         }
+        session.advanceSilently(selection.advances);
         for (const job of admissions) if (job.disposition === 'admitted') observed.add(job.jobId);
         if (terminal)
           expect(

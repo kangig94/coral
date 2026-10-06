@@ -567,8 +567,6 @@ export function formatHandoffContinuationReason(reason: HandoffContinuationReaso
     case 'handoff-not-applicable':
       return 'Handoff: not applicable — this is a display-only invocation.';
     case 'handoff-abandoned':
-      if (reason.reason === 'wait-contract-unsupported')
-        return 'Handoff: continuing current build because the selected CLI cannot preserve this monitor budget.';
       return [
         'Handoff: continuing current build — delegation was abandoned because stdout did not finish draining.',
         "Handoff hold: retry; if stdout still does not drain, preserve the output and inspect the invoking process's stdout consumer.",

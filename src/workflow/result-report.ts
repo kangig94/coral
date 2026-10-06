@@ -21,7 +21,7 @@ export const renderWorkflowReport: WorkflowReportPort = ({ db, jobId, accepted, 
       EventsRow
     >("SELECT * FROM events WHERE stream_kind = 'workflow' AND stream_id = ? AND type = 'workflow.completed' AND seq < ? ORDER BY seq DESC LIMIT 1")
     .get(jobId, accepted.seq);
-  if (!completed) return `${describeTerminalOutcome(terminal.outcome)}\n`;
+  if (!completed) return () => `${describeTerminalOutcome(terminal.outcome)}\n`;
   const parsed = workflowCompletedBodySchema.safeParse(JSON.parse(Buffer.from(completed.body).toString('utf8')));
   if (!parsed.success || parsed.data.outcome !== terminal.outcome.kind) return null;
   if (
@@ -31,6 +31,9 @@ export const renderWorkflowReport: WorkflowReportPort = ({ db, jobId, accepted, 
       terminal.outcome.causeRef.seq !== completed.seq)
   )
     return null;
-  const markdown = serializeWorkflowResult(parsed.data.stepDetails).markdown;
-  return markdown.trim().length > 0 ? markdown : `${describeTerminalOutcome(terminal.outcome)}\n`;
+  const { stepDetails } = parsed.data;
+  return () => {
+    const markdown = serializeWorkflowResult(stepDetails).markdown;
+    return markdown.trim().length > 0 ? markdown : `${describeTerminalOutcome(terminal.outcome)}\n`;
+  };
 };

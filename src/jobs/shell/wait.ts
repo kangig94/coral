@@ -88,7 +88,7 @@ export interface WaitCoordinatorDeps {
   }>;
   observeJobAbsence?: (jobId: string) => boolean;
   resultJobsRoot: string;
-  observeResultAvailability: (jobId: string, session?: object) => ResultAvailability;
+  observeResultAvailability: (jobId: string) => ResultAvailability;
   hintResultRepair?: (jobId: string) => void;
   /**
    * Reports what is carrying each still-pending job. Optional because a wait works without it — the journal
@@ -112,6 +112,8 @@ export type CarrierWaitPlan = Readonly<{
 }>;
 
 const EMPTY_CARRIER_PLAN: CarrierWaitPlan = Object.freeze({ interrupted: [], unknownJobIds: [] });
+
+const TERMINAL_PROJECTION_LIMIT = 128;
 
 /**
  * Turns carrier verdicts into what the wait stream should say about them.
@@ -327,10 +329,32 @@ export class WaitCoordinator {
     return { ...observed, frontier: signal.aborted ? 0 : this.deps.getCurrentJournalSeq() };
   }
 
-  private readonly terminalBodies = new WeakMap<object, Map<string, NonNullable<WaitAdmission['detail']>>>();
+  private readonly terminalProjections = new Map<string, JobWaitDetail>();
   private readonly metadataAdmissions = new WeakMap<object, Map<string, WaitAdmission>>();
 
   visitProgress: ProgressVisit = (epoch, read) => this.deps.visitProgress(epoch, read);
+
+  /**
+   * A terminal job's projection changes only with that job's own events, so one decoded projection serves every later
+   * request, whatever its content size, until the job's own last seq moves.
+   */
+  private loadWaitDetail(jobId: string, epochKey: string): JobWaitDetail {
+    const key = JSON.stringify([epochIdentity(epochKey), jobId]);
+    const retained = this.terminalProjections.get(key);
+    this.terminalProjections.delete(key);
+    const lastSeq = retained?.status?.lastSeq;
+    const projected =
+      retained !== undefined && lastSeq !== undefined && lastSeq === this.deps.readJobLastSeq(jobId)
+        ? retained
+        : this.deps.loadJobWaitDetail(jobId);
+    if (projected.status && projected.exit) {
+      this.terminalProjections.set(key, projected);
+      const oldest = this.terminalProjections.keys().next().value;
+      if (this.terminalProjections.size > TERMINAL_PROJECTION_LIMIT && oldest !== undefined)
+        this.terminalProjections.delete(oldest);
+    }
+    return projected;
+  }
 
   readWaitAdmission(jobId: string, epochKey: string, session?: object): WaitAdmission {
     const cache = (session ? this.metadataAdmissions.get(session) : undefined) ?? new Map<string, WaitAdmission>();
@@ -342,16 +366,11 @@ export class WaitCoordinator {
     if (cached?.detail && !cached.detail.exit && cached.detail.status.lastSeq === this.deps.readJobLastSeq(jobId))
       return cached.queued ? { ...cached, queued: this.queuedWaitEvent(cached.detail.status) } : cached;
     if (cached?.detail?.exit) {
-      const availability = this.deps.observeResultAvailability(jobId, session);
+      const availability = this.deps.observeResultAvailability(jobId);
       if (availability.kind === 'repair-pending') this.deps.hintResultRepair?.(jobId);
-      const key = JSON.stringify([epochIdentity(epochKey), jobId, cached.detail.terminalSeq]);
-      return {
-        ...cached,
-        detail: session ? (this.terminalBodies.get(session)?.get(key) ?? cached.detail) : cached.detail,
-        availability,
-      };
+      return { ...cached, availability };
     }
-    const projected = this.deps.loadJobWaitDetail(jobId);
+    const projected = this.loadWaitDetail(jobId, epochKey);
     if (!projected.status)
       return this.deps.observeJobAbsence?.(jobId) === true
         ? { jobId, disposition: 'missing', sourceRead: 'readable' }
@@ -375,7 +394,7 @@ export class WaitCoordinator {
             diagnostics: { ...projected.exit.diagnostics, usage: this.readTerminalUsage(terminal, projected.status) },
           }
         : null;
-    const availability = exit ? this.deps.observeResultAvailability(jobId, session) : undefined;
+    const availability = exit ? this.deps.observeResultAvailability(jobId) : undefined;
     if (availability?.kind === 'repair-pending') this.deps.hintResultRepair?.(jobId);
     const admission: WaitAdmission = {
       jobId,
@@ -387,11 +406,6 @@ export class WaitCoordinator {
       continuity: this.readQueryContinuity(jobId, projected.status),
       ...(projected.status.phase === 'queued' && !exit ? { queued: this.queuedWaitEvent(projected.status) } : {}),
     };
-    if (session && admission.detail?.exit) {
-      const bodies = this.terminalBodies.get(session) ?? new Map();
-      bodies.set(JSON.stringify([epochIdentity(epochKey), jobId, admission.detail.terminalSeq]), admission.detail);
-      this.terminalBodies.set(session, bodies);
-    }
     cache.set(jobId, admission);
     return admission;
   }

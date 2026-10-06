@@ -354,7 +354,9 @@ export class JobLocationIndex {
           }
         }
       }
-      this.epochDirectories.set(identity, directory);
+      // A new directory's naming record lands after its creation changed the epochs root, so a lookup that found no
+      // directory is never kept.
+      if (this.runtime.storage.existsSync(join(root, directory))) this.epochDirectories.set(identity, directory);
     }
     return join(this.root, 'epochs', directory, name);
   }
@@ -386,9 +388,26 @@ export class JobLocationIndex {
     return epochKeys;
   }
 
+  /**
+   * Equivalent addresses of one epoch share its identity lock, under which the epoch's directory is resolved and, when
+   * new, created already naming its epoch; a released writer, which knows only the directory lock, still shares that.
+   */
   private withRevisionLock<T>(epochKey: string, action: () => T): T {
-    const lockDir = this.epochPath(epochKey, 'revision.lock');
-    this.runtime.storage.mkdirSync(dirname(lockDir), { recursive: true, mode: 0o700 });
+    const identityLock = join(
+      this.root,
+      'revision-locks',
+      createHash('sha256').update(epochIdentity(epochKey)).digest('hex'),
+    );
+    this.runtime.storage.mkdirSync(dirname(identityLock), { recursive: true, mode: 0o700 });
+    return this.withDirectoryLock(identityLock, () => {
+      const revisionPath = this.epochPath(epochKey, 'revision.v1.json');
+      if (!this.runtime.storage.existsSync(dirname(revisionPath)))
+        atomicJson(this.runtime, revisionPath, { version: 'v1', epochKey, revision: 0 });
+      return this.withDirectoryLock(this.epochPath(epochKey, 'revision.lock'), action);
+    });
+  }
+
+  private withDirectoryLock<T>(lockDir: string, action: () => T): T {
     const release = acquireDirectoryLockSync(lockDir, {
       storage: this.runtime.storage,
       time: this.runtime.time,

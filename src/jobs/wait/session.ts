@@ -158,11 +158,13 @@ class ProgressSourceFault extends Error {
 /** A poll spent its raw-row allowance; the read it refused resumes on the next poll. */
 class ProgressRowsExhausted extends Error {}
 
-/** A position reached by scanning fault-only pages; it applies only once every line selected before it was consumed. */
-export type WaitSilentAdvance = Readonly<{ jobId: string; seq: number; after?: WaitProgressLine }>;
+/**
+ * What pages that yielded no line proved for one job: the position they reached and whether the last of them exhausted
+ * the job. Both apply only once every line selected before them was consumed.
+ */
+export type WaitSilentAdvance = Readonly<{ jobId: string; seq: number; exhausted: boolean; after?: WaitProgressLine }>;
 export type WaitSelection = {
   lines: WaitProgressLine[];
-  exhaustedJobIds: string[];
   advances: WaitSilentAdvance[];
   /** The line or byte budget left no room for another line. */
   full: boolean;
@@ -591,7 +593,6 @@ export class WaitSession {
     positioned: WaitPositioned = new Map(),
   ): WaitSelection {
     const selected: WaitProgressLine[] = [];
-    const exhaustedJobIds: string[] = [];
     const advances = new Map<string, WaitSilentAdvance>();
     const readable = this.admissions.filter((job): job is WaitAdmission & { epochKey: string } =>
       this.readable(job, sources),
@@ -638,7 +639,6 @@ export class WaitSession {
           job,
           sources.get(job.epochKey) as ProgressSource,
           rows,
-          exhaustedJobIds,
           advances,
           () => Math.max(0, budget - selected.length),
           positioned.get(job.jobId),
@@ -677,7 +677,7 @@ export class WaitSession {
         const begun = this.internal && selected.length > rowStart;
         if (!begun && selected.length >= budget) break;
         if (!begun && bytes + size > maxBytes)
-          return { lines: selected, exhaustedJobIds, advances: [...advances.values()], full: true, cut };
+          return { lines: selected, advances: [...advances.values()], full: true, cut };
         selected.push(line);
         bytes += size;
         pull(chosen);
@@ -685,7 +685,6 @@ export class WaitSession {
     }
     return {
       lines: selected,
-      exhaustedJobIds,
       advances: [...advances.values()],
       full: selected.length >= budget,
       cut,
@@ -696,7 +695,6 @@ export class WaitSession {
     job: WaitAdmission,
     source: ProgressSource,
     rows: number,
-    exhaustedJobIds: string[],
     advances: Map<string, WaitSilentAdvance>,
     remaining: () => number,
     positioned?: WaitPositionedTail,
@@ -735,18 +733,24 @@ export class WaitSession {
           yield line;
         }
       }
-      if (!yielded && page.through > entry.seq && (page.faultRows > 0 || page.rows.length > 0))
-        advances.set(job.jobId, { jobId: job.jobId, seq: page.through, ...(previous ? { after: previous } : {}) });
-      if (page.exhausted) {
-        if (!yielded) exhaustedJobIds.push(job.jobId);
-        return;
-      }
+      const moved = page.through > entry.seq && (page.faultRows > 0 || page.rows.length > 0);
+      if (!yielded && (moved || page.exhausted))
+        advances.set(job.jobId, {
+          jobId: job.jobId,
+          seq: moved ? page.through : entry.seq,
+          exhausted: page.exhausted,
+          ...(previous ? { after: previous } : {}),
+        });
+      if (page.exhausted) return;
       entry = { ...entry, seq: page.through, lineOffset: 0 };
       rows = Math.max(1, Math.min(500, remaining() + 1, rows * 2));
     }
   }
 
-  /** Fault-only pages move a job only behind lines already consumed, and never emit a message. */
+  /**
+   * Pages that yielded no line move or exhaust a job only behind lines already consumed, and never emit a message: a
+   * selected line that was not delivered keeps its job unread at its entry.
+   */
   advanceSilently(advances: readonly WaitSilentAdvance[]): void {
     for (const advance of advances) {
       const member = this.member(advance.jobId);
@@ -754,8 +758,9 @@ export class WaitSession {
         advance.after === undefined ||
         (member.entry.seq === advance.after.entryAfter.seq &&
           member.entry.lineOffset === advance.after.entryAfter.lineOffset);
-      if (consumed && member.entry.seq < advance.seq)
-        member.entry = { ...member.entry, seq: advance.seq, lineOffset: 0 };
+      if (!consumed) continue;
+      if (member.entry.seq < advance.seq) member.entry = { ...member.entry, seq: advance.seq, lineOffset: 0 };
+      if (advance.exhausted && member.progress === 'unread') member.progress = 'exhausted';
     }
   }
 
@@ -766,13 +771,6 @@ export class WaitSession {
     for (const [id, member] of this.members) copy.members.set(id, { ...member });
     for (const [id, coverage] of this.coverage) copy.coverage.set(id, coverage);
     return copy;
-  }
-
-  observeEmpty(jobIds: readonly string[]): void {
-    for (const jobId of jobIds) {
-      const member = this.member(jobId);
-      if (member.progress === 'unread') member.progress = 'exhausted';
-    }
   }
 
   consume(line: WaitProgressLine): void {

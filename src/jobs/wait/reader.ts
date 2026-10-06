@@ -92,7 +92,6 @@ export async function* readWaitSession(input: WaitReadInput): AsyncGenerator<Wai
           positioned,
         );
       });
-      session.observeEmpty(progress.exhaustedJobIds);
       const now = Number(time.monotonicNow());
       const nearDeadline: boolean = now >= deadline - 250 && !deadlineObserved;
       if (!observing && (now - lastObservation >= 5000 || nearDeadline) && now < deadline) {

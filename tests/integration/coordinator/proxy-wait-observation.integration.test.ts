@@ -46,6 +46,17 @@ import { TEST_CODEX_SCOPE } from '#tests/helpers/provider-credentials.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
 import { streamProviderTerminal } from '#src/providers/stream.js';
 
+function progressRecorded(eventBus: TypedEventBus, message: string): Promise<void> {
+  return new Promise((resolve) => {
+    const listener = (progress: { message: string }): void => {
+      if (progress.message !== message) return;
+      eventBus.off('job:progress', listener);
+      resolve();
+    };
+    eventBus.on('job:progress', listener);
+  });
+}
+
 it.each(['completion', 'handoff'] as const)(
   'observes a progressing local app-server placement through production assembly (%s)',
   async (ending) => {
@@ -64,9 +75,12 @@ it.each(['completion', 'handoff'] as const)(
     const launchCoordinator = new LaunchCoordinator({ runtime });
     const providerRegistry = new ProviderRegistry();
     let finishTurn!: () => void;
-    let turnExited = false;
+    let markTurnExited!: () => void;
     const turnFinished = new Promise<void>((resolve) => {
       finishTurn = resolve;
+    });
+    const turnExited = new Promise<void>((resolve) => {
+      markTurnExited = resolve;
     });
     const definition = defineFakeProvider({
       name: 'codex',
@@ -88,7 +102,7 @@ it.each(['completion', 'handoff'] as const)(
           await turnFinished;
           yield* streamProviderTerminal({ content: 'done', outcome: { kind: 'completed' }, durationMs: 1 });
         } finally {
-          turnExited = true;
+          markTurnExited();
         }
       },
     });
@@ -155,15 +169,15 @@ it.each(['completion', 'handoff'] as const)(
     const service = services.getExecutionService(ctx);
     let jobId: string | undefined;
     let quiesced = false;
+    const progressed = progressRecorded(eventBus, 'local turn progressing');
     try {
       const launch = await service.start('codex', { prompt: 'local placement reproduction' }, ctx);
       expect(launch.status).toBe('running');
       if (launch.status !== 'running') throw new Error('expected a running launch');
       jobId = launch.jobId;
-      await vi.waitFor(() =>
-        expect(store.readJobEvents(launch.jobId)).toContainEqual(
-          expect.objectContaining({ type: 'progress', message: 'local turn progressing' }),
-        ),
+      await progressed;
+      expect(store.readJobEvents(launch.jobId)).toContainEqual(
+        expect.objectContaining({ type: 'progress', message: 'local turn progressing' }),
       );
       expect(route).toHaveBeenCalledOnce();
       expect(awaitRoute).toHaveBeenCalledOnce();
@@ -189,8 +203,18 @@ it.each(['completion', 'handoff'] as const)(
       expect(observedPasses.every((pass) => pass.length === 1 && pass[0]?.liveness === 'live')).toBe(true);
       if (localService === undefined) throw new Error('expected a local execution service');
       if (ending === 'completion') {
+        // see LaunchOrchestrator.runAsync in src/jobs/shell/launch.ts
+        const release = launchCoordinator.releaseLaunch.bind(launchCoordinator);
+        const released = new Promise<void>((resolve) => {
+          vi.spyOn(launchCoordinator, 'releaseLaunch').mockImplementation((permit) => {
+            const outcome = release(permit);
+            resolve();
+            return outcome;
+          });
+        });
         finishTurn();
-        await vi.waitFor(() => expect(localService?.holdsLocalAppServerExecution(launch.jobId)).toBe(false));
+        await released;
+        expect(localService.holdsLocalAppServerExecution(launch.jobId)).toBe(false);
         expect(store.readStatus(jobId)?.phase).toBe('completed');
         return;
       }
@@ -209,11 +233,8 @@ it.each(['completion', 'handoff'] as const)(
     } finally {
       finishTurn();
       if (jobId !== undefined) {
-        const observedJobId = jobId;
-        await vi.waitFor(() => {
-          expect(turnExited).toBe(true);
-          expect(store.readStatus(observedJobId)?.phase).toBe(quiesced ? 'running' : 'completed');
-        });
+        await turnExited;
+        expect(store.readStatus(jobId)?.phase).toBe(quiesced ? 'running' : 'completed');
       }
       services.stopProviderOperationReconciler();
       db.close();
@@ -444,14 +465,14 @@ it('observes a progressing inherited proxy through execution-service assembly an
       },
     });
     await strictControlExchangeResult(control, 'operation.attach.v1', { operation, committedThroughProviderSeq: 0 });
+    const progressed = progressRecorded(eventBus, 'still progressing');
     expect(proxy.emitProviderEvent(operation, { kind: 'progress', message: 'still progressing' })).toMatchObject({
       kind: 'recorded',
       providerSeq: 1,
     });
-    await vi.waitFor(() =>
-      expect(store.readJobEvents(operation.jobId)).toContainEqual(
-        expect.objectContaining({ type: 'progress', message: 'still progressing' }),
-      ),
+    await progressed;
+    expect(store.readJobEvents(operation.jobId)).toContainEqual(
+      expect.objectContaining({ type: 'progress', message: 'still progressing' }),
     );
     const registries = {
       getDb: () => db,

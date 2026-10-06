@@ -11,7 +11,9 @@ import { TypedEventBus } from '#src/coordinator/event-bus.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { VirtualTime, flushMicrotasks } from '#tools/simulation/core/virtual-time.js';
 import { waitForAtoms } from '../../../src/workflow/wait.js';
-import type { WaitStreamEvent, WaitStreamRequest } from '../../../src/jobs/wait/contract.js';
+import type { ProgressVisit, WaitStreamEvent, WaitStreamRequest } from '../../../src/jobs/wait/contract.js';
+import { progressPage } from '#src/jobs/wait/progress-page.js';
+import { readWaitSession } from '#src/jobs/wait/reader.js';
 
 function atom(jobId: string, atomIndex: number): LaunchedAtom {
   return {
@@ -447,4 +449,73 @@ describe('a child the wait cannot read stays in the failure drain (F4)', () => {
     expect(waitStream).toHaveBeenCalledOnce();
     expect(sleeps).toEqual([]);
   });
+});
+
+it('ends the abort drain at its deadline while a refused live child keeps replenishing its backlog', async () => {
+  let now = 0;
+  let polls = 0;
+  let closed = 0;
+  const timing = { origin: 'runtime' as const, originAt: '', emittedAt: '', elapsedMs: 0 };
+  const time = {
+    monotonicNow: () => BigInt(now),
+    now: () => now,
+    sleep: async (ms: number) => {
+      now += ms;
+    },
+  };
+  const child = admitted('child', [], false);
+  // Each poll finds 600 more rows than the last, so the internal reader always has backlog left to drain.
+  const visit: ProgressVisit = (_epoch, read) => {
+    if (++polls > 100) throw new Error('drain outlived its deadline by 100 polls');
+    const frontier = polls * 600;
+    now += 100;
+    return {
+      kind: 'read',
+      value: read({
+        after: (_id, after, count) =>
+          progressPage(
+            Array.from({ length: Math.min(count + 1, frontier - after) }, (_, i) => ({
+              seq: after + i + 1,
+              progress: { seq: after + i + 1, message: 'p', timing },
+            })),
+            count,
+            frontier,
+          ),
+        before: () => {
+          throw new Error('an internal reader positions at origin');
+        },
+      }),
+    };
+  };
+  const abort = vi.fn(() => ({
+    notFound: [],
+    refused: [{ jobId: 'child', reason: 'Abort refused by the live owner; job continues', nextStep: 'Retry abort' }],
+    aborted: [],
+  }));
+  const waitStream = vi.fn(async function* (request: WaitStreamRequest) {
+    try {
+      yield* readWaitSession({ request, time: time as never, visit, read: () => [child], internal: true });
+    } finally {
+      closed++;
+    }
+  });
+  const result = waitForAtoms(
+    [atom('child', 0)],
+    { abort, waitStream } as unknown as WorkflowExecutionPort,
+    {} as InvocationContext,
+    {
+      signal: AbortSignal.abort(),
+      time,
+      staleTimeoutMs: 0,
+      staleCheckIntervalMs: 1000,
+      staleAbortTimeoutMs: 1000,
+      drainDeadlineMs: 1000,
+      onProgress: () => {},
+    },
+  );
+  await expect(result).rejects.toThrow('Pipeline aborted');
+  expect(abort).toHaveBeenCalledOnce();
+  expect(waitStream).toHaveBeenCalledOnce();
+  expect(closed).toBe(1);
+  expect(polls).toBeLessThanOrEqual(12);
 });

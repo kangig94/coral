@@ -203,8 +203,7 @@ import { createStorageRetentionScheduler } from '#src/coordinator/composition/st
       owner.onRepairHint(wake);
       owner.publishTerminalResult(f.jobId);
       expect(existsSync(f.resultPath)).toBe(false);
-      const observation = {};
-      const availability = owner.observeResultAvailability(f.jobId, observation);
+      const availability = owner.observeResultAvailability(f.jobId);
       expect(availability).toMatchObject({ kind: 'failed', cause: 'cutoff-untrusted', retryScheduled: true });
       const location = f.index.read(f.jobId);
       if (location?.detail.kind !== 'recorded') throw new Error('missing terminal');
@@ -219,7 +218,7 @@ import { createStorageRetentionScheduler } from '#src/coordinator/composition/st
       const session = new WaitSession([f.jobId]);
       session.reconcile([admission]);
       session.acknowledge(admission);
-      session.observeEmpty([f.jobId]);
+      session.advanceSilently([{ jobId: f.jobId, seq: 0, exhausted: true }]);
       expect(session.remaining()).toEqual([]);
       expect(session.artifactPending(f.jobId)).toBe(false);
       owner.hintRepair(f.jobId);
@@ -227,7 +226,7 @@ import { createStorageRetentionScheduler } from '#src/coordinator/composition/st
       expect(wake).toHaveBeenCalled();
       expect(existsSync(f.resultPath)).toBe(false);
       f.advance(300_001);
-      expect(owner.observeResultAvailability(f.jobId, observation)).toMatchObject({ kind: 'repair-pending' });
+      expect(owner.observeResultAvailability(f.jobId)).toMatchObject({ kind: 'repair-pending' });
       await owner.repairPass([f.jobId], { canContinue: () => true, record: () => {} });
       expect(existsSync(f.resultPath)).toBe(true);
     } finally {
@@ -650,12 +649,10 @@ it('observes an unchanged in-window unavailable terminal source once per wait se
   f.complete();
   const open = vi.spyOn(f.runtime.storage, 'openSqliteDatabaseSync');
   const owner = f.store.getResultExportOwner();
-  const session = {};
-  for (let poll = 0; poll < 40; poll++)
-    expect(owner.observeResultAvailability(f.jobId, session).kind).toBe('repair-pending');
+  for (let poll = 0; poll < 40; poll++) expect(owner.observeResultAvailability(f.jobId).kind).toBe('repair-pending');
   expect(open).toHaveBeenCalledTimes(1);
   f.removeSource();
-  expect(owner.observeResultAvailability(f.jobId, session)).toMatchObject({ kind: 'failed', retryScheduled: false });
+  expect(owner.observeResultAvailability(f.jobId)).toMatchObject({ kind: 'failed', retryScheduled: false });
 });
 
 it('decides progress retention once per request for an unchanged terminal', () => {
@@ -689,12 +686,12 @@ it('verifies an unavailable terminal against its source once, however many appen
   const open = vi.spyOn(f.runtime.storage, 'openSqliteDatabaseSync');
   const owner = f.store.getResultExportOwner();
   for (let poll = 0; poll < 10; poll++) {
-    expect(owner.observeResultAvailability(f.jobId, {}).kind).toBe('repair-pending');
+    expect(owner.observeResultAvailability(f.jobId).kind).toBe('repair-pending');
     f.store.appendProgress('other', 'other', `tick ${poll}`);
   }
   expect(open).toHaveBeenCalledTimes(1);
   f.removeSource();
-  expect(owner.observeResultAvailability(f.jobId, {})).toMatchObject({ kind: 'failed', retryScheduled: false });
+  expect(owner.observeResultAvailability(f.jobId)).toMatchObject({ kind: 'failed', retryScheduled: false });
 });
 
 it('reads a terminal its location does not yet record from the source once, until the source leaves', () => {
@@ -712,10 +709,10 @@ it('reads a terminal its location does not yet record from the source once, unti
   const open = vi.spyOn(f.runtime.storage, 'openSqliteDatabaseSync');
   const owner = f.store.getResultExportOwner();
   for (let poll = 0; poll < 10; poll++) {
-    expect(owner.observeResultAvailability(f.jobId, {}).kind).toBe('repair-pending');
+    expect(owner.observeResultAvailability(f.jobId).kind).toBe('repair-pending');
     f.store.appendProgress('other', 'other', `tick ${poll}`);
   }
   expect(open).toHaveBeenCalledTimes(1);
   f.removeSource();
-  expect(owner.observeResultAvailability(f.jobId, {}).kind).not.toBe('repair-pending');
+  expect(owner.observeResultAvailability(f.jobId).kind).not.toBe('repair-pending');
 });

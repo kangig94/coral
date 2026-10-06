@@ -87,7 +87,7 @@ import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
         { type: 'waiting', waitingJobIds: ['live-job'], cursor, exitCode: 75 },
       ]);
       await r.result;
-      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(r.save).toHaveBeenLastCalledWith(expect.any(String), true, true, 75);
       r.budget.stop();
       expect(r.out()).not.toContain('Carrier unconfirmed');
       expect(r.save.mock.calls.at(-1)?.[0]).not.toContain('Carrier unconfirmed');
@@ -105,7 +105,7 @@ import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
     it('preserves the input cursor for an admitted silent job', async () => {
       const r = run([]);
       await r.allDelivered;
-      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(r.save).toHaveBeenCalledOnce();
       r.budget.stop();
       await r.result;
       expect(r.out()).not.toContain('admission did not complete');

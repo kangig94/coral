@@ -593,24 +593,27 @@ describe('progress source faults are attributed per source (K2)', () => {
     session.reconcile([admitted('a', [], false)]);
     const first = select(session, visitRows(rows, undefined, 53));
     expect(first.lines).toEqual([]);
-    expect(first.advances).toEqual([{ jobId: 'a', seq: 53 }]);
+    expect(first.advances).toEqual([{ jobId: 'a', seq: 53, exhausted: true }]);
     session.advanceSilently(first.advances);
     expect(session.entry('a')).toMatchObject({ seq: 53, lineOffset: 0 });
+    expect(session.progressState('a')).toBe('exhausted');
     const second = select(session, visitRows(rows, undefined, 53));
     expect(second.advances).toEqual([]);
   });
 
-  it('never moves a job silently past a selected line it has not consumed', () => {
+  it('never moves or exhausts a job silently past a selected line it has not consumed', () => {
     const session = new WaitSession(['a']);
     session.reconcile([admitted('a', [], false)]);
     session.advanceSilently([
       {
         jobId: 'a',
         seq: 90,
+        exhausted: true,
         after: { entryAfter: { ...session.entry('a'), seq: 7 } } as never,
       },
     ]);
     expect(session.entry('a').seq).toBe(0);
+    expect(session.progressState('a')).toBe('unread');
   });
 });
 

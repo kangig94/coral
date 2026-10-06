@@ -274,7 +274,7 @@ describe('Phase D wait read purity (Revision S3)', () => {
         outcome: { kind: 'completed' },
         durationMs: 9,
       });
-      expect(readFileSync(f.epoch.path)).toEqual(mainBefore);
+      expect(readFileSync(f.epoch.path).equals(mainBefore)).toBe(true);
       expect(readFileSync(`${f.epoch.path}-wal`).length).toBeGreaterThan(0);
       const check = measure(f);
       if (entry === 'scopeCheck')

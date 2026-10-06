@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { mapWaitSubscriptionError } from '#src/cli/wait-stream-error.js';
 import { BackendToolHttpError } from '#src/transport/http/errors.js';
 import { TransientHttpError } from '#src/infra/http-errors.js';
-import { WaitBuildMismatchError } from '#src/cli/errors.js';
+import { WaitBuildMismatchError } from '#src/coordinator/handoff-routing/wait-invocation.js';
 import { IpcRpcError } from '#src/transport/ipc/client.js';
 
 function subscriptionError(code: string, detail?: unknown): Error {

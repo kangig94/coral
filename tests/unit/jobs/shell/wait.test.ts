@@ -17,6 +17,7 @@ import { JobAddressing } from '#src/jobs/addressing.js';
 import { JobLocationIndex } from '#src/jobs/location-index.js';
 import { waitEpochToken, waitJobHash } from '#src/jobs/wait/cursor.js';
 import type { WaitStreamRequest } from '#src/jobs/wait/contract.js';
+import { createTerminalExportFixture } from '#tests/helpers/terminal-export.js';
 
 function fixture() {
   const runtime = new SimulationRuntime();
@@ -599,7 +600,7 @@ it('isolates an unreadable active projection from its healthy sibling', () => {
   expect(admissions[1]).toMatchObject({ jobId: 'job-1', disposition: 'admitted' });
 });
 
-it('caches a terminal body per request while unrelated journal writes advance', () => {
+it("reuses a terminal body across requests while unrelated journal writes advance, until the job's own seq moves", () => {
   const f = fixture();
   f.journal.push(f.terminal());
   f.terminalize();
@@ -615,8 +616,64 @@ it('caches a terminal body per request while unrelated journal writes advance', 
   }
   expect(projection).toHaveBeenCalledTimes(1);
   expect(availability).toHaveBeenCalledTimes(31);
-  f.wait.readWaitAdmission('job-1', 'epoch', {});
+  for (let request = 0; request < 5; request++)
+    expect(f.wait.readWaitAdmission('job-1', 'epoch', {}).detail?.exit).toEqual(first.detail?.exit);
+  expect(projection).toHaveBeenCalledTimes(1);
+  expect(availability).toHaveBeenCalledTimes(36);
+  f.wait.readWaitAdmission('job-1', 'other-epoch', {});
   expect(projection).toHaveBeenCalledTimes(2);
+  f.journal.push({ ...f.terminal(), seq: 2 });
+  f.wait.readWaitAdmission('job-1', 'epoch', {});
+  expect(projection).toHaveBeenCalledTimes(3);
+});
+
+it('parses the same amount for a fresh snapshot of a 5 KB or a 20 KB terminal once its projection is decoded', () => {
+  const measured = [5_000, 20_000].map((size) => {
+    const f = createTerminalExportFixture();
+    try {
+      f.complete({ terminal: { content: 'R'.repeat(size), outcome: { kind: 'completed' }, durationMs: 1 } });
+      f.store.publishTerminalResult(f.jobId);
+      const owner = f.store.getResultExportOwner();
+      const wait = new WaitCoordinator({
+        time: f.runtime.time,
+        sessionManager: { get: () => null },
+        loadJobWaitDetail: (id: string) => f.store.loadJobWaitDetail(id),
+        readJobLastSeq: (id: string) => f.store.readJobLastSeq(id),
+        observeResultAvailability: (id: string) => owner.observeResultAvailability(id),
+        aggregateWorkflowUsage: () => undefined,
+      } as never);
+      const addressing = new JobAddressing(
+        f.index.readOnlyView(),
+        {
+          epochKey: () => f.epochKey,
+          detail: () => null,
+          readWaitAdmissions: (ids, epoch, session) => wait.readWaitAdmissions(ids, epoch, session),
+          visitProgress: (_epoch, read) => f.store.visitProgress(read),
+          abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
+        },
+        () => false,
+        () => 'pending',
+        undefined,
+        (id) => owner.observeResultAvailability(id),
+      );
+      addressing.snapshot({ jobIds: [f.jobId] });
+      const parse = vi.spyOn(JSON, 'parse');
+      try {
+        const responses = Array.from({ length: 3 }, () => addressing.snapshot({ jobIds: [f.jobId] }));
+        expect(responses.every((response) => response.jobs[0].terminal?.contentOmitted === true)).toBe(true);
+        return {
+          parsed: parse.mock.calls.map(([input]) => (typeof input === 'string' ? input.length : 0)),
+          responseBytes: responses.map((response) => Buffer.byteLength(JSON.stringify(response))),
+        };
+      } finally {
+        parse.mockRestore();
+      }
+    } finally {
+      f.close();
+    }
+  });
+  expect(measured[0]).toEqual(measured[1]);
+  expect(Math.max(...measured[0].parsed)).toBeLessThan(5_000);
 });
 
 it('settles an active-journal decode failure as unreadable and propagates a code defect', () => {

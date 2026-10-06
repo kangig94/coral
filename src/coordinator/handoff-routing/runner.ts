@@ -1,4 +1,5 @@
 import {
+  WaitBuildMismatchError,
   WaitInvocationReadinessError,
   WAIT_INVOCATION_CONTEXT_ENV,
   WAIT_INVOCATION_CONTRACT_ARGUMENT,
@@ -160,7 +161,7 @@ export type HandoffOutcome =
 export type HandoffContinuationReason =
   | Readonly<{ kind: 'routing'; basis: HandoffRoutingBasis }>
   | Readonly<{ kind: 'handoff-not-applicable'; reason: 'display-only' }>
-  | Readonly<{ kind: 'handoff-abandoned'; reason: 'stdout-drain-incomplete' | 'wait-contract-unsupported' }>;
+  | Readonly<{ kind: 'handoff-abandoned'; reason: 'stdout-drain-incomplete' }>;
 
 // A routing continuation must resolve its obligation through its basis table.
 export const HANDOFF_CONTINUATION_REASON_OBLIGATIONS = {
@@ -1533,14 +1534,8 @@ export async function runHandoff(
         options.waitInvocation?.originalCommand ??
           `coral-cli wait jobs ${operation.kind === 'follow-job' ? operation.jobId : ''}`,
       );
-    if (!supported)
-      return {
-        kind: 'recording-not-applicable',
-        continuationWithoutRecording: {
-          kind: 'run-current',
-          reason: { kind: 'handoff-abandoned', reason: 'wait-contract-unsupported' },
-        },
-      };
+    // A wait never runs on a build other than the coordinator's, so a target without the contract is refused here.
+    if (!supported) throw new WaitBuildMismatchError();
   }
   const recordingApplicable =
     operation.kind !== 'cli-invocation' ||

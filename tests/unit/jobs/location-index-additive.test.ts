@@ -1,6 +1,6 @@
 import { progressVisitFromDetails } from '#tests/helpers/wait-progress.js';
 import { loadReleasedBuild } from '#tests/helpers/released-build.js';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -711,6 +711,58 @@ it('finds a released alias directory created after an empty epoch lookup', () =>
   expect(index.revision(full)).toBe(7);
   index.holdUnknownLocations(full, 'recovered alias', true);
   expect(new JobLocationIndex(runtime, root).unknownLocationHold(alias)).toBe('recovered alias');
+});
+
+it("shares one revision lock and counter between equivalent addresses when one writer creates the epoch's directory", () => {
+  const { root } = fixture();
+  const full = JSON.stringify({ storeRoot: '/real/store', epoch: '7', lineageKey: 'lineage:7' });
+  const alias = JSON.stringify({ storeRoot: '/alias/store', epoch: '7', lineageKey: 'lineage:7' });
+  const subject = { projectRoot: '/project', workDir: '/project', jobKind: 'provider' } as const;
+  const epochs = join(root, 'job-locations.v1', 'epochs');
+  type Mkdir = typeof runtime.storage.mkdirSync;
+  // The other writer stands for another process: meeting a held lock, it reports contention instead of waiting.
+  const contended: string[] = [];
+  const otherStorage = Object.create(runtime.storage) as typeof runtime.storage;
+  otherStorage.mkdirSync = ((path: string, options?: Parameters<Mkdir>[1]) => {
+    try {
+      return runtime.storage.mkdirSync(path, options);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      contended.push(path);
+      throw new Error('contended', { cause: error });
+    }
+  }) as Mkdir;
+  const other = new JobLocationIndex({ ...runtime, storage: otherStorage }, root);
+  let interleaved = false;
+  const storage = Object.create(runtime.storage) as typeof runtime.storage;
+  storage.mkdirSync = ((path: string, options?: Parameters<Mkdir>[1]) => {
+    const made = runtime.storage.mkdirSync(path, options);
+    // The other writer arrives between this writer's new epoch directory and its first record.
+    if (!interleaved && dirname(path) === epochs) {
+      interleaved = true;
+      expect(() => other.register('job-b', alias, subject)).toThrow('contended');
+    }
+    return made;
+  }) as Mkdir;
+  new JobLocationIndex({ ...runtime, storage }, root).register('job-a', full, subject);
+  expect(interleaved).toBe(true);
+  expect(contended).toHaveLength(1);
+  other.register('job-b', alias, subject);
+  expect(readdirSync(epochs)).toHaveLength(1);
+  const restarted = new JobLocationIndex(runtime, root);
+  expect(restarted.revision(full)).toBe(2);
+  expect(restarted.revision(alias)).toBe(2);
+});
+
+it('finds an equivalent directory whose naming record lands after a lookup that found none', () => {
+  const { root, index } = fixture();
+  const full = JSON.stringify({ storeRoot: '/real/store', epoch: '7', lineageKey: 'lineage:7' });
+  const alias = JSON.stringify({ storeRoot: '/alias/store', epoch: '7', lineageKey: 'lineage:7' });
+  const directory = join(root, 'job-locations.v1', 'epochs', runtime.ids.sha256(full));
+  mkdirSync(directory, { recursive: true });
+  expect(index.revision(alias)).toBe(0);
+  writeFileSync(join(directory, 'revision.v1.json'), JSON.stringify({ version: 'v1', epochKey: full, revision: 3 }));
+  expect(index.revision(alias)).toBe(3);
 });
 
 it("resolves an epoch's records without parsing other epochs' certificates again until their directories change", () => {

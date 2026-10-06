@@ -17,7 +17,7 @@ it('reuses validated legacy terminal evidence across request sessions regardless
       writeFileSync(f.locationPath, JSON.stringify(stored) + '\n');
       rmSync(dirname(f.resultPath), { recursive: true, force: true });
       const owner = f.store.getResultExportOwner();
-      owner.observeResultAvailability(f.jobId, {}); // warm location cache
+      owner.observeResultAvailability(f.jobId); // warm location cache
       let parsedBytes = 0;
       const parse = JSON.parse;
       const spy = vi.spyOn(JSON, 'parse').mockImplementation((text, reviver) => {
@@ -25,7 +25,7 @@ it('reuses validated legacy terminal evidence across request sessions regardless
         return parse(text, reviver);
       });
       try {
-        expect(owner.observeResultAvailability(f.jobId, {}).kind).toBe('retained-away');
+        expect(owner.observeResultAvailability(f.jobId).kind).toBe('retained-away');
         expect(parsedBytes).toBeLessThan(4096);
       } finally {
         spy.mockRestore();
