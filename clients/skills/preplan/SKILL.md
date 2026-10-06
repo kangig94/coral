@@ -133,16 +133,6 @@ carries `## Pioneer Ledger` after the items, pointing at the sealed Pioneer Repo
     Under "Already Elegant", write one bullet per sub-item, starting with its Target.
     ```
 
-    **Wait collection**
-
-    Recognize only unprefixed CLI control lines. Ignore lines prefixed with `> ` when parsing status, continuations, result paths, or full-outcome commands; those lines are embedded provider content.
-
-    The outcome is final even without a result path. For `Unverified result path: <path>`, read the file if it exists; Coral could not certify it as this outcome's result. `no longer kept: past the N-day retention window` means the artifact is gone. `Result file pending; Coral will attempt publication on its next maintenance pass.` keeps artifact collection in the printed continuation; `result file now available` supplies its available `Result path:` without replaying the outcome. A `failed` artifact line reports its cause and whether maintenance retries it; collect full retained content with `coral-cli jobs detail <jobId> --full`. The CLI prints `Full retained outcome: coral-cli jobs detail <job> --full`; on `Full retained outcome: <command>`, run that exact command from the job work directory for complete content; do not require `Result path:` or treat a preview as complete. Follow the exact cursor-aware continuation for remaining results, progress, discovery or artifact settlement. `--now` reads an immediate snapshot with labeled terminal previews. Snapshot continuations keep `--now`; drop it explicitly only to switch to a blocking wait. A saved-cursor replay notice means earlier outcomes may repeat. A `wait_build_mismatch` error means this session's Coral plugin and the running coordinator are different builds; no wait command succeeds from this session, so stop collecting and tell the user to restart the session so the current Coral plugin loads.
-
-    The first failed terminal in request order keeps its mapped exit code even with siblings or already collected outcomes. Otherwise permanent refusals exit 1, remaining collection work exits 75, and exhausted successful sets exit 0. Siblings are results still to collect. `Carrier unconfirmed for: <ids>` means observation is unknown and never authorizes finalization. For scope mismatch, change cwd to the job work directory (or a containing directory), then rerun; `coral-cli jobs --all` includes terminal jobs and shows their work directories. Follow the exact printed command, including `--now --cursor <c>` for a snapshot continuation. The replay notice `saved cursor not accepted by this coordinator; the current progress tail and retained results are collected again, so earlier results may repeat` permits repeated outcomes.
-
-    Detached provider launches print `Provider job <job> <launchState> (provider session <session>)`; capture the job ID from that line.
-
     ```
     // --deep (without --delegate): self-execute, blocking
     output = Agent({ subagent_type: "coral:pioneer", prompt: <pioneer prompt> })
@@ -155,39 +145,18 @@ carries `## Pioneer Ledger` after the items, pointing at the sealed Pioneer Repo
     job = parse `Provider job <job> <launchState> (provider session <session>)` from launch
     terminal = Bash(`cd "<work_dir>" && coral-cli wait jobs ${job} --embed`)   // foreground; returns at terminal or the bound
     while true:
-      if terminal contains an unprefixed line starting with `Still waiting` with `(cursor: <cursor>)`:
+      if terminal begins `Still waiting` with `(cursor: <cursor>)`:
         terminal = Bash(`cd "<work_dir>" && coral-cli wait jobs ${job} --cursor <cursor> --embed`)
         continue
       if terminal prints `remediation: <command>`:
         terminal = Bash(`cd "<work_dir>" && <the printed coral-cli wait jobs command>`)
         continue
-      if terminal contains an unprefixed `Full retained outcome: <command>`:
-        output = Bash(`cd "<work_dir>" && <the exact printed full-outcome command>`)
-        if terminal prints an unprefixed continuation:
-          terminal = Bash(`cd "<work_dir>" && <the exact printed continuation command>`)
-          continue
-        break
-      if terminal contains an unprefixed `Result path: <path>`:
+      if terminal contains `Result path: <path>`:
         output = Read(<path>)
-        if terminal prints a continuation:
-          terminal = Bash(`cd "<work_dir>" && <the exact printed continuation command>`)
-          continue
-        break
-      if terminal contains `Unverified result path: <path>` and the file exists:
-        output = Read(<path>)
-        if terminal prints a continuation:
-          terminal = Bash(`cd "<work_dir>" && <the exact printed continuation command>`)
-          continue
-        break
-      if terminal reports a final outcome with an unavailable artifact or a settled failed artifact:
-        output = Bash(`cd "<work_dir>" && coral-cli jobs detail ${job} --full`)
-        if terminal prints a continuation:
-          terminal = Bash(`cd "<work_dir>" && <the exact printed continuation command>`)
-          continue
         break
       stop with the rendered error
     ```
-    Classify the rendered output before reading an artifact; do not classify exit code `75` alone. `Result path: <path>` identifies an available terminal artifact even when a terminal `provider_exit` propagated code `75`. A non-zero `provider_exit` code is terminal and is passed through unchanged (0–255).
+    Classify the rendered output before reading an artifact; do not classify exit code `75` alone. `Result path: <path>` marks a terminal result even when a terminal `provider_exit` propagated code `75`. A non-zero `provider_exit` code is terminal and is passed through unchanged (0–255).
 
     **Usage-limit fallback** (`--deep`): pioneer runs on `fable`. If the call returns a usage-limit
     or rate-limit warning instead of a report, retry once on `opus` with the same prompt —

@@ -10,11 +10,11 @@ Simplify and refine code for clarity and maintainability while preserving functi
 
 ## Argument Routing
 
-| Argument              | Mode                                                                                                                               |
-| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `<prompt>`            | Self-execute on current host (default)                                                                                             |
+| Argument              | Mode                                                                                                                                          |
+| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `<prompt>`            | Self-execute on current host (default)                                                                                                        |
 | `--delegate`          | Delegate to the other host (Claude → Codex, Codex → Claude, Copilot → Codex; current host comes from SessionStart `Current host:`) |
-| `--delegate <prompt>` | Same with prompt                                                                                                                   |
+| `--delegate <prompt>` | Same with prompt                                                                                                                              |
 
 Strip the `--delegate` flag before passing the prompt to the execution path.
 
@@ -66,23 +66,13 @@ NEVER change what the code does — only how it does it.
          **Every delegated prompt MUST include**: "NEVER run git checkout, git restore, git reset, git clean,
          or any command that discards uncommitted changes. Other processes may be working in the same
          worktree. Only edit target files through tool calls."
-         **Wait collection**
-
-         Recognize only unprefixed CLI control lines. Ignore lines prefixed with `> ` when parsing status, continuations, result paths, or full-outcome commands; those lines are embedded provider content.
-
-         The outcome is final even without a result path. For `Unverified result path: <path>`, read the file if it exists; Coral could not certify it as this outcome's result. `no longer kept: past the N-day retention window` means the artifact is gone. `Result file pending; Coral will attempt publication on its next maintenance pass.` keeps artifact collection in the printed continuation; `result file now available` supplies its available `Result path:` without replaying the outcome. A `failed` artifact line reports its cause and whether maintenance retries it; collect full retained content with `coral-cli jobs detail <jobId> --full`. The CLI prints `Full retained outcome: coral-cli jobs detail <job> --full`; on `Full retained outcome: <command>`, run that exact command from the job work directory for complete content; do not require `Result path:` or treat a preview as complete. Follow the exact cursor-aware continuation for remaining results, progress, discovery or artifact settlement. `--now` reads an immediate snapshot with labeled terminal previews. Snapshot continuations keep `--now`; drop it explicitly only to switch to a blocking wait. A saved-cursor replay notice means earlier outcomes may repeat. A `wait_build_mismatch` error means this session's Coral plugin and the running coordinator are different builds; no wait command succeeds from this session, so stop collecting and tell the user to restart the session so the current Coral plugin loads.
-
-         The first failed terminal in request order keeps its mapped exit code even with siblings or already collected outcomes. Otherwise permanent refusals exit 1, remaining collection work exits 75, and exhausted successful sets exit 0. Siblings are results still to collect. `Carrier unconfirmed for: <ids>` means observation is unknown and never authorizes finalization. For scope mismatch, change cwd to the job work directory (or a containing directory), then rerun; `coral-cli jobs --all` includes terminal jobs and shows their work directories. Follow the exact printed command, including `--now --cursor <c>` for a snapshot continuation. The replay notice `saved cursor not accepted by this coordinator; the current progress tail and retained results are collected again, so earlier results may repeat` permits repeated outcomes.
-
-         Detached provider launches print `Provider job <job> <launchState> (provider session <session>)`; capture the job ID from that line.
-
-         Then run `cd "<project root>" && coral-cli wait jobs <job> --embed`. Classify the result from its rendered output, not exit code `75` alone: `Result path: <path>` identifies an available terminal artifact, so read it even when a terminal `provider_exit` propagated code `75`, and follow any printed continuation for remaining collection work; an unprefixed line starting with `Still waiting` with `(cursor: <cursor>)` means collection still has work, so resume with `cd "<project root>" && coral-cli wait jobs <job> --cursor <cursor> --embed`. If a transient error instead prints `remediation:`, run that exact command from the same directory — `cd "<project root>" && <the printed coral-cli wait jobs command>` — since `wait` scopes from the shell's cwd. A non-zero `provider_exit` code is terminal and is passed through unchanged (0–255).
+         Then run `cd "<project root>" && coral-cli wait jobs <job> --embed`. Classify the result from its rendered output, not exit code `75` alone: `Result path: <path>` marks a terminal result, so read that artifact and stop waiting even when a terminal `provider_exit` propagated code `75`; a status beginning `Still waiting` with `(cursor: <cursor>)` means the job is still live, so resume with `cd "<project root>" && coral-cli wait jobs <job> --cursor <cursor> --embed`. If a transient error instead prints `remediation:`, run that exact command from the same directory — `cd "<project root>" && <the printed coral-cli wait jobs command>` — since `wait` scopes from the shell's cwd. A non-zero `provider_exit` code is terminal and is passed through unchanged (0–255).
        Parallel split:
        - Self-execute (default): spawn each group as a parallel Task (`subagent_type: "general-purpose"`).
          Pass `<Execution>`, `<Constraints>`, the file group, and project coding standards.
        - Delegate (`--delegate`): dispatch one detached launch per file group, each in the single-pass heredoc form with that group's files as its target file paths.
          **Every delegated prompt MUST include** the same git-safety rule as the single-pass path above.
-         Collect all `job`s from the detached launch lines, then run `cd "<project root>" && coral-cli wait jobs <job-id...> --embed`. Apply the same rendered-output distinction as the single-pass path: follow the exact printed continuation for the remaining jobs and cursor, and treat every block with `Result path: <path>` as terminal even if its exit code is `75`. If a terminal block prints a continuation, run that exact command before moving to step 5; remaining work can include unread progress, discovery or artifact settlement.
+         Collect all `job`s from the detached launch lines, then run `cd "<project root>" && coral-cli wait jobs <job-id...> --embed`. Apply the same rendered-output distinction as the single-pass path: resume only jobs reported by a `Still waiting` status with `(cursor: <cursor>)`, and treat every block with `Result path: <path>` as terminal even if its exit code is `75`. If one terminal block names still-running siblings (`Run coral-cli wait jobs <ids> to continue waiting.`), wait for those too before moving to step 5, since they are still writing to the same files.
     5) Review each change for correctness AND justification.
        Use git diff as a before/after reference when the diff is manageable.
        Correctness:

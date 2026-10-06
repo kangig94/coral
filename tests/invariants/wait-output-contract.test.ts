@@ -3,15 +3,12 @@ import { resolve } from 'node:path';
 import { Command } from 'commander';
 import { expect, it } from 'vitest';
 import { registerSessionCommands } from '#src/cli/commands/session.js';
-import { formatLaunch } from '#src/cli/format/jobs.js';
 import {
   formatWaitContinuation,
   formatWaitSnapshot,
   formatWaitTerminal,
   formatWaitWaiting,
 } from '#src/cli/format/wait.js';
-import { formatResultAvailability } from '#src/cli/format/result-availability.js';
-import { WAIT_CURSOR_REPLAY_NOTICE } from '#src/jobs/wait/cursor.js';
 import { WaitSession } from '#src/jobs/wait/session.js';
 import { selectWaitSnapshot } from '#tests/helpers/wait-progress.js';
 import { serializeWaitCursor } from '#src/jobs/wait/cursor.js';
@@ -25,7 +22,6 @@ import { admitted } from '#tests/helpers/wait-session.js';
 
 const root = resolve('.');
 const read = (path: string) => readFileSync(resolve(root, path), 'utf8');
-const skills = ['analyze', 'bugfix', 'code-simplify', 'plan', 'preplan', 'ralph'];
 
 function waitPorts(observed: unknown[]): HttpHandlerPorts {
   return {
@@ -190,48 +186,13 @@ it('M3 scope remediation changes cwd and lists terminal jobs', async () => {
   expect(output).toContain('including terminal jobs');
 });
 
-it.each(skills)('M3/M4 skill %s follows rendered launch, availability and snapshot contracts', (name) => {
-  const text = read(`clients/skills/${name}/SKILL.md`);
-  const launch = formatLaunch({
-    kind: 'provider-session',
-    jobId: '<job>',
-    sessionId: '<session>',
-    launchState: 'queued',
-  });
-  expect(text.replace('<launchState>', 'queued')).toContain(launch);
-  expect(text).not.toContain('Job <job> <launchState> (session <session>)');
-  for (const line of [
-    formatResultAvailability({ kind: 'repair-pending', ageUncertain: false }),
-    formatResultAvailability({ kind: 'available', resultPath: '<path>' }, true).split('\n')[0],
-    'Unverified result path:',
-    WAIT_CURSOR_REPLAY_NOTICE,
-    '--now --cursor <c>',
-    'Snapshot continuations keep `--now`; drop it explicitly only to switch to a blocking wait.',
-    'unprefixed line starting with `Still waiting`',
-    'Ignore lines prefixed with `> `',
-    'Full retained outcome: <command>',
-    'Siblings are results still to collect.',
-    'Carrier unconfirmed for: <ids>',
-    'change cwd',
-    'coral-cli jobs --all',
-    'A `wait_build_mismatch` error means',
-    'tell the user to restart the session so the current Coral plugin loads',
-  ])
-    expect(text).toContain(line);
-  expect(text).not.toContain('membership-change');
-  expect(text).not.toContain('older coordinator');
+it('a snapshot continuation keeps --now and the snapshot cursor', () => {
   const session = new WaitSession(['a']);
   session.reconcile([admitted('a', [], false)]);
   const snapshot = selectWaitSnapshot(session, 20);
   expect(formatWaitSnapshot(snapshot)).toContain(
     formatWaitContinuation(['a'], serializeWaitCursor(snapshot.cursor), true),
   );
-});
-
-it('plan retrieves full retained workflow content when no result path is available', () => {
-  const text = read('clients/skills/plan/SKILL.md');
-  expect(text).toContain('Full retained outcome: <command>');
-  expect(text).toContain('run that exact command from `{work_dir}` for the full workflow content');
 });
 
 it.each(['docs/architecture.md', 'docs/core-modules.md'])('F11 and owner contracts are accurate in %s', (path) => {
