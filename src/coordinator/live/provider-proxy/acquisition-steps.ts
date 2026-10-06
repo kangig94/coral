@@ -1,5 +1,3 @@
-import { join } from 'node:path';
-
 import { z } from 'zod';
 import { bindCustodyIdentity, recordCustodyIntent, type CustodyIntent } from '../../../store/custody-ledger.js';
 
@@ -107,7 +105,7 @@ export type ProviderProxyAcquisitionStepsOptions = Readonly<{
   runtime: Runtime;
   pluginRoot: string;
   /** A host that outlives its coordinator across an upgrade must retain its own bundle and assets. */
-  retainedHostRoot?: string | null;
+  currentEntrypoint?: string | null;
   /** This coordinator's own identity — the set's `buildSetId`/`generation`/`flavor` are its own, since every
    *  role dispatches from the exact same backend artifact this coordinator is running. */
   coordinatorIdentity: CoordinatorIdentity;
@@ -385,12 +383,10 @@ async function spawnProviderProxyGuardian(
   }
   const spawned = await requireSpawnedRole(
     spawnRoleProcess('guardian', setMinted.guardianCapsulePath, spawnPorts, {
-      ...(options.retainedHostRoot === undefined || options.retainedHostRoot === null
-        ? { pluginRoot: options.pluginRoot }
-        : {
-            pluginRoot: options.retainedHostRoot,
-            currentEntrypoint: join(options.retainedHostRoot, 'bridge', 'coral-backend.cjs'),
-          }),
+      pluginRoot: options.pluginRoot,
+      ...(options.currentEntrypoint === undefined || options.currentEntrypoint === null
+        ? {}
+        : { currentEntrypoint: options.currentEntrypoint }),
       detached: true,
       envAdditions: {
         [BUILD_FLAVOR_ENV_KEY]: flavor,

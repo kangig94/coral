@@ -180,6 +180,7 @@ describe('provider binding lifecycle', () => {
       }),
     ).toEqual({ ok: false, failure: { reason: 'subject-mismatch', provider: 'codex' } });
     const codexExecution = result.value.prepareExecution({
+      hostRoot: '/test/plugin/bridge',
       request: {
         action: 'exec',
         sessionId: 'codex-session',

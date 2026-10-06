@@ -83,6 +83,7 @@ type CoordinatorLaunchCoordinator = LaunchCoordinatorPort &
   ProviderDurableSpawner & { admitTopLevelLaunch?: () => boolean };
 
 export type ExecutionServiceDeps = {
+  runningWorkflowJobs: Set<string>;
   runtime: Runtime;
   progressStore: JobProgressStore;
   bundleHash?: string;

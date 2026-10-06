@@ -1,3 +1,4 @@
+import { providerProxyPlacement, type ProviderProxyPlacement } from './host-root.js';
 import { raceObserved } from '../../../infra/promise-signal.js';
 import type {
   AppServerTransport,
@@ -57,13 +58,12 @@ import {
   type ProviderProxySetAcquisitionStopDisposition,
 } from './proxy-set-acquisition.js';
 import {
-  hostFingerprintFromSpec,
-  hostKeyFromSpec,
   hostRefFromEntry,
   type ProviderHostEntry,
   type ProviderHostShutdownDisposition,
   type ProviderHostShutdownHold,
 } from './state.js';
+import { hostKeyFromSpec, hostFingerprintFromSpec } from '../../../providers/host-identity.js';
 import { AbortError, throwIfAborted } from '../../../runtime/abort.js';
 import type { ProviderProxyAuthorityRegistry, ProviderProxySetAuthority } from '../provider-proxy/authority.js';
 import {
@@ -81,6 +81,7 @@ import type { PublicationReceipt } from '../provider-proxy/set-publication.js';
 export type { ProviderHostEntry } from './state.js';
 
 export interface ProviderHostManager {
+  proxyHostRoot(): string;
   openSession(
     spec: ProviderServerSpec,
     options?: { jobId?: string; signal?: AbortSignal },
@@ -401,6 +402,7 @@ export class DefaultProviderHostManager
   private readonly runtime: Runtime;
   private readonly reapContainment: ProviderHostContainmentReaper;
   private readonly carrierBlocksRetirement: (hostRef: HostRef) => boolean;
+  private readonly proxyPlacement: ProviderProxyPlacement;
   private readonly proxySetAcquisitionConfig?: ProviderProxySetAcquisitionConfig;
   private readonly providerProxyLifecycleRef?: ProviderProxySetLifecycleRef;
   private readonly proxySetRotationEntries = new Map<string, ProxySetAcquisitionTarget>();
@@ -425,6 +427,7 @@ export class DefaultProviderHostManager
       options.allocateProviderServerGeneration ?? (() => this.nextProviderServerGeneration++);
     this.carrierBlocksRetirement = options.carrierBlocksRetirement;
     this.proxySetAcquisitionConfig = options.proxySetAcquisition;
+    this.proxyPlacement = options.proxySetAcquisition?.placement ?? providerProxyPlacement();
     this.providerProxyLifecycleRef = options.providerProxyLifecycleRef;
     this.admission = options.admission ?? createHostAdmissionCollection({ classify: () => 'unknown' });
   }
@@ -563,6 +566,10 @@ export class DefaultProviderHostManager
       throw new Error('provider_proxy_set_inherited_authority_not_durable');
     }
     lifecycle.registerInheritedSet(set, publicationReceipt, null, protection);
+  }
+
+  proxyHostRoot(): string {
+    return this.proxyPlacement.hostRoot;
   }
 
   /** See the `ProviderHostManager.routeAppServerOperation()` interface doc for this seam's full contract. */

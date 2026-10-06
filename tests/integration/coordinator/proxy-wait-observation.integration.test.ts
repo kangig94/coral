@@ -128,7 +128,11 @@ it.each(['completion', 'handoff'] as const)(
       operationRegistry: registry,
       providerProxyClaims: new ProviderProxySetClaimMirror(),
       providerProxyLifecycleRef: new ProviderProxySetLifecycleRef(),
-      providerHostManager: { routeAppServerOperation: route, awaitAppServerOperationRoute: awaitRoute },
+      providerHostManager: {
+        proxyHostRoot: () => '/test/plugin/bridge',
+        routeAppServerOperation: route,
+        awaitAppServerOperationRoute: awaitRoute,
+      },
       launchCoordinator,
       startupRecoveryBarrier: { hasPassed: () => true },
       eventBus,
@@ -479,6 +483,7 @@ it('observes a progressing inherited proxy through execution-service assembly an
       loadJobProjectionDetail: (id: string) => store.loadJobProjectionDetail(id),
       platform: process.platform,
       hasStartupRecoveryPassed: () => true,
+      isWorkflowOwnedByThisCoordinator: () => false,
       isAdmittedByThisCoordinator: () => false,
       registryStateForJob: (id: string) => registry.stateForJob(id),
     };

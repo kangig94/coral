@@ -10,6 +10,7 @@ import type { CreateBackendControlDeps } from './job-control.js';
 type AbortCollection = {
   pending: Set<string>;
   aborted: string[];
+  stopRequested: string[];
   refused: AbortRefusal[];
   held: AbortHold[];
   abandoned: AbortAbandonment[];
@@ -23,7 +24,7 @@ function retainAbortOutcome(collection: AbortCollection, result: AbortResult): v
     refused.push(refusal);
   }
   for (const hold of result.held ?? []) {
-    if (!pending.has(hold.jobId)) continue;
+    if (!pending.has(hold.jobId) || collection.stopRequested.includes(hold.jobId)) continue;
     pending.delete(hold.jobId);
     held.push(hold);
   }
@@ -39,11 +40,12 @@ export function abortCoordinatorJobs(jobIds: string[], deps: CreateBackendContro
   const collection: AbortCollection = {
     pending: new Set(jobIds),
     aborted: [],
+    stopRequested: [],
     refused: [],
     held: [],
     abandoned: [],
   };
-  const { pending, aborted, refused, held, abandoned } = collection;
+  const { pending, aborted, stopRequested, refused, held, abandoned } = collection;
   const providerStops = requestStops(jobIds, 'signal_abort');
   if (providerStops.kind === 'admission-closed') {
     if (world.launchCoordinator.successionAdmissionPaused()) {
@@ -51,10 +53,22 @@ export function abortCoordinatorJobs(jobIds: string[], deps: CreateBackendContro
     }
     return { kind: 'successor-owned', jobIds: providerStops.jobIds };
   }
+  const stopDiagnostics: NonNullable<AbortResult['stopDiagnostics']> = [];
   const recorded = new Set<string>();
   for (const [jobId, outcome] of providerStops.outcomes) {
     if (outcome.kind === 'recorded') {
       recorded.add(jobId);
+      aborted.push(jobId);
+      stopRequested.push(jobId);
+      if (outcome.lastError !== null && outcome.lastError !== undefined) {
+        stopDiagnostics.push({
+          jobId,
+          lastError: `${outcome.lastError.code}: ${outcome.lastError.message}`
+            .replace(/\s+/g, ' ')
+            .trim()
+            .slice(0, 512),
+        });
+      }
     } else if (outcome.kind === 'unrecorded') {
       pending.delete(jobId);
       refused.push({
@@ -78,7 +92,7 @@ export function abortCoordinatorJobs(jobIds: string[], deps: CreateBackendContro
       const result = recoveryRegistry.abort(registryJobIds);
       for (const jobId of result.aborted) {
         pending.delete(jobId);
-        aborted.push(jobId);
+        if (!recorded.has(jobId)) aborted.push(jobId);
       }
       retainAbortOutcome(collection, result);
     }
@@ -94,7 +108,7 @@ export function abortCoordinatorJobs(jobIds: string[], deps: CreateBackendContro
         recoveryRegistry.markCancelled(jobId);
       }
       pending.delete(jobId);
-      aborted.push(jobId);
+      if (!recorded.has(jobId)) aborted.push(jobId);
     }
     retainAbortOutcome(collection, result);
   }
@@ -104,20 +118,19 @@ export function abortCoordinatorJobs(jobIds: string[], deps: CreateBackendContro
     for (const jobId of result.aborted) {
       if (!pending.has(jobId)) continue;
       pending.delete(jobId);
-      aborted.push(jobId);
+      if (!recorded.has(jobId)) aborted.push(jobId);
     }
     retainAbortOutcome(collection, result);
   }
 
-  for (const jobId of recorded) {
-    if (!pending.delete(jobId)) continue;
-    aborted.push(jobId);
-  }
+  for (const jobId of recorded) pending.delete(jobId);
 
   return {
     kind: 'answered',
     result: {
       aborted,
+      ...(stopDiagnostics.length === 0 ? {} : { stopDiagnostics }),
+      ...(stopRequested.length === 0 ? {} : { stopRequested }),
       notFound: [...pending],
       ...(refused.length === 0 ? {} : { refused }),
       ...(held.length === 0 ? {} : { held }),

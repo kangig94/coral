@@ -1,6 +1,5 @@
 import { resolveStrictBundleIdentity } from '../../infra/bundle-manifest.js';
 import { writeAuditEvent } from '../../infra/audit-log.js';
-import { pinRunningBuildRoot } from '../../infra/retained-build-root.js';
 import { formatError } from '../../infra/error-format.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { registerPresentHistoricalEpochs, seedHistoricalEpoch } from '../../jobs/historical-reader.js';
@@ -51,15 +50,6 @@ function createStoreOpenedObserver(input: LifecycleRecoveryInput): NonNullable<L
     if (openStore.path !== ':memory:') {
       const runningBuild = resolveStrictBundleIdentity();
       if (runningBuild.ok && runningBuild.manifest.buildSetId === identity.buildSetId) {
-        try {
-          pinRunningBuildRoot(runtime, identity.pluginRoot, runningBuild.manifest);
-        } catch (error: unknown) {
-          writeAuditEvent(
-            'retained_build_root_unavailable',
-            { buildSetId: runningBuild.manifest.buildSetId, reason: formatError(error) },
-            'warn',
-          );
-        }
         const writerGeneration = observeSuccessionWriterGeneration(runtime);
         const generation =
           writerGeneration !== null &&

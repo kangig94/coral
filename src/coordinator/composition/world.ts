@@ -1,9 +1,9 @@
+import { providerProxyPlacement } from '../live/provider-hosts/host-root.js';
 declare const __VERSION__: string;
 import { join } from 'node:path';
 
 import { type PluginRegistry, createPluginRegistry } from '../../infra/plugin-registry.js';
 import { pluginRootNamespace } from '../../infra/plugin-identity.js';
-import { validatedRetainedBuildRoot } from '../../infra/retained-build-root.js';
 import { currentSuccessionAttemptChild } from '../succession/attempt-child.js';
 import { acceptedControllerTransferHandsCapsule } from '../succession/provider-host-transfer.js';
 import { ProviderRegistry } from '../../providers/registry.js';
@@ -292,6 +292,7 @@ export function connectProviderHostRetirementReevaluation(options: {
 }
 
 export interface CoordinatorWorld {
+  readonly runningWorkflowJobs: Set<string>;
   readonly identity: CoordinatorIdentity;
   readonly namespace: string;
   readonly bindHost: string;
@@ -510,7 +511,7 @@ function createWorldProviderHosts(input: WorldProviderHostInput) {
       carrierBlocksRetirement,
       proxySetAcquisition: {
         pluginRoot,
-        retainedHostRoot: () => validatedRetainedBuildRoot(runtime, buildSetId),
+        placement: providerProxyPlacement(),
         identity: { instanceId, buildSetId, flavor },
         operationRegistry,
         custody: providerCustody,
@@ -611,11 +612,13 @@ export function createCoordinatorWorld(
   const providerProxyLifecycleRef = new ProviderProxySetLifecycleRef();
   const providerProxySetContainmentProver = createProviderProxySetContainmentProver(runtime);
   const reapRecordedContainment = createProviderProxySetRecordedContainmentReaper(runtime);
+  const runningWorkflowJobs = new Set<string>();
   const localCarrierRegistries = {
     getDb: () => storeServicesRef.get().progressStore.getDb(),
     loadJobProjectionDetail: (jobId: string) => storeServicesRef.get().progressStore.loadJobProjectionDetail(jobId),
     platform: runtime.env.platform() as NodeJS.Platform,
     hasStartupRecoveryPassed: () => startupRecoveryBarrier.hasPassed(),
+    isWorkflowOwnedByThisCoordinator: (jobId: string) => runningWorkflowJobs.has(jobId),
     isAdmittedByThisCoordinator: (jobId: string) => admittedByThisCoordinator(launchCoordinator, jobId),
     registryStateForJob: (jobId: string) => operationRegistry.stateForJob(jobId),
   };
@@ -636,6 +639,7 @@ export function createCoordinatorWorld(
   providerRegistry.connectAppServerHost(providerHostManager);
 
   return {
+    runningWorkflowJobs,
     identity,
     namespace,
     bindHost,

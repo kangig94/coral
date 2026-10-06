@@ -1,3 +1,4 @@
+import { hostKeyFromSpec, hostFingerprintFromSpec } from '../providers/host-identity.js';
 import { raceObserved } from '../infra/promise-signal.js';
 import { backendLog } from '../infra/backend-log.js';
 import { bindCustodyProcessTicket, recordChildRoleCustodyIntent } from '../infra/custody-process-ticket.js';
@@ -245,67 +246,6 @@ function providerHostEvictionHold(
   };
 }
 
-/** Recursively re-keys every plain object in `value` (at every nesting depth) into ascending key order,
- *  leaving arrays and scalars untouched. Byte-for-byte copy of `canonicalValue`
- *  (`src/coordinator/live/provider-hosts/state.ts`) — required because `JSON.stringify`'s own second
- *  argument is a replacer *allowlist* applied at every nesting level, not a top-level key sorter: passing
- *  `Object.keys(canonical).sort()` there (the bug this replaces) silently drops every field one level below
- *  the top instead of sorting it. Sorting the value graph first and calling plain `JSON.stringify` on the
- *  result is the only way to get a deep-stable key order without that trap. */
-function canonicalValue(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(canonicalValue);
-  if (value !== null && typeof value === 'object') {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>)
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([key, entry]) => [key, canonicalValue(entry)]),
-    );
-  }
-  return value;
-}
-
-/** Stable identity for one executable configuration, independent of lease mode — a faithful reimplementation
- *  of `hostKeyFromSpec` (`src/coordinator/live/provider-hosts/state.ts`), copied rather than imported because
- *  that module lives under the forbidden `src/coordinator/live/` tree (see this file's top-of-file doc
- *  comment). Same field set, same `canonicalValue` sorter, same `JSON.stringify` call with no replacer — a
- *  divergence here silently mints a `HostRef.fingerprint` (below) that can never match the coordinator's own
- *  for an identical spec, which is exactly the defect this shape once had. The correspondence is not just
- *  asserted in prose: `tests/unit/provider-proxy/semantic-operation.test.ts`'s "agrees with the coordinator's
- *  own key/fingerprint functions" case imports both copies directly and proves they produce identical output
- *  for the same spec. Exported so that test can drive it directly rather than only indirectly through
- *  `createProxyAppServerHostAuthority`'s pooling behavior. */
-export function specIdentityKey(spec: ProviderServerSpec): string {
-  return JSON.stringify(
-    canonicalValue({
-      provider: spec.provider,
-      command: spec.command,
-      args: [...spec.args],
-      cwd: spec.cwd,
-      env: spec.env ?? {},
-      initializeRequest: spec.initializeRequest ?? null,
-      initializeTimeoutMs: spec.initializeTimeoutMs ?? null,
-      shutdownCapability: spec.shutdownCapability ?? null,
-    }),
-  );
-}
-
-/** Mirrors `hostFingerprintFromSpec` (`src/coordinator/live/provider-hosts/state.ts`) the same way
- *  `specIdentityKey` mirrors `hostKeyFromSpec`: same three fields, same key order (a plain object literal's
- *  string keys serialize in insertion order, so this does not need `canonicalValue`), same digest. Only the
- *  hashing call differs in *spelling* — `runtime.ids.sha256` here vs. `node:crypto`'s `createHash('sha256')`
- *  there — not in behavior: `src/runtime/real.ts` implements `ids.sha256` as
- *  `createHash('sha256').update(input).digest('hex')`, the identical primitive. Exported for the same
- *  direct-test reason as `specIdentityKey`. */
-export function specFingerprint(runtime: Runtime, spec: ProviderServerSpec): string {
-  return runtime.ids.sha256(
-    JSON.stringify({
-      identity: specIdentityKey(spec),
-      leaseMode: spec.leaseMode,
-      idleRetirement: spec.leaseMode === 'shared' ? spec.idleRetirement : null,
-    }),
-  );
-}
-
 type HostPoolEntry = {
   readonly hostKey: string;
   readonly spec: ProviderServerSpec;
@@ -329,7 +269,7 @@ function hostKeyFor(
   mode: ProxyHostCancellationMode,
   jobId: string | undefined,
 ): string {
-  const specKey = specIdentityKey(spec);
+  const specKey = hostKeyFromSpec(spec);
   if (mode === 'operation-isolated') return JSON.stringify([operation.jobId, operation.operationId, specKey]);
   return spec.leaseMode === 'shared' ? specKey : `${specKey} job:${jobId ?? ''}`;
 }
@@ -340,28 +280,23 @@ function assertLeasePolicy(spec: ProviderServerSpec, jobId: string | undefined):
   }
 }
 
-function hostRefForIdentity(
-  spec: ProviderServerSpec,
-  instanceId: string,
-  jobId: string | undefined,
-  runtime: Runtime,
-): HostRef {
+function hostRefForIdentity(spec: ProviderServerSpec, instanceId: string, jobId: string | undefined): HostRef {
   const identity = {
     provider: spec.provider,
-    fingerprint: specFingerprint(runtime, spec),
+    fingerprint: hostFingerprintFromSpec(spec),
     instanceId,
   } as const;
   if (spec.leaseMode === 'shared') return Object.freeze({ ...identity, leaseMode: 'shared' as const });
   return Object.freeze({ ...identity, leaseMode: 'job-exclusive' as const, ownerJobId: jobId as string });
 }
 
-function hostRefFor(entry: HostPoolEntry, runtime: Runtime): HostRef {
-  return hostRefForIdentity(entry.spec, entry.instanceId, entry.jobId, runtime);
+function hostRefFor(entry: HostPoolEntry): HostRef {
+  return hostRefForIdentity(entry.spec, entry.instanceId, entry.jobId);
 }
 
-function isMatchingHostRef(hostRef: HostRef, entry: HostPoolEntry, runtime: Runtime): boolean {
+function isMatchingHostRef(hostRef: HostRef, entry: HostPoolEntry): boolean {
   if (hostRef.provider !== entry.spec.provider) return false;
-  if (hostRef.fingerprint !== specFingerprint(runtime, entry.spec)) return false;
+  if (hostRef.fingerprint !== hostFingerprintFromSpec(entry.spec)) return false;
   if (hostRef.instanceId !== entry.instanceId) return false;
   if (hostRef.leaseMode !== entry.spec.leaseMode) return false;
   return hostRef.leaseMode !== 'job-exclusive' || hostRef.ownerJobId === entry.jobId;
@@ -446,7 +381,7 @@ class ProxyProviderRootPool {
   }
 
   matches(hostRef: HostRef, entry: HostPoolEntry): boolean {
-    return isMatchingHostRef(hostRef, entry, this.runtime);
+    return isMatchingHostRef(hostRef, entry);
   }
 
   allEntries(): ReadonlySet<HostPoolEntry> {
@@ -586,7 +521,7 @@ class ProxyProviderRootPool {
       }
       entry.cleanupHold = null;
       if (!entry.rootTokenReleased) {
-        const hostRef = hostRefFor(entry, this.runtime);
+        const hostRef = hostRefFor(entry);
         if (disposition.kind === 'operator-abandoned') this.retainTerminalEviction(hostRef, disposition);
         this.releaseLiveRoot(entry);
         this.closingEntries.delete(entry);
@@ -631,7 +566,7 @@ class ProxyProviderRootPool {
       request,
       generation: this.nextGeneration++,
       instanceId,
-      reservedRef: hostRefForIdentity(spec, instanceId, options?.jobId, this.runtime),
+      reservedRef: hostRefForIdentity(spec, instanceId, options?.jobId),
       handle: null,
       cleanupHold: null,
       liveRootCommitted: false,
@@ -699,7 +634,7 @@ class ProxyProviderRootPool {
       entry.shutdownHold = null;
       this.releaseLiveRoot(entry);
       this.closingEntries.delete(entry);
-      this.admission.observeRetired(hostRefFor(entry, this.runtime), 'closed');
+      this.admission.observeRetired(hostRefFor(entry), 'closed');
     };
     void handle.processCessation.then(retire);
   }
@@ -829,7 +764,7 @@ class ProxyProviderRootPool {
     if (hold === null) return { kind: 'no-hold' };
     const disposition = await hold.operatorExit.abandon();
     if (!isAcceptedProviderServerOperatorAbandonment(hold, disposition)) return { kind: 'refused', hold };
-    const retained = this.retainTerminalEviction(hostRefFor(entry, this.runtime), disposition);
+    const retained = this.retainTerminalEviction(hostRefFor(entry), disposition);
     entry.cleanupHold = null;
     this.releaseLiveRoot(entry);
     this.closingEntries.delete(entry);
@@ -949,7 +884,7 @@ class ProxyProviderHostSessions {
 
   private managedSessionFor(entry: HostPoolEntry): ManagedHostSession {
     let released = false;
-    const hostRef = hostRefFor(entry, this.runtime);
+    const hostRef = hostRefFor(entry);
     entry.refCount += 1;
     return Object.freeze({
       session: Object.freeze({

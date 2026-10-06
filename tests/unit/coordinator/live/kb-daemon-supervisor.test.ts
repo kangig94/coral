@@ -1,3 +1,8 @@
+import { cpSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import * as bundleManifest from '#src/infra/bundle-manifest.js';
+import { createRealRuntime } from '#src/runtime/real.js';
 import { EventEmitter } from 'node:events';
 
 import { PassThrough } from 'node:stream';
@@ -124,6 +129,57 @@ function writeParentRequest(daemonProcess: FakeDaemonProcess, id: string, method
 }
 
 describe('KB daemon supervisor', () => {
+  it('uses the installed entrypoint even when an old valid state copy exists', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'coral-kb-installed-root-'));
+    const manifest = bundleManifest.strictBundleManifestSchema.parse(
+      JSON.parse(readFileSync('clients/build/manifest.v2.json', 'utf8')),
+    );
+    const real = createRealRuntime('prod', { baseDir: directory });
+    const pluginRoot = join(directory, 'plugin-cache');
+    cpSync('clients/build', join(pluginRoot, 'bridge'), { recursive: true });
+    cpSync('clients/build', join(real.paths.coral.generation.root, 'builds', manifest.buildSetId, 'bridge'), {
+      recursive: true,
+    });
+    const running = vi.spyOn(bundleManifest, 'resolveStrictBundleIdentity').mockReturnValue({ ok: true, manifest });
+    const daemonProcess = new FakeDaemonProcess(103);
+    const { runtime, spawnCalls } = createRuntime([daemonProcess]);
+    const entrypoint = join(pluginRoot, 'bridge', 'coral-backend.cjs');
+    const supervisor = createKbDaemonSupervisor({
+      runtime: { ...runtime, paths: real.paths },
+      pluginRoot,
+      entrypoint,
+      command: '/node',
+    });
+    try {
+      const start = supervisor.start();
+      await flushMicrotasks();
+      writeReady(daemonProcess);
+      await start;
+      expect(spawnCalls[0]).toMatchObject({ args: [entrypoint], cwd: pluginRoot });
+    } finally {
+      daemonProcess.emitClose(0, null);
+      await supervisor.stop();
+      running.mockRestore();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it.each(['/plugin/bridge/coral-backend.cjs', '/development/clients/build/coral-backend.cjs'])(
+    'spawns the daemon from its running entrypoint %s',
+    async (entrypoint) => {
+      const daemonProcess = new FakeDaemonProcess(103);
+      const { runtime, spawnCalls } = createRuntime([daemonProcess]);
+      const supervisor = createKbDaemonSupervisor({ runtime, pluginRoot: '/plugin', entrypoint, command: '/node' });
+      const start = supervisor.start();
+      await flushMicrotasks();
+      writeReady(daemonProcess);
+      await start;
+      expect(spawnCalls[0]).toMatchObject({ command: '/node', args: [entrypoint], cwd: '/plugin' });
+      daemonProcess.emitClose(0, null);
+      await supervisor.stop();
+    },
+  );
+
   it('reports failed and escalates SIGTERM→SIGKILL when the daemon misses the start timeout', async () => {
     const daemonProcess = new FakeDaemonProcess(103);
     const { runtime, time } = createRuntime([daemonProcess]);

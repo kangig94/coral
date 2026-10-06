@@ -118,6 +118,7 @@ const TEST_EXECUTION_REQUEST = {
 const TEST_CODEX_PREPARED = buildCodexExecutionPlan({
   access: TEST_CODEX_ACCESS,
   hostPlan: codexAppServerLifecycle.planHost({
+    hostRoot: '/test/plugin/bridge',
     purpose: 'execution',
     access: TEST_CODEX_ACCESS,
     request: TEST_EXECUTION_REQUEST,
@@ -131,6 +132,7 @@ const TEST_CODEX_PREPARED = buildCodexExecutionPlan({
 });
 export const TEST_CODEX_PLAN = Object.freeze({
   host: codexAppServerLifecycle.planHost({
+    hostRoot: '/test/plugin/bridge',
     purpose: 'execution',
     access: TEST_CODEX_ACCESS,
     request: TEST_EXECUTION_REQUEST,
@@ -187,6 +189,7 @@ export function prepareTestCodexAppServer(
   persistedContinuity?: Record<string, unknown>,
 ) {
   const hostPlan = codexAppServerLifecycle.planHost({
+    hostRoot: '/test/plugin/bridge',
     purpose: 'execution',
     access: TEST_CODEX_ACCESS,
     request: {

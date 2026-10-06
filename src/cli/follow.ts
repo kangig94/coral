@@ -836,6 +836,8 @@ export async function launchAndFollow(options: FollowOptions): Promise<number> {
       const results = await Promise.all(jobIds.map((jobId) => options.abortJob(jobId)));
       return {
         aborted: results.flatMap((result) => result.aborted),
+        stopDiagnostics: results.flatMap((result) => result.stopDiagnostics ?? []),
+        stopRequested: results.flatMap((result) => result.stopRequested ?? []),
         notFound: results.flatMap((result) => result.notFound),
         refused: results.flatMap((result) => result.refused ?? []),
         held: results.flatMap((result) => result.held ?? []),

@@ -1,3 +1,4 @@
+import { formatAbortResult } from '#src/cli/format/jobs.js';
 import { expect, it } from 'vitest';
 import { BackendToolHttpError } from '#src/transport/http/errors.js';
 import { buildErrorEnvelope } from '#src/cli/errors.js';
@@ -53,4 +54,18 @@ it('includes every remaining job in the wait continuation', () => {
     false,
   );
   expect(output).toContain('coral-cli wait jobs job-a job-b job-c');
+});
+
+it('distinguishes a recorded stop from an aborted job', () => {
+  const output = formatAbortResult({
+    aborted: ['job-1'],
+    stopRequested: ['job-1'],
+    stopDiagnostics: [{ jobId: 'job-1', lastError: 'provider_operation_failed: Reply lost while stopping' }],
+    notFound: [],
+  });
+  expect(output).toContain('Stop requested for jobs: job-1');
+  expect(output).toContain('Stop diagnostic for job-1: provider_operation_failed: Reply lost while stopping');
+  expect(output).not.toContain('Aborted jobs: job-1');
+  expect(output).not.toContain('containment');
+  expect(output).not.toContain('Abort held');
 });

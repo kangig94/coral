@@ -105,7 +105,7 @@ describe('createCoordinatorControl.abortJobs', () => {
 
     expect(control.abortJobs([record.operation.jobId])).toEqual({
       kind: 'answered',
-      result: { aborted: [record.operation.jobId], notFound: [] },
+      result: { aborted: [record.operation.jobId], stopRequested: [record.operation.jobId], notFound: [] },
     });
     expect(readProviderOperation(harness.db, record.operation)).toMatchObject({
       phase: 'executing',
@@ -205,7 +205,7 @@ describe('createCoordinatorControl.abortJobs', () => {
 
     expect(control.abortJobs([record.operation.jobId])).toEqual({
       kind: 'answered',
-      result: { aborted: [record.operation.jobId], notFound: [] },
+      result: { aborted: [record.operation.jobId], stopRequested: [record.operation.jobId], notFound: [] },
     });
     expect(listener).toHaveBeenCalledOnce();
     expect(readProviderOperation(harness.db, record.operation)).toMatchObject({
@@ -388,4 +388,57 @@ describe('createCoordinatorControl.scopeCheckJobs', () => {
     expect(result.mismatch).toContain('provider-job');
     expect(result.mismatch).not.toContain('kb-job');
   });
+});
+
+it('keeps a recorded stop applied when its saga has a permanent diagnostic', () => {
+  const harness = createProviderOperationReconcilerHarness();
+  const record = providerOperationRecord('proxy-activation-pending');
+  insertProviderOperation(harness.db, {
+    ...record,
+    lastError: { observedAtMs: 100, code: 'provider_activation_ack_invalid', message: 'Fingerprint mismatch' },
+  });
+  const decision = controlFor(harness).abortJobs([record.operation.jobId]);
+  expect(decision).toMatchObject({
+    kind: 'answered',
+    result: {
+      aborted: [record.operation.jobId],
+      stopRequested: [record.operation.jobId],
+      stopDiagnostics: [
+        { jobId: record.operation.jobId, lastError: 'provider_activation_ack_invalid: Fingerprint mismatch' },
+      ],
+    },
+  });
+});
+
+it('annotates an applied stop with a condensed retry diagnostic without creating an abort hold', () => {
+  const harness = createProviderOperationReconcilerHarness();
+  const initial = providerOperationRecord('executing');
+  const registry = new AbortRegistry(new SimulationRuntime().ids);
+  vi.spyOn(registry, 'abort').mockReturnValue({
+    aborted: [],
+    notFound: [],
+    held: [{ jobId: initial.operation.jobId, reason: 'Local cleanup is pending', nextStep: 'Wait for cleanup.' }],
+  });
+  const record = {
+    ...initial,
+    lastError: { observedAtMs: 100, code: 'provider_operation_failed', message: 'Reply lost\n  while stopping' },
+  };
+  try {
+    insertProviderOperation(harness.db, record);
+    const decision = controlFor(harness, registry).abortJobs([record.operation.jobId]);
+    expect(decision).toMatchObject({
+      kind: 'answered',
+      result: {
+        aborted: [record.operation.jobId],
+        stopRequested: [record.operation.jobId],
+        stopDiagnostics: [
+          { jobId: record.operation.jobId, lastError: 'provider_operation_failed: Reply lost while stopping' },
+        ],
+      },
+    });
+    expect(decision.kind === 'answered' && decision.result.held).toBeUndefined();
+  } finally {
+    harness.reconciler.stop();
+    harness.db.close();
+  }
 });

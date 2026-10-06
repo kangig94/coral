@@ -14,7 +14,6 @@ import {
   type ProcessIncarnation,
   type ProcessLiveness,
 } from '../../infra/node-process.js';
-import { retainedBuildRoot } from '../../infra/retained-build-root.js';
 import { upgradeIntentPath } from '../../infra/path/index.js';
 import {
   quarantineCorruptUpgradeIntent,
@@ -1149,12 +1148,8 @@ export async function prepareCommittedSuccessorRecovery(
   if (!runsTargetBuild && !committedSuccessorMayControlWork(runtime, receipt.epochKey, epochHasLiveJobs))
     return { kind: 'none' };
 
-  const installed = revalidateUpgradeIntentTarget(intent);
-  const targetRoot =
-    installed.kind === 'validated'
-      ? intent.target.pluginRootLabel
-      : retainedBuildRoot(runtime, intent.target.build.buildSetId);
-  const target = installed.kind === 'validated' ? installed : revalidateUpgradeIntentTarget(intent, targetRoot);
+  const targetRoot = intent.target.pluginRootLabel;
+  const target = revalidateUpgradeIntentTarget(intent);
   if (target.kind !== 'validated') {
     return holdOrAbandon({ kind: 'committed-successor-build-invalid', attemptId: receipt.attemptId });
   }

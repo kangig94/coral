@@ -1,9 +1,6 @@
 import type { Runtime } from '../../../runtime/ports.js';
 import type { KbDaemonSupervisorState } from './state.js';
-import { join } from 'node:path';
 import { formatError } from '../../../infra/error-format.js';
-import type { resolveStrictBundleIdentity } from '../../../infra/bundle-manifest.js';
-import { validatedRetainedBuildRoot } from '../../../infra/retained-build-root.js';
 import { requirePipedHandles } from '../../../infra/process-supervision.js';
 import { encodeResolvedStoreEpoch } from '../../../store/epoch/index.js';
 import type {
@@ -40,7 +37,6 @@ type SpawnConfig = Readonly<{
   pluginRoot: string;
   command: string;
   entrypoint: string;
-  runningIdentity: ReturnType<typeof resolveStrictBundleIdentity>;
   forwardedKbDaemonEnv: Record<string, string>;
   backendNamespace: string;
   bundleHash: string;
@@ -60,29 +56,17 @@ export function spawnKbDaemonForStart(
   state: KbDaemonSupervisorState,
   dependencies: SpawnDependencies,
 ): { spawned: DaemonProcessLike; pipedHandles: ReturnType<typeof requirePipedHandles> } | null {
-  const {
-    runtime,
-    pluginRoot,
-    command,
-    entrypoint,
-    runningIdentity,
-    forwardedKbDaemonEnv,
-    backendNamespace,
-    bundleHash,
-    instanceId,
-  } = config;
+  const { runtime, pluginRoot, command, entrypoint, forwardedKbDaemonEnv, backendNamespace, bundleHash, instanceId } =
+    config;
   const { setFailure, rejectPendingRequests, abortActiveParentRequests, notifyExitListeners, killFailedSpawn } =
     dependencies;
   let spawned: DaemonProcessLike | null = null;
   let pipedHandles: ReturnType<typeof requirePipedHandles> | undefined;
   try {
-    const root =
-      (runningIdentity.ok ? validatedRetainedBuildRoot(runtime, runningIdentity.manifest.buildSetId) : null) ??
-      pluginRoot;
     spawned = runtime.process.spawn({
       command,
-      args: [root === pluginRoot ? entrypoint : join(root, 'bridge', 'coral-backend.cjs')],
-      cwd: root,
+      args: [entrypoint],
+      cwd: pluginRoot,
       envAdditions: {
         ...forwardedKbDaemonEnv,
         CORAL_KB_DAEMON: '1',
@@ -170,7 +154,6 @@ export function createKbDaemonStarter(
     pluginRoot,
     command,
     entrypoint,
-    runningIdentity,
     forwardedKbDaemonEnv,
     backendNamespace,
     bundleHash,
@@ -204,7 +187,6 @@ export function createKbDaemonStarter(
         pluginRoot,
         command,
         entrypoint,
-        runningIdentity,
         forwardedKbDaemonEnv,
         backendNamespace,
         bundleHash,

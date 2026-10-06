@@ -1,1 +1,1 @@
-{"version":"v1","buildSetId":"d62be5f7-c3e1-45e8-960d-96161454fcc4","bundleHash":"86d030ada47cd375","protocols":["prepare","commit"],"accepts":[{"owner":"durable-cli","generation":1},{"owner":"provider-operations","generation":1},{"owner":"provider-proxy-sets","generation":1}]}
+{"version":"v1","buildSetId":"f75e76e3-001f-46bd-8d25-3bd43402a89c","bundleHash":"b43f7ee4948e46b6","protocols":["prepare","commit"],"accepts":[{"owner":"durable-cli","generation":1},{"owner":"provider-operations","generation":1},{"owner":"provider-proxy-sets","generation":1}]}

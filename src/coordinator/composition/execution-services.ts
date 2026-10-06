@@ -135,6 +135,7 @@ function createExecutionServiceRegistry(input: {
         'SELECT COALESCE(MAX(seq), 0) AS seq FROM events',
       ).get()?.seq ?? 0;
     const created = createExecutionService(ctx, {
+      runningWorkflowJobs: world.runningWorkflowJobs,
       runtime,
       progressStore,
       bundleHash,
@@ -172,6 +173,7 @@ function createExecutionServiceRegistry(input: {
           loadJobProjectionDetail: (jobId) => getProgressStore().loadJobProjectionDetail(jobId),
           platform: runtime.env.platform() as NodeJS.Platform,
           hasStartupRecoveryPassed: () => world.startupRecoveryBarrier.hasPassed(),
+          isWorkflowOwnedByThisCoordinator: (jobId) => world.runningWorkflowJobs.has(jobId),
           isAdmittedByThisCoordinator: (jobId) => admittedByThisCoordinator(world.launchCoordinator, jobId),
           registryStateForJob: (jobId) => world.operationRegistry.stateForJob(jobId),
           holdsLocalAppServerExecution: (jobId) =>
@@ -420,6 +422,11 @@ function createExecutionOperationReconciler(input: {
   } = input;
   return new ProviderOperationReconciler({
     getProgressStore,
+    requestContainment: (identity, cause) => {
+      const lifecycle = world.providerProxyLifecycleRef.get();
+      if (lifecycle === null) throw new Error('Provider set containment owner is unavailable.');
+      lifecycle.requestOperationContainment(identity, cause);
+    },
     custody: () => {
       const activeEpochPath = getActiveEpochPath?.();
       const dbDir = runtime.paths.coral.store.dbDir;

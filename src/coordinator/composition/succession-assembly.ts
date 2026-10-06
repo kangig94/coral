@@ -1,6 +1,8 @@
 import { formatError } from '../../infra/error-format.js';
 import { type ProcessIncarnation } from '../../infra/node-process.js';
-import { validatedRetainedBuildRoot } from '../../infra/retained-build-root.js';
+import { installedBuild } from '../../infra/installed-build-root.js';
+import { localProviderHostRoot, resolveStrictBundleIdentity } from '../../infra/bundle-manifest.js';
+import { createForeignTargetValidator } from '../../infra/handoff-target.js';
 import { readUpgradeIntent, type UpgradeIntent } from '../../infra/upgrade-intent.js';
 import { recoverJobLocations } from '../../jobs/location-recovery.js';
 import { isTerminalPhase } from '../../jobs/phase.js';
@@ -207,7 +209,15 @@ export function createCoordinatorSuccessionAssembly(input: SuccessionAssemblyInp
       return status !== null && isTerminalPhase(status.phase);
     },
     localOperationJobIds: () => world.operationRegistry.liveJobIds(),
-    hostRootRetained: (buildSetId) => validatedRetainedBuildRoot(runtime, buildSetId) !== null,
+    hostInstalledRootAvailable: (buildSetId) => {
+      if (buildSetId !== identity.buildSetId) return installedBuild(buildSetId) !== null;
+      const running = resolveStrictBundleIdentity();
+      return (
+        running.ok &&
+        running.manifest.buildSetId === buildSetId &&
+        createForeignTargetValidator()(localProviderHostRoot(), running.manifest).kind === 'validated'
+      );
+    },
     attemptId: () => currentSuccessionAttemptChild()?.attemptId ?? null,
     targetChangesStoreFormat: () => {
       const observed = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);

@@ -1,3 +1,4 @@
+import { hostFingerprintFromSpec } from '../providers/host-identity.js';
 import { observePromise, raceWithSignal } from '../infra/promise-signal.js';
 import type { ProcessIncarnation } from '../infra/node-process.js';
 import { backendLog } from '../infra/backend-log.js';
@@ -220,8 +221,13 @@ function rebuildBoundProvider(
   return { state: 'reconstructed', bound };
 }
 
-function stagingInput(runtime: Runtime, prepared: ProxyPreparedAppServerOperation): BoundProviderHostPreparationInput {
+function stagingInput(
+  runtime: Runtime,
+  hostRoot: string,
+  prepared: ProxyPreparedAppServerOperation,
+): BoundProviderHostPreparationInput {
   return {
+    hostRoot,
     request: prepared.request,
     persistedContinuity: derivePersistedContinuity(prepared),
     baseEnv: prepared.baseEnv,
@@ -232,9 +238,11 @@ function stagingInput(runtime: Runtime, prepared: ProxyPreparedAppServerOperatio
 
 function executionInput(
   runtime: Runtime,
+  hostRoot: string,
   prepared: ProxyPreparedAppServerOperation,
 ): BoundProviderExecutionPreparationInput {
   return {
+    hostRoot,
     request: prepared.request,
     persistedContinuity: derivePersistedContinuity(prepared),
     baseEnv: prepared.baseEnv,
@@ -373,6 +381,8 @@ export interface SemanticOperationStageHandle {
 export type SemanticOperationRuntimeOptions = Readonly<{
   runtime: Runtime;
   hostAuthority: ProxyAppServerHostAuthority;
+  hostRoot: string;
+  hostFingerprint: string;
   /** The live `Proxy` this runtime pumps events into and reads ledger state from. Supplied as a getter
    *  because `createProxy` itself needs this runtime's `host` before the `Proxy` it returns can exist —
    *  the same forward-reference shape `role-main.ts` already uses for `guardianRef`/`reaperRef`. */
@@ -781,7 +791,7 @@ function createSemanticOperationHost(
           return;
         }
         try {
-          const preparedExecution = bound.prepareExecution(executionInput(runtime, prepared));
+          const preparedExecution = bound.prepareExecution(executionInput(runtime, options.hostRoot, prepared));
           if (preparedExecution.kind !== 'app-server') {
             throw new Error(
               `Provider '${bound.name}' prepared a standalone execution; this proxy runs app-server operations only.`,
@@ -943,12 +953,20 @@ function createSemanticOperationStager(
       entry.cancellationMode = cancellationMode;
       let input: BoundProviderHostPreparationInput;
       try {
-        input = stagingInput(runtime, prepared);
+        input = stagingInput(runtime, options.hostRoot, prepared);
       } catch (error: unknown) {
         return prepareRefusal(
           'provider_reconstruction_refused',
           'local-fallback',
           boundedRefusalReason(error, 'The provider operation could not be reconstructed.'),
+        );
+      }
+      const compiled = bound.prepareExecution(executionInput(runtime, options.hostRoot, prepared));
+      if (compiled.kind !== 'app-server' || hostFingerprintFromSpec(compiled.hostSpec) !== options.hostFingerprint) {
+        return prepareRefusal(
+          'proxy_prepare_refused',
+          'local-fallback',
+          'provider_host_fingerprint_mismatch: compiled host identity differs from the requested proxy set; activation is refused.',
         );
       }
       let openedStaging: Awaited<ReturnType<typeof appServer.openReplacement>>;

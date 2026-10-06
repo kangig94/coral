@@ -87,6 +87,7 @@ function readCarrierHealth(
           loadJobProjectionDetail: (jobId) => progressStore.loadJobProjectionDetail(jobId),
           platform,
           hasStartupRecoveryPassed: () => world.startupRecoveryBarrier.hasPassed(),
+          isWorkflowOwnedByThisCoordinator: (jobId) => world.runningWorkflowJobs.has(jobId),
           isAdmittedByThisCoordinator: (jobId) => admittedByThisCoordinator(world.launchCoordinator, jobId),
           registryStateForJob: (jobId) => world.operationRegistry.stateForJob(jobId),
         },

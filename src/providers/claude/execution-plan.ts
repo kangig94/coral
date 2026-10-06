@@ -1,3 +1,4 @@
+import { basename, join } from 'node:path';
 import type { ProviderPreflightInput, ProviderPreflightRuntime, ProviderRequest } from '../contract.js';
 import {
   allExecutionLifetimes,
@@ -14,7 +15,7 @@ import {
 import { shouldUseWindowsCommandShell, windowsCommandName } from '../../infra/windows-shell.js';
 import { CLAUDE_ALLOWED_REQUEST_ENV_KEYS, CLAUDE_PROTECTED_REQUEST_ENV_KEYS } from './credential-policy.js';
 import type { StoragePort } from '../../infra/port-types.js';
-import { resolveClaudeBrokerEntrypoint, type ClaudeBrokerHostPlan } from './request-mapping.js';
+import { type ClaudeBrokerHostPlan } from './request-mapping.js';
 import { claudeTransportEnv } from './transport-mode.js';
 import type { resolveClaudeTransportMode } from './transport-mode.js';
 import type { CanonicalWorkDir } from '../../runtime/canonical-work-dir.js';
@@ -176,12 +177,16 @@ export function createClaudeBrokerHost(options: {
   readonly cwd: CanonicalWorkDir;
   readonly baseEnv: Readonly<Record<string, string>>;
   readonly platform: string;
-  readonly storage: Pick<StoragePort, 'existsSync'>;
+  readonly hostRoot: string;
   readonly transportMode: ReturnType<typeof resolveClaudeTransportMode>;
 }): ClaudeExecutionPlan['host']['broker'] {
   return Object.freeze({
     command: process.execPath,
-    args: Object.freeze([resolveClaudeBrokerEntrypoint(options.storage)]),
+    args: Object.freeze([
+      basename(options.hostRoot) === 'dist'
+        ? join(options.hostRoot, 'providers', 'claude', 'appserver', 'server.js')
+        : join(options.hostRoot, 'coral-claude-appserver.cjs'),
+    ]),
     cwd: options.cwd,
     transportMode: options.transportMode,
     environment: Object.freeze([
@@ -196,7 +201,7 @@ export function buildClaudeHost(options: {
   readonly request: Pick<ProviderRequest, 'cwd' | 'coralEnv'>;
   readonly baseEnv: Readonly<Record<string, string>>;
   readonly platform: string;
-  readonly storage: Pick<StoragePort, 'existsSync'>;
+  readonly hostRoot: string;
   readonly transportMode: ReturnType<typeof resolveClaudeTransportMode>;
 }): ClaudeExecutionPlan['host'] {
   return Object.freeze({
@@ -205,7 +210,7 @@ export function buildClaudeHost(options: {
       cwd: options.request.cwd,
       baseEnv: options.baseEnv,
       platform: options.platform,
-      storage: options.storage,
+      hostRoot: options.hostRoot,
       transportMode: options.transportMode,
     }),
     controller: buildClaudeControllerHost({

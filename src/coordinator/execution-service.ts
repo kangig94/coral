@@ -165,6 +165,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
       getCurrentJournalSeq: deps.getCurrentJournalSeq,
     });
     this.workflowService = new WorkflowExecutionService({
+      runningJobs: deps.runningWorkflowJobs,
       runtime: this.runtime,
       abortRegistry: this.abortRegistry,
       backendNamespace: this.backendNamespace,

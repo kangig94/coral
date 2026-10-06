@@ -1,3 +1,4 @@
+import { localProviderHostRoot } from '../../../infra/bundle-manifest.js';
 import type { ProviderRequest } from '../../../providers/contract.js';
 import type { ProviderContinuityBlob } from '../../../sessions/continuity.js';
 import { backendLog } from '../../../infra/backend-log.js';
@@ -85,6 +86,7 @@ export class RecoveryService {
     request: ProviderRequest,
   ): BoundProviderHostPreparationInput {
     return {
+      hostRoot: localProviderHostRoot(),
       request,
       persistedContinuity: session.providerContinuity ?? undefined,
       baseEnv: this.deps.runtime.env.fullSnapshot(),

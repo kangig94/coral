@@ -176,6 +176,14 @@ Provider-host `list` and `inspect` can report `reclamation-failed`. This status 
 
 ## Exit Codes
 
+`coral-cli abort` distinguishes an accepted provider stop intent from a completed abort. Recorded
+stops stay in `aborted` for released-reader compatibility and are annotated by `stopRequested`.
+The new CLI prints `Stop requested for jobs: ...` for those entries and reserves `Aborted jobs: ...`
+for completed local aborts. Optional `stopDiagnostics` condense saga retry errors to one line; they
+do not turn an applied stop into a hold or change its successful exit. `held` means the stop was not
+applied. Executing operations retain retry-safe ownership; the CLI never promises their containment.
+Recording intent alone does not change the job's projected phase.
+
 | Exit | When used                                                                                                                                                                                                                                                                                                                                    |
 | ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `2`  | `invalid_usage`, `invalid_store_reset_incident_id`, `store_reset_epoch_ambiguous`                                                                                                                                                                                                                                                                                           |

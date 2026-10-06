@@ -3287,6 +3287,51 @@ export class ProviderProxySetLifecycle {
     };
   }
 
+  requestOperationContainment(identity: ProviderProxySetIdentity, cause: string): void {
+    const slot = this.#slots.get(providerProxySetKey(identity));
+    if (
+      slot === undefined ||
+      !('authority' in slot) ||
+      slot.authority === null ||
+      !providerProxySetIdentitiesEqual(slot.identity, identity) ||
+      (slot.kind !== 'available' && slot.kind !== 'draining')
+    )
+      return;
+    const liveClaims = this.#deps.claims.claimsFor(identity).length;
+    if (liveClaims > 0) {
+      const dispositions = new Map(this.#operatorDispositions.get(slot.key) ?? []);
+      const firstOccurrence = dispositions.get('operation-release')?.incidentReason !== cause;
+      dispositions.set('operation-release', {
+        disposition: 'held',
+        incidentReason: cause,
+        waitingFor: 'operation-control-outcome-unknown',
+      });
+      void this.#setOperatorDispositions(identity, dispositions);
+      if (firstOccurrence)
+        this.#report(
+          'warn',
+          `Provider operation containment held cause=${cause} liveClaims=${liveClaims}; exit=single-operation-release-or-authority-fault`,
+        );
+      return;
+    }
+    const fence = this.#deps.fenceProviderOperationMutations?.(identity);
+    if (fence === undefined) throw new Error('provider_proxy_operation_containment_mutation_fence_unavailable');
+    this.#removeRoute(slot);
+    const begin = (): void => {
+      if (this.#slots.get(slot.key) === slot && this.#deps.claims.claimsFor(identity).length === 0) {
+        this.#beginContainment(slot, {
+          action: 'stop-and-reap',
+          reason: 'operation_release_failed',
+          liveClaims: 0,
+          setIdentity: identity,
+        });
+      }
+      fence.release();
+    };
+    if (fence.kind === 'holding') void fence.retryAfter.then(begin);
+    else begin();
+  }
+
   containmentAbsent(identity: ProviderProxySetIdentity, disappearanceReceipt: string): ContainmentAbsenceAcceptance {
     return this.#containmentAbsent(identity, disappearanceReceipt, null);
   }
