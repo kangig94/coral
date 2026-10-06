@@ -9,7 +9,7 @@ import { MAX_WAIT_JOB_IDS } from '../../jobs/wait/stream-event.js';
 import { BackendToolHttpError } from '../../transport/http/errors.js';
 import { isRecord } from '../../infra/json.js';
 import { getWaitInvocation, WaitInvocationEnded, validateWaitJobsOptions } from '../wait-invocation.js';
-import type { Command } from 'commander';
+import { Option, type Command } from 'commander';
 import { z } from 'zod';
 
 import { isLivePhase, jobPhaseSchema } from '../../jobs/phase.js';
@@ -50,6 +50,7 @@ type WaitJobsOptions = {
   cursor?: string;
   embed?: boolean;
   verbose?: boolean;
+  follow?: boolean;
 };
 
 export function registerSessionCommands(program: Command, providerRegistry: ProviderRegistry): void {
@@ -282,9 +283,10 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
       return;
     }
 
+    // --follow is a launch follow delegated to this build: it drains and reconnects until the terminal.
     process.exitCode = await followJobs({
       start: { kind: 'jobs', jobIds, ...(opts.cursor === undefined ? {} : { serializedCursor: opts.cursor }) },
-      reconnectPolicy: 'bounded',
+      reconnectPolicy: opts.follow === true ? 'until-terminal' : 'bounded',
       invocation: getWaitInvocation(),
       projectRoot,
       emitError,
@@ -293,10 +295,10 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
         embed: opts.embed === true,
         verbose: opts.verbose === true,
       },
-      connect: async ({ jobIds: activeJobIds, cursor, timeoutSeconds, signal }) => ({
+      connect: async ({ jobIds: activeJobIds, cursor, timeoutSeconds, signal, drainProgress }) => ({
         kind: 'subscription',
         subscription: await client.subscribeJobsWait(
-          { jobIds: activeJobIds, timeoutSeconds, projectRoot, ...(cursor ? { cursor } : {}) },
+          { jobIds: activeJobIds, timeoutSeconds, projectRoot, drainProgress, ...(cursor ? { cursor } : {}) },
           { signal },
         ),
       }),
@@ -325,6 +327,7 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
       'Embed terminal result content when size permits; artifact availability is reported separately (cannot use with --now)',
     )
     .option('--verbose', 'Show detailed usage breakdown on terminal events (cannot use with --now)')
+    .addOption(new Option('--follow').hideHelp())
     .addHelpText(
       'after',
       '\nThe first failed terminal in request order keeps its mapped exit code, even with pending siblings.\n' +

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync, readSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import type { JobStore } from '../../../src/jobs/store.js';
 import type { Database } from '../../../src/store/db.js';
@@ -24,8 +24,8 @@ const index = new JobLocationIndex(runtime, root, renderWorkflowReport);
 const publish = runtime.storage.writeAtomicDurableSync;
 const pauseHere = () => {
   process.send?.({ kind: 'paused', origin });
-  const barrier = new Int32Array(new SharedArrayBuffer(4));
-  while (!existsSync(join(root, 'resume'))) Atomics.wait(barrier, 0, 0, 10);
+  // The blocking stdin read holds the publication until the test writes to it.
+  readSync(0, Buffer.alloc(1));
 };
 runtime.storage.writeAtomicDurableSync = (path, data, options) => {
   if (path !== index.resultPathFor('job-1')) return publish(path, data, options);

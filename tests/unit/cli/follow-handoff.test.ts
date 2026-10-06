@@ -179,7 +179,7 @@ describe('cli follow handoff', () => {
         secondRunStarted.resolve();
         expect(progressAcknowledged).toBe(false);
         expect(operation).toEqual({
-          kind: 'wait-jobs',
+          kind: 'follow-job',
           jobId: 'job-1',
           serializedCursor: serializeWaitCursor({ jobs: [entry(4)] }),
         });
@@ -355,5 +355,28 @@ describe('cli follow handoff', () => {
     expect(abortJob).toHaveBeenCalledOnce();
     expect(abortJob).toHaveBeenCalledWith('job-1');
     expect(process.stderr.write).toHaveBeenCalledWith('\nPress Ctrl+C again to abort the job.\n');
+  });
+
+  it('mirrors a delegated follow ending 75 after a Ctrl+C without retrying, since a terminal may carry 75', async () => {
+    const handoff = createDeferred<HandoffRunnerModule.HandoffRunResult>();
+    vi.spyOn(process.stdout, 'write').mockImplementation(((
+      _chunk: string | Uint8Array,
+      callback?: (error?: Error | null) => void,
+    ) => {
+      callback?.();
+      return true;
+    }) as typeof process.stdout.write);
+    mockState.ensure.mockResolvedValue(makeBackend());
+    mockState.runHandoff.mockReturnValueOnce(handoff.promise);
+
+    const { launchAndFollow } = await import('#src/cli/follow.js');
+    const follow = launchAndFollow(makeOptions());
+    await vi.waitFor(() => expect(mockState.runHandoff).toHaveBeenCalledTimes(1));
+    expect(mockState.runHandoff.mock.calls[0][0]).toEqual({ kind: 'follow-job', jobId: 'job-1' });
+
+    sigintHandler?.();
+    handoff.resolve(recorded({ kind: 'delegated', version: '2.0.0', outcome: { kind: 'handoff-exit', exitCode: 75 } }));
+    await expect(follow).resolves.toBe(75);
+    expect(mockState.runHandoff).toHaveBeenCalledTimes(1);
   });
 });

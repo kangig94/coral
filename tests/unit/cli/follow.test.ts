@@ -405,7 +405,7 @@ it('separates TTY notice, disposition and artifact lines with trailing newlines'
   }
 });
 
-it('keeps delegated launch abort reachable after the monitor child exits 75 on the first SIGINT', async () => {
+it('keeps launch abort reachable while a delegated follow runs and ends that follow when aborting', async () => {
   let sigint: (() => void) | undefined;
   const originalOn = process.on.bind(process);
   vi.spyOn(process, 'on').mockImplementation(((event: string, listener: () => void) => {
@@ -430,19 +430,55 @@ it('keeps delegated launch abort reachable after the monitor child exits 75 on t
       render: { isTTY: false, columns: 80, embed: false, verbose: false },
       emitError: vi.fn(),
       abortJobs,
-      connect: async () => {
+      connect: async ({ signal }) => {
         connects++;
         sigint?.();
+        expect(signal.aborted).toBe(false);
+        sigint?.();
+        expect(signal.aborted).toBe(true);
         return {
           kind: 'delegated',
           version: '9.9.9',
-          outcome: { kind: 'handoff-exit', version: '9.9.9', exitCode: 75 },
+          outcome: { kind: 'handoff-signal', signal: 'SIGTERM' },
         };
       },
     });
-    expect(connects).toBe(2);
+    expect(connects).toBe(1);
     expect(abortJobs).toHaveBeenCalledExactlyOnceWith(['job-1']);
     expect(code).toBe(1);
+  } finally {
+    vi.restoreAllMocks();
+  }
+});
+
+it('leaves the Ctrl+C prompt to the delegating parent when a delegated follower cannot abort', async () => {
+  let sigint: (() => void) | undefined;
+  const originalOn = process.on.bind(process);
+  vi.spyOn(process, 'on').mockImplementation(((event: string, listener: () => void) => {
+    if (event === 'SIGINT') sigint = listener;
+    return originalOn(event, listener);
+  }) as typeof process.on);
+  vi.spyOn(process.stdout, 'write').mockImplementation(((_c: unknown, cb?: () => void) => {
+    cb?.();
+    return true;
+  }) as typeof process.stdout.write);
+  const stderr = vi.spyOn(process.stderr, 'write').mockImplementation((() => true) as typeof process.stderr.write);
+  try {
+    const code = await followJobs({
+      start: { kind: 'jobs', jobIds: ['job-1'] },
+      reconnectPolicy: 'until-terminal',
+      projectRoot: '/project',
+      render: { isTTY: false, columns: 80, embed: false, verbose: false },
+      emitError: vi.fn(),
+      connect: async ({ signal }) => {
+        sigint?.();
+        sigint?.();
+        expect(signal.aborted).toBe(false);
+        return { kind: 'delegated', version: '9.9.9', outcome: { kind: 'handoff-exit', exitCode: 0 } };
+      },
+    });
+    expect(code).toBe(0);
+    expect(stderr).not.toHaveBeenCalledWith('\nPress Ctrl+C again to abort the job.\n');
   } finally {
     vi.restoreAllMocks();
   }

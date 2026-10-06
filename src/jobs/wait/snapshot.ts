@@ -31,8 +31,8 @@ function preview(text: string, budget: number): { text: string; omitted: boolean
 /** Summary delivery acknowledges the outcome, independently of progress or full text retrieval. */
 export function selectWaitSnapshot(session: WaitSession, lines = 20, visit: ProgressVisit): WaitSnapshot {
   return session.withProgress(visit, (sources) => {
-    session.position(sources, lines, WAIT_PROGRESS_LINES, WAIT_PROGRESS_BYTES);
-    const selection = session.select(sources, WAIT_PROGRESS_LINES, WAIT_PROGRESS_BYTES);
+    const positioned = session.position(sources, lines, WAIT_PROGRESS_LINES, WAIT_PROGRESS_BYTES);
+    const selection = session.select(sources, WAIT_PROGRESS_LINES, WAIT_PROGRESS_BYTES, positioned);
     const notices = [...session.notices];
     const jobs = session.admissions.map((admission) => snapshotJob(session, admission, notices));
     for (const line of selection.lines) {

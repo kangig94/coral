@@ -1,4 +1,9 @@
-import { progressVisitFromDetails } from '#tests/helpers/wait-progress.js';
+import { observeWaitRead, progressVisitFromDetails, testProgressVisit } from '#tests/helpers/wait-progress.js';
+import { Command } from 'commander';
+import { registerSessionCommands } from '#src/cli/commands/session.js';
+import { createBuiltInProviderRegistry } from '#src/providers/bootstrap.js';
+import * as dispatch from '#src/cli/dispatch.js';
+import { readWaitSession } from '#src/jobs/wait/reader.js';
 import { JobAddressing } from '#src/jobs/addressing.js';
 import { admitted } from '#tests/helpers/wait-session.js';
 import { createRealTimePort } from '#src/infra/time.js';
@@ -220,10 +225,7 @@ describe('cli follow', () => {
       }),
     );
     await expect(launchAndFollow(makeOptions())).resolves.toBe(0);
-    expect(mockState.runHandoff.mock.calls[0][0]).toEqual({
-      kind: 'cli-invocation',
-      argv: [...process.argv.slice(0, 2), 'wait', 'jobs', 'job-1'],
-    });
+    expect(mockState.runHandoff.mock.calls[0][0]).toEqual({ kind: 'follow-job', jobId: 'job-1' });
     expect(mockState.runHandoff.mock.calls[0][1].waitProbeRemainingMs()).toBe(588800);
     expect(mockState.subscribe.mock.calls[0][1]).toMatchObject({ cursor: { jobs: [] } });
   });
@@ -402,3 +404,56 @@ it.each(['pending', 'burst', 'failed'] as const)(
     }
   },
 );
+
+it('a delegated follow over 100 existing messages drains every line and returns only at the terminal', async () => {
+  const messages = Array.from({ length: 100 }, (_, i) => [i + 1, `delegated-line-${i + 1}`] as [number, string]);
+  const running = admitted('a', messages, false, 'active-epoch');
+  const finished = admitted('a', messages, true, 'active-epoch');
+  let connections = 0;
+  const requests: Array<Record<string, unknown>> = [];
+  let mono = 0n;
+  const time = {
+    ...createRealTimePort(),
+    monotonicNow: () => mono,
+    sleep: async (ms: number) => {
+      mono += BigInt(ms);
+    },
+  };
+  const subscribeJobsWait = vi.fn(async (fields: Record<string, unknown>) => {
+    requests.push(fields);
+    const job = ++connections === 1 ? running : finished;
+    const stream = readWaitSession({
+      request: fields as never,
+      time,
+      read: observeWaitRead(() => [job]),
+      visit: testProgressVisit,
+    });
+    return {
+      close: async () => {
+        await stream.return(undefined);
+      },
+      [Symbol.asyncIterator]: () => stream,
+    };
+  });
+  vi.spyOn(dispatch, 'makeClient').mockReturnValue({ subscribeJobsWait } as never);
+  let stdout = '';
+  vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: string | Uint8Array, callback?: () => void) => {
+    stdout += toText(chunk);
+    callback?.();
+    return true;
+  }) as typeof process.stdout.write);
+  const program = new Command();
+  registerSessionCommands(program, createBuiltInProviderRegistry());
+  try {
+    await program.parseAsync(['node', 'coral-cli', 'wait', 'jobs', 'a', '--follow']);
+    expect(requests.every((request) => request.drainProgress === true)).toBe(true);
+    expect(requests).toHaveLength(2);
+    const lines = stdout.split('\n').filter((line) => line.includes('delegated-line-'));
+    expect(lines.map((line) => /delegated-line-\d+/.exec(line)?.[0])).toEqual(messages.map(([, text]) => text));
+    expect(stdout.indexOf('Job a completed')).toBeGreaterThan(stdout.indexOf('delegated-line-100'));
+    expect(process.exitCode).toBe(0);
+  } finally {
+    process.exitCode = undefined;
+    vi.restoreAllMocks();
+  }
+});

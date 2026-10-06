@@ -78,10 +78,11 @@ it('a 501-row window with one non-message progress row loses rows past the windo
     };
     const snap = addressing.snapshot({ jobIds: [f.jobId], cursor } as never);
 
-    expect(snap.jobs[0].progress).toHaveLength(500);
+    // A 499-row page and its lookahead row spend the poll's allowance; the fault row is one of those 499.
+    expect(snap.jobs[0].progress).toEqual(Array.from({ length: 498 }, (_, i) => `line ${i}`));
     expect(snap.remainingJobIds).toEqual([f.jobId]);
     const second = addressing.snapshot({ jobIds: [f.jobId], cursor: snap.cursor });
-    expect(second.jobs[0].progress).toEqual(Array.from({ length: 100 }, (_, i) => `line ${i + 500}`));
+    expect(second.jobs[0].progress).toEqual(Array.from({ length: 102 }, (_, i) => `line ${i + 498}`));
     expect(second.remainingJobIds).toEqual([]);
   } finally {
     f.close();

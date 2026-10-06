@@ -49,6 +49,8 @@ export function waitInvocationMode(program: Command, argv: readonly string[]): W
   let mode: WaitInvocationMode | undefined;
   jobsParser.action(() => {
     validateWaitJobsOptions(jobsParser.opts());
+    // A delegated launch follow runs until its terminal, so no wait budget applies to it.
+    if (jobsParser.opts().follow === true) return;
     mode = jobsParser.opts().now === true ? 'snapshot' : 'bounded';
   });
   try {
@@ -290,7 +292,10 @@ export function validateWaitJobsOptions(opts: {
   cursor?: string;
   embed?: boolean;
   verbose?: boolean;
+  follow?: boolean;
 }): number | undefined {
+  if (opts.follow && opts.now)
+    throw new UsageError('--follow cannot be used with --now. Remove --follow for an immediate snapshot.');
   if (opts.now && (opts.embed || opts.verbose))
     throw new UsageError(
       `--now cannot be used with --embed or --verbose. Remove ${[opts.embed ? '--embed' : '', opts.verbose ? '--verbose' : ''].filter(Boolean).join(' and ')} for an immediate snapshot, or remove --now for a streaming wait. Use coral-cli jobs detail <jobId> --full for full content.`,

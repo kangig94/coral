@@ -21,6 +21,8 @@ type WaitReadInput = {
 type DeliveryState = {
   /** The frontier the client folds from this stream: the last cursor frame plus every later progress entry. */
   frontier: Map<string, WaitCursorEntry>;
+  /** A client folds from no cursor, so its stream's first frame is its base even when it equals the request cursor. */
+  framed: boolean;
   progressLines: number;
   progressBytes: number;
   dispositions: Map<string, string>;
@@ -58,7 +60,8 @@ export async function* readWaitSession(input: WaitReadInput): AsyncGenerator<Wai
   const signal = request.abortSignal ? AbortSignal.any([controller.signal, request.abortSignal]) : controller.signal;
   const bounded = request.drainProgress !== true && !internal;
   const state: DeliveryState = {
-    frontier: new Map((request.cursor?.jobs ?? []).map((entry) => [entry.hash, entry])),
+    frontier: new Map(),
+    framed: false,
     progressLines: 0,
     progressBytes: 0,
     dispositions: new Map(),
@@ -81,11 +84,12 @@ export async function* readWaitSession(input: WaitReadInput): AsyncGenerator<Wai
       session.reconcile(admissions);
       // Drain and internal reads deliver a backlog page by page, never a whole history in one synchronous pass.
       const progress = session.withProgress(input.visit, (sources) => {
-        session.position(sources, bounded ? 20 : null, WAIT_PROGRESS_LINES, WAIT_PROGRESS_BYTES);
+        const positioned = session.position(sources, bounded ? 20 : null, WAIT_PROGRESS_LINES, WAIT_PROGRESS_BYTES);
         return session.select(
           sources,
           bounded ? WAIT_PROGRESS_LINES - state.progressLines : WAIT_PROGRESS_LINES,
           bounded ? WAIT_PROGRESS_BYTES - state.progressBytes : WAIT_PROGRESS_BYTES,
+          positioned,
         );
       });
       session.observeEmpty(progress.exhaustedJobIds);
@@ -104,11 +108,17 @@ export async function* readWaitSession(input: WaitReadInput): AsyncGenerator<Wai
       yield* progressEvents(session, state, bounded, internal, progress.lines);
       session.advanceSilently(progress.advances);
       yield* cursorFrame(session, state);
-      if (yield* terminalEvents(session, bounded)) return;
+      const sliced = progress.cut && !progress.full;
+      if (yield* terminalEvents(session, bounded, sliced)) return;
       yield* carrierEvents(session, state.absentReported);
       if (session.remaining().length === 0) {
         yield waitingEvent(session);
         return;
+      }
+      // A poll cut short by its row allowance resumes after a macrotask; only a spent output budget or the deadline ends it.
+      if (sliced && (internal || Number(time.monotonicNow()) < deadline)) {
+        await setImmediate();
+        continue;
       }
       // An internal reader drains its backlog before its deadline answers; a client drain stops at its deadline.
       if (!bounded && session.hasProgress() && (internal || Number(time.monotonicNow()) < deadline)) {
@@ -181,7 +191,8 @@ function* cursorFrame(session: WaitSession, state: DeliveryState): Generator<Wai
       client.flags === entry.flags
     );
   };
-  if (cursor.jobs.length === state.frontier.size && cursor.jobs.every(held)) return;
+  if (state.framed && cursor.jobs.length === state.frontier.size && cursor.jobs.every(held)) return;
+  state.framed = true;
   state.frontier = new Map(cursor.jobs.map((entry) => [entry.hash, entry]));
   yield { type: 'cursor', cursor };
 }
@@ -286,11 +297,16 @@ function terminalEvent(
   });
 }
 
-/** An unbounded reader delivers a job's terminal only after its progress, so nothing it reads follows the outcome. */
-function* terminalEvents(session: WaitSession, bounded: boolean): Generator<WaitStreamEvent, boolean> {
+/**
+ * An unbounded reader delivers a job's terminal only after its progress, so nothing it reads follows the outcome. A
+ * bounded reader holds it while the job's tail is unpositioned or its poll was cut short by the row allowance, so
+ * progress the next slice can still deliver within this request never follows the outcome.
+ */
+function* terminalEvents(session: WaitSession, bounded: boolean, sliced: boolean): Generator<WaitStreamEvent, boolean> {
   for (const job of session.admissions) {
     if (job.disposition !== 'admitted' || !job.detail?.exit) continue;
-    if (!bounded && session.progressState(job.jobId) === 'unread') continue;
+    if (session.progressState(job.jobId) === 'unread' && (!bounded || sliced || session.positioning(job.jobId)))
+      continue;
     if (!session.acknowledged(job.jobId)) {
       session.acknowledge(job);
       yield terminalEvent(session, job, job.detail.exit);

@@ -35,6 +35,9 @@ const workflowTime = {
     workflowMonotonicClock += 100n;
     return workflowMonotonicClock;
   },
+  sleep: async (ms: number) => {
+    workflowMonotonicClock += BigInt(ms);
+  },
 };
 const workflowIds = { uuid: () => randomUUID() };
 const waitTiming = {

@@ -49,10 +49,11 @@ describe('wait snapshot', () => {
         false,
       ),
     );
+    // 128 tails of two lines and a lookahead row each fit the 500-row allowance; a third line would not.
     const snapshot = collect(jobs, 20);
-    expect(snapshot.jobs.every((job) => job.progress.length === 3)).toBe(true);
+    expect(snapshot.jobs.every((job) => job.progress.length === 2)).toBe(true);
     expect(snapshot.notices).toEqual(expect.arrayContaining([expect.stringContaining('was not shown')]));
-    expect(snapshot.jobs[0].progress).toEqual(['line5', 'line6', 'line7']);
+    expect(snapshot.jobs[0].progress).toEqual(['line6', 'line7']);
     expect(snapshot.exitCode).toBe(75);
   });
 
@@ -90,7 +91,11 @@ describe('wait snapshot', () => {
   });
 
   it('shares a 500-line prefix across terminal siblings, then collects only the unread sibling without replaying outcomes', () => {
-    const messages = Array.from({ length: 501 }, (_, i) => [i + 1, `line${i + 1}`] as [number, string]);
+    // Two lines per row reach the 500-line budget within the 500-row allowance; line501 is the one left over.
+    const messages = Array.from(
+      { length: 251 },
+      (_, i) => [i + 1, i === 250 ? 'line501' : `line${2 * i + 1}\nline${2 * i + 2}`] as [number, string],
+    );
     const a = admitted(
       'a',
       messages.filter(([seq]) => seq % 2 === 1),
@@ -232,8 +237,8 @@ it('bounds --lines selection passes independently of the requested history size'
   const filter = vi.spyOn(Array.prototype, 'filter');
   try {
     const snapshot = collect(jobs, 500);
-    expect(snapshot.jobs.every((job) => job.progress.length === 3)).toBe(true);
-    expect(snapshot.jobs.flatMap((job) => job.progress)).toHaveLength(384);
+    expect(snapshot.jobs.every((job) => job.progress.length === 2)).toBe(true);
+    expect(snapshot.jobs.flatMap((job) => job.progress)).toHaveLength(256);
   } finally {
     filter.mockRestore();
   }
@@ -293,13 +298,14 @@ it('continuations inspect only their unread page and never rebuild the backlog',
     false,
   );
   let cursor: WaitCursor | undefined = prefixCursor([job]);
+  // A 499-row page and its lookahead row spend one poll's 500-row allowance.
   for (let page = 0; page < 3; page++) {
     const session: WaitSession = new WaitSession(['a'], cursor);
     session.reconcile([job]);
     const split = vi.spyOn(String.prototype, 'split');
     try {
       const snapshot = selectWaitSnapshot(session);
-      expect(snapshot.jobs[0].progress[0]).toBe(`line${page * 500}`);
+      expect(snapshot.jobs[0].progress[0]).toBe(`line${page * 499}`);
       expect(split.mock.calls.length).toBeLessThanOrEqual(502);
       cursor = snapshot.cursor;
     } finally {

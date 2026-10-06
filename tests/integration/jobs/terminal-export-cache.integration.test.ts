@@ -4,7 +4,8 @@ import { dirname } from 'node:path';
 import { createTerminalExportFixture, TERMINAL_EXPORT_NOW } from '#tests/helpers/terminal-export.js';
 
 it('reuses validated legacy terminal evidence across request sessions regardless of body size', () => {
-  for (const size of [1_000, 1_000_000, 8_000_000]) {
+  // The larger body must exceed the parse bound, so decoding it again on the second request fails the bound.
+  for (const size of [1_000, 20_000]) {
     const f = createTerminalExportFixture('provider', true);
     try {
       f.complete({

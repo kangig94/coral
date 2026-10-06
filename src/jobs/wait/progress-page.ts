@@ -9,6 +9,8 @@ export type ProgressPage = Readonly<{
   exhausted: boolean;
   /** Raw rows in this page that carry no message; a page of only these advances its job silently. */
   faultRows: number;
+  /** Raw rows the read returned, its lookahead row included: the work this page cost. */
+  rawRows: number;
   [pageEvidence]: true;
 }>;
 export type TailPage = Readonly<{
@@ -16,6 +18,7 @@ export type TailPage = Readonly<{
   through: number;
   frontier: number;
   reachedStart: boolean;
+  rawRows: number;
   [pageEvidence]: true;
 }>;
 
@@ -28,6 +31,7 @@ export function progressPage(raw: readonly RawProgressRow[], requested: number, 
     through: exhausted ? sourceFrontier : selected[selected.length - 1].seq,
     exhausted,
     faultRows: selected.length - rows.length,
+    rawRows: raw.length,
     [pageEvidence]: true,
   };
 }
@@ -39,6 +43,7 @@ export function progressTail(raw: readonly RawProgressRow[], requested: number, 
     through: selected.at(-1)?.seq ?? 0,
     frontier: sourceFrontier,
     reachedStart: raw.length <= requested,
+    rawRows: raw.length,
     [pageEvidence]: true,
   };
 }

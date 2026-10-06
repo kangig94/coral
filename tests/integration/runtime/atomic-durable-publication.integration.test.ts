@@ -15,7 +15,6 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import { afterAll, beforeAll, expect, it } from 'vitest';
 import { createRealRuntime } from '#src/runtime/real.js';
@@ -80,11 +79,9 @@ it.each(['real', 'shared'])('held-fd corruption control: %s', (variant) => {
 
 it.each(['real', 'sweep'])('a paused writer still owns its stage after 25 hours: %s', async (variant) => {
   const target = join(directory, `aged-${variant}.json`);
-  const ready = join(directory, `ready-${variant}`);
-  const release = join(directory, `release-${variant}`);
-  const child = spawn(process.execPath, [fixture, join(directory, 'real.cjs'), target, 'held', ready, release], {
+  const child = spawn(process.execPath, [fixture, join(directory, 'real.cjs'), target, 'held'], {
     env: env(),
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio: ['pipe', 'pipe', 'pipe'],
   });
   let stderr = '';
   child.stderr.on('data', (chunk: Buffer) => {
@@ -94,11 +91,16 @@ it.each(['real', 'sweep'])('a paused writer still owns its stage after 25 hours:
     child.once('error', reject);
     child.once('exit', resolveEnd);
   });
+  const ready = new Promise<string>((resolveReady, reject) => {
+    let stdout = '';
+    child.stdout.on('data', (chunk: Buffer) => {
+      stdout += chunk.toString();
+      if (stdout.includes('\n')) resolveReady(stdout.slice(0, stdout.indexOf('\n')));
+    });
+    void ending.then((code) => reject(new Error(`writer exited ${code} before its stage was ready: ${stderr}`)));
+  });
   try {
-    const deadline = Date.now() + 10_000;
-    while (!existsSync(ready) && Date.now() < deadline) await delay(10);
-    expect(existsSync(ready)).toBe(true);
-    const stage = readFileSync(ready, 'utf8');
+    const stage = await ready;
     expect(stage).toMatch(/\.stage-\d+-\d+-[a-f0-9-]+$/);
     expect(stage.endsWith('.json')).toBe(false);
     const aged = new Date(Date.now() - 25 * 3_600_000);
@@ -108,7 +110,7 @@ it.each(['real', 'sweep'])('a paused writer still owns its stage after 25 hours:
       timeout: 10_000,
     });
     expect(existsSync(stage)).toBe(variant === 'real');
-    writeFileSync(release, 'resume');
+    child.stdin.write('r');
     expect(await ending).toBe(variant === 'real' ? 0 : 1);
     if (variant === 'sweep') expect(stderr).toContain('owned publication failed');
   } finally {

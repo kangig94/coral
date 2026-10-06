@@ -120,7 +120,8 @@ it('historical windowed read: snapshot with a cursor whose epoch watermark is be
       jobs: [{ hash: waitJobHash('U'), epoch: waitEpochToken(f.epochKey), seq: 0, lineOffset: 0, flags: 0 }],
     };
     const snap = f.addressing.snapshot({ jobIds: ['U'], cursor });
-    expect(snap.jobs[0].progress).toHaveLength(500);
+    // A snapshot is one poll: a 499-row page and its lookahead row spend its 500-row allowance.
+    expect(snap.jobs[0].progress).toHaveLength(499);
 
     expect(snap.remainingJobIds).toEqual(['U']);
   } finally {

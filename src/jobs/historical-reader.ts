@@ -133,8 +133,9 @@ type HistoricalEpochSource = {
   refreshPending?: { jobIds: string[]; frontier: number };
   seed?: {
     frontier?: number;
-    rows?: { job_id: string }[];
-    launches?: { stream_id: string; seq: number }[];
+    /** Launched jobs in launch order, then projected jobs without a launch: read once, so no slice reads them again. */
+    subjects?: readonly string[];
+    launchSeqs?: ReadonlyMap<string, number>;
     members?: ReadonlySet<string>;
     recordingError?: Error;
     failedRowOffset?: number;
@@ -183,6 +184,18 @@ function holdSourceFailure(
   index.holdUnknownLocations(epochKey, message, retryScheduled);
   return message;
 }
+type RetainedLocation = Readonly<{ kind: 'read'; location: JobLocation | null }> | Readonly<{ kind: 'unreadable' }>;
+
+/** A retained location this build cannot read is uncertainty about that one job; it never holds the epoch's others. */
+function readRetainedLocation(index: JobLocationIndex, jobId: string): RetainedLocation {
+  try {
+    return { kind: 'read', location: index.read(jobId) };
+  } catch (error) {
+    if (isCodeDefect(error)) throw error;
+    return { kind: 'unreadable' };
+  }
+}
+
 function retireHistoricalSource(index: JobLocationIndex, epochKey: string, source: HistoricalEpochSource): void {
   source.retired = true;
   source.readCache = undefined;
@@ -584,7 +597,8 @@ export function seedHistoricalEpoch(
     addressedEpoch = resolveHistoricalAddress(source, epochKey);
   } catch (error: unknown) {
     for (const known of knownJobs) {
-      if (index.read(known.jobId)) continue;
+      const retained = readRetainedLocation(index, known.jobId);
+      if (retained.kind === 'unreadable' || retained.location !== null) continue;
       if (budget && budget.remaining <= 0) break;
       if (budget) budget.remaining--;
       index.register(known.jobId, epochKey, known.subject);
@@ -605,7 +619,8 @@ export function seedHistoricalEpoch(
   try {
     if (observeHistoricalPath(source, epochKey, addressedEpoch) === 'absent') {
       for (const known of knownJobs) {
-        if (index.read(known.jobId)) continue;
+        const retained = readRetainedLocation(index, known.jobId);
+        if (retained.kind === 'unreadable' || retained.location !== null) continue;
         if (budget && budget.remaining <= 0) break;
         if (budget) budget.remaining--;
         index.register(known.jobId, epochKey, known.subject);
@@ -639,21 +654,20 @@ export function seedHistoricalEpoch(
     verifyHistoricalIdentity(source, epochKey, addressedEpoch);
     db = storage.openSqliteDatabaseSync(dbPath, { readOnly: true });
     db.exec('BEGIN');
-    const rows = (seed.rows ??= db.prepare('SELECT job_id FROM projection_jobs ORDER BY job_id ASC').all() as {
-      job_id: string;
-    }[]);
-    const highWaterSeq = z
-      .object({ seq: z.number().int().nonnegative() })
-      .parse(db.prepare("SELECT COALESCE(MAX(seq), 0) AS seq FROM events WHERE stream_kind = 'job'").get()).seq;
     seed.frontier ??= (db.prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get() as { seq: number }).seq;
     const observed = new Set<string>();
-
-    const launches = (seed.launches ??= db
-      .prepare(
-        "SELECT stream_id, seq FROM events WHERE stream_kind = 'job' AND type = 'job.launch.requested' ORDER BY seq ASC",
-      )
-      .all() as { stream_id: string; seq: number }[]);
-    seed.members ??= new Set([...launches.map((launch) => launch.stream_id), ...rows.map((row) => row.job_id)]);
+    if (seed.subjects === undefined || seed.launchSeqs === undefined || seed.members === undefined) {
+      const rows = db.prepare('SELECT job_id FROM projection_jobs ORDER BY job_id ASC').all() as { job_id: string }[];
+      const launches = db
+        .prepare(
+          "SELECT stream_id, seq FROM events WHERE stream_kind = 'job' AND type = 'job.launch.requested' ORDER BY seq ASC",
+        )
+        .all() as { stream_id: string; seq: number }[];
+      seed.subjects = [...new Set([...launches.map((launch) => launch.stream_id), ...rows.map((row) => row.job_id)])];
+      seed.launchSeqs = new Map(launches.map((launch) => [launch.stream_id, launch.seq]));
+      seed.members = new Set(seed.subjects);
+    }
+    const { subjects: sourceSubjects, launchSeqs, members } = seed;
     const pending = (): HistoricalSeedResult => {
       source.attempts = 0;
       index.holdUnknownLocations(
@@ -663,21 +677,22 @@ export function seedHistoricalEpoch(
       );
       return { kind: 'uncertified', knownJobIds: [...observed] };
     };
-    const subjects = [
-      ...new Set([
-        ...launches.map((launch) => launch.stream_id),
-        ...rows.map((row) => row.job_id),
-        ...knownJobs.map((job) => job.jobId),
-      ]),
-    ];
-    const launchById = new Map(launches.map((launch) => [launch.stream_id, launch]));
-    for (let i = seed.rowOffset; i < subjects.length; i++) {
-      const jobId = subjects[i];
+    const knownOnly = [...new Set(knownJobs.map((job) => job.jobId))].filter((jobId) => !members.has(jobId));
+    const subjectCount = sourceSubjects.length + knownOnly.length;
+    const subjectAt = (i: number): string =>
+      i < sourceSubjects.length ? sourceSubjects[i] : knownOnly[i - sourceSubjects.length];
+    for (let i = seed.rowOffset; i < subjectCount; i++) {
+      const jobId = subjectAt(i);
       if (budget) {
         if (budget.remaining <= 0) return pending();
         budget.remaining--;
       }
-      const retained = index.read(jobId);
+      const retainedRead = readRetainedLocation(index, jobId);
+      if (retainedRead.kind === 'unreadable') {
+        seed.rowOffset = i + 1;
+        continue;
+      }
+      const retained = retainedRead.location;
       if (retained && sameEpoch(retained.epochKey, epochKey) && hasReadableTerminalDetail(retained)) {
         if (!storage.existsSync(resultPathFor(jobsRoot, jobId))) {
           try {
@@ -692,11 +707,11 @@ export function seedHistoricalEpoch(
       }
       try {
         let registered = false;
-        const launch = launchById.get(jobId);
-        if (launch) {
+        const launchSeq = launchSeqs.get(jobId);
+        if (launchSeq !== undefined) {
           const row = z
             .object({ body: z.instanceof(Uint8Array) })
-            .parse(db.prepare('SELECT stream_id, body FROM events WHERE seq = ?').get(launch.seq));
+            .parse(db.prepare('SELECT stream_id, body FROM events WHERE seq = ?').get(launchSeq));
           const body = launchBodySchema.parse(parseBody(row.body));
           index.register(jobId, epochKey, {
             projectRoot: body.projectRoot,
@@ -752,7 +767,7 @@ export function seedHistoricalEpoch(
         seed.rowOffset = i + 1;
       }
     }
-    for (const jobId of subjects) observed.add(jobId);
+    for (let i = 0; i < subjectCount; i++) observed.add(subjectAt(i));
     if (seed.recordingError !== undefined) {
       if (seed.failedRowOffset !== undefined) seed.rowOffset = seed.failedRowOffset;
       source.attempts = (seed.failures ?? 0) + 1;
@@ -768,6 +783,10 @@ export function seedHistoricalEpoch(
     source.refreshAttempts = 0;
     source.sweep = { revision: index.revision(epochKey), frontier: seed.frontier };
     if (!certifyRetiredEpoch) return { kind: 'uncertified', knownJobIds: [...observed] };
+    // Read once, where the certificate needs it, never per slice: its cost grows with the journal.
+    const highWaterSeq = z
+      .object({ seq: z.number().int().nonnegative() })
+      .parse(db.prepare("SELECT COALESCE(MAX(seq), 0) AS seq FROM events WHERE stream_kind = 'job'").get()).seq;
     const certificate = index.certify(epochKey, highWaterSeq);
     return certificate === null
       ? { kind: 'unrecoverable-retained', knownJobIds: [...observed], reason: 'known-jobs-unresolved' }
@@ -940,6 +959,8 @@ export function readHistoricalSource(
             readCache.terminals.set(JSON.stringify([epochIdentity(epochKey), jobId, terminal.seq]), location);
         }
       } catch (error) {
+        // The stamp published below certifies only answers this observation produced, so a failed read keeps none.
+        readCache.jobs.delete(jobId);
         dispositions.set(
           jobId,
           view.unknownLocationHolds().find((hold) => sameEpoch(hold.epochKey, epochKey))?.retryScheduled === false
@@ -1099,7 +1120,12 @@ export function refreshHistoricalEpoch(
           : { kind: 'read' };
       }
       if (budget) budget.remaining--;
-      const location = index.read(jobId);
+      const retainedRead = readRetainedLocation(index, jobId);
+      if (retainedRead.kind === 'unreadable') {
+        requested.delete(jobId);
+        continue;
+      }
+      const location = retainedRead.location;
       if (
         location !== null &&
         (!sameEpoch(location.epochKey, epochKey) ||

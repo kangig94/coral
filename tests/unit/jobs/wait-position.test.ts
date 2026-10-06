@@ -4,7 +4,8 @@ import type { ProgressVisit } from '#src/jobs/wait/contract.js';
 import { progressVisitFromEvents } from '#tests/helpers/wait-progress.js';
 import { WaitSession, type WaitAdmission } from '#src/jobs/wait/session.js';
 import { selectWaitSnapshot } from '#tests/helpers/wait-progress.js';
-import { waitEpochToken, waitJobHash } from '#src/jobs/wait/cursor.js';
+import { TAIL_SCAN_FLAG, UNPOSITIONED_FLAG, waitEpochToken, waitJobHash } from '#src/jobs/wait/cursor.js';
+import { progressPage, progressTail, type RawProgressRow } from '#src/jobs/wait/progress-page.js';
 
 const E = JSON.stringify({ storeRoot: '/s', epoch: '1', path: '/s/epoch-1/store.db' });
 const timing = { origin: 'runtime' as const, originAt: 't', emittedAt: 't', elapsedMs: 0 };
@@ -83,4 +84,52 @@ it('fits a byte budget over oversized lines with work linear in the lines it loa
   }
   expect(rows).toBeLessThanOrEqual(64);
   expect(session.entry('a').seq).toBeGreaterThan(480);
+});
+
+it('keeps a cut tail scan unpositioned in its entry and finishes it from that cursor in a later session', () => {
+  const raw: RawProgressRow[] = [
+    ...Array.from({ length: 30 }, (_, i) => ({
+      seq: i + 1,
+      progress: { seq: i + 1, message: `line-${i + 1}`, timing },
+    })),
+    ...Array.from({ length: 2000 }, (_, i) => ({ seq: i + 31 })),
+  ];
+  let rows = 0;
+  const visit: ProgressVisit = (_epoch, read) => ({
+    kind: 'read',
+    value: read({
+      after: (_id, after, count) => {
+        const page = raw.filter((row) => row.seq > after).slice(0, count + 1);
+        rows += page.length;
+        return progressPage(page, count, 2030);
+      },
+      before: (_id, before, count) => {
+        const page = raw
+          .filter((row) => before === null || row.seq < before)
+          .reverse()
+          .slice(0, count + 1);
+        rows += page.length;
+        return progressTail(page, count, 2030);
+      },
+    }),
+  });
+  const job = admission('a', []);
+  const first = new WaitSession(['a']);
+  first.reconcile([job]);
+  first.withProgress(visit, (sources) => first.position(sources, 20, 500, 65536));
+  expect(rows).toBeLessThanOrEqual(500);
+  const cut = first.cursor().jobs[0];
+  expect(cut.flags).toBe(UNPOSITIONED_FLAG | TAIL_SCAN_FLAG);
+  expect(cut.lineOffset).toBe(0);
+  expect(cut.seq).toBeGreaterThan(30);
+  let cursor = first.cursor();
+  for (let polls = 0; polls < 5 && (cursor.jobs[0].flags & UNPOSITIONED_FLAG) !== 0; polls++) {
+    const later = new WaitSession(['a'], cursor);
+    later.reconcile([job]);
+    rows = 0;
+    later.withProgress(visit, (sources) => later.position(sources, 20, 500, 65536));
+    expect(rows).toBeLessThanOrEqual(500);
+    cursor = later.cursor();
+  }
+  expect(cursor.jobs[0]).toMatchObject({ seq: 10, lineOffset: 0, flags: 0 });
 });

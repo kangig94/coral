@@ -43,11 +43,15 @@ if (scenario === 'observer') {
     }
   };
   const first = nextFinal();
+  let settled = false;
+  void first.then(() => {
+    settled = true;
+  });
   await flushMicrotasks(20);
   time.tick(1_000);
-  await flushMicrotasks(20);
-  const next = await Promise.race([first, new Promise((resolve) => setTimeout(() => resolve('late'), 50))]);
-  assert.notEqual(next, 'late', 'carrier observer exceeded the stream deadline');
+  await flushMicrotasks(50);
+  assert.ok(settled, 'carrier observer exceeded the stream deadline');
+  const next = await first;
   assert.deepEqual(next.value.carrierUnknownJobIds, ['known']);
   await stream.return();
   process.exit(0);
@@ -136,8 +140,9 @@ const events = [];
 function received(event) {
   events.push(event);
   if (event.type === 'progress') {
+    // The handover listener runs inside abort(); the next macrotask then releases a stream no handover ended.
     handover.abort();
-    setTimeout(release, 25);
+    setImmediate(release);
   }
 }
 

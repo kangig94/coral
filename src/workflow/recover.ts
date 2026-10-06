@@ -141,7 +141,7 @@ type ResumeWorkflowContext = {
   eventsBySeq: ReadonlyMap<number, EventsRow>;
   completion: ReturnType<typeof workflowCompletedBodySchema.parse> | null;
   drain: ReturnType<typeof workflowDrainEnteredBodySchema.parse> | null;
-  time: Pick<TimePort, 'now' | 'monotonicNow'>;
+  time: Pick<TimePort, 'now' | 'monotonicNow' | 'sleep'>;
   onProgress: (workflowId: string, message: string) => void;
   /**
    * A mandatory checkpoint, not a notification: recovery may not proceed past a committed replacement
@@ -1411,7 +1411,7 @@ type ResumeAllOptions = {
   staleAbortTimeoutMs?: number;
   drainDeadlineMs?: number;
   ids: Pick<IdPort, 'uuid'>;
-  time: Pick<TimePort, 'now' | 'monotonicNow'>;
+  time: Pick<TimePort, 'now' | 'monotonicNow' | 'sleep'>;
 };
 
 const workflowRetryOptions = new WeakMap<Database, ResumeAllOptions>();

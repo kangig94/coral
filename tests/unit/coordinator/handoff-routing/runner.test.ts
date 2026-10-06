@@ -654,14 +654,57 @@ it('uses the remaining launch-follow invocation budget for its contract probe', 
     return probeChild;
   });
   mockState.spawn.mockImplementation(() => childThatExits(0, null));
-  const result = runHandoff(cliOperation('wait', 'jobs', 'a'), {
-    pluginRoot: '/plugin/root',
-    waitProbeRemainingMs: () => 4200,
-  });
+  const result = runHandoff(
+    { kind: 'follow-job', jobId: 'a' },
+    {
+      pluginRoot: '/plugin/root',
+      waitProbeRemainingMs: () => 4200,
+    },
+  );
   void result.catch(() => undefined);
   await started.promise;
   (runtime.time as VirtualTime).tick(1500);
   await vi.advanceTimersByTimeAsync(1500);
   expect(probeChild.kill).not.toHaveBeenCalled();
   await expect(result).resolves.toMatchObject({ kind: 'delegated', outcome: { kind: 'handoff-success' } });
+});
+
+it('delegates a launch follow as wait jobs --follow and ends that child when its caller stops', async () => {
+  mockState.execFile.mockImplementation((_file, _args, _options, callback) => {
+    queueMicrotask(() => callback(null, JSON.stringify({ version: 1, monitorOnly: true })));
+    return childThatExits(0, null);
+  });
+  const kill = vi.fn();
+  mockState.spawn.mockImplementation(() => {
+    const child = childThatStaysAlive();
+    child.kill = kill.mockImplementation(() => {
+      queueMicrotask(() => {
+        child.emit('exit', null, 'SIGTERM');
+        child.emit('close', null, 'SIGTERM');
+      });
+      return true;
+    });
+    return child;
+  });
+  const caller = new AbortController();
+  const result = runHandoff(
+    { kind: 'follow-job', jobId: 'a', serializedCursor: 'saved-cursor' },
+    { pluginRoot: '/plugin/root', signal: caller.signal, waitProbeRemainingMs: () => 10_000 },
+  );
+  await vi.waitFor(() => expect(mockState.spawn).toHaveBeenCalledOnce());
+  expect(mockState.spawn.mock.calls[0][1].slice(1)).toEqual([
+    'wait',
+    'jobs',
+    'a',
+    '--follow',
+    '--cursor',
+    'saved-cursor',
+  ]);
+  expect(kill).not.toHaveBeenCalled();
+  caller.abort();
+  await expect(result).resolves.toMatchObject({
+    kind: 'delegated',
+    outcome: { kind: 'handoff-signal', signal: 'SIGTERM' },
+  });
+  expect(kill).toHaveBeenCalledWith('SIGTERM');
 });

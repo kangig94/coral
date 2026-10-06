@@ -87,6 +87,20 @@ describe('wait cursor codec', () => {
     expect(decodeSerializedWaitCursor(serializeWaitCursor(cursor).slice(0, -1)).kind).toBe('rejected');
   });
 
+  it('round trips an interrupted tail scan and rejects one without unpositioning, an epoch or a boundary', () => {
+    const scan = { hash: waitJobHash('s'), epoch: waitEpochToken('e'), seq: 9454, lineOffset: 5, flags: 12 };
+    const acknowledged = { ...scan, hash: waitJobHash('t'), flags: 13 };
+    const cursor = { jobs: [scan, acknowledged] };
+    expect(decodeSerializedWaitCursor(serializeWaitCursor(cursor))).toEqual({ kind: 'decoded', cursor });
+    for (const bad of [
+      { ...scan, flags: 8 },
+      { ...scan, epoch: null },
+      { ...scan, seq: 0 },
+      { ...scan, flags: 16 },
+    ])
+      expect(decodeWaitCursor({ jobs: [bad] }).kind).toBe('rejected');
+  });
+
   it('uses the exact layout bound with no version header', () => {
     const cursor = {
       jobs: Array.from({ length: 128 }, (_, i) => ({

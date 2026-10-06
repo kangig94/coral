@@ -1,14 +1,14 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 
-const [bundle, target, mode, ready, release] = process.argv.slice(2);
+const [bundle, target, mode] = process.argv.slice(2);
 const originalRename = fs.renameSync;
 if (mode === 'held') {
   fs.renameSync = (source, destination) => {
     if (destination === target) {
-      fs.writeFileSync(ready, source);
-      const sleeper = new Int32Array(new SharedArrayBuffer(4));
-      while (!fs.existsSync(release)) Atomics.wait(sleeper, 0, 0, 10);
+      // Readiness is the stage path on stdout; the blocking stdin read holds the rename until the test releases it.
+      fs.writeSync(1, `${source}\n`);
+      fs.readSync(0, Buffer.alloc(1));
     }
     return originalRename(source, destination);
   };

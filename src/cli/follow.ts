@@ -441,11 +441,8 @@ async function finishDelegatedFollow(
     renderHandoffNotice(outcome);
     return { kind: 'exit', code: 0 };
   }
-  if (outcome.kind === 'handoff-exit') {
-    if (outcome.exitCode === 75 && state.sigintCount === 1 && options.reconnectPolicy === 'until-terminal')
-      return { kind: 'retry' };
-    return { kind: 'exit', code: normalizeExitCode(outcome.exitCode) };
-  }
+  // A delegated follow already ran to its own end; its 75 may be a provider terminal's code, so it is never retried.
+  if (outcome.kind === 'handoff-exit') return { kind: 'exit', code: normalizeExitCode(outcome.exitCode) };
   if (outcome.signal === 'SIGINT' && state.sigintCount === 1) return { kind: 'retry' };
   options.emitError(
     new WaitResumeError(
@@ -496,15 +493,11 @@ function deliveredFollowExitCode(event: WaitStreamEvent, context: FollowContext)
   return undefined;
 }
 
-async function deliverFollowEvent(event: WaitStreamEvent, context: FollowContext): Promise<void> {
-  const { options, state, jobLabels, causeRenderer } = context;
-  const renderCursor =
-    event.type === 'terminal' ? waitCursorForJobs(state.currentCursor, event.remainingJobIds) : state.currentCursor;
-  const cursor = serializedCursor(renderCursor) ?? null;
-  state.remainingJobIds = eventRemainingJobs(event, state.remainingJobIds);
+/** The continuation a cut at this point prints: the remaining jobs and the frontier the client has folded. */
+function foldedContinuation(state: FollowSessionState): string {
   const remaining = state.remainingJobIds;
   const unknown = remaining.filter((id) => state.carrierUnknownJobIds.includes(id));
-  const savedContinuation =
+  return (
     formatWaitWaiting(
       {
         type: 'waiting',
@@ -513,7 +506,18 @@ async function deliverFollowEvent(event: WaitStreamEvent, context: FollowContext
       },
       serializedCursor(waitCursorForJobs(state.currentCursor, remaining)) ?? null,
       remaining,
-    ) + '\n';
+    ) + '\n'
+  );
+}
+
+async function deliverFollowEvent(event: WaitStreamEvent, context: FollowContext): Promise<void> {
+  const { options, state, jobLabels, causeRenderer } = context;
+  const renderCursor =
+    event.type === 'terminal' ? waitCursorForJobs(state.currentCursor, event.remainingJobIds) : state.currentCursor;
+  const cursor = serializedCursor(renderCursor) ?? null;
+  state.remainingJobIds = eventRemainingJobs(event, state.remainingJobIds);
+  const remaining = state.remainingJobIds;
+  const savedContinuation = foldedContinuation(state);
   const renderedEvent = event;
   const delivery = emitWaitEvent(
     renderedEvent,
@@ -583,6 +587,9 @@ async function applyFollowStreamEvent(
   state.currentCursor = decision.cursor;
   state.sendCursor ||= serializedCursor(state.currentCursor) !== undefined;
   if (decision.shouldRender) await deliverFollowEvent(event, context);
+  // A frame renders nothing, so no delivery saves it, yet a cut before the next rendered event must print it; it is
+  // never saved ahead of a rendered event that is still being written.
+  else if (context.pendingOutput.size === 0) options.invocation?.saveContinuation(foldedContinuation(state));
   return followEventDecision(event, context);
 }
 
@@ -698,7 +705,8 @@ function installFollowSignals(context: FollowContext, allJobIds: string[]): () =
   const { options, state, controller, abortState } = context;
   const onInvocationEnd = () => controller.abort();
   const onSigint = () => {
-    if (state.remainingJobIds.length === 0) return;
+    // A follower that cannot abort is a delegated one: its delegating parent prompts, aborts and ends it.
+    if (state.remainingJobIds.length === 0 || options.abortJobs === undefined) return;
     state.sigintCount += 1;
     if (state.sigintCount === 1) {
       process.stderr.write('\nPress Ctrl+C again to abort the job.\n');
@@ -840,13 +848,13 @@ export async function launchAndFollow(options: FollowOptions): Promise<number> {
       let backend;
       try {
         backend = await ensure('jobs.wait', options.pluginRoot);
+        // The delegated build follows with this policy itself: it drains and reconnects until the terminal.
         const result = await runHandoff(
-          cursor
-            ? { kind: 'wait-jobs', jobId: options.launchResult.jobId, serializedCursor: serializeWaitCursor(cursor) }
-            : {
-                kind: 'cli-invocation',
-                argv: [...process.argv.slice(0, 2), 'wait', 'jobs', options.launchResult.jobId],
-              },
+          {
+            kind: 'follow-job',
+            jobId: options.launchResult.jobId,
+            ...(cursor ? { serializedCursor: serializeWaitCursor(cursor) } : {}),
+          },
           {
             pluginRoot: options.pluginRoot,
             signal,

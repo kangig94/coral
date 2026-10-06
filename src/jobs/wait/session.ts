@@ -9,6 +9,7 @@ import type { WaitCursor, WaitCursorEntry, WaitStreamEvent, ProgressSource, Prog
 import {
   ACKNOWLEDGED_FLAG,
   ARTIFACT_PENDING_FLAG,
+  TAIL_SCAN_FLAG,
   UNPOSITIONED_FLAG,
   waitCursorEntry,
   waitEpochToken,
@@ -134,21 +135,52 @@ class ProgressSourceFault extends Error {
   }
 }
 
+/** A poll spent its raw-row allowance; the read it refused resumes on the next poll. */
+class ProgressRowsExhausted extends Error {}
+
 /** A position reached by scanning fault-only pages; it applies only once every line selected before it was consumed. */
 export type WaitSilentAdvance = Readonly<{ jobId: string; seq: number; after?: WaitProgressLine }>;
 export type WaitSelection = {
   lines: WaitProgressLine[];
   exhaustedJobIds: string[];
   advances: WaitSilentAdvance[];
+  /** The line or byte budget left no room for another line. */
+  full: boolean;
+  /** The poll's raw-row allowance ran out before every readable job was served; the rest resumes next poll. */
+  cut: boolean;
 };
 
 const TAIL_PAGE_ROWS = 32;
+/** Raw progress rows one poll may read, lookahead rows included, shared by positioning and selection. */
+const WAIT_PROGRESS_ROWS = 500;
+
+/** A backward scan for one job's tail; it outlives a cut poll so the next poll continues it instead of restarting. */
+type TailScan = {
+  /** Lines this session loaded, oldest first. */
+  lines: WaitProgressLine[];
+  sizes: number[];
+  bytes: number;
+  /** Lines an earlier request found at or above `before`; this session holds their count but not their positions. */
+  prior: number;
+  /** The lowest raw seq scanned; null before the first page. */
+  before: number | null;
+  reachedStart: boolean;
+  /** The source frontier when this session began the scan; null for a scan resumed from a cursor. */
+  top: number | null;
+};
+
+/**
+ * Lines a tail scan read in this poll's transaction from a job's new position through the source frontier: the scan
+ * covered every row of the job up to that frontier, so selection serves them without reading those rows again.
+ */
+export type WaitPositioned = ReadonlyMap<string, Readonly<{ lines: readonly WaitProgressLine[]; through: number }>>;
 
 export class WaitSession {
   admissions: WaitAdmission[] = [];
   readonly notices: string[] = [];
   private readonly members = new Map<string, Member>();
   private readonly coverage = new Map<string, { kind: 'live' | 'absent' | 'unknown'; frontier: number }>();
+  private readonly tails = new Map<string, TailScan>();
 
   readonly jobIds: readonly string[];
   readonly input?: WaitCursor;
@@ -236,11 +268,12 @@ export class WaitSession {
         epochs.set(epochIdentity(job.epochKey), job.epochKey);
     const order = [...epochs.values()];
     const sources = new Map<string, ProgressSource>();
+    const allowance = { remaining: WAIT_PROGRESS_ROWS };
     const open = (index: number): T => {
       const epoch = order[index];
       if (epoch === undefined) return read(sources);
       const result = visit(epoch, (source) => {
-        sources.set(epoch, this.attributed(epoch, source));
+        sources.set(epoch, this.attributed(epoch, source, allowance));
         return open(index + 1);
       });
       if (result.kind === 'read') return result.value;
@@ -250,7 +283,8 @@ export class WaitSession {
     return open(0);
   }
 
-  private attributed(epoch: string, source: ProgressSource): ProgressSource {
+  /** Every raw row a poll reads, lookahead included, is charged to its one allowance before the read can exceed it. */
+  private attributed(epoch: string, source: ProgressSource, allowance: { remaining: number }): ProgressSource {
     const guard = <P>(jobId: string, read: () => P): P => {
       try {
         return read();
@@ -259,9 +293,23 @@ export class WaitSession {
         throw new ProgressSourceFault(epoch, jobId, error);
       }
     };
+    const affordable = (rows: number): number => {
+      if (allowance.remaining < 2) throw new ProgressRowsExhausted();
+      return Math.min(rows, allowance.remaining - 1);
+    };
+    const charge = <P extends { rawRows: number }>(page: P): P => {
+      allowance.remaining -= page.rawRows;
+      return page;
+    };
     return {
-      after: (jobId, afterSeq, rows) => guard(jobId, () => source.after(jobId, afterSeq, rows)),
-      before: (jobId, beforeSeq, rows) => guard(jobId, () => source.before(jobId, beforeSeq, rows)),
+      after: (jobId, afterSeq, rows) => {
+        const limit = affordable(rows);
+        return charge(guard(jobId, () => source.after(jobId, afterSeq, limit)));
+      },
+      before: (jobId, beforeSeq, rows) => {
+        const limit = affordable(rows);
+        return charge(guard(jobId, () => source.before(jobId, beforeSeq, limit)));
+      },
     };
   }
 
@@ -304,50 +352,67 @@ export class WaitSession {
     return affected;
   }
 
-  position(sources: ReadonlyMap<string, ProgressSource>, count: number | null, budget: number, maxBytes: number): void {
+  /**
+   * A tail scan cut short by the row allowance keeps its job unpositioned and resumes from its boundary next poll;
+   * positioning never lands on a partial scan, which could skip older lines that belong in the tail.
+   */
+  position(
+    sources: ReadonlyMap<string, ProgressSource>,
+    count: number | null,
+    budget: number,
+    maxBytes: number,
+  ): WaitPositioned {
+    const positioned = new Map<string, { lines: readonly WaitProgressLine[]; through: number }>();
     let pending = this.admissions.filter(
       (job): job is WaitAdmission & { epochKey: string } =>
         this.readable(job, sources) && (this.member(job.jobId).entry.flags & UNPOSITIONED_FLAG) !== 0,
     );
-    if (pending.length === 0) return;
+    for (const jobId of this.tails.keys()) if (!pending.some((job) => job.jobId === jobId)) this.tails.delete(jobId);
+    if (pending.length === 0) return positioned;
     if (count === null) {
       for (const job of pending) {
         const member = this.member(job.jobId);
-        member.entry = { ...member.entry, flags: member.entry.flags & ~UNPOSITIONED_FLAG };
+        member.entry = {
+          ...member.entry,
+          flags: member.entry.flags & ~(UNPOSITIONED_FLAG | TAIL_SCAN_FLAG),
+          seq: 0,
+          lineOffset: 0,
+        };
+        this.tails.delete(job.jobId);
       }
-      return;
+      return positioned;
     }
-    type Tail = {
-      lines: WaitProgressLine[];
-      sizes: number[];
-      bytes: number;
-      before: number | null;
-      reachedStart: boolean;
-      frontier: number;
-    };
-    const tails = new Map<string, Tail>();
-    const tailFor = (jobId: string): Tail => {
-      const tail = tails.get(jobId);
+    const tailFor = (jobId: string): TailScan => {
+      const tail = this.tails.get(jobId);
       assert(tail);
       return tail;
     };
+    const found = (tail: TailScan): number => tail.prior + tail.lines.length;
+    const fresh = new Set<string>();
     // Loading stops once the loaded tail alone exceeds the byte budget: no level can then select past it.
     const load = (job: WaitAdmission & { epochKey: string }, size: number): void => {
       const source = sources.get(job.epochKey) as ProgressSource;
-      const tail = tails.get(job.jobId) ?? {
-        lines: [],
-        sizes: [],
-        bytes: 0,
-        before: null,
-        reachedStart: false,
-        frontier: 0,
-      };
-      tails.set(job.jobId, tail);
-      while (tail.lines.length < size && !tail.reachedStart && tail.bytes <= maxBytes) {
-        const page = source.before(job.jobId, tail.before, Math.min(size - tail.lines.length, TAIL_PAGE_ROWS));
-        tail.frontier = page.frontier;
+      const { entry } = this.member(job.jobId);
+      const resumed = (entry.flags & TAIL_SCAN_FLAG) !== 0;
+      let tail = this.tails.get(job.jobId);
+      if (tail === undefined) {
+        tail = {
+          lines: [],
+          sizes: [],
+          bytes: 0,
+          prior: resumed ? entry.lineOffset : 0,
+          before: resumed ? entry.seq : null,
+          reachedStart: false,
+          top: null,
+        };
+        this.tails.set(job.jobId, tail);
+        fresh.add(job.jobId);
+      }
+      while (found(tail) < size && !tail.reachedStart && tail.bytes <= maxBytes) {
+        const page = source.before(job.jobId, tail.before, Math.min(size - found(tail), TAIL_PAGE_ROWS));
+        if (tail.before === null) tail.top = page.frontier;
         tail.reachedStart = page.reachedStart;
-        tail.before = page.through;
+        if (page.rawRows > 0) tail.before = page.through;
         const lines = page.rows.flatMap((row) => this.lines(job, row));
         const sizes = lines.map((line) => Buffer.byteLength(shortenWaitLine(line.text)));
         tail.lines = [...lines, ...tail.lines];
@@ -355,39 +420,46 @@ export class WaitSession {
         tail.bytes += sizes.reduce((sum, size) => sum + size, 0);
       }
     };
-    const loadAll = (size: number): void => {
+    const loadAll = (size: number): 'loaded' | 'cut' => {
       for (const job of [...pending]) {
         if (!pending.includes(job)) continue;
         try {
           load(job, size);
         } catch (error) {
+          if (error instanceof ProgressRowsExhausted) return 'cut';
           if (!(error instanceof ProgressSourceFault)) throw error;
           const affected = this.fault(error);
           pending = pending.filter((member) => !affected.includes(member.jobId));
+          for (const jobId of affected) this.tails.delete(jobId);
         }
       }
+      return 'loaded';
     };
-    let level = Math.min(count, Math.floor(budget / pending.length));
+    // Each level line costs a row and each tail its lookahead row, so the row allowance caps the level too.
+    const rowLevel = Math.floor(WAIT_PROGRESS_ROWS / pending.length) - 1;
+    let level = Math.min(count, Math.floor(budget / pending.length), rowLevel);
     for (;;) {
-      loadAll(Math.max(1, level));
-      if (pending.length === 0) return;
-      const short = pending.filter(
-        (job) => tailFor(job.jobId).reachedStart && tailFor(job.jobId).lines.length <= level,
-      );
+      if (loadAll(Math.max(1, level)) === 'cut') {
+        this.holdTailScans(pending);
+        return positioned;
+      }
+      if (pending.length === 0) return positioned;
+      const short = pending.filter((job) => tailFor(job.jobId).reachedStart && found(tailFor(job.jobId)) <= level);
       const longCount = pending.length - short.length;
-      const used = short.reduce((sum, job) => sum + tailFor(job.jobId).lines.length, 0);
-      const next = longCount === 0 ? level : Math.min(count, Math.floor((budget - used) / longCount));
+      const used = short.reduce((sum, job) => sum + found(tailFor(job.jobId)), 0);
+      const next = longCount === 0 ? level : Math.min(count, Math.floor((budget - used) / longCount), rowLevel);
       if (next <= level) break;
       level = next;
     }
+    // Lines an earlier request found have no size here; selection still enforces the byte budget on delivery.
     const suffixes = pending.map((job) => {
-      const { sizes } = tailFor(job.jobId);
+      const { sizes, prior } = tailFor(job.jobId);
       const suffix = [0];
       for (let index = sizes.length - 1; index >= 0; index--) suffix.push(suffix[suffix.length - 1] + sizes[index]);
-      return suffix;
+      return { suffix, prior };
     });
     const bytes = (k: number): number =>
-      suffixes.reduce((sum, suffix) => sum + suffix[Math.min(k, suffix.length - 1)], 0);
+      suffixes.reduce((sum, { suffix, prior }) => sum + suffix[Math.min(Math.max(0, k - prior), suffix.length - 1)], 0);
     let fits = 0;
     let over = level + 1;
     while (over - fits > 1) {
@@ -399,19 +471,40 @@ export class WaitSession {
     const omitted: string[] = [];
     for (const job of pending) {
       const tail = tailFor(job.jobId);
-      const selected = level === 0 ? [] : tail.lines.slice(-level);
-      const first = selected[0];
+      const shown = Math.min(level, found(tail));
+      const first = shown > tail.prior ? tail.lines[tail.lines.length - (shown - tail.prior)] : undefined;
+      const boundary = (tail.before ?? 1) - 1;
       const member = this.member(job.jobId);
       member.entry = {
         ...member.entry,
-        flags: member.entry.flags & ~UNPOSITIONED_FLAG,
-        seq: first ? first.seq - Number(first.offset === 0) : tail.frontier,
+        flags: member.entry.flags & ~(UNPOSITIONED_FLAG | TAIL_SCAN_FLAG),
+        // A line an earlier request found cannot be located again, so the tail then starts at that scan's boundary.
+        seq: first ? first.seq - Number(first.offset === 0) : tail.prior > 0 ? boundary : (tail.top ?? boundary),
         lineOffset: first?.offset ?? 0,
       };
-      if (!tail.reachedStart || tail.lines.length > selected.length) omitted.push(job.jobId);
+      if (first && fresh.has(job.jobId) && tail.top !== null)
+        positioned.set(job.jobId, { lines: tail.lines.slice(-shown), through: tail.top });
+      this.tails.delete(job.jobId);
+      if (!tail.reachedStart || found(tail) > shown) omitted.push(job.jobId);
     }
     if (omitted.length)
       this.notice(`Earlier progress for ${omitted.join(', ')} was not shown; showing the most recent lines.`);
+    return positioned;
+  }
+
+  /** A cut scan is recorded on its entry, so a cursor taken at this cut resumes the scan instead of restarting it. */
+  private holdTailScans(pending: readonly WaitAdmission[]): void {
+    for (const job of pending) {
+      const tail = this.tails.get(job.jobId);
+      if (tail?.before === null || tail?.before === undefined) continue;
+      const member = this.member(job.jobId);
+      member.entry = {
+        ...member.entry,
+        flags: member.entry.flags | UNPOSITIONED_FLAG | TAIL_SCAN_FLAG,
+        seq: tail.before,
+        lineOffset: tail.prior + tail.lines.length,
+      };
+    }
   }
 
   private lines(job: WaitAdmission, row: WaitProgressRow): WaitProgressLine[] {
@@ -431,14 +524,26 @@ export class WaitSession {
   }
 
   /** Epochs take turns one row at a time, so no epoch's backlog can starve another's within one budget. */
-  select(sources: ReadonlyMap<string, ProgressSource>, budget: number, maxBytes: number): WaitSelection {
+  select(
+    sources: ReadonlyMap<string, ProgressSource>,
+    budget: number,
+    maxBytes: number,
+    positioned: WaitPositioned = new Map(),
+  ): WaitSelection {
     const selected: WaitProgressLine[] = [];
     const exhaustedJobIds: string[] = [];
     const advances = new Map<string, WaitSilentAdvance>();
-    const jobs = this.admissions.filter((job): job is WaitAdmission & { epochKey: string } =>
+    const readable = this.admissions.filter((job): job is WaitAdmission & { epochKey: string } =>
       this.readable(job, sources),
     );
-    const rows = Math.min(500, Math.ceil(budget / Math.max(1, jobs.length)) + 1);
+    const jobs = readable.filter((job) => (this.member(job.jobId).entry.flags & UNPOSITIONED_FLAG) === 0);
+    let cut = jobs.length < readable.length;
+    // Each job's first page, lookahead included, fits the poll's allowance, so no job waits on another's backlog.
+    const perJob = Math.max(1, jobs.length);
+    const rows = Math.max(
+      1,
+      Math.min(500, Math.ceil(budget / perJob) + 1, Math.floor(WAIT_PROGRESS_ROWS / perJob) - 1),
+    );
     type Head = { jobId: string; iterator: Generator<WaitProgressLine>; next: IteratorResult<WaitProgressLine> };
     const epochs = new Map<string, Head[]>();
     const drop = (jobIds: readonly string[]): void => {
@@ -456,8 +561,12 @@ export class WaitSession {
       try {
         head.next = head.iterator.next();
       } catch (error) {
-        if (!(error instanceof ProgressSourceFault)) throw error;
         head.next = { done: true, value: undefined };
+        if (error instanceof ProgressRowsExhausted) {
+          cut = true;
+          return;
+        }
+        if (!(error instanceof ProgressSourceFault)) throw error;
         drop(this.fault(error));
       }
     };
@@ -472,6 +581,7 @@ export class WaitSession {
           exhaustedJobIds,
           advances,
           () => Math.max(0, budget - selected.length),
+          positioned.get(job.jobId),
         ),
         next: { done: true, value: undefined },
       };
@@ -502,13 +612,20 @@ export class WaitSession {
       while (!chosen.next.done && chosen.next.value.seq === row && selected.length < budget) {
         const line = chosen.next.value;
         const size = Buffer.byteLength(shortenWaitLine(line.text));
-        if (bytes + size > maxBytes) return { lines: selected, exhaustedJobIds, advances: [...advances.values()] };
+        if (bytes + size > maxBytes)
+          return { lines: selected, exhaustedJobIds, advances: [...advances.values()], full: true, cut };
         selected.push(line);
         bytes += size;
         pull(chosen);
       }
     }
-    return { lines: selected, exhaustedJobIds, advances: [...advances.values()] };
+    return {
+      lines: selected,
+      exhaustedJobIds,
+      advances: [...advances.values()],
+      full: selected.length >= budget,
+      cut,
+    };
   }
 
   private *selectJob(
@@ -518,7 +635,19 @@ export class WaitSession {
     exhaustedJobIds: string[],
     advances: Map<string, WaitSilentAdvance>,
     remaining: () => number,
+    positioned?: Readonly<{ lines: readonly WaitProgressLine[]; through: number }>,
   ): Generator<WaitProgressLine> {
+    if (positioned) {
+      const last = positioned.lines.length - 1;
+      for (let index = 0; index < last; index++) yield positioned.lines[index];
+      const line = positioned.lines[last];
+      yield {
+        ...line,
+        entryAfter: { ...line.entryAfter, seq: positioned.through, lineOffset: 0 },
+        progressAfter: 'exhausted',
+      };
+      return;
+    }
     const member = this.member(job.jobId);
     let entry = member.entry;
     let previous: WaitProgressLine | undefined;
@@ -594,6 +723,9 @@ export class WaitSession {
   }
   progressState(jobId: string): ProgressState {
     return this.members.get(jobId)?.progress ?? 'unknown';
+  }
+  positioning(jobId: string): boolean {
+    return (this.member(jobId).entry.flags & UNPOSITIONED_FLAG) !== 0;
   }
   entry(jobId: string): WaitCursorEntry {
     return this.member(jobId).entry;

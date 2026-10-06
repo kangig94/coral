@@ -1460,7 +1460,9 @@ describe('a frontier the client holds is complete at every cut (K1)', () => {
       }),
     );
     expect(events.filter((event) => event.type === 'progress')).toEqual([]);
-    expect(events.find((event) => event.type === 'cursor')).toMatchObject({ cursor: savedCursor({ a: 53 }) });
+    const frames = events.filter((event) => event.type === 'cursor');
+    expect(frames[0]).toMatchObject({ cursor: savedCursor({ a: 5 }) });
+    expect(frames.at(-1)).toMatchObject({ cursor: savedCursor({ a: 53 }) });
   });
 });
 
@@ -1521,4 +1523,189 @@ it('drains an internal backlog page by page, never a whole history in one synchr
   expect(events.filter((event) => event.type === 'progress')).toHaveLength(1200);
   expect(events.at(-1)?.type).toBe('terminal');
   expect(largestVisit).toBeLessThanOrEqual(501);
+});
+
+describe('every poll reads within one raw-row allowance (F1)', () => {
+  const timing = { origin: 'runtime' as const, originAt: '', emittedAt: '', elapsedMs: 0 };
+  type Raw = { seq: number; progress?: { seq: number; message: string; timing: typeof timing } };
+  const message = (seq: number, text: string): Raw => ({ seq, progress: { seq, message: text, timing } });
+  const faults = (from: number, count: number): Raw[] => Array.from({ length: count }, (_, i) => ({ seq: from + i }));
+  const above = (raw: readonly Raw[], seq: number): number => {
+    let low = 0;
+    let high = raw.length;
+    while (low < high) {
+      const middle = (low + high) >> 1;
+      if (raw[middle].seq > seq) high = middle;
+      else low = middle + 1;
+    }
+    return low;
+  };
+  /** Records the raw rows each poll reads, and whether a macrotask ran since the previous poll. */
+  function rowSource(rows: Record<string, readonly Raw[]>, frontier: number) {
+    const polls: { rows: number; afterMacrotask: boolean }[] = [];
+    let macrotask = false;
+    const visit: ProgressVisit = (_epoch, read) => {
+      const poll = { rows: 0, afterMacrotask: macrotask };
+      polls.push(poll);
+      macrotask = false;
+      setImmediate(() => {
+        macrotask = true;
+      });
+      return {
+        kind: 'read',
+        value: read({
+          after: (id, after, count) => {
+            const start = above(rows[id], after);
+            const raw = rows[id].slice(start, start + count + 1);
+            poll.rows += raw.length;
+            return progressPage(raw, count, frontier);
+          },
+          before: (id, before, count) => {
+            const end = before === null ? rows[id].length : above(rows[id], before - 1);
+            const raw = rows[id].slice(Math.max(0, end - count - 1), end).reverse();
+            poll.rows += raw.length;
+            return progressTail(raw, count, frontier);
+          },
+        }),
+      };
+    };
+    return { visit, polls };
+  }
+  const steppedTime = (): TimePort => {
+    let mono = 0n;
+    return {
+      ...virtualTimeMethods(),
+      monotonicNow: () => mono,
+      sleep: async (ms) => {
+        mono += BigInt(ms);
+      },
+    };
+  };
+
+  it('delivers first within 500 raw rows over 100,000 fault rows and yields a macrotask between slices', async () => {
+    const { visit, polls } = rowSource({ a: faults(1, 100_000) }, 100_001);
+    const stream = readWaitSession({
+      request: { jobIds: ['a'], timeoutSeconds: 0, cursor: savedCursor({ a: 0 }, 'E') },
+      internal: true,
+      time: new VirtualTime(),
+      read: () => [admitted('a', [], true, 'E')],
+      visit,
+    });
+    const first = await stream.next();
+    expect(first.value).toMatchObject({ type: 'cursor' });
+    expect(polls).toHaveLength(1);
+    expect(polls[0].rows).toBeLessThanOrEqual(500);
+    const events = [first.value as WaitStreamEvent, ...(await collectWithFrames(stream))];
+    expect(polls.length).toBeGreaterThanOrEqual(200);
+    expect(polls.every((poll) => poll.rows <= 500)).toBe(true);
+    expect(polls.slice(1).every((poll) => poll.afterMacrotask)).toBe(true);
+    expect(events.filter((event) => event.type === 'progress')).toEqual([]);
+    const frames = events.filter((event) => event.type === 'cursor');
+    expect(frames.at(-1)).toMatchObject({ cursor: savedCursor({ a: 100_001 }, 'E') });
+    expect(events.at(-1)).toMatchObject({ type: 'terminal', jobId: 'a' });
+  });
+
+  it('positions a cursorless tail over a fault-dense history in bounded slices and lands on the true tail', async () => {
+    const lines = Array.from({ length: 40 }, (_, i) => message(i + 1, `line-${i + 1}`));
+    const { visit, polls } = rowSource({ a: [...lines, ...faults(41, 30_000)] }, 30_040);
+    const events = await collectWithFrames(
+      readWaitSession({
+        request: { jobIds: ['a'], timeoutSeconds: 60 },
+        time: steppedTime(),
+        read: () => [admitted('a', [], true, 'E')],
+        visit,
+      }),
+    );
+    expect(events.filter((event) => event.type === 'progress').map((event) => event.message)).toEqual(
+      Array.from({ length: 20 }, (_, i) => `line-${i + 21}`),
+    );
+    expect(events).toContainEqual({
+      type: 'notice',
+      message: 'Earlier progress for a was not shown; showing the most recent lines.',
+    });
+    expect(events.at(-1)).toMatchObject({ type: 'terminal', jobId: 'a', remainingJobIds: [] });
+    expect(polls.length).toBeGreaterThan(60);
+    expect(polls.every((poll) => poll.rows <= 500)).toBe(true);
+  });
+
+  it('delivers every line exactly once when a stream is cut at any event across slices', async () => {
+    const history: Record<string, Raw[]> = {
+      a: [0, 1, 2, 3, 4].flatMap((i) => [
+        message(1 + i * 701, i === 2 ? 'a-2a\na-2b' : `a-${i}`),
+        ...faults(2 + i * 701, 700),
+      ]),
+      b: [0, 1, 2].flatMap((i) => [message(4000 + i * 1201, `b-${i}`), ...faults(4001 + i * 1201, 1200)]),
+      c: [...faults(8000, 1500), ...[0, 1, 2, 3, 4].map((i) => message(9500 + i, `c-${i}`)), ...faults(9505, 900)],
+    };
+    const expected = {
+      a: ['a-0', 'a-1', 'a-2a', 'a-2b', 'a-3', 'a-4'],
+      b: ['b-0', 'b-1', 'b-2'],
+      c: ['c-0', 'c-1', 'c-2', 'c-3', 'c-4'],
+    };
+    const jobs = [admitted('a', [], true, 'E1'), admitted('b', [], true, 'E1'), admitted('c', [], true, 'E2')];
+    const run = async (cut: number) => {
+      const { visit } = rowSource(history, 10_405);
+      let cursor: WaitCursor | undefined = savedCursor({ a: 0, b: 0 }, 'E1');
+      let ids = ['a', 'b', 'c'];
+      let events = 0;
+      const printed: Record<string, string[]> = { a: [], b: [], c: [] };
+      const fold = (event: WaitStreamEvent) => {
+        const decision = advanceWaitRenderCursor(cursor, event);
+        cursor = decision.cursor;
+        if (event.type === 'progress' && decision.shouldRender) printed[event.jobId].push(...event.message.split('\n'));
+        if (isFinalWaitEvent(event)) ids = event.type === 'waiting' ? event.waitingJobIds : event.remainingJobIds;
+      };
+      const stream = () =>
+        readWaitSession({
+          request: { jobIds: ids, timeoutSeconds: 60, ...(cursor ? { cursor } : {}) },
+          time: steppedTime(),
+          read: () => jobs.filter((job) => ids.includes(job.jobId)),
+          visit,
+        });
+      const first = stream();
+      for (let index = 0; index < cut; index++) {
+        const next = await first.next();
+        if (next.done) break;
+        events++;
+        fold(next.value);
+      }
+      await first.return(undefined);
+      for (let requests = 0; ids.length && requests < 12; requests++) for await (const event of stream()) fold(event);
+      return { printed, ids, events };
+    };
+    const uncut = await run(Infinity);
+    expect(uncut.printed).toEqual(expected);
+    expect(uncut.ids).toEqual([]);
+    for (let cut = 0; cut <= uncut.events; cut++) {
+      const result = await run(cut);
+      expect({ cut, printed: result.printed, ids: result.ids }).toEqual({ cut, printed: expected, ids: [] });
+    }
+  });
+});
+
+it('opens a continuation from a positioned cursor with a frame, so a fold that starts from no cursor has a base', async () => {
+  let client: WaitCursor | undefined;
+  const types: string[] = [];
+  for await (const event of readWaitSession({
+    request: { jobIds: ['j'], cursor: savedCursor({ j: 0 }, 'E'), timeoutSeconds: 1, drainProgress: true },
+    time: new VirtualTime(),
+    read: observeWaitRead(() => [
+      admitted(
+        'j',
+        [
+          [1, 'one'],
+          [2, 'two'],
+        ],
+        false,
+        'E',
+      ),
+    ]),
+    visit: testProgressVisit,
+  })) {
+    types.push(event.type);
+    client = advanceWaitRenderCursor(client, event).cursor;
+    if (event.type === 'progress') break;
+  }
+  expect(types).toEqual(['cursor', 'progress']);
+  expect(client).toEqual(savedCursor({ j: 1 }, 'E'));
 });

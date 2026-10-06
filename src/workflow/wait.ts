@@ -30,7 +30,7 @@ export function formatAtomProgress(atom: LaunchedAtom, message: string): string 
 }
 
 export type WaitForAtomsOptions = {
-  time: Pick<TimePort, 'now' | 'monotonicNow'>;
+  time: Pick<TimePort, 'now' | 'monotonicNow' | 'sleep'>;
   signal?: AbortSignal;
   staleTimeoutMs: number;
   staleCheckIntervalMs: number;
@@ -82,6 +82,10 @@ export type AwaitStepState = {
     firstFailure: WaitFailure;
     drainDeadline: number;
   } | null;
+  /** Pending children the current cycle's wait refused: no terminal of theirs can arrive through it. */
+  unobservable: Set<string>;
+  /** Children the failure abort answered as absent, so none of them is left to drain. */
+  abortAbsent: Set<string>;
 };
 
 function waitTimeoutSeconds(staleTimeoutMs: number, staleCheckIntervalMs: number): number {
@@ -133,6 +137,8 @@ function createAwaitStepState(
     observedIdleMs: new Map([...pending.values()].map((atom) => [atom.atomKey, 0])),
     lastObservedAtMonotonicMs: time.monotonicNow(),
     observedDrainMs: 0,
+    unobservable: new Set(),
+    abortAbsent: new Set(),
     failureDrain:
       initialState.failureDrain === undefined
         ? null
@@ -186,7 +192,16 @@ function enterFailureDrain(
   };
   state.observedDrainMs = 0;
   options.onFailureDrain?.(snapshotWaitState(state), failure);
-  executionSvc.abort([...state.pending.keys()]);
+  state.abortAbsent = new Set(executionSvc.abort([...state.pending.keys()]).notFound);
+  for (const jobId of state.unobservable) releaseAbsent(state, jobId);
+}
+
+/** A refused child leaves the drain only once the abort answered that no such job exists. */
+function releaseAbsent(state: AwaitStepState, jobId: string): void {
+  const atom = state.pending.get(jobId);
+  if (!atom || !state.abortAbsent.has(jobId)) return;
+  state.pending.delete(jobId);
+  state.observedIdleMs.delete(atom.atomKey);
 }
 
 function recordWaitActivity(
@@ -217,8 +232,9 @@ function handleWaitEvent(
       if (event.disposition === 'discovery-unknown') return 'handled';
       const atom = state.pending.get(event.jobId);
       if (!atom) return 'handled';
-      state.pending.delete(event.jobId);
-      state.observedIdleMs.delete(atom.atomKey);
+      // The refused child stays pending, so the abort includes it and its drain obligation outlives this refusal.
+      state.unobservable.add(event.jobId);
+      releaseAbsent(state, event.jobId);
       enterFailureDrain(
         state,
         executionSvc,
@@ -320,6 +336,7 @@ async function awaitWaitCycle(
   const timeoutSeconds = waitTimeoutSeconds(options.staleTimeoutMs, options.staleCheckIntervalMs);
   const observedCadenceMs = timeoutSeconds * 1_000;
   let events = 0;
+  state.unobservable.clear();
 
   // The pipeline abort signal is not this wait's: after an abort the wait is what drains the aborted atoms.
   for await (const event of executionSvc.waitStream({
@@ -379,13 +396,17 @@ async function awaitStepCompletion(
     }
 
     const cycleOutcome = await awaitWaitCycle(state, executionSvc, ctx, options, buildPartialStepDetailsForCycle);
+    const cadenceMs = waitTimeoutSeconds(options.staleTimeoutMs, options.staleCheckIntervalMs) * 1_000;
     // A cycle that observed nothing may not be followed by another in the same macrotask, or timers starve.
     if (cycleOutcome === 'stream-empty') await setImmediate();
-    advanceObservedWaitTime(
-      state,
-      options.time.monotonicNow(),
-      waitTimeoutSeconds(options.staleTimeoutMs, options.staleCheckIntervalMs) * 1_000,
-    );
+    // A wait that refuses every pending child returns at once, so the drain then waits out its cadence instead.
+    if (
+      state.failureDrain !== null &&
+      state.pending.size > 0 &&
+      [...state.pending.keys()].every((jobId) => state.unobservable.has(jobId))
+    )
+      await options.time.sleep(Math.max(0, Math.min(cadenceMs, options.drainDeadlineMs - state.observedDrainMs)));
+    advanceObservedWaitTime(state, options.time.monotonicNow(), cadenceMs);
 
     if (state.failureDrain !== null && (state.pending.size === 0 || state.observedDrainMs >= options.drainDeadlineMs)) {
       throw createWorkflowExecutionError(

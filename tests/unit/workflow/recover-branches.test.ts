@@ -52,6 +52,9 @@ const fixedTime = {
     recoverMonotonicClock += 100n;
     return recoverMonotonicClock;
   },
+  sleep: async (ms: number) => {
+    recoverMonotonicClock += BigInt(ms);
+  },
 };
 
 const PROJECT_ROOT = canonicalizeWorkDir(process.cwd(), process.cwd());

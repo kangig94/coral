@@ -35,3 +35,11 @@ it.each([
 ] as const)('states the intent-specific repairs for %j', (options, repairs) => {
   for (const repair of repairs) expect(() => validateWaitJobsOptions(options)).toThrow(repair);
 });
+
+it('gives a delegated launch follow no wait budget and refuses it with --now', () => {
+  const program = new Command();
+  program.command('wait').command('jobs').argument('<jobIds...>').option('--now').option('--follow');
+  expect(waitInvocationMode(program, ['node', 'cli', 'wait', 'jobs', 'a', '--follow'])).toBeUndefined();
+  expect(waitInvocationMode(program, ['node', 'cli', 'wait', 'jobs', 'a'])).toBe('bounded');
+  expect(() => validateWaitJobsOptions({ follow: true, now: true })).toThrow('--follow cannot be used with --now');
+});

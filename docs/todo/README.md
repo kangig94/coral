@@ -55,7 +55,7 @@ from an unexpected result on its own. Both halves live in
 than wait on them. The decision leaves one constraint in its place: a CLI surface may not be changed so
 that a stale reader's existing expectation silently becomes wrong.
 
-**What the compatibility decision left behind.** `build-identity-and-upgrade` asks for a repository-wide mixed-build record gate. `jobs-read-contract-schema-first` consumes that rule. Wait artifact availability is implemented through the negotiated v3 contract.
+**What the compatibility decision left behind.** `build-identity-and-upgrade` asks for a repository-wide mixed-build record gate. `jobs-read-contract-schema-first` consumes that rule. Wait artifact availability ships on the single wait contract, which carries no version tag and no capability negotiation; a request from another build is refused as `wait_build_mismatch`.
 
 **Relationships that matter before starting.** `legacy-v1-capsule-retirement` and
 `foreign-capsule-retirement-terminal-recovery`

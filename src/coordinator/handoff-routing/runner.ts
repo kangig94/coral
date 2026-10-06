@@ -88,11 +88,11 @@ const handoffOperationSchema = z.discriminatedUnion('kind', [
     .strict(),
   z
     .object({
-      kind: z.literal('wait-jobs'),
+      kind: z.literal('follow-job'),
       jobId: z.string().min(1),
       // Opaque here on purpose: the caller already holds the serialized cursor, and decoding it would make
       // this coordinator module depend on the jobs domain's wait vocabulary just to re-encode the same string.
-      serializedCursor: z.string().min(1),
+      serializedCursor: z.string().min(1).optional(),
     })
     .strict(),
   z.object({ kind: z.literal('backend-startup') }).strict(),
@@ -143,7 +143,7 @@ type LiveIncumbentReading =
 
 export type HandoffOperation =
   | Readonly<{ kind: 'cli-invocation'; argv: readonly string[] }>
-  | Readonly<{ kind: 'wait-jobs'; jobId: string; serializedCursor: string }>
+  | Readonly<{ kind: 'follow-job'; jobId: string; serializedCursor?: string }>
   | Readonly<{ kind: 'backend-startup' }>;
 
 export type HandoffSuccess = Readonly<{
@@ -843,8 +843,14 @@ function delegatedArguments(operation: HandoffOperation): readonly string[] {
   switch (operation.kind) {
     case 'cli-invocation':
       return operation.argv.slice(2);
-    case 'wait-jobs':
-      return ['wait', 'jobs', operation.jobId, '--cursor', operation.serializedCursor];
+    case 'follow-job':
+      return [
+        'wait',
+        'jobs',
+        operation.jobId,
+        '--follow',
+        ...(operation.serializedCursor === undefined ? [] : ['--cursor', operation.serializedCursor]),
+      ];
     case 'backend-startup':
       return [];
   }
@@ -1334,6 +1340,29 @@ function bindMonitorChild(
     .catch(() => undefined);
 }
 
+/** A delegated follow ignores Ctrl+C because its caller owns that decision, so the caller ends it when it stops. */
+function endFollowWithCaller(
+  child: ChildProcess,
+  observation: ObservedChild,
+  signal: AbortSignal,
+  runtime: Runtime,
+): void {
+  const end = () =>
+    void gracefulKill(
+      child as ChildProcessLike,
+      {
+        time: {
+          clearTimeout: (handle) => runtime.time.clearTimeout(handle),
+          setTimeout: (callback, delay) => runtime.time.setTimeout(callback, delay),
+        },
+      },
+      runtime.process.observeLiveness,
+    );
+  signal.addEventListener('abort', end, { once: true });
+  if (signal.aborted) end();
+  void observation.closed.finally(() => signal.removeEventListener('abort', end)).catch(() => undefined);
+}
+
 async function executeResolvedHandoff(
   operation: HandoffOperation,
   routing: HandoffRoutingResult,
@@ -1417,6 +1446,8 @@ async function executeResolvedHandoff(
       const child = spawn(process.execPath, childArguments, spawnOptions);
       const childObservation = observeChild(child);
       if (waitInvocation !== undefined) bindMonitorChild(child, childObservation, waitInvocation, runtime);
+      else if (operation.kind === 'follow-job' && signal !== undefined)
+        endFollowWithCaller(child, childObservation, signal, runtime);
       await childObservation.spawned;
       executionPhase.current = 'child-outcome-wait';
       if (startup !== undefined) {
@@ -1496,7 +1527,7 @@ export async function runHandoff(
     if (supported === null)
       throw new WaitInvocationReadinessError(
         options.waitInvocation?.originalCommand ??
-          `coral-cli wait jobs ${operation.kind === 'wait-jobs' ? operation.jobId : ''}`,
+          `coral-cli wait jobs ${operation.kind === 'follow-job' ? operation.jobId : ''}`,
       );
     if (!supported)
       return {

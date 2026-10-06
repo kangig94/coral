@@ -2444,8 +2444,26 @@ it('the sweep uses the production onOpen lineage without hydrating the active ep
     projectRoot: base,
     backendNamespace: 'fixture',
   });
+  // The scheduler's timers run when the test says so: the first sweep starts on demand, and its 5 s reschedule
+  // marks that the whole sweep has finished.
+  const sweeps: Array<() => void> = [];
+  let swept!: () => void;
+  const firstSweep = new Promise<void>((resolve) => {
+    swept = resolve;
+  });
   const scheduler = createStoreEpochSweepScheduler({
-    runtime,
+    runtime: {
+      ...runtime,
+      time: {
+        ...runtime.time,
+        setTimeout: (callback, delay) => {
+          sweeps.push(callback);
+          if (delay === 5_000) swept();
+          return { unref: () => undefined } as never;
+        },
+        clearTimeout: () => undefined,
+      },
+    },
     world: { log: vi.fn() },
     jobLocationIndex: index,
     selectedStoreEpochKey: () => selected,
@@ -2456,7 +2474,8 @@ it('the sweep uses the production onOpen lineage without hydrating the active ep
   });
   try {
     scheduler.schedule(settled.store);
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    sweeps[0]();
+    await firstSweep;
     await scheduler.stop();
     expect(selected).not.toBe(key);
     expect(index.read('live-job')?.disposition).toBe('active-owner');
@@ -3396,6 +3415,203 @@ it('an undecodable launch row cannot stop hydration of the subjects after it in 
     );
     expect(f.index.read(f.jobId)?.disposition).toBe('terminal');
     expect(f.index.unknownLocationHold(f.epochKey)).not.toBeNull();
+  } finally {
+    f.close();
+  }
+});
+
+describe('per-job failures stay per-job (F4)', () => {
+  const seedFixture = (f: ReturnType<typeof createTerminalExportFixture>, storagePort = f.runtime.storage) =>
+    seedHistoricalEpoch(
+      f.runtime,
+      f.index,
+      f.epoch,
+      f.epochKey,
+      currentCoralStoreFormat().fingerprint,
+      f.runtime.paths.coral.exports.jobsRoot,
+      storagePort,
+    );
+  const locationOf = (f: ReturnType<typeof createTerminalExportFixture>, jobId: string) =>
+    join(f.root, 'job-locations.v1', 'jobs', `${Buffer.from(jobId).toString('base64url')}.json`);
+
+  it('seeds a healthy sibling readable past a malformed retained location and holds no epoch for it', () => {
+    const f = createTerminalExportFixture('provider', true);
+    try {
+      initTestJob(f.store, {
+        jobId: 'sibling',
+        sessionId: 'sibling-session',
+        provider: 'claude',
+        projectRoot: f.root,
+        backendNamespace: 'fixture',
+      });
+      rmSync(locationOf(f, 'sibling'));
+      writeFileSync(f.locationPath, '{bad json');
+      expect(seedFixture(f).kind).not.toBe('unrecoverable-retained');
+      expect(f.index.read('sibling')).toMatchObject({ jobId: 'sibling' });
+      expect(f.index.unknownLocationHolds()).toEqual([]);
+      const read = readHistoricalSource(f.index, f.epochKey, ['sibling'], {});
+      expect(read.kind === 'read' && read.dispositions.get('sibling')).toBe('readable');
+    } finally {
+      f.close();
+    }
+  });
+
+  it('refreshes a healthy sibling past a malformed retained location', () => {
+    const f = createTerminalExportFixture('provider', true);
+    try {
+      initTestJob(f.store, {
+        jobId: 'sibling',
+        sessionId: 'sibling-session',
+        provider: 'claude',
+        projectRoot: f.root,
+        backendNamespace: 'fixture',
+      });
+      seedFixture(f);
+      writeFileSync(f.locationPath, '{bad json');
+      commitJobTerminal(f.store, 'sibling', 'sibling-session', {
+        content: 'sibling done',
+        outcome: { kind: 'completed' },
+        durationMs: 1,
+      });
+      expect(refreshHistoricalEpoch(f.index, f.epochKey, [f.jobId, 'sibling'])).toEqual({ kind: 'read' });
+      expect(f.index.read('sibling')?.disposition).toBe('terminal');
+    } finally {
+      f.close();
+    }
+  });
+
+  it.each([
+    ['a transient SQLITE_IOERR', 'readable'],
+    ['a malformed terminal', 'settled-unreadable'],
+  ] as const)('reads a job again after %s instead of answering from its earlier cache', (failure, settled) => {
+    const f = createTerminalExportFixture('provider', true);
+    try {
+      let failNext = false;
+      const storagePort = {
+        ...f.runtime.storage,
+        openSqliteDatabaseSync: (...args: Parameters<typeof f.runtime.storage.openSqliteDatabaseSync>) => {
+          const db = f.runtime.storage.openSqliteDatabaseSync(...args);
+          const bound = <T extends object>(target: T, key: string | symbol): unknown => {
+            const value: unknown = Reflect.get(target, key);
+            return typeof value === 'function' ? value.bind(target) : value;
+          };
+          return new Proxy(db, {
+            get: (target, key) =>
+              key !== 'prepare'
+                ? bound(target, key)
+                : (sql: string) => {
+                    const statement = target.prepare(sql);
+                    if (sql !== 'SELECT * FROM projection_jobs WHERE job_id = ?' || !failNext) return statement;
+                    failNext = false;
+                    return new Proxy(statement, {
+                      get: (inner, name) =>
+                        name === 'get'
+                          ? () => {
+                              throw Object.assign(new Error('disk I/O error'), { code: 'SQLITE_IOERR' });
+                            }
+                          : bound(inner, name),
+                    });
+                  },
+          });
+        },
+      };
+      seedFixture(f, storagePort);
+      const session = {};
+      const disposition = () => {
+        const read = readHistoricalSource(f.index, f.epochKey, [f.jobId], session);
+        return read.kind === 'read' ? read.dispositions.get(f.jobId) : read.disposition;
+      };
+      expect(disposition()).toBe('readable');
+      if (failure === 'a transient SQLITE_IOERR') {
+        commitJobTerminal(f.store, f.jobId, 'session-1', {
+          content: 'valid result',
+          outcome: { kind: 'completed' },
+          durationMs: 1,
+        });
+        failNext = true;
+        expect(disposition()).toBe('transient-unknown');
+        const read = readHistoricalSource(f.index, f.epochKey, [f.jobId], session);
+        expect(read.kind === 'read' && read.locations.get(f.jobId)?.disposition).toBe('terminal');
+      } else {
+        f.db
+          .prepare('INSERT INTO events(ts, type, stream_kind, stream_id, refs, body) VALUES (?, ?, ?, ?, ?, ?)')
+          .run(
+            new Date(TERMINAL_EXPORT_CUTOFF).toISOString(),
+            'job.terminal.recorded',
+            'job',
+            f.jobId,
+            '{}',
+            Buffer.from(JSON.stringify({ terminal: { content: 'future', outcome: { kind: 'unrecognized' } } })),
+          );
+        f.db
+          .prepare(
+            "UPDATE projection_jobs SET phase = 'completed', last_seq = (SELECT MAX(seq) FROM events) WHERE job_id = ?",
+          )
+          .run(f.jobId);
+        expect(disposition()).toBe('settled-unreadable');
+      }
+      expect(disposition()).toBe(settled);
+    } finally {
+      f.close();
+    }
+  });
+});
+
+it('reads the seed inventory once per seed and the job high-water mark only at completion', () => {
+  const f = createTerminalExportFixture('provider', true);
+  try {
+    for (let i = 0; i < 4; i++)
+      initTestJob(f.store, {
+        jobId: `inventory-${i}`,
+        sessionId: `inventory-session-${i}`,
+        provider: 'claude',
+        projectRoot: f.root,
+        backendNamespace: 'fixture',
+      });
+    for (let i = 0; i < 4; i++)
+      rmSync(join(f.root, 'job-locations.v1', 'jobs', `${Buffer.from(`inventory-${i}`).toString('base64url')}.json`));
+    const statements: string[] = [];
+    const storagePort = {
+      ...f.runtime.storage,
+      openSqliteDatabaseSync: (...args: Parameters<typeof f.runtime.storage.openSqliteDatabaseSync>) => {
+        const db = f.runtime.storage.openSqliteDatabaseSync(...args);
+        return new Proxy(db, {
+          get: (target, key) => {
+            if (key === 'prepare')
+              return (sql: string) => {
+                statements.push(sql);
+                return target.prepare(sql);
+              };
+            const value: unknown = Reflect.get(target, key);
+            return typeof value === 'function' ? value.bind(target) : value;
+          },
+        });
+      },
+    };
+    const results = [];
+    for (let slice = 0; slice < 8; slice++) {
+      const result = seedHistoricalEpoch(
+        f.runtime,
+        f.index,
+        f.epoch,
+        f.epochKey,
+        currentCoralStoreFormat().fingerprint,
+        f.runtime.paths.coral.exports.jobsRoot,
+        storagePort,
+        [],
+        true,
+        { remaining: 1 },
+      );
+      results.push(result.kind);
+      if (result.kind !== 'uncertified' || f.index.unknownLocationHold(f.epochKey) === null) break;
+    }
+    expect(results.length).toBeGreaterThan(2);
+    expect(statements.filter((sql) => sql.startsWith('SELECT job_id FROM projection_jobs ORDER BY'))).toHaveLength(1);
+    expect(statements.filter((sql) => sql.includes("type = 'job.launch.requested' ORDER BY seq"))).toHaveLength(1);
+    expect(
+      statements.filter((sql) => sql === "SELECT COALESCE(MAX(seq), 0) AS seq FROM events WHERE stream_kind = 'job'"),
+    ).toHaveLength(1);
+    for (let i = 0; i < 4; i++) expect(f.index.read(`inventory-${i}`)).toMatchObject({ jobId: `inventory-${i}` });
   } finally {
     f.close();
   }

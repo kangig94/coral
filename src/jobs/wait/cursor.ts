@@ -24,6 +24,11 @@ export const WAIT_CURSOR_REPLAY_NOTICE =
 export const ACKNOWLEDGED_FLAG = 1;
 export const ARTIFACT_PENDING_FLAG = 2;
 export const UNPOSITIONED_FLAG = 4;
+/**
+ * An unpositioned job whose tail scan was cut short: its seq is the lowest raw seq scanned, every row from there to
+ * the scan's top has been read, and its lineOffset counts the message lines those rows hold.
+ */
+export const TAIL_SCAN_FLAG = 8;
 
 const MAX_JOBS = 128;
 const MAX_CURSOR_BYTES = 8192;
@@ -52,9 +57,11 @@ function validEntry(value: unknown): value is WaitCursorEntry {
     (lineOffset as number) <= 0xffffffff &&
     Number.isInteger(flags) &&
     (flags as number) >= 0 &&
-    (flags as number) <= 7 &&
+    (flags as number) <= 15 &&
     (epoch !== null || flags === UNPOSITIONED_FLAG) &&
-    (((flags as number) & UNPOSITIONED_FLAG) === 0 || (seq === 0 && lineOffset === 0)) &&
+    (((flags as number) & TAIL_SCAN_FLAG) === 0
+      ? ((flags as number) & UNPOSITIONED_FLAG) === 0 || (seq === 0 && lineOffset === 0)
+      : ((flags as number) & UNPOSITIONED_FLAG) !== 0 && (seq as number) >= 1) &&
     (((flags as number) & ARTIFACT_PENDING_FLAG) === 0 || ((flags as number) & ACKNOWLEDGED_FLAG) !== 0)
   );
 }

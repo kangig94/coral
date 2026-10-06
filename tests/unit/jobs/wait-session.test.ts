@@ -441,8 +441,11 @@ it('water-fills a maximum set before reading tails, within the raw-row budget', 
     (_epoch, visit) => ({
       kind: 'read',
       value: visit({
-        after: (_id, after, count) =>
-          progressPage(raw.filter((row) => row.seq > after).slice(0, count + 1), count, 100),
+        after: (_id, after, count) => {
+          const page = raw.filter((row) => row.seq > after).slice(0, count + 1);
+          rowsRead += page.length;
+          return progressPage(page, count, 100);
+        },
         before: (_id, before, count) => {
           const page = raw
             .filter((row) => before === null || row.seq < before)
@@ -455,11 +458,13 @@ it('water-fills a maximum set before reading tails, within the raw-row budget', 
       }),
     }),
     (sources) => {
-      session.position(sources, 20, 500, 65536);
-      const selected = session.select(sources, 500, 65536);
-      expect(selected.lines).toHaveLength(128 * 3);
-      expect(rowsRead).toBeLessThanOrEqual(500 + 128);
-      expect(session.cursor().jobs.every((entry) => entry.seq === 97)).toBe(true);
+      // Two lines and a lookahead row per tail fit 128 tails in 500 rows, and selection reuses what positioning read.
+      const positioned = session.position(sources, 20, 500, 65536);
+      const selected = session.select(sources, 500, 65536, positioned);
+      expect(selected.lines).toHaveLength(128 * 2);
+      expect(selected.cut).toBe(false);
+      expect(rowsRead).toBeLessThanOrEqual(500);
+      expect(session.cursor().jobs.every((entry) => entry.seq === 98)).toBe(true);
     },
   );
 });
@@ -662,4 +667,41 @@ it('exhausts a job whose saved line offset lies past its row instead of holding 
   expect(selectTestProgress(session)).toEqual([]);
   expect(session.progressState('a')).toBe('exhausted');
   expect(session.hasProgress()).toBe(false);
+});
+
+it('never selects from a member whose tail scan is unfinished, since its seq is a scan boundary', () => {
+  const timing = { origin: 'runtime' as const, originAt: '', emittedAt: '', elapsedMs: 0 };
+  const raw = Array.from({ length: 10 }, (_, index) => ({
+    seq: index + 1,
+    progress: { seq: index + 1, message: `line-${index + 1}`, timing },
+  }));
+  const session = new WaitSession(['a'], {
+    jobs: [{ hash: waitJobHash('a'), epoch: waitEpochToken('epoch-E'), seq: 6, lineOffset: 5, flags: 12 }],
+  });
+  session.reconcile([admitted('a', [], false)]);
+  const reads: number[] = [];
+  const selection = session.withProgress(
+    (_epoch, visit) => ({
+      kind: 'read',
+      value: visit({
+        after: (_id, after, count) => {
+          reads.push(after);
+          return progressPage(raw.filter((row) => row.seq > after).slice(0, count + 1), count, 10);
+        },
+        before: (_id, before, count) =>
+          progressTail(
+            raw
+              .filter((row) => before === null || row.seq < before)
+              .reverse()
+              .slice(0, count + 1),
+            count,
+            10,
+          ),
+      }),
+    }),
+    (sources) => session.select(sources, 500, 65536),
+  );
+  expect(reads).toEqual([]);
+  expect(selection).toMatchObject({ lines: [], cut: true });
+  expect(session.entry('a')).toMatchObject({ seq: 6, lineOffset: 5, flags: 12 });
 });

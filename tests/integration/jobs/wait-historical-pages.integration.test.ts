@@ -43,10 +43,11 @@ it('historical: no fault row; watermark before launch (reset/new member) hides l
       jobs: [{ hash: waitJobHash(f.jobId), epoch: waitEpochToken(f.epochKey), seq: 0, lineOffset: 0, flags: 0 }],
     };
     const snap = addressing.snapshot({ jobIds: [f.jobId], cursor } as never);
-    expect(snap.jobs[0].progress).toEqual(Array.from({ length: 500 }, (_, i) => `line ${i}`));
+    // A 499-row page and its lookahead row spend one poll's 500-row allowance.
+    expect(snap.jobs[0].progress).toEqual(Array.from({ length: 499 }, (_, i) => `line ${i}`));
     expect(snap.remainingJobIds).toEqual([f.jobId]);
     const next = addressing.snapshot({ jobIds: [f.jobId], cursor: snap.cursor });
-    expect(next.jobs[0].progress).toEqual(Array.from({ length: 100 }, (_, i) => `line ${i + 500}`));
+    expect(next.jobs[0].progress).toEqual(Array.from({ length: 101 }, (_, i) => `line ${i + 499}`));
     expect(next.remainingJobIds).toEqual([]);
   } finally {
     f.close();

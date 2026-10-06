@@ -554,6 +554,7 @@ describe('actual wait carriage', () => {
     }))
       events.push(event);
     expect(events).toEqual([
+      { type: 'cursor', cursor: snapshot.cursor },
       expect.objectContaining({
         type: 'artifact',
         availability: { kind: 'available', resultPath: f.resultPath },

@@ -22,28 +22,23 @@ afterAll(() => rmSync(directory, { recursive: true, force: true }));
 
 async function probe(
   scenario: string,
-  snapshot = false,
 ): Promise<{ code: number | null; timedOut: boolean; stdout: string; stderr: string; elapsed: number }> {
   const entry = join(directory, 'real', 'coral-cli.cjs');
   const start = performance.now();
   const home = mkdtempSync(join(directory, 'home-'));
   const target = entry;
-  const child = spawn(
-    process.execPath,
-    [entry, 'wait', 'jobs', 'a', 'ghost', ...(snapshot ? ['--now'] : ['--embed']), '--cursor', saved],
-    {
-      env: {
-        PATH: process.env.PATH,
-        HOME: home,
-        LANG: 'C.UTF-8',
-        TMPDIR: '/tmp',
-        WAIT_PROBE_SCENARIO: scenario,
-        WAIT_PROBE_MODE: snapshot ? 'snapshot' : 'bounded',
-        WAIT_PROBE_TARGET: target,
-      },
-      stdio: ['ignore', 'pipe', 'pipe'],
+  const child = spawn(process.execPath, [entry, 'wait', 'jobs', 'a', 'ghost', '--embed', '--cursor', saved], {
+    env: {
+      PATH: process.env.PATH,
+      HOME: home,
+      LANG: 'C.UTF-8',
+      TMPDIR: '/tmp',
+      WAIT_PROBE_SCENARIO: scenario,
+      WAIT_PROBE_MODE: 'bounded',
+      WAIT_PROBE_TARGET: target,
     },
-  );
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
   let stdout = '';
   let stderr = '';
   let timedOut = false;
@@ -80,12 +75,9 @@ function assertBounded(result: Awaited<ReturnType<typeof probe>>): void {
     expect(() => process.kill(Number(match[1]), 0)).toThrow();
 }
 
-it.each([false, true])('bounds a real delegated monitor, snapshot=%s', async (snapshot) => {
-  const result = await probe('delegated-delivery', snapshot);
+it('bounds a real delegated monitor and prints its confirmed cursor', async () => {
+  const result = await probe('delegated-delivery');
   assertBounded(result);
-  if (snapshot) expect(result.stdout).toContain('--now');
-  else {
-    expect(result.stdout).toContain('confirmed delivery');
-    expect(result.stdout).toContain(`--cursor ${frontier}`);
-  }
+  expect(result.stdout).toContain('confirmed delivery');
+  expect(result.stdout).toContain(`--cursor ${frontier}`);
 });

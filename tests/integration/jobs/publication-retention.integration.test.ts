@@ -73,19 +73,11 @@ async function prune(f: ReturnType<typeof fixture>) {
 }
 function message(child: ChildProcess, kind: string): Promise<void> {
   return new Promise((resolveMessage, reject) => {
-    const timeout = setTimeout(() => reject(new Error(`Missing ${kind}`)), 10_000);
     child.on('message', (value) => {
-      if (typeof value === 'object' && value !== null && 'kind' in value && value.kind === kind) {
-        clearTimeout(timeout);
-        resolveMessage();
-      }
+      if (typeof value === 'object' && value !== null && 'kind' in value && value.kind === kind) resolveMessage();
     });
-    child.once('exit', (code) => {
-      if (code && code !== 0) {
-        clearTimeout(timeout);
-        reject(new Error(`publisher exited ${code}`));
-      }
-    });
+    // 'close' follows the IPC channel's close, so every message the publisher sent has been delivered by then.
+    child.once('close', (code) => reject(new Error(`publisher exited ${code} before ${kind}`)));
   });
 }
 
@@ -98,7 +90,7 @@ describe('publication and retention under Revision S1', () => {
       writeFileSync(join(f.root, 'clock'), String(TERMINAL_EXPORT_NOW));
       const child = fork(publisher, [f.root, f.epochKey, 'pre-stage', origin, kbBundle], {
         env: { PATH: process.env.PATH, HOME: join(f.root, 'isolated-home'), LANG: 'C.UTF-8', TMPDIR: '/tmp' },
-        stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
+        stdio: ['pipe', 'ignore', 'pipe', 'ipc'],
       });
       children.push(child);
       await message(child, 'paused');
@@ -106,7 +98,7 @@ describe('publication and retention under Revision S1', () => {
       writeFileSync(join(f.root, 'clock'), String(TERMINAL_EXPORT_NOW + 1));
       await prune(f);
       const done = message(child, 'done');
-      writeFileSync(join(f.root, 'resume'), '');
+      child.stdin?.write('r');
       await done;
       expect(existsSync(f.resultPath)).toBe(false);
       expect(f.index.resultDurable(f.jobId)).toBe(true);
@@ -119,14 +111,14 @@ describe('publication and retention under Revision S1', () => {
     writeFileSync(join(f.root, 'clock'), String(TERMINAL_EXPORT_NOW));
     const child = fork(publisher, [f.root, f.epochKey, 'staged', 'coordinator', kbBundle], {
       env: { PATH: process.env.PATH, HOME: join(f.root, 'isolated-home'), LANG: 'C.UTF-8', TMPDIR: '/tmp' },
-      stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
+      stdio: ['pipe', 'ignore', 'pipe', 'ipc'],
     });
     children.push(child);
     await message(child, 'paused');
     f.advance(1);
     writeFileSync(join(f.root, 'clock'), String(TERMINAL_EXPORT_NOW + 1));
     const done = message(child, 'done');
-    writeFileSync(join(f.root, 'resume'), '');
+    child.stdin?.write('r');
     await done;
     expect(existsSync(f.resultPath)).toBe(false);
     expect(f.index.resultDurable(f.jobId)).toBe(true);

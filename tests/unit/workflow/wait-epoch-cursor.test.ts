@@ -107,7 +107,7 @@ describe('workflow wait epoch cursor', () => {
       { waitStream } as unknown as WorkflowExecutionPort,
       {} as InvocationContext,
       {
-        time: { now: () => 0, monotonicNow: () => 0n },
+        time: { now: () => 0, monotonicNow: () => 0n, sleep: async () => {} },
         staleTimeoutMs: 0,
         staleCheckIntervalMs: 1_000,
         staleAbortTimeoutMs: 30_000,
@@ -234,7 +234,7 @@ it('a workflow child missing from the real reader fails its atom after one proje
       [atom('missing-child', 0)],
       {
         waitStream: (request: Parameters<WorkflowExecutionPort['waitStream']>[0]) => wait.waitForOutcomes(request),
-        abort: vi.fn(),
+        abort: vi.fn(() => ({ aborted: [], notFound: ['missing-child'] })),
       } as unknown as WorkflowExecutionPort,
       {} as InvocationContext,
       {
@@ -387,4 +387,60 @@ it('reads an internal child’s progress from the epoch it was admitted in', asy
     },
   );
   expect(progress).toContain('0-wor historical line');
+});
+
+describe('a child the wait cannot read stays in the failure drain (F4)', () => {
+  const refused: WaitStreamEvent = {
+    type: 'disposition',
+    jobId: 'child',
+    disposition: 'discovery-unreadable',
+    message: 'Job location cannot be decoded by this build',
+  };
+  const run = (notFound: string[]) => {
+    let mono = 0n;
+    const sleeps: number[] = [];
+    const abort = vi.fn((jobIds: string[]) => ({ aborted: jobIds.filter((id) => !notFound.includes(id)), notFound }));
+    const waitStream = vi.fn(async function* (_request: WaitStreamRequest) {
+      yield refused;
+      yield { type: 'waiting', waitingJobIds: [], cursor: { jobs: [] }, exitCode: 1 } satisfies WaitStreamEvent;
+    });
+    const result = waitForAtoms(
+      [atom('child', 0)],
+      { abort, waitStream } as unknown as WorkflowExecutionPort,
+      {} as InvocationContext,
+      {
+        time: {
+          now: () => Number(mono),
+          monotonicNow: () => mono,
+          sleep: async (ms) => {
+            sleeps.push(ms);
+            mono += BigInt(ms);
+          },
+        },
+        staleTimeoutMs: 0,
+        staleCheckIntervalMs: 1_000,
+        staleAbortTimeoutMs: 30_000,
+        drainDeadlineMs: 5_000,
+        onProgress: () => {},
+      },
+    );
+    return { result, abort, waitStream, sleeps };
+  };
+
+  it('aborts the unreadable child and holds its drain until the bounded deadline, pacing each refused cycle', async () => {
+    const { result, abort, waitStream, sleeps } = run([]);
+    await expect(result).rejects.toThrow("Step 0, atom 'worker' could not be read: discovery-unreadable");
+    expect(abort).toHaveBeenCalledExactlyOnceWith(['child']);
+    expect(waitStream.mock.calls.every(([request]) => request.jobIds.includes('child'))).toBe(true);
+    expect(sleeps.reduce((sum, ms) => sum + ms, 0)).toBe(5_000);
+    expect(waitStream.mock.calls.length).toBeLessThanOrEqual(6);
+  });
+
+  it('releases the unreadable child at once when the abort answers that no such job exists', async () => {
+    const { result, abort, waitStream, sleeps } = run(['child']);
+    await expect(result).rejects.toThrow("Step 0, atom 'worker' could not be read: discovery-unreadable");
+    expect(abort).toHaveBeenCalledExactlyOnceWith(['child']);
+    expect(waitStream).toHaveBeenCalledOnce();
+    expect(sleeps).toEqual([]);
+  });
 });
