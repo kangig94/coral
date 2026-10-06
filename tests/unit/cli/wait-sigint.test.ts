@@ -118,7 +118,6 @@ it.each(['opening', 'silent', 'backoff', 'close', 'iterator-return'])(
     vi.useFakeTimers();
     const stdout = capture();
     const budget = invocation();
-    const abortJobs = vi.fn();
     let finishLate!: (value: IteratorResult<unknown>) => void;
     const stuck = new Promise<never>(() => {});
     const frontier = savedCursor({ a: 42 });
@@ -157,7 +156,6 @@ it.each(['opening', 'silent', 'backoff', 'close', 'iterator-return'])(
       projectRoot: '/project',
       render: { isTTY: false, columns: 80, embed: false, verbose: false },
       emitError: vi.fn(),
-      abortJobs,
       connect: () =>
         stall === 'opening'
           ? stuck
@@ -168,7 +166,6 @@ it.each(['opening', 'silent', 'backoff', 'close', 'iterator-return'])(
     });
     await vi.advanceTimersByTimeAsync(590_000);
     expect(await code).toBe(75);
-    expect(abortJobs).not.toHaveBeenCalled();
     const frozen = stdout();
     expect(frozen.match(/Run coral-cli wait jobs/g)).toHaveLength(1);
     if (stall === 'close' || stall === 'iterator-return') {
@@ -190,11 +187,10 @@ it.each(['opening', 'silent', 'backoff', 'close', 'iterator-return'])(
   },
 );
 
-it('two SIGINTs end a monitor without calling abort', async () => {
+it('two SIGINTs end a monitor with exit 75', async () => {
   capture();
   const exit = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
   const budget = invocation();
-  const abortJobs = vi.fn();
   const code = followJobs({
     start: { kind: 'jobs', jobIds: ['a'] },
     reconnectPolicy: 'bounded',
@@ -202,13 +198,11 @@ it('two SIGINTs end a monitor without calling abort', async () => {
     projectRoot: '/project',
     render: { isTTY: false, columns: 80, embed: false, verbose: false },
     emitError: vi.fn(),
-    abortJobs,
     connect: () => new Promise<never>(() => {}),
   });
   process.emit('SIGINT');
   process.emit('SIGINT');
   expect(await code).toBe(75);
-  expect(abortJobs).not.toHaveBeenCalled();
   expect(exit).toHaveBeenCalledExactlyOnceWith(75);
 });
 

@@ -132,11 +132,8 @@ type DiscussSeedArgs = {
   demographics?: { origin_weights: Record<string, number>; outlier_ratio?: number };
 };
 
-export type AbortCapableClient = {
+type CliCommandClient = {
   abortJobs(jobIds: string[]): Promise<AbortResult>;
-};
-
-type CliCommandClient = AbortCapableClient & {
   createSession(
     provider: string,
     prompt: string,

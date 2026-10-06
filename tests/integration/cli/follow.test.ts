@@ -6,7 +6,6 @@ import { jobsWaitRequest, jobWaitSchema } from '#src/transport/rpc/jobs.js';
 import { decodeWaitCursor, serializeWaitCursor, waitJobHash } from '#src/jobs/wait/cursor.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { AbortResult } from '#src/jobs/contracts/abort-registry.js';
 import type { AcceptedLaunchResponse } from '#src/jobs/launch.js';
 import { type WaitStreamEvent } from '#src/jobs/wait/contract.js';
 import { createDeferred } from '#tools/testing/deferred.js';
@@ -97,7 +96,6 @@ function makeTerminalEvent(
 
 type TestLaunchAndFollowOptions = {
   launchResult: AcceptedLaunchResponse;
-  abortJob: (jobId: string) => Promise<AbortResult>;
   pluginRoot: string;
   projectRoot: string;
   emitError: (error: unknown) => void;
@@ -114,7 +112,6 @@ function makeOptions(overrides: Partial<TestLaunchAndFollowOptions> = {}): TestL
       jobId: 'job-1',
       sessionId: 'session-1',
     } satisfies AcceptedLaunchResponse,
-    abortJob: async (jobId) => ({ aborted: [jobId], notFound: [] }),
     pluginRoot: '/plugin/root',
     projectRoot: '/project/root',
     emitError: (error: unknown) => {
@@ -253,7 +250,6 @@ describe('cli follow', () => {
       projectRoot: '/project/root',
       emitError,
       render: { isTTY: false, columns: 80, embed: false, verbose: false },
-      abortJobs: vi.fn(),
       connect,
       backoffScheduler,
     });
@@ -285,39 +281,46 @@ describe('cli follow', () => {
     expect(mockState.subscribe).toHaveBeenCalledTimes(1);
   });
 
-  it('warns on first SIGINT, aborts on second SIGINT, and calls abortJob once', async () => {
-    const { launchAndFollow } = await loadFollowModule();
-    const started = createDeferred<void>();
-    const abortJob = vi.fn().mockResolvedValue({ aborted: ['job-1'], notFound: [] });
+  it.each(['throws', 'ends'] as const)(
+    'stops following on the first SIGINT with one continuation and exit 75 when the stream %s',
+    async (streamEnding) => {
+      const { launchAndFollow } = await loadFollowModule();
+      const started = createDeferred<void>();
 
-    mockState.ensure.mockResolvedValueOnce(makeBackend());
-    mockState.subscribe.mockImplementationOnce(
-      async (_method: string, _params: unknown, options?: { signal?: AbortSignal }) =>
-        makeSubscription(async function* () {
-          started.resolve();
-          await new Promise<never>((_resolve, reject) => {
-            options?.signal?.addEventListener('abort', () => reject(new TypeError('terminated')), { once: true });
-          });
-        }),
-    );
+      mockState.ensure.mockResolvedValueOnce(makeBackend());
+      mockState.subscribe.mockImplementationOnce(
+        async (_method: string, _params: unknown, options?: { signal?: AbortSignal }) =>
+          makeSubscription(async function* () {
+            started.resolve();
+            await new Promise<void>((resolve, reject) => {
+              options?.signal?.addEventListener(
+                'abort',
+                () => (streamEnding === 'throws' ? reject(new TypeError('terminated')) : resolve()),
+                { once: true },
+              );
+            });
+          }),
+      );
 
-    const followPromise = launchAndFollow(makeOptions({ abortJob }));
-    await started.promise;
+      const followPromise = launchAndFollow(makeOptions());
+      await started.promise;
 
-    expect(sigintHandler).not.toBeNull();
-    sigintHandler?.();
-    sigintHandler?.();
+      expect(sigintHandler).not.toBeNull();
+      sigintHandler?.();
 
-    await expect(followPromise).resolves.toBe(1);
+      await expect(followPromise).resolves.toBe(75);
 
-    expect(stdout).toBe('Provider job job-1 launch accepted (provider session session-1)\n');
-    expect(stderr).toBe('\nPress Ctrl+C again to abort the job.\n');
-    expect(abortJob).toHaveBeenCalledTimes(1);
-    expect(abortJob).toHaveBeenCalledWith('job-1');
-    expect(mockState.ensure).toHaveBeenCalledTimes(1);
-    expect(mockState.subscribe).toHaveBeenCalledTimes(1);
-    expect(process.off).toHaveBeenCalledWith('SIGINT', expect.any(Function));
-  });
+      expect(stdout).toBe(
+        'Provider job job-1 launch accepted (provider session session-1)\n' +
+          'Still waiting on 1 job. Run coral-cli wait jobs job-1 to continue waiting.\n' +
+          'Carrier unconfirmed for: job-1.\n',
+      );
+      expect(stderr).toBe('');
+      expect(mockState.ensure).toHaveBeenCalledTimes(1);
+      expect(mockState.subscribe).toHaveBeenCalledTimes(1);
+      expect(sigintHandler).toBeNull();
+    },
+  );
 });
 
 it.each(['pending', 'burst', 'failed'] as const)(

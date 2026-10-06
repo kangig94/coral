@@ -5,7 +5,6 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 import { BackendToolHttpError } from '../transport/http/errors.js';
 import type { AcceptedLaunchResponse } from '../jobs/launch.js';
-import type { AbortResult } from '../jobs/contracts/abort-registry.js';
 import type { CauseRef } from '../causality/cause-ref.js';
 import type { TerminalOutcome } from '../jobs/outcome.js';
 import type { JobStatus, JobTerminal } from '../jobs/records.js';
@@ -27,7 +26,7 @@ import {
   runHandoff,
   type HandoffOutcome,
 } from '../coordinator/handoff-routing/runner.js';
-import { formatAbortResult, formatLaunch, formatWorkflowSlot } from './format/jobs.js';
+import { formatLaunch, formatWorkflowSlot } from './format/jobs.js';
 import { openCliCauseRefRenderer } from './cause-renderer.js';
 import { openReadCoralStore, type ReadCoralStoreHandle } from './read-store.js';
 import { errorCodeToExit, WaitResumeError, WaitOutputError } from './errors.js';
@@ -55,9 +54,6 @@ const WAIT_FLUSH_MARGIN_SECONDS = 10;
 const FOLLOW_TIMEOUT_SECONDS = BASH_TOOL_TIMEOUT_CEILING_SECONDS - WAIT_FLUSH_MARGIN_SECONDS;
 const TRANSIENT_RETRY_LIMIT = 2;
 const TRANSIENT_RETRY_DELAY_MS = 1_000;
-const ABORT_SUCCEEDED_EXIT_CODE = 1;
-export const ABORT_REFUSED_EXIT_CODE = 3;
-const ABORT_REQUEST_FAILED_FALLBACK_EXIT_CODE = 70;
 
 type BackoffScheduler = (delayMs: number) => Promise<void>;
 type ReconnectPolicy = 'bounded' | 'until-terminal';
@@ -90,7 +86,6 @@ type FollowJobsOptions = {
   start: FollowStart;
   reconnectPolicy: ReconnectPolicy;
   connect: (request: FollowConnectionRequest) => Promise<FollowConnection>;
-  abortJobs?: (jobIds: readonly string[]) => Promise<AbortResult>;
   invocation?: WaitInvocation;
   projectRoot: string;
   emitError: (error: unknown) => void;
@@ -101,14 +96,8 @@ type FollowJobsOptions = {
   backoffScheduler?: BackoffScheduler;
 };
 
-type AbortAttempt =
-  | Readonly<{ kind: 'succeeded' }>
-  | Readonly<{ kind: 'refused'; result: AbortResult }>
-  | Readonly<{ kind: 'request-failed'; error: unknown }>;
-
 type FollowOptions = {
   launchResult: AcceptedLaunchResponse;
-  abortJob: (jobId: string) => Promise<AbortResult>;
   pluginRoot: string;
   projectRoot: string;
   emitError: (error: unknown) => void;
@@ -293,32 +282,6 @@ function fallbackExitCode(): number {
   return typeof process.exitCode === 'number' ? process.exitCode : 1;
 }
 
-function classifyAbortResult(result: AbortResult): AbortAttempt {
-  return (result.refused?.length ?? 0) + (result.held?.length ?? 0) + (result.abandoned?.length ?? 0) > 0
-    ? { kind: 'refused', result }
-    : { kind: 'succeeded' };
-}
-
-async function finishAbortAttempt(
-  abortPromise: Promise<AbortAttempt>,
-  emitError: (error: unknown) => void,
-): Promise<number> {
-  const attempt = await abortPromise;
-  if (attempt.kind === 'succeeded') {
-    return ABORT_SUCCEEDED_EXIT_CODE;
-  }
-  if (attempt.kind === 'refused') {
-    writeStdout(formatAbortResult(attempt.result) + '\n');
-    return ABORT_REFUSED_EXIT_CODE;
-  }
-
-  emitError(attempt.error);
-  const exitCode = fallbackExitCode();
-  return exitCode === ABORT_SUCCEEDED_EXIT_CODE || exitCode === ABORT_REFUSED_EXIT_CODE
-    ? ABORT_REQUEST_FAILED_FALLBACK_EXIT_CODE
-    : exitCode;
-}
-
 function boundedTimeoutSeconds(deadlineMs: number): number {
   const remaining = Math.max(0, deadlineMs - performance.now());
   return Math.max(1, Math.floor(remaining / 1000) - 1);
@@ -344,7 +307,7 @@ type FollowSessionState = {
   sendCursor: boolean;
   retriesLeft: number;
   hasOpenedSubscription: boolean;
-  sigintCount: number;
+  interrupted: boolean;
   carrierUnknownJobIds: string[];
 };
 
@@ -355,7 +318,6 @@ async function connectFollowStream(
   state: FollowSessionState,
   controller: AbortController,
   deadlineMs: number,
-  abortState: { promise: Promise<AbortAttempt> | null },
 ): Promise<FollowStep | { kind: 'connected'; connection: FollowConnection }> {
   try {
     if (options.reconnectPolicy === 'bounded' && deadlineMs - performance.now() <= 1000) {
@@ -376,8 +338,8 @@ async function connectFollowStream(
     return { kind: 'connected', connection };
   } catch (error) {
     options.invocation?.check();
-    if (abortState.promise !== null) {
-      return { kind: 'exit', code: await finishAbortAttempt(abortState.promise, options.emitError) };
+    if (state.interrupted) {
+      return { kind: 'exit', code: finishInterruptedFollow(state) };
     }
     const handledError = mapWaitSubscriptionError(error);
     if (
@@ -414,29 +376,25 @@ async function connectFollowStream(
     }
     state.retriesLeft -= 1;
     const shouldRetry = await waitForRetry(controller.signal, options.backoffScheduler);
-    if (abortState.promise !== null) {
-      return { kind: 'exit', code: await finishAbortAttempt(abortState.promise, options.emitError) };
+    if (state.interrupted) {
+      return { kind: 'exit', code: finishInterruptedFollow(state) };
     }
     return shouldRetry ? { kind: 'retry' } : { kind: 'exit', code: 1 };
   }
 }
 
-async function finishDelegatedFollow(
+function finishDelegatedFollow(
   outcome: HandoffOutcome,
   options: FollowJobsOptions,
   state: FollowSessionState,
-  abortState: { promise: Promise<AbortAttempt> | null },
-): Promise<FollowStep> {
-  if (abortState.promise !== null) {
-    return { kind: 'exit', code: await finishAbortAttempt(abortState.promise, options.emitError) };
-  }
+): FollowStep {
   if (outcome.kind === 'handoff-success') {
     renderHandoffNotice(outcome);
     return { kind: 'exit', code: 0 };
   }
   // A delegated wait already ran to its own end; its 75 may be a provider terminal's code, so it is never retried.
   if (outcome.kind === 'handoff-exit') return { kind: 'exit', code: normalizeExitCode(outcome.exitCode) };
-  if (outcome.signal === 'SIGINT' && state.sigintCount === 1) return { kind: 'retry' };
+  if (outcome.signal === 'SIGINT') return { kind: 'exit', code: finishInterruptedFollow(state) };
   options.emitError(
     new WaitResumeError(
       `Delegated wait command ended from signal ${outcome.signal}; the jobs may still be running.`,
@@ -451,7 +409,6 @@ type FollowContext = {
   options: FollowJobsOptions;
   state: FollowSessionState;
   controller: AbortController;
-  abortState: { promise: Promise<AbortAttempt> | null };
   jobLabels: ReturnType<typeof jobLabelsFor>;
   causeRenderer: ReturnType<typeof openCliCauseRefRenderer>;
   deadlineMs: number;
@@ -499,6 +456,12 @@ function foldedContinuation(state: FollowSessionState): string {
       remaining,
     ) + '\n'
   );
+}
+
+/** Ctrl+C must never abort a job: jobs belong to the backend and outlive this follow, so the cut stays resumable. */
+function finishInterruptedFollow(state: FollowSessionState): number {
+  writeStdout(foldedContinuation(state));
+  return 75;
 }
 
 async function deliverFollowEvent(event: WaitStreamEvent, context: FollowContext): Promise<void> {
@@ -584,10 +547,9 @@ async function readFollowSubscription(
   subscription: WaitSubscription,
   context: FollowContext,
 ): Promise<FollowStep | undefined> {
-  const { options, abortState } = context;
+  const { options, state } = context;
   for await (const raw of subscription) {
-    if (abortState.promise !== null)
-      return { kind: 'exit', code: await finishAbortAttempt(abortState.promise, options.emitError) };
+    if (state.interrupted) return { kind: 'exit', code: finishInterruptedFollow(state) };
     if (isWaitHandoverNotice(raw)) return { kind: 'retry' };
     options.invocation?.check();
     const event = parseWaitStreamEventValue(raw);
@@ -599,10 +561,9 @@ async function readFollowSubscription(
 }
 
 async function followReadFailure(error: unknown, context: FollowContext): Promise<FollowStep> {
-  const { options, state, abortState, controller } = context;
+  const { options, state, controller } = context;
   options.invocation?.check();
-  if (abortState.promise !== null)
-    return { kind: 'exit', code: await finishAbortAttempt(abortState.promise, options.emitError) };
+  if (state.interrupted) return { kind: 'exit', code: finishInterruptedFollow(state) };
   if (error instanceof WaitOutputError) throw error;
   const handledError = mapWaitSubscriptionError(error);
   if (
@@ -629,8 +590,7 @@ async function followReadFailure(error: unknown, context: FollowContext): Promis
   }
   state.retriesLeft -= 1;
   const shouldRetry = await waitForRetry(controller.signal, options.backoffScheduler);
-  if (abortState.promise !== null)
-    return { kind: 'exit', code: await finishAbortAttempt(abortState.promise, options.emitError) };
+  if (state.interrupted) return { kind: 'exit', code: finishInterruptedFollow(state) };
   return shouldRetry ? { kind: 'retry' } : { kind: 'exit', code: 1 };
 }
 
@@ -654,6 +614,7 @@ async function consumeFollowSubscription(
   } finally {
     await closeFollowSubscription(connection.subscription, options);
   }
+  if (state.interrupted) return { kind: 'exit', code: finishInterruptedFollow(state) };
   options.emitError(
     new WaitResumeError(
       'The wait stream ended before a terminal event; the jobs may still be running.',
@@ -688,22 +649,15 @@ function prepareFollowOptions(options: FollowJobsOptions) {
   return { options: { ...options, invocation }, localInvocation, allJobIds, parsedCursor };
 }
 
-function installFollowSignals(context: FollowContext, allJobIds: string[]): () => void {
-  const { options, state, controller, abortState } = context;
+function installFollowSignals(context: FollowContext): () => void {
+  const { options, state, controller } = context;
   const onInvocationEnd = () => controller.abort();
   const onSigint = () => {
-    const abortJobs = options.abortJobs;
-    if (state.remainingJobIds.length === 0 || abortJobs === undefined) return;
-    state.sigintCount += 1;
-    if (state.sigintCount === 1) {
-      process.stderr.write('\nPress Ctrl+C again to abort the job.\n');
-      return;
-    }
-    if (abortState.promise !== null) return;
+    if (state.remainingJobIds.length === 0) return;
+    // A stop that hangs must still be leavable.
+    if (state.interrupted) process.exit(75);
+    state.interrupted = true;
     controller.abort();
-    abortState.promise = Promise.resolve()
-      .then(() => abortJobs(allJobIds))
-      .then(classifyAbortResult, (error): AbortAttempt => ({ kind: 'request-failed', error }));
   };
   options.invocation?.signal.addEventListener('abort', onInvocationEnd, { once: true });
   if (options.reconnectPolicy === 'until-terminal') process.on('SIGINT', onSigint);
@@ -718,7 +672,6 @@ function createFollowContext(prepared: ReturnType<typeof prepareFollowOptions>):
   return {
     options,
     controller: new AbortController(),
-    abortState: { promise: null },
     jobLabels: null,
     deadlineMs: performance.now() + (options.invocation?.remainingMs() ?? FOLLOW_TIMEOUT_SECONDS * 1000),
     causeRenderer: openCliCauseRefRenderer(options.projectRoot),
@@ -730,26 +683,27 @@ function createFollowContext(prepared: ReturnType<typeof prepareFollowOptions>):
       sendCursor: parsedCursor !== undefined,
       retriesLeft: TRANSIENT_RETRY_LIMIT,
       hasOpenedSubscription: false,
-      sigintCount: 0,
+      interrupted: false,
       carrierUnknownJobIds: [...allJobIds],
     },
   };
 }
 
 async function monitorFollowJobs(context: FollowContext): Promise<number> {
-  const { options, state, controller, deadlineMs, abortState } = context;
+  const { options, state, controller, deadlineMs } = context;
   options.invocation?.check();
   context.jobLabels = jobLabelsFor(options.projectRoot, jobIdsFromStart(options.start));
   options.invocation?.check();
   while (true) {
-    if (abortState.promise !== null) return await finishAbortAttempt(abortState.promise, options.emitError);
+    if (state.interrupted) return finishInterruptedFollow(state);
     if (state.remainingJobIds.length === 0) return state.lastExitCode ?? 75;
     options.invocation?.check();
-    const connected = await connectFollowStream(options, state, controller, deadlineMs, abortState);
+    const connected = await connectFollowStream(options, state, controller, deadlineMs);
     if (connected.kind === 'retry') continue;
     if (connected.kind === 'exit') return connected.code;
-    if (abortState.promise !== null) return await finishAbortAttempt(abortState.promise, options.emitError);
     const { connection } = connected;
+    // A delegated child answers the interrupt with its own continuation, and a second one must not follow it.
+    if (state.interrupted && connection.kind !== 'delegated') return finishInterruptedFollow(state);
     if (connection.kind === 'subscription' && options.reconnectPolicy === 'bounded') {
       options.invocation?.saveContinuation(
         formatWaitWaiting(
@@ -764,7 +718,7 @@ async function monitorFollowJobs(context: FollowContext): Promise<number> {
     }
     const decision =
       connection.kind === 'delegated'
-        ? await finishDelegatedFollow(connection.outcome, options, state, abortState)
+        ? finishDelegatedFollow(connection.outcome, options, state)
         : await consumeFollowSubscription(connection, context);
     if (decision.kind === 'retry') continue;
     return decision.code;
@@ -775,7 +729,7 @@ export async function followJobs(options: FollowJobsOptions): Promise<number> {
   const prepared = prepareFollowOptions(options);
   const context = createFollowContext(prepared);
   const invocation = context.options.invocation;
-  const removeSignals = installFollowSignals(context, prepared.allJobIds);
+  const removeSignals = installFollowSignals(context);
   if (options.start.kind === 'launch') writeStdout(formatLaunch(options.start.launchResult) + '\n');
   try {
     const monitorAndFlush = async () => {
@@ -801,7 +755,6 @@ export async function followJobs(options: FollowJobsOptions): Promise<number> {
     context.causeRenderer.close();
     removeSignals();
     if (prepared.localInvocation) invocation?.dispose();
-    if (context.abortState.promise !== null) await context.abortState.promise;
   }
 }
 
@@ -818,18 +771,6 @@ export async function launchAndFollow(options: FollowOptions): Promise<number> {
       columns: options.columns,
       embed: false,
       verbose: false,
-    },
-    abortJobs: async (jobIds) => {
-      const results = await Promise.all(jobIds.map((jobId) => options.abortJob(jobId)));
-      return {
-        aborted: results.flatMap((result) => result.aborted),
-        stopDiagnostics: results.flatMap((result) => result.stopDiagnostics ?? []),
-        stopRequested: results.flatMap((result) => result.stopRequested ?? []),
-        notFound: results.flatMap((result) => result.notFound),
-        refused: results.flatMap((result) => result.refused ?? []),
-        held: results.flatMap((result) => result.held ?? []),
-        abandoned: results.flatMap((result) => result.abandoned ?? []),
-      };
     },
     connect: async ({ jobIds, cursor, timeoutSeconds, signal, drainProgress }) => {
       const probeStarted = performance.now();

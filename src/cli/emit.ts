@@ -12,7 +12,7 @@ import { launchAndFollow } from './follow.js';
 import { renderHandoffPublicationIncidents } from './handoff-notice.js';
 import { isJsonObject } from './parse.js';
 import { clearPendingReadStoreNote, flushPendingReadStoreNote } from './read-store.js';
-import { type AbortCapableClient, getPluginRoot } from './dispatch.js';
+import { getPluginRoot } from './dispatch.js';
 
 type CliOutputFormat = 'text' | 'json';
 
@@ -100,11 +100,7 @@ export function getTerminalContext(): { isTTY: boolean; columns: number } {
   };
 }
 
-export async function handleLaunchResult(
-  result: unknown,
-  detach: boolean | undefined,
-  client: AbortCapableClient,
-): Promise<void> {
+export async function handleLaunchResult(result: unknown, detach: boolean | undefined): Promise<void> {
   if (!isAcceptedLaunchResponse(result)) {
     emitError(new Error(`Expected accepted launch response, received: ${JSON.stringify(result)}`));
     return;
@@ -119,7 +115,6 @@ export async function handleLaunchResult(
   // Follow-level failures route through emitError and return the envelope exit code instead.
   process.exitCode = await launchAndFollow({
     launchResult: result,
-    abortJob: async (jobId) => client.abortJobs([jobId]),
     pluginRoot: getPluginRoot(),
     projectRoot: process.cwd(),
     emitError,

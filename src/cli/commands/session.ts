@@ -24,7 +24,9 @@ import { UsageError, WaitOutputError, WaitSnapshotResponseError, normalizeUsageE
 import { WaitBuildMismatchError } from '../../coordinator/handoff-routing/wait-invocation.js';
 import { formatAbortResult, formatJobDetail, formatJobsList, renderJobsList } from '../format/jobs.js';
 import { openCliCauseRefRenderer } from '../cause-renderer.js';
-import { ABORT_REFUSED_EXIT_CODE, followJobs } from '../follow.js';
+import { followJobs } from '../follow.js';
+
+const ABORT_REFUSED_EXIT_CODE = 3;
 
 type JobsOptions = {
   phase?: string;

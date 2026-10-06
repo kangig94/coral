@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { followJobs } from '#src/cli/follow.js';
 import { WaitInvocation } from '#src/cli/wait-invocation.js';
+import { createDeferred } from '#tools/testing/deferred.js';
 import { waitJobHash, serializeWaitCursor } from '#src/jobs/wait/cursor.js';
 
 import { JobAddressing } from '#src/jobs/addressing.js';
@@ -300,7 +301,6 @@ import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
       emitError: (e) => {
         out += `ERR ${String(e)}\n`;
       },
-      abortJobs: async () => ({ aborted: [], notFound: [] }),
       connect: async () => {
         connects += 1;
         const events =
@@ -370,7 +370,6 @@ import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
         emitError: (e) => {
           out += `ERR ${String(e)}\n`;
         },
-        abortJobs: async () => ({ aborted: [], notFound: [] }),
         connect: async ({ jobIds, cursor, drainProgress, timeoutSeconds }) => ({
           kind: 'subscription',
           subscription: {
@@ -438,22 +437,23 @@ it('separates TTY notice and disposition lines with trailing newlines', async ()
   }
 });
 
-it('keeps launch abort reachable while a delegated follow runs and ends that follow when aborting', async () => {
+it('leaves a stop that is still in progress on a second SIGINT with exit 75', async () => {
   let sigint: (() => void) | undefined;
-  const originalOn = process.on.bind(process);
   vi.spyOn(process, 'on').mockImplementation(((event: string, listener: () => void) => {
     if (event === 'SIGINT') sigint = listener;
-    return originalOn(event, listener);
+    return process;
   }) as typeof process.on);
+  vi.spyOn(process, 'off').mockImplementation((() => process) as typeof process.off);
+  const exit = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
   vi.spyOn(process.stdout, 'write').mockImplementation(((_c: unknown, cb?: () => void) => {
     cb?.();
     return true;
   }) as typeof process.stdout.write);
-  vi.spyOn(process.stderr, 'write').mockImplementation((() => true) as typeof process.stderr.write);
-  const abortJobs = vi.fn(async () => ({ aborted: ['job-1'], notFound: [] }));
-  let connects = 0;
+  const connecting = createDeferred();
+  const stop = createDeferred<never>();
+  const emitError = vi.fn();
   try {
-    const code = await followJobs({
+    const code = followJobs({
       start: {
         kind: 'launch',
         launchResult: { kind: 'provider-session', launchState: 'running', jobId: 'job-1', sessionId: 's' },
@@ -461,24 +461,20 @@ it('keeps launch abort reachable while a delegated follow runs and ends that fol
       reconnectPolicy: 'until-terminal',
       projectRoot: '/project',
       render: { isTTY: false, columns: 80, embed: false, verbose: false },
-      emitError: vi.fn(),
-      abortJobs,
-      connect: async ({ signal }) => {
-        connects++;
-        sigint?.();
-        expect(signal.aborted).toBe(false);
-        sigint?.();
-        expect(signal.aborted).toBe(true);
-        return {
-          kind: 'delegated',
-          version: '9.9.9',
-          outcome: { kind: 'handoff-signal', signal: 'SIGTERM' },
-        };
+      emitError,
+      connect: () => {
+        connecting.resolve();
+        return stop.promise;
       },
     });
-    expect(connects).toBe(1);
-    expect(abortJobs).toHaveBeenCalledExactlyOnceWith(['job-1']);
-    expect(code).toBe(1);
+    await connecting.promise;
+    sigint?.();
+    expect(exit).not.toHaveBeenCalled();
+    sigint?.();
+    expect(exit).toHaveBeenCalledExactlyOnceWith(75);
+    stop.reject(new Error('the stop ignored its signal'));
+    expect(await code).toBe(75);
+    expect(emitError).not.toHaveBeenCalled();
   } finally {
     vi.restoreAllMocks();
   }

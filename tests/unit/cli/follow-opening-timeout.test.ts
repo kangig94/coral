@@ -14,20 +14,17 @@ it.each([undefined, serializeWaitCursor(savedCursor({ 'remaining-job': 42 }))])(
   async (cursor) => {
     const emitError = vi.fn();
     const connect = vi.fn().mockRejectedValue(new IpcRequestTimeout('acknowledgement deadline exceeded'));
-    const abortJobs = vi.fn();
     const code = await followJobs({
       start: { kind: 'jobs', jobIds: ['remaining-job'], serializedCursor: cursor },
       reconnectPolicy: 'bounded',
       projectRoot: '/project',
       render: { isTTY: false, columns: 80, embed: false, verbose: false },
-      abortJobs,
       connect,
       backoffScheduler: async () => {},
       emitError,
     });
     expect(code).toBe(75);
     expect(connect).toHaveBeenCalledTimes(3);
-    expect(abortJobs).not.toHaveBeenCalled();
     const error = buildErrorEnvelope(emitError.mock.calls[0][0]);
     expect(error.envelope.code).toBe('transient');
     expect(error.envelope.remediation).toContain('coral-cli wait jobs remaining-job');
@@ -43,7 +40,6 @@ it('keeps authentication refusal distinct from timeout exhaustion', async () => 
     reconnectPolicy: 'bounded',
     projectRoot: '/project',
     render: { isTTY: false, columns: 80, embed: false, verbose: false },
-    abortJobs: vi.fn(),
     connect,
     emitError,
   });
