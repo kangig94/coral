@@ -19,17 +19,8 @@ export type WaitCursorEntry = Readonly<{
   lineOffset: number;
   flags: number;
 }>;
-export type WaitCursorV3 = Readonly<{ version: 'jobs.wait.v3'; jobs: readonly WaitCursorEntry[] }>;
-
-export type WaitCursor =
-  | WaitCursorV3
-  | { version?: never; afterSeq: number; deliveredJobIds?: string[]; admittedJobIds?: string[] }
-  | {
-      version: 'jobs.wait.v2';
-      positions: Record<string, number>;
-      locations: Record<string, string>;
-      deliveredJobIds?: string[];
-    };
+/** The one wait frontier shape: an entry per job and no version tag. Any other shape is refused, never translated. */
+export type WaitCursor = Readonly<{ jobs: readonly WaitCursorEntry[] }>;
 
 export interface WaitRequest {
   jobIds: string[];
@@ -40,20 +31,12 @@ export interface WaitRequest {
 export interface WaitStreamRequest extends WaitRequest {
   cursor?: WaitCursor;
   abortSignal?: AbortSignal;
-  supportsWaitV2?: boolean;
-  supportsWaitV3?: boolean;
   drainProgress?: boolean;
   admissions?: WaitAdmission[];
-  onLegacyCursor?: (cursor: Extract<WaitCursor, { afterSeq: number }>) => void;
   onCoverage?: (jobIds: readonly string[], unknownJobIds: readonly string[], frontier: number) => void;
 }
 
-export type CanonicalWaitStreamRequest = WaitStreamRequest & {
-  supportsWaitV2: boolean;
-  supportsWaitV3: boolean;
-  supportsInterrupted: boolean;
-  supportsHandover: boolean;
-};
+export type CanonicalWaitStreamRequest = WaitStreamRequest & { drainProgress: boolean };
 
 export interface WaitSnapshotRequest extends WaitStreamRequest {
   lines?: number;
@@ -88,39 +71,25 @@ type TerminalWaitEvent = {
   continuity?: ContinuitySnapshot | null;
   usage?: UsageSummary;
 };
-type FinalV3 = { version: 'jobs.wait.v3'; cursor: WaitCursorV3; exitCode: number };
-type LegacyCursor = {
-  version?: 'jobs.wait.v2';
-  epochKey?: string;
-  cursor?: Extract<WaitCursor, { version: 'jobs.wait.v2' }>;
-};
+type Final = { cursor: WaitCursor; exitCode: number };
 export type WaitStreamEvent =
-  | { type: 'notice'; version: 'jobs.wait.v3'; message: string }
+  | { type: 'notice'; message: string }
+  // The complete frontier for a cut before the final event: it replaces the client's base and never completes.
+  | { type: 'cursor'; cursor: WaitCursor }
   | {
       type: 'disposition';
-      version: 'jobs.wait.v3';
       jobId: string;
       disposition: Exclude<WaitAdmission['disposition'], 'admitted'>;
       message?: string;
     }
-  | (FinalV3 & { type: 'artifact'; jobId: string; availability: ResultAvailability; remainingJobIds: string[] })
-  | (ProgressWaitEvent & { version: 'jobs.wait.v3'; entry: WaitCursorEntry })
-  | (ProgressWaitEvent & LegacyCursor)
+  | (Final & { type: 'artifact'; jobId: string; availability: ResultAvailability; remainingJobIds: string[] })
+  | (ProgressWaitEvent & { entry: WaitCursorEntry })
   | (QueuedWaitEventBase & { jobKind: 'provider'; sessionId: string })
   | (QueuedWaitEventBase & { jobKind: 'workflow'; workflowId: string })
   | (QueuedWaitEventBase & { jobKind: 'kb'; systemTaskId: string })
-  | (TerminalWaitEvent & FinalV3 & { availability: ResultAvailability; resultPath?: string; epochKey?: string })
-  | (TerminalWaitEvent & LegacyCursor & { resultPath: string; availability?: never; exitCode?: never })
+  | (TerminalWaitEvent & Final & { availability: ResultAvailability; resultPath?: string; epochKey?: string })
   | CarrierInterruptedWaitEvent
-  | (FinalV3 & { type: 'waiting'; waitingJobIds: string[]; carrierUnknownJobIds?: string[] })
-  | {
-      type: 'waiting';
-      waitingJobIds: string[];
-      version?: never;
-      exitCode?: never;
-      cursor?: Extract<WaitCursor, { version: 'jobs.wait.v2' }>;
-      carrierUnknownJobIds?: string[];
-    };
+  | (Final & { type: 'waiting'; waitingJobIds: string[]; carrierUnknownJobIds?: string[] });
 
 export function isFinalWaitEvent(
   event: WaitStreamEvent,
@@ -128,16 +97,12 @@ export function isFinalWaitEvent(
   return event.type === 'terminal' || event.type === 'artifact' || event.type === 'waiting';
 }
 
-/**
- * A handover notice may be sent only to a subscriber that declared `supportsHandover`; others would read the
- * following end as final.
- */
+/** A handover notice tells the subscriber the clean end that follows is not final; it reconnects to the successor. */
 export type WaitHandoverNotice = { type: 'handover' };
 
 /** Carrier absence cannot end a job, release its claim, or become a recorded interruption fault. */
 export type CarrierInterruptedWaitEvent = {
   type: 'interrupted';
-  version?: 'jobs.wait.v3';
   jobId: string;
   storedPhase: JobPhase;
   observedMaxJournalSeq: number;

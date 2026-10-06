@@ -1,10 +1,9 @@
 import { WaitSessionError } from '../../jobs/wait/session.js';
-import { jobsWaitExtensions } from '../rpc/jobs.js';
 import type { ProcessIncarnation } from '../../infra/node-process.js';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { z, type ZodError } from 'zod';
-import { type WaitCursor, type WaitStreamEvent, type WaitStreamRequest } from '../../jobs/wait/contract.js';
+import { type WaitStreamEvent } from '../../jobs/wait/contract.js';
 import { serializeWaitCursor } from '../../jobs/wait/cursor.js';
 import { decodeSerializedWaitCursor } from '../../jobs/wait/cursor.js';
 import { performance } from 'node:perf_hooks';
@@ -782,14 +781,8 @@ async function writeWaitSseEvent(
   event: WaitStreamEvent | { type: 'handover'; code: string; message: string },
   deadline: number,
   signal: AbortSignal,
-  legacyCursor?: Extract<WaitCursor, { afterSeq: number }>,
 ): Promise<boolean> {
-  const cursor =
-    'cursor' in event && event.cursor
-      ? serializeWaitCursor(event.cursor)
-      : legacyCursor && (event.type === 'progress' || event.type === 'terminal')
-        ? serializeWaitCursor(legacyCursor)
-        : undefined;
+  const cursor = 'cursor' in event ? serializeWaitCursor(event.cursor) : undefined;
   if (writeSseEvent(res, event.type, event, cursor)) return true;
   if (res.destroyed || res.writableEnded || signal.aborted) return false;
   const budget = Math.min(1000, Math.max(0, deadline - performance.now()));
@@ -817,14 +810,7 @@ async function handleJobsWaitSubscription(
   req: IncomingMessage,
   res: ServerResponse,
   deps: HttpHandlerPorts,
-  request: {
-    jobIds: string[];
-    projectRoot: string;
-    timeoutSeconds?: number;
-    cursor?: WaitCursor;
-    supportsWaitV2?: boolean;
-    supportsHandover?: boolean;
-  },
+  request: Record<string, unknown> & { timeoutSeconds?: number; cursor?: unknown },
 ): Promise<void> {
   if (rejectRestrictedRemoteTransportOption(req, res, deps, request)) {
     return;
@@ -847,14 +833,8 @@ async function handleJobsWaitSubscription(
 
   const deadline = performance.now() + (request.timeoutSeconds ?? 600) * 1000;
   const controller = new AbortController();
-  let legacyCursor: Extract<WaitCursor, { afterSeq: number }> | undefined;
-  const waitRequest: WaitStreamRequest = {
-    ...request,
-    onLegacyCursor: (cursor) => {
-      legacyCursor = cursor;
-    },
-    ...(headerCursor === undefined ? {} : { cursor: headerCursor }),
-  };
+  // The SSE frontier rides Last-Event-ID; a request without one states the empty frontier of a fresh collection.
+  const waitRequest = { ...request, cursor: headerCursor ?? { jobs: [] } };
   const principal = authenticateCatalogPrincipal(req, deps);
   if (principal === null) {
     controller.abort();
@@ -886,12 +866,6 @@ async function handleJobsWaitSubscription(
 
   let closed = false;
   const iterator = execution.notifications[Symbol.asyncIterator]();
-  const handoverSignal = request.supportsHandover === true ? undefined : deps.jobs.waitHandoverSignal();
-  const refuseHandover = () => {
-    writeSseEvent(res, 'error', lifecycleRefusalResult);
-    res.end();
-    close();
-  };
   const close = () => {
     if (closed) {
       return;
@@ -900,16 +874,10 @@ async function handleJobsWaitSubscription(
     controller.abort();
     deps.events.removeResponse(res);
     req.off('close', close);
-    handoverSignal?.removeEventListener('abort', refuseHandover);
     void iterator.return?.(undefined).catch(() => undefined);
   };
   req.once('close', close);
   runOnResponseDone(res, close);
-  if (handoverSignal?.aborted) {
-    refuseHandover();
-    return;
-  }
-  handoverSignal?.addEventListener('abort', refuseHandover, { once: true });
 
   try {
     while (true) {
@@ -923,7 +891,7 @@ async function handleJobsWaitSubscription(
       }
 
       const event = next.value as WaitStreamEvent;
-      if (!(await writeWaitSseEvent(res, event, deadline, controller.signal, legacyCursor))) {
+      if (!(await writeWaitSseEvent(res, event, deadline, controller.signal))) {
         if (!res.destroyed && !res.writableEnded)
           writeSseEvent(res, 'error', {
             code: 'transient',
@@ -959,7 +927,7 @@ async function handleCatalogSubscriptionRoute(
         req,
         res,
         deps,
-        request as { jobIds: string[]; projectRoot: string; timeoutSeconds?: number; cursor?: { afterSeq: number } },
+        request as Record<string, unknown> & { timeoutSeconds?: number; cursor?: unknown },
       );
       return;
     default:
@@ -1028,7 +996,6 @@ export function buildCoordinatorHttpDispatchTable(
 }
 
 function readHttpPingSnapshot(deps: HttpHandlerPorts): {
-  jobsWaitExtensions: readonly string[];
   status: string;
   version: string;
   bundleHash: string;
@@ -1047,14 +1014,13 @@ function readHttpPingSnapshot(deps: HttpHandlerPorts): {
     namespace: health.namespace,
     instanceId: health.instanceId,
     pid: health.pid,
-    jobsWaitExtensions: jobsWaitExtensions(deps.jobs),
     ...(health.incarnation === undefined ? {} : { incarnation: health.incarnation }),
   };
 }
 
 async function readDetailedHealthSnapshot(
   deps: HttpHandlerPorts,
-): Promise<ReturnType<HttpHandlerPorts['health']['read']> & { jobsWaitExtensions: readonly string[] }> {
+): Promise<ReturnType<HttpHandlerPorts['health']['read']>> {
   let health = deps.health.read();
   if (shouldProbeKbDaemonHealth(health, deps.identity.now()) && deps.admin.probeKbDaemon) {
     try {
@@ -1064,7 +1030,7 @@ async function readDetailedHealthSnapshot(
       // Detailed health must stay available even if the child probe path itself fails.
     }
   }
-  return { ...health, jobsWaitExtensions: jobsWaitExtensions(deps.jobs) };
+  return health;
 }
 
 function localOperationalProjectRoot(spec: HttpOperationalSpec, parsedUrl: URL): string | undefined | ZodError {

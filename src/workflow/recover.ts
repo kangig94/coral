@@ -49,6 +49,8 @@ import {
 import { DEFAULT_STALE_ABORT_TIMEOUT_MS, recoverStaleAtom, STALE_RESUME_PROMPT } from './stale-recovery.js';
 
 import { waitForAtoms } from './wait.js';
+import { waitEpochToken, waitJobHash } from '../jobs/wait/cursor.js';
+import type { WaitCursorEntry } from '../jobs/wait/contract.js';
 import type { WorkflowFinalizationIntent } from './finalization.js';
 import {
   providerSessionProvider,
@@ -894,9 +896,7 @@ async function assembleRelaunch(
 
 function buildWaitRecoveryPlan(deps: ResumeWorkflowDeps, snapshot: RecoverySnapshot): WaitRecoveryPlan {
   const completedOutputs = new Map<string, string>();
-  let pendingCursorSeq: number | null = null;
-  const locations: Record<string, string> = {};
-  const positions: Record<string, number> = {};
+  const entries: WaitCursorEntry[] = [];
   const drain = deps.drain;
   const projectionsByJob = new Map(deps.childRows.map((row) => [row.job_id, row]));
 
@@ -907,25 +907,22 @@ function buildWaitRecoveryPlan(deps: ResumeWorkflowDeps, snapshot: RecoverySnaps
       continue;
     }
 
-    const projection = projectionsByJob.get(slot.jobId);
-    if (deps.jobEpochKey !== undefined) {
-      const epochKey = deps.jobEpochKey(slot.jobId);
-      if (epochKey === null) throw new Error(`Workflow recovery has no epoch location for ${slot.jobId}`);
-      locations[slot.jobId] = epochKey;
-      positions[epochKey] = Math.min(positions[epochKey] ?? projection?.last_seq ?? 0, projection?.last_seq ?? 0);
-    } else if (projection) {
-      pendingCursorSeq =
-        pendingCursorSeq === null ? projection.last_seq : Math.min(pendingCursorSeq, projection.last_seq);
-    }
+    // A child whose location is unknown stays unpositioned, so the recovered wait delivers it from its origin.
+    const epochKey = deps.jobEpochKey?.(slot.jobId) ?? null;
+    if (epochKey !== null)
+      entries.push({
+        hash: waitJobHash(slot.jobId),
+        epoch: waitEpochToken(epochKey),
+        seq: projectionsByJob.get(slot.jobId)?.last_seq ?? 0,
+        lineOffset: 0,
+        flags: 0,
+      });
   }
 
   const failure = firstTerminalFailure(snapshot.compiledSlots, drain, snapshot.slotDetailsByJob);
   const initialState: Partial<WaitInternalState> = {
     completedOutputs,
-    cursor:
-      deps.jobEpochKey === undefined
-        ? { afterSeq: pendingCursorSeq ?? 0 }
-        : { version: 'jobs.wait.v2', positions, locations },
+    cursor: { jobs: entries },
     lastActivityAt: new Map<string, number>(),
     staleRetries: new Map<string, number>(),
     expectedStaleAborts: new Set<string>(),

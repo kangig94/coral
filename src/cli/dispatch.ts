@@ -1,9 +1,8 @@
 import { isRecord } from '../infra/json.js';
 import type { WaitSnapshotRequest } from '../jobs/wait/contract.js';
 import type { WaitSnapshot } from '../jobs/wait/session.js';
-import { WaitSnapshotResponseError } from './errors.js';
+import { WaitBuildMismatchError } from './errors.js';
 import { getWaitInvocation } from './wait-invocation.js';
-import { serializeWaitCursor, WAIT_CURSOR_REPLAY_NOTICE } from '../jobs/wait/cursor.js';
 import type { Command } from 'commander';
 import { readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 
@@ -146,7 +145,7 @@ type CliCommandClient = AbortCapableClient & {
   workflow(expression: string, options: WorkflowRequestOptions): Promise<AcceptedLaunchResponse>;
   listJobs(options?: JobsListOptions): Promise<JobsListResponse>;
   detailJob(jobId: string): Promise<JobDetailResponse>;
-  snapshotJobsWait(fields: WaitSnapshotRequest, onCursorReset?: () => void): Promise<WaitSnapshot>;
+  snapshotJobsWait(fields: WaitSnapshotRequest): Promise<WaitSnapshot>;
   discussSeed(args: DiscussSeedArgs): Promise<PersonaSeedOutput>;
   discussStart(args: {
     agents: Array<{
@@ -198,11 +197,7 @@ type CliCommandClient = AbortCapableClient & {
     params?: unknown,
     options?: IpcSubscriptionOptions,
   ): Promise<IpcSubscription<TResult>>;
-  subscribeJobsWait(
-    fields: JobsWaitFields,
-    options?: IpcSubscriptionOptions,
-    onCursorReset?: () => void,
-  ): Promise<IpcSubscription<unknown>>;
+  subscribeJobsWait(fields: JobsWaitFields, options?: IpcSubscriptionOptions): Promise<IpcSubscription<unknown>>;
 };
 
 type CliClientBindings = {
@@ -944,22 +939,15 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
     ...createKbSourceCommunityClient(bindings),
     ...createKbMemoClient(bindings),
     subscribe,
-    snapshotJobsWait: async (fields, onCursorReset) => {
+    snapshotJobsWait: async (fields) => {
       const invocation = getWaitInvocation();
       const run = <T>(work: () => Promise<T>) => (invocation ? invocation.run(work) : work());
-      const refusal = () =>
-        new WaitSnapshotResponseError(
-          `coral-cli wait jobs ${fields.jobIds.join(' ')}${fields.cursor ? ` --cursor ${serializeWaitCursor(fields.cursor)}` : ''}`,
-          'this coordinator predates --now; no collection cursor advanced.',
-        );
       await run(reconcileKbBoot);
       const coordinator = await run(() => ensure('jobs.wait.snapshot', resolvePluginRoot()));
-      if (!coordinator.jobsWaitExtensions.includes('supportsWaitV3')) throw refusal();
-      const negotiated = jobsWaitRequest({ ...fields, projectRoot }, coordinator.jobsWaitExtensions, onCursorReset);
       const request = {
         jobIds: fields.jobIds,
         projectRoot,
-        ...(negotiated.cursor === undefined ? {} : { cursor: negotiated.cursor }),
+        ...(fields.cursor === undefined ? {} : { cursor: fields.cursor }),
         ...(fields.lines === undefined ? {} : { lines: fields.lines }),
       };
       try {
@@ -982,21 +970,11 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
           (/unknown.method|method not found/i.test(error.message) ||
             (isRecord(error.cause) && error.cause.code === 'unknown_method'))
         )
-          throw refusal();
+          throw new WaitBuildMismatchError();
         throw error;
       }
     },
-    subscribeJobsWait: (fields, options, onCursorReset) =>
-      subscribeTo(
-        'jobs.wait',
-        (coordinator) =>
-          jobsWaitRequest(
-            fields,
-            coordinator.jobsWaitExtensions,
-            onCursorReset ?? (() => process.stdout.write(`${WAIT_CURSOR_REPLAY_NOTICE}\n`)),
-          ),
-        options,
-      ),
+    subscribeJobsWait: (fields, options) => subscribeTo('jobs.wait', () => jobsWaitRequest(fields), options),
   };
 }
 

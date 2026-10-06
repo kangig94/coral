@@ -92,7 +92,6 @@ export type RawCoordinatorHealth = {
   incarnation?: ProcessIncarnation;
   components?: TransportRuntimeComponentStatus[];
   env?: Readonly<Record<string, string>>;
-  jobsWaitExtensions?: readonly string[];
   sentinel?: { version: 1; id: string };
 };
 
@@ -124,7 +123,6 @@ export type EnsuredIpcClient = IpcClient & {
   readonly host: string;
   readonly port: number;
   readonly version: string;
-  readonly jobsWaitExtensions: readonly string[];
 };
 
 type EnsuredClientAuthMode = 'boot' | 'none';
@@ -230,7 +228,6 @@ function summarizeBackend(
     host: info.host,
     port: info.port,
     version: info.version,
-    jobsWaitExtensions: health.jobsWaitExtensions ?? [],
   });
 }
 
@@ -300,8 +297,6 @@ const rawCoordinatorHealthSchema = z
     incarnation: processIncarnationSchema.optional(),
     components: z.array(runtimeComponentStatusSchema).optional(),
     env: z.record(z.string()).optional(),
-    // An unreadable advertisement is no advertisement: it may withhold an extension, never reject the coordinator.
-    jobsWaitExtensions: z.array(z.string()).optional().catch(undefined),
     sentinel: z
       .object({ version: z.literal(1), id: z.string().min(1) })
       .optional()

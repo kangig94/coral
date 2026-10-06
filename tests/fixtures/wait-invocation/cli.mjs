@@ -3,6 +3,7 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import { getWaitInvocation } from '#src/cli/wait-invocation.js';
 import { IpcRequestTimeout } from '#src/transport/ipc/client.js';
 import { dirname } from 'node:path';
+import { waitEpochToken, waitJobHash } from '#src/jobs/wait/cursor.js';
 
 const scenario = process.env.WAIT_PROBE_SCENARIO;
 const delegated = process.env.CORAL_CLI_HANDOFF_DELEGATED === '1';
@@ -13,7 +14,8 @@ if (delegated && scenario === 'late-child-output') {
     if (message?.type === 'wait-cancel') process.stdout.write('late child output\n');
   });
 }
-const cursor = { version: 'jobs.wait.v2', locations: { a: 'epoch' }, positions: { epoch: 42 }, deliveredJobIds: [] };
+const entry = (seq) => ({ hash: waitJobHash('a'), epoch: waitEpochToken('epoch'), seq, lineOffset: 0, flags: 0 });
+const cursor = { jobs: [entry(42)] };
 const timing = { origin: 'runtime', originAt: '2026-10-04T00:00:00Z', emittedAt: '2026-10-04T00:00:00Z', elapsedMs: 0 };
 
 globalThis.waitProbe = {
@@ -63,7 +65,6 @@ globalThis.waitProbe = {
       return never;
     }
     return {
-      jobsWaitExtensions: ['supportsWaitV2', 'supportsHandover', 'supportsInterrupted', ...(process.env.WAIT_PROBE_MODE === 'snapshot' ? ['supportsWaitV3'] : [])],
       async subscribe(method, params) {
         if (scenario === 'opening') return never;
         if (scenario === 'backoff') throw new IpcRequestTimeout('probe retry');
@@ -83,23 +84,15 @@ globalThis.waitProbe = {
                 'delegated-sync-delivery',
               ].includes(scenario)
             ) {
-              yield {
-                type: 'progress',
-                jobId: 'a',
-                seq: 42,
-                message: 'confirmed delivery',
-                timing,
-                version: 'jobs.wait.v2',
-                epochKey: 'epoch',
-                cursor,
-              };
+              yield { type: 'cursor', cursor: { jobs: [entry(41)] } };
+              yield { type: 'progress', jobId: 'a', seq: 42, message: 'confirmed delivery', timing, entry: entry(42) };
             }
             if (scenario === 'sync-delivery' || (delegated && scenario === 'delegated-sync-delivery')) {
               await pause(20);
               Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 850);
             }
             if (scenario === 'close') {
-              yield { type: 'waiting', waitingJobIds: ['a'], cursor, carrierUnknownJobIds: ['a'] };
+              yield { type: 'waiting', waitingJobIds: ['a'], cursor, carrierUnknownJobIds: ['a'], exitCode: 75 };
               return;
             }
             process.stderr.write('INTERRUPT_READY\n');

@@ -10,6 +10,7 @@ import {
 } from 'node:http';
 import { join } from 'node:path';
 import { decodeSerializedWaitCursor } from '#src/jobs/wait/cursor.js';
+import { savedCursor } from '#tests/helpers/wait-session.js';
 import type { WaitStreamEvent } from '#src/jobs/wait/contract.js';
 import type * as NodeOs from 'node:os';
 import type * as ServerMod from '#src/coordinator/index.js';
@@ -133,23 +134,26 @@ function createFakeExecutionService(overrides: Partial<FakeExecutionService> = {
       jobId: 'workflow-job',
     })),
     abort: vi.fn((jobIds: string[]) => ({ aborted: jobIds, notFound: [] })),
-    waitStream: vi.fn(async function* (request): AsyncGenerator<WaitStreamEvent> {
-      request.onLegacyCursor?.({ afterSeq: 7, admittedJobIds: ['job-1'], deliveredJobIds: [] });
+    waitStream: vi.fn(async function* (): AsyncGenerator<WaitStreamEvent> {
+      yield { type: 'cursor', cursor: savedCursor({ 'job-1': 6 }) };
       yield {
         type: 'progress',
         jobId: 'job-1',
         seq: 7,
         message: 'working',
         timing: waitTiming,
+        entry: savedCursor({ 'job-1': 7 }).jobs[0],
       };
-      request.onLegacyCursor?.({ afterSeq: 8, admittedJobIds: ['job-1'], deliveredJobIds: ['job-1'] });
       yield {
         type: 'terminal',
         jobId: 'job-1',
         seq: 8,
         remainingJobIds: [],
         resultPath: jobResultPath('job-1'),
+        availability: { kind: 'available', resultPath: jobResultPath('job-1') },
         result: { content: 'done', durationMs: 1_000, outcome: { kind: 'completed' } },
+        cursor: { jobs: [] },
+        exitCode: 0,
       };
     }),
     waitStreamOnce: vi.fn(async () => ({
@@ -921,7 +925,7 @@ describe('execution backend server', () => {
       }
     });
 
-    it('versionless SSE IDs preserve admission separately from delivered terminal IDs', async () => {
+    it('gives every SSE event that carries a cursor that cursor as its id', async () => {
       const { deps } = createHttpHandlerDeps();
       const started = await startHttpHandlerServer(deps);
       try {
@@ -933,47 +937,27 @@ describe('execution backend server', () => {
         const text = await response.text();
         expect(response.status).toBe(200);
         const ids = [...text.matchAll(/^id: (.+)$/gm)].map((match) => decodeSerializedWaitCursor(match[1]));
-        expect(ids[0]).toMatchObject({
-          kind: 'decoded',
-          cursor: { afterSeq: 7, admittedJobIds: ['job-1'], deliveredJobIds: [] },
-        });
-        expect(ids[1]).toMatchObject({
-          kind: 'decoded',
-          cursor: { afterSeq: 8, admittedJobIds: ['job-1'], deliveredJobIds: ['job-1'] },
-        });
+        expect(ids).toEqual([
+          { kind: 'decoded', cursor: savedCursor({ 'job-1': 6 }) },
+          { kind: 'decoded', cursor: { jobs: [] } },
+        ]);
       } finally {
         await _closeHttpServer(started.server);
       }
     });
 
-    it('carries the session frontier rather than inventing one from a delivered event', async () => {
-      const service = createFakeExecutionService({
-        waitStream: vi.fn(async function* (request) {
-          request.onLegacyCursor?.({ afterSeq: 4, admittedJobIds: ['job-1'], deliveredJobIds: [] });
-          yield { type: 'progress', jobId: 'job-1', seq: 7, message: 'working', timing: waitTiming };
-        }),
-      });
-      const { deps } = createHttpHandlerDeps({ executionService: service });
-      const started = await startHttpHandlerServer(deps);
-      try {
-        const response = await fetch(`${started.baseUrl}/jobs/wait`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Coral-Backend-Token': 'test-token' },
-          body: JSON.stringify({ jobIds: ['job-1'], timeoutSeconds: 1, projectRoot: DEFAULT_PROJECT_ROOT }),
-        });
-        const body = await response.text();
-        const id = body.match(/^id: (.+)$/m)?.[1];
-        expect(id && decodeSerializedWaitCursor(id)).toMatchObject({ kind: 'decoded', cursor: { afterSeq: 4 } });
-      } finally {
-        await _closeHttpServer(started.server);
-      }
-    });
-
-    it('ends a non-handover HTTP wait with the same lifecycle refusal as IPC', async () => {
+    it('ends an HTTP wait at succession with the handover notice', async () => {
       const handover = new AbortController();
       const service = createFakeExecutionService({
         waitStream: vi.fn(async function* () {
-          yield { type: 'progress', jobId: 'job-1', seq: 1, message: 'started', timing: waitTiming };
+          yield {
+            type: 'progress',
+            jobId: 'job-1',
+            seq: 1,
+            message: 'started',
+            timing: waitTiming,
+            entry: savedCursor({ 'job-1': 1 }).jobs[0],
+          };
           await new Promise<void>((resolve) =>
             handover.signal.addEventListener('abort', () => resolve(), { once: true }),
           );
@@ -996,8 +980,7 @@ describe('execution backend server', () => {
           if (next.done) break;
           text += new TextDecoder().decode(next.value);
         }
-        expect(text).toContain('event: error');
-        expect(text).toContain(JSON.stringify(lifecycleRefusalResult));
+        expect(text).toContain('event: handover');
         expect(deps.streamResponses.size).toBe(0);
       } finally {
         handover.abort();
@@ -1263,7 +1246,7 @@ describe('execution backend server', () => {
     });
   });
 
-  it('returns 403 before streaming when /jobs/wait includes cross-project jobs', async () => {
+  it('answers a cross-project /jobs/wait member with a scope-mismatch disposition and exit 1', async () => {
     const fakeService = createFakeExecutionService();
     const progressStore = createProgressStore();
     createdJobIds.add('job-foreign');
@@ -1292,13 +1275,11 @@ describe('execution backend server', () => {
       }),
     });
 
-    expect(response.status).toBe(403);
-    expect(await response.json()).toEqual({
-      code: 'scope_mismatch',
-      message:
-        'Job job-foreign: scope-mismatch. Change cwd to the job work directory; coral-cli jobs --all includes terminal jobs. Read coral-cli jobs detail job-foreign.',
-      detail: { jobs: ['job-foreign'] },
-    });
+    expect(response.status).toBe(200);
+    const body = await response.text();
+    expect(body).toContain('event: disposition');
+    expect(body).toContain('"disposition":"scope-mismatch"');
+    expect(body).toMatch(/event: waiting\n(?:id: .*\n)?data: .*"exitCode":1/);
     expect(fakeService.waitStream).not.toHaveBeenCalled();
   });
 

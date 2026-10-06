@@ -1,7 +1,14 @@
 import { progressPage, progressTail } from '#src/jobs/wait/progress-page.js';
-import { progressVisitFromDetails, selectTestProgress } from '#tests/helpers/wait-progress.js';
+import {
+  observeWaitRead,
+  progressVisitFromDetails,
+  selectTestProgress,
+  testProgressVisit,
+} from '#tests/helpers/wait-progress.js';
+import type { ProgressVisit } from '#src/jobs/wait/contract.js';
+import { HistoricalDecodeError } from '#src/jobs/source-read.js';
 import type { JobLocation, JobLocationView } from '#src/jobs/location-index.js';
-import type { WaitStreamEvent, WaitCursorV3 } from '#src/jobs/wait/contract.js';
+import type { WaitStreamEvent, WaitCursor } from '#src/jobs/wait/contract.js';
 import { JobAddressing } from '#src/jobs/addressing.js';
 import { createRealTimePort } from '#src/infra/time.js';
 import { admitted } from '#tests/helpers/wait-session.js';
@@ -174,43 +181,14 @@ it.each([false, true])(
   },
 );
 
-it('translates a released acknowledgement into pending artifact collection without replaying its outcome', () => {
-  const a = admitted('a');
-  a.availability = { kind: 'repair-pending', ageUncertain: false };
-  const session = new WaitSession(['a'], {
-    version: 'jobs.wait.v2',
-    positions: { 'epoch-E': 0 },
-    locations: { a: 'epoch-E' },
-    deliveredJobIds: ['a'],
-  });
-  session.reconcile([a]);
-  const snapshot = selectWaitSnapshot(session);
-  expect(snapshot.jobs[0].terminal).toBeUndefined();
-  expect(snapshot.jobs[0].alreadyCollected).toBe(true);
-  expect(snapshot.remainingJobIds).toEqual(['a']);
-  expect(snapshot.cursor.jobs[0].flags).toBe(3);
-});
-
-it('versionless acknowledgements do not invent a membership reset', () => {
-  const a = admitted('a', [[100, 'a100']]);
-  const u = admitted('u', [[2, 'u2']], false);
-  const session = new WaitSession(['a', 'u'], { afterSeq: 100, deliveredJobIds: ['a'] }, 'epoch-E');
-  session.reconcile([a, u]);
-  expect(selectTestProgress(session).map((line) => line.text)).toEqual([]);
-  expect(session.acknowledged('a')).toBe(true);
-  expect(session.notices).toEqual([]);
-});
-
 it.each([
   ['a', 'b'],
   ['b', 'a'],
 ])('internal replacement membership %j preserves the sibling frontier', (...jobIds) => {
   const input = {
-    version: 'jobs.wait.v3' as const,
-
     jobs: [{ hash: waitJobHash('a'), epoch: waitEpochToken('real-epoch'), seq: 10, lineOffset: 0, flags: 0 }],
   };
-  const session = new WaitSession(jobIds, input, 'real-epoch', true);
+  const session = new WaitSession(jobIds, input, true);
   session.reconcile(
     jobIds.map((id) =>
       admitted(
@@ -239,9 +217,13 @@ it('reuses unread progress through idle polls and never splits consumed history'
     ),
   );
   const input = {
-    version: 'jobs.wait.v2' as const,
-    locations: Object.fromEntries(jobs.map((job) => [job.jobId, 'epoch-E'])),
-    positions: { 'epoch-E': 4999 },
+    jobs: jobs.map((job) => ({
+      hash: waitJobHash(job.jobId),
+      epoch: waitEpochToken('epoch-E'),
+      seq: 4999,
+      lineOffset: 0,
+      flags: 0,
+    })),
   };
   const session = new WaitSession(
     jobs.map((job) => job.jobId),
@@ -259,15 +241,6 @@ it('reuses unread progress through idle polls and never splits consumed history'
   } finally {
     split.mockRestore();
   }
-});
-
-it('versionless membership evidence never acknowledges a terminal before delivery', () => {
-  const job = admitted('a', [[1, 'received progress']]);
-  const session = new WaitSession(['a'], { afterSeq: 1, deliveredJobIds: [], admittedJobIds: ['a'] }, 'epoch-E');
-  session.reconcile([job]);
-  expect(selectTestProgress(session)).toEqual([]);
-  expect(session.acknowledged('a')).toBe(false);
-  expect(selectWaitSnapshot(session).jobs[0].terminal).toBeDefined();
 });
 
 it('holds the shared progress frontier while one member history is unreadable', () => {
@@ -318,22 +291,6 @@ it.each(['readable', 'transient-unknown', 'settled-unreadable', 'retired'] as co
     }
   },
 );
-
-it('a versionless deliveredJobIds list acknowledges terminals without declaring membership', () => {
-  const session = new WaitSession(['b'], { afterSeq: 50, deliveredJobIds: ['a'] }, 'epoch-E');
-  session.reconcile([
-    admitted(
-      'b',
-      [
-        [40, 'already seen'],
-        [60, 'next'],
-      ],
-      false,
-    ),
-  ]);
-  expect(session.notices).toEqual([]);
-  expect(selectTestProgress(session).map((line) => line.text)).toEqual(['next']);
-});
 
 it.each([false, true])('unknown discovery preserves known cursor flags, resumed=%s', (resumed) => {
   const a = admitted('A');
@@ -414,9 +371,7 @@ describe('addressing discovery retry preserves interleaved progress', () => {
       undefined,
       () => ({ kind: 'available', resultPath: '/r/x' }),
     );
-    const cursor: WaitCursorV3 = {
-      version: 'jobs.wait.v3',
-
+    const cursor: WaitCursor = {
       jobs: [
         { hash: waitJobHash('a'), epoch: waitEpochToken(E), seq: 4, lineOffset: 0, flags: 0 },
         { hash: waitJobHash('b'), epoch: waitEpochToken(E), seq: 4, lineOffset: 0, flags: 0 },
@@ -426,7 +381,6 @@ describe('addressing discovery retry preserves interleaved progress', () => {
     // first read() is validateWait's admission (failB=0 -> ok), second is the stream's first poll (failB=1 -> EMFILE)
     for await (const e of addressing.waitStream({
       jobIds: ['a', 'b'],
-      supportsWaitV3: true,
       timeoutSeconds: 1,
       cursor,
       projectRoot: '/tmp',
@@ -508,4 +462,204 @@ it('water-fills a maximum set before reading tails, within the raw-row budget', 
       expect(session.cursor().jobs.every((entry) => entry.seq === 97)).toBe(true);
     },
   );
+});
+
+describe('progress source faults are attributed per source (K2)', () => {
+  const timing = { origin: 'runtime' as const, originAt: '', emittedAt: '', elapsedMs: 0 };
+  type Row = { seq: number; message?: string } | 'undecodable' | 'fault';
+  const visitRows =
+    (rows: Record<string, Row[]>, onVisit?: () => void, frontier = 100): ProgressVisit =>
+    (epoch, read) => {
+      onVisit?.();
+      const raw = (id: string) =>
+        (rows[id] ?? []).map((row, index) => {
+          if (row === 'undecodable') throw new HistoricalDecodeError(`row ${index} of ${id} in ${epoch}`);
+          if (row === 'fault') return { seq: 50 + index };
+          return { seq: row.seq, progress: { seq: row.seq, message: row.message ?? `${id}-${row.seq}`, timing } };
+        });
+      return {
+        kind: 'read',
+        value: read({
+          after: (id, after, count) =>
+            progressPage(
+              raw(id)
+                .filter((row) => row.seq > after)
+                .slice(0, count + 1),
+              count,
+              frontier,
+            ),
+          before: (id, before, count) =>
+            progressTail(
+              raw(id)
+                .filter((row) => before === null || row.seq < before)
+                .reverse()
+                .slice(0, count + 1),
+              count,
+              frontier,
+            ),
+        }),
+      };
+    };
+  const select = (session: WaitSession, visit: ProgressVisit) =>
+    session.withProgress(visit, (sources) => {
+      session.position(sources, null, 500, 65536);
+      return session.select(sources, 500, 65536);
+    });
+
+  it('settles only the job whose row failed to decode and keeps its other-epoch sibling readable', () => {
+    const session = new WaitSession(['a1', 'b1']);
+    session.reconcile([admitted('a1', [], true, 'epoch-E1'), admitted('b1', [], true, 'epoch-E2')]);
+    const selected = select(session, visitRows({ a1: [{ seq: 5 }, 'undecodable'], b1: [{ seq: 7 }, { seq: 8 }] }));
+    expect(selected.lines.map((line) => line.text)).toEqual(['b1-7', 'b1-8']);
+    expect(session.progressState('a1')).toBe('lost');
+    expect(session.notices.join(' ')).toContain('Earlier progress for a1 cannot be read by this build');
+    expect(session.notices.join(' ')).not.toContain('b1 cannot be read');
+  });
+
+  it('visits each epoch once however many epochs hold a failing job', () => {
+    const ids = Array.from({ length: 18 }, (_, index) => `job-${index}`);
+    const session = new WaitSession(ids);
+    session.reconcile(ids.map((id, index) => admitted(id, [], false, `epoch-${index}`)));
+    let visits = 0;
+    select(
+      session,
+      visitRows(
+        Object.fromEntries(ids.map((id) => [id, id === 'job-0' ? ['undecodable' as const] : [{ seq: 5 }]])),
+        () => visits++,
+      ),
+    );
+    expect(visits).toBe(18);
+    expect(ids.slice(1).every((id) => session.progressState(id) !== 'lost')).toBe(true);
+  });
+
+  it('propagates a code defect instead of holding the job behind it', () => {
+    const session = new WaitSession(['a']);
+    session.reconcile([admitted('a', [], false)]);
+    const defect: ProgressVisit = (_epoch, read) => ({
+      kind: 'read',
+      value: read({
+        after: () => {
+          throw new TypeError('defect');
+        },
+        before: () => progressTail([], 1, 0),
+      }),
+    });
+    expect(() => select(session, defect)).toThrow(TypeError);
+  });
+
+  it('holds only the faulted epoch on a transient page failure', () => {
+    const session = new WaitSession(['a', 'b']);
+    session.reconcile([admitted('a', [], false, 'epoch-E1'), admitted('b', [[3, 'b-3']], false, 'epoch-E2')]);
+    const busy: ProgressVisit = (epoch, read) =>
+      epoch === 'epoch-E1'
+        ? {
+            kind: 'read',
+            value: read({
+              after: () => {
+                throw Object.assign(new Error('database is locked'), { code: 'ERR_SQLITE_ERROR' });
+              },
+              before: () => progressTail([], 1, 0),
+            }),
+          }
+        : testProgressVisit(epoch, read);
+    observeWaitRead(() => session.admissions)();
+    const selected = select(session, busy);
+    expect(selected.lines.map((line) => line.text)).toEqual(['b-3']);
+    expect(session.progressState('a')).toBe('unknown');
+    expect(session.remaining()).toContain('a');
+  });
+
+  it('says a retired source no longer keeps the progress', () => {
+    const session = new WaitSession(['a']);
+    session.reconcile([admitted('a', [], true, 'epoch-OLD')]);
+    session.withProgress(
+      () => ({ kind: 'unreadable', disposition: 'retired' }),
+      () => undefined,
+    );
+    expect(session.notices.join(' ')).toContain('Earlier progress for a is no longer kept');
+    expect(session.notices.join(' ')).not.toContain('cannot be read by this build');
+  });
+
+  it('advances a job silently past fault-only pages behind its consumed lines, without a message', () => {
+    const rows = { a: [{ seq: 5 }, 'fault', 'fault', 'fault'] as Row[] };
+    const session = new WaitSession(['a'], {
+      jobs: [{ hash: waitJobHash('a'), epoch: waitEpochToken('epoch-E'), seq: 5, lineOffset: 0, flags: 0 }],
+    });
+    session.reconcile([admitted('a', [], false)]);
+    const first = select(session, visitRows(rows, undefined, 53));
+    expect(first.lines).toEqual([]);
+    expect(first.advances).toEqual([{ jobId: 'a', seq: 53 }]);
+    session.advanceSilently(first.advances);
+    expect(session.entry('a')).toMatchObject({ seq: 53, lineOffset: 0 });
+    const second = select(session, visitRows(rows, undefined, 53));
+    expect(second.advances).toEqual([]);
+  });
+
+  it('never moves a job silently past a selected line it has not consumed', () => {
+    const session = new WaitSession(['a']);
+    session.reconcile([admitted('a', [], false)]);
+    session.advanceSilently([
+      {
+        jobId: 'a',
+        seq: 90,
+        after: { entryAfter: { ...session.entry('a'), seq: 7 } } as never,
+      },
+    ]);
+    expect(session.entry('a').seq).toBe(0);
+  });
+});
+
+describe('only admitted members hold progress (K3)', () => {
+  it('does not report truncated progress for a refused sibling', () => {
+    const session = new WaitSession(['a', 'ghost']);
+    session.reconcile([admitted('a', [[1, 'only line']], false), { jobId: 'ghost', disposition: 'missing' }]);
+    expect(session.progressState('ghost')).toBe('refused');
+    const snapshot = selectWaitSnapshot(session, 20);
+    expect(snapshot.notices.some((notice) => notice.startsWith('Progress truncated'))).toBe(false);
+    expect(session.hasProgress()).toBe(false);
+  });
+});
+
+it('serves every epoch a turn so a chatty first epoch cannot starve the next one', () => {
+  const chatty = admitted(
+    'chatty',
+    Array.from({ length: 600 }, (_, index) => [index + 1, `c-${index}`] as [number, string]),
+    false,
+    'epoch-E1',
+  );
+  const quiet = admitted('quiet', [[3, 'q-3']], false, 'epoch-E2');
+  const session = new WaitSession(['chatty', 'quiet'], {
+    jobs: [
+      { hash: waitJobHash('chatty'), epoch: waitEpochToken('epoch-E1'), seq: 0, lineOffset: 0, flags: 0 },
+      { hash: waitJobHash('quiet'), epoch: waitEpochToken('epoch-E2'), seq: 0, lineOffset: 0, flags: 0 },
+    ],
+  });
+  session.reconcile([chatty, quiet]);
+  expect(selectTestProgress(session, 500).map((line) => line.text)).toContain('q-3');
+});
+
+it('selects each line once when a deferred member keeps an older alias of the same epoch', () => {
+  const s1 = JSON.stringify({ storeRoot: '/a', epoch: '1', path: '/a/epoch-1/store.db', lineageKey: 'L:1' });
+  const s2 = JSON.stringify({ storeRoot: '/b', epoch: '1', path: '/b/epoch-1/store.db', lineageKey: 'L:1' });
+  const session = new WaitSession(['j1', 'j2']);
+  const j1 = admitted('j1', [[1, 'j1 line']], false, s1);
+  const j2 = admitted('j2', [[2, 'j2 line']], false, s2);
+  session.reconcile([j1, j2]);
+  session.reconcile([
+    { jobId: 'j1', disposition: 'discovery-unknown', sourceRead: 'transient-unknown', observationDeferred: true },
+    j2,
+  ]);
+  observeWaitRead(() => [j1, j2])();
+  expect(selectTestProgress(session).map((line) => line.text)).toEqual(['j1 line', 'j2 line']);
+});
+
+it('exhausts a job whose saved line offset lies past its row instead of holding it unread forever', () => {
+  const job = admitted('a', [[5, 'one\ntwo']], false);
+  const session = new WaitSession(['a'], {
+    jobs: [{ hash: waitJobHash('a'), epoch: waitEpochToken('epoch-E'), seq: 5, lineOffset: 9, flags: 0 }],
+  });
+  session.reconcile([job]);
+  expect(selectTestProgress(session)).toEqual([]);
+  expect(session.progressState('a')).toBe('exhausted');
+  expect(session.hasProgress()).toBe(false);
 });

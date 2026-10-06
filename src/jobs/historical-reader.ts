@@ -2,11 +2,11 @@ import type { ProgressPage, TailPage } from './wait/progress-page.js';
 import { waitEpochToken } from './wait/cursor.js';
 import type { ProgressSource, ProgressVisitResult } from './wait/contract.js';
 import { progressPage, progressTail, type RawProgressRow } from './wait/progress-page.js';
-import { epochIdentity, sameEpoch } from '../store/epoch/identity.js';
+import { epochIdentity, sameEpoch, sameEpochOrFallbackAddress } from '../store/epoch/identity.js';
 import { setImmediate } from 'node:timers/promises';
 import { hasObservedTerminalDetail, hasReadableTerminalDetail } from './terminal/identity.js';
-import { WaitSessionError, type SourceReadDisposition } from './wait/session.js';
-import { HistoricalDecodeError, sourceReadFailureDisposition } from './source-read.js';
+import type { SourceReadDisposition } from './wait/session.js';
+import { HistoricalDecodeError, isCodeDefect, sourceReadFailureDisposition, sourceReadStamp } from './source-read.js';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
 
@@ -111,7 +111,12 @@ const launchBodySchema = z.discriminatedUnion('jobKind', [
 type Projection = z.infer<typeof olderProjectionSchema> & { work_dir?: string | null };
 type HistoricalReader = (db: SqliteDatabasePort) => unknown[];
 type HistoricalReadFrontier = { frontier: number; location: JobLocation | null; absent?: boolean };
-type HistoricalReadCache = { jobs: Map<string, HistoricalReadFrontier>; terminals: Map<string, JobLocation> };
+type HistoricalReadCache = {
+  jobs: Map<string, HistoricalReadFrontier>;
+  terminals: Map<string, JobLocation>;
+  /** The source stamp observed before this session's last opened read; unchanged, the cached answers still hold. */
+  observed?: { path: string; stamp: string };
+};
 
 type HistoricalEpochSource = {
   readonly epochKey: string;
@@ -481,7 +486,7 @@ export function registerPresentHistoricalEpochs(
       if (!key) throw new Error('Source identity cannot be observed');
       attempts.delete(address);
       const fallbackKey = JSON.stringify({ storeRoot: resolved.storeRoot, epoch: resolved.epoch, path: resolved.path });
-      if (fallbackKey !== key) index.clearUnknownLocations(fallbackKey);
+      if (fallbackKey !== key && index.ownsUnknownLocationHold(fallbackKey)) index.clearUnknownLocations(fallbackKey);
       if (sameEpoch(key, activeEpochKey) || historicalSources.get(index)?.has(epochIdentity(key))) continue;
       const fingerprint = entry.epochJson.kind === 'valid' ? entry.epochJson.value.build.storeFormatFingerprint : '';
       const certificate = index.certificate(key);
@@ -737,7 +742,11 @@ export function seedHistoricalEpoch(
       } catch (error) {
         seed.recordingError ??= error instanceof Error ? error : new Error(String(error));
         seed.failedRowOffset ??= i;
-        index.markUnresolved(jobId);
+        try {
+          index.markUnresolved(jobId);
+        } catch {
+          // A subject whose location cannot be marked is covered by the epoch hold; it must not stop later subjects.
+        }
         index.resultRepairFailures.add(jobId);
       } finally {
         seed.rowOffset = i + 1;
@@ -821,16 +830,7 @@ export function readHistoricalSource(
 ): HistoricalSourceRead {
   const source = historicalSources.get(view)?.get(epochIdentity(epochKey));
   if (source === undefined) {
-    const hold = view.unknownLocationHolds().find((hold) => {
-      if (sameEpoch(hold.epochKey, epochKey)) return true;
-      try {
-        const left = JSON.parse(hold.epochKey ?? '') as { storeRoot?: string; epoch?: string; lineageKey?: string };
-        const right = JSON.parse(epochKey) as { storeRoot?: string; epoch?: string };
-        return left.lineageKey === undefined && left.storeRoot === right.storeRoot && left.epoch === right.epoch;
-      } catch {
-        return false;
-      }
-    });
+    const hold = view.unknownLocationHolds().find((hold) => sameEpochOrFallbackAddress(hold.epochKey, epochKey));
     const state = view.historicalSourceState?.(epochKey);
     const absent = state === 'absent' && view.historicalSourceState?.(epochKey) === 'absent';
     return retiredHistoricalEpochs.get(view)?.has(epochIdentity(epochKey)) || absent
@@ -853,6 +853,13 @@ export function readHistoricalSource(
       reason:
         'This build cannot read the retained source format; epoch maintenance re-reads it at the next coordinator start',
     };
+  const observed = session && !fullHistory ? source.readCache?.get(session) : undefined;
+  if (
+    observed?.observed &&
+    jobIds.every((jobId) => observed.jobs.has(jobId)) &&
+    sourceReadStamp(source.storage, observed.observed.path) === observed.observed.stamp
+  )
+    return cachedHistoricalRead(observed, epochKey, jobIds);
   let release: (() => void) | null = null;
   let db: SqliteDatabasePort | null = null;
   try {
@@ -861,6 +868,7 @@ export function readHistoricalSource(
       return { kind: 'unreadable', disposition: 'retired', retired: true };
     release = acquireSharedFileLockNoRepairSync(join(dirname(epoch.path), STORE_LOCK_FILE_NAME));
     verifyHistoricalIdentity(source, epochKey, epoch);
+    const stamp = sourceReadStamp(source.storage, epoch.path);
     db = source.storage.openSqliteDatabaseSync(epoch.path, { readOnly: true });
     db.exec('BEGIN');
     const frontier = (db.prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get() as { seq: number }).seq;
@@ -941,6 +949,7 @@ export function readHistoricalSource(
         unreadableJobs.add(jobId);
       }
     }
+    if (session && !fullHistory) readCache.observed = stamp === null ? undefined : { path: epoch.path, stamp };
     const result = { kind: 'read', locations, dispositions, unreadableJobs, absentJobs } as const;
     return result;
   } catch (error) {
@@ -959,6 +968,33 @@ export function readHistoricalSource(
     db?.close();
     release?.();
   }
+}
+
+function cachedHistoricalRead(
+  cache: HistoricalReadCache,
+  epochKey: string,
+  jobIds: readonly string[],
+): HistoricalSourceRead {
+  const locations = new Map<string, JobLocation | null>();
+  const absentJobs = new Set<string>();
+  for (const jobId of jobIds) {
+    const cached = cache.jobs.get(jobId) as HistoricalReadFrontier;
+    const terminal = cached.location?.terminalSeq;
+    locations.set(
+      jobId,
+      terminal === undefined
+        ? cached.location
+        : (cache.terminals.get(JSON.stringify([epochIdentity(epochKey), jobId, terminal])) ?? cached.location),
+    );
+    if (cached.absent) absentJobs.add(jobId);
+  }
+  return {
+    kind: 'read',
+    locations,
+    dispositions: new Map(jobIds.map((jobId) => [jobId, 'readable' as const])),
+    unreadableJobs: new Set(),
+    absentJobs,
+  };
 }
 
 export function historicalSourceReader(index: JobLocationIndex): HistoricalSourceReader {
@@ -1198,6 +1234,7 @@ export function readHistoricalProgressTail(
   return progressTail(historicalRawProgress(raw), rows, sourceFrontier);
 }
 
+/** Only opening is classified here: the read runs outside this source's error scope, so no failure can be misattributed. */
 export function visitHistoricalProgress<T>(
   view: JobLocationView,
   epochKey: string,
@@ -1210,14 +1247,24 @@ export function visitHistoricalProgress<T>(
   let release: (() => void) | null = null;
   let db: SqliteDatabasePort | null = null;
   try {
-    const epoch = resolveHistoricalAddress(source, epochKey);
-    if (observeHistoricalPath(source, epochKey, epoch) === 'absent')
-      return { kind: 'unreadable', disposition: 'retired' };
-    release = acquireSharedFileLockNoRepairSync(join(dirname(epoch.path), STORE_LOCK_FILE_NAME));
-    verifyHistoricalIdentity(source, epochKey, epoch);
-    db = source.storage.openSqliteDatabaseSync(epoch.path, { readOnly: true });
-    db.exec('BEGIN');
-    const frontier = (db.prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get() as { seq: number }).seq;
+    let frontier: number;
+    try {
+      const epoch = resolveHistoricalAddress(source, epochKey);
+      if (observeHistoricalPath(source, epochKey, epoch) === 'absent')
+        return { kind: 'unreadable', disposition: 'retired' };
+      release = acquireSharedFileLockNoRepairSync(join(dirname(epoch.path), STORE_LOCK_FILE_NAME));
+      verifyHistoricalIdentity(source, epochKey, epoch);
+      db = source.storage.openSqliteDatabaseSync(epoch.path, { readOnly: true });
+      db.exec('BEGIN');
+      frontier = (db.prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get() as { seq: number }).seq;
+    } catch (error) {
+      if (isCodeDefect(error)) throw error;
+      return {
+        kind: 'unreadable',
+        disposition: sourceReadFailureDisposition(error),
+        reason: 'Historical progress cannot be observed',
+      };
+    }
     const opened = db;
     return {
       kind: 'read',
@@ -1225,13 +1272,6 @@ export function visitHistoricalProgress<T>(
         after: (id, after, rows) => readHistoricalProgressPage(opened, id, after, rows, frontier),
         before: (id, before, rows) => readHistoricalProgressTail(opened, id, before, rows, frontier),
       }),
-    };
-  } catch (error) {
-    if (error instanceof WaitSessionError) throw error;
-    return {
-      kind: 'unreadable',
-      disposition: sourceReadFailureDisposition(error),
-      reason: 'Historical progress cannot be observed',
     };
   } finally {
     db?.close();

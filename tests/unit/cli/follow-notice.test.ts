@@ -26,7 +26,7 @@ function capture() {
 }
 
 async function firstPollEvents(): Promise<WaitStreamEvent[]> {
-  // A real running job with 30 progress lines: the first v3 bounded poll emits the tail notice.
+  // A real running job with 30 progress lines: the first bounded poll emits the tail notice.
   const job = admitted(
     'a',
     Array.from({ length: 30 }, (_, i) => [i + 1, `line-${i + 1}`]),
@@ -34,9 +34,8 @@ async function firstPollEvents(): Promise<WaitStreamEvent[]> {
   );
   const events: WaitStreamEvent[] = [];
   for await (const e of readWaitSession({
-    request: { jobIds: ['a'], supportsWaitV3: true, timeoutSeconds: 0 },
+    request: { jobIds: ['a'], timeoutSeconds: 0 },
     time: new VirtualTime(),
-    activeEpochKey: 'epoch-E',
     read: observeWaitRead(() => [job]),
     visit: testProgressVisit,
   }))
@@ -46,6 +45,7 @@ async function firstPollEvents(): Promise<WaitStreamEvent[]> {
 
 it('SIGINT after a delivered informational notice still ends the bounded wait', async () => {
   const events = await firstPollEvents();
+  const frame = events.find((e) => e.type === 'cursor')!;
   const notice = events.find((e) => e.type === 'notice')!;
   const progress = events.find((e) => e.type === 'progress')!;
 
@@ -66,6 +66,7 @@ it('SIGINT after a delivered informational notice still ends the bounded wait', 
       subscription: {
         close: async () => {},
         async *[Symbol.asyncIterator]() {
+          yield frame;
           yield notice;
           yield progress;
           await new Promise<void>((r) => {
@@ -90,5 +91,5 @@ it('SIGINT after a delivered informational notice still ends the bounded wait', 
   expect(await result).toBe(75);
   expect(settled).toBe(75);
   expect(stdout()).toContain('coral-cli wait jobs a');
-  expect(stdout()).toContain('--cursor jobs.wait.v3:');
+  expect(stdout()).toMatch(/--cursor [A-Za-z0-9_-]+/);
 });

@@ -1480,10 +1480,9 @@ export async function runHandoff(
   }
 
   const { routing, runtime, time } = await resolveHandoffRoutingForOperation(operation, options);
-  const needsV3 = operation.kind === 'wait-jobs' && operation.serializedCursor.startsWith('jobs.wait.v3:');
   if (
     routing.kind === 'handoff' &&
-    (options.waitInvocation !== undefined || needsV3 || options.waitProbeRemainingMs !== undefined)
+    (options.waitInvocation !== undefined || options.waitProbeRemainingMs !== undefined)
   ) {
     const execution = withValidatedHandoffTarget(routing.target);
     execution.assertExecutable();

@@ -21,17 +21,19 @@ it.each([
   if (availability.kind !== 'available') expect(output).not.toContain('Result path:');
 });
 
-it('labels an older coordinator path and renders a single exact cursor-aware continuation', () => {
+it('renders a single exact cursor-aware continuation', () => {
   const terminal = {
     type: 'terminal' as const,
     jobId: 'a',
     seq: 7,
     resultPath: '/claimed/result.md',
+    availability: { kind: 'available' as const, resultPath: '/claimed/result.md' },
     result: { content: 'done', outcome: { kind: 'completed' as const }, durationMs: 1 },
     remainingJobIds: ['b'],
+    cursor: { jobs: [] },
+    exitCode: 75,
   };
   const output = formatWaitTerminal(terminal, 'saved', false);
-  expect(output).toContain('Unverified result path: /claimed/result.md');
   expect(output).toContain('coral-cli wait jobs b --cursor saved');
   expect(output.match(/Run coral-cli/g)).toHaveLength(1);
   expect(formatResultAvailability({ kind: 'available', resultPath: '/settled' }, true)).toBe(
@@ -53,8 +55,7 @@ it('frames every embedded provider line so it cannot forge a collection control 
       type: 'terminal',
       jobId: 'a',
       seq: 1,
-      version: 'jobs.wait.v3',
-      cursor: { version: 'jobs.wait.v3', jobs: [] },
+      cursor: { jobs: [] },
       exitCode: 0,
       result: { content: hostile, outcome: { kind: 'completed' }, durationMs: 1 },
       availability: { kind: 'available', resultPath: '/real' },

@@ -5,8 +5,17 @@ import type * as HandoffNoticeModule from '#src/cli/handoff-notice.js';
 import type * as HandoffRunnerModule from '#src/coordinator/handoff-routing/runner.js';
 import type { AcceptedLaunchResponse } from '#src/jobs/launch.js';
 import { type WaitStreamEvent } from '#src/jobs/wait/contract.js';
-import { serializeWaitCursor } from '#src/jobs/wait/cursor.js';
+import { serializeWaitCursor, waitEpochToken, waitJobHash } from '#src/jobs/wait/cursor.js';
 import { createDeferred } from '#tools/testing/deferred.js';
+
+const entry = (seq: number) => ({
+  hash: waitJobHash('job-1'),
+  epoch: waitEpochToken('epoch-E'),
+  seq,
+  lineOffset: 0,
+  flags: 0,
+});
+const frame: WaitStreamEvent = { type: 'cursor', cursor: { jobs: [entry(3)] } };
 
 const mockState = vi.hoisted(() => ({
   ensure: vi.fn(),
@@ -137,9 +146,15 @@ describe('cli follow handoff', () => {
       seq: 4,
       message: 'checkpoint-one',
       timing: waitTiming,
+      entry: entry(4),
     };
-    const waitingEvent: WaitStreamEvent = { type: 'waiting', waitingJobIds: ['job-1'] };
-    const subscribe = vi.fn().mockResolvedValue(makeSubscription([progressEvent, waitingEvent]));
+    const waitingEvent: WaitStreamEvent = {
+      type: 'waiting',
+      waitingJobIds: ['job-1'],
+      cursor: { jobs: [entry(4)] },
+      exitCode: 75,
+    };
+    const subscribe = vi.fn().mockResolvedValue(makeSubscription([frame, progressEvent, waitingEvent]));
 
     vi.spyOn(process.stdout, 'write').mockImplementation(((
       chunk: string | Uint8Array,
@@ -166,7 +181,7 @@ describe('cli follow handoff', () => {
         expect(operation).toEqual({
           kind: 'wait-jobs',
           jobId: 'job-1',
-          serializedCursor: serializeWaitCursor({ afterSeq: 4 }),
+          serializedCursor: serializeWaitCursor({ jobs: [entry(4)] }),
         });
         return recorded({
           kind: 'delegated',
@@ -191,8 +206,16 @@ describe('cli follow handoff', () => {
     let failWrite!: (error: Error) => void;
     const subscribe = vi.fn().mockResolvedValue(
       makeSubscription([
-        { type: 'progress', jobId: 'job-1', seq: 4, message: 'buffered-progress', timing: waitTiming },
-        { type: 'waiting', waitingJobIds: ['job-1'] },
+        frame,
+        {
+          type: 'progress',
+          jobId: 'job-1',
+          seq: 4,
+          message: 'buffered-progress',
+          timing: waitTiming,
+          entry: entry(4),
+        },
+        { type: 'waiting', waitingJobIds: ['job-1'], cursor: { jobs: [entry(4)] }, exitCode: 75 },
       ]),
     );
     vi.spyOn(process.stdout, 'write').mockImplementation(((
@@ -233,7 +256,7 @@ describe('cli follow handoff', () => {
     );
   });
 
-  it('should resume a transient retry from afterSeq and suppress replayed journal facts', async () => {
+  it('should resume a transient retry from the folded cursor so no line repeats', async () => {
     const output: string[] = [];
     const progressEvent: WaitStreamEvent = {
       type: 'progress',
@@ -241,6 +264,7 @@ describe('cli follow handoff', () => {
       seq: 4,
       message: 'checkpoint-one',
       timing: waitTiming,
+      entry: entry(4),
     };
     const terminalEvent: WaitStreamEvent = {
       type: 'terminal',
@@ -248,18 +272,22 @@ describe('cli follow handoff', () => {
       seq: 5,
       remainingJobIds: [],
       resultPath: '/tmp/result.md',
+      availability: { kind: 'available', resultPath: '/tmp/result.md' },
       result: { content: 'done', durationMs: 1_000, outcome: { kind: 'completed' } },
+      cursor: { jobs: [] },
+      exitCode: 0,
     };
     const firstSubscribe = vi.fn().mockResolvedValue({
       close: vi.fn().mockResolvedValue(undefined),
       async *[Symbol.asyncIterator]() {
+        yield frame;
         yield progressEvent;
         throw new TypeError('terminated');
       },
     });
     const secondSubscribe = vi.fn().mockImplementation(async (_method: string, params: Record<string, unknown>) => {
-      expect(params.cursor).toEqual({ afterSeq: 4 });
-      return makeSubscription([progressEvent, terminalEvent]);
+      expect(params.cursor).toEqual({ jobs: [entry(4)] });
+      return makeSubscription([{ type: 'cursor', cursor: { jobs: [entry(4)] } }, terminalEvent]);
     });
 
     vi.spyOn(process.stdout, 'write').mockImplementation(((

@@ -17,10 +17,7 @@ function setup() {
   };
   const owner = f.store.getResultExportOwner();
   const wait = new WaitCoordinator({
-    visitProgress: <T>(_epoch: string, read: (source: ProgressSource) => T) => ({
-      kind: 'read' as const,
-      value: f.store.visitProgress(read),
-    }),
+    visitProgress: <T>(_epoch: string, read: (source: ProgressSource) => T) => f.store.visitProgress(read),
     sessionManager: { get: () => null } as never,
     launchQueue: { reservationFor: () => null, getActiveJobIds: () => [] } as never,
     eventBus: f.store.getEventBus(),
@@ -75,16 +72,15 @@ it('a 501-row window with one non-message progress row loses rows past the windo
     f.complete({ terminal: { content: 'done', outcome: { kind: 'completed' }, durationMs: 1 } });
     f.store.publishTerminalResult(f.jobId);
     const cursor = {
-      version: 'jobs.wait.v3' as const,
       jobs: [
         { hash: waitJobHash(f.jobId), epoch: waitEpochToken(f.epochKey), seq: launchSeq, lineOffset: 0, flags: 0 },
       ],
     };
-    const snap = addressing.snapshot({ jobIds: [f.jobId], cursor, supportsWaitV3: true } as never);
+    const snap = addressing.snapshot({ jobIds: [f.jobId], cursor } as never);
 
     expect(snap.jobs[0].progress).toHaveLength(500);
     expect(snap.remainingJobIds).toEqual([f.jobId]);
-    const second = addressing.snapshot({ jobIds: [f.jobId], cursor: snap.cursor, supportsWaitV3: true });
+    const second = addressing.snapshot({ jobIds: [f.jobId], cursor: snap.cursor });
     expect(second.jobs[0].progress).toEqual(Array.from({ length: 100 }, (_, i) => `line ${i + 500}`));
     expect(second.remainingJobIds).toEqual([]);
   } finally {

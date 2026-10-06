@@ -12,7 +12,7 @@ async function collect(s: AsyncGenerator<WaitStreamEvent>) {
   return out;
 }
 
-it('a cut inside a v3 progress batch replays already rendered lines', async () => {
+it('a cut inside a progress batch resumes after the last rendered line', async () => {
   // A running job whose earlier lines 1..5 were consumed by a previous wait (cursor C0).
   const job = admitted(
     'a',
@@ -22,9 +22,8 @@ it('a cut inside a v3 progress batch replays already rendered lines', async () =
   const read = (cursor?: WaitCursor) =>
     collect(
       readWaitSession({
-        request: { jobIds: ['a'], supportsWaitV3: true, timeoutSeconds: 0, ...(cursor ? { cursor } : {}) },
+        request: { jobIds: ['a'], timeoutSeconds: 0, ...(cursor ? { cursor } : {}) },
         time: new VirtualTime(),
-        activeEpochKey: 'epoch-E',
         read: observeWaitRead(() => [job]),
         visit: testProgressVisit,
       }),
@@ -41,9 +40,8 @@ it('a cut inside a v3 progress batch replays already rendered lines', async () =
   const read2 = (cursor?: WaitCursor) =>
     collect(
       readWaitSession({
-        request: { jobIds: ['a'], supportsWaitV3: true, timeoutSeconds: 0, ...(cursor ? { cursor } : {}) },
+        request: { jobIds: ['a'], timeoutSeconds: 0, ...(cursor ? { cursor } : {}) },
         time: new VirtualTime(),
-        activeEpochKey: 'epoch-E',
         read: observeWaitRead(() => [job2]),
         visit: testProgressVisit,
       }),

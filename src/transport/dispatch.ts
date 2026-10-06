@@ -4,7 +4,9 @@ import { randomUUID } from 'node:crypto';
 import type { DiscussSessionsListResponse } from '../discuss/read-contract.js';
 import type { JobLaunchRequest } from '../jobs/launch.js';
 import type { JobsListResponse } from '../jobs/records.js';
-import type { WaitCursor, WaitHandoverNotice, WaitStreamEvent } from '../jobs/wait/contract.js';
+import type { WaitHandoverNotice, WaitStreamEvent } from '../jobs/wait/contract.js';
+import { decodeWaitCursor, type WaitCursorRejection } from '../jobs/wait/cursor.js';
+import { WAIT_BUILD_MISMATCH, waitRequestFromAnotherBuild } from './rpc/jobs.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import {
   canonicalizeWorkDir,
@@ -270,24 +272,6 @@ function withAbortSignal<T extends object>(request: T, abortSignal?: AbortSignal
     configurable: true,
   });
   return request;
-}
-
-/**
- * `interrupted` is withheld here rather than left to the wire consumer, because HTTP and IPC are two
- * separate emitters and a per-transport check would have to be kept in sync twice. An already-installed
- * CLI that never declared `supportsInterrupted` gets the pre-`interrupted` stream verbatim — indistinguishable
- * from talking to a coordinator that predates the event — instead of a type its renderer has no case for.
- */
-async function* withInterruptedGate(
-  events: AsyncIterable<WaitStreamEvent>,
-  supportsInterrupted: boolean,
-): AsyncGenerator<WaitStreamEvent> {
-  for await (const event of events) {
-    if (event.type === 'interrupted' && !supportsInterrupted) {
-      continue;
-    }
-    yield event;
-  }
 }
 
 /**
@@ -1181,25 +1165,22 @@ async function executeJobsWaitCatalogRequest({
   rpcPorts,
   abortSignal,
 }: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
-  const parsed = request as {
+  const parsed = request as Record<string, unknown> & {
     jobIds: string[];
     projectRoot: string;
     timeoutSeconds?: number;
-    cursor?: WaitCursor;
-    supportsInterrupted?: boolean;
-    supportsWaitV2?: boolean;
-    supportsWaitV3?: boolean;
     drainProgress?: boolean;
-    supportsHandover?: boolean;
   };
-  const waitRequest = {
-    ...parsed,
-    supportsWaitV2: parsed.supportsWaitV2 === true,
-    supportsWaitV3: parsed.supportsWaitV3 === true,
+  if (waitRequestFromAnotherBuild(parsed)) return unary(WAIT_BUILD_MISMATCH, 409);
+  const decoded = decodeWaitCursor(parsed.cursor);
+  if (decoded.kind === 'rejected') return unary(decoded.error, 400);
+  const waitRequest: CanonicalWaitStreamRequest = {
+    jobIds: parsed.jobIds,
+    projectRoot: parsed.projectRoot,
+    ...(parsed.timeoutSeconds === undefined ? {} : { timeoutSeconds: parsed.timeoutSeconds }),
+    cursor: decoded.cursor,
     drainProgress: parsed.drainProgress === true,
-    supportsInterrupted: parsed.supportsInterrupted === true,
-    supportsHandover: parsed.supportsHandover === true,
-  } satisfies CanonicalWaitStreamRequest;
+  };
   const callerRoot = canonicalRequest.projectRoot;
   if (callerRoot === undefined) return unaryHttp(domainResultToHttp(invalidRequestResult()));
   if (!rpcPorts.jobs.admitWait)
@@ -1210,29 +1191,21 @@ async function executeJobsWaitCatalogRequest({
   const admissions = rpcPorts.jobs.admitWait(waitRequest);
   const admittedRequest: CanonicalWaitStreamRequest = Object.assign(waitRequest, { admissions });
   const cursorError = rpcPorts.jobs.validateWait(admittedRequest);
-  if (cursorError) {
-    const status =
-      cursorError.code === 'transient'
-        ? 503
-        : cursorError.code === 'scope_mismatch'
-          ? 403
-          : cursorError.code === 'job_outcome_unrecoverable' || cursorError.code === 'job_outcome_unreadable'
-            ? 409
-            : cursorError.code === 'jobs_not_found' || cursorError.code === 'job_pre_epoch_history'
-              ? 404
-              : 400;
-    return unary(cursorError, status);
-  }
+  if (cursorError) return unary(cursorError, 400);
   return {
     kind: 'subscription',
     notifications: withSuccessionHandover(
-      withInterruptedGate(
-        rpcPorts.jobs.waitStream(withAbortSignal(admittedRequest, abortSignal)),
-        waitRequest.supportsInterrupted,
-      ),
-      waitRequest.supportsHandover ? rpcPorts.jobs.waitHandoverSignal() : undefined,
+      rpcPorts.jobs.waitStream(withAbortSignal(admittedRequest, abortSignal)),
+      rpcPorts.jobs.waitHandoverSignal(),
     ),
   };
+}
+
+function snapshotRequest(request: unknown): WaitSnapshotRequest | WaitCursorRejection {
+  const parsed = request as WaitSnapshotRequest & { cursor?: unknown };
+  if (parsed.cursor === undefined) return parsed;
+  const decoded = decodeWaitCursor(parsed.cursor);
+  return decoded.kind === 'rejected' ? decoded.error : { ...parsed, cursor: decoded.cursor };
 }
 
 function executeJobsCatalogRequest(context: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
@@ -1243,16 +1216,13 @@ function executeJobsCatalogRequest(context: AuthorizedCatalogRequest): Promise<C
       return executeJobsListCatalogRequest(context);
     case 'jobs.detail':
       return executeJobsDetailCatalogRequest(context);
-    case 'jobs.wait.snapshot':
+    case 'jobs.wait.snapshot': {
       if (!context.rpcPorts.jobs.snapshot)
         return Promise.resolve(unary({ code: 'unknown_method', message: 'This coordinator predates --now.' }, 400));
-      return Promise.resolve(
-        unary(
-          context.rpcPorts.jobs.snapshot(
-            withAbortSignal({ ...(context.request as WaitSnapshotRequest), supportsWaitV3: true }, context.abortSignal),
-          ),
-        ),
-      );
+      const snapshot = snapshotRequest(context.request);
+      if ('code' in snapshot) return Promise.resolve(unary(snapshot, 400));
+      return Promise.resolve(unary(context.rpcPorts.jobs.snapshot(withAbortSignal(snapshot, context.abortSignal))));
+    }
     case 'jobs.wait':
       return executeJobsWaitCatalogRequest(context);
     default:

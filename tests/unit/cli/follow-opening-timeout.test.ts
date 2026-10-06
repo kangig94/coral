@@ -1,6 +1,7 @@
 import { afterEach, expect, it, vi } from 'vitest';
 
 import { serializeWaitCursor } from '#src/jobs/wait/cursor.js';
+import { savedCursor } from '#tests/helpers/wait-session.js';
 import { WaitInvocation } from '#src/cli/wait-invocation.js';
 import { followJobs } from '#src/cli/follow.js';
 import { buildErrorEnvelope } from '#src/cli/errors.js';
@@ -8,7 +9,7 @@ import { IpcRequestTimeout } from '#src/transport/ipc/client.js';
 
 afterEach(() => vi.restoreAllMocks());
 
-it.each([undefined, serializeWaitCursor({ afterSeq: 42 })])(
+it.each([undefined, serializeWaitCursor(savedCursor({ 'remaining-job': 42 }))])(
   'preserves wait continuation after initial IPC exhaustion, cursor=%s',
   async (cursor) => {
     const emitError = vi.fn();
@@ -71,7 +72,6 @@ it('saves an exact continuation after a refused sibling disposition is delivered
           async *[Symbol.asyncIterator]() {
             yield {
               type: 'disposition',
-              version: 'jobs.wait.v3',
               jobId: 'ghost',
               disposition: 'missing',
             };

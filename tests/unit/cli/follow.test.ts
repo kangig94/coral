@@ -1,4 +1,5 @@
 import { progressVisitFromDetails } from '#tests/helpers/wait-progress.js';
+import { savedCursor } from '#tests/helpers/wait-session.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { followJobs } from '#src/cli/follow.js';
@@ -63,8 +64,6 @@ import { SimulationRuntime } from '#tools/simulation/runtime.js';
     return { budget, out, result, allDelivered, save };
   }
   const cursor = {
-    version: 'jobs.wait.v3' as const,
-
     jobs: [{ hash: waitJobHash('live-job'), epoch: waitEpochToken('epoch'), seq: 7, lineOffset: 0, flags: 0 }],
   };
   describe('CLI watchdog flush (server waiting event arrives after the 590 s CLI deadline)', () => {
@@ -72,7 +71,6 @@ import { SimulationRuntime } from '#tools/simulation/runtime.js';
       const r = run([
         {
           type: 'progress',
-          version: 'jobs.wait.v3',
           jobId: 'live-job',
           seq: 7,
           message: 'working',
@@ -84,7 +82,7 @@ import { SimulationRuntime } from '#tools/simulation/runtime.js';
           },
           entry: cursor.jobs[0],
         },
-        { type: 'waiting', version: 'jobs.wait.v3', waitingJobIds: ['live-job'], cursor, exitCode: 75 },
+        { type: 'waiting', waitingJobIds: ['live-job'], cursor, exitCode: 75 },
       ]);
       await r.result;
       await new Promise((resolve) => setTimeout(resolve, 20));
@@ -148,7 +146,7 @@ import { SimulationRuntime } from '#tools/simulation/runtime.js';
         subscription: {
           close: async () => {},
           async *[Symbol.asyncIterator]() {
-            yield { type: 'waiting', version: 'jobs.wait.v3', waitingJobIds: ['live-job'], cursor, exitCode: 75 };
+            yield { type: 'waiting', waitingJobIds: ['live-job'], cursor, exitCode: 75 };
           },
         },
       }),
@@ -201,7 +199,7 @@ import { SimulationRuntime } from '#tools/simulation/runtime.js';
     vi.restoreAllMocks();
     process.exitCode = undefined;
   });
-  describe('all-refused v3 bounded wait', () => {
+  describe('all-refused bounded wait', () => {
     it('prints a settled line without a cursor when its only job is missing', async () => {
       const runtime = new SimulationRuntime();
       const index = new JobLocationIndex(runtime, '/coral');
@@ -219,8 +217,7 @@ import { SimulationRuntime } from '#tools/simulation/runtime.js';
         () => ({ kind: 'failed', cause: 'terminal-unusable', retryScheduled: false }),
       );
       const events: unknown[] = [];
-      for await (const event of addressing.waitStream({ jobIds: ['ghost'], supportsWaitV3: true, timeoutSeconds: 5 }))
-        events.push(event);
+      for await (const event of addressing.waitStream({ jobIds: ['ghost'], timeoutSeconds: 5 })) events.push(event);
       let stdout = '';
       vi.spyOn(process.stdout, 'write').mockImplementation(((
         chunk: string | Uint8Array,
@@ -283,14 +280,13 @@ import { SimulationRuntime } from '#tools/simulation/runtime.js';
     elapsedMs: 1000,
   };
   const cursor = (ack: number) => ({
-    version: 'jobs.wait.v3' as const,
     jobs:
       ack < 0
         ? []
         : [{ hash: waitJobHash('job-1'), epoch: waitEpochToken('epoch'), seq: 7, lineOffset: 0, flags: ack }],
   });
 
-  it('launch-and-follow (until-terminal) keeps following across a V3 waiting event', async () => {
+  it('launch-and-follow (until-terminal) keeps following across a waiting event', async () => {
     let out = '';
     vi.spyOn(process.stdout, 'write').mockImplementation(((c: string | Uint8Array, cb?: (e?: Error | null) => void) => {
       out += c.toString();
@@ -317,7 +313,6 @@ import { SimulationRuntime } from '#tools/simulation/runtime.js';
             ? [
                 {
                   type: 'progress',
-                  version: 'jobs.wait.v3',
                   jobId: 'job-1',
                   seq: 7,
                   message: 'line',
@@ -325,12 +320,11 @@ import { SimulationRuntime } from '#tools/simulation/runtime.js';
                   entry: cursor(0).jobs[0],
                 },
                 // what readWaitSession sends at its deadline or once the 500-line/64 KiB progress budget is spent
-                { type: 'waiting', version: 'jobs.wait.v3', waitingJobIds: ['job-1'], cursor: cursor(0), exitCode: 75 },
+                { type: 'waiting', waitingJobIds: ['job-1'], cursor: cursor(0), exitCode: 75 },
               ]
             : [
                 {
                   type: 'terminal',
-                  version: 'jobs.wait.v3',
                   jobId: 'job-1',
                   seq: 9,
                   remainingJobIds: [],
@@ -382,22 +376,20 @@ it('separates TTY notice, disposition and artifact lines with trailing newlines'
           subscription: {
             close: async () => {},
             async *[Symbol.asyncIterator]() {
-              yield { type: 'notice', version: 'jobs.wait.v3', message: 'notice text' };
-              yield { type: 'disposition', version: 'jobs.wait.v3', jobId: 'a', disposition: 'missing' };
+              yield { type: 'notice', message: 'notice text' };
+              yield { type: 'disposition', jobId: 'a', disposition: 'missing' };
               yield {
                 type: 'artifact',
-                version: 'jobs.wait.v3',
                 jobId: 'a',
                 availability: { kind: 'failed', cause: 'repair-failed', retryScheduled: true },
                 remainingJobIds: [],
-                cursor: { version: 'jobs.wait.v3', jobs: [] },
+                cursor: { jobs: [] },
                 exitCode: 1,
               };
               yield {
                 type: 'waiting',
-                version: 'jobs.wait.v3',
                 waitingJobIds: [],
-                cursor: { version: 'jobs.wait.v3', jobs: [] },
+                cursor: { jobs: [] },
                 exitCode: 1,
               };
             },
@@ -459,7 +451,7 @@ it('keeps delegated launch abort reachable after the monitor child exits 75 on t
 import { BackendUnreachableError } from '#src/infra/http-errors.js';
 
 it('preserves the saved cursor in backend-unreachable remediation', async () => {
-  const cursor = serializeWaitCursor({ afterSeq: 42 });
+  const cursor = serializeWaitCursor(savedCursor({ a: 42 }));
   const emitError = vi.fn();
   vi.spyOn(process.stdout, 'write').mockImplementation(((_c: unknown, cb?: () => void) => {
     cb?.();
@@ -480,13 +472,8 @@ it('preserves the saved cursor in backend-unreachable remediation', async () => 
   }
 });
 
-it('trims a legacy saved cursor before connecting a subset wait', async () => {
-  const cursor = {
-    version: 'jobs.wait.v2' as const,
-    locations: { a: 'epoch-E', b: 'epoch-E' },
-    positions: { 'epoch-E': 4 },
-    deliveredJobIds: ['b'],
-  };
+it('trims a saved cursor to the remaining jobs before connecting a subset wait', async () => {
+  const cursor = savedCursor({ a: 4, b: 9 });
   const connect = vi.fn(async () => ({
     kind: 'delegated' as const,
     version: '9.9.9',
@@ -501,10 +488,7 @@ it('trims a legacy saved cursor before connecting a subset wait', async () => {
       emitError: vi.fn(),
       connect,
     });
-    expect(connect.mock.calls[0]).toMatchObject([{ cursor: { locations: { a: 'epoch-E' }, deliveredJobIds: [] } }]);
-    expect(
-      (connect.mock.calls as unknown as Array<[{ cursor: { locations: object } }]>)[0][0].cursor.locations,
-    ).toEqual({ a: 'epoch-E' });
+    expect((connect.mock.calls as unknown as Array<[{ cursor: unknown }]>)[0][0].cursor).toEqual(savedCursor({ a: 4 }));
   } finally {
     vi.restoreAllMocks();
   }
@@ -517,7 +501,7 @@ it.each([1, 42])('preserves exit %s when a handover follows the final event', as
     callback?.();
     return true;
   }) as typeof process.stdout.write);
-  const empty = { version: 'jobs.wait.v3' as const, jobs: [] };
+  const empty = { jobs: [] };
   try {
     const code = await followJobs({
       start: { kind: 'jobs', jobIds: ['job'] },
@@ -533,11 +517,10 @@ it.each([1, 42])('preserves exit %s when a handover follows the final event', as
             yield {
               type: 'disposition',
               disposition: 'missing',
-              version: 'jobs.wait.v3',
               jobId: 'job',
               message: 'Job is missing',
             };
-            yield { type: 'waiting', version: 'jobs.wait.v3', waitingJobIds: [], cursor: empty, exitCode };
+            yield { type: 'waiting', waitingJobIds: [], cursor: empty, exitCode };
             yield { type: 'handover' };
           },
         },
@@ -549,7 +532,7 @@ it.each([1, 42])('preserves exit %s when a handover follows the final event', as
   }
 });
 
-it('resets a V3 cursor rejected mid-stream and completes the reconnect', async () => {
+it('resets a cursor rejected mid-stream and completes the reconnect', async () => {
   let output = '';
   vi.spyOn(process.stdout, 'write').mockImplementation(((text: unknown, callback?: () => void) => {
     output += String(text);
@@ -557,8 +540,6 @@ it('resets a V3 cursor rejected mid-stream and completes the reconnect', async (
     return true;
   }) as typeof process.stdout.write);
   const cursor = {
-    version: 'jobs.wait.v3' as const,
-
     jobs: [{ hash: waitJobHash('job'), epoch: waitEpochToken('e'), seq: 1, lineOffset: 0, flags: 0 }],
   };
   const emitError = vi.fn();
@@ -582,9 +563,8 @@ it('resets a V3 cursor rejected mid-stream and completes the reconnect', async (
               if (first) throw new BackendToolHttpError('cursor rejected', 400, { code: 'wait_cursor_mismatch' });
               yield {
                 type: 'waiting',
-                version: 'jobs.wait.v3',
                 waitingJobIds: [],
-                cursor: { version: 'jobs.wait.v3', jobs: [] },
+                cursor: { jobs: [] },
                 exitCode: 0,
               };
             },
@@ -626,15 +606,12 @@ it('launch-and-follow prints a continuation for an accepted outcome awaiting its
           async *[Symbol.asyncIterator]() {
             yield {
               type: 'terminal',
-              version: 'jobs.wait.v3',
               jobId: 'job',
               seq: 2,
               result: { content: 'done', durationMs: 1, outcome: { kind: 'completed' } },
               availability: { kind: 'repair-pending', ageUncertain: false },
               remainingJobIds: ['job'],
               cursor: {
-                version: 'jobs.wait.v3',
-
                 jobs: [{ hash: waitJobHash('job'), epoch: waitEpochToken('e'), seq: 2, lineOffset: 0, flags: 3 }],
               },
               exitCode: 75,
@@ -643,7 +620,7 @@ it('launch-and-follow prints a continuation for an accepted outcome awaiting its
         },
       }),
     });
-    expect(code).toBe(75);
+    expect(code).toBe(0);
     expect(output).toContain('coral-cli wait jobs job --cursor');
   } finally {
     vi.restoreAllMocks();
@@ -674,9 +651,8 @@ it.each([0, 42])(
             async *[Symbol.asyncIterator]() {
               yield {
                 type: 'waiting',
-                version: 'jobs.wait.v3',
                 waitingJobIds: [],
-                cursor: { version: 'jobs.wait.v3', jobs: [] },
+                cursor: { jobs: [] },
                 exitCode,
               };
             },

@@ -90,7 +90,7 @@ type CreateExecutionServicesDeps = {
   runtime: Runtime;
   getActiveEpochPath?: () => string | null;
   currentJobEpochKey?: () => string | null;
-  internalWaitAdmissions?: ExecutionServiceDeps['internalWaitAdmissions'];
+  internalWait?: ExecutionServiceDeps['internalWait'];
   observeJobAbsence?: (jobId: string) => boolean;
   bundleHash: string;
   backendNamespace: string;
@@ -148,12 +148,12 @@ function createExecutionServiceRegistry(input: {
       coordinatorCommit: (cb) => getProgressStore().commit(cb),
       loadJobProjectionDetail: (jobId) => getProgressStore().loadJobProjectionDetail(jobId),
 
-      visitProgress: (_epoch, read) => ({ kind: 'read', value: getProgressStore().visitProgress(read) }),
+      visitProgress: (_epoch, read) => getProgressStore().visitProgress(read),
       aggregateWorkflowUsage: (workflowJobId) => aggregateWorkflowUsage(getProgressStore().getDb(), workflowJobId),
       subscribeJobEvents,
       getCurrentJournalSeq,
       currentJobEpochKey: input.deps.currentJobEpochKey,
-      internalWaitAdmissions: input.deps.internalWaitAdmissions,
+      internalWait: input.deps.internalWait,
       observeJobAbsence: input.deps.observeJobAbsence,
       observeResultAvailability: (jobId, session) =>
         getProgressStore().getResultExportOwner().observeResultAvailability(jobId, session),

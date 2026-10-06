@@ -8,7 +8,7 @@ import { afterAll, beforeAll, expect, it } from 'vitest';
 const directory = mkdtempSync(join(tmpdir(), 'coral-wait-phase-a-'));
 
 beforeAll(() => {
-  for (const variant of ['real', 'ungated-handover', 'include-missing', 'property-decoder', 'unbounded-observer'])
+  for (const variant of ['real', 'no-handover', 'include-missing', 'property-decoder', 'unbounded-observer'])
     symlinkSync(sharedFixture(`phase-${variant}`), join(directory, `${variant}.mjs`));
 });
 
@@ -23,16 +23,15 @@ function probe(transport: string, scenario: string, variant = 'real'): string {
   });
 }
 
-it.each(['http', 'ipc'])('%s uses the shared negotiated handover path', (transport) => {
-  expect(probe(transport, 'negotiated')).toContain('handover');
-  expect(probe(transport, 'legacy')).not.toContain('"type":"handover"');
+it.each(['http', 'ipc'])('%s carries the handover notice on every wait stream', (transport) => {
+  expect(probe(transport, 'handover')).toContain('"type":"handover"');
 });
 
 it.each(['http', 'ipc'])('%s excludes a missing sibling from the exact continuation', (transport) => {
   expect(probe(transport, 'missing')).not.toContain('ghost');
 });
 
-it('HTTP softly rejects unknown header cursor generations', () => {
+it('HTTP softly rejects a header cursor in an old shape', () => {
   expect(probe('http', 'unknown-header')).toContain('unknown-header');
 });
 
@@ -41,7 +40,7 @@ it('the server deadline bounds an observer that never resolves', () => {
 });
 
 it.each([
-  ['http', 'legacy', 'ungated-handover'],
+  ['http', 'handover', 'no-handover'],
   ['http', 'missing', 'include-missing'],
   ['ipc', 'codec', 'property-decoder'],
   ['ipc', 'observer', 'unbounded-observer'],

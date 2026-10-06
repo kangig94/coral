@@ -1,130 +1,22 @@
 import type { WaitAdmission } from './session.js';
 import { createHash } from 'node:crypto';
-import { epochIdentity, sameEpoch } from '../../store/epoch/identity.js';
+import { epochIdentity } from '../../store/epoch/identity.js';
 import { isRecord } from '../../infra/json.js';
-import type { WaitCursor, WaitCursorV3, WaitCursorEntry } from './contract.js';
+import type { WaitCursor, WaitCursorEntry } from './contract.js';
 
-export function serializeWaitCursor(cursor: WaitCursor): string {
-  if (cursor.version === 'jobs.wait.v3') return encodeWaitCursorV3(cursor);
-  return Buffer.from(JSON.stringify(cursor)).toString('base64url');
-}
-
-export function waitCursorForJobs(cursor: WaitCursor, jobIds: readonly string[]): WaitCursor;
-export function waitCursorForJobs(cursor: WaitCursor | undefined, jobIds: readonly string[]): WaitCursor | undefined;
-export function waitCursorForJobs(cursor: WaitCursor | undefined, jobIds: readonly string[]): WaitCursor | undefined {
-  if (!cursor) return undefined;
-  if (cursor.version === 'jobs.wait.v3') return filterWaitCursorV3(cursor, jobIds);
-  const deliveredJobIds = cursor.deliveredJobIds?.filter((id) => jobIds.includes(id));
-  if (cursor.version === undefined)
-    return {
-      ...cursor,
-      ...(deliveredJobIds === undefined ? {} : { deliveredJobIds }),
-      ...(cursor.admittedJobIds === undefined
-        ? {}
-        : { admittedJobIds: cursor.admittedJobIds.filter((id) => jobIds.includes(id)) }),
-    };
-  const locations = Object.fromEntries(
-    jobIds.flatMap((jobId) => {
-      const epochKey = cursor.locations[jobId];
-      return epochKey === undefined ? [] : [[jobId, epochKey]];
-    }),
-  );
-  const requestedEpochs = new Set(Object.values(locations));
-  const positions = Object.fromEntries(
-    Object.entries(cursor.positions).filter(([epochKey]) =>
-      [...requestedEpochs].some((key) => sameEpoch(key, epochKey)),
-    ),
-  );
-  return {
-    version: 'jobs.wait.v2',
-    locations,
-    positions,
-    ...(cursor.deliveredJobIds === undefined ? {} : { deliveredJobIds }),
-  };
-}
-
-export type WaitCursorRejection = Readonly<{
-  code: 'wait_cursor_unsupported' | 'wait_cursor_malformed';
-  message: string;
-}>;
+export type WaitCursorRejection = Readonly<{ code: 'wait_cursor_malformed'; message: string }>;
 
 export type WaitCursorDecoded =
   | Readonly<{ kind: 'decoded'; cursor: WaitCursor }>
   | Readonly<{ kind: 'rejected'; error: WaitCursorRejection }>;
 
-function rejected(code: WaitCursorRejection['code']): WaitCursorDecoded {
-  return {
-    kind: 'rejected',
-    error: {
-      code,
-      message: code === 'wait_cursor_unsupported' ? 'Unsupported wait cursor generation' : 'Malformed wait cursor',
-    },
-  };
-}
-
-/** Unknown generations must never be interpreted as a legacy frontier. */
-export function decodeWaitCursor(value: unknown): WaitCursorDecoded {
-  if (!isRecord(value)) return rejected('wait_cursor_malformed');
-  if (value.version === 'jobs.wait.v3') {
-    return validV3(value) ? { kind: 'decoded', cursor: value as WaitCursorV3 } : rejected('wait_cursor_malformed');
-  }
-  if (value.version !== undefined && value.version !== 'jobs.wait.v2') return rejected('wait_cursor_unsupported');
-  const delivered = value.deliveredJobIds;
-  const admitted = value.admittedJobIds;
-  if (
-    admitted !== undefined &&
-    (!Array.isArray(admitted) ||
-      admitted.some((id) => typeof id !== 'string' || id.length === 0) ||
-      new Set(admitted).size !== admitted.length)
-  )
-    return rejected('wait_cursor_malformed');
-  if (
-    delivered !== undefined &&
-    (!Array.isArray(delivered) ||
-      delivered.some((id) => typeof id !== 'string' || id.length === 0) ||
-      new Set(delivered).size !== delivered.length)
-  )
-    return rejected('wait_cursor_malformed');
-  if (value.version === undefined) {
-    if (
-      !Number.isSafeInteger(value.afterSeq) ||
-      (value.afterSeq as number) < 0 ||
-      Object.keys(value).some((key) => key !== 'afterSeq' && key !== 'deliveredJobIds' && key !== 'admittedJobIds')
-    )
-      return rejected('wait_cursor_malformed');
-  } else {
-    if (
-      !isRecord(value.positions) ||
-      !isRecord(value.locations) ||
-      Object.entries(value.positions).some(
-        ([key, seq]) => key.length === 0 || !Number.isSafeInteger(seq) || (seq as number) < 0,
-      ) ||
-      Object.entries(value.locations).some(
-        ([id, key]) =>
-          id.length === 0 ||
-          typeof key !== 'string' ||
-          key.length === 0 ||
-          !Object.keys(value.positions as object).some((positionKey) => sameEpoch(positionKey, key)),
-      ) ||
-      Object.keys(value).some((key) => !['version', 'positions', 'locations', 'deliveredJobIds'].includes(key))
-    )
-      return rejected('wait_cursor_malformed');
-  }
-  return { kind: 'decoded', cursor: value as WaitCursor };
-}
-
-export function decodeSerializedWaitCursor(raw: string): WaitCursorDecoded {
-  try {
-    if (raw.startsWith('jobs.wait.v3:')) return decodeBinaryV3(raw);
-    if (raw.startsWith('jobs.wait.')) return rejected('wait_cursor_unsupported');
-    if (!/^[A-Za-z0-9_-]+$/.test(raw)) return rejected('wait_cursor_malformed');
-    return decodeWaitCursor(
-      JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.from(raw, 'base64url'))),
-    );
-  } catch {
-    return rejected('wait_cursor_malformed');
-  }
-}
+const REJECTED: WaitCursorDecoded = {
+  kind: 'rejected',
+  error: {
+    code: 'wait_cursor_malformed',
+    message: 'This wait cursor cannot be decoded by this build; collection restarts from the current tail.',
+  },
+};
 
 export const WAIT_CURSOR_REPLAY_NOTICE =
   'saved cursor not accepted by this coordinator; the current progress tail and retained results are collected again, so earlier results may repeat';
@@ -133,16 +25,11 @@ export const ACKNOWLEDGED_FLAG = 1;
 export const ARTIFACT_PENDING_FLAG = 2;
 export const UNPOSITIONED_FLAG = 4;
 
-const V3_PREFIX = 'jobs.wait.v3:';
+const MAX_JOBS = 128;
 const MAX_CURSOR_BYTES = 8192;
-export const UNRESOLVED_EPOCH = 0xff;
+const UNRESOLVED_EPOCH = 0xff;
 
 /** Tokens identify accepted locations; they cannot reconstruct filesystem paths. */
-export function waitEpochPosition(positions: Record<string, number>, epochKey: string): number | undefined {
-  const matches = Object.entries(positions).filter(([key]) => sameEpoch(key, epochKey));
-  return matches.length ? Math.max(...matches.map(([, seq]) => seq)) : undefined;
-}
-
 export function waitEpochToken(epochKey: string): string {
   return createHash('sha256').update(epochIdentity(epochKey)).digest().subarray(0, 16).toString('hex');
 }
@@ -172,22 +59,27 @@ function validEntry(value: unknown): value is WaitCursorEntry {
   );
 }
 
-function validV3(value: Record<string, unknown>): boolean {
-  return (
-    Object.keys(value).length === 2 &&
-    Array.isArray(value.jobs) &&
-    value.jobs.length <= 128 &&
-    value.jobs.every(validEntry) &&
-    new Set(value.jobs.map((job) => job.hash)).size === value.jobs.length
-  );
+/** A cursor is exactly `{ jobs }`; an object in any other shape is not a cursor this build reads. */
+export function decodeWaitCursor(value: unknown): WaitCursorDecoded {
+  if (!isRecord(value) || Object.keys(value).length !== 1) return REJECTED;
+  const { jobs } = value;
+  if (
+    !Array.isArray(jobs) ||
+    jobs.length > MAX_JOBS ||
+    !jobs.every(validEntry) ||
+    new Set(jobs.map((job) => job.hash)).size !== jobs.length
+  )
+    return REJECTED;
+  return { kind: 'decoded', cursor: { jobs } };
 }
 
-export function encodeWaitCursorV3(cursor: WaitCursorV3): string {
-  if (!validV3(cursor)) throw new Error('wait_cursor_malformed');
+/** Layout: job count, epoch count, 16-byte epoch tokens, then per job hash, epoch ordinal, flags, seq u64, offset u32. */
+export function serializeWaitCursor(cursor: WaitCursor): string {
+  if (decodeWaitCursor(cursor).kind !== 'decoded') throw new Error('wait_cursor_malformed');
   const epochs = [...new Set(cursor.jobs.flatMap((job) => (job.epoch === null ? [] : [job.epoch])))];
-  const bytes = Buffer.alloc(4 + epochs.length * 16 + cursor.jobs.length * 22);
-  bytes.set([3, 1, cursor.jobs.length, epochs.length]);
-  let offset = 4;
+  const bytes = Buffer.alloc(2 + epochs.length * 16 + cursor.jobs.length * 22);
+  bytes.set([cursor.jobs.length, epochs.length]);
+  let offset = 2;
   for (const epoch of epochs) {
     bytes.set(Buffer.from(epoch, 'hex'), offset);
     offset += 16;
@@ -200,34 +92,28 @@ export function encodeWaitCursorV3(cursor: WaitCursorV3): string {
     bytes.writeUInt32BE(job.lineOffset, offset + 18);
     offset += 22;
   }
-  const encoded = V3_PREFIX + bytes.toString('base64url');
-  if (Buffer.byteLength(encoded) > MAX_CURSOR_BYTES) throw new Error('wait_cursor_malformed');
-  return encoded;
+  return bytes.toString('base64url');
 }
 
-function decodeBinaryV3(raw: string): WaitCursorDecoded {
-  const encoded = raw.slice(V3_PREFIX.length);
-  if (Buffer.byteLength(raw) > MAX_CURSOR_BYTES || !/^[A-Za-z0-9_-]+$/.test(encoded))
-    return rejected('wait_cursor_malformed');
-  const bytes = Buffer.from(encoded, 'base64url');
+export function decodeSerializedWaitCursor(raw: string): WaitCursorDecoded {
+  if (Buffer.byteLength(raw) > MAX_CURSOR_BYTES || !/^[A-Za-z0-9_-]+$/.test(raw)) return REJECTED;
+  const bytes = Buffer.from(raw, 'base64url');
   if (
-    bytes.toString('base64url') !== encoded ||
-    bytes.length < 4 ||
-    bytes[0] !== 3 ||
-    bytes[1] !== 1 ||
-    bytes[2] > 128 ||
-    bytes[3] > 128 ||
-    bytes.length !== 4 + bytes[3] * 16 + bytes[2] * 22
+    bytes.toString('base64url') !== raw ||
+    bytes.length < 2 ||
+    bytes[0] > MAX_JOBS ||
+    bytes[1] > MAX_JOBS ||
+    bytes.length !== 2 + bytes[1] * 16 + bytes[0] * 22
   )
-    return rejected('wait_cursor_malformed');
+    return REJECTED;
   const epochs: string[] = [];
-  let offset = 4;
-  for (let i = 0; i < bytes[3]; i++, offset += 16) epochs.push(bytes.subarray(offset, offset + 16).toString('hex'));
-  if (new Set(epochs).size !== epochs.length) return rejected('wait_cursor_malformed');
+  let offset = 2;
+  for (let i = 0; i < bytes[1]; i++, offset += 16) epochs.push(bytes.subarray(offset, offset + 16).toString('hex'));
+  if (new Set(epochs).size !== epochs.length) return REJECTED;
   const jobs: WaitCursorEntry[] = [];
-  for (let i = 0; i < bytes[2]; i++, offset += 22) {
+  for (let i = 0; i < bytes[0]; i++, offset += 22) {
     const ordinal = bytes[offset + 8];
-    if (ordinal !== UNRESOLVED_EPOCH && ordinal >= epochs.length) return rejected('wait_cursor_malformed');
+    if (ordinal !== UNRESOLVED_EPOCH && ordinal >= epochs.length) return REJECTED;
     jobs.push({
       hash: bytes.subarray(offset, offset + 8).toString('hex'),
       epoch: ordinal === UNRESOLVED_EPOCH ? null : epochs[ordinal],
@@ -236,53 +122,35 @@ function decodeBinaryV3(raw: string): WaitCursorDecoded {
       lineOffset: bytes.readUInt32BE(offset + 18),
     });
   }
-  return decodeWaitCursor({ version: 'jobs.wait.v3', jobs });
+  return decodeWaitCursor({ jobs });
 }
 
-export function filterWaitCursorV3(cursor: WaitCursorV3, jobIds: readonly string[]): WaitCursorV3 {
+export function waitCursorForJobs(cursor: WaitCursor, jobIds: readonly string[]): WaitCursor;
+export function waitCursorForJobs(cursor: WaitCursor | undefined, jobIds: readonly string[]): WaitCursor | undefined;
+export function waitCursorForJobs(cursor: WaitCursor | undefined, jobIds: readonly string[]): WaitCursor | undefined {
+  if (!cursor) return undefined;
   const hashes = new Set(jobIds.map(waitJobHash));
-  return { version: 'jobs.wait.v3', jobs: cursor.jobs.filter((job) => hashes.has(job.hash)) };
+  return { jobs: cursor.jobs.filter((job) => hashes.has(job.hash)) };
 }
 
-export function upsertWaitCursorEntry(cursor: WaitCursor | undefined, entry: WaitCursorEntry): WaitCursorV3 {
-  const jobs = cursor?.version === 'jobs.wait.v3' ? [...cursor.jobs] : [];
+export function upsertWaitCursorEntry(cursor: WaitCursor, entry: WaitCursorEntry): WaitCursor {
+  const jobs = [...cursor.jobs];
   const index = jobs.findIndex((job) => job.hash === entry.hash);
   if (index === -1) jobs.push(entry);
   else jobs[index] = entry;
-  return { version: 'jobs.wait.v3', jobs };
+  return { jobs };
 }
 
-export function legacyWaitEntries(
-  cursor: WaitCursor | undefined,
-  admissions: readonly WaitAdmission[],
-  activeEpochKey?: string,
-): WaitCursorEntry[] {
-  return admissions.map((job) => {
-    const hash = waitJobHash(job.jobId);
-    const epoch = job.epochKey ? waitEpochToken(job.epochKey) : null;
-    if (cursor?.version === 'jobs.wait.v3') {
-      const saved = cursor.jobs.find((entry) => entry.hash === hash);
-      if (saved) return saved;
-    } else if (epoch !== null && cursor) {
-      const known =
-        cursor.version === 'jobs.wait.v2'
-          ? sameEpoch(cursor.locations[job.jobId], job.epochKey)
-          : sameEpoch(job.epochKey, activeEpochKey) &&
-            (cursor.admittedJobIds === undefined || cursor.admittedJobIds.includes(job.jobId));
-      if (known)
-        return {
-          hash,
-          epoch,
-          seq:
-            cursor.version === 'jobs.wait.v2'
-              ? (waitEpochPosition(cursor.positions, job.epochKey as string) ?? 0)
-              : cursor.afterSeq,
-          lineOffset: 0,
-          flags: cursor.deliveredJobIds?.includes(job.jobId)
-            ? ACKNOWLEDGED_FLAG | (job.availability?.kind === 'repair-pending' ? ARTIFACT_PENDING_FLAG : 0)
-            : 0,
-        };
+/** A job the cursor does not name starts unpositioned, so it receives its own tail on its first readable visit. */
+export function waitCursorEntry(cursor: WaitCursor | undefined, job: WaitAdmission): WaitCursorEntry {
+  const hash = waitJobHash(job.jobId);
+  return (
+    cursor?.jobs.find((entry) => entry.hash === hash) ?? {
+      hash,
+      epoch: job.epochKey ? waitEpochToken(job.epochKey) : null,
+      seq: 0,
+      lineOffset: 0,
+      flags: UNPOSITIONED_FLAG,
     }
-    return { hash, epoch, seq: 0, lineOffset: 0, flags: UNPOSITIONED_FLAG };
-  });
+  );
 }

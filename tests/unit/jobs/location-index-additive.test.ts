@@ -1,5 +1,5 @@
 import { progressVisitFromDetails } from '#tests/helpers/wait-progress.js';
-import { loadReleasedWait } from '#tests/helpers/released-wait.js';
+import { loadReleasedBuild } from '#tests/helpers/released-build.js';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -500,7 +500,7 @@ it('invalidates a reused inode stamp when file birth time changes', () => {
 
 it('retains incremental nonterminal progress for the real rolled-back v0.10.17 reader', async () => {
   const { root, index } = fixture();
-  const released = await loadReleasedWait('v0.10.17', directories);
+  const released = await loadReleasedBuild('v0.10.17', directories);
   index.register('live', 'epoch', {
     projectRoot: '/workspace/project',
     workDir: '/workspace/project',
@@ -670,7 +670,7 @@ it('reuses validated retained copies for a maximum snapshot and admission set un
       expect(addressing.snapshot({ jobIds: ids, projectRoot: '/workspace/project' }).jobs).toHaveLength(128);
       expect(
         addressing
-          .admitWait({ jobIds: ids, projectRoot: '/workspace/project', supportsWaitV3: true })
+          .admitWait({ jobIds: ids, projectRoot: '/workspace/project' })
           .every((job) => job.disposition === 'admitted'),
       ).toBe(true);
     }

@@ -107,7 +107,11 @@ export type ExecutionServiceDeps = {
   }) => AsyncIterable<JobEvent>;
   getCurrentJournalSeq: () => number;
   currentJobEpochKey?: () => string | null;
-  internalWaitAdmissions?: (jobIds: readonly string[], session: WaitStreamRequest) => WaitAdmission[];
+  /** Internal waits admit children through job addressing and read each child's progress from its admitted epoch. */
+  internalWait?: Readonly<{
+    admissions: (jobIds: readonly string[], session: WaitStreamRequest) => WaitAdmission[];
+    visitProgress: ProgressVisit;
+  }>;
   observeJobAbsence?: (jobId: string) => boolean;
   observeResultAvailability: (jobId: string, session?: object) => ResultAvailability;
   hintResultRepair?: (jobId: string) => void;

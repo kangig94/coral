@@ -187,7 +187,7 @@ describe('wait snapshot', () => {
     const before = JSON.stringify(cursor);
     const request = new WaitSession(['a'], cursor);
     request.reconcile([a]);
-    expect(() => selectWaitSnapshot(request)).toThrow('Snapshot identity metadata exceeds');
+    expect(() => selectWaitSnapshot(request)).toThrow('Snapshot exceeds the response size budget');
     expect(JSON.stringify(cursor)).toBe(before);
     expect(input.acknowledged('a')).toBe(false);
   });
@@ -244,7 +244,7 @@ it('oversized snapshot remediation preserves every requested job and the input c
   jobs[0].availability = { kind: 'available', resultPath: '/'.repeat(2 * 1024 * 1024) };
   const session = new WaitSession(
     jobs.map((job) => job.jobId),
-    { afterSeq: 0 },
+    { jobs: [] },
   );
   session.reconcile(jobs);
   try {

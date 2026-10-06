@@ -51,7 +51,6 @@ it('reads same-epoch members at one cut when a writer commits between member rea
       () => ({ kind: 'failed', cause: 'terminal-unusable', retryScheduled: false }),
     );
     const cursor = {
-      version: 'jobs.wait.v3' as const,
       jobs: ['job-1', 'job-2'].map((id) => ({
         hash: waitJobHash(id),
         epoch: waitEpochToken(f.epochKey),
@@ -60,8 +59,8 @@ it('reads same-epoch members at one cut when a writer commits between member rea
         flags: 0,
       })),
     };
-    const first = addressing.snapshot({ jobIds: ['job-1', 'job-2'], supportsWaitV3: true, cursor });
-    const next = addressing.snapshot({ jobIds: ['job-1', 'job-2'], supportsWaitV3: true, cursor: first.cursor });
+    const first = addressing.snapshot({ jobIds: ['job-1', 'job-2'], cursor });
+    const next = addressing.snapshot({ jobIds: ['job-1', 'job-2'], cursor: first.cursor });
     expect([...first.jobs[0].progress, ...next.jobs[0].progress]).toEqual(['A committed between reads']);
     expect([...first.jobs[1].progress, ...next.jobs[1].progress]).toEqual(['B later commit']);
   } finally {
@@ -144,10 +143,10 @@ it('does not acknowledge a retained terminal committed after the historical prog
       },
       () => ({ kind: 'failed', cause: 'terminal-unusable', retryScheduled: false }),
     );
-    const first = addressing.snapshot({ jobIds: [f.jobId], supportsWaitV3: true });
+    const first = addressing.snapshot({ jobIds: [f.jobId] });
     expect(first.jobs[0].terminal).toBeUndefined();
     expect(first.remainingJobIds).toEqual([f.jobId]);
-    const next = addressing.snapshot({ jobIds: [f.jobId], supportsWaitV3: true, cursor: first.cursor });
+    const next = addressing.snapshot({ jobIds: [f.jobId], cursor: first.cursor });
     expect([...first.jobs[0].progress, ...next.jobs[0].progress]).toEqual(['late progress']);
     expect(next.jobs[0].terminal?.outcomeKind).toBe('completed');
   } finally {

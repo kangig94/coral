@@ -26,7 +26,8 @@ export function createStoreEpochSweepScheduler(input: {
   let timer: TimerHandle | null = null;
   let settleScheduled: (() => void) | null = null;
   let settlement = Promise.resolve();
-  let lastSweep = -Infinity;
+  let lastSweepStart = -Infinity;
+  let lastSweepDuration = 0;
 
   return {
     schedule: (openStore) => {
@@ -39,7 +40,7 @@ export function createStoreEpochSweepScheduler(input: {
         });
         timer = runtime.time.setTimeout(() => {
           timer = null;
-          lastSweep = Number(runtime.time.monotonicNow());
+          lastSweepStart = Number(runtime.time.monotonicNow());
           void (async () => {
             const budget = { remaining: 0 };
             try {
@@ -54,14 +55,18 @@ export function createStoreEpochSweepScheduler(input: {
               world.log(`Historical epoch registration could not complete: ${formatError(error)}\n`);
             }
             await retryUnknownHistoricalEpochs(jobLocationIndex, budget);
-            await settleSupersededEpochClosures(
-              runtime,
-              jobLocationIndex,
-              controller.signal,
-              undefined,
-              input.selectedStoreEpochKey() ?? undefined,
-              input.closeProxySetForEpochClosure,
-            );
+            try {
+              await settleSupersededEpochClosures(
+                runtime,
+                jobLocationIndex,
+                controller.signal,
+                undefined,
+                input.selectedStoreEpochKey() ?? undefined,
+                input.closeProxySetForEpochClosure,
+              );
+            } catch (error) {
+              world.log(`Superseded epoch closure could not complete: ${formatError(error)}\n`);
+            }
             if (!controller.signal.aborted) {
               await refreshHistoricalEpochs(jobLocationIndex, budget);
               void (await sweepStoreEpochsPostReady(
@@ -78,6 +83,7 @@ export function createStoreEpochSweepScheduler(input: {
               world.log(`Store epoch closure or retention sweep could not complete: ${formatError(error)}\n`);
             })
             .finally(() => {
+              lastSweepDuration = Number(runtime.time.monotonicNow()) - lastSweepStart;
               settleScheduled?.();
               settleScheduled = null;
               if (!controller.signal.aborted) schedule(5_000);
@@ -91,7 +97,10 @@ export function createStoreEpochSweepScheduler(input: {
         runtime.time.clearTimeout(timer);
         timer = null;
         settleScheduled?.();
-        schedule(Math.max(0, 5_000 - (Number(runtime.time.monotonicNow()) - lastSweep)));
+        // A hint may bring the next sweep forward to 5 s after the previous one began, but sweeping may never
+        // occupy more than half the time, however long one sweep takes.
+        const earliest = lastSweepStart + Math.max(5_000, 2 * lastSweepDuration);
+        schedule(Math.max(0, earliest - Number(runtime.time.monotonicNow())));
       });
       schedule(0);
     },

@@ -1,3 +1,4 @@
+import { savedCursor } from '#tests/helpers/wait-session.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { createServer, type Server as HttpServer } from 'node:http';
@@ -42,14 +43,24 @@ function makeWaitEvents(): WaitStreamEvent[] {
       runningJobIds: [],
       timing: { ...waitTiming, origin: 'queued' },
     },
-    { type: 'progress', jobId: 'job-1', seq: 5, message: 'working', timing: waitTiming },
+    {
+      type: 'progress',
+      jobId: 'job-1',
+      seq: 5,
+      message: 'working',
+      timing: waitTiming,
+      entry: savedCursor({ 'job-1': 5 }).jobs[0],
+    },
     {
       type: 'terminal',
       jobId: 'job-1',
       seq: 6,
       remainingJobIds: [],
       resultPath: '/tmp/result.md',
+      availability: { kind: 'available', resultPath: '/tmp/result.md' },
       result: { content: 'done', outcome: { kind: 'completed' }, durationMs: 0 },
+      cursor: { jobs: [] },
+      exitCode: 0,
     },
   ];
 }
@@ -212,47 +223,9 @@ afterEach(async () => {
 });
 
 describe('subscription carriage', () => {
-  it("should end an undeclared subscriber's wait at handover with the lifecycle refusal shipped CLIs retry", async () => {
-    const requests: WaitStreamRequest[] = [];
-    const ports = createPorts(requests);
-    const handover = new AbortController();
-    ports.jobs.waitHandoverSignal = () => handover.signal;
-    ports.jobs.waitStream = vi.fn(async function* (request: WaitStreamRequest) {
-      requests.push(request);
-      yield makeWaitEvents()[0];
-      await new Promise<void>((resolve) => request.abortSignal?.addEventListener('abort', () => resolve()));
-    });
-    const socketPath = makeSocketPath();
-    const listener = createIpcServer(ports);
-
-    await listenIpcServer(listener, socketPath);
-    try {
-      const subscription = await createIpcClient(socketPath, undefined, {
-        kind: 'boot',
-        token: 'test-boot-token',
-      }).subscribe<unknown>('jobs.wait', { jobIds: ['job-1'], projectRoot: PROJECT_ROOT, timeoutSeconds: 30 });
-      const received: unknown[] = [];
-      const ended = (async () => {
-        for await (const event of subscription) {
-          received.push(event);
-          handover.abort();
-        }
-      })();
-
-      const refusal = await ended.then(
-        () => null,
-        (error: unknown) => error,
-      );
-      expect(received).toEqual([makeWaitEvents()[0]]);
-      expect(refusal).toMatchObject({ cause: { code: 'backend_shutting_down' } });
-    } finally {
-      await closeIpcServer(listener);
-    }
-  });
-
-  it.each([[true, [makeWaitEvents()[0], { type: 'handover' }]]] as const)(
-    'ends an open wait with a handover notice only for a subscriber that declared it (declared=%s)',
-    async (supportsHandover, expected) => {
+  it.each([[[makeWaitEvents()[0], { type: 'handover' }]]] as const)(
+    'ends every open wait with a handover notice at succession',
+    async (expected) => {
       const requests: WaitStreamRequest[] = [];
       const ports = createPorts(requests);
       const handover = new AbortController();
@@ -274,7 +247,7 @@ describe('subscription carriage', () => {
           jobIds: ['job-1'],
           projectRoot: PROJECT_ROOT,
           timeoutSeconds: 30,
-          ...(supportsHandover ? { supportsHandover: true } : {}),
+          cursor: { jobs: [] },
         });
         const received: unknown[] = [];
         for await (const event of subscription) {
@@ -331,6 +304,7 @@ describe('subscription carriage', () => {
         jobIds: ['job-1'],
         projectRoot: PROJECT_ROOT,
         timeoutSeconds: 30,
+        cursor: { jobs: [] },
       });
 
       expect(listener.sockets.size).toBe(1);
@@ -356,7 +330,7 @@ describe('subscription carriage', () => {
     const socketPath = makeSocketPath();
     const listener = createIpcServer(ports);
     const baseUrl = await startHttpServer(ports);
-    const expectedCursor = { afterSeq: 4 };
+    const expectedCursor = savedCursor({ 'job-1': 4 });
 
     await listenIpcServer(listener, socketPath);
     try {

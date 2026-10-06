@@ -4,7 +4,7 @@ import { createConnection } from 'node:net';
 import { join } from 'node:path';
 import { createHttpHandler } from '#src/transport/http/handler.js';
 import { createIpcServer, closeIpcServer } from '#src/transport/ipc/server.js';
-import { decodeWaitCursor } from '#src/jobs/wait/cursor.js';
+import { decodeWaitCursor, waitEpochToken, waitJobHash } from '#src/jobs/wait/cursor.js';
 import { serializeWaitCursor, waitCursorForJobs } from '#src/jobs/wait/cursor.js';
 import { formatWaitWaiting } from '#src/cli/format/wait.js';
 import { WaitSession } from '#src/jobs/wait/session.js';
@@ -36,7 +36,13 @@ if (scenario === 'observer') {
     observeCarriers: () => stuck,
   });
   const stream = wait.waitForJobs({ jobIds: ['known'], timeoutSeconds: 1 });
-  const first = stream.next();
+  const nextFinal = async () => {
+    for (;;) {
+      const next = await stream.next();
+      if (next.done || ['terminal', 'artifact', 'waiting'].includes(next.value.type)) return next;
+    }
+  };
+  const first = nextFinal();
   await flushMicrotasks(20);
   time.tick(1_000);
   await flushMicrotasks(20);
@@ -47,13 +53,9 @@ if (scenario === 'observer') {
   process.exit(0);
 }
 if (scenario === 'codec') {
-  assert.deepEqual(decodeWaitCursor({ version: 'jobs.wait.future', afterSeq: 42 }), {
-    kind: 'rejected',
-    error: { code: 'wait_cursor_unsupported', message: 'Unsupported wait cursor generation' },
-  });
+  assert.equal(decodeWaitCursor({ version: 'jobs.wait.future', afterSeq: 42 }).kind, 'rejected');
   process.exit(0);
 }
-const negotiated = scenario === 'negotiated';
 const handover = new AbortController();
 let release;
 const hold = new Promise((resolve) => {
@@ -61,12 +63,8 @@ const hold = new Promise((resolve) => {
 });
 const noOp = () => {};
 const stub = new Proxy({}, { get: () => noOp });
-const cursor = {
-  version: 'jobs.wait.v2',
-  locations: { known: 'epoch', ghost: 'epoch' },
-  positions: { epoch: 42 },
-  deliveredJobIds: [],
-};
+const entry = (jobId) => ({ hash: waitJobHash(jobId), epoch: waitEpochToken('epoch'), seq: 42, lineOffset: 0, flags: 0 });
+const cursor = { jobs: [entry('known'), entry('ghost')] };
 const ports = {
   identity: {
     pluginRoot: process.env.HOME,
@@ -113,13 +111,19 @@ const ports = {
             emittedAt: '2026-10-04T00:00:00Z',
             elapsedMs: 0,
           },
+          entry: { ...entry('known'), seq: 43 },
         };
         await hold;
       }
       const session = new WaitSession(req.jobIds, req.cursor);
       session.reconcile(req.admissions);
       const remaining = session.remaining();
-      yield { type: 'waiting', waitingJobIds: remaining, cursor: waitCursorForJobs(req.cursor ?? cursor, remaining) };
+      yield {
+        type: 'waiting',
+        waitingJobIds: remaining,
+        cursor: waitCursorForJobs(req.cursor ?? cursor, remaining),
+        exitCode: session.exitCode(),
+      };
     },
   },
 };
@@ -127,8 +131,6 @@ const params = {
   jobIds: scenario === 'missing' ? ['known', 'ghost'] : ['known'],
   projectRoot: process.env.HOME,
   timeoutSeconds: 10,
-  supportsWaitV2: true,
-  ...(negotiated ? { supportsHandover: true } : {}),
 };
 const events = [];
 function received(event) {
@@ -181,7 +183,7 @@ if (transport === 'http') {
           res.on('end', () => {
             if (scenario === 'unknown-header') {
               assert.equal(res.statusCode, 400);
-              assert.equal(JSON.parse(pending).code, 'wait_cursor_unsupported');
+              assert.equal(JSON.parse(pending).code, 'wait_cursor_malformed');
             } else assert.equal(pending, '');
             resolve();
           });
@@ -209,10 +211,7 @@ if (transport === 'http') {
         while ((end = pending.indexOf('\n')) >= 0) {
           const frame = JSON.parse(pending.slice(0, end));
           pending = pending.slice(end + 1);
-          if (frame.kind === 'error') {
-            assert.equal(scenario, 'legacy');
-            assert.equal(frame.error.data.code, 'backend_shutting_down');
-          }
+          if (frame.kind === 'error') assert.fail(`wait stream refused: ${JSON.stringify(frame.error)}`);
           if (frame.kind === 'notification') received(frame.params);
         }
       });
@@ -224,7 +223,7 @@ if (transport === 'http') {
           id: 1,
           method: 'jobs.wait',
           auth: { kind: 'boot', token: 'boot' },
-          params: { ...params, ...(scenario === 'missing' ? { cursor } : {}) },
+          params: { ...params, cursor: scenario === 'missing' ? cursor : { jobs: [] } },
         }) + '\n',
       );
     });
@@ -236,13 +235,16 @@ if (transport === 'http') {
 if (scenario === 'missing') {
   const waiting = events.find((event) => event.type === 'waiting');
   assert.deepEqual(waiting.waitingJobIds, ['known']);
-  assert.deepEqual(Object.keys(waiting.cursor.locations), ['known']);
+  assert.deepEqual(
+    waiting.cursor.jobs.map((job) => job.hash),
+    [waitJobHash('known')],
+  );
   assert.equal(formatWaitWaiting(waiting, serializeWaitCursor(waiting.cursor)).includes('ghost'), false);
 } else if (scenario !== 'unknown-header') {
   assert.equal(
     events.some((event) => event.type === 'handover'),
-    negotiated,
-    'handover must be negotiated',
+    true,
+    'every wait stream carries the handover notice',
   );
   assert.equal(events.filter((event) => event.type === 'progress').length, 1);
 }

@@ -101,6 +101,7 @@ const TRANSPORT_ALLOWED = new Set([
   'src/jobs/wait/contract.ts',
   'src/jobs/wait/cursor.ts',
   'src/jobs/wait/session.ts',
+  'src/jobs/wait/snapshot.ts',
   'src/jobs/wait/stream-event.ts',
   'src/providers/host-administration-vocabulary.ts',
   'src/providers/host-ref-codec.ts',

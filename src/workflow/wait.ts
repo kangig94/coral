@@ -1,3 +1,4 @@
+import { setImmediate } from 'node:timers/promises';
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
 import type { TimePort } from '../infra/port-types.js';
@@ -89,16 +90,7 @@ function waitTimeoutSeconds(staleTimeoutMs: number, staleCheckIntervalMs: number
 }
 
 function cloneCursor(cursor?: WaitCursor): WaitCursor | undefined {
-  if (cursor === undefined) return undefined;
-  if (cursor.version === 'jobs.wait.v3') return structuredClone(cursor);
-  return cursor.version === 'jobs.wait.v2'
-    ? {
-        version: 'jobs.wait.v2',
-        positions: { ...cursor.positions },
-        locations: { ...cursor.locations },
-        ...(cursor.deliveredJobIds === undefined ? {} : { deliveredJobIds: [...cursor.deliveredJobIds] }),
-      }
-    : { afterSeq: cursor.afterSeq };
+  return cursor === undefined ? undefined : structuredClone(cursor);
 }
 
 function cloneMap<K, V>(value?: Map<K, V>): Map<K, V> {
@@ -215,6 +207,9 @@ function handleWaitEvent(
   options: Pick<WaitForAtomsOptions, 'onProgress' | 'onAtomTerminal' | 'onFailureDrain' | 'time' | 'drainDeadlineMs'>,
 ): 'handled' | 'check-stale' {
   switch (event.type) {
+    case 'cursor':
+      state.cursor = advanceWaitRenderCursor(state.cursor, event).cursor;
+      return 'handled';
     case 'notice':
     case 'artifact':
       return 'handled';
@@ -321,17 +316,18 @@ async function awaitWaitCycle(
   ctx: InvocationContext,
   options: WaitForAtomsOptions,
   buildPartialStepDetailsForCycle: () => StepDetail[],
-): Promise<'stream-ended' | 'stale-recovered'> {
+): Promise<'stream-ended' | 'stream-empty' | 'stale-recovered'> {
   const timeoutSeconds = waitTimeoutSeconds(options.staleTimeoutMs, options.staleCheckIntervalMs);
   const observedCadenceMs = timeoutSeconds * 1_000;
+  let events = 0;
 
+  // The pipeline abort signal is not this wait's: after an abort the wait is what drains the aborted atoms.
   for await (const event of executionSvc.waitStream({
     jobIds: [...state.pending.keys()],
-    supportsWaitV3: true,
     timeoutSeconds,
     cursor: waitCursorForJobs(state.cursor, [...state.pending.keys()]),
-    abortSignal: options.signal,
   })) {
+    events++;
     advanceObservedWaitTime(state, options.time.monotonicNow(), observedCadenceMs);
     const eventOutcome = handleWaitEvent(event, state, executionSvc, options);
     if (eventOutcome !== 'check-stale') continue;
@@ -353,7 +349,7 @@ async function awaitWaitCycle(
     return 'stale-recovered';
   }
 
-  return 'stream-ended';
+  return events === 0 ? 'stream-empty' : 'stream-ended';
 }
 
 async function awaitStepCompletion(
@@ -383,6 +379,8 @@ async function awaitStepCompletion(
     }
 
     const cycleOutcome = await awaitWaitCycle(state, executionSvc, ctx, options, buildPartialStepDetailsForCycle);
+    // A cycle that observed nothing may not be followed by another in the same macrotask, or timers starve.
+    if (cycleOutcome === 'stream-empty') await setImmediate();
     advanceObservedWaitTime(
       state,
       options.time.monotonicNow(),

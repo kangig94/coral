@@ -81,8 +81,13 @@ export function terminalEligibility(
     sameEpoch(saved.data.epochKey, location.epochKey) &&
     saved.data.terminalSeq === terminal.seq &&
     saved.data.terminalTimestamp === terminal.ts;
+  // A saved age may be later than its terminal's own timestamp (a regressed legacy terminal is aged by its newest
+  // surviving row) but never earlier, which would expire the terminal before its own timestamp allows.
   let age: number | 'unknown' | 'regression' =
-    matches && saved.data.kind === 'known' && saved.data.terminalAt === Date.parse(terminal.ts)
+    matches &&
+    saved.data.kind === 'known' &&
+    saved.data.terminalAt !== undefined &&
+    saved.data.terminalAt >= Date.parse(terminal.ts)
       ? saved.data.terminalAt
       : matches && saved.data.kind === 'regression'
         ? 'regression'

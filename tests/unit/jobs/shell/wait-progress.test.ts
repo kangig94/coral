@@ -84,7 +84,7 @@ it('cursorless bounded wait: progress appended between polls beyond the tail win
     () => ({ kind: 'available', resultPath: '/x' }),
   );
   const events: WaitStreamEvent[] = [];
-  const stream = addressing.waitStream({ jobIds: ['job-1'], supportsWaitV3: true, timeoutSeconds: 3 });
+  const stream = addressing.waitStream({ jobIds: ['job-1'], timeoutSeconds: 3 });
   const done = (async () => {
     for await (const e of stream) events.push(e);
   })();

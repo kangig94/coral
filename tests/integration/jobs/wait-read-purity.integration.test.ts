@@ -228,15 +228,14 @@ describe('Phase D wait read purity (Revision S3)', () => {
           expect(formatJobDetail(detail, undefined, [], true)).toContain('canonical result');
       }
       if (entry === 'snapshot')
-        expect(
-          f.addressing.snapshot({ jobIds: [f.jobId], supportsWaitV3: true }).jobs[0].terminal?.contentPreview,
-        ).toContain('canonical result');
+        expect(f.addressing.snapshot({ jobIds: [f.jobId] }).jobs[0].terminal?.contentPreview).toContain(
+          'canonical result',
+        );
       if (entry === 'detail')
         expect(f.addressing.detail(f.jobId)).toMatchObject({ exit: { content: 'canonical result' } });
-      if (entry === 'validateWait')
-        expect(f.addressing.validateWait({ jobIds: [f.jobId], supportsWaitV3: true })).toBeNull();
+      if (entry === 'validateWait') expect(f.addressing.validateWait({ jobIds: [f.jobId] })).toBeNull();
       if (entry === 'waitStream')
-        expect(await terminal(f.addressing.waitStream({ jobIds: [f.jobId], supportsWaitV3: true }))).toMatchObject({
+        expect(await terminal(f.addressing.waitStream({ jobIds: [f.jobId] }))).toMatchObject({
           type: 'terminal',
           result: { content: 'canonical result' },
         });
@@ -252,7 +251,7 @@ describe('Phase D wait read purity (Revision S3)', () => {
     const observation = vi.spyOn(f.owner, 'observeResultAvailability');
     const hint = vi.spyOn(f.owner, 'hintRepair');
     const check = measure(f);
-    expect(await terminal(f.addressing.waitStream({ jobIds: [f.jobId], supportsWaitV3: true }))).toMatchObject({
+    expect(await terminal(f.addressing.waitStream({ jobIds: [f.jobId] }))).toMatchObject({
       type: 'terminal',
       result: { content: 'canonical result' },
     });
@@ -287,9 +286,9 @@ describe('Phase D wait read purity (Revision S3)', () => {
           expect(formatJobDetail(detail, undefined, [], true)).toContain('terminal only in WAL');
       }
       if (entry === 'snapshot')
-        expect(
-          f.addressing.snapshot({ jobIds: [f.jobId], supportsWaitV3: true }).jobs[0].terminal?.contentPreview,
-        ).toContain('terminal only in WAL');
+        expect(f.addressing.snapshot({ jobIds: [f.jobId] }).jobs[0].terminal?.contentPreview).toContain(
+          'terminal only in WAL',
+        );
       if (entry === 'detail')
         expect(f.addressing.detail(f.jobId)).toMatchObject({
           exit: { content: 'terminal only in WAL' },
@@ -298,10 +297,9 @@ describe('Phase D wait read purity (Revision S3)', () => {
             expect.objectContaining({ type: 'terminal' }),
           ],
         });
-      if (entry === 'validateWait')
-        expect(f.addressing.validateWait({ jobIds: [f.jobId], supportsWaitV3: true })).toBeNull();
+      if (entry === 'validateWait') expect(f.addressing.validateWait({ jobIds: [f.jobId] })).toBeNull();
       if (entry === 'waitStream')
-        expect(await terminal(f.addressing.waitStream({ jobIds: [f.jobId], supportsWaitV3: true }))).toMatchObject({
+        expect(await terminal(f.addressing.waitStream({ jobIds: [f.jobId] }))).toMatchObject({
           type: 'terminal',
           result: { content: 'terminal only in WAL', durationMs: 9 },
         });
@@ -385,7 +383,7 @@ describe('Phase D wait read purity (Revision S3)', () => {
     );
     const check = measure(f);
     expect(addressing.detail(f.jobId)).toMatchObject({ exit: { content: 'never exported' } });
-    expect(await terminal(addressing.waitStream({ jobIds: [f.jobId], supportsWaitV3: true }))).toMatchObject({
+    expect(await terminal(addressing.waitStream({ jobIds: [f.jobId] }))).toMatchObject({
       type: 'terminal',
       result: { content: 'never exported' },
     });
@@ -409,7 +407,7 @@ describe('Phase D wait read purity (Revision S3)', () => {
       'typo',
     ]);
     expect(f.addressing.detail('typo')).toBeNull();
-    expect(f.addressing.validateWait({ jobIds: ['typo'], supportsWaitV3: true })).toBeNull();
+    expect(f.addressing.validateWait({ jobIds: ['typo'] })).toBeNull();
     const disposition = f.addressing.unknownJobDisposition();
     const caveat = f.addressing.unknownJobCaveat();
     check();
@@ -453,7 +451,7 @@ describe('Phase D wait read purity (Revision S3)', () => {
     const check = measure(f);
     expect(addressing.scopeCheck([f.jobId], canonicalWorkDirWireSchema.parse(f.root), 'contains').missing).toEqual([]);
     expect(addressing.detail(f.jobId)).toMatchObject({ status: { jobKind: 'kb' } });
-    expect(addressing.validateWait({ jobIds: [f.jobId], supportsWaitV3: true })).toBeNull();
+    expect(addressing.validateWait({ jobIds: [f.jobId] })).toBeNull();
     check();
   });
 
@@ -483,7 +481,7 @@ it.each(['missing', 'malformed'] as const)('maintenance repairs a %s guard after
   if (guard === 'missing') rmSync(lock);
   else writeFileSync(lock, 'malformed guard');
   let check = measure(f);
-  expect(f.addressing.admitWait({ jobIds: [f.jobId], supportsWaitV3: true })[0]).toMatchObject({
+  expect(f.addressing.admitWait({ jobIds: [f.jobId] })[0]).toMatchObject({
     disposition: 'admitted',
     sourceRead: 'transient-unknown',
   });
@@ -493,7 +491,7 @@ it.each(['missing', 'malformed'] as const)('maintenance repairs a %s guard after
   refreshHistoricalEpochs(f.index);
   expect(existsSync(lock)).toBe(true);
   check = measure(f);
-  expect(f.addressing.admitWait({ jobIds: [f.jobId], supportsWaitV3: true })[0]).toMatchObject({
+  expect(f.addressing.admitWait({ jobIds: [f.jobId] })[0]).toMatchObject({
     disposition: 'admitted',
     sourceRead: 'readable',
     detail: { exit: { content: 'journal terminal' } },

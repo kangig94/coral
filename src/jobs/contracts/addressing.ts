@@ -1,21 +1,9 @@
 import type { JobDetailResponse } from '../records.js';
 
+/** Both refusals are soft: the client drops its cursor and starts a fresh collection. */
 export type WaitCursorError = Readonly<{
-  code:
-    | 'wait_cursor_epoch_required'
-    | 'wait_cursor_mismatch'
-    | 'wait_epoch_unsupported'
-    | 'wait_cursor_unsupported'
-    | 'wait_cursor_malformed'
-    | 'jobs_not_found'
-    | 'job_pre_epoch_history'
-    | 'transient'
-    | 'scope_mismatch'
-    | 'job_outcome_unrecoverable'
-    | 'job_outcome_unreadable';
+  code: 'wait_cursor_mismatch' | 'wait_cursor_malformed';
   message: string;
-  detail?: { jobs: string[]; disposition?: string };
-  remediation?: string;
 }>;
 
 export type JobDetailLookup =

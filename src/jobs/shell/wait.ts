@@ -1,5 +1,5 @@
 import type { ProgressVisit } from '../wait/contract.js';
-import { sourceReadFailureDisposition } from '../source-read.js';
+import { isCodeDefect, sourceReadFailureDisposition } from '../source-read.js';
 import { epochIdentity, sameEpoch } from '../../store/epoch/identity.js';
 import { readWaitSession } from '../wait/reader.js';
 import type { WaitAdmission } from '../wait/session.js';
@@ -80,7 +80,11 @@ export interface WaitCoordinatorDeps {
   }) => AsyncIterable<JobEvent>;
   getCurrentJournalSeq: () => number;
   currentJobEpochKey?: () => string | null;
-  internalWaitAdmissions?: (jobIds: readonly string[], session: WaitStreamRequest) => WaitAdmission[];
+  /** Internal waits admit children through job addressing and read each child's progress from its admitted epoch. */
+  internalWait?: Readonly<{
+    admissions: (jobIds: readonly string[], session: WaitStreamRequest) => WaitAdmission[];
+    visitProgress: ProgressVisit;
+  }>;
   observeJobAbsence?: (jobId: string) => boolean;
   resultJobsRoot: string;
   observeResultAvailability: (jobId: string, session?: object) => ResultAvailability;
@@ -309,17 +313,26 @@ export class WaitCoordinator {
 
   readWaitAdmissions(jobIds: readonly string[], epochKey: string, session?: object): WaitAdmission[] {
     const frontier = this.deps.getCurrentJournalSeq();
-    return jobIds.map((jobId) => {
+    return jobIds.map((jobId): WaitAdmission => {
       try {
         return this.readWaitAdmission(jobId, epochKey, session, frontier);
       } catch (error) {
-        const sourceRead = sourceReadFailureDisposition(error);
-        return {
-          jobId,
-          sourceRead,
-          disposition: sourceRead === 'settled-unreadable' ? 'discovery-unreadable' : 'discovery-unknown',
-          message: 'Job location cannot be observed; location recovery re-reads it at the next coordinator start',
-        };
+        if (isCodeDefect(error)) throw error;
+        return sourceReadFailureDisposition(error) === 'settled-unreadable'
+          ? {
+              jobId,
+              disposition: 'outcome-unreadable',
+              epochKey,
+              sourceRead: 'settled-unreadable',
+              message: "This build cannot decode this job's records in the active journal; no later read changes that",
+            }
+          : {
+              jobId,
+              disposition: 'admitted',
+              epochKey,
+              sourceRead: 'transient-unknown',
+              message: 'The active journal cannot be read right now; this wait reads it again on its next poll',
+            };
       }
     });
   }
@@ -406,26 +419,23 @@ export class WaitCoordinator {
   }
 
   async *waitForJobs(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent> {
-    if (req.supportsWaitV3 !== true && req.supportsWaitV2 !== true) yield* this.waitForOutcomes(req);
-    else yield* this.readWait(req, false);
+    yield* this.readWait(req, false);
   }
 
   async *waitForOutcomes(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent> {
-    yield* this.readWait({ ...req, supportsWaitV3: true }, true);
+    yield* this.readWait(req, true);
   }
 
   private async *readWait(req: WaitStreamRequest, internal: boolean): AsyncGenerator<WaitStreamEvent> {
     const epochKey = this.deps.currentJobEpochKey?.() ?? ':memory:';
+    const addressed = internal ? this.deps.internalWait : undefined;
     yield* readWaitSession({
       request: req,
       internal,
       time: this.deps.time,
-      activeEpochKey: epochKey,
-      visit: this.deps.visitProgress,
+      visit: addressed?.visitProgress ?? this.deps.visitProgress,
       read: () =>
-        internal && this.deps.internalWaitAdmissions
-          ? this.deps.internalWaitAdmissions(req.jobIds, req)
-          : this.readWaitAdmissions(req.jobIds, epochKey, req),
+        addressed ? addressed.admissions(req.jobIds, req) : this.readWaitAdmissions(req.jobIds, epochKey, req),
       observe: async (session, signal) => {
         const pending = session.admissions
           .filter((job) => job.disposition === 'admitted' && !job.detail?.exit)

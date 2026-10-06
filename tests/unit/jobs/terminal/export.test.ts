@@ -380,6 +380,26 @@ describe('terminal export owner', () => {
     expect(f.index.resultDurable(f.jobId)).toBe(true);
   });
 
+  it('decides a refused rename once, so a cutoff trusted again afterwards cannot turn the refusal into a failure', () => {
+    const f = fixture();
+    f.complete();
+    const write = f.runtime.storage.writeAtomicDurableSync;
+    vi.spyOn(f.runtime.storage, 'writeAtomicDurableSync').mockImplementation((path, bytes, options) => {
+      if (path !== f.resultPath) return write(path, bytes, options);
+      return write(path, bytes, {
+        ...options,
+        beforeRename: () => {
+          f.jump(86_400_000);
+          const decided = options?.beforeRename?.() ?? true;
+          f.advance(5 * 60_000);
+          return decided;
+        },
+      });
+    });
+    expect(() => f.store.ensureResultArtifact(f.jobId)).not.toThrow();
+    expect(existsSync(f.resultPath)).toBe(false);
+  });
+
   it('keeps validated expired age after source removal and restart; no selected-source or mtime fallback', () => {
     const f = fixture();
     f.complete({ terminalAt: TERMINAL_EXPORT_CUTOFF - 1 });
@@ -691,6 +711,20 @@ it('unchanged workflow availability polls render the report once per read sessio
   expect(report).toHaveBeenCalledTimes(1);
 });
 
+it('unrelated journal appends do not render a repair-pending workflow report again within a read session', () => {
+  const f = fixture('workflow');
+  f.complete();
+  const owner = f.store.getResultExportOwner();
+  const input = (owner as unknown as { input: { workflowReport: WorkflowReportPort } }).input;
+  const report = vi.spyOn(input, 'workflowReport');
+  const session = {};
+  for (let i = 0; i < 4; i++) {
+    writeFileSync(f.epoch.path, `unrelated append ${i}`);
+    expect(owner.observeResultAvailability(f.jobId, session)).toMatchObject({ kind: 'repair-pending' });
+  }
+  expect(report).toHaveBeenCalledTimes(1);
+});
+
 it('a repair scan skips terminal preparation for already recorded age evidence', async () => {
   const f = fixture();
   f.complete();
@@ -736,6 +770,20 @@ it('rechecks a deferred source age after clock trust returns and the terminal ex
   expect(owner.observeResultAvailability(f.jobId, session)).toMatchObject({
     kind: 'retained-away',
   });
+});
+
+it('recomputes a legacy source age when the cutoff crosses it under an unchanged source stamp', () => {
+  const f = fixture();
+  f.complete();
+  writeFileSync(f.epoch.path, 'source stamp');
+  const record = JSON.parse(readFileSync(f.locationPath, 'utf8'));
+  delete record.terminalAge;
+  writeFileSync(f.locationPath, JSON.stringify(record));
+  const owner = f.store.getResultExportOwner();
+  expect(f.index.read(f.jobId)?.storedIdentity).toBeDefined();
+  expect(owner.observeResultAvailability(f.jobId)).toMatchObject({ kind: 'repair-pending' });
+  f.advance(30 * 86_400_000);
+  expect(owner.observeResultAvailability(f.jobId)).toMatchObject({ kind: 'retained-away' });
 });
 
 it('a settled source owner ends artifact retry after a retained terminal read fails', () => {
@@ -1024,7 +1072,7 @@ it('first publication validates terminal content once and never renders during r
   }
 });
 
-it('an evicted repair failure remains failed with bounded in-memory evidence', () => {
+it('a full repair-failure set forgets its oldest job instead of relabelling every other job', () => {
   const f = fixture();
   const owner = new TerminalResultExportOwner({
     runtime: f.runtime,
@@ -1037,12 +1085,14 @@ it('an evicted repair failure remains failed with bounded in-memory evidence', (
   });
   for (const id of ['a', 'b', 'c']) expect(() => owner.ensureResultMarkdownArtifact(id)).toThrow();
   expect((owner as unknown as { failures: Set<string> }).failures.size).toBe(2);
-  for (const id of ['a', 'b', 'c'])
+  for (const id of ['b', 'c'])
     expect(owner.observeResultAvailability(id)).toMatchObject({
       kind: 'failed',
       cause: 'repair-failed',
       retryScheduled: true,
     });
+  for (const id of ['a', 'never-failed'])
+    expect(owner.observeResultAvailability(id)).toEqual({ kind: 'repair-pending', ageUncertain: true });
 });
 
 it('reuses source eligibility when an evicted location view is decoded again', () => {

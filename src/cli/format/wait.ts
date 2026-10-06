@@ -67,7 +67,7 @@ export function formatWaitContinuation(jobIds: readonly string[], cursor: string
   return `Run coral-cli wait jobs ${jobIds.join(' ')}${now ? ' --now' : ''}${cursor === null ? '' : ` --cursor ${cursor}`} to continue waiting.`;
 }
 
-export function formatWaitProgress(event: WaitProgressEvent, label?: string): string {
+export function formatWaitProgress(event: Omit<WaitProgressEvent, 'entry'>, label?: string): string {
   return formatTimedMessage(event.timing.elapsedMs, event.message, label);
 }
 
@@ -98,27 +98,17 @@ export function formatWaitTerminal(
     .replace(/\r\n|[\r\n\u2028\u2029]/g, '\n> ');
   const continuation = formatWaitContinuation(event.remainingJobIds, cursor);
   const fullDetail =
-    (event.version === 'jobs.wait.v3' && event.availability?.kind !== 'available') ||
-    (inline && event.result.content.length > 10_000)
+    event.availability.kind !== 'available' || (inline && event.result.content.length > 10_000)
       ? `Full retained outcome: ${renderJobsOperatorCommand({ kind: 'jobs-detail-full', jobId: event.jobId })}`
       : undefined;
   if (!inline) {
-    return joinLines([
-      header,
-      fullDetail,
-      event.version === 'jobs.wait.v3' && event.availability
-        ? formatResultAvailability(event.availability)
-        : `Unverified result path: ${event.resultPath}`,
-      continuation,
-    ]);
+    return joinLines([header, fullDetail, formatResultAvailability(event.availability), continuation]);
   }
 
   return joinLines([
     header,
     fullDetail,
-    event.version === 'jobs.wait.v3' && event.availability
-      ? formatResultAvailability(event.availability)
-      : `Unverified result path: ${event.resultPath}`,
+    formatResultAvailability(event.availability),
     frameWaitContent(truncatePreview(pickTerminalPreviewSource(event.result, options.describeCauseRef))),
     continuation,
     cursor === null || event.remainingJobIds.length === 0 ? undefined : `Cursor: ${cursor}`,
@@ -130,7 +120,7 @@ export function formatWaitCarrierInterrupted(event: WaitCarrierInterruptedEvent)
 }
 
 export function formatWaitWaiting(
-  event: WaitWaitingEvent,
+  event: Pick<WaitWaitingEvent, 'type' | 'waitingJobIds' | 'carrierUnknownJobIds'>,
   cursor: string | null,
   resumeJobIds: readonly string[] = event.waitingJobIds,
 ): string {

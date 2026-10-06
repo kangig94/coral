@@ -27,7 +27,7 @@ describe('jobWaitSchema', () => {
       schema.parse({
         jobIds: ['a', 'a'],
         projectRoot: '/tmp',
-        ...(schema === jobWaitSchema ? { supportsWaitV3: true } : {}),
+        ...(schema === jobWaitSchema ? {} : {}),
       }),
     ).toThrow('Each job ID must appear only once; remove duplicate job IDs.');
   });

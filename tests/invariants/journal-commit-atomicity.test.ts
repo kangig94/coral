@@ -145,16 +145,7 @@ function createWorkflowExecutionPort(
         jobIds: [...req.jobIds],
         ...(req.cursor === undefined ? {} : { cursor: structuredClone(req.cursor) }),
       });
-      const baseSeq = Math.max(
-        req.cursor === undefined
-          ? 0
-          : 'afterSeq' in req.cursor
-            ? req.cursor.afterSeq
-            : req.cursor.version === 'jobs.wait.v3'
-              ? Math.max(0, ...req.cursor.jobs.map((job) => job.seq))
-              : Math.max(0, ...Object.values(req.cursor.positions)),
-        100,
-      );
+      const baseSeq = Math.max(0, ...(req.cursor?.jobs ?? []).map((job) => job.seq), 100);
       return emitWaitEvents(
         req.jobIds.map((jobId, index): WaitStreamEvent => {
           const outcome = options.terminalOutcomeByJob?.get(jobId) ?? { kind: 'completed' };
@@ -164,11 +155,14 @@ function createWorkflowExecutionPort(
             seq: baseSeq + index + 1,
             remainingJobIds: req.jobIds.slice(index + 1),
             resultPath: `/tmp/coral-exports/jobs/${jobId}/result.md`,
+            availability: { kind: 'available', resultPath: `/tmp/coral-exports/jobs/${jobId}/result.md` },
             result: {
               content: options.terminalContentByJob?.get(jobId) ?? `result:${jobId}`,
               outcome,
               durationMs: 0,
             },
+            cursor: { jobs: [] },
+            exitCode: 0,
           };
         }),
       );

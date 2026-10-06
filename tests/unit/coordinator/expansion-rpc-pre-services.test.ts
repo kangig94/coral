@@ -114,8 +114,9 @@ it('reuses internal historical admission requests within their stable wait sessi
       },
       async () => [],
     );
-    const admitInternal = bindings.mock.calls.at(-1)![0].internalWaitAdmissions!;
-    const session = { jobIds: ['child', 'sibling'], cursor: { afterSeq: 7 }, projectRoot: '/workspace' };
+    const admitInternal = bindings.mock.calls.at(-1)![0].internalWait!.admissions;
+    const cursor = { jobs: [] };
+    const session = { jobIds: ['child', 'sibling'], cursor, projectRoot: '/workspace' };
     admitInternal(['child', 'sibling'], session);
     admitInternal(['child', 'sibling'], session);
     admitInternal(['child', 'sibling'], { jobIds: ['child', 'sibling'] });
@@ -123,7 +124,7 @@ it('reuses internal historical admission requests within their stable wait sessi
     expect(admission.mock.calls[2][0]).not.toBe(admission.mock.calls[0][0]);
     expect(admission.mock.calls[0][0]).toMatchObject({
       jobIds: ['child', 'sibling'],
-      cursor: { afterSeq: 7 },
+      cursor,
       projectRoot: '/workspace',
       drainProgress: true,
     });

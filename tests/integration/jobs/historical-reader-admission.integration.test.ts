@@ -34,7 +34,7 @@ it('admits an unindexed historical job read-only before maintenance hydration', 
       undefined,
       () => ({ kind: 'failed', cause: 'terminal-unusable', retryScheduled: false }),
     );
-    const admitted = addressing.admitWait({ jobIds: [f.jobId], supportsWaitV3: true } as never);
+    const admitted = addressing.admitWait({ jobIds: [f.jobId] } as never);
 
     expect(admitted[0].disposition).toBe('admitted');
     expect(f.index.read(f.jobId)).toBeNull();

@@ -1,5 +1,6 @@
 import { jobProgressRetentionExpired } from '../progress-retention.js';
 import { observeResolvedStoreEpoch } from '../../store/epoch/index.js';
+import { epochIdentity } from '../../store/epoch/identity.js';
 import { sourceReadFailureDisposition, sourceReadStamp } from '../source-read.js';
 import { dirname, join } from 'node:path';
 
@@ -174,6 +175,7 @@ export type ResultAvailability =
       unverifiedResultPath?: string;
     }>;
 
+/** Bounded by evicting its oldest member: an overflow forgets one job, never relabels every other job. */
 class RepairSet extends Set<string> {
   private readonly limit: number;
   constructor(limit = 1024) {
@@ -189,31 +191,12 @@ class RepairSet extends Set<string> {
   }
 }
 
-class RepairFailureSet extends Set<string> {
-  private overflowed = false;
-  private readonly limit: number;
-  constructor(limit = 1024) {
-    super();
-    this.limit = limit;
-  }
-  override has(jobId: string): boolean {
-    return this.overflowed || super.has(jobId);
-  }
-  override add(jobId: string): this {
-    if (!super.has(jobId) && this.size >= this.limit) {
-      this.overflowed = true;
-      return this;
-    }
-    return super.add(jobId);
-  }
-}
-
 const repairFailures = new WeakMap<object, Set<string>>();
 
 export function resultRepairFailuresFor(ownerScope: object): Set<string> {
   let failures = repairFailures.get(ownerScope);
   if (!failures) {
-    failures = new RepairFailureSet();
+    failures = new RepairSet();
     repairFailures.set(ownerScope, failures);
   }
   return failures;
@@ -223,7 +206,7 @@ const repairQueues = new WeakMap<object, { hints: Set<string>; listener: (() => 
 
 export class TerminalResultExportOwner {
   private readonly failures: Set<string>;
-  private readonly uncaptured = new RepairFailureSet();
+  private readonly uncaptured = new RepairSet();
   private publicationLocation: JobLocation | null | undefined;
   private publicationTerminal: { accepted: EventsRow; terminal: JobTerminal } | undefined;
   private sourceSession: { db: Database; ctx: StoreReadContext } | undefined;
@@ -254,7 +237,7 @@ export class TerminalResultExportOwner {
 
   constructor(input: TerminalResultExportOwner['input']) {
     this.input = input;
-    this.failures = input.failures ?? new RepairFailureSet(input.repairQueueLimit);
+    this.failures = input.failures ?? new RepairSet(input.repairQueueLimit);
     const scope = input.repairScope ?? this;
     this.repairQueue = repairQueues.get(scope) ?? { hints: new RepairSet(input.repairQueueLimit), listener: null };
     repairQueues.set(scope, this.repairQueue);
@@ -294,30 +277,21 @@ export class TerminalResultExportOwner {
     return this.readableFile(location.resultPath);
   }
 
-  private readonly observedWorkflowReports = new WeakMap<
-    object,
-    Map<string, { stamp: string; identity: string | undefined; readable: boolean }>
-  >();
+  private readonly observedWorkflowReports = new WeakMap<object, Map<string, boolean>>();
 
+  /** A terminal's workflow facts precede it in its own stream, so unrelated appends cannot change its readability. */
   private workflowReadable(jobId: string, session?: object): boolean {
     const location = this.input.location(jobId);
-    const epoch = location ? observeResolvedStoreEpoch(this.input.runtime, location.epochKey) : undefined;
-    const stamp = epoch ? sourceReadStamp(this.input.runtime.storage, epoch.path) : null;
-    const cache = session ? this.observedWorkflowReports.get(session) : undefined;
-    const previous = cache?.get(jobId);
-    if (
-      stamp !== null &&
-      previous?.stamp === stamp &&
-      location?.storedIdentity !== undefined &&
-      previous.identity === location.storedIdentity
-    )
-      return previous.readable;
+    const identity =
+      session && location?.terminalSeq !== undefined && location.storedIdentity !== undefined
+        ? JSON.stringify([epochIdentity(location.epochKey), jobId, location.terminalSeq, location.storedIdentity])
+        : undefined;
+    const observed = session ? this.observedWorkflowReports.get(session) : undefined;
+    const cached = identity === undefined ? undefined : observed?.get(identity);
+    if (cached !== undefined) return cached;
     const readable = this.render(jobId) !== null;
-    if (session && stamp !== null && location) {
-      const next = cache ?? new Map();
-      next.set(jobId, { stamp, identity: location.storedIdentity, readable });
-      this.observedWorkflowReports.set(session, next);
-    }
+    if (session && identity !== undefined)
+      this.observedWorkflowReports.set(session, (observed ?? new Map<string, boolean>()).set(identity, readable));
     return readable;
   }
 
@@ -353,20 +327,36 @@ export class TerminalResultExportOwner {
     });
   }
 
-  /** Availability observation never synchronizes or repairs storage. */
-  progressRetentionExpired(jobId: string): boolean | undefined {
+  private readonly progressRetention = new WeakMap<object, Map<string, boolean>>();
+
+  /** Availability observation never synchronizes or repairs storage; one request decides each terminal once. */
+  progressRetentionExpired(jobId: string, session?: object): boolean | undefined {
     const cutoff = trustedJobRetentionCutoff(this.input.runtime);
     if (cutoff === null) return undefined;
+    const location = this.input.location(jobId);
+    const identity =
+      session && location?.terminalSeq !== undefined
+        ? JSON.stringify([epochIdentity(location.epochKey), jobId, location.terminalSeq])
+        : undefined;
+    const decided = session ? this.progressRetention.get(session) : undefined;
+    const cached = identity === undefined ? undefined : decided?.get(identity);
+    if (cached !== undefined) return cached;
+    let expired: boolean | undefined;
     try {
-      return (
+      expired =
         this.withSource(jobId, (db) => {
           const terminal = readAcceptedTerminal(db, jobId);
           return terminal ? jobProgressRetentionExpired(db, terminal, cutoff) : undefined;
-        }) ?? undefined
-      );
+        }) ?? undefined;
     } catch {
       return undefined;
     }
+    if (session && identity !== undefined && expired !== undefined) {
+      const next = decided ?? new Map<string, boolean>();
+      next.set(identity, expired);
+      this.progressRetention.set(session, next);
+    }
+    return expired;
   }
 
   private readonly observedEligibility = new Map<
@@ -393,7 +383,7 @@ export class TerminalResultExportOwner {
       const kind =
         cutoff === null
           ? 'unknown'
-          : typeof age === 'number' && !previous.eligibility.ageUnproven
+          : typeof age === 'number'
             ? age < cutoff
               ? 'expired'
               : 'inside'
@@ -647,8 +637,13 @@ function writeResultArtifact(
   if (!markdown || !beforeRename()) return;
   const jobsRoot = dirname(dirname(targetPath));
   storage.mkdirSync(dirname(targetPath), { recursive: true });
-  if (!storage.writeAtomicDurableSync(targetPath, markdown, { encoding: 'utf-8', beforeRename })) {
-    if (!beforeRename()) return;
+  let refused = false;
+  const decideRename = (): boolean => {
+    refused = !beforeRename();
+    return !refused;
+  };
+  if (!storage.writeAtomicDurableSync(targetPath, markdown, { encoding: 'utf-8', beforeRename: decideRename })) {
+    if (refused) return;
     throw new Error(`Failed to write result artifact: ${targetPath}`);
   }
   if (!storage.syncDirectoryDurableSync(jobsRoot) || !storage.syncDirectoryDurableSync(dirname(jobsRoot)))

@@ -17,9 +17,8 @@ it('bounded wait continuation drops a resolved member progress in another epoch'
   const delivered: string[] = [];
 
   for await (const event of readWaitSession({
-    request: { jobIds: ['u', 'v', 'a'], cursor, supportsWaitV3: true, timeoutSeconds: 0 },
+    request: { jobIds: ['u', 'v', 'a'], cursor, timeoutSeconds: 0 },
     time: new VirtualTime(),
-    activeEpochKey: 'E9',
     read: observeWaitRead(() => [
       admitted('u', lines(10, 29, 'u'), false, 'E1'),
       admitted('v', lines(30, 2000, 'v'), false, 'E1'),

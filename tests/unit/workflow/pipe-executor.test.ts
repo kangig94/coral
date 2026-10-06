@@ -70,7 +70,10 @@ function terminal(
     seq: ++terminalSeq,
     remainingJobIds: [],
     resultPath: `/tmp/coral-exports/jobs/${jobId}/result.md`,
+    availability: { kind: 'available', resultPath: `/tmp/coral-exports/jobs/${jobId}/result.md` },
     result: terminalResult,
+    cursor: { jobs: [] },
+    exitCode: 0,
   };
 }
 
@@ -78,6 +81,8 @@ function stillWaiting(waitingJobIds: string[]): WaitStreamEvent {
   return {
     type: 'waiting',
     waitingJobIds,
+    cursor: { jobs: [] },
+    exitCode: 75,
   };
 }
 

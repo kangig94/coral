@@ -1,4 +1,4 @@
-import type { ProgressSource } from './wait/contract.js';
+import type { ProgressSource, ProgressVisitResult } from './wait/contract.js';
 import { visitJobProgress } from './read-queries.js';
 import { sameEpoch } from '../store/epoch/identity.js';
 import { hasReadableTerminalDetail } from './terminal/identity.js';
@@ -553,7 +553,7 @@ export class JobStore implements JobProgressStore {
     return readJobEvents(this.db, jobId, this, terminalOnly, afterSeq);
   }
 
-  visitProgress<T>(read: (source: ProgressSource) => T): T {
+  visitProgress<T>(read: (source: ProgressSource) => T): ProgressVisitResult<T> {
     return visitJobProgress(this.db, this, read);
   }
 

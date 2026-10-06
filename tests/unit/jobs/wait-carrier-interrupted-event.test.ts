@@ -21,11 +21,12 @@ describe('carrier interrupted wait event', () => {
   });
 
   it('never advances the render cursor', () => {
-    const decision = advanceWaitRenderCursor({ afterSeq: 3 }, INTERRUPTED);
+    const cursor = { jobs: [] };
+    const decision = advanceWaitRenderCursor(cursor, INTERRUPTED);
 
     // `observedMaxJournalSeq` is what was seen, not what was consumed. Advancing the resume cursor past it
     // would let a reconnect skip journal events this stream never delivered.
-    expect(decision.cursor).toEqual({ afterSeq: 3 });
+    expect(decision.cursor).toBe(cursor);
     expect(decision.shouldRender).toBe(true);
   });
 

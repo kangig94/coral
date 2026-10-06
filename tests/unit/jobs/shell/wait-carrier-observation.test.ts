@@ -1,3 +1,4 @@
+import { nextDelivered } from '#tests/helpers/wait-stream.js';
 import { progressVisitFromEvents } from '#tests/helpers/wait-progress.js';
 import { describe, expect, it } from 'vitest';
 
@@ -89,7 +90,7 @@ it.each(['initial', 'poll', 'throw'])('the stream deadline bounds %s carrier obs
     },
   } as never);
   const stream = wait.waitForJobs({ jobIds: [JOB_A], timeoutSeconds: 1 });
-  const next = stream.next();
+  const next = nextDelivered(stream);
   await flushMicrotasks(20);
   for (let i = 0; i < 4; i++) {
     time.tick(250);

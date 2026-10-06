@@ -30,9 +30,8 @@ it('fresh bounded wait renders every line of a multi-line progress message', asy
   );
   const events: WaitStreamEvent[] = [];
   for await (const e of readWaitSession({
-    request: { jobIds: ['a'], supportsWaitV3: true, timeoutSeconds: 0 },
+    request: { jobIds: ['a'], timeoutSeconds: 0 },
     time: new VirtualTime(),
-    activeEpochKey: 'epoch-E',
     read: observeWaitRead(() => [job]),
     visit: testProgressVisit,
   }))

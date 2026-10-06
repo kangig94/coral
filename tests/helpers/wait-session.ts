@@ -1,4 +1,6 @@
 import type { JobDetailResponse } from '#src/jobs/records.js';
+import type { WaitCursor } from '#src/jobs/wait/contract.js';
+import { waitEpochToken, waitJobHash } from '#src/jobs/wait/cursor.js';
 import type { WaitAdmission } from '#src/jobs/wait/session.js';
 
 export function admitted(
@@ -47,5 +49,18 @@ export function admitted(
       ],
       readiness: 'ready',
     } as never,
+  };
+}
+
+/** A saved single-shape cursor positioning each named job at its sequence in one epoch. */
+export function savedCursor(positions: Record<string, number>, epochKey = 'epoch-E'): WaitCursor {
+  return {
+    jobs: Object.entries(positions).map(([jobId, seq]) => ({
+      hash: waitJobHash(jobId),
+      epoch: waitEpochToken(epochKey),
+      seq,
+      lineOffset: 0,
+      flags: 0,
+    })),
   };
 }

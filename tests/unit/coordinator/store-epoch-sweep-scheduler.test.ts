@@ -104,6 +104,34 @@ it('spaces historical hydration hints and removes the listener on stop', async (
   }
 });
 
+it('keeps a full idle interval after a long sweep when a polling wait hints hydration', async () => {
+  vi.useFakeTimers();
+  const subscribe = vi.spyOn(historical, 'onHistoricalHydrationHint');
+  const f = createTerminalExportFixture();
+  vi.mocked(refreshHistoricalEpochs).mockImplementation(async () => {
+    f.advance(5000);
+  });
+  const timer = vi.spyOn(f.runtime.time, 'setTimeout');
+  const scheduler = createStoreEpochSweepScheduler({
+    runtime: f.runtime,
+    world: { log: vi.fn() },
+    jobLocationIndex: f.index,
+    selectedStoreEpochKey: () => f.epochKey,
+    onOpen: vi.fn(),
+    closeProxySetForEpochClosure: vi.fn(),
+  });
+  try {
+    scheduler.schedule(f.epoch);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(refreshHistoricalEpochs).toHaveBeenCalledTimes(1);
+    subscribe.mock.calls.at(-1)?.[1]?.('historical-epoch');
+    expect(timer.mock.calls.at(-1)?.[1]).toBe(5000);
+  } finally {
+    await scheduler.stop();
+    f.close();
+  }
+});
+
 it('still runs retirement when one historical source throws', async () => {
   vi.useFakeTimers();
   const actual = await vi.importActual<typeof HistoricalReader>('#src/jobs/historical-reader.js');
@@ -180,5 +208,44 @@ it('registration runs first and its failure does not skip closure or retention',
     await scheduler.stop();
     f.close();
     vi.mocked(historical.registerPresentHistoricalEpochs).mockReset();
+  }
+});
+
+it('a persistently failing closure settlement does not skip historical refresh or retention', async () => {
+  vi.useFakeTimers();
+  const epochs = await import('#src/store/epoch/index.js');
+  const closure = await import('#src/coordinator/services/recovery/epoch-closure.js');
+  const f = createTerminalExportFixture();
+  const order: string[] = [];
+  vi.mocked(closure.settleSupersededEpochClosures).mockImplementation(async () => {
+    order.push('closure');
+    throw new Error('closure settlement failed');
+  });
+  vi.mocked(refreshHistoricalEpochs).mockImplementation(async () => {
+    order.push('refresh');
+  });
+  vi.mocked(epochs.sweepStoreEpochsPostReady).mockImplementation(async () => {
+    order.push('sweep');
+    return {} as never;
+  });
+  const log = vi.fn();
+  const scheduler = createStoreEpochSweepScheduler({
+    runtime: f.runtime,
+    world: { log },
+    jobLocationIndex: f.index,
+    selectedStoreEpochKey: () => f.epochKey,
+    onOpen: vi.fn(),
+    closeProxySetForEpochClosure: vi.fn(),
+  });
+  try {
+    scheduler.schedule(f.epoch);
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(order).toEqual(['closure', 'refresh', 'sweep', 'closure', 'refresh', 'sweep']);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('closure settlement failed'));
+  } finally {
+    await scheduler.stop();
+    f.close();
+    vi.mocked(closure.settleSupersededEpochClosures).mockReset();
   }
 });

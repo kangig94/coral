@@ -53,15 +53,14 @@ it('historical: a 501-row window with a non-message row hides later progress', (
       () => false,
     );
     const cursor = {
-      version: 'jobs.wait.v3' as const,
       jobs: [
         { hash: waitJobHash(f.jobId), epoch: waitEpochToken(f.epochKey), seq: launchSeq, lineOffset: 0, flags: 0 },
       ],
     };
-    const snap = addressing.snapshot({ jobIds: [f.jobId], cursor, supportsWaitV3: true });
+    const snap = addressing.snapshot({ jobIds: [f.jobId], cursor });
     expect(snap.jobs[0].progress).toEqual(Array.from({ length: 500 }, (_, index) => `line ${index}`));
     expect(snap.remainingJobIds).toEqual([f.jobId]);
-    const next = addressing.snapshot({ jobIds: [f.jobId], cursor: snap.cursor, supportsWaitV3: true });
+    const next = addressing.snapshot({ jobIds: [f.jobId], cursor: snap.cursor });
     expect(next.jobs[0].progress).toEqual(Array.from({ length: 100 }, (_, index) => `line ${index + 500}`));
     expect(next.remainingJobIds).toEqual([]);
   } finally {

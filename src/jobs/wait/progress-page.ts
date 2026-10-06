@@ -7,6 +7,8 @@ export type ProgressPage = Readonly<{
   rows: readonly WaitProgressRow[];
   through: number;
   exhausted: boolean;
+  /** Raw rows in this page that carry no message; a page of only these advances its job silently. */
+  faultRows: number;
   [pageEvidence]: true;
 }>;
 export type TailPage = Readonly<{
@@ -20,10 +22,12 @@ export type TailPage = Readonly<{
 export function progressPage(raw: readonly RawProgressRow[], requested: number, sourceFrontier: number): ProgressPage {
   const selected = raw.slice(0, requested);
   const exhausted = raw.length <= requested;
+  const rows = selected.flatMap((row) => (row.progress ? [row.progress] : []));
   return {
-    rows: selected.flatMap((row) => (row.progress ? [row.progress] : [])),
+    rows,
     through: exhausted ? sourceFrontier : selected[selected.length - 1].seq,
     exhausted,
+    faultRows: selected.length - rows.length,
     [pageEvidence]: true,
   };
 }

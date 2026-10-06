@@ -102,7 +102,11 @@ export function recoverJobLocations(index: JobLocationIndex, epochKey: string, s
         }
       } catch (error) {
         recoveryError ??= error instanceof Error ? error : new Error(String(error));
-        index.markUnresolved(row.stream_id);
+        try {
+          index.markUnresolved(row.stream_id);
+        } catch {
+          // A row whose own location cannot be marked is covered by the epoch hold; it must not stop later rows.
+        }
       }
     }
     if (recoveryError !== undefined) throw recoveryError;

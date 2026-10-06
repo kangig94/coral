@@ -40,13 +40,12 @@ it('historical: no fault row; watermark before launch (reset/new member) hides l
       () => false,
     );
     const cursor = {
-      version: 'jobs.wait.v3' as const,
       jobs: [{ hash: waitJobHash(f.jobId), epoch: waitEpochToken(f.epochKey), seq: 0, lineOffset: 0, flags: 0 }],
     };
-    const snap = addressing.snapshot({ jobIds: [f.jobId], cursor, supportsWaitV3: true } as never);
+    const snap = addressing.snapshot({ jobIds: [f.jobId], cursor } as never);
     expect(snap.jobs[0].progress).toEqual(Array.from({ length: 500 }, (_, i) => `line ${i}`));
     expect(snap.remainingJobIds).toEqual([f.jobId]);
-    const next = addressing.snapshot({ jobIds: [f.jobId], supportsWaitV3: true, cursor: snap.cursor });
+    const next = addressing.snapshot({ jobIds: [f.jobId], cursor: snap.cursor });
     expect(next.jobs[0].progress).toEqual(Array.from({ length: 100 }, (_, i) => `line ${i + 500}`));
     expect(next.remainingJobIds).toEqual([]);
   } finally {

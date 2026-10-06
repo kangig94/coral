@@ -3,6 +3,7 @@ import { CommanderError } from 'commander';
 import { ZodError } from 'zod';
 
 import { BackendToolHttpError } from '../transport/http/errors.js';
+import { WAIT_BUILD_MISMATCH, WAIT_BUILD_MISMATCH_REASON, WAIT_BUILD_MISMATCH_REMEDY } from '../transport/rpc/jobs.js';
 import { BackendUnreachableError, TransientHttpError } from '../infra/http-errors.js';
 import { isRecord } from '../infra/json.js';
 import { DiscussWatchReadError } from '../discuss/watch.js';
@@ -123,6 +124,18 @@ export class WaitResumeError extends Error {
     this.name = 'WaitResumeError';
     const cursorArg = serializedCursor === undefined ? '' : ` --cursor ${serializedCursor}`;
     this.remediation = `Rerun \`coral-cli wait jobs ${jobIds.join(' ')}${cursorArg}\` to continue waiting.`;
+  }
+}
+
+/** Wait never bridges builds: the remedy is a session restart onto the installed build, never a retry. */
+export class WaitBuildMismatchError extends Error {
+  readonly code = WAIT_BUILD_MISMATCH.code;
+  readonly exitCode = 1;
+  readonly remediation = WAIT_BUILD_MISMATCH_REMEDY;
+
+  constructor() {
+    super(WAIT_BUILD_MISMATCH_REASON);
+    this.name = 'WaitBuildMismatchError';
   }
 }
 
@@ -272,6 +285,7 @@ function directErrorEnvelope(error: unknown): CliErrorResult | null {
     error instanceof StoreResetCliError ||
     error instanceof ChildPrincipalBindingError ||
     error instanceof WaitResumeError ||
+    error instanceof WaitBuildMismatchError ||
     error instanceof WaitOutputError ||
     error instanceof WaitSnapshotResponseError ||
     error instanceof WaitInvocationReadinessError

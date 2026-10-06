@@ -18,6 +18,7 @@ import { serializeWaitCursor } from '#src/jobs/wait/cursor.js';
 import { ProviderRegistry } from '#src/providers/registry.js';
 import { rpcCatalog } from '#src/transport/rpc/catalog.js';
 import { executeCatalogRequest } from '#src/transport/dispatch.js';
+import { jobsWaitRequest } from '#src/transport/rpc/jobs.js';
 import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
 import { admitted } from '#tests/helpers/wait-session.js';
@@ -26,58 +27,96 @@ const root = resolve('.');
 const read = (path: string) => readFileSync(resolve(root, path), 'utf8');
 const skills = ['analyze', 'bugfix', 'code-simplify', 'plan', 'preplan', 'ralph'];
 
-it('canonicalizes omitted wire capabilities before wait admission and streaming', async () => {
+function waitPorts(observed: unknown[]): HttpHandlerPorts {
+  return {
+    identity: { pluginRoot: '/plugin' },
+    coralEnvSnapshot: {},
+    admin: { isLaunchFenceActive: () => false },
+    jobs: {
+      admitWait: (request: unknown) => {
+        observed.push(request);
+        return [admitted('a')];
+      },
+      validateWait: (request: unknown) => {
+        observed.push(request);
+        return null;
+      },
+      waitStream: async function* (request: unknown) {
+        observed.push(request);
+      },
+      waitHandoverSignal: () => new AbortController().signal,
+    },
+  } as unknown as HttpHandlerPorts;
+}
+
+it('canonicalizes a current wait request, which always states its frontier, before admission and streaming', async () => {
   const spec = rpcCatalog.find((method) => method.name === 'jobs.wait')!;
   const observed: unknown[] = [];
   const result = await executeCatalogRequest(
     spec,
-    spec.requestSchema.parse({ jobIds: ['a'], projectRoot: root }),
-    {
-      identity: { pluginRoot: '/plugin' },
-      coralEnvSnapshot: {},
-      admin: { isLaunchFenceActive: () => false },
-      jobs: {
-        admitWait: (request: unknown) => {
-          observed.push(request);
-          return [admitted('a')];
-        },
-        validateWait: (request: unknown) => {
-          observed.push(request);
-          return null;
-        },
-        waitStream: async function* (request: unknown) {
-          observed.push(request);
-        },
-        waitHandoverSignal: () => new AbortController().signal,
-      },
-    } as unknown as HttpHandlerPorts,
+    spec.requestSchema.parse(jobsWaitRequest({ jobIds: ['a'], projectRoot: root })),
+    waitPorts(observed),
     testProjectPrincipal(root),
   );
   expect(result.kind).toBe('subscription');
   if (result.kind !== 'subscription') throw new Error('Wait refused');
   await result.notifications[Symbol.asyncIterator]().next();
   expect(observed).toHaveLength(3);
-  for (const request of observed)
-    expect(request).toMatchObject({
-      supportsWaitV2: false,
-      supportsWaitV3: false,
-      supportsInterrupted: false,
-      supportsHandover: false,
-    });
+  for (const request of observed) {
+    expect(request).toMatchObject({ jobIds: ['a'], cursor: { jobs: [] }, drainProgress: false });
+    expect(Object.keys(request as object).filter((key) => key.startsWith('supports'))).toEqual([]);
+  }
+});
+
+it.each([
+  ['no frontier', {}],
+  ['a capability flag', { supportsInterrupted: true, cursor: { jobs: [] } }],
+  ['a versionless cursor', { cursor: { afterSeq: 4 } }],
+  ['a v2 cursor', { cursor: { version: 'jobs.wait.v2', positions: {}, locations: {} } }],
+])('refuses a request with %s from another build with restart guidance and admits nothing', async (_shape, fields) => {
+  const spec = rpcCatalog.find((method) => method.name === 'jobs.wait')!;
+  const observed: unknown[] = [];
+  const result = await executeCatalogRequest(
+    spec,
+    spec.requestSchema.parse({ jobIds: ['a'], projectRoot: root, ...fields }),
+    waitPorts(observed),
+    testProjectPrincipal(root),
+  );
+  expect(result).toMatchObject({
+    kind: 'unary',
+    body: { code: 'wait_build_mismatch', message: expect.stringContaining('Restart the session') },
+  });
+  expect(observed).toEqual([]);
+});
+
+it('refuses an undecodable single-shape cursor softly so the client restarts fresh', async () => {
+  const spec = rpcCatalog.find((method) => method.name === 'jobs.wait')!;
+  const observed: unknown[] = [];
+  const result = await executeCatalogRequest(
+    spec,
+    spec.requestSchema.parse({ jobIds: ['a'], projectRoot: root, cursor: { jobs: [{ hash: 'x' }] } }),
+    waitPorts(observed),
+    testProjectPrincipal(root),
+  );
+  expect(result).toMatchObject({ kind: 'unary', body: { code: 'wait_cursor_malformed' } });
+  expect(observed).toEqual([]);
 });
 
 it.each([false, true])(
   'M1 terminal and waiting output contain one runnable cursor-aware command, embed=%s',
   (embed) => {
-    const cursor = serializeWaitCursor({ afterSeq: 7 });
+    const cursor = serializeWaitCursor({ jobs: [] });
     const terminal = formatWaitTerminal(
       {
         type: 'terminal',
         jobId: 'a',
         seq: 7,
         resultPath: '/result.md',
+        availability: { kind: 'available', resultPath: '/result.md' },
         result: { content: 'done', durationMs: 1, outcome: { kind: 'completed' } },
         remainingJobIds: ['b', 'u'],
+        cursor: { jobs: [] },
+        exitCode: 75,
       },
       cursor,
       embed,
@@ -175,8 +214,12 @@ it.each(skills)('M3/M4 skill %s follows rendered launch, availability and snapsh
     'Carrier unconfirmed for: <ids>',
     'change cwd',
     'coral-cli jobs --all',
+    'A `wait_build_mismatch` error means',
+    'tell the user to restart the session so the current Coral plugin loads',
   ])
     expect(text).toContain(line);
+  expect(text).not.toContain('membership-change');
+  expect(text).not.toContain('older coordinator');
   const session = new WaitSession(['a']);
   session.reconcile([admitted('a', [], false)]);
   const snapshot = selectWaitSnapshot(session, 20);

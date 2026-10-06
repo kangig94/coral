@@ -763,6 +763,13 @@ export class JobLocationIndex {
     }
   }
 
+  /** Whether this exact key owns a hold file; answering it takes no lock and creates nothing. */
+  ownsUnknownLocationHold(epochKey: string): boolean {
+    return this.runtime.storage.existsSync(
+      join(this.root, 'epochs', epochHoldDirectory(epochKey), 'unknown-locations.v1.json'),
+    );
+  }
+
   unknownLocationHold(epochKey: string): string | null {
     const ownedPath = join(this.root, 'epochs', epochHoldDirectory(epochKey), 'unknown-locations.v1.json');
     if (this.runtime.storage.existsSync(ownedPath))
@@ -979,7 +986,9 @@ export class JobLocationIndex {
         const path = location.resultPath ?? this.resultPathFor(jobId);
         if (observeStorePath(this.runtime.storage, path) === 'absent') return true;
         const artifact = this.runtime.storage.lstatSync(path, { bigint: true });
-        if (!artifact.isFile() || artifact.size === 0n) return true;
+        // A symlink or directory may stand for content Coral cannot see: it is held to the durability rule below,
+        // which the post-ready sweep re-applies every cycle until the entry is absent, empty, or a durable result.
+        if (artifact.isFile() && artifact.size === 0n) return true;
       } catch {
         return false;
       }

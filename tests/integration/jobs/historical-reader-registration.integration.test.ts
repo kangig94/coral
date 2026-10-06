@@ -1,6 +1,6 @@
 import { progressVisitFromDetails } from '#tests/helpers/wait-progress.js';
-import { it, expect } from 'vitest';
-import { readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { it, expect, vi } from 'vitest';
+import { existsSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createTerminalExportFixture } from '#tests/helpers/terminal-export.js';
 import {
@@ -51,7 +51,29 @@ it('a transient registration failure leaves a fallback-keyed retry hold that not
 
     expect(holds).toEqual([]);
     expect(addressing.unknownJobDisposition()).toBe('not-found');
-    expect(addressing.admitWait({ jobIds: ['typo-id'], supportsWaitV3: true })[0].disposition).toBe('missing');
+    expect(addressing.admitWait({ jobIds: ['typo-id'] })[0].disposition).toBe('missing');
+  } finally {
+    f.close();
+  }
+});
+
+it('takes no revision lock and creates no hold directory for an epoch that registers without a fallback hold', () => {
+  const f = createTerminalExportFixture('provider', true);
+  try {
+    f.complete();
+    const entry = {
+      resolved: f.epoch,
+      epochKey: f.epochKey,
+      epochJson: { kind: 'valid', value: { build: { storeFormatFingerprint: currentCoralStoreFormat().fingerprint } } },
+    } as never;
+    registerPresentHistoricalEpochs(f.runtime, f.index, [entry], 'other-active', { remaining: 0 });
+    const epochs = join(f.root, 'job-locations.v1', 'epochs');
+    const before = existsSync(epochs) ? readdirSync(epochs).sort() : [];
+    const mkdir = vi.spyOn(f.runtime.storage, 'mkdirSync');
+    for (let sweep = 0; sweep < 10; sweep++)
+      registerPresentHistoricalEpochs(f.runtime, f.index, [entry], 'other-active', { remaining: 0 });
+    expect(mkdir.mock.calls.filter(([path]) => String(path).endsWith('revision.lock'))).toEqual([]);
+    expect(existsSync(epochs) ? readdirSync(epochs).sort() : []).toEqual(before);
   } finally {
     f.close();
   }

@@ -4,7 +4,8 @@ import type { WaitCursor } from '../../jobs/wait/contract.js';
 import { parseWaitSnapshot } from '../../jobs/wait/snapshot.js';
 import { formatWaitSnapshot, formatWaitContinuation } from '../format/wait.js';
 import { serializeWaitCursor } from '../../jobs/wait/cursor.js';
-import { mapWaitSubscriptionError } from '../wait-stream-error.js';
+import { mapWaitSubscriptionError, SOFT_CURSOR_REFUSALS } from '../wait-stream-error.js';
+import { MAX_WAIT_JOB_IDS } from '../../jobs/wait/stream-event.js';
 import { BackendToolHttpError } from '../../transport/http/errors.js';
 import { isRecord } from '../../infra/json.js';
 import { getWaitInvocation, WaitInvocationEnded, validateWaitJobsOptions } from '../wait-invocation.js';
@@ -19,7 +20,13 @@ import { getProviderNames, makeClient, type AbortOptions } from '../dispatch.js'
 import { emitError, getTerminalContext } from '../emit.js';
 import { parseJobIds } from '../flags.js';
 import { flushPendingReadStoreNote } from '../read-store.js';
-import { UsageError, WaitOutputError, WaitSnapshotResponseError, normalizeUsageError } from '../errors.js';
+import {
+  UsageError,
+  WaitBuildMismatchError,
+  WaitOutputError,
+  WaitSnapshotResponseError,
+  normalizeUsageError,
+} from '../errors.js';
 import { formatAbortResult, formatJobDetail, formatJobsList, renderJobsList } from '../format/jobs.js';
 import { openCliCauseRefRenderer } from '../cause-renderer.js';
 import { ABORT_REFUSED_EXIT_CODE, followJobs } from '../follow.js';
@@ -203,6 +210,10 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
 
   async function runWaitJobs(jobIds: string[], opts: WaitJobsOptions, command: Command): Promise<void> {
     const lines = validateWaitJobsOptions(opts);
+    if (new Set(jobIds).size !== jobIds.length)
+      throw new UsageError('Each job ID must appear only once. Remove the duplicate job IDs and rerun.');
+    if (jobIds.length > MAX_WAIT_JOB_IDS)
+      throw new UsageError(`At most ${MAX_WAIT_JOB_IDS} jobs may be waited on at once. Split the IDs across commands.`);
     const projectRoot = process.cwd();
     const client = makeClient(projectRoot, command);
     if (opts.now) {
@@ -218,29 +229,22 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
         process.stdout.write(`${WAIT_CURSOR_REPLAY_NOTICE} This snapshot shows the latest progress tail.\n`);
       };
       const read = () =>
-        client.snapshotJobsWait(
-          {
-            jobIds,
-            projectRoot,
-            ...(cursor === undefined ? {} : { cursor }),
-            ...(lines === undefined ? {} : { lines }),
-          },
-          reset,
-        );
+        client.snapshotJobsWait({
+          jobIds,
+          projectRoot,
+          ...(cursor === undefined ? {} : { cursor }),
+          ...(lines === undefined ? {} : { lines }),
+        });
       let response;
       try {
         response = await read();
       } catch (error) {
         const mapped = mapWaitSubscriptionError(error);
+        if (mapped instanceof WaitBuildMismatchError) throw mapped;
         if (
           !(mapped instanceof BackendToolHttpError) ||
           !isRecord(mapped.body) ||
-          ![
-            'wait_cursor_epoch_required',
-            'wait_cursor_unsupported',
-            'wait_cursor_malformed',
-            'wait_cursor_mismatch',
-          ].includes(String(mapped.body.code))
+          !SOFT_CURSOR_REFUSALS.includes(String(mapped.body.code))
         )
           throw error;
         reset();
@@ -289,12 +293,11 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
         embed: opts.embed === true,
         verbose: opts.verbose === true,
       },
-      connect: async ({ jobIds: activeJobIds, cursor, timeoutSeconds, signal, onCursorReset }) => ({
+      connect: async ({ jobIds: activeJobIds, cursor, timeoutSeconds, signal }) => ({
         kind: 'subscription',
         subscription: await client.subscribeJobsWait(
           { jobIds: activeJobIds, timeoutSeconds, projectRoot, ...(cursor ? { cursor } : {}) },
           { signal },
-          onCursorReset,
         ),
       }),
     });

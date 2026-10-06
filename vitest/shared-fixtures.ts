@@ -63,19 +63,8 @@ function transformPhase(source: string, path: string, variant: string): string {
       'observing = true;',
       'await observeCarriers(input, session, signal); observing = true;',
     );
-  if (variant === 'ungated-handover' && path.endsWith('/http/handler.ts')) {
-    source =
-      "import { raceWithSignal } from '../../infra/promise-signal.js';\n" +
-      replaceLiteral(
-        replaceLiteral(
-          source,
-          'const handoverSignal = request.supportsHandover === true ? undefined : deps.jobs.waitHandoverSignal();',
-          'const handoverSignal = undefined;',
-        ),
-        'const next = await iterator.next();',
-        "const next = await raceWithSignal(iterator.next(), deps.jobs.waitHandoverSignal(), () => ({ done: false, value: { type: 'handover' } }));",
-      );
-  }
+  if (variant === 'no-handover' && path.endsWith('/transport/dispatch.ts'))
+    source = replaceLiteral(source, '      rpcPorts.jobs.waitHandoverSignal(),', '      undefined,');
   if (variant === 'include-missing' && path.endsWith('/jobs/wait/session.ts'))
     source = replaceLiteral(
       source,
@@ -85,8 +74,8 @@ function transformPhase(source: string, path: string, variant: string): string {
   if (variant === 'property-decoder' && path.endsWith('/jobs/wait/cursor.ts'))
     source = replaceLiteral(
       source,
-      "if (!isRecord(value)) return rejected('wait_cursor_malformed');",
-      "if (!isRecord(value)) return rejected('wait_cursor_malformed'); if ('afterSeq' in value) return { kind: 'decoded', cursor: value as WaitCursor };",
+      'if (!isRecord(value) || Object.keys(value).length !== 1) return REJECTED;',
+      "if (isRecord(value) && 'afterSeq' in value) return { kind: 'decoded', cursor: value as WaitCursor }; if (!isRecord(value) || Object.keys(value).length !== 1) return REJECTED;",
     );
   return source;
 }
@@ -126,7 +115,7 @@ export async function buildSharedFixture(name: string, directory: string): Promi
     entries.set(name, { path, family, variant });
   };
   add('wait-real', join(root, 'tests/fixtures/wait-invocation/cli.mjs'), 'wait');
-  for (const variant of ['real', 'ungated-handover', 'include-missing', 'property-decoder', 'unbounded-observer'])
+  for (const variant of ['real', 'no-handover', 'include-missing', 'property-decoder', 'unbounded-observer'])
     add(`phase-${variant}`, join(root, 'tests/fixtures/wait-lifetime/phase-a.mjs'), 'phase', variant);
   for (const variant of ['real', 'shared', 'sweep'])
     add(`atomic-${variant}`, join(root, 'src/runtime/real.ts'), 'atomic', variant);
@@ -149,22 +138,13 @@ export async function buildSharedFixture(name: string, directory: string): Promi
     execFileSync('tar', ['-x', '-C', releaseRoot], {
       input: execFileSync('git', ['archive', tag, 'src'], { maxBuffer: 50 * 1024 * 1024 }),
     });
-    const extra =
+    const durableExports =
       tag === 'v0.10.15'
         ? "export { sweepStoreEpochsPostReady } from './src/store/epoch.ts';"
         : "export { JobLocationIndex } from './src/jobs/location-index.ts'; export { readPendingProtections } from './src/store/epoch/pending-protection.ts'; export { sweepStoreEpochsPostReady } from './src/store/epoch/post-ready-sweep.ts';" +
           (tag === 'v0.10.16' ? '' : "export { pruneStoreEpochHolders } from './src/store/epoch/holder.ts';");
     const entry = join(releaseRoot, 'released.ts');
-    writeFileSync(
-      entry,
-      `export { parseWaitStreamEventValue, advanceWaitRenderCursor } from './src/jobs/wait-stream-event.ts';
-export { jobWaitSchema } from './src/transport/rpc/jobs.ts';
-export { formatWaitTerminal, formatWaitWaiting } from './src/cli/format/wait.ts';
-export { serializeWaitCursor, parseSerializedWaitCursor } from './src/jobs/wait.ts';
-export { errorCodeToExit } from './src/cli/errors.ts';
-export { mapWaitSubscriptionError } from './src/cli/wait-stream-error.ts';
-${extra}`,
-    );
+    writeFileSync(entry, durableExports);
     add(tag, entry);
   }
   await build({

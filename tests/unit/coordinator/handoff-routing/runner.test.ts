@@ -578,29 +578,6 @@ it('allows a slow supported wait contract to use the existing invocation budget'
   await expect(result).resolves.toMatchObject({ kind: 'delegated', outcome: { kind: 'handoff-success' } });
 });
 
-it('keeps a v3 launch-follow cursor in this CLI when the selected released target lacks its contract', async () => {
-  mockState.execFile.mockImplementation((_file, _args, _options, callback) => {
-    queueMicrotask(() => callback(Object.assign(new Error('unknown option'), { code: 2 }), ''));
-    return childThatExits(2, null);
-  });
-  const { WaitSession } = await import('#src/jobs/wait/session.js');
-  const { serializeWaitCursor } = await import('#src/jobs/wait/cursor.js');
-  const serializedCursor = serializeWaitCursor(new WaitSession(['a']).cursor());
-  const result = await runHandoffResult(
-    { kind: 'wait-jobs', jobId: 'a', serializedCursor },
-    { pluginRoot: '/plugin/root' },
-  );
-  expect(result).toMatchObject({
-    kind: 'recording-not-applicable',
-    continuationWithoutRecording: {
-      kind: 'run-current',
-      reason: { kind: 'handoff-abandoned', reason: 'wait-contract-unsupported' },
-    },
-  });
-  expect(mockState.spawn).not.toHaveBeenCalled();
-  expect(mockState.publishGenerationCoordinatedHandoffRoutingTransitions).not.toHaveBeenCalled();
-});
-
 it('keeps the monitor IPC listener through close when delivery follows exit', async () => {
   const save = vi.fn();
   mockState.execFile.mockImplementation((_file, _args, _options, callback) => {

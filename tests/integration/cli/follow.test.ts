@@ -2,7 +2,8 @@ import { progressVisitFromDetails } from '#tests/helpers/wait-progress.js';
 import { JobAddressing } from '#src/jobs/addressing.js';
 import { admitted } from '#tests/helpers/wait-session.js';
 import { createRealTimePort } from '#src/infra/time.js';
-import { jobsWaitRequest, jobWaitSchema, JOBS_WAIT_EXTENSIONS } from '#src/transport/rpc/jobs.js';
+import { jobsWaitRequest, jobWaitSchema } from '#src/transport/rpc/jobs.js';
+import { decodeWaitCursor, waitEpochToken, waitJobHash } from '#src/jobs/wait/cursor.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AbortResult } from '#src/jobs/contracts/abort-registry.js';
@@ -44,7 +45,6 @@ function makeBackend(instanceId = 'backend-1') {
     port: 4100,
     token: 'backend-token',
     version: '0.5.2',
-    jobsWaitExtensions: ['supportsInterrupted', 'supportsWaitV2', 'supportsHandover'],
     request: vi.fn(),
     subscribe: mockState.subscribe,
     health: vi.fn(),
@@ -59,6 +59,14 @@ const waitTiming = {
   elapsedMs: 2_000,
 } as const;
 
+const entry = (seq: number) => ({
+  hash: waitJobHash('job-1'),
+  epoch: waitEpochToken('epoch-E'),
+  seq,
+  lineOffset: 0,
+  flags: 0,
+});
+
 function makeProgressEvent(message = 'Still running'): Extract<WaitStreamEvent, { type: 'progress' }> {
   return {
     type: 'progress',
@@ -66,12 +74,13 @@ function makeProgressEvent(message = 'Still running'): Extract<WaitStreamEvent, 
     seq: 1,
     message,
     timing: waitTiming,
+    entry: entry(1),
   };
 }
 
 function makeTerminalEvent(
   result: Record<string, unknown> = {},
-  overrides: Partial<Extract<WaitStreamEvent, { type: 'terminal' }> & { version?: 'jobs.wait.v2' }> = {},
+  overrides: Partial<Extract<WaitStreamEvent, { type: 'terminal' }>> = {},
 ): Extract<WaitStreamEvent, { type: 'terminal' }> {
   return {
     type: 'terminal',
@@ -79,12 +88,15 @@ function makeTerminalEvent(
     seq: 1,
     remainingJobIds: [],
     resultPath: '/tmp/result.md',
+    availability: { kind: 'available', resultPath: '/tmp/result.md' },
     result: {
       content: 'done',
       outcome: { kind: 'completed' },
       durationMs: 0,
       ...result,
     } as Extract<WaitStreamEvent, { type: 'terminal' }>['result'],
+    cursor: { jobs: [] },
+    exitCode: 0,
     ...overrides,
   };
 }
@@ -213,7 +225,7 @@ describe('cli follow', () => {
       argv: [...process.argv.slice(0, 2), 'wait', 'jobs', 'job-1'],
     });
     expect(mockState.runHandoff.mock.calls[0][1].waitProbeRemainingMs()).toBe(588800);
-    expect(mockState.subscribe.mock.calls[0][1]).not.toHaveProperty('cursor');
+    expect(mockState.subscribe.mock.calls[0][1]).toMatchObject({ cursor: { jobs: [] } });
   });
 
   it('resubscribes with the current cursor after a handover notice, without spending a retry', async () => {
@@ -225,6 +237,7 @@ describe('cli follow', () => {
     const handedOver = {
       close: vi.fn().mockResolvedValue(undefined),
       [Symbol.asyncIterator]: async function* (): AsyncGenerator<unknown> {
+        yield { type: 'cursor', cursor: { jobs: [entry(0)] } };
         yield progressEvent;
         yield { type: 'handover' };
       },
@@ -255,7 +268,7 @@ describe('cli follow', () => {
     expect(backoffScheduler).not.toHaveBeenCalled();
     expect(handedOver.close).toHaveBeenCalledOnce();
     expect(connect).toHaveBeenCalledTimes(2);
-    expect(connect.mock.calls[1]?.[0]).toMatchObject({ jobIds: ['job-1'], cursor: { afterSeq: 1 } });
+    expect(connect.mock.calls[1]?.[0]).toMatchObject({ jobIds: ['job-1'], cursor: { jobs: [entry(1)] } });
   });
 
   it('returns the emitted envelope exit code on non-transient stream failures without retrying', async () => {
@@ -360,14 +373,13 @@ it.each(['pending', 'burst', 'failed'] as const)(
         emitError: (error) => {
           throw error;
         },
-        connect: async ({ jobIds, cursor, signal, onCursorReset, drainProgress }) => {
-          const raw = jobsWaitRequest(
-            { jobIds, projectRoot: '/tmp', timeoutSeconds: 1, cursor, drainProgress },
-            JOBS_WAIT_EXTENSIONS,
-            onCursorReset,
+        connect: async ({ jobIds, cursor, signal, drainProgress }) => {
+          const parsed = jobWaitSchema.parse(
+            jobsWaitRequest({ jobIds, projectRoot: '/tmp', timeoutSeconds: 1, cursor, drainProgress }),
           );
-          const parsed = jobWaitSchema.parse(raw);
-          const stream = owner.waitStream({ ...parsed, abortSignal: signal });
+          const decoded = decodeWaitCursor(parsed.cursor);
+          if (decoded.kind === 'rejected') throw new Error(decoded.error.message);
+          const stream = owner.waitStream({ ...parsed, cursor: decoded.cursor, abortSignal: signal });
           return {
             kind: 'subscription',
             subscription: {
@@ -379,9 +391,10 @@ it.each(['pending', 'burst', 'failed'] as const)(
           };
         },
       });
-      expect(code).toBe(scenario === 'failed' ? 42 : scenario === 'pending' ? 75 : 0);
+      // Following a launch exits with the outcome; a pending artifact is offered as a continuation, not awaited.
+      expect(code).toBe(scenario === 'failed' ? 42 : 0);
       if (scenario === 'pending' || scenario === 'failed')
-        expect(stdout).toContain('Run coral-cli wait jobs a --cursor jobs.wait.v3:');
+        expect(stdout).toContain('Run coral-cli wait jobs a --cursor ');
       else expect(stdout).not.toContain('Run coral-cli wait');
       if (scenario === 'burst') expect(stdout).toContain('foreground-line-599');
     } finally {

@@ -1,32 +1,53 @@
+import { nextDelivered } from '#tests/helpers/wait-stream.js';
 import { testProgressVisit, observeWaitRead } from '#tests/helpers/wait-progress.js';
 import { createTerminalExportFixture } from '#tests/helpers/terminal-export.js';
 import { WaitCoordinator } from '#src/jobs/shell/wait.js';
 import { JobAddressing } from '#src/jobs/addressing.js';
 import { waitEpochToken, waitJobHash } from '#src/jobs/wait/cursor.js';
-import { describe } from 'vitest';
-import { loadReleasedWait } from '#tests/helpers/released-wait.js';
-import { rmSync } from 'node:fs';
-import { expect, it, vi, afterEach } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { readWaitSession } from '#src/jobs/wait/reader.js';
 import { WaitSession } from '#src/jobs/wait/session.js';
 import type { WaitAdmission } from '#src/jobs/wait/session.js';
 import { parseWaitSnapshot } from '#src/jobs/wait/snapshot.js';
 import { selectWaitSnapshot } from '#tests/helpers/wait-progress.js';
-import { createRealTimePort } from '#src/infra/time.js';
 import { VirtualTime, flushMicrotasks } from '#tools/simulation/core/virtual-time.js';
+import type { TimePort } from '#src/infra/port-types.js';
 
-import { admitted } from '#tests/helpers/wait-session.js';
-import type { WaitStreamEvent, WaitCursor, WaitCursorV3 } from '#src/jobs/wait/contract.js';
+import { admitted, savedCursor } from '#tests/helpers/wait-session.js';
+import type { WaitStreamEvent, WaitCursor } from '#src/jobs/wait/contract.js';
 
-import { parseWaitStreamEventValue } from '#src/jobs/wait/stream-event.js';
+import { advanceWaitRenderCursor, parseWaitStreamEventValue } from '#src/jobs/wait/stream-event.js';
+import { isFinalWaitEvent, type ProgressVisit } from '#src/jobs/wait/contract.js';
+import { progressPage, progressTail } from '#src/jobs/wait/progress-page.js';
+import { waitCursorForJobs } from '#src/jobs/wait/cursor.js';
+import { progressVisitFromEvents } from '#tests/helpers/wait-progress.js';
 import { serializeWaitCursor } from '#src/jobs/wait/cursor.js';
 import { formatWaitSnapshot, formatWaitWaiting, formatWaitProgress, formatWaitTerminal } from '#src/cli/format/wait.js';
 
-async function collect(stream: AsyncGenerator<WaitStreamEvent>): Promise<WaitStreamEvent[]> {
+async function collectWithFrames(stream: AsyncGenerator<WaitStreamEvent>): Promise<WaitStreamEvent[]> {
   const events = [];
   for await (const event of stream) events.push(event);
   return events;
+}
+
+/** Delivered events: cursor frames only move the client frontier and are asserted by their own tests. */
+async function collect(stream: AsyncGenerator<WaitStreamEvent>): Promise<WaitStreamEvent[]> {
+  return (await collectWithFrames(stream)).filter((event) => event.type !== 'cursor');
+}
+
+/** A plain time port whose clock methods a test may override, since spreading a class instance drops them. */
+function virtualTimeMethods(): TimePort {
+  const time = new VirtualTime();
+  return {
+    now: () => time.now(),
+    monotonicNow: () => time.monotonicNow(),
+    sleep: (ms, options) => time.sleep(ms, options),
+    setTimeout: (fn, ms) => time.setTimeout(fn, ms),
+    clearTimeout: (handle) => time.clearTimeout(handle),
+    setInterval: (fn, ms) => time.setInterval(fn, ms),
+    clearInterval: (handle) => time.clearInterval(handle),
+  };
 }
 
 it('does not rebuild history for each delivered event cursor', async () => {
@@ -39,9 +60,8 @@ it('does not rebuild history for each delivered event cursor', async () => {
   try {
     const events = await collect(
       readWaitSession({
-        request: { jobIds: ['a'], supportsWaitV3: true, timeoutSeconds: 0 },
-        time: createRealTimePort(),
-        activeEpochKey: 'epoch-E',
+        request: { jobIds: ['a'], timeoutSeconds: 0 },
+        time: new VirtualTime(),
         read: observeWaitRead(() => [job]),
         visit: testProgressVisit,
       }),
@@ -53,36 +73,12 @@ it('does not rebuild history for each delivered event cursor', async () => {
   }
 });
 
-it('drains a legacy terminal backlog and closes an acknowledged continuation with empty waiting', async () => {
-  const job = admitted(
-    'a',
-    Array.from({ length: 600 }, (_, i) => [i + 1, `line-${i}`]),
-  );
-  const read = (cursor?: WaitCursor) =>
-    collect(
-      readWaitSession({
-        request: { jobIds: ['a'], supportsWaitV2: true, timeoutSeconds: 0, cursor },
-        time: createRealTimePort(),
-        activeEpochKey: 'epoch-E',
-        read: observeWaitRead(() => [job]),
-        visit: testProgressVisit,
-      }),
-    );
-  const first = await read();
-  expect(first.filter((event) => event.type === 'progress')).toHaveLength(600);
-  expect(first.at(-1)).toMatchObject({ type: 'terminal', remainingJobIds: [] });
-  expect(await read(first.find((event) => event.type === 'terminal')!.cursor)).toEqual([
-    expect.objectContaining({ type: 'waiting', waitingJobIds: [] }),
-  ]);
-});
-
 it('keeps completed live coverage when a later refresh outlives the deadline', async () => {
   const time = new VirtualTime();
   let calls = 0;
   const stream = readWaitSession({
-    request: { jobIds: ['a'], supportsWaitV3: true, timeoutSeconds: 1 },
+    request: { jobIds: ['a'], timeoutSeconds: 1 },
     time,
-    activeEpochKey: 'epoch-E',
     read: observeWaitRead(() => [admitted('a', [], false)]),
     visit: testProgressVisit,
     observe: (session) => {
@@ -90,7 +86,7 @@ it('keeps completed live coverage when a later refresh outlives the deadline', a
       else return new Promise<void>(() => {});
     },
   });
-  const next = stream.next();
+  const next = nextDelivered(stream);
   await flushMicrotasks(20);
   for (let i = 0; i < 4; i++) {
     time.tick(250);
@@ -101,78 +97,19 @@ it('keeps completed live coverage when a later refresh outlives the deadline', a
   await stream.return(undefined);
 });
 
-it('refuses a legacy membership replay before delivering any member', async () => {
-  const events: WaitStreamEvent[] = [];
-  await expect(
-    (async () => {
-      for await (const event of readWaitSession({
-        request: {
-          jobIds: ['a', 'b'],
-          supportsWaitV2: true,
-          cursor: {
-            version: 'jobs.wait.v2',
-            locations: { a: 'epoch-E' },
-            positions: { 'epoch-E': 100 },
-          },
-        },
-        time: createRealTimePort(),
-        activeEpochKey: 'epoch-E',
-        read: observeWaitRead(() => [admitted('a', [], false), admitted('b', [[10, 'unread b']])]),
-        visit: testProgressVisit,
-      }))
-        events.push(event);
-    })(),
-  ).rejects.toMatchObject({ code: 'wait_cursor_epoch_required', message: expect.stringContaining('without') });
-  expect(events).toEqual([]);
-});
-
-it('refuses a legacy partially missing batch before delivering its successful sibling', async () => {
-  const stream = readWaitSession({
-    request: { jobIds: ['a', 'ghost'], supportsWaitV2: true, timeoutSeconds: 0 },
-    time: createRealTimePort(),
-    activeEpochKey: 'epoch-E',
-    read: observeWaitRead(() => [admitted('a'), { jobId: 'ghost', disposition: 'missing' }]),
-    visit: testProgressVisit,
-  });
-  await expect(stream.next()).rejects.toMatchObject({
-    code: 'jobs_not_found',
-    message: expect.stringContaining('ghost'),
-  });
-});
-
-it('refuses a missing legacy member discovered during streaming', async () => {
-  const time = new VirtualTime();
-  let missing = false;
-  const stream = readWaitSession({
-    request: { jobIds: ['a'], supportsWaitV2: true, timeoutSeconds: 1 },
-    time,
-    activeEpochKey: 'epoch-E',
-    read: observeWaitRead(() => (missing ? [{ jobId: 'a', disposition: 'missing' }] : [admitted('a', [], false)])),
-    visit: testProgressVisit,
-  });
-  const next = stream.next();
-  const assertion = expect(next).rejects.toMatchObject({ code: 'jobs_not_found' });
-  await flushMicrotasks(20);
-  missing = true;
-  time.tick(250);
-  await flushMicrotasks(20);
-  await assertion;
-});
-
 it('refreshes carrier coverage from live to unknown within the original deadline', async () => {
   const time = new VirtualTime();
   let calls = 0;
   const stream = readWaitSession({
-    request: { jobIds: ['a'], supportsWaitV3: true, timeoutSeconds: 1 },
+    request: { jobIds: ['a'], timeoutSeconds: 1 },
     time,
-    activeEpochKey: 'epoch-E',
     read: observeWaitRead(() => [admitted('a', [], false)]),
     visit: testProgressVisit,
     observe: (session) => {
       session.observeCoverage(['a'], ++calls === 1 ? [] : ['a'], 0);
     },
   });
-  const next = stream.next();
+  const next = nextDelivered(stream);
   await flushMicrotasks(20);
   for (let i = 0; i < 4; i++) {
     time.tick(250);
@@ -189,9 +126,8 @@ it('keeps one cancellable carrier observation in flight and ignores its late rep
   let observedSignal: AbortSignal | undefined;
   let complete!: () => void;
   const stream = readWaitSession({
-    request: { jobIds: ['a'], supportsWaitV3: true, timeoutSeconds: 1 },
+    request: { jobIds: ['a'], timeoutSeconds: 1 },
     time,
-    activeEpochKey: 'epoch-E',
     read: observeWaitRead(() => [admitted('a', [], false)]),
     visit: testProgressVisit,
     observe: async (session, signal) => {
@@ -203,7 +139,7 @@ it('keeps one cancellable carrier observation in flight and ignores its late rep
       if (!signal.aborted) session.observeCoverage(['a'], [], 0);
     },
   });
-  const next = stream.next();
+  const next = nextDelivered(stream);
   await flushMicrotasks(20);
   for (let i = 0; i < 4; i++) {
     time.tick(250);
@@ -224,7 +160,7 @@ it.each(['snapshot-to-stream', 'stream-to-snapshot'])(
     const a = admitted('a', [[100, 'a100']]);
     a.availability = { kind: 'repair-pending', ageUncertain: false };
     const unresolved: WaitAdmission[] = [a, { jobId: 'u', disposition: 'discovery-unknown' }];
-    let cursor: WaitCursorV3;
+    let cursor: WaitCursor;
     if (direction === 'snapshot-to-stream') {
       const session = new WaitSession(['a', 'u']);
       session.reconcile(unresolved);
@@ -232,22 +168,20 @@ it.each(['snapshot-to-stream', 'stream-to-snapshot'])(
     } else {
       const events = await collect(
         readWaitSession({
-          request: { jobIds: ['a', 'u'], supportsWaitV3: true },
-          time: createRealTimePort(),
-          activeEpochKey: 'epoch-E',
+          request: { jobIds: ['a', 'u'] },
+          time: new VirtualTime(),
           read: observeWaitRead(() => unresolved),
           visit: testProgressVisit,
         }),
       );
-      cursor = events.find((event) => event.type === 'terminal')!.cursor as WaitCursorV3;
+      cursor = events.find((event) => event.type === 'terminal')!.cursor;
     }
     const joined = [a, admitted('u', [[2, 'u below 100']], false)];
     if (direction === 'snapshot-to-stream') {
       const events = await collect(
         readWaitSession({
-          request: { jobIds: ['a', 'u'], supportsWaitV3: true, cursor, timeoutSeconds: 0 },
-          time: createRealTimePort(),
-          activeEpochKey: 'epoch-E',
+          request: { jobIds: ['a', 'u'], cursor, timeoutSeconds: 0 },
+          time: new VirtualTime(),
           read: observeWaitRead(() => joined),
           visit: testProgressVisit,
         }),
@@ -263,7 +197,7 @@ it.each(['snapshot-to-stream', 'stream-to-snapshot'])(
         'cursor' in events.at(-1)!
           ? (events.at(-1)! as Extract<WaitStreamEvent, { type: 'waiting' }>).cursor
           : undefined
-      ) as WaitCursorV3;
+      ) as WaitCursor;
     } else {
       const session = new WaitSession(['a', 'u'], cursor);
       session.reconcile(joined);
@@ -286,9 +220,8 @@ it('delivers a second terminal after an acknowledged sibling and returns the set
   session.acknowledge(a);
   const events = await collect(
     readWaitSession({
-      request: { jobIds: ['a', 'b'], cursor: session.cursor(), supportsWaitV3: true },
-      time: createRealTimePort(),
-      activeEpochKey: 'epoch-E',
+      request: { jobIds: ['a', 'b'], cursor: session.cursor() },
+      time: new VirtualTime(),
       read: observeWaitRead(() => [a, b]),
       visit: testProgressVisit,
     }),
@@ -305,16 +238,15 @@ it.each(['delayed', 'throws'])(
     const time = new VirtualTime();
     const a = admitted('a', [], false);
     const stream = readWaitSession({
-      request: { jobIds: ['a'], timeoutSeconds: 1, supportsWaitV3: true },
+      request: { jobIds: ['a'], timeoutSeconds: 1 },
       time,
-      activeEpochKey: 'epoch-E',
       read: observeWaitRead(() => [a]),
       visit: testProgressVisit,
       observe: () => {
         if (observer === 'throws') throw new Error('observer failed');
       },
     });
-    const next = stream.next();
+    const next = nextDelivered(stream);
     await flushMicrotasks(20);
     for (let i = 0; i < 4; i++) {
       time.tick(250);
@@ -336,9 +268,8 @@ it('returns artifact settlement without replaying the terminal and re-evaluates 
   a.availability = { kind: 'available', resultPath: '/settled/a' };
   const events = await collect(
     readWaitSession({
-      request: { jobIds: ['a'], cursor: session.cursor(), supportsWaitV3: true },
-      time: createRealTimePort(),
-      activeEpochKey: 'epoch-E',
+      request: { jobIds: ['a'], cursor: session.cursor() },
+      time: new VirtualTime(),
       read: observeWaitRead(() => [a]),
       visit: testProgressVisit,
     }),
@@ -354,21 +285,20 @@ it('returns artifact settlement without replaying the terminal and re-evaluates 
   const time = new VirtualTime();
   let closure = false;
   const stream = readWaitSession({
-    request: { jobIds: ['u'], supportsWaitV3: true, timeoutSeconds: 1 },
+    request: { jobIds: ['u'], timeoutSeconds: 1 },
     time,
-    activeEpochKey: 'epoch-E',
     read: observeWaitRead(() =>
       closure ? [{ jobId: 'u', disposition: 'outcome-unrecoverable' }] : [admitted('u', [], false, 'old-epoch')],
     ),
     visit: testProgressVisit,
   });
-  const next = stream.next();
+  const next = nextDelivered(stream);
   await flushMicrotasks(20);
   closure = true;
   time.tick(250);
   await flushMicrotasks(20);
   await expect(next).resolves.toMatchObject({ value: { type: 'disposition', disposition: 'outcome-unrecoverable' } });
-  await expect(stream.next()).resolves.toMatchObject({
+  await expect(nextDelivered(stream)).resolves.toMatchObject({
     value: { type: 'waiting', waitingJobIds: [], exitCode: 1 },
   });
   await stream.return(undefined);
@@ -383,23 +313,22 @@ it('resets membership resolved during a bounded wait and preserves acknowledged 
   const time = new VirtualTime();
   let resolved = false;
   const stream = readWaitSession({
-    request: { jobIds: ['a', 'u'], supportsWaitV3: true, timeoutSeconds: 1, cursor: saved },
+    request: { jobIds: ['a', 'u'], timeoutSeconds: 1, cursor: saved },
     time,
-    activeEpochKey: 'epoch-E',
     read: observeWaitRead(() => [
       a,
       resolved ? admitted('u', [[2, 'u2']], false) : { jobId: 'u', disposition: 'discovery-unknown' },
     ]),
     visit: testProgressVisit,
   });
-  expect((await stream.next()).value).toMatchObject({ type: 'disposition', disposition: 'discovery-unknown' });
-  const next = stream.next();
+  expect((await nextDelivered(stream)).value).toMatchObject({ type: 'disposition', disposition: 'discovery-unknown' });
+  const next = nextDelivered(stream);
   await flushMicrotasks(20);
   resolved = true;
   time.tick(250);
   await flushMicrotasks(20);
   expect((await next).value).toMatchObject({ type: 'progress', jobId: 'u', message: 'u2' });
-  const final = stream.next();
+  const final = nextDelivered(stream);
   await flushMicrotasks(20);
   time.tick(1000);
   expect((await final).value).toMatchObject({
@@ -424,6 +353,9 @@ it('resets membership resolved during a bounded wait and preserves acknowledged 
         result: { content: 'done', outcome: { kind: 'completed' }, durationMs: 1 },
         remainingJobIds: [],
         resultPath: '/r/a',
+        availability: { kind: 'available', resultPath: '/r/a' },
+        cursor: { jobs: [] },
+        exitCode: 0,
       },
       'input-cursor',
       true,
@@ -440,10 +372,10 @@ it('resets membership resolved during a bounded wait and preserves acknowledged 
       Array.from({ length: 600 }, (_, index) => [index + 1, `line ${index}`]),
       false,
     );
+    const time = new VirtualTime();
     const stream = readWaitSession({
-      request: { jobIds: ['live-job'], supportsWaitV3: true, timeoutSeconds: 590 },
-      time: createRealTimePort(),
-      activeEpochKey: 'epoch-E',
+      request: { jobIds: ['live-job'], timeoutSeconds: 590 },
+      time,
       read: observeWaitRead(() => (++reads === 1 ? [job] : [backlog])),
       visit: testProgressVisit,
       observe: async (session, signal) => {
@@ -452,20 +384,24 @@ it('resets membership resolved during a bounded wait and preserves acknowledged 
         else await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));
       },
     });
-    let waiting;
-    for await (const event of stream) if (event.type === 'waiting') waiting = event;
+    let waiting: WaitStreamEvent | undefined;
+    const run = (async () => {
+      for await (const event of stream) if (event.type === 'waiting') waiting = event;
+    })();
+    await flushMicrotasks(20);
+    time.tick(250);
+    await run;
     expect(observations).toBe(1);
     expect(waiting).toMatchObject({ waitingJobIds: ['live-job'] });
-    expect(waiting?.carrierUnknownJobIds).toBeUndefined();
+    expect(waiting).not.toHaveProperty('carrierUnknownJobIds');
   });
   it('downgrades coverage after a failed refresh', async () => {
     const time = new VirtualTime();
     const job = admitted('live-job', [], false);
     let observations = 0;
     const stream = readWaitSession({
-      request: { jobIds: ['live-job'], supportsWaitV3: true, timeoutSeconds: 0.3 },
+      request: { jobIds: ['live-job'], timeoutSeconds: 0.3 },
       time,
-      activeEpochKey: 'epoch-E',
       read: observeWaitRead(() => [job]),
       visit: testProgressVisit,
       observe: (session) => {
@@ -496,13 +432,12 @@ it('resets membership resolved during a bounded wait and preserves acknowledged 
   it('does not report an undelivered sibling failure in a terminal event', async () => {
     const jobs = [admitted('a'), admitted('b', [], true, 'epoch-E', true)];
     const stream = readWaitSession({
-      request: { jobIds: ['a', 'b'], supportsWaitV3: true },
-      time: createRealTimePort(),
-      activeEpochKey: 'epoch-E',
+      request: { jobIds: ['a', 'b'] },
+      time: new VirtualTime(),
       read: observeWaitRead(() => jobs),
       visit: testProgressVisit,
     });
-    expect((await stream.next()).value).toMatchObject({
+    expect((await nextDelivered(stream)).value).toMatchObject({
       type: 'terminal',
       jobId: 'a',
       remainingJobIds: ['b'],
@@ -516,14 +451,12 @@ it('resets membership resolved during a bounded wait and preserves acknowledged 
     first.reconcile([job]);
     first.acknowledge(job);
     const stream = readWaitSession({
-      request: { jobIds: ['a'], cursor: first.cursor(), supportsWaitV3: true },
-      time: createRealTimePort(),
-      activeEpochKey: 'epoch-E',
+      request: { jobIds: ['a'], cursor: first.cursor() },
+      time: new VirtualTime(),
       read: observeWaitRead(() => [job]),
       visit: testProgressVisit,
     });
-    const events = [];
-    for await (const event of stream) events.push(event);
+    const events = await collect(stream);
     expect(events).toEqual([expect.objectContaining({ type: 'waiting', waitingJobIds: [], exitCode: 0 })]);
     expect(formatWaitWaiting({ type: 'waiting', waitingJobIds: [] }, 'invalid')).toBe('Wait complete; no jobs remain.');
   });
@@ -542,13 +475,10 @@ it('resets membership resolved during a bounded wait and preserves acknowledged 
       })),
     };
     expect(parseWaitSnapshot(extra)).toMatchObject(snapshot);
-    expect(
-      parseWaitStreamEventValue({ type: 'notice', version: 'jobs.wait.v3', message: 'ok', future: true }),
-    ).toMatchObject({ message: 'ok' });
+    expect(parseWaitStreamEventValue({ type: 'notice', message: 'ok', future: true })).toMatchObject({ message: 'ok' });
     expect(
       parseWaitStreamEventValue({
         type: 'disposition',
-        version: 'jobs.wait.v3',
         jobId: 'a',
         disposition: 'missing',
         future: true,
@@ -574,7 +504,9 @@ it('resets membership resolved during a bounded wait and preserves acknowledged 
     ).toContain('\n> Result path: forged');
   });
   it('names a runnable smaller snapshot retry with the unchanged input cursor', () => {
-    const input = { afterSeq: 7 };
+    const input = {
+      jobs: [{ hash: waitJobHash('a'), epoch: waitEpochToken('epoch-E'), seq: 7, lineOffset: 0, flags: 0 }],
+    };
     const session = new WaitSession(['a', 'b'], input);
     session.reconcile([
       { jobId: 'a', disposition: 'missing', message: 'x'.repeat(2 * 1024 * 1024) },
@@ -589,10 +521,9 @@ it('resets membership resolved during a bounded wait and preserves acknowledged 
 it('internal outcomes drain every progress line before completion without a page waiting event', async () => {
   const events: WaitStreamEvent[] = [];
   for await (const event of readWaitSession({
-    request: { jobIds: ['a'], supportsWaitV3: true, timeoutSeconds: 0 },
+    request: { jobIds: ['a'], timeoutSeconds: 0 },
     internal: true,
     time: new VirtualTime(),
-    activeEpochKey: 'epoch-E',
     read: observeWaitRead(() => [
       admitted(
         'a',
@@ -610,15 +541,14 @@ it('internal outcomes drain every progress line before completion without a page
 it('crosses a timer boundary before returning an immediate internal deadline without an outcome', async () => {
   const time = new VirtualTime();
   const stream = readWaitSession({
-    request: { jobIds: ['a'], supportsWaitV3: true, timeoutSeconds: 0 },
+    request: { jobIds: ['a'], timeoutSeconds: 0 },
     internal: true,
     time,
-    activeEpochKey: 'epoch-E',
     read: observeWaitRead(() => [admitted('a', [], false)]),
     visit: testProgressVisit,
   });
   let returned = false;
-  const next = stream.next().then((event) => {
+  const next = nextDelivered(stream).then((event) => {
     returned = true;
     return event;
   });
@@ -627,32 +557,6 @@ it('crosses a timer boundary before returning an immediate internal deadline wit
   time.tick(1);
   expect((await next).value).toMatchObject({ type: 'waiting' });
   await stream.return(undefined);
-});
-
-it('settles a retired artifact silently after a legacy terminal was acknowledged', async () => {
-  const job = admitted('a');
-  job.availability = { kind: 'failed', cause: 'source-epoch-retired', retryScheduled: false };
-  await expect(
-    collect(
-      readWaitSession({
-        request: {
-          jobIds: ['a'],
-          supportsWaitV2: true,
-          cursor: {
-            version: 'jobs.wait.v2',
-            locations: { a: 'epoch-E' },
-            positions: { 'epoch-E': 0 },
-            deliveredJobIds: ['a'],
-          },
-          timeoutSeconds: 0,
-        },
-        time: createRealTimePort(),
-        activeEpochKey: 'epoch-E',
-        read: observeWaitRead(() => [job]),
-        visit: testProgressVisit,
-      }),
-    ),
-  ).resolves.toEqual([expect.objectContaining({ type: 'waiting', waitingJobIds: [] })]);
 });
 
 it('retries an unknown historical read on a bounded schedule, then exits 75 unresolved', async () => {
@@ -666,9 +570,8 @@ it('retries an unknown historical read on a bounded schedule, then exits 75 unre
   const read = vi.fn(() => [a]);
   const events = await collect(
     readWaitSession({
-      request: { jobIds: ['a'], supportsWaitV3: true, timeoutSeconds: 590 },
-      time: { ...createRealTimePort(), monotonicNow: () => monotonic, sleep },
-      activeEpochKey: 'epoch-E',
+      request: { jobIds: ['a'], timeoutSeconds: 590 },
+      time: { ...virtualTimeMethods(), monotonicNow: () => monotonic, sleep },
       read: observeWaitRead(read),
       visit: testProgressVisit,
     }),
@@ -684,9 +587,8 @@ it('retries an unknown historical read on a bounded schedule, then exits 75 unre
 it('keeps a multiline child message in one internal progress event', async () => {
   const events = await collect(
     readWaitSession({
-      request: { jobIds: ['a'], supportsWaitV3: true, timeoutSeconds: 0 },
-      time: createRealTimePort(),
-      activeEpochKey: 'epoch-E',
+      request: { jobIds: ['a'], timeoutSeconds: 0 },
+      time: new VirtualTime(),
       internal: true,
       read: observeWaitRead(() => [admitted('a', [[1, 'first\nsecond\nthird']])]),
       visit: testProgressVisit,
@@ -716,9 +618,8 @@ it('preserves a terminal sibling backlog across a transient epoch hold in stream
   };
   const events = await collect(
     readWaitSession({
-      request: { jobIds: ['A', 'U'], supportsWaitV3: true, timeoutSeconds: 0 },
-      time: createRealTimePort(),
-      activeEpochKey: 'epoch-NEW',
+      request: { jobIds: ['A', 'U'], timeoutSeconds: 0 },
+      time: new VirtualTime(),
       read: observeWaitRead(() => [a, u]),
       visit: testProgressVisit,
     }),
@@ -746,15 +647,14 @@ it('does not shorten a live sibling window after transient source retries', asyn
   };
   const events = await collect(
     readWaitSession({
-      request: { jobIds: ['LIVE', 'X'], supportsWaitV3: true, timeoutSeconds: 589 },
+      request: { jobIds: ['LIVE', 'X'], timeoutSeconds: 589 },
       time: {
-        ...createRealTimePort(),
+        ...virtualTimeMethods(),
         monotonicNow: () => mono,
         sleep: async (ms) => {
           mono += BigInt(ms);
         },
       },
-      activeEpochKey: 'epoch-A',
       read: observeWaitRead(() => [live, unknown]),
       visit: testProgressVisit,
       observe: (session) => session.observeCoverage(['LIVE'], [], 1),
@@ -762,68 +662,6 @@ it('does not shorten a live sibling window after transient source retries', asyn
   );
   expect(mono).toBe(589000n);
   expect(events.at(-1)).toMatchObject({ type: 'waiting', waitingJobIds: ['LIVE', 'X'] });
-});
-
-it('does not let a versionless terminal overtake a repair-pending terminal or skip sibling progress', async () => {
-  let mono = 0n;
-  const time = {
-    ...createRealTimePort(),
-    monotonicNow: () => mono,
-    sleep: async (ms: number) => {
-      mono += BigInt(ms);
-    },
-  };
-  const r = admitted('R');
-  const s = admitted('S');
-  for (const [job, seq] of [
-    [r, 40],
-    [s, 60],
-  ] as const) {
-    job.detail.events = job.detail.events.map((event) => (event.type === 'terminal' ? { ...event, seq } : event));
-    job.detail.status.lastSeq = seq;
-    job.detail.terminalSeq = seq;
-  }
-  r.availability = { kind: 'repair-pending', ageUncertain: false };
-  const t = admitted(
-    'T',
-    [
-      [50, 'T fifty'],
-      [70, 'T seventy'],
-    ],
-    false,
-  );
-  await expect(
-    collect(
-      readWaitSession({
-        request: { jobIds: ['R', 'S', 'T'], timeoutSeconds: 1 },
-        time,
-        activeEpochKey: 'epoch-E',
-        read: observeWaitRead(() => [r, s, t]),
-        visit: testProgressVisit,
-      }),
-    ),
-  ).resolves.toEqual([expect.objectContaining({ type: 'waiting', waitingJobIds: ['R', 'S', 'T'] })]);
-  r.availability = { kind: 'available', resultPath: '/r' };
-  const second = await collect(
-    readWaitSession({
-      request: { jobIds: ['R', 'S', 'T'], timeoutSeconds: 1, cursor: { afterSeq: 0 } },
-      time,
-      activeEpochKey: 'epoch-E',
-      read: observeWaitRead(() => [r, s, t]),
-      visit: testProgressVisit,
-    }),
-  );
-  expect(second.find((event) => event.type === 'terminal')).toMatchObject({ jobId: 'R', seq: 40 });
-  const third = await collect(
-    readWaitSession({
-      request: { jobIds: ['S', 'T'], timeoutSeconds: 1, cursor: { afterSeq: 40 } },
-      time,
-      activeEpochKey: 'epoch-E',
-      read: observeWaitRead(() => [s, t]),
-      visit: testProgressVisit,
-    }),
-  );
-  expect(third.find((event) => event.type === 'progress')).toMatchObject({ jobId: 'T', seq: 50 });
 });
 
 it('settles a permanently unreadable retained outcome after delivery instead of keeping it in every continuation', async () => {
@@ -834,9 +672,8 @@ it('settles a permanently unreadable retained outcome after delivery instead of 
   };
   const first = await collect(
     readWaitSession({
-      request: { jobIds: ['h'], supportsWaitV3: true, timeoutSeconds: 0 },
-      time: createRealTimePort(),
-      activeEpochKey: 'new',
+      request: { jobIds: ['h'], timeoutSeconds: 0 },
+      time: new VirtualTime(),
       read: observeWaitRead(() => [job]),
       visit: testProgressVisit,
     }),
@@ -850,73 +687,14 @@ it('settles a permanently unreadable retained outcome after delivery instead of 
   expect(snapshot.notices.join(' ')).not.toContain('no longer kept');
 });
 
-const releasedDirectories: string[] = [];
-afterEach(() => {
-  for (const directory of releasedDirectories.splice(0)) rmSync(directory, { recursive: true, force: true });
-});
-it.each(['v0.10.15', 'v0.10.17'] as const)('delivers a 600-line backlog through the real %s reader', async (tag) => {
-  const released = await loadReleasedWait(tag, releasedDirectories);
-  const job = admitted(
-    'a',
-    Array.from({ length: 600 }, (_, i) => [i + 1, `line-${i}`]),
-  );
-  const request = {
-    jobIds: ['a'],
-    projectRoot: '/tmp',
-    timeoutSeconds: 1,
-    supportsInterrupted: true,
-    ...(tag === 'v0.10.17' ? { supportsWaitV2: true, supportsHandover: true } : {}),
-  };
-  released.jobWaitSchema.parse(request);
-  let cursor: WaitCursor = { afterSeq: 0 };
-  let lines = 0;
-  for await (const wire of readWaitSession({
-    request,
-    time: createRealTimePort(),
-    activeEpochKey: 'epoch-E',
-    read: observeWaitRead(() => [job]),
-    visit: testProgressVisit,
-  })) {
-    const event = released.parseWaitStreamEventValue(wire);
-    cursor = released.advanceWaitRenderCursor(cursor, event).cursor;
-    if (event.type === 'progress') lines += event.message.split('\n').length;
-    if (event.type === 'terminal') {
-      expect(lines).toBe(600);
-      expect(event.remainingJobIds).toEqual([]);
-      expect(released.formatWaitTerminal(event, null, false)).not.toContain('Run coral-cli wait');
-    }
-    if (event.type === 'waiting') expect(event.waitingJobIds.length).toBeGreaterThan(0);
-  }
-  expect(lines).toBe(600);
-  if (tag === 'v0.10.17' && cursor.version !== 'jobs.wait.v3') expect(cursor.deliveredJobIds).toContain('a');
-});
-
-it('waits resumably for a v0.10.15 pending artifact without returning later sibling progress', async () => {
-  const a = admitted('a', [], true);
-  a.availability = { kind: 'repair-pending', ageUncertain: false };
-  const b = admitted('b', [[2000, 'b later line']], false);
-  await expect(
-    collect(
-      readWaitSession({
-        request: { jobIds: ['a', 'b'], timeoutSeconds: 0 },
-        time: createRealTimePort(),
-        activeEpochKey: 'epoch-E',
-        read: observeWaitRead(() => [a, b]),
-        visit: testProgressVisit,
-      }),
-    ),
-  ).resolves.toEqual([expect.objectContaining({ type: 'waiting', waitingJobIds: ['a', 'b'] })]);
-});
-
 it('a settled source ends a wait on the first poll without a continuation', async () => {
   const read = vi.fn((): WaitAdmission[] => [
     { jobId: 'U', disposition: 'outcome-unreadable', sourceRead: 'settled-unreadable' },
   ]);
   const events = await collect(
     readWaitSession({
-      request: { jobIds: ['U'], supportsWaitV3: true },
-      time: createRealTimePort(),
-      activeEpochKey: 'active',
+      request: { jobIds: ['U'] },
+      time: new VirtualTime(),
       read: observeWaitRead(read),
       visit: testProgressVisit,
     }),
@@ -929,14 +707,13 @@ it('rate limits idle carrier observation across forty polls', async () => {
   const time = new VirtualTime();
   const observe = vi.fn((session: WaitSession) => session.observeCoverage(['a'], [], 0));
   const stream = readWaitSession({
-    request: { jobIds: ['a'], supportsWaitV3: true, timeoutSeconds: 10 },
+    request: { jobIds: ['a'], timeoutSeconds: 10 },
     time,
-    activeEpochKey: 'epoch-E',
     read: observeWaitRead(() => [admitted('a', [], false)]),
     visit: testProgressVisit,
     observe,
   });
-  const next = stream.next();
+  const next = nextDelivered(stream);
   await flushMicrotasks(20);
   for (let i = 0; i < 40; i++) {
     time.tick(250);
@@ -956,9 +733,8 @@ it('admitted, unknown, admitted retains one acknowledged terminal in a resumed s
   middle.reconcile([{ jobId: 'a', disposition: 'discovery-unknown' }]);
   const events = await collect(
     readWaitSession({
-      request: { jobIds: ['a'], supportsWaitV3: true, cursor: middle.cursor(), timeoutSeconds: 0 },
-      time: createRealTimePort(),
-      activeEpochKey: 'epoch-E',
+      request: { jobIds: ['a'], cursor: middle.cursor(), timeoutSeconds: 0 },
+      time: new VirtualTime(),
       read: observeWaitRead(() => [a]),
       visit: testProgressVisit,
     }),
@@ -982,9 +758,8 @@ it('a fresh bounded poll selects every job tail across a shared epoch without in
   ];
   const events = await collect(
     readWaitSession({
-      request: { jobIds: ['a', 'b'], supportsWaitV3: true, timeoutSeconds: 0 },
-      time: createRealTimePort(),
-      activeEpochKey: 'epoch-E',
+      request: { jobIds: ['a', 'b'], timeoutSeconds: 0 },
+      time: new VirtualTime(),
       read: observeWaitRead(() => jobs),
       visit: testProgressVisit,
     }),
@@ -1004,9 +779,7 @@ describe('discovery retry preserves interleaved progress', () => {
   }
 
   it('preserves unread progress after one transient member read failure', async () => {
-    const cursor: WaitCursorV3 = {
-      version: 'jobs.wait.v3',
-
+    const cursor: WaitCursor = {
       jobs: [
         { hash: waitJobHash('a'), epoch: waitEpochToken('epoch-E'), seq: 4, lineOffset: 0, flags: 0 },
         { hash: waitJobHash('b'), epoch: waitEpochToken('epoch-E'), seq: 4, lineOffset: 0, flags: 0 },
@@ -1037,9 +810,8 @@ describe('discovery retry preserves interleaved progress', () => {
     };
     const events = await collect(
       readWaitSession({
-        request: { jobIds: ['a', 'b'], supportsWaitV3: true, timeoutSeconds: 2, cursor },
+        request: { jobIds: ['a', 'b'], timeoutSeconds: 2, cursor },
         time: advancingTime(),
-        activeEpochKey: 'epoch-E',
         read: observeWaitRead(() => (++poll === 1 ? [a, bUnknown] : [a, b])),
         visit: testProgressVisit,
       }),
@@ -1058,9 +830,7 @@ describe('unknown first member preserves continuation', () => {
   }
 
   it('uses live epoch positions when the first member is transiently unknown', async () => {
-    const cursor: WaitCursorV3 = {
-      version: 'jobs.wait.v3',
-
+    const cursor: WaitCursor = {
       jobs: [
         { hash: waitJobHash('u'), epoch: waitEpochToken('epoch-E'), seq: 4, lineOffset: 0, flags: 0 },
         { hash: waitJobHash('a'), epoch: waitEpochToken('epoch-E'), seq: 4, lineOffset: 0, flags: 0 },
@@ -1080,12 +850,11 @@ describe('unknown first member preserves continuation', () => {
       sourceRead: 'transient-unknown',
       message: 'EIO',
     } as never;
-    const run = async (c: WaitCursorV3) =>
+    const run = async (c: WaitCursor) =>
       collect(
         readWaitSession({
-          request: { jobIds: ['u', 'a'], supportsWaitV3: true, timeoutSeconds: 1, cursor: c },
+          request: { jobIds: ['u', 'a'], timeoutSeconds: 1, cursor: c },
           time: advancingTime(),
-          activeEpochKey: 'epoch-E',
           read: observeWaitRead(() => [u, a]),
           visit: testProgressVisit,
         }),
@@ -1094,7 +863,6 @@ describe('unknown first member preserves continuation', () => {
     expect(first.filter((e) => e.type === 'progress').map((e) => e.message)).toEqual(['a-5', 'a-6']);
     const last = first.at(-1) as Extract<WaitStreamEvent, { type: 'waiting' }>;
 
-    if (last.cursor?.version !== 'jobs.wait.v3') throw new Error('missing v3 continuation');
     const second = await run(last.cursor);
     const progress2 = second.filter((e) => e.type === 'progress').map((e) => e.message);
 
@@ -1102,9 +870,8 @@ describe('unknown first member preserves continuation', () => {
     const secondLast = second.at(-1) as Extract<WaitStreamEvent, { type: 'waiting' }>;
     const recovered = await collect(
       readWaitSession({
-        request: { jobIds: ['u', 'a'], supportsWaitV3: true, timeoutSeconds: 0, cursor: secondLast.cursor },
+        request: { jobIds: ['u', 'a'], timeoutSeconds: 0, cursor: secondLast.cursor },
         time: advancingTime(),
-        activeEpochKey: 'epoch-E',
         read: observeWaitRead(() => [admitted('u', [], false), a]),
         visit: testProgressVisit,
       }),
@@ -1114,7 +881,7 @@ describe('unknown first member preserves continuation', () => {
 });
 
 describe('bounded tail selection excludes older history', () => {
-  async function collect(cursor: WaitCursorV3 | undefined, read: () => ReturnType<typeof admitted>[]) {
+  async function collect(cursor: WaitCursor | undefined, read: () => ReturnType<typeof admitted>[]) {
     let t = 0;
     const time = {
       monotonicNow: () => BigInt(t),
@@ -1125,9 +892,8 @@ describe('bounded tail selection excludes older history', () => {
     } as never;
     const events: WaitStreamEvent[] = [];
     for await (const event of readWaitSession({
-      request: { jobIds: ['A', 'B'], supportsWaitV3: true, timeoutSeconds: 1, ...(cursor ? { cursor } : {}) },
+      request: { jobIds: ['A', 'B'], timeoutSeconds: 1, ...(cursor ? { cursor } : {}) },
       time,
-      activeEpochKey: 'epoch-E',
       read: observeWaitRead(read),
       visit: testProgressVisit,
     }))
@@ -1135,7 +901,7 @@ describe('bounded tail selection excludes older history', () => {
     return events;
   }
 
-  describe('first bounded v3 tail selection', () => {
+  describe('first bounded tail selection', () => {
     it('does not replay history that the tail intentionally excluded', async () => {
       // A: 30 long lines at seq 1..30 (4000 bytes each). B: 100 short lines at seq 31..130. Both running.
       const a = admitted(
@@ -1151,7 +917,7 @@ describe('bounded tail selection excludes older history', () => {
       const read = () => [a, b];
       const first = await collect(undefined, read);
       expect(first.filter((e) => e.type === 'progress').length).toBeGreaterThan(0);
-      const last = [...first].reverse().find((e) => 'cursor' in e && e.cursor) as { cursor: WaitCursorV3 };
+      const last = [...first].reverse().find((e) => 'cursor' in e && e.cursor) as { cursor: WaitCursor };
 
       const second = await collect(last.cursor, read);
       const secondLines = second
@@ -1166,157 +932,11 @@ describe('bounded tail selection excludes older history', () => {
   });
 });
 
-it.each(['v0.10.15', 'v0.10.17', 'v0.10.18'] as const)(
-  'released %s clients hold pending repairs and refuse failed artifacts',
-  async (tag) => {
-    const directories: string[] = [];
-    try {
-      const released = await loadReleasedWait(tag, directories);
-      for (const availability of [
-        { kind: 'repair-pending', ageUncertain: false },
-        { kind: 'failed', cause: 'repair-failed', retryScheduled: true },
-        { kind: 'failed', cause: 'cutoff-untrusted', retryScheduled: true },
-      ] as const) {
-        const job = { ...admitted('a'), availability };
-        const parsed = released.jobWaitSchema.parse({
-          jobIds: ['a'],
-          projectRoot: '/tmp',
-          timeoutSeconds: 1,
-          ...(tag === 'v0.10.15' ? {} : { supportsWaitV2: true }),
-        });
-        const request = { ...(parsed as object), timeoutSeconds: 0 } as never;
-        const read = () =>
-          collect(
-            readWaitSession({
-              request,
-              time: createRealTimePort(),
-              activeEpochKey: 'epoch-E',
-              read: observeWaitRead(() => [job]),
-              visit: testProgressVisit,
-            }),
-          );
-        if (availability.kind === 'failed') {
-          await expect(read()).rejects.toMatchObject({
-            code: 'wait_epoch_unsupported',
-            message: expect.stringContaining('jobs detail a'),
-          });
-          continue;
-        }
-        const events = await read();
-        expect(events.some((event) => event.type === 'terminal')).toBe(false);
-        const waiting = events.at(-1)!;
-        expect(waiting).toMatchObject({ type: 'waiting', waitingJobIds: ['a'] });
-        expect(released.parseWaitStreamEventValue(waiting)).toMatchObject({ type: 'waiting' });
-        if ('cursor' in waiting && waiting.cursor?.version === 'jobs.wait.v2')
-          expect(waiting.cursor.deliveredJobIds).toEqual([]);
-        const text = released.formatWaitWaiting(waiting, released.serializeWaitCursor({ afterSeq: 0 }), ['a']);
-        expect(text).toContain('coral-cli wait jobs a');
-        expect(text).toContain('(cursor: ');
-        job.availability = { kind: 'available', resultPath: '/results/a' } as never;
-        const repaired = await collect(
-          readWaitSession({
-            request,
-            time: createRealTimePort(),
-            activeEpochKey: 'epoch-E',
-            read: observeWaitRead(() => [job]),
-            visit: testProgressVisit,
-          }),
-        );
-        expect(released.parseWaitStreamEventValue(repaired.find((event) => event.type === 'terminal'))).toMatchObject({
-          type: 'terminal',
-          resultPath: '/results/a',
-        });
-      }
-    } finally {
-      for (const dir of directories) rmSync(dir, { recursive: true, force: true });
-    }
-  },
-);
-
-it('mid-stream discovery unknown retains a legacy continuation', async () => {
-  let poll = 0;
-  let mono = 0n;
-  const events = await collect(
-    readWaitSession({
-      request: { jobIds: ['a'], supportsWaitV2: true, timeoutSeconds: 1 },
-      time: {
-        ...createRealTimePort(),
-        monotonicNow: () => mono,
-        sleep: async (ms) => {
-          mono += BigInt(ms);
-        },
-      },
-      activeEpochKey: 'epoch-E',
-      read: observeWaitRead(() =>
-        ++poll === 1
-          ? [admitted('a', [], false)]
-          : [{ jobId: 'a', disposition: 'discovery-unknown', sourceRead: 'transient-unknown' }],
-      ),
-      visit: testProgressVisit,
-    }),
-  );
-  expect(events.at(-1)).toMatchObject({
-    type: 'waiting',
-    waitingJobIds: ['a'],
-    cursor: { version: 'jobs.wait.v2', locations: { a: 'epoch-E' } },
-  });
-});
-
-it('legacy progress preserves released bytes including overlong lines', async () => {
-  const message = 'x'.repeat(5000) + '\nsecond line';
-  const job = admitted('a', [[1, message]]);
-  for (const supportsWaitV2 of [false, true]) {
-    const events = await collect(
-      readWaitSession({
-        request: { jobIds: ['a'], supportsWaitV2, timeoutSeconds: 0 },
-        time: createRealTimePort(),
-        activeEpochKey: 'epoch-E',
-        read: observeWaitRead(() => [job]),
-        visit: testProgressVisit,
-      }),
-    );
-    expect(events.find((event) => event.type === 'progress')).toMatchObject({ message });
-  }
-});
-
-it.each([false, true])('refuses every failed artifact for a released reader, retry=%s', async (retryScheduled) => {
-  const job = admitted('a');
-  job.availability = { kind: 'failed', cause: 'repair-failed', retryScheduled };
-  await expect(
-    collect(
-      readWaitSession({
-        request: { jobIds: ['a'], supportsWaitV2: true, timeoutSeconds: 0 },
-        time: createRealTimePort(),
-        activeEpochKey: 'epoch-E',
-        read: observeWaitRead(() => [job]),
-        visit: testProgressVisit,
-      }),
-    ),
-  ).rejects.toMatchObject({
-    code: 'wait_epoch_unsupported',
-    message: expect.stringContaining('coral-cli jobs detail a'),
-  });
-});
-
-it('released terminal keeps a transient sibling in the remaining batch', async () => {
-  const events = await collect(
-    readWaitSession({
-      request: { jobIds: ['a', 'b'], supportsWaitV2: true, timeoutSeconds: 0 },
-      time: createRealTimePort(),
-      activeEpochKey: 'epoch-E',
-      read: observeWaitRead(() => [admitted('a'), { jobId: 'b', disposition: 'discovery-unknown' }]),
-      visit: testProgressVisit,
-    }),
-  );
-  expect(events.at(-1)).toMatchObject({ type: 'terminal', remainingJobIds: ['b'] });
-});
-
 it('launch follow drains early progress rather than selecting a tail', async () => {
   const events = await collect(
     readWaitSession({
-      request: { jobIds: ['a'], supportsWaitV3: true, drainProgress: true, timeoutSeconds: 0 },
-      time: createRealTimePort(),
-      activeEpochKey: 'epoch-E',
+      request: { jobIds: ['a'], drainProgress: true, timeoutSeconds: 0 },
+      time: new VirtualTime(),
       read: observeWaitRead(() => [
         admitted(
           'a',
@@ -1349,29 +969,13 @@ it('windows snapshot content and diagnostics before encoding', () => {
 function advancingTime() {
   let now = 0n;
   return {
-    ...createRealTimePort(),
+    ...virtualTimeMethods(),
     monotonicNow: () => now,
     sleep: async (ms: number) => {
       now += BigInt(ms);
     },
   };
 }
-
-it('states held progress before delivering a legacy terminal', async () => {
-  const a = admitted('a');
-  a.sourceRead = 'transient-unknown';
-  const events = await collect(
-    readWaitSession({
-      request: { jobIds: ['a'], supportsWaitV2: true, timeoutSeconds: 0 },
-      time: createRealTimePort(),
-      activeEpochKey: 'epoch-E',
-      read: observeWaitRead(() => [a]),
-      visit: testProgressVisit,
-    }),
-  );
-  expect(events[0]).toMatchObject({ type: 'progress', message: expect.stringContaining('was not shown') });
-  expect(events.at(-1)).toMatchObject({ type: 'terminal' });
-});
 
 it('cursorless snapshot omission retains the current tail watermark', () => {
   const job = admitted(
@@ -1390,39 +994,12 @@ it('cursorless snapshot omission retains the current tail watermark', () => {
   expect(snapshot.cursor.jobs[0].seq).toBe(29);
 });
 
-it('settles a failed artifact silently after a legacy terminal was acknowledged', async () => {
-  const job = admitted('a');
-  job.availability = { kind: 'failed', cause: 'cutoff-untrusted', retryScheduled: true };
-  await expect(
-    collect(
-      readWaitSession({
-        request: {
-          jobIds: ['a'],
-          supportsWaitV2: true,
-          cursor: {
-            version: 'jobs.wait.v2',
-            positions: { 'epoch-E': 1000 },
-            locations: { a: 'epoch-E' },
-            deliveredJobIds: ['a'],
-          },
-          timeoutSeconds: 0,
-        },
-        time: createRealTimePort(),
-        activeEpochKey: 'epoch-E',
-        read: observeWaitRead(() => [job]),
-        visit: testProgressVisit,
-      }),
-    ),
-  ).resolves.toEqual([expect.objectContaining({ type: 'waiting', waitingJobIds: [] })]);
-});
-
 it('does not spend unknown-read retries on a deferred poll', async () => {
   let poll = 0;
   const events = await collect(
     readWaitSession({
-      request: { jobIds: ['a'], supportsWaitV3: true, timeoutSeconds: 20 },
+      request: { jobIds: ['a'], timeoutSeconds: 20 },
       time: advancingTime(),
-      activeEpochKey: 'epoch-E',
       read: observeWaitRead(() => {
         poll++;
         if (poll === 1) return [{ jobId: 'a', disposition: 'discovery-unknown' }];
@@ -1436,40 +1013,17 @@ it('does not spend unknown-read retries on a deferred poll', async () => {
   expect(poll).toBe(5);
 });
 
-it('gives a legacy cursor without a warning sequence slot a runnable held-progress refusal', async () => {
-  const job = admitted('a');
-  job.sourceRead = 'transient-unknown';
-  await expect(
-    collect(
-      readWaitSession({
-        request: { jobIds: ['a'], cursor: { afterSeq: 999 }, timeoutSeconds: 0 },
-        time: createRealTimePort(),
-        activeEpochKey: 'epoch-E',
-        read: observeWaitRead(() => [job]),
-        visit: testProgressVisit,
-      }),
-    ),
-  ).rejects.toMatchObject({
-    code: 'wait_epoch_unsupported',
-    message: expect.stringContaining('jobs detail a to inspect'),
-  });
-});
-
 it('carries the failed set code on the last progress batch before stream closure', async () => {
   const events = await collect(
     readWaitSession({
       request: {
         jobIds: ['a'],
-        supportsWaitV3: true,
         timeoutSeconds: 0,
         cursor: {
-          version: 'jobs.wait.v3',
-
           jobs: [{ hash: waitJobHash('a'), epoch: waitEpochToken('epoch-E'), seq: 4, lineOffset: 0, flags: 1 }],
         },
       },
       time: new VirtualTime(),
-      activeEpochKey: 'epoch-E',
       read: observeWaitRead(() => [
         admitted(
           'a',
@@ -1492,9 +1046,8 @@ it('carries the failed set code on the last progress batch before stream closure
 it('carries the refused set code before the completion notice', async () => {
   const events = await collect(
     readWaitSession({
-      request: { jobIds: ['ghost'], supportsWaitV3: true, timeoutSeconds: 0 },
+      request: { jobIds: ['ghost'], timeoutSeconds: 0 },
       time: new VirtualTime(),
-      activeEpochKey: 'epoch-E',
       read: observeWaitRead(() => [{ jobId: 'ghost', disposition: 'missing' }]),
       visit: testProgressVisit,
     }),
@@ -1508,9 +1061,8 @@ it('applies a cursorless tail when a member first becomes readable', async () =>
   const time = new VirtualTime();
   let polls = 0;
   const stream = readWaitSession({
-    request: { jobIds: ['a'], supportsWaitV3: true, timeoutSeconds: 1 },
+    request: { jobIds: ['a'], timeoutSeconds: 1 },
     time,
-    activeEpochKey: 'epoch-E',
     read: observeWaitRead(() =>
       ++polls === 1
         ? [{ jobId: 'a', disposition: 'discovery-unknown' }]
@@ -1551,55 +1103,11 @@ it('persists tail selection across a snapshot of a held epoch', () => {
   expect(readable.jobs[0].progress[0]).toBe('line-2981');
 });
 
-it.each([false, true])('settles delivered legacy artifacts silently (v2=%s)', async (v2) => {
-  const time = new VirtualTime();
-  let polls = 0;
-  const result = collect(
-    readWaitSession({
-      request: {
-        jobIds: ['a', 'b'],
-        supportsWaitV2: v2,
-        timeoutSeconds: 1,
-        cursor: v2
-          ? {
-              version: 'jobs.wait.v2',
-              positions: { 'epoch-E': 0 },
-              locations: { a: 'epoch-E', b: 'epoch-E' },
-              deliveredJobIds: ['a'],
-            }
-          : { afterSeq: 0, deliveredJobIds: ['a'] },
-      },
-      time,
-      activeEpochKey: 'epoch-E',
-      read: observeWaitRead(() => {
-        const settled = ++polls > 1;
-        return [
-          {
-            ...admitted('a'),
-            availability: settled
-              ? { kind: 'available', resultPath: '/a.md' }
-              : { kind: 'repair-pending', ageUncertain: false },
-          },
-          admitted('b', [], settled),
-        ];
-      }),
-      visit: testProgressVisit,
-    }),
-  );
-  await flushMicrotasks(20);
-  time.tick(250);
-  await flushMicrotasks(20);
-  time.tick(1000);
-  const events = await result;
-  expect(events.at(-1)).toMatchObject({ type: 'terminal', jobId: 'b', remainingJobIds: [] });
-});
-
-it('attaches its job entry to every V3 progress event', async () => {
+it('attaches its job entry to every progress event', async () => {
   const events = await collect(
     readWaitSession({
-      request: { jobIds: ['a'], supportsWaitV3: true, timeoutSeconds: 0 },
+      request: { jobIds: ['a'], timeoutSeconds: 0 },
       time: new VirtualTime(),
-      activeEpochKey: 'epoch-E',
       read: observeWaitRead(() => [
         admitted(
           'a',
@@ -1620,25 +1128,6 @@ it('attaches its job entry to every V3 progress event', async () => {
   expect(progress.every((event) => parseWaitStreamEventValue(event) !== null)).toBe(true);
 });
 
-it('bounds terminal-boundary searches independently of a versionless progress backlog', async () => {
-  const job = admitted(
-    'a',
-    Array.from({ length: 64 }, (_, i) => [i + 1, `line-${i}`]),
-  );
-  const find = vi.spyOn(job.detail.events, 'find');
-  const events = await collect(
-    readWaitSession({
-      request: { jobIds: ['a'], timeoutSeconds: 0 },
-      time: new VirtualTime(),
-      activeEpochKey: 'epoch-E',
-      read: observeWaitRead(() => [job]),
-      visit: testProgressVisit,
-    }),
-  );
-  expect(events.filter((event) => event.type === 'progress')).toHaveLength(64);
-  expect(find.mock.calls.length).toBeLessThanOrEqual(10);
-});
-
 it('shares stream admission and reads only a bounded tail or the requested epoch suffix', async () => {
   const f = createTerminalExportFixture();
   try {
@@ -1648,23 +1137,20 @@ it('shares stream admission and reads only a bounded tail or the requested epoch
     const coordinator = new WaitCoordinator({
       visitProgress: (_epoch, visit) => {
         reads++;
-        return {
-          kind: 'read',
-          value: f.store.visitProgress((source) =>
-            visit({
-              after: (id, after, count) => {
-                const page = source.after(id, after, count);
-                rows += page.rows.length;
-                return page;
-              },
-              before: (id, before, count) => {
-                const page = source.before(id, before, count);
-                rows += page.rows.length;
-                return page;
-              },
-            }),
-          ),
-        };
+        return f.store.visitProgress((source) =>
+          visit({
+            after: (id, after, count) => {
+              const page = source.after(id, after, count);
+              rows += page.rows.length;
+              return page;
+            },
+            before: (id, before, count) => {
+              const page = source.before(id, before, count);
+              rows += page.rows.length;
+              return page;
+            },
+          }),
+        );
       },
       sessionManager: { get: () => null } as never,
       launchQueue: { reservationFor: () => null, getActiveJobIds: () => [] } as never,
@@ -1693,7 +1179,7 @@ it('shares stream admission and reads only a bounded tail or the requested epoch
       undefined,
       () => ({ kind: 'available', resultPath: '/x' }),
     );
-    const request = { jobIds: [f.jobId], supportsWaitV3: true, timeoutSeconds: 0 };
+    const request = { jobIds: [f.jobId], timeoutSeconds: 0 };
     const admittedRequest = Object.assign(request, { admissions: addressing.admitWait(request) });
     const events = await collect(addressing.waitStream(admittedRequest));
     expect(reads).toBe(1);
@@ -1702,7 +1188,6 @@ it('shares stream admission and reads only a bounded tail or the requested epoch
     rows = 0;
     const resumed = addressing.snapshot({
       jobIds: [f.jobId],
-      supportsWaitV3: true,
       cursor: 'cursor' in last ? last.cursor : undefined,
     });
     expect(resumed.jobs[0].progress).toEqual([]);
@@ -1710,74 +1195,6 @@ it('shares stream admission and reads only a bounded tail or the requested epoch
   } finally {
     f.close();
   }
-});
-
-it.each(['v0.10.15', 'v0.10.16', 'v0.10.17', 'v0.10.18'] as const)(
-  'gives %s runnable held-progress remediation without --full',
-  async (tag) => {
-    const directories: string[] = [];
-    const released = await loadReleasedWait(tag, directories);
-    const job = { ...admitted('a', [], true), sourceRead: 'transient-unknown' as const };
-    try {
-      const events = await collect(
-        readWaitSession({
-          request: { jobIds: ['a'], supportsWaitV2: tag !== 'v0.10.15', timeoutSeconds: 0 },
-          time: new VirtualTime(),
-          activeEpochKey: 'epoch-E',
-          read: observeWaitRead(() => [job]),
-          visit: testProgressVisit,
-        }),
-      );
-      const text = events
-        .map((event) => released.parseWaitStreamEventValue(event))
-        .map((event) => (event && 'message' in event ? (event.message ?? '') : ''))
-        .join('\n');
-      expect(text).toContain('coral-cli jobs detail a');
-      expect(text).not.toContain('--full');
-    } finally {
-      for (const directory of directories) rmSync(directory, { recursive: true, force: true });
-    }
-  },
-);
-
-it.each([false, true])('a legacy failed artifact refuses only its affected job, v2=%s', async (v2) => {
-  const a = admitted('a');
-  const failed = {
-    ...admitted('b'),
-    availability: { kind: 'failed' as const, cause: 'repair-failed' as const, retryScheduled: true },
-  };
-  let cursor: WaitCursor | undefined;
-  const request = {
-    jobIds: ['a', 'b'],
-    supportsWaitV2: v2,
-    timeoutSeconds: 0,
-    onLegacyCursor: (next: WaitCursor) => {
-      cursor = next;
-    },
-  };
-  const events = await collect(
-    readWaitSession({
-      request,
-      time: new VirtualTime(),
-      activeEpochKey: 'epoch-E',
-      read: observeWaitRead(() => [a, failed]),
-      visit: testProgressVisit,
-    }),
-  );
-  const terminal = events.find((event) => event.type === 'terminal')!;
-  cursor = terminal.cursor ?? cursor;
-  expect(terminal).toMatchObject({ jobId: 'a', remainingJobIds: ['b'] });
-  await expect(
-    collect(
-      readWaitSession({
-        request: { ...request, cursor },
-        time: new VirtualTime(),
-        activeEpochKey: 'epoch-E',
-        read: observeWaitRead(() => [a, failed]),
-        visit: testProgressVisit,
-      }),
-    ),
-  ).rejects.toThrow('coral-cli jobs detail b');
 });
 
 it.each(['terminal', 'artifact', 'budget', 'deadline', 'all-refused', 'all-done'] as const)(
@@ -1788,10 +1205,9 @@ it.each(['terminal', 'artifact', 'budget', 'deadline', 'all-refused', 'all-done'
       kind === 'budget' ? Array.from({ length: 600 }, (_, index) => [index + 1, `line-${index}`]) : [],
       kind !== 'deadline' && kind !== 'budget',
     );
-    let cursor: WaitCursorV3 | undefined;
+    let cursor: WaitCursor | undefined;
     if (kind === 'artifact' || kind === 'all-done')
       cursor = {
-        version: 'jobs.wait.v3',
         jobs: [
           {
             hash: waitJobHash('a'),
@@ -1802,11 +1218,10 @@ it.each(['terminal', 'artifact', 'budget', 'deadline', 'all-refused', 'all-done'
           },
         ],
       };
-    const events = await collect(
+    const events = await collectWithFrames(
       readWaitSession({
-        request: { jobIds: ['a'], supportsWaitV3: true, timeoutSeconds: 0, drainProgress: true, cursor },
+        request: { jobIds: ['a'], timeoutSeconds: 0, drainProgress: true, cursor },
         time: new VirtualTime(),
-        activeEpochKey: 'epoch-E',
         read: observeWaitRead(() => (kind === 'all-refused' ? [{ jobId: 'a', disposition: 'missing' }] : [job])),
         visit: testProgressVisit,
       }),
@@ -1816,17 +1231,16 @@ it.each(['terminal', 'artifact', 'budget', 'deadline', 'all-refused', 'all-done'
     expect(isFinalWaitEvent(events.at(-1)!)).toBe(true);
     for (const event of events.filter((event) => !isFinalWaitEvent(event))) {
       expect(event).not.toHaveProperty('exitCode');
-      expect(event).not.toHaveProperty('cursor');
+      if (event.type !== 'cursor') expect(event).not.toHaveProperty('cursor');
     }
     expect(events.at(-1)?.type).toBe(kind === 'terminal' ? 'terminal' : kind === 'artifact' ? 'artifact' : 'waiting');
   },
 );
 
-it('rejects completion fields on V3 progress and notices, and incomplete finals', () => {
+it('rejects completion fields on progress and notices, and incomplete finals', () => {
   const entry = { hash: waitJobHash('a'), epoch: waitEpochToken('epoch-E'), seq: 1, lineOffset: 0, flags: 0 };
   const progress = {
     type: 'progress',
-    version: 'jobs.wait.v3',
     jobId: 'a',
     seq: 1,
     message: 'line',
@@ -1837,17 +1251,15 @@ it('rejects completion fields on V3 progress and notices, and incomplete finals'
   expect(() =>
     parseWaitStreamEventValue({
       type: 'notice',
-      version: 'jobs.wait.v3',
       message: 'notice',
-      cursor: { version: 'jobs.wait.v3', jobs: [] },
+      cursor: { jobs: [] },
     }),
   ).toThrow();
   expect(() =>
     parseWaitStreamEventValue({
       type: 'waiting',
-      version: 'jobs.wait.v3',
       waitingJobIds: [],
-      cursor: { version: 'jobs.wait.v3', jobs: [] },
+      cursor: { jobs: [] },
     }),
   ).toThrow();
 });
@@ -1862,7 +1274,6 @@ it('an internal discuss-style waiter survives the bounded transient retry schedu
       request: { jobIds: ['a'], timeoutSeconds: 20 },
       internal: true,
       time,
-      activeEpochKey: 'epoch-E',
       read: observeWaitRead(() =>
         readable
           ? [admitted('a')]
@@ -1889,75 +1300,225 @@ it('an internal discuss-style waiter survives the bounded transient retry schedu
   expect(events.at(-1)).toMatchObject({ type: 'terminal', jobId: 'a' });
 });
 
-it.each([0, 1, 2, 3, 4, 5])(
-  'the released v0.10.17 fold resumes each full message exactly after cut %i',
-  async (cut) => {
-    const released = await loadReleasedWait('v0.10.17', []);
-    const a = admitted('a', [
-      [1, 'a-one\na-two'],
-      [3, 'a-three'],
-    ]);
-    const b = admitted('b', [
-      [2, 'b-one\nb-two'],
-      [4, 'b-three'],
-    ]);
-    a.detail.terminalSeq = 5;
-    b.detail.terminalSeq = 6;
-    a.detail.events[a.detail.events.length - 1].seq = 5;
-    b.detail.events[b.detail.events.length - 1].seq = 6;
-    let cursor: WaitCursor | undefined;
-    const printed: string[] = [];
-    const fold = (event: WaitStreamEvent) => {
-      const parsed = released.parseWaitStreamEventValue(event);
-      const decision = released.advanceWaitRenderCursor(cursor ?? { afterSeq: 0 }, parsed);
-      cursor = decision.cursor;
-      if (decision.shouldRender && event.type === 'progress') printed.push(event.message);
-    };
-    const stream = () =>
-      readWaitSession({
-        request: { jobIds: ['a', 'b'], supportsWaitV2: true, timeoutSeconds: 0, cursor },
-        activeEpochKey: 'epoch-E',
-        time: new VirtualTime(),
-        read: observeWaitRead(() => [a, b]),
-        visit: testProgressVisit,
-      });
-    const first = stream();
-    for (let index = 0; index < cut; index++) {
-      const next = await first.next();
-      if (next.done) break;
-      fold(next.value);
-    }
-    await first.return(undefined);
-    for (let requests = 0; requests < 3; requests++) for await (const event of stream()) fold(event);
-    expect(printed).toEqual(['a-one\na-two', 'b-one\nb-two', 'a-three', 'b-three']);
-  },
-);
+describe('a frontier the client holds is complete at every cut (K1)', () => {
+  type Jobs = Record<string, ReturnType<typeof admitted>>;
+  const jobsWith = (events: Record<string, Array<[number, string]>>): Jobs =>
+    Object.fromEntries(Object.entries(events).map(([id, messages]) => [id, admitted(id, messages, false)]));
+  const frontierOf = (jobs: Jobs) =>
+    Math.max(0, ...Object.values(jobs).flatMap((job) => job.detail.events.map((event) => event.seq)));
 
-it('v2 terminal acknowledgement preserves message delivery position and renders every held-member warning', async () => {
-  const released = await loadReleasedWait('v0.10.17', []);
-  const a = { ...admitted('a', [], true), sourceRead: 'transient-unknown' as const };
-  const b = { ...admitted('b', [], true), sourceRead: 'transient-unknown' as const };
-  a.detail.terminalSeq = 4;
-  b.detail.terminalSeq = 3;
-  let cursor: WaitCursor = { afterSeq: 0 };
-  const warnings: string[] = [];
-  const read = async (jobs: (typeof a)[]) => {
-    for await (const event of readWaitSession({
-      request: { jobIds: jobs.map((job) => job.jobId), supportsWaitV2: true, timeoutSeconds: 0, cursor },
-      activeEpochKey: 'epoch-E',
+  async function cutRun(jobs: Jobs, cursor: WaitCursor | undefined, cut: (event: WaitStreamEvent) => boolean) {
+    const ids = Object.keys(jobs);
+    const shown: string[] = [];
+    let client = cursor;
+    for await (const raw of readWaitSession({
+      request: { jobIds: ids, timeoutSeconds: 0, ...(cursor ? { cursor: waitCursorForJobs(cursor, ids) } : {}) },
       time: new VirtualTime(),
-      read: observeWaitRead(() => jobs),
-      visit: testProgressVisit,
+      read: () => Object.values(jobs),
+      visit: progressVisitFromEvents(
+        (id) => jobs[id].detail.events,
+        () => frontierOf(jobs),
+      ),
     })) {
-      const decision = released.advanceWaitRenderCursor(cursor, released.parseWaitStreamEventValue(event));
-      cursor = decision.cursor;
-      if (decision.shouldRender && event.type === 'progress') warnings.push(event.message);
+      const event = parseWaitStreamEventValue(JSON.parse(JSON.stringify(raw))) as WaitStreamEvent;
+      if (cut(event)) break;
+      client = advanceWaitRenderCursor(client, event).cursor;
+      if (event.type === 'progress') shown.push(`${event.jobId}:${event.message}`);
     }
+    return { shown, client };
+  }
+  const beforeFinal = (event: WaitStreamEvent) => isFinalWaitEvent(event);
+  const delivered = (shown: string[], jobId: string) => shown.filter((line) => line.startsWith(`${jobId}:`));
+  const later = Array.from({ length: 40 }, (_, i) => [20 + i, `b${i + 1}`] as [number, string]);
+
+  it('positions a silent member in the client frontier, so lines it gains before the reconnect all arrive', async () => {
+    const first = await cutRun(
+      jobsWith({
+        A: [
+          [10, 'a1'],
+          [11, 'a2'],
+          [12, 'a3'],
+        ],
+        B: [],
+      }),
+      undefined,
+      beforeFinal,
+    );
+    expect(delivered(first.shown, 'A')).toEqual(['A:a1', 'A:a2', 'A:a3']);
+    const second = await cutRun(
+      jobsWith({
+        A: [
+          [10, 'a1'],
+          [11, 'a2'],
+          [12, 'a3'],
+        ],
+        B: later,
+      }),
+      first.client,
+      () => false,
+    );
+    expect(delivered(second.shown, 'B')).toEqual(later.map(([, message]) => `B:${message}`));
+    expect(delivered(second.shown, 'A')).toEqual([]);
+  });
+
+  it('keeps every member of a saved frontier when progress for one member arrives before a cut', async () => {
+    const saved = savedCursor({ A: 15, B: 15 });
+    const first = await cutRun(jobsWith({ A: [[16, 'a-new']], B: [[5, 'b-old']] }), saved, beforeFinal);
+    expect(first.shown).toEqual(['A:a-new']);
+    const second = await cutRun(
+      jobsWith({ A: [[16, 'a-new']], B: [[5, 'b-old'], ...later] }),
+      first.client,
+      () => false,
+    );
+    expect(delivered(second.shown, 'B')).toEqual(later.map(([, message]) => `B:${message}`));
+  });
+
+  it('never replays what a saved frontier already covers for a silent member', async () => {
+    const old = Array.from({ length: 30 }, (_, i) => [i + 1, `b-seen-${i + 1}`] as [number, string]);
+    const jobs = jobsWith({ A: [[41, 'a-new']], B: old });
+    const first = await cutRun(jobs, savedCursor({ A: 40, B: 40 }), beforeFinal);
+    const second = await cutRun(jobs, first.client, () => false);
+    expect(delivered([...first.shown, ...second.shown], 'B')).toEqual([]);
+  });
+
+  it('a cut right after a queued event leaves a frontier, never a synthetic legacy cursor', async () => {
+    const queuedJob = admitted('Q', [], false);
+    queuedJob.detail.status.phase = 'queued';
+    queuedJob.queued = {
+      type: 'queued',
+      jobId: 'Q',
+      queuePosition: 1,
+      runningJobIds: [],
+      timing: { origin: 'runtime', originAt: '', emittedAt: '', elapsedMs: 0 },
+      jobKind: 'kb',
+      systemTaskId: 't',
+    };
+    const history = Array.from({ length: 300 }, (_, i) => [i + 1, `old-${i + 1}`] as [number, string]);
+    const jobs: Jobs = { Q: queuedJob, R: admitted('R', history, false) };
+    let afterQueued = false;
+    const first = await cutRun(jobs, undefined, (event) => {
+      if (afterQueued) return true;
+      afterQueued = event.type === 'queued';
+      return false;
+    });
+    expect(first.client).not.toHaveProperty('afterSeq');
+    expect(first.client?.jobs.map((entry) => entry.hash).sort()).toEqual([waitJobHash('Q'), waitJobHash('R')].sort());
+    const second = await cutRun(jobs, first.client, () => false);
+    expect(delivered(second.shown, 'R')).toEqual(history.slice(-20).map(([, message]) => `R:${message}`));
+  });
+
+  it('acknowledges a terminal only on an entry that names its epoch, in stream and snapshot', async () => {
+    const time = new VirtualTime();
+    let poll = 0;
+    const read = (): WaitAdmission[] =>
+      ++poll === 1
+        ? [{ jobId: 'u', disposition: 'discovery-unknown', sourceRead: 'transient-unknown', message: 'held' }]
+        : [{ ...admitted('u', [], true, 'epoch-H'), sourceRead: 'transient-unknown', progressUnknown: true }];
+    const events: WaitStreamEvent[] = [];
+    const run = (async () => {
+      for await (const event of readWaitSession({
+        request: { jobIds: ['u'], timeoutSeconds: 60 },
+        time,
+        read: observeWaitRead(read),
+        visit: testProgressVisit,
+      }))
+        events.push(event);
+    })();
+    await flushMicrotasks(20);
+    time.tick(300);
+    await flushMicrotasks(50);
+    await run;
+    const terminal = events.find((event) => event.type === 'terminal');
+    if (terminal?.type !== 'terminal') throw new Error('expected a terminal');
+    expect(terminal.cursor.jobs[0].epoch).toBe(waitEpochToken('epoch-H'));
+    expect(terminal.cursor.jobs[0].flags & 1).toBe(1);
+    expect(() => parseWaitStreamEventValue(JSON.parse(JSON.stringify(terminal)))).not.toThrow();
+    expect(() => serializeWaitCursor(terminal.cursor)).not.toThrow();
+    const session = new WaitSession(['u']);
+    session.reconcile(read());
+    expect(parseWaitSnapshot(selectWaitSnapshot(session)).jobs[0].epochToken).toBe(waitEpochToken('epoch-H'));
+  });
+
+  it('carries a silent fault-page advance in a cursor frame and emits no message for it', async () => {
+    const events = await collectWithFrames(
+      readWaitSession({
+        request: { jobIds: ['a'], timeoutSeconds: 0, cursor: savedCursor({ a: 5 }) },
+        time: new VirtualTime(),
+        read: () => [admitted('a', [], false)],
+        visit: (_epoch, read) => ({
+          kind: 'read',
+          value: read({
+            after: (_id, after, rows) =>
+              progressPage(
+                [51, 52, 53].filter((seq) => seq > after).map((seq) => ({ seq })),
+                rows,
+                53,
+              ),
+            before: (_id, _before, rows) => progressTail([], rows, 53),
+          }),
+        }),
+      }),
+    );
+    expect(events.filter((event) => event.type === 'progress')).toEqual([]);
+    expect(events.find((event) => event.type === 'cursor')).toMatchObject({ cursor: savedCursor({ a: 53 }) });
+  });
+});
+
+describe('only admitted members hold a bounded wait open (K3)', () => {
+  it('keeps monitoring a running job when a sibling id is refused', async () => {
+    const time = new VirtualTime();
+    const events: WaitStreamEvent[] = [];
+    let done = false;
+    void (async () => {
+      for await (const event of readWaitSession({
+        request: { jobIds: ['a', 'ghost'], timeoutSeconds: 60 },
+        time,
+        read: observeWaitRead(() => [admitted('a', [], false), { jobId: 'ghost', disposition: 'missing' }]),
+        visit: testProgressVisit,
+        observe: (session) => session.observeCoverage(['a'], [], 1),
+      }))
+        events.push(event);
+      done = true;
+    })();
+    await flushMicrotasks(50);
+    expect(done).toBe(false);
+    expect(events.some((event) => event.type === 'disposition' && event.jobId === 'ghost')).toBe(true);
+  });
+});
+
+it('drains an internal backlog page by page, never a whole history in one synchronous pass', async () => {
+  const job = admitted(
+    'a',
+    Array.from({ length: 1200 }, (_, index) => [index + 1, `line ${index}`]),
+  );
+  const observed = progressVisitFromEvents(() => job.detail.events);
+  let rows = 0;
+  let largestVisit = 0;
+  const visit: ProgressVisit = (epoch, read) => {
+    rows = 0;
+    const result = observed(epoch, (source) =>
+      read({
+        after: (id, after, count) => {
+          const page = source.after(id, after, count);
+          rows += page.rows.length;
+          return page;
+        },
+        before: (id, before, count) => source.before(id, before, count),
+      }),
+    );
+    largestVisit = Math.max(largestVisit, rows);
+    return result;
   };
-  await read([a, b]);
-  expect(cursor).toMatchObject({ version: 'jobs.wait.v2', positions: { 'epoch-E': 0 }, deliveredJobIds: ['a'] });
-  await read([b]);
-  expect(warnings).toHaveLength(2);
-  expect(warnings[0]).toContain('Earlier progress for a is held');
-  expect(warnings[1]).toContain('Earlier progress for b is held');
+  const events = await collect(
+    readWaitSession({
+      request: { jobIds: ['a'], timeoutSeconds: 0 },
+      internal: true,
+      time: new VirtualTime(),
+      read: () => [job],
+      visit,
+    }),
+  );
+  expect(events.filter((event) => event.type === 'progress')).toHaveLength(1200);
+  expect(events.at(-1)?.type).toBe('terminal');
+  expect(largestVisit).toBeLessThanOrEqual(501);
 });

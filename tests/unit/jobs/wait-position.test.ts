@@ -1,5 +1,7 @@
 import type { JobDetailResponse } from '#src/jobs/records.js';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
+import type { ProgressVisit } from '#src/jobs/wait/contract.js';
+import { progressVisitFromEvents } from '#tests/helpers/wait-progress.js';
 import { WaitSession, type WaitAdmission } from '#src/jobs/wait/session.js';
 import { selectWaitSnapshot } from '#tests/helpers/wait-progress.js';
 import { waitEpochToken, waitJobHash } from '#src/jobs/wait/cursor.js';
@@ -32,8 +34,6 @@ function admission(jobId: string, seqs: number[]): WaitAdmission & { detail: Job
 it('tail-pending member resolving into a prefix sibling epoch', () => {
   // A was collected up to seq 100; A has 100 unread lines (101..200). U was unresolved (0xff + TAIL) and now resolves into E.
   const input = {
-    version: 'jobs.wait.v3' as const,
-
     jobs: [
       { hash: waitJobHash('A'), epoch: waitEpochToken(E), seq: 100, lineOffset: 0, flags: 0 },
       { hash: waitJobHash('U'), epoch: null, seq: 0, lineOffset: 0, flags: 4 },
@@ -41,7 +41,7 @@ it('tail-pending member resolving into a prefix sibling epoch', () => {
   };
   const aSeqs = Array.from({ length: 200 }, (_, i) => i + 1).filter((s) => s % 2 === 1); // A: odd seqs 1..199
   const uSeqs = Array.from({ length: 30 }, (_, i) => 201 + i); // U: 201..230
-  const session = new WaitSession(['A', 'U'], input, 'active-epoch');
+  const session = new WaitSession(['A', 'U'], input);
   session.reconcile([admission('A', aSeqs), admission('U', uSeqs)]);
   const snap = selectWaitSnapshot(session);
   const a = snap.jobs.find((j) => j.jobId === 'A')!;
@@ -52,4 +52,35 @@ it('tail-pending member resolving into a prefix sibling epoch', () => {
   expect(u.progress).toEqual(uSeqs.slice(-20).map((seq) => `U-${seq}`));
   expect(snap.notices.filter((notice) => notice.includes('was not shown'))).toEqual([expect.stringContaining('U')]);
   expect(snap.notices.join(' ')).not.toContain('replay');
+});
+
+it('fits a byte budget over oversized lines with work linear in the lines it loads', () => {
+  const line = 'é'.repeat(26_000);
+  const seqs = Array.from({ length: 500 }, (_, index) => index + 1);
+  const job = admission('a', seqs);
+  for (const event of job.detail.events) if (event.type === 'progress') event.message = line;
+  let rows = 0;
+  const visit = progressVisitFromEvents(() => job.detail.events);
+  const counted: ProgressVisit = (epoch, read) =>
+    visit(epoch, (source) =>
+      read({
+        after: source.after,
+        before: (id, before, count) => {
+          const page = source.before(id, before, count);
+          rows += page.rows.length;
+          return page;
+        },
+      }),
+    );
+  const session = new WaitSession(['a']);
+  session.reconcile([job]);
+  const byteLength = vi.spyOn(Buffer, 'byteLength');
+  try {
+    session.withProgress(counted, (sources) => session.position(sources, 500, 500, 64 * 1024));
+    expect(byteLength.mock.calls.length).toBeLessThan(500);
+  } finally {
+    byteLength.mockRestore();
+  }
+  expect(rows).toBeLessThanOrEqual(64);
+  expect(session.entry('a').seq).toBeGreaterThan(480);
 });

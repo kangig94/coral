@@ -1,6 +1,7 @@
 import type { ProgressPage, TailPage } from './wait/progress-page.js';
 import { progressPage, progressTail, type RawProgressRow } from './wait/progress-page.js';
-import type { ProgressSource } from './wait/contract.js';
+import type { ProgressSource, ProgressVisitResult } from './wait/contract.js';
+import { isCodeDefect, sourceReadFailureDisposition } from './source-read.js';
 import type { Database } from '../store/db.js';
 import type { HostRef, UsageSummary } from '../providers/contract.js';
 
@@ -781,15 +782,34 @@ export function readJobProgressTail(
   return progressTail(rawProgressRows(raw, ctx), rows, sourceFrontier);
 }
 
-export function visitJobProgress<T>(db: Database, ctx: StoreReadContext, read: (source: ProgressSource) => T): T {
+/** Only opening is classified here: the read runs outside this source's error scope, so no failure can be misattributed. */
+export function visitJobProgress<T>(
+  db: Database,
+  ctx: StoreReadContext,
+  read: (source: ProgressSource) => T,
+): ProgressVisitResult<T> {
   const owned = !db.isTransaction;
-  if (owned) db.exec('BEGIN');
+  let frontier: number;
   try {
-    const frontier = db.prepare<[], { seq: number }>('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get()?.seq ?? 0;
-    return read({
-      after: (id, after, rows) => readJobProgressPage(db, id, ctx, after, rows, frontier),
-      before: (id, before, rows) => readJobProgressTail(db, id, ctx, before, rows, frontier),
-    });
+    if (owned) db.exec('BEGIN');
+    frontier = db.prepare<[], { seq: number }>('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get()?.seq ?? 0;
+  } catch (error) {
+    if (owned && db.isTransaction) db.exec('ROLLBACK');
+    if (isCodeDefect(error)) throw error;
+    return {
+      kind: 'unreadable',
+      disposition: sourceReadFailureDisposition(error),
+      reason: 'The active journal cannot be read right now',
+    };
+  }
+  try {
+    return {
+      kind: 'read',
+      value: read({
+        after: (id, after, rows) => readJobProgressPage(db, id, ctx, after, rows, frontier),
+        before: (id, before, rows) => readJobProgressTail(db, id, ctx, before, rows, frontier),
+      }),
+    };
   } finally {
     if (owned) db.exec('ROLLBACK');
   }

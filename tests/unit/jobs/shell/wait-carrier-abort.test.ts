@@ -1,3 +1,4 @@
+import { nextDelivered } from '#tests/helpers/wait-stream.js';
 import { progressVisitFromEvents, progressVisitFromDetails } from '#tests/helpers/wait-progress.js';
 import { it, expect, vi } from 'vitest';
 import { WaitCoordinator } from '#src/jobs/shell/wait.js';
@@ -70,9 +71,8 @@ it.each(['direct', 'v2', 'live'])(
       undefined,
       () => ({ kind: 'failed', cause: 'terminal-unusable', retryScheduled: false }),
     );
-    const stream =
-      mode !== 'v2' ? wait.waitForJobs(request) : addressing.waitStream({ ...request, supportsWaitV2: true });
-    const pending = stream.next();
+    const stream = mode !== 'v2' ? wait.waitForJobs(request) : addressing.waitStream(request);
+    const pending = nextDelivered(stream);
     await started;
     if (mode === 'live') {
       finishObservation([]);

@@ -586,15 +586,17 @@ export function createCoordinatorCore(
     runtime,
     getActiveEpochPath: () => core.state.selectedStoreEpochPath,
     currentJobEpochKey: core.currentJobEpochKey,
-    internalWaitAdmissions: (jobIds, session) => {
-      const request = internalWaitRequests.get(session) ?? {
-        ...session,
-        jobIds: [...jobIds],
-        supportsWaitV3: true as const,
-        drainProgress: true as const,
-      };
-      internalWaitRequests.set(session, request);
-      return requestPorts.jobAddressing.admitWait(request);
+    internalWait: {
+      admissions: (jobIds, session) => {
+        const request = internalWaitRequests.get(session) ?? {
+          ...session,
+          jobIds: [...jobIds],
+          drainProgress: true as const,
+        };
+        internalWaitRequests.set(session, request);
+        return requestPorts.jobAddressing.admitWait(request);
+      },
+      visitProgress: (epoch, read) => requestPorts.jobAddressing.visitProgress(epoch, read),
     },
     observeJobAbsence: (jobId) => getProgressStore().observeJobAbsence(jobId),
     bundleHash: world.identity.bundleHash,

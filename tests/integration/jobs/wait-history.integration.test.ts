@@ -93,16 +93,14 @@ function build(progressCount: number) {
   return { root, epochKey, addressing };
 }
 
-it('historical windowed read: bounded wait with v3 cursor whose epoch watermark is below launch', async () => {
+it('historical windowed read: bounded wait with a cursor whose epoch watermark is below launch', async () => {
   const f = build(1000);
   try {
     const cursor = {
-      version: 'jobs.wait.v3' as const,
       jobs: [{ hash: waitJobHash('U'), epoch: waitEpochToken(f.epochKey), seq: 0, lineOffset: 0, flags: 0 }],
     };
     const events: WaitStreamEvent[] = [];
-    for await (const e of f.addressing.waitStream({ jobIds: ['U'], supportsWaitV3: true, timeoutSeconds: 2, cursor }))
-      events.push(e);
+    for await (const e of f.addressing.waitStream({ jobIds: ['U'], timeoutSeconds: 2, cursor })) events.push(e);
     const progress = events.filter((e) => e.type === 'progress');
     expect(progress).toHaveLength(500);
     expect(progress.at(-1)).toMatchObject({ message: 'line-500' });
@@ -115,14 +113,13 @@ it('historical windowed read: bounded wait with v3 cursor whose epoch watermark 
   }
 });
 
-it('historical windowed read: snapshot with v3 cursor whose epoch watermark is below launch', () => {
+it('historical windowed read: snapshot with a cursor whose epoch watermark is below launch', () => {
   const f = build(1000);
   try {
     const cursor = {
-      version: 'jobs.wait.v3' as const,
       jobs: [{ hash: waitJobHash('U'), epoch: waitEpochToken(f.epochKey), seq: 0, lineOffset: 0, flags: 0 }],
     };
-    const snap = f.addressing.snapshot({ jobIds: ['U'], supportsWaitV3: true, cursor });
+    const snap = f.addressing.snapshot({ jobIds: ['U'], cursor });
     expect(snap.jobs[0].progress).toHaveLength(500);
 
     expect(snap.remainingJobIds).toEqual(['U']);

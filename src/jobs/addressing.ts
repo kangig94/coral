@@ -1,8 +1,7 @@
-import { LegacyWaitDelivery } from './wait/legacy.js';
 import type { ProgressVisit } from './wait/contract.js';
 import { epochIdentity, sameEpoch } from '../store/epoch/identity.js';
 import { sourceReadFailureDisposition } from './source-read.js';
-import { serializeWaitCursor, decodeWaitCursor, waitEpochToken } from './wait/cursor.js';
+import { waitEpochToken } from './wait/cursor.js';
 import { WaitSession, WaitSessionError, type WaitAdmission, type WaitSnapshot } from './wait/session.js';
 import { selectWaitSnapshot } from './wait/snapshot.js';
 import { readWaitSession } from './wait/reader.js';
@@ -100,7 +99,7 @@ export class JobAddressing {
   private readonly locations: JobLocationView;
   private readonly readHistorical: HistoricalSourceReader;
   private readonly observeResultAvailability: (jobId: string, session?: object) => ResultAvailability;
-  private readonly progressRetentionExpired?: (jobId: string) => boolean | undefined;
+  private readonly progressRetentionExpired?: (jobId: string, session?: object) => boolean | undefined;
   private readonly hintRepair?: (jobId: string) => void;
   private readonly active: ActiveJobAccess;
   private readonly preEpochHistoryExists: PreEpochHistoryProbe;
@@ -119,7 +118,7 @@ export class JobAddressing {
       },
     observeResultAvailability: (jobId: string, session?: object) => ResultAvailability,
     hintRepair?: (jobId: string) => void,
-    progressRetentionExpired?: (jobId: string) => boolean | undefined,
+    progressRetentionExpired?: (jobId: string, session?: object) => boolean | undefined,
   ) {
     this.locations = locations;
     this.active = active;
@@ -175,12 +174,14 @@ export class JobAddressing {
     });
   }
 
-  private location(jobId: string, activeEpochKey?: string): JobLocation | null {
+  /** A wait poll resolves unknown IDs through its own session-cached hold reads, so it skips the uncached hold scan. */
+  private location(jobId: string, activeEpochKey?: string, scanHolds = true): JobLocation | null {
     const existing = this.locations.read(jobId);
     if (existing !== null) return existing;
     const detail = this.active.detail(jobId);
     const epochKey = activeEpochKey ?? this.active.epochKey() ?? ':memory:';
     if (detail === null) {
+      if (!scanHolds) return null;
       for (const hold of this.locations.unknownLocationHolds()) {
         if (!hold.epochKey || sameEpoch(hold.epochKey, epochKey)) continue;
         const read = this.readHistorical(hold.epochKey, [jobId]);
@@ -390,7 +391,7 @@ export class JobAddressing {
     const locations = new Map(
       ordered.map((jobId) => {
         try {
-          return [jobId, this.location(jobId, activeEpochKey)] as const;
+          return [jobId, this.location(jobId, activeEpochKey, false)] as const;
         } catch (error) {
           const sourceRead = sourceReadFailureDisposition(error);
           failures.set(jobId, {
@@ -508,7 +509,7 @@ export class JobAddressing {
           ...(detail?.exit
             ? {
                 availability,
-                progressLost: this.progressRetentionExpired?.(jobId) === true,
+                progressLost: this.progressRetentionExpired?.(jobId, request) === true,
               }
             : {}),
         };
@@ -549,85 +550,33 @@ export class JobAddressing {
         sourceRead,
         message,
         progressUnknown: sourceRead === 'transient-unknown',
-        progressLost: this.progressRetentionExpired?.(jobId) === true,
+        progressLost: this.progressRetentionExpired?.(jobId, request) === true,
       };
     });
   }
 
   validateWait(request: WaitStreamRequest): WaitCursorError | null {
-    const cursor = request.cursor;
-    if (cursor !== undefined) {
-      const decoded = decodeWaitCursor(cursor);
-      if (decoded.kind === 'rejected') return decoded.error;
-    }
     const admissions = request.admissions ?? this.admitWait(request);
-    const activeEpochKey = this.waitEpoch(request);
-    if (request.supportsWaitV3 !== true) {
-      const refusal = admissions.find((job) => job.disposition !== 'admitted' && job.disposition !== 'missing');
-      if (refusal?.disposition === 'discovery-unknown')
-        return {
-          code: 'transient',
-          message: `Job ${refusal.jobId}: discovery-unknown. ${this.unknownJobCaveat()}`,
-          detail: { jobs: [...request.jobIds], disposition: 'discovery-unknown' },
-          remediation: `coral-cli wait jobs ${request.jobIds.join(' ')}${cursor === undefined ? '' : ` --cursor ${serializeWaitCursor(cursor)}`}`,
-        };
-      if (refusal)
-        return {
-          code:
-            refusal.disposition === 'scope-mismatch'
-              ? 'scope_mismatch'
-              : refusal.disposition === 'pre-epoch-history'
-                ? 'job_pre_epoch_history'
-                : refusal.disposition === 'outcome-unreadable' || refusal.disposition === 'discovery-unreadable'
-                  ? 'job_outcome_unreadable'
-                  : 'job_outcome_unrecoverable',
-          message: `Job ${refusal.jobId}: ${refusal.disposition}. ${refusal.message ?? ''} Read coral-cli jobs detail ${refusal.jobId}.`,
-          detail: { jobs: admissions.filter((job) => job.disposition === refusal.disposition).map((job) => job.jobId) },
-        };
-      const missing = admissions.filter((job) => job.disposition === 'missing').map((job) => job.jobId);
-      if (missing.length > 0)
-        return {
-          code: 'jobs_not_found',
-          message: `Jobs not found: ${missing.join(', ')}. Remove those IDs to collect the remaining jobs. ${this.unknownJobCaveat()}`,
-        };
-    }
-    const historicalAdmission = admissions.find(
-      (job) => job.disposition === 'admitted' && !sameEpoch(job.epochKey, activeEpochKey),
-    );
-    if (cursor?.version === undefined && cursor !== undefined && historicalAdmission !== undefined)
-      return {
-        code: 'wait_cursor_epoch_required',
-        message: `The legacy cursor cannot identify historical epochs. Run coral-cli jobs detail ${historicalAdmission.jobId}${request.supportsWaitV3 === true ? ' --full' : ''}.`,
-      };
-    if (request.supportsWaitV3 !== true && cursor?.version === 'jobs.wait.v3')
-      return { code: 'wait_cursor_unsupported', message: 'V3 cursor requires supportsWaitV3.' };
-    if (request.supportsWaitV3 !== true && request.supportsWaitV2 !== true && historicalAdmission !== undefined)
-      return {
-        code: 'wait_epoch_unsupported',
-        message: `This CLI cannot identify historical progress epochs. Run coral-cli jobs detail ${historicalAdmission.jobId}.`,
-      };
     try {
-      const session = new WaitSession(request.jobIds, cursor, activeEpochKey);
-      session.reconcile(admissions);
-      if (request.supportsWaitV3 !== true) new LegacyWaitDelivery(session, activeEpochKey).reconcile();
+      new WaitSession(request.jobIds, request.cursor).reconcile(admissions);
     } catch (error) {
-      if (error instanceof WaitSessionError)
-        return { code: error.code as WaitCursorError['code'], message: error.message };
+      if (error instanceof WaitSessionError) return { code: 'wait_cursor_mismatch', message: error.message };
       throw error;
     }
     return null;
   }
 
-  private readonly visitProgress: ProgressVisit = (epoch, read) =>
+  /** Every reader of a job's progress goes to the job's admitted epoch, active or retained. */
+  readonly visitProgress: ProgressVisit = (epoch, read) =>
     sameEpoch(epoch, this.active.epochKey() ?? ':memory:')
       ? (this.active.visitProgress?.(epoch, read) ?? { kind: 'unreadable', disposition: 'transient-unknown' })
       : (this.locations.visitProgress?.(epoch, read) ?? { kind: 'unreadable', disposition: 'transient-unknown' });
 
   snapshot(request: WaitSnapshotRequest): WaitSnapshot {
     const admissions = this.admitWait(request, false);
-    const error = this.validateWait({ ...request, supportsWaitV3: true, admissions });
+    const error = this.validateWait({ ...request, admissions });
     if (error) throw new WaitSessionError(error.code, error.message);
-    const session = new WaitSession(request.jobIds, request.cursor, this.waitEpoch(request));
+    const session = new WaitSession(request.jobIds, request.cursor);
     session.reconcile(admissions);
     return selectWaitSnapshot(session, request.lines ?? 20, this.visitProgress);
   }
@@ -640,7 +589,6 @@ export class JobAddressing {
     yield* readWaitSession({
       request,
       time: this.locations.time,
-      activeEpochKey,
       visit: this.visitProgress,
       read: () => {
         const admissions = firstRead && request.admissions ? request.admissions : this.admitWait(request, !firstRead);

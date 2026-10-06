@@ -1134,3 +1134,15 @@ describe('retired legacy exports', () => {
     expect(branch).toBe(false);
   });
 });
+
+it('never accepts a saved age earlier than its terminal timestamp', () => {
+  const f = createTerminalExportFixture();
+  try {
+    f.complete({ terminalAt: TERMINAL_EXPORT_CUTOFF + 1000 });
+    const location = f.index.read(f.jobId)!;
+    const forged = { ...location, terminalAge: { ...location.terminalAge!, kind: 'known', terminalAt: 0 } };
+    expect(terminalEligibility(f.runtime, forged as never, () => null, false).kind).not.toBe('expired');
+  } finally {
+    f.close();
+  }
+});

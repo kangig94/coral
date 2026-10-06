@@ -29,8 +29,7 @@ import { createRealTimePort } from '#src/infra/time.js';
 import type { WaitSnapshot } from '#src/jobs/wait/session.js';
 import type { JobDetailResponse } from '#src/jobs/records.js';
 import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
-import { admitted } from '#tests/helpers/wait-session.js';
-import { jobsWaitExtensions } from '#src/transport/rpc/jobs.js';
+import { admitted, savedCursor } from '#tests/helpers/wait-session.js';
 import { parseWaitStreamEventValue } from '#src/jobs/wait/stream-event.js';
 
 const cleanup: Array<() => void | Promise<void>> = [];
@@ -107,7 +106,7 @@ describe('actual wait carriage', () => {
       const input = {
         jobIds: ['a', 'a'],
         projectRoot: f.root,
-        ...(method === 'jobs.wait' ? { supportsWaitV3: true } : {}),
+        ...(method === 'jobs.wait' ? { cursor: { jobs: [] } } : {}),
       };
       const response = method === 'jobs.wait' ? client.subscribe(method, input) : client.request(method, input);
       await expect(response).rejects.toMatchObject({
@@ -220,11 +219,8 @@ describe('actual wait carriage', () => {
     const socketPath = join(f.root, 'snapshot.sock');
     await new Promise<void>((resolve) => listener.server.listen(socketPath, resolve));
     const client = createIpcClient(socketPath, undefined, { kind: 'boot', token: 'boot-token' });
-    expect(jobsWaitExtensions(listenerPorts.jobs)).toContain('supportsWaitV3');
-    expect(await client.health<{ jobsWaitExtensions: string[] }>()).toMatchObject({
-      jobsWaitExtensions: expect.arrayContaining(['supportsWaitV3']),
-    });
-    const stream = await client.subscribe('jobs.wait', { jobIds: [ids[0]], projectRoot: f.root, supportsWaitV3: true });
+    expect(await client.health()).not.toHaveProperty('jobsWaitExtensions');
+    const stream = await client.subscribe('jobs.wait', { jobIds: [ids[0]], projectRoot: f.root, cursor: { jobs: [] } });
     try {
       for await (const event of stream) {
         const decoded = parseWaitStreamEventValue(event);
@@ -237,7 +233,7 @@ describe('actual wait carriage', () => {
       await stream.close();
     }
     const response = client.request<WaitSnapshot>('jobs.wait.snapshot', { jobIds: ids, projectRoot: f.root });
-    await expect(response).resolves.toHaveProperty('version', 'jobs.wait.v3');
+    await expect(response).resolves.not.toHaveProperty('version');
     const snapshot = parseWaitSnapshot(await response);
     expect(snapshot.jobs).toHaveLength(2);
     expect(
@@ -335,7 +331,6 @@ describe('actual wait carriage', () => {
       p.jobs.waitStream = async function* () {
         yield {
           type: 'waiting',
-          version: 'jobs.wait.v3',
           waitingJobIds: jobs.map((job) => job.jobId),
           cursor,
           exitCode: 75,
@@ -374,7 +369,7 @@ describe('actual wait carriage', () => {
           },
         );
         req.on('error', reject);
-        req.end(JSON.stringify({ jobIds: jobs.map((job) => job.jobId), projectRoot: '/tmp', supportsWaitV3: true }));
+        req.end(JSON.stringify({ jobIds: jobs.map((job) => job.jobId), projectRoot: '/tmp' }));
       });
       expect(response.status).toBe(200);
       expect(response.body.endsWith('\n\n')).toBe(true);
@@ -402,7 +397,7 @@ describe('actual wait carriage', () => {
     vi.spyOn(performance, 'now').mockImplementation(() => clock);
     p.jobs.waitStream = async function* () {
       clock = mode === 'drains' ? 950 : 1000;
-      yield { type: 'waiting', version: 'jobs.wait.v3', waitingJobIds: ['a'], cursor: session.cursor(), exitCode: 75 };
+      yield { type: 'waiting', waitingJobIds: ['a'], cursor: session.cursor(), exitCode: 75 };
     };
     const handler = createHttpHandler(p);
     let closeResponse!: () => void;
@@ -458,7 +453,7 @@ describe('actual wait carriage', () => {
         },
       );
       req.on('error', reject);
-      req.end(JSON.stringify({ jobIds: ['a'], projectRoot: '/tmp', supportsWaitV3: true, timeoutSeconds: 1 }));
+      req.end(JSON.stringify({ jobIds: ['a'], projectRoot: '/tmp', timeoutSeconds: 1 }));
     });
     await blockedPromise;
     await vi.advanceTimersByTimeAsync(25);
@@ -479,9 +474,7 @@ describe('actual wait carriage', () => {
     vi.useRealTimers();
   });
 
-  it('advertises V3 only with a working snapshot and validates its admission, artifact and continuation contracts', async () => {
-    const p = ports();
-    expect(jobsWaitExtensions(p.jobs)).not.toContain('supportsWaitV3');
+  it('validates snapshot admission, artifact and continuation contracts', async () => {
     const a = admitted('a');
     a.availability = { kind: 'repair-pending', ageUncertain: false };
     const admissions = [
@@ -499,7 +492,6 @@ describe('actual wait carriage', () => {
     );
     vi.spyOn(addressing, 'admitWait').mockReturnValue(admissions);
     const complete = ports(addressing);
-    expect(jobsWaitExtensions(complete.jobs)).toContain('supportsWaitV3');
     const snapshot = parseWaitSnapshot(complete.jobs.snapshot!({ jobIds: ['a', 'ghost', 'u'], projectRoot: '/tmp' }));
     expect(snapshot.jobs[0].availability?.kind).toBe('repair-pending');
     expect(snapshot.remainingJobIds).toEqual(['a', 'u']);
@@ -507,14 +499,9 @@ describe('actual wait carriage', () => {
     for await (const event of complete.jobs.waitStream({
       jobIds: ['a', 'ghost', 'u'],
       projectRoot: '/tmp',
-      supportsWaitV3: true,
-      supportsWaitV2: false,
-      supportsInterrupted: false,
-      supportsHandover: false,
+      drainProgress: false,
     }))
       expect(parseWaitStreamEventValue(event)).toEqual(event);
-    complete.jobs.snapshot = undefined;
-    expect(jobsWaitExtensions(complete.jobs)).not.toContain('supportsWaitV3');
   });
   it('collects a cross-process maintenance export after an acknowledged snapshot without replaying its outcome', async () => {
     const f = createTerminalExportFixture('provider', true);
@@ -564,7 +551,6 @@ describe('actual wait carriage', () => {
     for await (const event of addressing.waitStream({
       jobIds: [f.jobId],
       cursor: snapshot.cursor,
-      supportsWaitV3: true,
     }))
       events.push(event);
     expect(events).toEqual([
@@ -590,7 +576,7 @@ it('HTTP sends a typed mid-stream error and canonicalizes the admission scope', 
   p.jobs.admitWait = vi.fn(() => session.admissions);
   p.jobs.validateWait = () => null;
   p.jobs.waitStream = async function* () {
-    yield { type: 'waiting', version: 'jobs.wait.v3', waitingJobIds: ['a'], cursor: session.cursor(), exitCode: 75 };
+    yield { type: 'waiting', waitingJobIds: ['a'], cursor: session.cursor(), exitCode: 75 };
     throw new WaitSessionError('wait_epoch_unsupported', 'Run coral-cli jobs detail a --full.');
   };
   const handler = createHttpHandler(p);
@@ -623,7 +609,7 @@ it('HTTP sends a typed mid-stream error and canonicalizes the admission scope', 
       },
     );
     req.on('error', reject);
-    req.end(JSON.stringify({ jobIds: ['a'], projectRoot: alias, supportsWaitV3: true }));
+    req.end(JSON.stringify({ jobIds: ['a'], projectRoot: alias }));
   });
   expect(body).toContain('event: error');
   expect(body).toContain('wait_epoch_unsupported');
@@ -641,7 +627,7 @@ it('an oversized IPC snapshot returns each unchanged subset command as a tempora
   const socketPath = join(f.root, 'oversized.sock');
   await new Promise<void>((resolve) => listener.server.listen(socketPath, resolve));
   const client = createIpcClient(socketPath, undefined, { kind: 'boot', token: 'boot-token' });
-  const cursor = { afterSeq: 42 };
+  const cursor = savedCursor({ a: 42 });
   await expect(
     client.request('jobs.wait.snapshot', { jobIds: ['a', 'b'], cursor, projectRoot: f.root }),
   ).rejects.toMatchObject({
@@ -652,4 +638,29 @@ it('an oversized IPC snapshot returns each unchanged subset command as a tempora
       ),
     },
   });
+});
+
+it('refuses a released CLI wait request over IPC with the restart guidance', async () => {
+  const f = createTerminalExportFixture();
+  cleanup.push(() => f.close());
+  const p = ports();
+  p.jobs.scopeCheck = () => ({ valid: ['a'], missing: [], mismatch: [] });
+  p.jobs.admitWait = vi.fn();
+  const listener = createIpcServer(p);
+  cleanup.push(() => closeIpcServer(listener));
+  const socketPath = join(f.root, 'released.sock');
+  await new Promise<void>((resolve) => listener.server.listen(socketPath, resolve));
+  const client = createIpcClient(socketPath, undefined, { kind: 'boot', token: 'boot-token' });
+  await expect(
+    client.subscribe('jobs.wait', {
+      jobIds: ['a'],
+      projectRoot: f.root,
+      timeoutSeconds: 1,
+      supportsInterrupted: true,
+      cursor: { afterSeq: 7 },
+    }),
+  ).rejects.toMatchObject({
+    data: { code: 'wait_build_mismatch', message: expect.stringContaining('Restart the session') },
+  });
+  expect(p.jobs.admitWait).not.toHaveBeenCalled();
 });

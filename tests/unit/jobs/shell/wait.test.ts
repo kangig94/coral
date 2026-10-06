@@ -1,3 +1,5 @@
+import { StoreCodecError } from '#src/store/body-codec.js';
+import { nextDelivered, nextFinal } from '#tests/helpers/wait-stream.js';
 import { progressVisitFromEvents, progressVisitFromDetails } from '#tests/helpers/wait-progress.js';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -133,15 +135,12 @@ describe('WaitCoordinator', () => {
     );
     const stream = addressing.waitStream({
       jobIds: ['job-1'],
-      supportsWaitV3: true,
       timeoutSeconds: 1,
       cursor: {
-        version: 'jobs.wait.v3',
-
         jobs: [{ hash: waitJobHash('job-1'), epoch: waitEpochToken('epoch'), seq: 501, lineOffset: 0, flags: 0 }],
       },
     });
-    const next = stream.next();
+    const next = nextDelivered(stream);
     await flushMicrotasks(40);
     for (let i = 0; i < 4; i++) {
       f.runtime.time.tick(250);
@@ -189,11 +188,13 @@ describe('WaitCoordinator', () => {
       settled = true;
     });
     const assertion = expect(result).rejects.toThrow('Wait expired');
-    await flushMicrotasks(5000);
+    // The backlog drains page by page across macrotasks; only the virtual deadline may end the wait.
+    for (let turn = 0; turn < 20; turn++) await new Promise<void>((resolve) => setImmediate(resolve));
     expect(settled).toBe(false);
     for (let i = 0; i < 4; i++) {
       f.runtime.time.tick(250);
       await flushMicrotasks(50);
+      await new Promise<void>((resolve) => setImmediate(resolve));
     }
     await assertion;
   });
@@ -221,13 +222,11 @@ describe('WaitCoordinator', () => {
       return result;
     };
     const events = [];
-    for await (const event of f.wait.waitForJobs({ jobIds: ['a', 'b'], supportsWaitV3: true, timeoutSeconds: 0 }))
-      events.push(event);
+    for await (const event of f.wait.waitForJobs({ jobIds: ['a', 'b'], timeoutSeconds: 0 })) events.push(event);
     const last = events.at(-1)!;
     const cursor = 'cursor' in last ? last.cursor : undefined;
     for await (const event of f.wait.waitForJobs({
       jobIds: ['a', 'b'],
-      supportsWaitV3: true,
       timeoutSeconds: 0,
       cursor,
     }))
@@ -241,24 +240,24 @@ describe('WaitCoordinator', () => {
     const f = fixture();
     f.deps.observeResultAvailability = () => ({ kind: 'repair-pending', ageUncertain: false });
     f.journal.push(f.terminal());
-    const event = (await f.wait.waitForJobs({ jobIds: ['job-1'] }).next()).value;
+    const event = (await nextDelivered(f.wait.waitForJobs({ jobIds: ['job-1'] }))).value;
     expect(event).toMatchObject({ type: 'terminal' });
     expect(event).not.toHaveProperty('resultPath');
   });
 
-  it('preserves queued activity when the shared V3 reader has no journal progress', async () => {
+  it('preserves queued activity when the shared reader has no journal progress', async () => {
     const f = fixture();
     const projected = f.deps.loadJobProjectionDetail('job-1');
     f.deps.loadJobProjectionDetail = () => ({ ...projected, status: { ...projected.status!, phase: 'queued' } });
-    const stream = f.wait.waitForJobs({ jobIds: ['job-1'], supportsWaitV3: true, timeoutSeconds: 0 });
-    expect((await stream.next()).value).toMatchObject({
+    const stream = f.wait.waitForJobs({ jobIds: ['job-1'], timeoutSeconds: 0 });
+    expect((await nextDelivered(stream)).value).toMatchObject({
       type: 'queued',
       jobId: 'job-1',
       jobKind: 'provider',
       sessionId: 'session-1',
       queuePosition: 0,
     });
-    expect((await stream.next()).value).toMatchObject({ type: 'waiting', waitingJobIds: ['job-1'] });
+    expect((await nextDelivered(stream)).value).toMatchObject({ type: 'waiting', waitingJobIds: ['job-1'] });
     await stream.return(undefined);
   });
 
@@ -322,7 +321,7 @@ describe('WaitCoordinator', () => {
   it('catches up from the durable journal after a missed notification', async () => {
     const f = fixture();
     const stream = f.wait.waitForJobs({ jobIds: ['job-1'], timeoutSeconds: 1 });
-    const next = stream.next();
+    const next = nextDelivered(stream);
     await f.pollStarted;
     f.journal.push(f.terminal());
     f.runtime.time.tick(250);
@@ -335,7 +334,7 @@ describe('WaitCoordinator', () => {
     f.terminalize();
     f.releaseClaim();
     const stream = f.wait.waitForJobs({ jobIds: ['job-1'], timeoutSeconds: 1 });
-    const next = stream.next();
+    const next = nextDelivered(stream);
     await f.pollStarted;
     f.runtime.time.tick(1001);
     expect((await next).value).toMatchObject({
@@ -348,9 +347,9 @@ describe('WaitCoordinator', () => {
 
   it('replays a terminal arriving after timeout on the next request with the unchanged cursor', async () => {
     const f = fixture();
-    const cursor = { afterSeq: 0 };
+    const cursor = { jobs: [] };
     const stream = f.wait.waitForJobs({ jobIds: ['job-1'], timeoutSeconds: 1, cursor });
-    const next = stream.next();
+    const next = nextFinal(stream);
     await f.pollStarted;
     f.runtime.time.tick(1001);
     expect((await next).value).toMatchObject({
@@ -360,9 +359,9 @@ describe('WaitCoordinator', () => {
     });
     await stream.return(undefined);
     f.journal.push(f.terminal());
-    expect(cursor).toEqual({ afterSeq: 0 });
+    expect(cursor).toEqual({ jobs: [] });
     const resumed = f.wait.waitForJobs({ jobIds: ['job-1'], cursor });
-    expect((await resumed.next()).value).toMatchObject({ type: 'terminal', seq: 1 });
+    expect((await nextFinal(resumed)).value).toMatchObject({ type: 'terminal', seq: 1 });
     await resumed.return(undefined);
   });
 });
@@ -478,53 +477,6 @@ it('reuses the active frontier and decodes only newly appended progress', () => 
   expect(next[0].detail).not.toHaveProperty('events');
 });
 
-it('accepts v0.10.15 cursors without recorded membership and drains their full terminal backlog', async () => {
-  const f = fixture();
-  const index = new JobLocationIndex(f.runtime, '/state');
-  index.register('job-1', 'epoch', { projectRoot: '/project', workDir: '/project', jobKind: 'provider' });
-  const addressing = new JobAddressing(
-    index,
-    {
-      visitProgress: f.wait.visitProgress,
-      epochKey: () => 'epoch',
-      detail: () => {
-        const detail = f.wait.readWaitAdmission('job-1', 'epoch').detail;
-        return detail ? { ...detail, events: f.journal } : null;
-      },
-      readWaitAdmissions: (ids, epoch, session) => f.wait.readWaitAdmissions(ids, epoch, session),
-      abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
-    },
-    () => false,
-    () => 'pending',
-    undefined,
-    (id) => ({ kind: 'available', resultPath: `/results/${id}/result.md` }),
-  );
-  for (let seq = 1; seq <= 700; seq++)
-    f.journal.push({
-      ...f.terminal(),
-      type: 'progress',
-      seq,
-      message: `line ${seq}`,
-      timing: {
-        origin: 'runtime',
-        originAt: '2026-10-04T00:00:00.000Z',
-        emittedAt: '2026-10-04T00:00:00.000Z',
-        elapsedMs: 0,
-      },
-    });
-  f.journal.push({ ...f.terminal(), seq: 701 });
-  f.terminalize();
-  expect(addressing.validateWait({ jobIds: ['job-1'], cursor: { afterSeq: 500 } })).toBeNull();
-  const events = [];
-  for await (const event of addressing.waitStream({ jobIds: ['job-1'] })) events.push(event);
-  expect(events.filter((event) => event.type === 'progress')).toHaveLength(700);
-  expect(events.at(-1)?.type).toBe('terminal');
-  const resumed = [];
-  for await (const event of addressing.waitStream({ jobIds: ['job-1'], cursor: { afterSeq: 500 } }))
-    resumed.push(event);
-  expect(resumed.filter((event) => event.type === 'progress')).toHaveLength(200);
-});
-
 it('keeps independent incremental frontiers for separate wait sessions', () => {
   const f = fixture();
   f.journal.push(...admitted('job-1', [[1, 'first']], false).detail.events);
@@ -564,7 +516,7 @@ it('observes availability once per terminal poll and emits one repair hint', () 
     observe,
     hint,
   );
-  const request = { jobIds: ['job-1'], supportsWaitV3: true };
+  const request = { jobIds: ['job-1'] };
   for (let poll = 0; poll < 20; poll++) addressing.admitWait(request);
   expect(observe).toHaveBeenCalledTimes(20);
   expect(hint).toHaveBeenCalledTimes(20);
@@ -607,7 +559,10 @@ it('internal child wait reads its durable historical epoch', async () => {
   f.deps.currentJobEpochKey = () => 'active';
   f.deps.loadJobProjectionDetail = () => ({ status: null, launch: null, runtime: null, exit: null });
   f.deps.observeJobAbsence = () => true;
-  f.deps.internalWaitAdmissions = () => [admitted('child', [], true, 'historical')];
+  f.deps.internalWait = {
+    admissions: () => [admitted('child', [], true, 'historical')],
+    visitProgress: f.deps.visitProgress,
+  };
   const events = [];
   for await (const event of f.wait.waitForOutcomes({ jobIds: ['child'], timeoutSeconds: 0 })) events.push(event);
   expect(events.at(-1)).toMatchObject({ type: 'terminal', jobId: 'child', result: { content: 'child result' } });
@@ -620,7 +575,7 @@ it('isolates an unreadable active projection from its healthy sibling', () => {
     return { status: admitted('job-1', [], false).detail.status, launch: null, runtime: null, exit: null };
   };
   const admissions = f.wait.readWaitAdmissions(['damaged', 'job-1'], 'epoch', {});
-  expect(admissions[0]).toMatchObject({ disposition: 'discovery-unknown', sourceRead: 'transient-unknown' });
+  expect(admissions[0]).toMatchObject({ disposition: 'admitted', sourceRead: 'transient-unknown' });
   expect(admissions[1]).toMatchObject({ jobId: 'job-1', disposition: 'admitted' });
 });
 
@@ -642,4 +597,18 @@ it('caches a terminal body per request while unrelated journal writes advance', 
   expect(availability).toHaveBeenCalledTimes(31);
   f.wait.readWaitAdmission('job-1', 'epoch', {});
   expect(projection).toHaveBeenCalledTimes(2);
+});
+
+it('settles an active-journal decode failure as unreadable and propagates a code defect', () => {
+  const f = fixture();
+  f.deps.loadJobProjectionDetail = (jobId) => {
+    if (jobId === 'undecodable') throw new StoreCodecError('Current codec rejected stored event', {});
+    if (jobId === 'defect') throw new TypeError('defect');
+    return { status: admitted(jobId, [], false).detail.status, launch: null, runtime: null, exit: null };
+  };
+  expect(f.wait.readWaitAdmissions(['undecodable', 'job-1'], 'epoch', {})).toMatchObject([
+    { jobId: 'undecodable', disposition: 'outcome-unreadable', sourceRead: 'settled-unreadable' },
+    { jobId: 'job-1', disposition: 'admitted' },
+  ]);
+  expect(() => f.wait.readWaitAdmissions(['defect'], 'epoch', {})).toThrow(TypeError);
 });

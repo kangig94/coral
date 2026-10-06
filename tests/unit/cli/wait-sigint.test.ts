@@ -1,3 +1,4 @@
+import { savedCursor } from '#tests/helpers/wait-session.js';
 import { Command } from 'commander';
 import { afterEach, expect, it, vi } from 'vitest';
 import { followJobs } from '#src/cli/follow.js';
@@ -66,7 +67,7 @@ it('returns transient remediation with the unchanged command on a failed stream 
       subscription: {
         close: async () => {},
         async *[Symbol.asyncIterator]() {
-          yield { type: 'waiting', waitingJobIds: ['a'] };
+          yield { type: 'waiting', waitingJobIds: ['a'], cursor: { jobs: [] }, exitCode: 75 };
         },
       },
     }),
@@ -116,7 +117,7 @@ it.each(['opening', 'silent', 'backoff', 'close', 'iterator-return'])(
     const abortJobs = vi.fn();
     let finishLate!: (value: IteratorResult<unknown>) => void;
     const stuck = new Promise<never>(() => {});
-    const frontier = { version: 'jobs.wait.v2' as const, positions: { e: 42 }, locations: { a: 'e' } };
+    const frontier = savedCursor({ a: 42 });
     const subscription = {
       close: vi.fn(() => (stall === 'close' ? stuck : Promise.resolve())),
       [Symbol.asyncIterator]: () => {
@@ -127,7 +128,13 @@ it.each(['opening', 'silent', 'backoff', 'close', 'iterator-return'])(
               first = false;
               return Promise.resolve({
                 done: false as const,
-                value: { type: 'waiting', waitingJobIds: ['a'], cursor: frontier, carrierUnknownJobIds: ['a'] },
+                value: {
+                  type: 'waiting',
+                  waitingJobIds: ['a'],
+                  cursor: frontier,
+                  carrierUnknownJobIds: ['a'],
+                  exitCode: 75,
+                },
               });
             }
             return new Promise<IteratorResult<unknown>>((resolve) => {
@@ -228,7 +235,7 @@ it('a stdout drain cannot outlive the invocation or advance an undelivered curso
       subscription: {
         close: async () => {},
         async *[Symbol.asyncIterator]() {
-          yield { type: 'waiting', waitingJobIds: ['a'] };
+          yield { type: 'waiting', waitingJobIds: ['a'], cursor: { jobs: [] }, exitCode: 75 };
         },
       },
     }),
@@ -270,7 +277,6 @@ it('freezes observed carrier absence without labeling it unconfirmed', async () 
             observation: { kind: 'carrier_interrupted', reason: 'carrier_absent' },
             continuity: 'unavailable',
             outcome: 'unknown',
-            cursor: { version: 'jobs.wait.v2', locations: { a: 'e' }, positions: { e: 42 } },
           };
           await new Promise<never>(() => {});
         },
@@ -284,78 +290,43 @@ it('freezes observed carrier absence without labeling it unconfirmed', async () 
   expect(stdout()).toContain('Still waiting on 1 job');
 });
 
-it('resets acknowledgements when negotiation requires a fresh request', async () => {
-  const stdout = capture();
-  const budget = invocation();
-  const oldCursor = {
-    version: 'jobs.wait.v2' as const,
-    positions: { e: 42 },
-    locations: { a: 'e' },
-    deliveredJobIds: ['a'],
-  };
-  const code = await followJobs({
-    start: { kind: 'jobs', jobIds: ['a'], serializedCursor: serializeWaitCursor(oldCursor) },
-    reconnectPolicy: 'bounded',
-    invocation: budget,
-    projectRoot: '/project',
-    render: { isTTY: false, columns: 80, embed: false, verbose: false },
-    emitError: vi.fn(),
-    connect: async ({ onCursorReset }) => {
-      onCursorReset();
-      return {
-        kind: 'subscription',
-        subscription: {
-          close: async () => {},
-          async *[Symbol.asyncIterator]() {
-            yield {
-              type: 'terminal',
-              jobId: 'a',
-              seq: 1,
-              remainingJobIds: [],
-              resultPath: '/result.md',
-              result: { content: 'result', durationMs: 1, outcome: { kind: 'completed' } },
-            };
-          },
+it.each([
+  ['versionless', Buffer.from(JSON.stringify({ afterSeq: 42, deliveredJobIds: ['a'] })).toString('base64url')],
+  [
+    'v2',
+    Buffer.from(JSON.stringify({ version: 'jobs.wait.v2', positions: { e: 42 }, locations: { a: 'e' } })).toString(
+      'base64url',
+    ),
+  ],
+  ['prefixed', `jobs.wait.v3:${serializeWaitCursor(savedCursor({ a: 42 }))}`],
+])(
+  'a saved %s cursor is refused softly and the collection restarts fresh with the replay notice',
+  async (_shape, token) => {
+    const stdout = capture();
+    const budget = invocation();
+    const connect = vi.fn(async () => ({
+      kind: 'subscription' as const,
+      subscription: {
+        close: async () => {},
+        async *[Symbol.asyncIterator]() {
+          yield { type: 'waiting', waitingJobIds: ['a'], cursor: savedCursor({ a: 50 }), exitCode: 75 };
         },
-      };
-    },
-  });
-  expect(code).toBe(0);
-  expect(stdout()).toMatch(new RegExp(`^${WAIT_CURSOR_REPLAY_NOTICE}`));
-  expect(stdout()).toContain('Job a completed');
-});
-
-it('unknown saved generations replay from the start with a notice before output', async () => {
-  const stdout = capture();
-  const budget = invocation();
-  const connect = vi.fn(async () => ({
-    kind: 'subscription' as const,
-    subscription: {
-      close: async () => {},
-      async *[Symbol.asyncIterator]() {
-        yield { type: 'waiting', waitingJobIds: ['a'] };
       },
-    },
-  }));
-  await followJobs({
-    start: {
-      kind: 'jobs',
-      jobIds: ['a'],
-      serializedCursor: Buffer.from(JSON.stringify({ version: 'jobs.wait.future', afterSeq: 42 })).toString(
-        'base64url',
-      ),
-    },
-    reconnectPolicy: 'bounded',
-    invocation: budget,
-    projectRoot: '/project',
-    render: { isTTY: false, columns: 80, embed: false, verbose: false },
-    emitError: vi.fn(),
-    connect,
-  });
-  expect(connect.mock.calls[0]).not.toBeUndefined();
-  expect(connect).toHaveBeenCalledWith(expect.not.objectContaining({ cursor: expect.anything() }));
-  expect(stdout().startsWith(`${WAIT_CURSOR_REPLAY_NOTICE}\n`)).toBe(true);
-});
+    }));
+    await followJobs({
+      start: { kind: 'jobs', jobIds: ['a'], serializedCursor: token },
+      reconnectPolicy: 'bounded',
+      invocation: budget,
+      projectRoot: '/project',
+      render: { isTTY: false, columns: 80, embed: false, verbose: false },
+      emitError: vi.fn(),
+      connect,
+    });
+    expect(connect).toHaveBeenCalledWith(expect.not.objectContaining({ cursor: expect.anything() }));
+    expect(stdout().startsWith(`${WAIT_CURSOR_REPLAY_NOTICE}\n`)).toBe(true);
+    expect(stdout()).toContain(`--cursor ${serializeWaitCursor(savedCursor({ a: 50 }))}`);
+  },
+);
 
 it.each([
   [['wait', 'jobs', 'a'], 'bounded'],
@@ -434,7 +405,7 @@ it('terminates a repeated cursor-reset refusal after retrying without the cursor
   const emitError = vi.fn();
   expect(
     await followJobs({
-      start: { kind: 'jobs', jobIds: ['a'], serializedCursor: serializeWaitCursor({ afterSeq: 7 }) },
+      start: { kind: 'jobs', jobIds: ['a'], serializedCursor: serializeWaitCursor(savedCursor({ a: 7 })) },
       reconnectPolicy: 'bounded',
       invocation: budget,
       projectRoot: '/project',

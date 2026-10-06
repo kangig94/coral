@@ -1,5 +1,7 @@
+import { nextFinal, nextOfType } from '#tests/helpers/wait-stream.js';
+import { waitEpochToken, waitJobHash } from '#src/jobs/wait/cursor.js';
 import { progressVisitFromDetails } from '#tests/helpers/wait-progress.js';
-import { admitted } from '#tests/helpers/wait-session.js';
+import { admitted, savedCursor } from '#tests/helpers/wait-session.js';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { once } from 'node:events';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -168,12 +170,12 @@ describe('job addressing across a process-owned epoch switch', () => {
       createNewFormatEpoch(root);
       activeEpochKey = newEpochKey;
       expect(addressing.detail('old-live')).toMatchObject({ exit: { content: 'old result' } });
-      const stream = addressing.waitStream({ jobIds: ['old-live'], supportsWaitV2: true });
-      expect((await stream.next()).value).toMatchObject({
+      const stream = addressing.waitStream({ jobIds: ['old-live'] });
+      expect((await nextFinal(stream)).value).toMatchObject({
         type: 'terminal',
         jobId: 'old-live',
         epochKey: oldEpochKey,
-        cursor: { positions: {}, deliveredJobIds: ['old-live'] },
+        cursor: { jobs: [] },
         remainingJobIds: [],
       });
       await stream.return(undefined);
@@ -228,17 +230,15 @@ describe('job addressing across a process-owned epoch switch', () => {
         status: { jobId: 'old-live', phase: 'running' },
       });
       const jobIds = ['new-live', 'old-live'];
-      expect(addressing.validateWait({ jobIds, cursor: { afterSeq: 1 } })?.code).toBe('wait_cursor_epoch_required');
-      const pending = addressing.waitStream({ jobIds, supportsWaitV2: true, timeoutSeconds: 5 });
-      const nextProgress = pending.next();
+      const pending = addressing.waitStream({ jobIds, timeoutSeconds: 5 });
+      const nextProgress = nextOfType(pending, 'progress');
       await progress(child, lines);
-      expect((await nextProgress).value).toMatchObject({
+      expect(await nextProgress).toMatchObject({
         type: 'progress',
         jobId: 'old-live',
-        epochKey: oldEpochKey,
-        cursor: { positions: { [newEpochKey]: 0, [oldEpochKey]: 2 } },
+        entry: { hash: waitJobHash('old-live'), epoch: waitEpochToken(oldEpochKey) },
       });
-      const next = pending.next();
+      const next = nextFinal(pending);
       await finish(child, lines);
       seedHistoricalEpoch(
         runtime,
@@ -255,34 +255,24 @@ describe('job addressing across a process-owned epoch switch', () => {
         type: 'terminal',
         jobId: 'old-live',
         epochKey: oldEpochKey,
-        cursor: { positions: { [newEpochKey]: 0 }, locations: { 'new-live': newEpochKey } },
+        cursor: { jobs: [{ hash: waitJobHash('new-live'), epoch: waitEpochToken(newEpochKey) }] },
       });
       await pending.return(undefined);
       expect(addressing.detail('old-live')).toMatchObject({ exit: { content: 'old result' } });
-      if (terminal.cursor === undefined) throw new Error('Expected a vector cursor');
       expect(terminal.remainingJobIds).toEqual(['new-live']);
+      expect(addressing.validateWait({ jobIds: terminal.remainingJobIds, cursor: terminal.cursor })).toBeNull();
+      expect(addressing.validateWait({ jobIds: ['old-live'], cursor: terminal.cursor })).toBeNull();
       expect(
-        addressing.validateWait({ jobIds: terminal.remainingJobIds, cursor: terminal.cursor, supportsWaitV2: true }),
-      ).toBeNull();
-      expect(
-        addressing.validateWait({ jobIds: ['old-live'], cursor: terminal.cursor, supportsWaitV2: true }),
-      ).toBeNull();
-      expect(
-        addressing.validateWait({
-          jobIds: ['old-live'],
-          supportsWaitV2: true,
-          cursor: { version: 'jobs.wait.v2', locations: { 'old-live': newEpochKey }, positions: { [newEpochKey]: 0 } },
-        })?.code,
+        addressing.validateWait({ jobIds: ['old-live'], cursor: savedCursor({ 'old-live': 0 }, newEpochKey) })?.code,
       ).toBe('wait_cursor_mismatch');
       const resumed = addressing.waitStream({
         jobIds: terminal.remainingJobIds,
         cursor: terminal.cursor,
-        supportsWaitV2: true,
         timeoutSeconds: 0.01,
       });
-      expect((await resumed.next()).value).toMatchObject({
+      expect((await nextFinal(resumed)).value).toMatchObject({
         type: 'waiting',
-        cursor: { positions: { [newEpochKey]: 0 }, locations: { 'new-live': newEpochKey } },
+        cursor: { jobs: [{ hash: waitJobHash('new-live'), epoch: waitEpochToken(newEpochKey) }] },
       });
       await resumed.return(undefined);
     } finally {

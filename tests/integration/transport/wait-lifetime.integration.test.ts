@@ -84,13 +84,3 @@ it.each(probes)(
   },
   30_000,
 );
-
-it('legacy IPC collects consumed events while the wait stays open', () => {
-  const home = mkdtempSync(join(directory, 'home-'));
-  const output = execFileSync(
-    process.execPath,
-    ['--expose-gc', join(directory, 'ipc-reachable.mjs'), '10000', 'legacy'],
-    { env: { PATH: process.env.PATH, HOME: home, LANG: 'C.UTF-8', TMPDIR: '/tmp' }, encoding: 'utf8', timeout: 20_000 },
-  );
-  expect(output).toContain('"supportsHandover":false');
-}, 30_000);

@@ -10,7 +10,9 @@ import { JobAddressing } from '../../../src/jobs/addressing.js';
 import { createRealRuntime } from '../../../src/runtime/real.js';
 import { JobLocationIndex } from '../../../src/jobs/location-index.js';
 
-import type { WaitCursor } from '../../../src/jobs/wait/contract.js';
+import type { WaitCursor, WaitStreamEvent } from '../../../src/jobs/wait/contract.js';
+import { savedCursor } from '#tests/helpers/wait-session.js';
+import { nextDelivered, nextFinal } from '#tests/helpers/wait-stream.js';
 import { canonicalWorkDirWireSchema } from '../../../src/runtime/canonical-work-dir.js';
 import type { JobDetailResponse } from '../../../src/jobs/records.js';
 
@@ -76,7 +78,7 @@ it('describes unreadable addresses without exposing storage paths or raw errors'
   index.read = () => {
     throw failure;
   };
-  const job = historicalAddressing(index).admitWait({ jobIds: ['job'], supportsWaitV3: true })[0];
+  const job = historicalAddressing(index).admitWait({ jobIds: ['job'] })[0];
   expect(job.disposition).toBe('discovery-unknown');
   expect(job.message).toContain('250 ms, 1 s and 5 s');
   expect(job.message).not.toContain('/secret');
@@ -105,7 +107,7 @@ it('uses a short epoch label for a settled historical source', () => {
     () => ({ kind: 'unreadable', disposition: 'settled-unreadable' }),
     () => ({ kind: 'failed', cause: 'terminal-unusable', retryScheduled: false }),
   );
-  const job = addressing.admitWait({ jobIds: ['job'], supportsWaitV3: true })[0];
+  const job = addressing.admitWait({ jobIds: ['job'] })[0];
   expect(job.message).toMatch(/^Epoch [0-9a-f]{8}:/);
   expect(job.message).toContain('next coordinator start');
   expect(job.message).not.toContain('/secret');
@@ -143,7 +145,7 @@ it.each([
       () => ({ kind: 'unreadable', disposition, reason }),
       () => ({ kind: 'failed', cause: 'terminal-unusable', retryScheduled: false }),
     );
-    const job = addressing.admitWait({ jobIds: ['known'], supportsWaitV3: true })[0];
+    const job = addressing.admitWait({ jobIds: ['known'] })[0];
     expect(job.message).toContain('Epoch maintenance');
     expect(job.message).toContain(
       disposition === 'transient-unknown' ? '3 consecutive failures' : 'next coordinator start',
@@ -182,19 +184,11 @@ describe('job addressing', () => {
     });
     index.recordTerminal('old', detail('old', 'completed'), resultPath, 12);
     const addressing = historicalAddressing(index);
-    const cursor: WaitCursor = {
-      version: 'jobs.wait.v2',
-      locations: { old: 'lineage-old:7' },
-      positions: { 'lineage-old:7': 0 },
-    };
+    const cursor: WaitCursor = savedCursor({ old: 0 }, 'lineage-old:7');
     expect(addressing.detail('old')).toMatchObject({ epochKey: 'lineage-old:7' });
-    expect(addressing.validateWait({ jobIds: ['old'], cursor, supportsWaitV2: true })).toBeNull();
-    const stream = addressing.waitStream({ jobIds: ['old'], cursor, supportsWaitV2: true });
-    expect((await stream.next()).value).toMatchObject({
-      type: 'progress',
-      message: expect.stringContaining('was not shown'),
-    });
-    expect((await stream.next()).value).toMatchObject({
+    expect(addressing.validateWait({ jobIds: ['old'], cursor })).toBeNull();
+    const stream = addressing.waitStream({ jobIds: ['old'], cursor });
+    expect((await nextFinal(stream)).value).toMatchObject({
       type: 'terminal',
       jobId: 'old',
       epochKey: 'lineage-old:7',
@@ -238,8 +232,8 @@ it.each([0, -3_600_000, 3_600_000])('bounds historical waiting across a %s ms wa
     jobKind: 'provider',
   });
   index.holdUnknownLocations('lineage-old:7', 'temporary source read failure', true);
-  const iterator = historicalAddressing(index).waitStream({ jobIds: ['old'], timeoutSeconds: 1, supportsWaitV2: true });
-  const result = iterator.next();
+  const iterator = historicalAddressing(index).waitStream({ jobIds: ['old'], timeoutSeconds: 1 });
+  const result = nextFinal(iterator);
   await flushMicrotasks();
   offset = step;
   for (let tick = 0; tick < 5; tick++) {
@@ -250,57 +244,17 @@ it.each([0, -3_600_000, 3_600_000])('bounds historical waiting across a %s ms wa
   await iterator.return(undefined);
 });
 
-it.each([false, true])('refuses a partially missing legacy batch at admission, v2=%s', async (supportsWaitV2) => {
-  const { index } = fixture();
-  index.register('known', 'lineage-new:8', {
-    projectRoot: '/workspace/project',
-    workDir: '/workspace/project',
-    jobKind: 'provider',
-  });
-  const seen: string[][] = [];
-  const addressing = new JobAddressing(
-    index,
-    {
-      visitProgress: progressVisitFromDetails((id) => (id === 'known' ? detail(id, 'running') : null)),
-      epochKey: () => 'lineage-new:8',
-      detail: (id) => (id === 'known' ? detail(id, 'running') : null),
-      abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
-    },
-    () => false,
-    () => 'pending',
-    undefined,
-    () => ({ kind: 'failed', cause: 'terminal-unusable', retryScheduled: false }),
-  );
-  const request = { jobIds: ['known', 'ghost'], supportsWaitV2, timeoutSeconds: 0 };
-  expect(addressing.validateWait(request)).toMatchObject({
-    code: 'jobs_not_found',
-    message: expect.stringContaining('ghost'),
-  });
-  await expect(addressing.waitStream(request).next()).rejects.toMatchObject({ code: 'jobs_not_found' });
-  expect(seen).toEqual([]);
-});
-
-it('rejects an unsupported generation before reading structural cursor fields', () => {
-  const { index } = fixture();
-  expect(
-    historicalAddressing(index).validateWait({
-      jobIds: ['ghost'],
-      cursor: { version: 'unknown', afterSeq: 0 } as never,
-    }),
-  ).toMatchObject({ code: 'wait_cursor_unsupported' });
-});
-
 it('keeps retryable unknown IDs in a direct continuation and re-admits them after write-owned recovery', async () => {
   const { index } = fixture();
   index.holdUnknownLocations('recovering', 'recovery pending', true);
   const addressing = historicalAddressing(index);
-  const waiting = addressing.waitStream({ jobIds: ['unknown'], supportsWaitV3: true, timeoutSeconds: 0 });
-  expect((await waiting.next()).value).toMatchObject({
+  const waiting = addressing.waitStream({ jobIds: ['unknown'], timeoutSeconds: 0 });
+  expect((await nextDelivered(waiting)).value).toMatchObject({
     type: 'disposition',
     jobId: 'unknown',
     disposition: 'discovery-unknown',
   });
-  expect((await waiting.next()).value).toMatchObject({ type: 'waiting', waitingJobIds: ['unknown'] });
+  expect((await nextFinal(waiting)).value).toMatchObject({ type: 'waiting', waitingJobIds: ['unknown'] });
   await waiting.return(undefined);
   index.register('unknown', 'lineage-old:7', {
     projectRoot: '/workspace/project',
@@ -309,12 +263,8 @@ it('keeps retryable unknown IDs in a direct continuation and re-admits them afte
   });
   index.recordTerminal('unknown', detail('unknown', 'completed'), index.resultPathFor('unknown'), 12);
   index.clearUnknownLocations('recovering');
-  const admitted = addressing.waitStream({ jobIds: ['unknown'], supportsWaitV2: true });
-  expect((await admitted.next()).value).toMatchObject({
-    type: 'progress',
-    message: expect.stringContaining('was not shown'),
-  });
-  expect((await admitted.next()).value).toMatchObject({ type: 'terminal', jobId: 'unknown' });
+  const admitted = addressing.waitStream({ jobIds: ['unknown'] });
+  expect((await nextFinal(admitted)).value).toMatchObject({ type: 'terminal', jobId: 'unknown' });
   await admitted.return(undefined);
 });
 
@@ -452,7 +402,7 @@ it.each([false, true])(
       undefined,
       () => ({ kind: 'available', resultPath: '/result' }),
     );
-    const request = { jobIds: ['known'], supportsWaitV3: true };
+    const request = { jobIds: ['known'] };
     expect(addressing.admitWait(request)[0]).toMatchObject({ disposition: 'admitted', epochKey: 'active' });
     epoch = null;
     expect(addressing.admitWait(request)[0]).toMatchObject({
@@ -489,7 +439,7 @@ it('reclassifies the previous active epoch after a proven selection change withi
     },
     () => ({ kind: 'available', resultPath: '/result' }),
   );
-  const request = { jobIds: ['known'], supportsWaitV3: true };
+  const request = { jobIds: ['known'] };
   expect(addressing.admitWait(request)[0]).toMatchObject({ disposition: 'admitted', epochKey: 'previous' });
   expect(historicalReads).toEqual([]);
   epoch = 'successor';
@@ -572,7 +522,7 @@ it.each(['readable', 'transient-unknown', 'settled-unreadable', 'retired'] as co
       undefined,
       () => sourceRead === 'retired',
     );
-    const admissions = addressing.admitWait({ jobIds: ['A', 'U'], supportsWaitV3: true });
+    const admissions = addressing.admitWait({ jobIds: ['A', 'U'] });
     expect(admissions[1].sourceRead).toBe(sourceRead);
     const snapshot = addressing.snapshot({ jobIds: ['A', 'U'] });
     expect(snapshot.remainingJobIds).toEqual(sourceRead === 'transient-unknown' ? ['U'] : []);
@@ -635,9 +585,7 @@ it.each(['pending', 'decided'] as const)(
       () => ({ kind: 'unreadable', disposition: 'settled-unreadable', reason: 'bounded attempts exhausted' }),
       () => ({ kind: 'repair-pending', ageUncertain: true }),
     );
-    expect(addressing.admitWait({ jobIds: ['U'], supportsWaitV3: true })).toMatchObject([
-      { disposition: 'outcome-unreadable' },
-    ]);
+    expect(addressing.admitWait({ jobIds: ['U'] })).toMatchObject([{ disposition: 'outcome-unreadable' }]);
     expect(addressing.detail('U')).toMatchObject({ kind: 'outcome-unreadable' });
     const snapshot = addressing.snapshot({ jobIds: ['U'] });
     expect(snapshot.exitCode).toBe(1);
@@ -669,7 +617,7 @@ it('isolates a schema-incompatible location from readable siblings', () => {
     undefined,
     () => ({ kind: 'available', resultPath: '/r.md' }),
   );
-  const admissions = addressing.admitWait({ jobIds: ['good', 'bad'], supportsWaitV3: true });
+  const admissions = addressing.admitWait({ jobIds: ['good', 'bad'] });
   expect(admissions).toMatchObject([{ disposition: 'admitted' }, { disposition: 'discovery-unreadable' }]);
   expect(addressing.snapshot({ jobIds: ['good', 'bad'] })).toMatchObject({ exitCode: 1, remainingJobIds: [] });
 });
@@ -687,7 +635,6 @@ it.each([true, false])('abort shares unknown discovery classification when retry
 
 import { admitted } from '#tests/helpers/wait-session.js';
 import { ACKNOWLEDGED_FLAG, waitEpochToken, waitJobHash } from '#src/jobs/wait/cursor.js';
-import type { WaitStreamEvent, WaitCursorV3 } from '#src/jobs/wait/contract.js';
 
 it.each([false, true])('first poll observes every member without false holds, terminal=%s', async (terminal) => {
   const { index } = fixture();
@@ -717,9 +664,8 @@ it.each([false, true])('first poll observes every member without false holds, te
     () => ({ kind: 'available', resultPath: '/r/x' }),
   );
   const jobIds = terminal ? [...ids.slice(0, 50), 'typo', ...ids.slice(50)] : ids;
-  const cursor: WaitCursorV3 | undefined = terminal
+  const cursor: WaitCursor | undefined = terminal
     ? {
-        version: 'jobs.wait.v3',
         jobs: ids.map((id) => ({
           hash: waitJobHash(id),
           epoch: waitEpochToken('epoch-E'),
@@ -729,7 +675,7 @@ it.each([false, true])('first poll observes every member without false holds, te
         })),
       }
     : undefined;
-  const request = { jobIds, supportsWaitV3: true, timeoutSeconds: 0, cursor };
+  const request = { jobIds, timeoutSeconds: 0, cursor };
   const admissions = addressing.admitWait(request);
   const events: WaitStreamEvent[] = [];
   for await (const event of addressing.waitStream({ ...request, admissions })) events.push(event);
@@ -743,20 +689,27 @@ it.each([false, true])('first poll observes every member without false holds, te
   }
 });
 
-it.each([undefined, { afterSeq: 1 }])(
-  'a versionless historical reader gets a runnable detail refusal, cursor=%s',
-  (cursor) => {
-    const { index } = fixture();
-    index.register('old', 'historical', {
-      projectRoot: '/workspace/project',
-      workDir: '/workspace/project',
-      jobKind: 'provider',
-    });
-    index.recordTerminal('old', detail('old', 'completed'), index.resultPathFor('old'), 12);
-    const addressing = historicalAddressing(index);
-    expect(addressing.validateWait({ jobIds: ['old'], cursor })).toMatchObject({
-      code: cursor ? 'wait_cursor_epoch_required' : 'wait_epoch_unsupported',
-      message: expect.stringContaining('Run coral-cli jobs detail old'),
-    });
-  },
-);
+it('resolves unknown IDs through one session read per held epoch, never an uncached scan per ID', () => {
+  const { index } = fixture();
+  for (const epoch of ['held-1', 'held-2', 'held-3']) index.holdUnknownLocations(epoch, 'recovery pending', true);
+  const reads: Array<{ epochKey: string; session: object | undefined }> = [];
+  const addressing = new JobAddressing(
+    index.readOnlyView(),
+    {
+      visitProgress: progressVisitFromDetails(() => null),
+      epochKey: () => 'active',
+      detail: () => null,
+      abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
+    },
+    () => false,
+    () => 'pending',
+    (epochKey, _jobIds, session) => {
+      reads.push({ epochKey, session });
+      return { kind: 'read', locations: new Map(), dispositions: new Map() };
+    },
+    () => ({ kind: 'failed', cause: 'terminal-unusable', retryScheduled: false }),
+  );
+  addressing.admitWait({ jobIds: ['u1', 'u2', 'u3', 'u4'] });
+  expect(reads.map((read) => read.epochKey).sort()).toEqual(['held-1', 'held-2', 'held-3']);
+  expect(reads.every((read) => read.session !== undefined)).toBe(true);
+});

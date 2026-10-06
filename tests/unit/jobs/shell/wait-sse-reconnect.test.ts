@@ -1,3 +1,6 @@
+import { nextDelivered } from '#tests/helpers/wait-stream.js';
+import { advanceWaitRenderCursor } from '#src/jobs/wait/stream-event.js';
+import type { WaitCursor } from '#src/jobs/wait/contract.js';
 import { progressVisitFromEvents } from '#tests/helpers/wait-progress.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import type { Database } from '#src/store/db.js';
@@ -198,8 +201,14 @@ describe('wait SSE reconnect', () => {
     });
 
     const firstIterator = coordinator.waitForJobs({ jobIds: [jobId], timeoutSeconds: 5 })[Symbol.asyncIterator]();
-    const first = await firstIterator.next();
+    let clientCursor: WaitCursor | undefined;
+    let first = await firstIterator.next();
+    while (!first.done && first.value.type === 'cursor') {
+      clientCursor = advanceWaitRenderCursor(clientCursor, first.value).cursor;
+      first = await firstIterator.next();
+    }
     expect(first.done).toBe(false);
+    if (!first.done) clientCursor = advanceWaitRenderCursor(clientCursor, first.value).cursor;
     expect(first.value).toMatchObject({
       type: 'progress',
       jobId,
@@ -214,11 +223,11 @@ describe('wait SSE reconnect', () => {
       .waitForJobs({
         jobIds: [jobId],
         timeoutSeconds: 5,
-        cursor: { afterSeq: 3 },
+        cursor: clientCursor,
       })
       [Symbol.asyncIterator]();
 
-    const replayed = await reconnectIterator.next();
+    const replayed = await nextDelivered(reconnectIterator);
     expect(replayed.done).toBe(false);
     expect(replayed.value).toMatchObject({
       type: 'progress',
@@ -227,7 +236,7 @@ describe('wait SSE reconnect', () => {
       message: 'progress-2',
     });
 
-    const liveProgressPromise = reconnectIterator.next();
+    const liveProgressPromise = nextDelivered(reconnectIterator);
     appendProgress('progress-3');
     const liveProgress = await liveProgressPromise;
     expect(liveProgress.done).toBe(false);
@@ -238,7 +247,7 @@ describe('wait SSE reconnect', () => {
       message: 'progress-3',
     });
 
-    const terminalPromise = reconnectIterator.next();
+    const terminalPromise = nextDelivered(reconnectIterator);
     commitTerminal();
     const terminal = await terminalPromise;
     expect(terminal.done).toBe(false);
@@ -399,7 +408,7 @@ describe('wait SSE reconnect', () => {
     });
 
     const iterator = coordinator.waitForJobs({ jobIds: [jobId], timeoutSeconds: 1 })[Symbol.asyncIterator]();
-    const progress = await iterator.next();
+    const progress = await nextDelivered(iterator);
     expect(progress.done).toBe(false);
     expect(progress.value).toMatchObject({
       type: 'progress',
@@ -408,7 +417,7 @@ describe('wait SSE reconnect', () => {
       message: 'progress-before-race',
     });
 
-    const terminal = await iterator.next();
+    const terminal = await nextDelivered(iterator);
     expect(terminal.done).toBe(false);
     expect(terminal.value).toMatchObject({
       type: 'terminal',

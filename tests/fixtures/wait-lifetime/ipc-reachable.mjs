@@ -3,7 +3,6 @@ import { createConnection } from 'node:net';
 import { setImmediate as tick } from 'node:timers/promises';
 import assert from 'node:assert/strict';
 const count = Number(process.argv[2] ?? 10000);
-const supportsHandover = process.argv[3] !== 'legacy';
 const weak = [];
 let release;
 const streamHold = new Promise((r) => (release = r));
@@ -84,7 +83,7 @@ client.write(
       jobIds: ['job-1'],
       projectRoot: '/tmp',
       timeoutSeconds: 600,
-      ...(supportsHandover ? { supportsHandover: true } : {}),
+      cursor: { jobs: [] },
     },
   }) + '\n',
 );
@@ -102,7 +101,6 @@ const retained = weak.reduce((n, r) => n + Number(r.deref() !== undefined), 0);
 console.log(
   JSON.stringify({
     count,
-    supportsHandover,
     frames,
     retainedConsumedEvents: retained,
     heapUsed: process.memoryUsage().heapUsed,

@@ -100,7 +100,10 @@ function terminal(jobId: string, content: string, seq = 0): WaitStreamEvent {
     seq,
     remainingJobIds: [],
     resultPath: `/tmp/coral-exports/jobs/${jobId}/result.md`,
+    availability: { kind: 'available', resultPath: `/tmp/coral-exports/jobs/${jobId}/result.md` },
     result,
+    cursor: { jobs: [] },
+    exitCode: 0,
   };
 }
 
@@ -283,7 +286,7 @@ function createHarness(options: {
     abort: vi.fn(() => ({ aborted: [], notFound: [] })),
     awaitLaunch: vi.fn(async (): Promise<'ready'> => 'ready'),
     waitStream: vi.fn((req: WaitStreamRequest) => {
-      const nextSeq = req.cursor && 'afterSeq' in req.cursor ? req.cursor.afterSeq + 1 : 1;
+      const nextSeq = Math.max(0, ...(req.cursor?.jobs ?? []).map((entry) => entry.seq)) + 1;
       return emit(req.jobIds.map((jobId, index) => terminal(jobId, `result:${jobId}`, nextSeq + index)));
     }),
     waitForJobTerminal: vi.fn(async () => {}),

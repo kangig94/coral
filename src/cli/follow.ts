@@ -32,7 +32,7 @@ import { openCliCauseRefRenderer } from './cause-renderer.js';
 import { openReadCoralStore, type ReadCoralStoreHandle } from './read-store.js';
 import { errorCodeToExit, WaitResumeError, WaitOutputError } from './errors.js';
 import { renderHandoffNotice, renderHandoffPublicationIncidents } from './handoff-notice.js';
-import { mapWaitSubscriptionError } from './wait-stream-error.js';
+import { mapWaitSubscriptionError, SOFT_CURSOR_REFUSALS } from './wait-stream-error.js';
 import {
   formatWaitProgress,
   formatWaitContinuation,
@@ -86,7 +86,6 @@ type FollowConnectionRequest = Readonly<{
   timeoutSeconds: number;
   drainProgress: boolean;
   signal: AbortSignal;
-  onCursorReset: () => void;
 }>;
 
 type FollowJobsOptions = {
@@ -124,8 +123,9 @@ function writeStdout(text: string): void {
   process.stdout.write(text);
 }
 
+/** An empty frontier is a fresh collection, which a continuation states by naming no cursor. */
 function serializedCursor(cursor: WaitCursor | undefined): string | undefined {
-  return cursor ? serializeWaitCursor(cursor) : undefined;
+  return cursor && cursor.jobs.length > 0 ? serializeWaitCursor(cursor) : undefined;
 }
 
 function jobIdsFromStart(start: FollowStart): readonly string[] {
@@ -378,12 +378,6 @@ async function connectFollowStream(
       timeoutSeconds:
         options.reconnectPolicy === 'bounded' ? boundedTimeoutSeconds(deadlineMs) : FOLLOW_TIMEOUT_SECONDS,
       signal: controller.signal,
-      onCursorReset: () => {
-        options.invocation?.check();
-        writeStdout(`${WAIT_CURSOR_REPLAY_NOTICE}\n`);
-        state.currentCursor = undefined;
-        state.sendCursor = false;
-      },
     });
     options.invocation?.check();
     return { kind: 'connected', connection };
@@ -396,12 +390,7 @@ async function connectFollowStream(
     if (
       handledError instanceof BackendToolHttpError &&
       isRecord(handledError.body) &&
-      [
-        'wait_cursor_epoch_required',
-        'wait_cursor_unsupported',
-        'wait_cursor_malformed',
-        'wait_cursor_mismatch',
-      ].includes(String(handledError.body.code))
+      SOFT_CURSOR_REFUSALS.includes(String(handledError.body.code))
     ) {
       if (!state.sendCursor) {
         options.emitError(withWaitRecovery(handledError, state.remainingJobIds, state.currentCursor));
@@ -485,8 +474,6 @@ function eventRemainingJobs(event: WaitStreamEvent, current: readonly string[]):
   if (event.type === 'waiting') return [...event.waitingJobIds];
   if (event.type === 'disposition' && event.disposition !== 'discovery-unknown')
     return current.filter((id) => id !== event.jobId);
-  const cursor = 'cursor' in event ? event.cursor : undefined;
-  if (cursor?.version === 'jobs.wait.v2') return Object.keys(cursor.locations);
   return [...current];
 }
 
@@ -498,15 +485,12 @@ function followOriginalCommand(options: FollowJobsOptions): string {
 
 function deliveredFollowExitCode(event: WaitStreamEvent, context: FollowContext): number | undefined {
   const { options } = context;
-  if (event.type === 'terminal') {
-    if (event.version === 'jobs.wait.v3') return event.exitCode;
-    if (options.reconnectPolicy === 'until-terminal') return toExitCode(event.result);
-    const code = event.exitCode ?? toExitCode(event.result);
-    return code !== 0 ? code : event.remainingJobIds.length === 0 ? 0 : 75;
-  }
+  // Following a launch ends at its terminal with the outcome's code; a pending artifact is reported, not awaited.
+  if (event.type === 'terminal')
+    return options.reconnectPolicy === 'until-terminal' ? toExitCode(event.result) : event.exitCode;
   if (event.type === 'artifact') return event.exitCode;
   if (event.type === 'waiting') {
-    if (options.reconnectPolicy === 'bounded') return event.exitCode ?? (event.waitingJobIds.length === 0 ? 0 : 75);
+    if (options.reconnectPolicy === 'bounded') return event.exitCode;
     return event.waitingJobIds.length === 0 ? 0 : undefined;
   }
   return undefined;
@@ -630,9 +614,7 @@ async function followReadFailure(error: unknown, context: FollowContext): Promis
   if (
     handledError instanceof BackendToolHttpError &&
     isRecord(handledError.body) &&
-    ['wait_cursor_epoch_required', 'wait_cursor_unsupported', 'wait_cursor_malformed', 'wait_cursor_mismatch'].includes(
-      String(handledError.body.code),
-    ) &&
+    SOFT_CURSOR_REFUSALS.includes(String(handledError.body.code)) &&
     state.sendCursor
   ) {
     writeStdout(`${WAIT_CURSOR_REPLAY_NOTICE}\n`);
@@ -853,7 +835,7 @@ export async function launchAndFollow(options: FollowOptions): Promise<number> {
         abandoned: results.flatMap((result) => result.abandoned ?? []),
       };
     },
-    connect: async ({ jobIds, cursor, timeoutSeconds, signal, onCursorReset, drainProgress }) => {
+    connect: async ({ jobIds, cursor, timeoutSeconds, signal, drainProgress }) => {
       const probeStarted = performance.now();
       let backend;
       try {
@@ -892,11 +874,13 @@ export async function launchAndFollow(options: FollowOptions): Promise<number> {
         // from the iterator, not here.
         subscription: await backend.subscribe<unknown>(
           'jobs.wait',
-          jobsWaitRequest(
-            { jobIds, timeoutSeconds, drainProgress, projectRoot: options.projectRoot, ...(cursor ? { cursor } : {}) },
-            backend.jobsWaitExtensions,
-            onCursorReset,
-          ),
+          jobsWaitRequest({
+            jobIds,
+            timeoutSeconds,
+            drainProgress,
+            projectRoot: options.projectRoot,
+            ...(cursor ? { cursor } : {}),
+          }),
           {
             timeoutMs: HEALTH_TIMEOUT_MS,
             signal,

@@ -1,4 +1,4 @@
-import type { WaitCursorV3 } from '#src/jobs/wait/contract.js';
+import type { WaitCursor } from '#src/jobs/wait/contract.js';
 import { waitJobHash, waitEpochToken } from '#src/jobs/wait/cursor.js';
 import type { JobDetailResponse, JobEvent } from '#src/jobs/records.js';
 import type { WaitAdmission, WaitSession } from '#src/jobs/wait/session.js';
@@ -75,9 +75,8 @@ export function selectWaitSnapshot(session: WaitSession, lines = 20) {
   return snapshot(session, lines, testProgressVisit);
 }
 
-export function prefixCursor(jobs: readonly WaitAdmission[]): WaitCursorV3 {
+export function prefixCursor(jobs: readonly WaitAdmission[]): WaitCursor {
   return {
-    version: 'jobs.wait.v3',
     jobs: jobs.map((job) => ({
       hash: waitJobHash(job.jobId),
       epoch: job.epochKey ? waitEpochToken(job.epochKey) : null,

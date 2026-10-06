@@ -1,7 +1,7 @@
 import { rmSync } from 'node:fs';
 import { afterEach, expect, it, vi } from 'vitest';
 import { recordPendingProtection, readPendingProtections } from '#src/store/epoch/pending-protection.js';
-import { loadReleasedWait } from '#tests/helpers/released-wait.js';
+import { loadReleasedBuild } from '#tests/helpers/released-build.js';
 import { createTerminalExportFixture } from '#tests/helpers/terminal-export.js';
 
 const directories: string[] = [];
@@ -12,7 +12,7 @@ afterEach(() => {
 it.each(['v0.10.16', 'v0.10.17'] as const)(
   'keeps unpublished pending-protection stages invisible to current and %s scanners',
   async (tag) => {
-    const released = await loadReleasedWait(tag, directories);
+    const released = await loadReleasedBuild(tag, directories);
     const f = createTerminalExportFixture('provider', true);
     try {
       const write = f.runtime.storage.writeAtomicDurableSync;

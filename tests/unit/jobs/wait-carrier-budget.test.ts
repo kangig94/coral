@@ -11,14 +11,12 @@ const lines = (from: number, to: number, prefix: string): Array<[number, string]
 it('a live job with a >500-line backlog is reported carrier-unconfirmed on a continuation', async () => {
   // Earlier wait consumed through seq 10.
   const cursor = {
-    version: 'jobs.wait.v3' as const,
     jobs: [{ hash: waitJobHash('a'), epoch: waitEpochToken('E'), seq: 10, lineOffset: 0, flags: 0 }],
   };
   const events: unknown[] = [];
   for await (const event of readWaitSession({
-    request: { jobIds: ['a'], cursor, supportsWaitV3: true, timeoutSeconds: 3 },
+    request: { jobIds: ['a'], cursor, timeoutSeconds: 3 },
     time: new VirtualTime(),
-    activeEpochKey: 'E',
     read: observeWaitRead(() => [admitted('a', lines(1, 800, 'a'), false, 'E')]),
     visit: testProgressVisit,
     observe: async (session) => {

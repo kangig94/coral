@@ -1,3 +1,4 @@
+import { nextFinal } from '#tests/helpers/wait-stream.js';
 import { progressVisitFromDetails } from '#tests/helpers/wait-progress.js';
 import { linkSync, symlinkSync, unlinkSync, renameSync } from 'node:fs';
 import { observeProtectedEpoch } from '#src/store/epoch/protection.js';
@@ -321,8 +322,8 @@ describe('historical job readers', () => {
       () => ({ kind: 'failed', cause: 'terminal-unusable', retryScheduled: false }),
     );
     expect(addressing.detail('finished')).toMatchObject({ status: { phase: 'completed' } });
-    const stream = addressing.waitStream({ jobIds: ['finished'], supportsWaitV3: true });
-    expect((await stream.next()).value).toMatchObject({ type: 'terminal', jobId: 'finished' });
+    const stream = addressing.waitStream({ jobIds: ['finished'] });
+    expect((await nextFinal(stream)).value).toMatchObject({ type: 'terminal', jobId: 'finished' });
     await stream.return(undefined);
   });
 
@@ -726,21 +727,15 @@ console.log('ready');`;
         (jobId) => exporter.observeResultAvailability(jobId),
       );
       expect(existsSync(join(root, 'results', 'old-live', 'result.md'))).toBe(true);
-      const v2 = addressing.waitStream({ jobIds: ['old-live'], supportsWaitV2: true } as never);
-      expect((await v2.next()).value).toMatchObject({
+      const stream = addressing.waitStream({ jobIds: ['old-live'], timeoutSeconds: 1 });
+      expect((await nextFinal(stream)).value).toMatchObject({
         type: 'terminal',
         resultPath: join(root, 'results', 'old-live', 'result.md'),
-      });
-      await v2.return(undefined);
-      const v3 = addressing.waitStream({ jobIds: ['old-live'], supportsWaitV3: true, timeoutSeconds: 1 } as never);
-      const ev = (await v3.next()).value as Record<string, unknown>;
-      expect(ev).toMatchObject({
-        type: 'terminal',
         availability: { kind: 'available' },
         remainingJobIds: [],
         exitCode: 0,
       });
-      await v3.return(undefined);
+      await stream.return(undefined);
       source.close();
       rmSync(root, { recursive: true, force: true });
     });
@@ -850,10 +845,9 @@ process.stdin.on('data', (input) => {
         expect(existsSync(join(f.root, 'results', 'old-live', 'result.md'))).toBe(false);
         const stream = f.addressing.waitStream({
           jobIds: ['old-live'],
-          supportsWaitV3: true,
           timeoutSeconds: 0,
         } as never);
-        const ev = (await stream.next()).value as Record<string, unknown>;
+        const ev = (await nextFinal(stream)).value as Record<string, unknown>;
         expect(ev).toMatchObject({
           type: 'terminal',
           availability: { kind: 'repair-pending' },
@@ -863,21 +857,6 @@ process.stdin.on('data', (input) => {
         await stream.return(undefined);
         f.hydrate();
         expect(f.exporter.observeResultAvailability('old-live').kind).toBe('available');
-      } finally {
-        await f.close();
-      }
-    });
-    it('returns resumable waiting to legacy clients while hydration is pending', async () => {
-      const f = await setup();
-      try {
-        await f.finish();
-        const stream = f.addressing.waitStream({
-          jobIds: ['old-live'],
-          supportsWaitV2: true,
-          timeoutSeconds: 0,
-        } as never);
-        await expect(stream.next()).resolves.toMatchObject({ value: { type: 'waiting', waitingJobIds: ['old-live'] } });
-        await stream.return(undefined);
       } finally {
         await f.close();
       }
@@ -999,7 +978,7 @@ process.stdin.on('data', (input) => {
           undefined,
           () => ({ kind: 'failed', cause: 'terminal-unusable', retryScheduled: false }),
         );
-        const admissions = addressing.admitWait({ jobIds: ['typo-not-a-job'], supportsWaitV3: true });
+        const admissions = addressing.admitWait({ jobIds: ['typo-not-a-job'] });
         const session = new WaitSession(['typo-not-a-job']);
         session.reconcile(admissions);
         expect(admissions[0].disposition).toBe('discovery-unreadable');
@@ -1189,8 +1168,8 @@ it('isolates invalid job reads, continues hydration after a recording failure an
     undefined,
     () => ({ kind: 'failed', cause: 'terminal-unusable', retryScheduled: false }),
   );
-  expect(addressing.admitWait({ jobIds: ['good'], supportsWaitV3: true })[0].detail?.exit).not.toBeNull();
-  expect(addressing.admitWait({ jobIds: ['good'], supportsWaitV3: true })[0].progressUnknown).toBe(false);
+  expect(addressing.admitWait({ jobIds: ['good'] })[0].detail?.exit).not.toBeNull();
+  expect(addressing.admitWait({ jobIds: ['good'] })[0].progressUnknown).toBe(false);
   const hydration = vi.fn();
   onHistoricalHydrationHint(index, hydration);
   index.holdUnknownLocations(epochKey, 'held without retry');
@@ -1269,7 +1248,7 @@ describe('historical read dispositions', () => {
           historicalSourceReader(index),
           (id) => f.store.getResultExportOwner().observeResultAvailability(id),
         );
-        const [admission] = addressing.admitWait({ jobIds: [f.jobId], supportsWaitV3: true });
+        const [admission] = addressing.admitWait({ jobIds: [f.jobId] });
         expect(admission.progressUnknown, phase).not.toBe(true);
         expect(admission.progressLost, phase).toBe(false);
         const first = addressing.snapshot({ jobIds: [f.jobId] });
@@ -1280,7 +1259,6 @@ describe('historical read dispositions', () => {
         const events = [];
         for await (const event of addressing.waitStream({
           jobIds: [f.jobId],
-          supportsWaitV3: true,
           cursor: first.cursor,
           timeoutSeconds: 1,
         }))
@@ -1335,9 +1313,7 @@ describe('historical read dispositions', () => {
           historicalSourceReader(f.index),
           (id) => f.store.getResultExportOwner().observeResultAvailability(id),
         );
-        expect(addressing.admitWait({ jobIds: [f.jobId], supportsWaitV3: true })[0].disposition).toBe(
-          'outcome-unreadable',
-        );
+        expect(addressing.admitWait({ jobIds: [f.jobId] })[0].disposition).toBe('outcome-unreadable');
         expect(addressing.detail(f.jobId)).toMatchObject({ kind: 'outcome-unreadable' });
         expect(addressing.outcomeUnrecoverable([f.jobId])).toEqual([]);
         expect(addressing.snapshot({ jobIds: [f.jobId] })).toMatchObject({ remainingJobIds: [], exitCode: 1 });
@@ -1798,10 +1774,9 @@ it('delivers a historical sibling backlog and settles deterministic per-job deco
       undefined,
       () => ({ kind: 'available', resultPath: '/x' }),
     );
-    const admissions = addressing.admitWait({ jobIds: ['good', 'bad'], supportsWaitV3: true });
+    const admissions = addressing.admitWait({ jobIds: ['good', 'bad'] });
     const events: WaitStreamEvent[] = [];
-    for await (const e of addressing.waitStream({ jobIds: ['good', 'bad'], supportsWaitV3: true, timeoutSeconds: 1 }))
-      events.push(e);
+    for await (const e of addressing.waitStream({ jobIds: ['good', 'bad'], timeoutSeconds: 1 })) events.push(e);
     const goodProgress = events.filter((e) => e.type === 'progress' && e.jobId === 'good').length;
     const terminal = events.find((e) => e.type === 'terminal');
     expect(goodProgress).toBe(2);
@@ -1902,13 +1877,11 @@ it.each(['pending', 'decided'] as const)(
       for (let i = 0; i < 2; i++) {
         refreshHistoricalEpochs(f.index);
         expect(f.index.unknownLocationHolds()[0].retryScheduled).toBe(true);
-        expect(addressing.admitWait({ jobIds: [f.jobId], supportsWaitV3: true })[0].disposition).toBe('admitted');
+        expect(addressing.admitWait({ jobIds: [f.jobId] })[0].disposition).toBe('admitted');
       }
       refreshHistoricalEpochs(f.index);
       expect(f.index.unknownLocationHolds()[0].retryScheduled).toBe(false);
-      expect(addressing.admitWait({ jobIds: [f.jobId], supportsWaitV3: true })[0].disposition).toBe(
-        'outcome-unreadable',
-      );
+      expect(addressing.admitWait({ jobIds: [f.jobId] })[0].disposition).toBe('outcome-unreadable');
       expect(addressing.detail(f.jobId)).toMatchObject({ kind: 'outcome-unreadable' });
       expect(addressing.snapshot({ jobIds: [f.jobId] })).toMatchObject({ exitCode: 1, remainingJobIds: [] });
       open.mockRestore();
@@ -2360,14 +2333,12 @@ describe('ordinary retirement keeps typos missing', () => {
         undefined,
         () => ({ kind: 'failed', cause: 'terminal-unusable', retryScheduled: false }),
       );
-      expect(addressing.admitWait({ jobIds: ['typo-id'], supportsWaitV3: true })[0].disposition).toBe('missing');
+      expect(addressing.admitWait({ jobIds: ['typo-id'] })[0].disposition).toBe('missing');
 
       rmSync(epochDir, { recursive: true, force: true }); // ordinary retirement removes the epoch directory
       await retryUnknownHistoricalEpochs(index);
 
-      const after = addressing.admitWait({ jobIds: ['typo-id'], supportsWaitV3: true });
-
-      expect(addressing.validateWait({ jobIds: ['typo-id'] })).toMatchObject({ code: 'jobs_not_found' });
+      const after = addressing.admitWait({ jobIds: ['typo-id'] });
 
       expect(after[0].disposition).toBe('missing');
     });
@@ -2433,7 +2404,7 @@ describe('released hold reconciliation uses its path', () => {
     );
     expect(afterOpen).toHaveLength(1);
     expect(afterOwnerClear).toEqual([]);
-    expect(addressing.admitWait({ jobIds: ['typo-id'], supportsWaitV3: true })[0].disposition).toBe('missing');
+    expect(addressing.admitWait({ jobIds: ['typo-id'] })[0].disposition).toBe('missing');
     rmSync(base, { recursive: true, force: true });
   });
 });
@@ -2719,10 +2690,10 @@ describe('historical maintenance budgets and retirement', () => {
       undefined,
       () => ({ kind: 'available', resultPath: '/x' }),
     );
-    expect(
-      addressing.admitWait({ jobIds: ['done-1', 'typo-id'], supportsWaitV3: true }).map((job) => job.disposition),
-    ).toEqual(['admitted', 'missing']);
-    expect(addressing.validateWait({ jobIds: ['typo-id'], supportsWaitV2: true })?.code).toBe('jobs_not_found');
+    expect(addressing.admitWait({ jobIds: ['done-1', 'typo-id'] }).map((job) => job.disposition)).toEqual([
+      'admitted',
+      'missing',
+    ]);
   });
 
   it.each([true, false])('bounds terminal record re-reads and preserves eventual progress, terminal=%s', (terminal) => {
@@ -2747,7 +2718,7 @@ describe('historical maintenance budgets and retirement', () => {
       undefined,
       () => ({ kind: 'available', resultPath: '/x' }),
     );
-    const request = { jobIds: [...ids].reverse(), supportsWaitV3: true };
+    const request = { jobIds: [...ids].reverse() };
     const read = vi.spyOn(storage, 'readFileSync');
     const observed = new Set<string>();
     const delivered = new Set<string>();
@@ -2916,7 +2887,7 @@ describe('historical maintenance budgets and retirement', () => {
       undefined,
       () => ({ kind: 'available', resultPath: '/result.md' }),
     );
-    const request = { jobIds: ['ghost', 'job-3'], supportsWaitV3: true };
+    const request = { jobIds: ['ghost', 'job-3'] };
     seedHistoricalEpoch(runtime, index, epoch, key, FP0, join(f.root, 'results'), storage, [], false, { remaining: 0 });
     expect(addressing.admitWait(request).map((job) => job.disposition)).toEqual(['missing', 'admitted']);
     seedHistoricalEpoch(runtime, index, epoch, key, FP0, join(f.root, 'results'), storage, [], false, { remaining: 1 });
@@ -3350,6 +3321,82 @@ it('a per-job transient read honours the source hold already settled by maintena
     expect(read.dispositions?.get(f.jobId)).toBe('settled-unreadable');
   } finally {
     vi.restoreAllMocks();
+    f.close();
+  }
+});
+
+it('reads an unchanged held source once per wait session and again after it changes', () => {
+  const f = createTerminalExportFixture('provider', true);
+  try {
+    seedHistoricalEpoch(
+      f.runtime,
+      f.index,
+      f.epoch,
+      f.epochKey,
+      currentCoralStoreFormat().fingerprint,
+      f.runtime.paths.coral.exports.jobsRoot,
+      f.runtime.storage,
+    );
+    const open = vi.spyOn(f.runtime.storage, 'openSqliteDatabaseSync');
+    const session = {};
+    for (let poll = 0; poll < 10; poll++)
+      expect(readHistoricalSource(f.index, f.epochKey, [f.jobId, 'typo'], session).kind).toBe('read');
+    expect(open).toHaveBeenCalledTimes(1);
+    f.store.appendProgress(f.jobId, 'session-1', 'changed');
+    expect(readHistoricalSource(f.index, f.epochKey, [f.jobId, 'typo'], session).kind).toBe('read');
+    expect(open).toHaveBeenCalledTimes(2);
+  } finally {
+    f.close();
+  }
+});
+
+it('lets an error raised by a historical progress read escape its source and still releases the source', () => {
+  const f = createTerminalExportFixture('provider', true);
+  try {
+    seedHistoricalEpoch(
+      f.runtime,
+      f.index,
+      f.epoch,
+      f.epochKey,
+      currentCoralStoreFormat().fingerprint,
+      f.runtime.paths.coral.exports.jobsRoot,
+      f.runtime.storage,
+    );
+    expect(() =>
+      f.index.readOnlyView().visitProgress!(f.epochKey, () => {
+        throw new TypeError('defect in the reader');
+      }),
+    ).toThrow(TypeError);
+    const attempt = attemptExclusiveFileLockSync(join(dirname(f.epoch.path), '.lock'));
+    expect(attempt.kind).toBe('acquired');
+    if (attempt.kind === 'acquired') attempt.lease();
+  } finally {
+    f.close();
+  }
+});
+
+it('an undecodable launch row cannot stop hydration of the subjects after it in the same slice', () => {
+  const f = createTerminalExportFixture('provider', true);
+  try {
+    f.complete();
+    f.index.markUncertified(f.jobId);
+    f.db
+      .prepare(
+        "INSERT INTO events(seq, ts, type, stream_kind, stream_id, body) VALUES (0, ?, 'job.launch.requested', 'job', 'job-0', ?)",
+      )
+      .run(new Date(TERMINAL_EXPORT_CUTOFF).toISOString(), Buffer.from('not json'));
+    seedHistoricalEpoch(
+      f.runtime,
+      f.index,
+      f.epoch,
+      f.epochKey,
+      currentCoralStoreFormat().fingerprint,
+      f.runtime.paths.coral.exports.jobsRoot,
+      f.runtime.storage,
+    );
+    expect(f.index.read(f.jobId)?.disposition).toBe('terminal');
+    expect(f.index.unknownLocationHold(f.epochKey)).not.toBeNull();
+  } finally {
     f.close();
   }
 });

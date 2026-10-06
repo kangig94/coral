@@ -5,13 +5,12 @@ import { readWaitSession } from '#src/jobs/wait/reader.js';
 import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
 import { admitted } from '#tests/helpers/wait-session.js';
 
-it('fresh v3 stream: CLI render decisions keep every line of a multi-line message', async () => {
+it('fresh stream: CLI render decisions keep every line of a multi-line message', async () => {
   let cursor: any = { afterSeq: 0 };
   const rendered: string[] = [];
   for await (const event of readWaitSession({
-    request: { jobIds: ['a'], supportsWaitV3: true, timeoutSeconds: 0 },
+    request: { jobIds: ['a'], timeoutSeconds: 0 },
     time: new VirtualTime(),
-    activeEpochKey: 'E',
     read: observeWaitRead(() => [
       admitted(
         'a',
@@ -108,9 +107,8 @@ it.each([0, 1, 250, 499, 500, 501, 630])(
     };
     const stream = () =>
       readWaitSession({
-        request: { jobIds: ids, supportsWaitV3: true, timeoutSeconds: 0, cursor },
+        request: { jobIds: ids, timeoutSeconds: 0, cursor },
         time: new VirtualTime(),
-        activeEpochKey: 'E1',
         read: () => jobs.filter((job) => ids.includes(job.jobId)),
         visit,
       });
@@ -133,8 +131,7 @@ it('delivering a readable member preserves a transient sibling frontier for its 
   const collect = async (cursor: WaitCursor, held: boolean) => {
     const events: WaitStreamEvent[] = [];
     for await (const event of readWaitSession({
-      request: { jobIds: ['a', 'b'], supportsWaitV3: true, timeoutSeconds: 0, cursor },
-      activeEpochKey: 'epoch-E',
+      request: { jobIds: ['a', 'b'], timeoutSeconds: 0, cursor },
       time: new VirtualTime(),
       read: observeWaitRead(() =>
         jobs.map((job) => (job.jobId === 'b' && held ? { ...job, sourceRead: 'transient-unknown' as const } : job)),
@@ -148,7 +145,7 @@ it('delivering a readable member preserves a transient sibling frontier for its 
   const first = await collect(initial, true);
   expect(first.filter((event) => event.type === 'progress').map((event) => event.message)).toEqual(['a-readable']);
   const last = first.at(-1)!;
-  if (!('cursor' in last) || last.cursor?.version !== 'jobs.wait.v3') throw new Error('Expected continuation');
+  if (last.type !== 'waiting') throw new Error('Expected continuation');
   expect(last.cursor.jobs.find((entry) => entry.hash === initial.jobs[1].hash)).toEqual(initial.jobs[1]);
   const second = await collect(last.cursor, false);
   expect(second.filter((event) => event.type === 'progress').map((event) => event.message)).toEqual(['b-held']);

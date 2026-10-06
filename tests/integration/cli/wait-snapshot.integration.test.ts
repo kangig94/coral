@@ -9,7 +9,7 @@ import { IpcLifecycleRefusal } from '#src/transport/ipc/client.js';
 import { WaitInvocation, installWaitInvocation } from '#src/cli/wait-invocation.js';
 import { WaitSession } from '#src/jobs/wait/session.js';
 import { selectWaitSnapshot, prefixCursor } from '#tests/helpers/wait-progress.js';
-import { admitted } from '#tests/helpers/wait-session.js';
+import { admitted, savedCursor } from '#tests/helpers/wait-session.js';
 
 let invocation: WaitInvocation | undefined;
 afterEach(() => {
@@ -24,19 +24,6 @@ function program() {
   registerSessionCommands(p, createBuiltInProviderRegistry());
   return p;
 }
-
-it('refuses --now locally on an older coordinator without opening a subscription or sending snapshot', async () => {
-  const request = vi.fn();
-  const subscribe = vi.fn();
-  vi.spyOn(ensure, 'ensure').mockResolvedValue({ jobsWaitExtensions: ['supportsWaitV2'], request, subscribe } as never);
-  const p = program();
-  const wait = p.commands.find((command) => command.name() === 'wait')!.commands[0];
-  await expect(
-    dispatch.makeClient(process.cwd(), wait).snapshotJobsWait({ jobIds: ['a'], projectRoot: process.cwd() }),
-  ).rejects.toThrow('this coordinator predates --now');
-  expect(request).not.toHaveBeenCalled();
-  expect(subscribe).not.toHaveBeenCalled();
-});
 
 it('commits only a complete validated snapshot, preserves --now, and cannot acknowledge a malformed response', async () => {
   const a = admitted('a', [[1, Array.from({ length: 501 }, (_, i) => `${i}`).join('\n')]]);
@@ -83,14 +70,18 @@ it('commits only a complete validated snapshot, preserves --now, and cannot ackn
   expect(errorOutput).toContain('Run coral-cli wait jobs a --now');
 });
 
-it('maps an unknown snapshot method to the older-coordinator refusal', async () => {
+it('answers an older coordinator without the snapshot method with the restart refusal', async () => {
   const request = vi.fn().mockRejectedValue(new Error('Method not found'));
-  vi.spyOn(ensure, 'ensure').mockResolvedValue({ jobsWaitExtensions: ['supportsWaitV3'], request } as never);
+  vi.spyOn(ensure, 'ensure').mockResolvedValue({ request } as never);
   const p = program();
   const wait = p.commands.find((command) => command.name() === 'wait')!.commands[0];
   await expect(
     dispatch.makeClient(process.cwd(), wait).snapshotJobsWait({ jobIds: ['a'], projectRoot: process.cwd() }),
-  ).rejects.toThrow('this coordinator predates --now');
+  ).rejects.toMatchObject({
+    code: 'wait_build_mismatch',
+    exitCode: 1,
+    remediation: expect.stringContaining('Restart the session'),
+  });
 });
 
 it.each(['refusal', 'disconnect', 'output failure'])(
@@ -155,30 +146,12 @@ it.each(['shape', 'membership'])(
   },
 );
 
-import { serializeWaitCursor } from '#src/jobs/wait/cursor.js';
-
-it.each([{ afterSeq: 42 }, { version: 'jobs.wait.v2' as const, positions: { e: 42 }, locations: { a: 'e' } }])(
-  'preserves a compatible saved cursor in the older-coordinator --now refusal: %j',
-  async (cursor) => {
-    vi.spyOn(ensure, 'ensure').mockResolvedValue({ jobsWaitExtensions: ['supportsWaitV2'], request: vi.fn() } as never);
-    const p = program();
-    const wait = p.commands.find((command) => command.name() === 'wait')!.commands[0];
-    await expect(
-      dispatch.makeClient(process.cwd(), wait).snapshotJobsWait({ jobIds: ['a'], cursor }),
-    ).rejects.toMatchObject({
-      remediation: `Run coral-cli wait jobs a --cursor ${serializeWaitCursor(cursor)}`,
-      code: 'transient',
-      exitCode: 75,
-    });
-  },
-);
-
 it('uses the successor retry path for snapshot reads while preserving their request cursor', async () => {
-  const cursor = { afterSeq: 42 };
+  const cursor = savedCursor({ a: 42 });
   const refusal = new IpcLifecycleRefusal('/tmp/isolated-snapshot.sock', 'jobs.wait.snapshot');
   const request = vi.fn().mockRejectedValue(refusal);
   const successorRequest = vi.fn().mockResolvedValue('snapshot');
-  const incumbent = { jobsWaitExtensions: ['supportsWaitV3'], request };
+  const incumbent = { request };
   const successor = { request: successorRequest };
   vi.spyOn(ensure, 'ensure').mockResolvedValue(incumbent as never);
   vi.spyOn(ensure, 'issueWithSuccessorAfterLifecycleRefusal').mockImplementation(async (_method, _root, issue) => {
@@ -223,16 +196,4 @@ it('describes a reset snapshot cursor as a latest progress tail', async () => {
   expect(output).toContain(WAIT_CURSOR_REPLAY_NOTICE);
   expect(output).toContain('current progress tail');
   expect(output).toContain('line-29');
-});
-
-it('older-coordinator snapshot refusal preserves the v3 cursor in remediation', async () => {
-  vi.spyOn(ensure, 'ensure').mockResolvedValue({ jobsWaitExtensions: ['supportsWaitV2'] } as never);
-  const p = program();
-  const wait = p.commands.find((command) => command.name() === 'wait')!.commands[0];
-  const session = new WaitSession(['a']);
-  session.reconcile([admitted('a', [], false)]);
-  const cursor = session.cursor();
-  await expect(
-    dispatch.makeClient(process.cwd(), wait).snapshotJobsWait({ jobIds: ['a'], cursor }),
-  ).rejects.toMatchObject({ remediation: expect.stringContaining(`--cursor ${serializeWaitCursor(cursor)}`) });
 });

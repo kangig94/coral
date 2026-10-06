@@ -28,3 +28,29 @@ export function sameEpoch(left: EpochIdentity, right: EpochIdentity): boolean {
 export function epochHoldDirectory(key: string): string {
   return createHash('sha256').update(key).digest('hex');
 }
+
+function addressFields(key: string | undefined): { storeRoot?: unknown; epoch?: unknown; lineageKey?: unknown } | null {
+  if (!key?.startsWith('{')) return null;
+  try {
+    const value: unknown = JSON.parse(key);
+    return typeof value === 'object' && value !== null ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+/** A hold recorded before an address's lineage was readable names the epoch at that store root and number. */
+export function sameEpochOrFallbackAddress(holdKey: string | undefined, epochKey: string): boolean {
+  if (sameEpoch(holdKey, epochKey)) return true;
+  const hold = addressFields(holdKey);
+  const epoch = addressFields(epochKey);
+  return (
+    hold !== null &&
+    epoch !== null &&
+    hold.lineageKey === undefined &&
+    typeof hold.storeRoot === 'string' &&
+    hold.storeRoot === epoch.storeRoot &&
+    typeof hold.epoch === 'string' &&
+    hold.epoch === epoch.epoch
+  );
+}

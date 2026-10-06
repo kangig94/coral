@@ -657,3 +657,20 @@ it('observes an unchanged in-window unavailable terminal source once per wait se
   f.removeSource();
   expect(owner.observeResultAvailability(f.jobId, session)).toMatchObject({ kind: 'failed', retryScheduled: false });
 });
+
+it('decides progress retention once per request for an unchanged terminal', () => {
+  const f = createTerminalExportFixture('provider', true);
+  try {
+    f.complete();
+    const owner = f.store.getResultExportOwner();
+    owner.publishTerminalResult(f.jobId);
+    const opens = vi.spyOn(f.runtime.storage, 'openSqliteDatabaseSync');
+    const request = {};
+    for (let poll = 0; poll < 40; poll++) owner.progressRetentionExpired(f.jobId, request);
+    expect(opens.mock.calls.length).toBeLessThanOrEqual(1);
+    owner.progressRetentionExpired(f.jobId, {});
+    expect(opens.mock.calls.length).toBeLessThanOrEqual(2);
+  } finally {
+    f.close();
+  }
+});

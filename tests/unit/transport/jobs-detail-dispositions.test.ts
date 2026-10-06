@@ -1,5 +1,5 @@
+import { savedCursor } from '#tests/helpers/wait-session.js';
 import { progressVisitFromDetails } from '#tests/helpers/wait-progress.js';
-import { waitEpochToken } from '#src/jobs/wait/cursor.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -162,27 +162,7 @@ describe('jobs.detail retained-epoch dispositions', () => {
     expect(errorCodeToExit('job_outcome_unrecoverable', 409)).toBe(1);
   });
 
-  it('should refuse to open a wait on a job no recorded terminal will reach', async () => {
-    const waitStream = vi.fn();
-    const result = await execute(
-      'jobs.wait',
-      { jobIds: ['job-1', 'job-2'] },
-      {
-        scopeCheck: () => ({ valid: ['job-1', 'job-2'], mismatch: [], missing: [] }),
-        outcomeUnrecoverable: () => ['job-2'],
-        validateWait: () => null,
-        waitStream,
-      },
-    );
-
-    expect(result).toMatchObject({
-      kind: 'unary',
-      body: { code: 'job_outcome_unrecoverable', detail: { jobs: ['job-2'] } },
-    });
-    expect(waitStream).not.toHaveBeenCalled();
-  });
-
-  it.each(['jobs.wait', 'jobs.abort'] as const)(
+  it.each(['jobs.abort'] as const)(
     'should answer %s on ids no epoch knows the way jobs.detail does',
     async (method) => {
       const jobs = {
@@ -190,7 +170,7 @@ describe('jobs.detail retained-epoch dispositions', () => {
         unknownJobDisposition: () => 'pre-epoch-history',
         outcomeUnrecoverable: () => [],
       };
-      const body = method === 'jobs.wait' ? { jobIds: ['job-1'] } : { jobs: ['job-1'] };
+      const body = { jobs: ['job-1'] };
 
       expect(await execute(method, body, jobs)).toMatchObject({
         kind: 'unary',
@@ -202,28 +182,6 @@ describe('jobs.detail retained-epoch dispositions', () => {
       });
     },
   );
-
-  it('should give missing ids in a mixed wait the pre-epoch disposition before streaming', async () => {
-    const waitStream = vi.fn();
-    const result = await execute(
-      'jobs.wait',
-      { jobIds: ['known', 'possible-flat'] },
-      {
-        scopeCheck: () => ({ valid: ['known', 'possible-flat'], mismatch: [], missing: ['possible-flat'] }),
-        unknownJobDisposition: () => 'pre-epoch-history',
-        outcomeUnrecoverable: () => [],
-        validateWait: () => null,
-        waitStream,
-      },
-    );
-
-    expect(result).toMatchObject({
-      kind: 'unary',
-      statusCode: 404,
-      body: { code: 'job_pre_epoch_history', detail: { jobs: ['possible-flat'] } },
-    });
-    expect(waitStream).not.toHaveBeenCalled();
-  });
 
   it('should let addressing answer each id in a mixed pre-epoch abort', async () => {
     const abort = vi.fn(() => ({
@@ -257,27 +215,25 @@ describe('jobs.detail retained-epoch dispositions', () => {
 
 it('maps jobs-owned admission without filtering the request or its saved cursor', async () => {
   const validateWait = vi.fn(() => null);
-  const cursor = {
-    version: 'jobs.wait.v2',
-    positions: { e: 12, missing: 9 },
-    locations: { known: 'e', ghost: 'missing' },
-    deliveredJobIds: ['ghost'],
-  };
+  const cursor = savedCursor({ known: 12, ghost: 9 }, 'e');
   const waitStream = vi.fn(async function* (request: WaitStreamRequest) {
     yield {
       type: 'waiting' as const,
       waitingJobIds: request.admissions?.filter((job) => job.disposition === 'admitted').map((job) => job.jobId) ?? [],
+      cursor: { jobs: [] },
+      exitCode: 75,
     };
   });
   const result = await execute(
     'jobs.wait',
-    { jobIds: ['known', 'ghost'], cursor, supportsWaitV2: true, supportsWaitV3: true },
+    { jobIds: ['known', 'ghost'], cursor },
     {
       scopeCheck: () => ({ valid: ['known', 'ghost'], mismatch: [], missing: ['ghost'] }),
       unknownJobDisposition: () => 'not-found',
       outcomeUnrecoverable: () => [],
       validateWait,
       waitStream,
+      waitHandoverSignal: () => new AbortController().signal,
     },
   );
   expect(result).toMatchObject({ kind: 'subscription' });
@@ -294,53 +250,6 @@ it('maps jobs-owned admission without filtering the request or its saved cursor'
   const stream = (result as { notifications: AsyncIterable<unknown> }).notifications;
   for await (const event of stream) expect(event).toMatchObject({ waitingJobIds: ['known'] });
   expect(waitStream.mock.calls[0][0]).toMatchObject({ jobIds: ['known', 'ghost'], cursor });
-});
-
-it.each([false, true])('keeps retryable unknown discovery resumable in a legacy %s mixed wait', async (mixed) => {
-  const ids = mixed ? ['known', 'unknown'] : ['unknown'];
-  const cursor = { version: 'jobs.wait.v2', positions: { e: 12 }, locations: { known: 'e' } };
-  const result = await execute(
-    'jobs.wait',
-    { jobIds: ids, cursor, supportsWaitV2: true },
-    {
-      scopeCheck: () => ({ valid: ids, mismatch: [], missing: ['unknown'] }),
-      unknownJobDisposition: () => 'discovery-unknown',
-      unknownJobCaveat: () => 'Unreadable epoch historical: recovery retry pending.',
-    },
-  );
-  expect(result).toMatchObject({
-    kind: 'unary',
-    statusCode: 503,
-    body: {
-      code: 'transient',
-      detail: { jobs: ids, disposition: 'discovery-unknown' },
-      remediation: `coral-cli wait jobs ${ids.join(' ')} --cursor ${Buffer.from(JSON.stringify(cursor)).toString('base64url')}`,
-    },
-  });
-  expect(errorCodeToExit('transient', 503)).toBe(75);
-});
-
-it('answers a typo as discovery-unreadable with the permanent epoch caveat', async () => {
-  const result = await execute(
-    'jobs.wait',
-    { jobIds: ['typo'] },
-    {
-      scopeCheck: () => ({ valid: ['typo'], mismatch: [], missing: ['typo'] }),
-      unknownJobDisposition: () => 'discovery-unreadable',
-      unknownJobCaveat: () => 'Unreadable epoch permanently-lost: retained-store-root-missing.',
-    },
-  );
-  expect(result).toMatchObject({
-    kind: 'unary',
-    statusCode: 409,
-    body: {
-      code: 'job_outcome_unreadable',
-      message: expect.stringContaining(
-        `${waitEpochToken('permanently-lost').slice(0, 8)}: Epoch maintenance cannot read this source; it re-reads it at the next coordinator start`,
-      ),
-    },
-  });
-  expect(errorCodeToExit('job_outcome_unreadable', 409)).toBe(1);
 });
 
 it('keeps the singular missing-job detail code when an epoch caveat is present', async () => {

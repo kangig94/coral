@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { z } from 'zod';
 import { decodeWaitCursor, waitJobHash, serializeWaitCursor } from './cursor.js';
-import { WAIT_SNAPSHOT_BYTES, type WaitCursorV3, type ProgressVisit } from './contract.js';
+import { WAIT_SNAPSHOT_BYTES, type WaitCursor, type ProgressVisit } from './contract.js';
 import { resultAvailabilitySchema } from './stream-event.js';
 import type { WaitAdmission, WaitSession, WaitSnapshot, WaitSnapshotJob, WaitTerminalSummary } from './session.js';
 import { WaitSessionError, waitTerminalExitCode, shortenWaitLine } from './session.js';
@@ -48,7 +48,9 @@ export function selectWaitSnapshot(session: WaitSession, lines = 20, visit: Prog
         else if (target.artifactPending(job.jobId) && job.availability?.kind !== 'repair-pending')
           target.settleArtifact(job.jobId);
       }
-      if (includeProgress) for (const line of selection.lines) target.consume(line);
+      if (!includeProgress) return;
+      for (const line of selection.lines) target.consume(line);
+      target.advanceSilently(selection.advances);
     };
     const outcome = (includeProgress: boolean) => {
       const draft = session.preview();
@@ -63,7 +65,6 @@ export function selectWaitSnapshot(session: WaitSession, lines = 20, visit: Prog
     };
     const { progressTruncated, ...delivered } = outcome(true);
     const snapshot: WaitSnapshot = {
-      version: 'jobs.wait.v3',
       jobs,
       notices,
       ...delivered,
@@ -150,8 +151,29 @@ function terminalSummary(
   };
 }
 
+/** The one snapshot size policy: a JSON-RPC envelope at most this large, whatever carries it. */
+export function waitSnapshotEnvelopeFits(encodedBytes: number): boolean {
+  return encodedBytes <= WAIT_SNAPSHOT_BYTES;
+}
+
+function snapshotEnvelopeBytes(snapshot: unknown): number {
+  return encodedBytes({ jsonrpc: '2.0', id: 'x'.repeat(1024), result: snapshot });
+}
+
+/** An oversized snapshot never advances the input cursor; each subset retry repeats that unchanged cursor. */
+export function waitSnapshotTooLarge(jobIds: readonly string[], input: WaitCursor | undefined): WaitSessionError {
+  const retries = jobIds.map(
+    (jobId) =>
+      `coral-cli wait jobs '${jobId.replaceAll("'", "'\\''")}' --now${input ? ` --cursor ${serializeWaitCursor(input)}` : ''}`,
+  );
+  return new WaitSessionError(
+    'wait_snapshot_too_large',
+    `Snapshot exceeds the response size budget. Retry subsets with the original cursor: ${retries.join('; ')}. The input cursor has not advanced.`,
+  );
+}
+
 function fitSnapshotResponse(snapshot: WaitSnapshot, session: WaitSession): boolean {
-  if (encodedBytes({ jsonrpc: '2.0', id: 'x'.repeat(1024), result: snapshot }) <= WAIT_SNAPSHOT_BYTES) return true;
+  if (waitSnapshotEnvelopeFits(snapshotEnvelopeBytes(snapshot))) return true;
   for (const job of snapshot.jobs)
     if (job.terminal) {
       job.terminal.contentOmitted = true;
@@ -159,7 +181,7 @@ function fitSnapshotResponse(snapshot: WaitSnapshot, session: WaitSession): bool
       job.terminal.diagnosticOmitted = true;
       job.terminal.diagnosticPreview = '[diagnostics omitted: response size budget]';
     }
-  if (encodedBytes({ jsonrpc: '2.0', id: 'x'.repeat(1024), result: snapshot }) <= WAIT_SNAPSHOT_BYTES) return true;
+  if (waitSnapshotEnvelopeFits(snapshotEnvelopeBytes(snapshot))) return true;
   for (const job of snapshot.jobs) job.progress = [];
   snapshot.notices.push('Progress omitted to fit the complete response; run the continuation.');
   assertSnapshotFits(snapshot, session);
@@ -167,16 +189,8 @@ function fitSnapshotResponse(snapshot: WaitSnapshot, session: WaitSession): bool
 }
 
 function assertSnapshotFits(snapshot: unknown, session: WaitSession): void {
-  if (encodedBytes({ jsonrpc: '2.0', id: 'x'.repeat(1024), result: snapshot }) <= WAIT_SNAPSHOT_BYTES) return;
-  const retries = session.jobIds.map(
-    (jobId) =>
-      `coral-cli wait jobs '${jobId.replaceAll("'", "'\\''")}' --now${session.input ? ` --cursor ${serializeWaitCursor(session.input)}` : ''}`,
-  );
-  const retry = retries.join('; ');
-  throw new WaitSessionError(
-    'wait_snapshot_too_large',
-    `Snapshot identity metadata exceeds the response size budget. Retry a smaller job set: ${retry}. The input cursor has not advanced.`,
-  );
+  if (!waitSnapshotEnvelopeFits(snapshotEnvelopeBytes(snapshot)))
+    throw waitSnapshotTooLarge(session.jobIds, session.input);
 }
 
 /** A partial or malformed unary response must not advance collection state. */
@@ -192,7 +206,6 @@ export function parseWaitSnapshot(value: unknown, jobIds?: readonly string[]): W
 
 const waitSnapshotSchema = z
   .object({
-    version: z.literal('jobs.wait.v3'),
     jobs: z
       .array(
         z
@@ -236,10 +249,7 @@ const waitSnapshotSchema = z
       )
       .max(128),
     notices: z.array(z.string()),
-    cursor: z.custom<WaitCursorV3>((value) => {
-      const decoded = decodeWaitCursor(value);
-      return decoded.kind === 'decoded' && decoded.cursor.version === 'jobs.wait.v3';
-    }),
+    cursor: z.custom<WaitCursor>((value) => decodeWaitCursor(value).kind === 'decoded'),
     remainingJobIds: z.array(z.string()).max(128),
     exitCode: z.number().int().min(0).max(255),
   })

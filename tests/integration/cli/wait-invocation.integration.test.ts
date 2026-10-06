@@ -5,15 +5,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, expect, it } from 'vitest';
 import { serializeWaitCursor } from '#src/jobs/wait/cursor.js';
+import { savedCursor } from '#tests/helpers/wait-session.js';
 
 const directory = mkdtempSync(join(tmpdir(), 'coral-wait-invocation-'));
-const saved = serializeWaitCursor({ afterSeq: 7 });
-const frontier = serializeWaitCursor({
-  version: 'jobs.wait.v2',
-  locations: { a: 'epoch' },
-  positions: { epoch: 42 },
-  deliveredJobIds: [],
-});
+const saved = serializeWaitCursor(savedCursor({ a: 7 }, 'epoch'));
+const frontier = serializeWaitCursor(savedCursor({ a: 42 }, 'epoch'));
 
 beforeAll(() => {
   const outdir = join(directory, 'real');

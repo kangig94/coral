@@ -1,4 +1,4 @@
-import { loadReleasedWait } from '#tests/helpers/released-wait.js';
+import { loadReleasedBuild } from '#tests/helpers/released-build.js';
 import { rmSync } from 'node:fs';
 import { crashHolderPublication } from '#tests/helpers/crash-holder-publication.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -210,7 +210,7 @@ it.each(['v0.10.15', 'v0.10.16', 'v0.10.17'] as const)(
   async (tag) => {
     const f = fixture();
     const dirs: string[] = [];
-    const released = await loadReleasedWait(tag, dirs);
+    const released = await loadReleasedBuild(tag, dirs);
     const runtime = { ...f.runtime, process: { ...f.runtime.process, observeLiveness: () => 'absent' as const } };
     const root = f.runtime.paths.coral.store.dbDir;
     const selected = { storeRoot: root, epoch: '1', path: join(root, 'epoch-1', 'store.db') };
