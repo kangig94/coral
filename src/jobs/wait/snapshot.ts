@@ -31,7 +31,7 @@ function preview(text: string, budget: number): { text: string; omitted: boolean
   return { text: `${selected}[preview shortened: content omitted]`, omitted: true };
 }
 
-/** One poll: a terminal is summarized on every read, once its job's readable progress is delivered. */
+/** Terminal truth must remain visible while unread progress stays in the continuation. */
 export function selectWaitSnapshot(session: WaitSession, lines = 20, visit: ProgressVisit): WaitSnapshot {
   return session.withProgress(visit, (sources) => {
     const selection = session.select(sources, { lines: WAIT_PROGRESS_LINES, bytes: WAIT_PROGRESS_BYTES }, lines);

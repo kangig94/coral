@@ -16,7 +16,7 @@ function collect(jobs: ReturnType<typeof admitted>[], lines?: number) {
 }
 
 describe('wait snapshot', () => {
-  it('holds a terminal behind a transient progress read and keeps its first-read tail for the next read', () => {
+  it('prints terminal truth during a transient progress read and keeps its first-read tail for the next read', () => {
     const job = admitted(
       'held',
       Array.from({ length: 30 }, (_, i) => [i + 1, `line${i + 1}`]),
@@ -25,7 +25,7 @@ describe('wait snapshot', () => {
     const firstSession = testSession(['held']);
     firstSession.reconcile([job]);
     const first = selectWaitSnapshotFrom(firstSession, 20, busy);
-    expect(first.jobs[0].terminal).toBeUndefined();
+    expect(first.jobs[0].terminal).toBeDefined();
     expect(first.jobs[0].progress).toEqual([]);
     expect(first.remainingJobIds).toEqual(['held']);
     expect(first.cursor).toBeNull();
@@ -60,7 +60,7 @@ describe('wait snapshot', () => {
     session.reconcile([a]);
     const first = selectWaitSnapshot(session);
     expect(first.jobs[0].progress).toHaveLength(500);
-    expect(first.jobs[0].progress.at(-1)).toMatch(/^500\[line shortened: \d+ bytes omitted\]$/);
+    expect(first.jobs[0].progress.at(-1)).toMatch(/^500\[event shortened: 1 lines, 4 bytes omitted\]$/);
     expect(first.jobs[0].terminal).toBeDefined();
     expect(first.remainingJobIds).toEqual([]);
     expect(first.exitCode).toBe(0);
@@ -168,4 +168,39 @@ it('collects every remaining line after a budget cut, tolerating lines the next 
     new Set(job.detail.events.flatMap((event) => (event.type === 'progress' ? [event.message] : []))),
   );
   expect(snapshot?.jobs[0].terminal).toBeDefined();
+});
+
+it('prints a failed snapshot terminal and artifact before its 501-event backlog is consumed', () => {
+  const messages: Array<[number, string]> = Array.from({ length: 501 }, (_, i) => [i + 1, `line ${i}`]);
+  const job = admitted('a', messages, true, 'epoch-E', true);
+  const first = collect([job]);
+  expect(first.jobs[0].progress).toEqual(messages.slice(0, 500).map(([, text]) => text));
+  expect(first.jobs[0].terminal).toMatchObject({ exitCode: 42 });
+  expect(first.jobs[0].availability).toEqual(job.availability);
+  expect(first.remainingJobIds).toEqual(['a']);
+  expect(first.exitCode).toBe(42);
+  const next = testSession(['a'], first.cursor!);
+  next.reconcile([job]);
+  const second = selectWaitSnapshot(next);
+  expect(second.jobs[0].progress).toEqual(['line 500']);
+  expect(second.jobs[0].terminal).toMatchObject({ exitCode: 42 });
+  expect(second.remainingJobIds).toEqual([]);
+});
+
+it('keeps a historical pending artifact in a snapshot continuation with exit 75 until it settles', () => {
+  const job = { ...admitted('h', [[50, 'historical progress']], true, 'old'), historical: true };
+  job.availability = { kind: 'pending' };
+  const first = collect([job]);
+  expect(first.jobs[0].terminal).toBeDefined();
+  expect(first.jobs[0].availability).toEqual({ kind: 'pending' });
+  expect(first.jobs[0].progress).toEqual([]);
+  expect(first.remainingJobIds).toEqual(['h']);
+  expect(first.exitCode).toBe(75);
+  job.availability = { kind: 'available', resultPath: '/results/h' };
+  const next = testSession(['h'], first.cursor ?? undefined);
+  next.reconcile([job]);
+  const second = selectWaitSnapshot(next);
+  expect(second.jobs[0].availability).toEqual(job.availability);
+  expect(second.remainingJobIds).toEqual([]);
+  expect(second.exitCode).toBe(0);
 });

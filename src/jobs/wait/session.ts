@@ -262,7 +262,6 @@ export class WaitSession {
     );
     const source = (job: WaitAdmission & { epochKey: string }): ProgressSource =>
       sources.get(epochIdentity(job.epochKey)) as ProgressSource;
-    // Read after the job's rows within one visit, so a job whose page ran out has no unread row at or below it.
     const frontier = (job: WaitAdmission & { epochKey: string }): number | null =>
       this.readRows(job.jobId, () => source(job).frontier());
     const rows: WaitSelectedRow[] = [];
@@ -294,7 +293,7 @@ export class WaitSession {
           const chosen: WaitSelectedRow[] = [];
           let index = candidates.length - 1;
           for (; index >= 0; index--) {
-            const selected = this.fit(job.jobId, candidates[index], room, chosen.length === 0);
+            const selected = this.fit(job.jobId, candidates[index], room, chosen.length === 0, true);
             if (selected === undefined) continue;
             if (selected === null) break;
             chosen.unshift(selected);
@@ -363,14 +362,16 @@ export class WaitSession {
     row: WaitProgressRow,
     room: WaitBudget,
     force: boolean,
+    tail = false,
   ): WaitSelectedRow | null | undefined {
     if (row.message === undefined || row.timing === undefined) return undefined;
-    let shown = splitWaitProgress(row.message).map((line) => shortenWaitLine(line));
+    const original = splitWaitProgress(row.message);
+    let shown = original.map((line) => shortenWaitLine(line));
     let size = byteLength(shown);
     if (shown.length > room.lines || size > room.bytes) {
       if (!force) return null;
       if (!this.internal) {
-        shown = fitWaitEvent(shown, room.lines, room.bytes);
+        shown = fitWaitEvent(original, room.lines, room.bytes, tail);
         size = byteLength(shown);
       }
     }
@@ -404,21 +405,18 @@ export class WaitSession {
   private terminalSeq(job: WaitAdmission): number {
     return job.detail?.terminalSeq ?? job.detail?.status.lastSeq ?? 0;
   }
-  /** A terminal follows every progress row of its job that can still be read, so nothing it reads follows the outcome. */
-  terminalDeliverable(job: WaitAdmission): boolean {
+  terminalDeliverable(job: WaitAdmission, drainProgress = false): boolean {
     const progress = this.progressState(job.jobId);
     return (
-      job.disposition === 'admitted' && Boolean(job.detail?.exit) && progress !== 'unread' && progress !== 'unknown'
+      job.disposition === 'admitted' &&
+      Boolean(job.detail?.exit) &&
+      (!(this.internal || drainProgress) || (progress !== 'unread' && progress !== 'unknown'))
     );
   }
-  /**
-   * How printing a deliverable terminal now would count. Only a terminal above the request's watermark, or one from a
-   * historical epoch, is new and ends the read; any other is a repeat that ends nothing, and once printed it ends the
-   * read only if it was printed with a pending artifact that has since settled.
-   */
   terminalDelivery(job: WaitAdmission): 'final' | 'repeat' | null {
     const member = this.member(job.jobId);
     if (member.delivered) return member.awaitingArtifact && !this.artifactPending(job) ? 'final' : null;
+    if (job.historical && this.artifactPending(job)) return 'repeat';
     return job.historical === true || this.base === undefined || this.terminalSeq(job) > this.base ? 'final' : 'repeat';
   }
   deliverTerminal(job: WaitAdmission): void {
@@ -428,7 +426,7 @@ export class WaitSession {
   }
   /** A delivered job stays in the continuation while its artifact is still pending. */
   artifactPending(job: WaitAdmission): boolean {
-    return !this.internal && !job.historical && job.availability?.kind === 'pending';
+    return !this.internal && job.availability?.kind === 'pending';
   }
   unknown(jobId: string): boolean {
     return this.progressState(jobId) === 'unknown';
@@ -439,7 +437,10 @@ export class WaitSession {
         (job) =>
           job.disposition === 'unknown' ||
           (job.disposition === 'admitted' &&
-            (!job.detail?.exit || !this.member(job.jobId).delivered || this.artifactPending(job))),
+            (!job.detail?.exit ||
+              !this.member(job.jobId).delivered ||
+              ['unread', 'unknown'].includes(this.progressState(job.jobId)) ||
+              this.artifactPending(job))),
       )
       .map((job) => job.jobId);
   }
@@ -459,18 +460,14 @@ export class WaitSession {
       job.disposition === 'unknown' && (job.epochKey === undefined || sameEpoch(job.epochKey, this.activeEpochKey))
     );
   }
-  /**
-   * The minimum over the requested active-epoch jobs of how far each was consumed, a terminal not yet printed by this
-   * read counting as an undelivered row. A job this read never positioned does not hold it back; every other job has
-   * no undelivered row at or below it, so a resume repeats their rows at worst and loses none.
-   */
+  /** An unpositioned requested member cannot authorize skipping any of its rows on resume. */
   cursor(): WaitCursor | null {
     let watermark = Infinity;
     for (const job of this.admissions) {
       if (!this.holdsWatermark(job)) continue;
       const member = this.member(job.jobId);
       let consumed = member.progress === 'lost' ? Infinity : member.seq;
-      if (consumed === undefined) continue;
+      if (consumed === undefined) return null;
       if (job.detail?.exit && !member.delivered) consumed = Math.min(consumed, this.terminalSeq(job) - 1);
       watermark = Math.min(watermark, consumed);
     }
@@ -519,23 +516,38 @@ export function shortenWaitLine(line: string): string {
   return `${buffer.subarray(0, end).toString('utf8')}[line shortened: ${bytes - end} bytes omitted]`;
 }
 
-/** A row larger than the budget keeps its leading lines; the last line it keeps says how many bytes were cut. */
-function fitWaitEvent(lines: readonly string[], maxLines: number, maxBytes: number): string[] {
+function fitWaitEvent(lines: readonly string[], maxLines: number, maxBytes: number, tail = false): string[] {
   const kept: string[] = [];
   let used = 0;
-  for (const [index, line] of lines.entries()) {
-    const size = Buffer.byteLength(line);
+  const ordered = tail ? [...lines].reverse() : lines;
+  for (const [index, line] of ordered.entries()) {
+    const shortened = shortenWaitLine(line);
+    const size = Buffer.byteLength(shortened);
     if (kept.length < maxLines - 1 && used + size + MARKER_ROOM <= maxBytes) {
-      kept.push(line);
+      kept.push(shortened);
       used += size;
       continue;
     }
-    const omitted = byteLength(lines.slice(index));
+    const omittedLines = ordered.length - index - 1;
+    const omitted = byteLength(ordered.slice(index)) + omittedLines;
     const buffer = Buffer.from(line);
-    let end = Math.max(0, Math.min(size, 4000, maxBytes - used - MARKER_ROOM));
-    while (end > 0 && (buffer[end] & 0xc0) === 0x80) end--;
-    kept.push(`${buffer.subarray(0, end).toString('utf8')}[line shortened: ${omitted - end} bytes omitted]`);
+    const originalSize = buffer.length;
+    let end = Math.max(0, Math.min(originalSize, 4000, maxBytes - used - MARKER_ROOM));
+    if (tail && ordered.length > 1) {
+      let start = originalSize - end;
+      while (start < originalSize && (buffer[start] & 0xc0) === 0x80) start++;
+      kept.push(
+        `[earlier progress omitted: ${omittedLines} lines, ${omitted - originalSize + start} bytes]${buffer.subarray(start).toString('utf8')}`,
+      );
+    } else {
+      while (end > 0 && (buffer[end] & 0xc0) === 0x80) end--;
+      const marker =
+        ordered.length === 1
+          ? `[line shortened: ${omitted - end} bytes omitted]`
+          : `[event shortened: ${omittedLines} lines, ${omitted - end} bytes omitted]`;
+      kept.push(`${buffer.subarray(0, end).toString('utf8')}${marker}`);
+    }
     break;
   }
-  return kept;
+  return tail ? kept.reverse() : kept;
 }

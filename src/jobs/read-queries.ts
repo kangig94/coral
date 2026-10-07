@@ -796,35 +796,33 @@ function progressRows(rows: readonly EventsRow[], ctx: StoreReadContext): WaitPr
   });
 }
 
-/**
- * A visit runs synchronously on the connection the journal's only writer appends through, so its frontier and every
- * page it returns observe one journal state.
- */
+/** Rows committed after the captured frontier must remain unconsumed for the next read. */
 export function visitJobProgress<T>(
   db: Database,
   ctx: StoreReadContext,
   read: (source: ProgressSource) => T,
 ): ProgressVisitResult<T> {
+  const frontier =
+    prepareCached<[], { seq: number }>(db, 'SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get()?.seq ?? 0;
   return {
     kind: 'read',
     value: read({
-      frontier: () =>
-        prepareCached<[], { seq: number }>(db, 'SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get()?.seq ?? 0,
+      frontier: () => frontier,
       after: (jobId, afterSeq, rows) =>
         progressRows(
-          prepareCached<[string, number, number], EventsRow>(
+          prepareCached<[string, number, number, number], EventsRow>(
             db,
-            "SELECT * FROM events WHERE type = 'job.progress.emitted' AND stream_id = ? AND seq > ? ORDER BY seq LIMIT ?",
-          ).all(jobId, afterSeq, rows),
+            "SELECT * FROM events WHERE type = 'job.progress.emitted' AND stream_id = ? AND seq > ? AND seq <= ? ORDER BY seq LIMIT ?",
+          ).all(jobId, afterSeq, frontier, rows),
           ctx,
         ),
       newest: (jobId, rows) =>
         progressRows(
-          prepareCached<[string, number], EventsRow>(
+          prepareCached<[string, number, number], EventsRow>(
             db,
-            "SELECT * FROM events WHERE type = 'job.progress.emitted' AND stream_id = ? ORDER BY seq DESC LIMIT ?",
+            "SELECT * FROM events WHERE type = 'job.progress.emitted' AND stream_id = ? AND seq <= ? ORDER BY seq DESC LIMIT ?",
           )
-            .all(jobId, rows)
+            .all(jobId, frontier, rows)
             .reverse(),
           ctx,
         ),

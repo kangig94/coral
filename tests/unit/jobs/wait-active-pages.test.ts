@@ -75,7 +75,8 @@ it('resumes after a budget cut through the active journal, skipping a fault row 
     const first = addressing.snapshot({ jobIds: [f.jobId], cursor });
     // A 500-row page holds the fault row and 499 lines; the budget cut leaves the rest for the continuation.
     expect(first.jobs[0].progress).toEqual(Array.from({ length: 499 }, (_, i) => `line ${i}`));
-    expect(first.jobs[0].terminal).toBeUndefined();
+    expect(first.jobs[0].terminal).toMatchObject({ outcomeKind: 'completed' });
+    expect(first.jobs[0].availability).toMatchObject({ kind: 'available' });
     expect(first.remainingJobIds).toEqual([f.jobId]);
     const second = addressing.snapshot({ jobIds: [f.jobId], cursor: first.cursor ?? undefined });
     const delivered = new Set([...first.jobs[0].progress, ...second.jobs[0].progress]);

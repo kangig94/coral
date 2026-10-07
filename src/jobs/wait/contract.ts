@@ -127,7 +127,7 @@ export interface JobWaitPort {
 export type WaitProgressRow = Readonly<{ seq: number; message?: string; timing?: JobProgressTiming }>;
 
 export interface ProgressSource {
-  /** The journal's highest seq, read in the same transaction as every row this source returns. */
+  /** The journal frontier captured before any rows are read; every returned row has seq at or below it. */
   frontier(): number;
   /** The job's rows after `afterSeq`, oldest first, at most `rows` of them. */
   after(jobId: string, afterSeq: number, rows: number): readonly WaitProgressRow[];

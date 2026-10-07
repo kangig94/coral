@@ -2,6 +2,7 @@ import {
   observeWaitRead,
   progressVisitFromDetails,
   selectTestProgress,
+  selectWaitSnapshot,
   testProgressVisit,
 } from '#tests/helpers/wait-progress.js';
 import type { ProgressVisit, WaitProgressRow } from '#src/jobs/wait/contract.js';
@@ -302,4 +303,115 @@ describe('progress source faults are attributed per job', () => {
     expect(session.cursor()).toBe(savedCursor(53));
     expect(session.progressState('a')).toBe('exhausted');
   });
+});
+
+it.each([undefined, savedCursor(10)])(
+  'holds an unpositioned requested member at input %s until it resolves',
+  (cursor) => {
+    const a = admitted('a', [[100, 'a100']], false);
+    const first = testSession(['a', 'u'], cursor);
+    first.reconcile([a, { jobId: 'u', disposition: 'unknown', epochKey: TEST_EPOCH }]);
+    const snapshot = selectWaitSnapshot(first);
+    expect(snapshot.jobs[0].progress).toEqual(['a100']);
+    expect(snapshot.cursor).toBe(cursor ?? null);
+    const next = testSession(['a', 'u'], snapshot.cursor ?? undefined);
+    next.reconcile([a, admitted('u', [[50, 'u50']], false)]);
+    expect(selectWaitSnapshot(next).jobs[1].progress).toEqual(['u50']);
+  },
+);
+
+it.each(['missing', 'scope-mismatch', 'unreadable', 'historical', 'lost'] as const)(
+  'a %s member does not hold the watermark',
+  (kind) => {
+    const session = testSession(['a', 'u']);
+    session.reconcile([
+      admitted('a', [[100, 'a100']], false),
+      kind === 'historical'
+        ? { ...admitted('u'), historical: true }
+        : kind === 'lost'
+          ? admitted('u', [], false, 'other')
+          : { jobId: 'u', disposition: kind },
+    ]);
+    observeWaitRead(() => session.admissions)();
+    session.withProgress(
+      (epoch, read) =>
+        epoch === 'other' ? { kind: 'unreadable', disposition: 'settled-unreadable' } : testProgressVisit(epoch, read),
+      (sources) => {
+        const selected = session.select(sources, { lines: 500, bytes: 65536 }, 20);
+        session.commit(selected);
+      },
+    );
+    expect(session.cursor()).toBe(savedCursor(100));
+  },
+);
+
+it('reports the exact complete lines and bytes omitted from a forced 501-line event', () => {
+  const lines = Array.from({ length: 501 }, (_, i) => `line ${i}`);
+  const session = testSession(['a'], savedCursor(0));
+  session.reconcile([admitted('a', [[1, lines.join('\n')]])]);
+  const snapshot = selectWaitSnapshot(session);
+  expect(snapshot.jobs[0].progress).toHaveLength(500);
+  expect(snapshot.jobs[0].progress.at(-1)).toBe('line 499[event shortened: 1 lines, 9 bytes omitted]');
+  expect(snapshot.cursor).toBe(savedCursor(1000));
+  expect(snapshot.jobs[0].terminal).toBeDefined();
+});
+
+it('takes the end of a multiline event for a first-read tail and marks earlier omitted lines', () => {
+  const lines = Array.from({ length: 40 }, (_, i) => `tail line ${i}`);
+  const session = testSession(['a']);
+  session.reconcile([admitted('a', [[1, lines.join('\n')]], false)]);
+  const snapshot = selectWaitSnapshot(session, 20);
+  expect(snapshot.jobs[0].progress).toHaveLength(20);
+  expect(snapshot.jobs[0].progress[0]).toBe('[earlier progress omitted: 20 lines, 250 bytes]tail line 20');
+  expect(snapshot.jobs[0].progress.slice(1)).toEqual(lines.slice(21));
+});
+
+it('holds a fresh member whose progress page fails transiently until its seq-50 row can be read', () => {
+  const a = admitted('a', [[100, 'a100']], false);
+  const u = admitted('u', [[50, 'u50']], false, 'other');
+  const session = testSession(['a', 'u']);
+  session.reconcile([a, u]);
+  observeWaitRead(() => session.admissions)();
+  session.withProgress(
+    (epoch, read) =>
+      epoch === 'other'
+        ? {
+            kind: 'read',
+            value: read({
+              frontier: () => 100,
+              newest: () => {
+                throw Object.assign(new Error('database is locked'), { code: 'ERR_SQLITE_ERROR' });
+              },
+              after: () => [],
+            }),
+          }
+        : testProgressVisit(epoch, read),
+    (sources) => {
+      const selected = session.select(sources, { lines: 500, bytes: 65536 }, 20);
+      session.commit(selected);
+      expect(texts(selected.rows)).toEqual(['a100']);
+    },
+  );
+  expect(session.cursor()).toBeNull();
+  const resumed = testSession(['a', 'u'], session.cursor() ?? undefined);
+  resumed.reconcile([a, u]);
+  expect(selectWaitSnapshot(resumed).jobs[1].progress).toEqual(['u50']);
+});
+
+it('counts omitted bytes from original long lines rather than their shortened representations', () => {
+  const session = testSession(['a'], savedCursor(0));
+  session.reconcile([admitted('a', [[1, Array.from({ length: 501 }, () => 'x'.repeat(5000)).join('\n')]])]);
+  const snapshot = selectWaitSnapshot(session);
+  expect(snapshot.jobs[0].progress).toHaveLength(17);
+  expect(snapshot.jobs[0].progress.at(-1)).toBe(
+    'x'.repeat(864) + '[event shortened: 484 lines, 2424620 bytes omitted]',
+  );
+});
+
+it('keeps the single-line shortening marker when a tail share forces an over-long line to fit', () => {
+  const jobs = Array.from({ length: 128 }, (_, i) => admitted(`a${i}`, [[i + 1, 'x'.repeat(5000)]], false));
+  const session = testSession(jobs.map((job) => job.jobId));
+  session.reconcile(jobs);
+  const snapshot = selectWaitSnapshot(session);
+  expect(snapshot.jobs[0].progress).toEqual(['x'.repeat(416) + '[line shortened: 4584 bytes omitted]']);
 });

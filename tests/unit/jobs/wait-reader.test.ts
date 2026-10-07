@@ -503,7 +503,11 @@ describe('paged progress delivery', () => {
         fold(next.value);
       }
       await first.return(undefined);
-      for (let requests = 0; ids.length && requests < 12; requests++) for await (const event of stream()) fold(event);
+      const rowsPerJob = Math.floor(500 / jobs.length);
+      const maxRequests =
+        Math.ceil(Object.values(history).reduce((sum, rows) => sum + rows.length, 0) / rowsPerJob) + jobs.length;
+      for (let requests = 0; ids.length && requests < maxRequests; requests++)
+        for await (const event of stream()) fold(event);
       return { printed, ids, events };
     };
     // A terminal ends a read while its siblings are still paging, so even an uncut run may repeat their lines.
@@ -544,3 +548,101 @@ it('moves the client cursor with a frame after a poll that delivered rows', asyn
   expect(types).toEqual(['progress', 'progress', 'cursor']);
   expect(client).toEqual(savedCursor(2));
 });
+
+it('returns a failed bounded terminal with its artifact and continuation before a 501-event backlog drains', async () => {
+  const messages: Array<[number, string]> = Array.from({ length: 501 }, (_, i) => [i + 1, `line ${i}`]);
+  const job = admitted('a', messages, true, TEST_EPOCH, true);
+  const run = (cursor: WaitCursor) =>
+    collect(
+      readWaitSession({
+        request: { jobIds: ['a'], cursor, timeoutSeconds: 0 },
+        time: new VirtualTime(),
+        read: observeWaitRead(() => [job]),
+        visit: testProgressVisit,
+      }),
+    );
+  const first = await run(savedCursor(0));
+  expect(first.filter((event) => event.type === 'progress').map((event) => event.message)).toEqual(
+    messages.slice(0, 500).map(([, text]) => text),
+  );
+  expect(first.at(-1)).toMatchObject({
+    type: 'terminal',
+    jobId: 'a',
+    result: { outcome: { kind: 'provider_exit', code: 42 } },
+    availability: job.availability,
+    remainingJobIds: ['a'],
+    exitCode: 42,
+    cursor: savedCursor(500),
+  });
+  const final = first.at(-1)!;
+  if (!isFinalWaitEvent(final)) throw new Error('expected a final terminal');
+  const second = await run(final.cursor!);
+  expect(second.filter((event) => event.type === 'progress').map((event) => event.message)).toEqual(['line 500']);
+  expect(second.at(-1)).toMatchObject({ type: 'terminal', remainingJobIds: [], exitCode: 42 });
+});
+
+it.each([false, true])(
+  'drains 501 progress events before a terminal for a drain reader (internal=%s)',
+  async (internal) => {
+    const events = await collect(
+      readWaitSession({
+        request: { jobIds: ['a'], cursor: savedCursor(0), drainProgress: true, timeoutSeconds: 60 },
+        internal,
+        time: new VirtualTime(),
+        read: observeWaitRead(() => [
+          admitted(
+            'a',
+            Array.from({ length: 501 }, (_, i) => [i + 1, `line ${i}`]),
+          ),
+        ]),
+        visit: testProgressVisit,
+      }),
+    );
+    expect(events.filter((event) => event.type === 'progress')).toHaveLength(501);
+    expect(events.at(-1)).toMatchObject({ type: 'terminal', remainingJobIds: [] });
+  },
+);
+
+it.each(['settled', 'sibling', 'deadline'] as const)(
+  'a historical pending artifact prints without ending a bounded wait until %s',
+  async (end) => {
+    const time = new VirtualTime();
+    const historical = { ...admitted('h', [], true, 'old'), historical: true };
+    historical.availability = { kind: 'pending' };
+    let siblingTerminal = false;
+    let done = false;
+    const events: WaitStreamEvent[] = [];
+    const run = (async () => {
+      for await (const event of readWaitSession({
+        request: { jobIds: ['h', 'a'], timeoutSeconds: 1 },
+        time,
+        read: observeWaitRead(() => [historical, admitted('a', [], siblingTerminal)]),
+        visit: testProgressVisit,
+        observe: (session) => session.observeCoverage(['a'], [], 1000),
+      }))
+        events.push(event);
+      done = true;
+    })();
+    await flushMicrotasks(30);
+    expect(done).toBe(false);
+    expect(events.find((event) => event.type === 'terminal')).toMatchObject({
+      jobId: 'h',
+      availability: { kind: 'pending' },
+      remainingJobIds: ['h', 'a'],
+    });
+    expect(events.some(isFinalWaitEvent)).toBe(false);
+    if (end === 'settled') historical.availability = { kind: 'available', resultPath: '/results/h' };
+    if (end === 'sibling') siblingTerminal = true;
+    time.tick(end === 'deadline' ? 1000 : 250);
+    await run;
+    expect(events.at(-1)).toMatchObject(
+      end === 'deadline'
+        ? { type: 'waiting', waitingJobIds: ['h', 'a'], exitCode: 75 }
+        : {
+            type: 'terminal',
+            jobId: end === 'settled' ? 'h' : 'a',
+            remainingJobIds: end === 'settled' ? ['a'] : ['h'],
+          },
+    );
+  },
+);

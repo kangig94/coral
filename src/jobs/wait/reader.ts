@@ -103,7 +103,7 @@ export async function* readWaitSession(input: WaitReadInput): AsyncGenerator<Wai
       yield* admissionEvents(session, state);
       yield* progressEvents(progress, state);
       session.commit(progress);
-      const terminals = yield* terminalEvents(session);
+      const terminals = yield* terminalEvents(session, !bounded);
       if (terminals === 'final') return;
       if (progress.rows.length > 0 || terminals === 'repeated') yield* cursorFrame(session, state);
       yield* carrierEvents(session, state.absentReported);
@@ -236,9 +236,12 @@ function terminalEvent(
 }
 
 /** Every repeat is printed before a new terminal ends the read, so each read prints every requested terminal. */
-function* terminalEvents(session: WaitSession): Generator<WaitStreamEvent, 'final' | 'repeated' | 'none'> {
+function* terminalEvents(
+  session: WaitSession,
+  drainProgress: boolean,
+): Generator<WaitStreamEvent, 'final' | 'repeated' | 'none'> {
   const deliveries = session.admissions.flatMap((job) => {
-    if (!job.detail?.exit || !session.terminalDeliverable(job)) return [];
+    if (!job.detail?.exit || !session.terminalDeliverable(job, drainProgress)) return [];
     const delivery = session.terminalDelivery(job);
     return delivery === null ? [] : [{ job, exit: job.detail.exit, delivery }];
   });
