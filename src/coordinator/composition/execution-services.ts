@@ -89,6 +89,9 @@ type CreateExecutionServicesDeps = {
   world: CoordinatorWorld;
   runtime: Runtime;
   getActiveEpochPath?: () => string | null;
+  currentJobEpochKey?: () => string | null;
+  internalWait?: ExecutionServiceDeps['internalWait'];
+  observeJobAbsence?: (jobId: string) => boolean;
   bundleHash: string;
   backendNamespace: string;
   settlementRefusalRecorder: SettlementRefusalRecorder;
@@ -145,10 +148,18 @@ function createExecutionServiceRegistry(input: {
       pluginRegistry: world.pluginRegistry,
       coordinatorCommit: (cb) => getProgressStore().commit(cb),
       loadJobProjectionDetail: (jobId) => getProgressStore().loadJobProjectionDetail(jobId),
-      readJobEvents: (jobId) => getProgressStore().readJobEvents(jobId),
+      loadJobWaitDetail: (jobId) => getProgressStore().loadJobWaitDetail(jobId),
+      readJobLastSeq: (jobId) => getProgressStore().readJobLastSeq(jobId),
+
+      visitProgress: (_epoch, read) => getProgressStore().visitProgress(read),
       aggregateWorkflowUsage: (workflowJobId) => aggregateWorkflowUsage(getProgressStore().getDb(), workflowJobId),
       subscribeJobEvents,
       getCurrentJournalSeq,
+      currentJobEpochKey: input.deps.currentJobEpochKey,
+      internalWait: input.deps.internalWait,
+      observeJobAbsence: input.deps.observeJobAbsence,
+      observeResultAvailability: (jobId) => getProgressStore().getResultExportOwner().observeResultAvailability(jobId),
+      hintResultRepair: (jobId) => getProgressStore().getResultExportOwner().hintRepair(jobId),
       appServerProxyRoute: createAppServerProxyRoute({
         hostManager: world.providerHostManager,
         reconciler: providerOperationReconciler,
@@ -165,6 +176,8 @@ function createExecutionServiceRegistry(input: {
           isWorkflowOwnedByThisCoordinator: (jobId) => world.runningWorkflowJobs.has(jobId),
           isAdmittedByThisCoordinator: (jobId) => admittedByThisCoordinator(world.launchCoordinator, jobId),
           registryStateForJob: (jobId) => world.operationRegistry.stateForJob(jobId),
+          holdsLocalAppServerExecution: (jobId) =>
+            [...services.values()].some((service) => service.holdsLocalAppServerExecution?.(jobId) === true),
         },
         getCurrentJournalSeq,
         (records) =>

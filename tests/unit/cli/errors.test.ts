@@ -332,6 +332,7 @@ describe('cli errors', () => {
       ['invalid_usage', undefined, 2],
       ['legacy_source_writer_observation_unknown', undefined, 75],
       ['transient', undefined, 75],
+      ['wait_snapshot_too_large', undefined, 75],
       ['busy', undefined, 75],
       ['backend_error', 503, 75],
       ['coordinator_socket_dir_insecure', undefined, 1],

@@ -1,3 +1,4 @@
+import { sameEpoch } from '../store/epoch/identity.js';
 import type { Database } from '../store/db.js';
 import { decodeBody, type StoreReadContext } from '../store/body-codec.js';
 import type { CustodyEntry } from '../store/custody-ledger.js';
@@ -28,7 +29,7 @@ export function readSuccessionCustodyJobIds(
     if (entry.kind !== 'holding') return [];
     const intent = entry.intent;
     const inEpoch =
-      intent.epochKey === undefined ? intent.epoch === epoch.epochPath : intent.epochKey === epoch.lineageKey;
+      intent.epochKey === undefined ? intent.epoch === epoch.epochPath : sameEpoch(intent.epochKey, epoch.lineageKey);
     const jobId = intent.jobId ?? (intent.owner === 'durable-cli' ? intent.operationId : undefined);
     return inEpoch && jobId !== undefined ? [jobId] : [];
   });

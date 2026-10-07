@@ -1,8 +1,9 @@
+import { setImmediate } from 'node:timers/promises';
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
 import type { TimePort } from '../infra/port-types.js';
-import { isWaitCursorV2, waitCursorForJobs, type WaitCursor, type WaitStreamEvent } from '../jobs/wait.js';
-import { advanceWaitRenderCursor } from '../jobs/wait-stream-event.js';
+import { type WaitCursor, type WaitStreamEvent } from '../jobs/wait/contract.js';
+import { advanceWaitRenderCursor } from '../jobs/wait/stream-event.js';
 import { phaseForOutcome } from '../jobs/outcome.js';
 import {
   buildStepDetailsForAtoms,
@@ -28,7 +29,7 @@ export function formatAtomProgress(atom: LaunchedAtom, message: string): string 
 }
 
 export type WaitForAtomsOptions = {
-  time: Pick<TimePort, 'now' | 'monotonicNow'>;
+  time: Pick<TimePort, 'now' | 'monotonicNow' | 'sleep'>;
   signal?: AbortSignal;
   staleTimeoutMs: number;
   staleCheckIntervalMs: number;
@@ -69,7 +70,7 @@ export type WaitStaleRecoveryHandler = (
 export type AwaitStepState = {
   pending: Map<string, LaunchedAtom>;
   results: Map<string, string>;
-  cursor: WaitCursor;
+  cursor: WaitCursor | undefined;
   lastActivityAt: Map<string, number>;
   staleRetries: Map<string, number>;
   expectedStaleAborts: Set<string>;
@@ -80,23 +81,15 @@ export type AwaitStepState = {
     firstFailure: WaitFailure;
     drainDeadline: number;
   } | null;
+  /** Pending children the current cycle's wait refused: no terminal of theirs can arrive through it. */
+  unobservable: Set<string>;
+  /** Children the failure abort answered as absent, so none of them is left to drain. */
+  abortAbsent: Set<string>;
 };
 
 function waitTimeoutSeconds(staleTimeoutMs: number, staleCheckIntervalMs: number): number {
   const timeoutMs = staleTimeoutMs > 0 ? Math.min(staleTimeoutMs, staleCheckIntervalMs) : staleCheckIntervalMs;
   return Math.max(1, Math.ceil(timeoutMs / 1000));
-}
-
-function cloneCursor(cursor?: WaitCursor): WaitCursor {
-  if (cursor === undefined) return { afterSeq: 0 };
-  return isWaitCursorV2(cursor)
-    ? {
-        version: 'jobs.wait.v2',
-        positions: { ...cursor.positions },
-        locations: { ...cursor.locations },
-        ...(cursor.deliveredJobIds === undefined ? {} : { deliveredJobIds: [...cursor.deliveredJobIds] }),
-      }
-    : { afterSeq: cursor.afterSeq };
 }
 
 function cloneMap<K, V>(value?: Map<K, V>): Map<K, V> {
@@ -132,13 +125,15 @@ function createAwaitStepState(
   return {
     pending,
     results,
-    cursor: cloneCursor(initialState.cursor),
+    cursor: initialState.cursor,
     lastActivityAt,
     staleRetries,
     expectedStaleAborts: cloneSet(initialState.expectedStaleAborts),
     observedIdleMs: new Map([...pending.values()].map((atom) => [atom.atomKey, 0])),
     lastObservedAtMonotonicMs: time.monotonicNow(),
     observedDrainMs: 0,
+    unobservable: new Set(),
+    abortAbsent: new Set(),
     failureDrain:
       initialState.failureDrain === undefined
         ? null
@@ -164,7 +159,7 @@ function snapshotWaitState(state: AwaitStepState): WaitInternalState {
   return {
     atoms: [...state.pending.values()],
     completedOutputs: new Map(state.results),
-    cursor: cloneCursor(waitCursorForJobs(state.cursor, [...state.pending.keys()])),
+    cursor: state.cursor,
     lastActivityAt: new Map(state.lastActivityAt),
     staleRetries: new Map(state.staleRetries),
     expectedStaleAborts: new Set(state.expectedStaleAborts),
@@ -192,7 +187,16 @@ function enterFailureDrain(
   };
   state.observedDrainMs = 0;
   options.onFailureDrain?.(snapshotWaitState(state), failure);
-  executionSvc.abort([...state.pending.keys()]);
+  state.abortAbsent = new Set(executionSvc.abort([...state.pending.keys()]).notFound);
+  for (const jobId of state.unobservable) releaseAbsent(state, jobId);
+}
+
+/** A refused child leaves the drain only once the abort answered that no such job exists. */
+function releaseAbsent(state: AwaitStepState, jobId: string): void {
+  const atom = state.pending.get(jobId);
+  if (!atom || !state.abortAbsent.has(jobId)) return;
+  state.pending.delete(jobId);
+  state.observedIdleMs.delete(atom.atomKey);
 }
 
 function recordWaitActivity(
@@ -213,6 +217,33 @@ function handleWaitEvent(
   options: Pick<WaitForAtomsOptions, 'onProgress' | 'onAtomTerminal' | 'onFailureDrain' | 'time' | 'drainDeadlineMs'>,
 ): 'handled' | 'check-stale' {
   switch (event.type) {
+    case 'cursor':
+      state.cursor = event.cursor;
+      return 'handled';
+    case 'notice':
+      return 'handled';
+    case 'disposition': {
+      if (event.disposition === 'unknown') return 'handled';
+      const atom = state.pending.get(event.jobId);
+      if (!atom) return 'handled';
+      // The refused child stays pending, so the abort includes it and its drain obligation outlives this refusal.
+      state.unobservable.add(event.jobId);
+      releaseAbsent(state, event.jobId);
+      enterFailureDrain(
+        state,
+        executionSvc,
+        {
+          aborted: false,
+          message: `Step ${atom.stepIndex}, atom '${atom.agent}' could not be read: ${event.disposition}`,
+          failedStep: atom.stepIndex,
+          failedAtom: atom.agent,
+          failedJobId: event.jobId,
+          failedSlotId: atom.slotId,
+        },
+        options,
+      );
+      return 'handled';
+    }
     case 'queued': {
       const atom = state.pending.get(event.jobId);
       if (!atom) return 'handled';
@@ -221,9 +252,6 @@ function handleWaitEvent(
     }
 
     case 'progress': {
-      const advanced = advanceWaitRenderCursor(state.cursor, event);
-      state.cursor = advanced.cursor;
-      if (!advanced.shouldRender) return 'handled';
       const atom = state.pending.get(event.jobId);
       if (!atom) return 'handled';
       recordWaitActivity(state, atom, stripElapsedPrefix(event.message), options);
@@ -234,10 +262,8 @@ function handleWaitEvent(
       const atom = state.pending.get(event.jobId);
       if (!atom) return 'handled';
 
-      // A render decision may advance the cursor but may not withhold a pending atom's terminal.
       state.cursor = advanceWaitRenderCursor(state.cursor, event).cursor;
       state.pending.delete(event.jobId);
-      state.cursor = waitCursorForJobs(state.cursor, [...state.pending.keys()]);
       state.observedIdleMs.delete(atom.atomKey);
 
       const outcomePhase = phaseForOutcome(event.result.outcome);
@@ -289,23 +315,36 @@ function handleWaitEvent(
   }
 }
 
+type DrainingState = AwaitStepState & { failureDrain: NonNullable<AwaitStepState['failureDrain']> };
+
+function failureDrainEnded(state: AwaitStepState, drainDeadlineMs: number): state is DrainingState {
+  return state.failureDrain !== null && (state.pending.size === 0 || state.observedDrainMs >= drainDeadlineMs);
+}
+
 async function awaitWaitCycle(
   state: AwaitStepState,
   executionSvc: WorkflowExecutionPort,
   ctx: InvocationContext,
   options: WaitForAtomsOptions,
   buildPartialStepDetailsForCycle: () => StepDetail[],
-): Promise<'stream-ended' | 'stale-recovered'> {
+): Promise<'stream-ended' | 'stream-empty' | 'stale-recovered' | 'drain-ended'> {
   const timeoutSeconds = waitTimeoutSeconds(options.staleTimeoutMs, options.staleCheckIntervalMs);
   const observedCadenceMs = timeoutSeconds * 1_000;
+  let events = 0;
+  state.unobservable.clear();
 
+  // The pipeline abort signal is not this wait's: after an abort the wait is what drains the aborted atoms.
   for await (const event of executionSvc.waitStream({
     jobIds: [...state.pending.keys()],
     timeoutSeconds,
-    cursor: waitCursorForJobs(state.cursor, [...state.pending.keys()]),
+    cursor: state.cursor,
   })) {
+    events++;
     advanceObservedWaitTime(state, options.time.monotonicNow(), observedCadenceMs);
     const eventOutcome = handleWaitEvent(event, state, executionSvc, options);
+    // A refused live child can replenish the internal reader's backlog forever, so the drain bound holds per event,
+    // never only once the stream ends; leaving the loop closes the stream.
+    if (failureDrainEnded(state, options.drainDeadlineMs)) return 'drain-ended';
     if (eventOutcome !== 'check-stale') continue;
     if (state.failureDrain !== null || options.staleTimeoutMs <= 0 || !options.recoverStaleAtom) continue;
 
@@ -325,7 +364,7 @@ async function awaitWaitCycle(
     return 'stale-recovered';
   }
 
-  return 'stream-ended';
+  return events === 0 ? 'stream-empty' : 'stream-ended';
 }
 
 async function awaitStepCompletion(
@@ -355,13 +394,19 @@ async function awaitStepCompletion(
     }
 
     const cycleOutcome = await awaitWaitCycle(state, executionSvc, ctx, options, buildPartialStepDetailsForCycle);
-    advanceObservedWaitTime(
-      state,
-      options.time.monotonicNow(),
-      waitTimeoutSeconds(options.staleTimeoutMs, options.staleCheckIntervalMs) * 1_000,
-    );
+    const cadenceMs = waitTimeoutSeconds(options.staleTimeoutMs, options.staleCheckIntervalMs) * 1_000;
+    // A cycle that observed nothing may not be followed by another in the same macrotask, or timers starve.
+    if (cycleOutcome === 'stream-empty') await setImmediate();
+    // A wait that refuses every pending child returns at once, so the drain then waits out its cadence instead.
+    if (
+      state.failureDrain !== null &&
+      state.pending.size > 0 &&
+      [...state.pending.keys()].every((jobId) => state.unobservable.has(jobId))
+    )
+      await options.time.sleep(Math.max(0, Math.min(cadenceMs, options.drainDeadlineMs - state.observedDrainMs)));
+    advanceObservedWaitTime(state, options.time.monotonicNow(), cadenceMs);
 
-    if (state.failureDrain !== null && (state.pending.size === 0 || state.observedDrainMs >= options.drainDeadlineMs)) {
+    if (failureDrainEnded(state, options.drainDeadlineMs)) {
       throw createWorkflowExecutionError(
         state.failureDrain.firstFailure.message,
         state.failureDrain.firstFailure.aborted,

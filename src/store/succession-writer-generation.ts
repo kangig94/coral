@@ -1,3 +1,4 @@
+import { sameEpoch } from './epoch/identity.js';
 import { join, resolve } from 'node:path';
 
 import {
@@ -655,7 +656,7 @@ export function recordSuccessionServing(
     if (current.serving !== undefined) {
       if (
         current.serving.attemptId !== serving.attemptId ||
-        current.serving.epochKey !== serving.epochKey ||
+        !sameEpoch(current.serving.epochKey, serving.epochKey) ||
         current.serving.successorInstanceId !== serving.successorInstanceId ||
         current.serving.controlGeneration !== serving.controlGeneration ||
         current.serving.recordedAt !== serving.recordedAt

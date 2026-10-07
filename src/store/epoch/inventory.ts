@@ -1,3 +1,4 @@
+import { sameEpoch } from './identity.js';
 import { type Runtime } from '../../runtime/ports.js';
 import { type EpochClosureEvidence, observeEpochClosure } from './closure.js';
 import { observeProtectedEpochAddresses, protectedEpochRemoved, unrecognizedProtectedEpochs } from './protection.js';
@@ -130,7 +131,7 @@ function storeEpochCustodyState(
   if (epochKey === null) return 'unobserved';
   const entries = custody.filter(
     (entry): entry is Exclude<CustodyEntry, { kind: 'unreadable' }> =>
-      entry.kind !== 'unreadable' && entry.intent.epochKey === epochKey,
+      entry.kind !== 'unreadable' && sameEpoch(entry.intent.epochKey, epochKey),
   );
   if (entries.length === 0) return 'unobserved';
   return entries.every((entry) => entry.kind === 'absent') ? 'absent' : 'holding';

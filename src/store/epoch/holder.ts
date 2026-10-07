@@ -3,7 +3,7 @@ import { type FileLockLease, acquireSharedFileLockSync, attemptExclusiveFileLock
 import { type SuccessionWriterEntitlement } from '../succession-writer-generation.js';
 import { type Database } from '../db.js';
 import { observeStorePath } from '../path-observation.js';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { setImmediate } from 'node:timers/promises';
 import { type ResolvedStoreEpoch, type StoreEpochHolderListEntry } from './types.js';
 import {
@@ -103,6 +103,7 @@ export function registerStoreEpochHolder(
           {
             encoding: 'utf-8',
             mode: 0o600,
+            stagePath: join(dirname(resolved.path), `.holder-stage-${runtime.env.pid()}-${runtime.ids.uuid()}`),
           },
         )
       ) {

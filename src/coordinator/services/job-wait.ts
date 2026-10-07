@@ -1,9 +1,15 @@
+import type { ProgressVisit } from '../../jobs/wait/contract.js';
 import { raceObserved } from '../../infra/promise-signal.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { JobEvent, LaunchReadiness } from '../../jobs/records.js';
 import { deriveLaunchReadiness } from '../../jobs/launch-readiness.js';
 import type { JobProjectionDetail } from '../../jobs/read-queries.js';
-import type { JobWaitPort, WaitStreamEvent, WaitStreamOnceResult, WaitStreamRequest } from '../../jobs/wait.js';
+import type {
+  JobWaitPort,
+  WaitStreamEvent,
+  WaitStreamOnceResult,
+  WaitStreamRequest,
+} from '../../jobs/wait/contract.js';
 
 export interface JobWaitServiceDeps {
   runtime: Pick<Runtime, 'time'>;
@@ -63,8 +69,26 @@ export class JobWaitService {
     }
   }
 
+  visitProgress: ProgressVisit = (epoch, read) =>
+    this.deps.waitCoordinator.visitProgress?.(epoch, read) ?? { kind: 'unreadable', disposition: 'transient-unknown' };
+
+  readWaitAdmissions(jobIds: readonly string[], epochKey: string, session?: object) {
+    return this.deps.waitCoordinator.readWaitAdmissions?.(jobIds, epochKey, session) ?? [];
+  }
+
+  observeWaitCarriers(jobIds: readonly string[], signal: AbortSignal) {
+    return (
+      this.deps.waitCoordinator.observeWaitCarriers?.(jobIds, signal) ??
+      Promise.resolve({ unknownJobIds: [...jobIds], interrupted: [], frontier: 0 })
+    );
+  }
+
+  readWaitAdmission(jobId: string, epochKey: string, session?: object) {
+    return this.deps.waitCoordinator.readWaitAdmission?.(jobId, epochKey, session) ?? null;
+  }
+
   async *waitStream(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent> {
-    yield* this.deps.waitCoordinator.waitForJobs(req);
+    yield* this.deps.waitCoordinator.waitForOutcomes(req);
   }
 
   async waitStreamOnce(jobId: string, timeoutMs?: number): Promise<WaitStreamOnceResult> {

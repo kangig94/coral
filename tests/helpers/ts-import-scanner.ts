@@ -203,10 +203,18 @@ export function parseSourceImportEdges(
   repoRoot: string,
   sourceFilePath: string,
   productionFiles: Set<string>,
+  parsedSource?: ts.SourceFile,
 ): ParsedImportEdge[] {
   const sourceCanonicalPath = toCanonicalSrcPath(repoRoot, sourceFilePath);
-  const sourceText = readFileSync(sourceFilePath, 'utf-8');
-  const sourceFile = ts.createSourceFile(sourceFilePath, sourceText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const sourceFile =
+    parsedSource ??
+    ts.createSourceFile(
+      sourceFilePath,
+      readFileSync(sourceFilePath, 'utf-8'),
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TS,
+    );
   const edges: ParsedImportEdge[] = [];
 
   function recordEdge(

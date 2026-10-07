@@ -1,3 +1,4 @@
+import { renderWorkflowReport } from '../workflow/result-report.js';
 declare const __VERSION__: string;
 
 import { dirname } from 'node:path';
@@ -25,7 +26,7 @@ import type { AppendedEvent } from '../store/append.js';
 import { JobStore } from '../jobs/store.js';
 import { JobLocationIndex } from '../jobs/location-index.js';
 import { deriveLaunchReadiness } from '../jobs/launch-readiness.js';
-import { observeTerminalResultExports } from '../jobs/terminal/export.js';
+import { observeTerminalResultExports, resultPathFor } from '../jobs/terminal/export.js';
 import { noProviderLookupPort } from '../providers/catalog.js';
 import { createEventBodyCodec } from '../store/event-body-codec.js';
 import { AbortRegistry } from '../jobs/shell/abort-registry.js';
@@ -396,7 +397,9 @@ function createKbDaemonProgressStore({
   backendNamespace: string;
 }>): JobStore {
   const jobLocations =
-    resolvedStore === null ? null : new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
+    resolvedStore === null
+      ? null
+      : new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot, renderWorkflowReport);
   let observeTerminalExports: (appended: readonly AppendedEvent[]) => void = () => {};
   const progressStore = new JobStore(backendNamespace, guardedRuntime, createEventBodyCodec(), {
     db: activeDb as ConstructorParameters<typeof JobStore>[3]['db'],
@@ -431,10 +434,11 @@ function createKbDaemonProgressStore({
       options.onJournalEvents?.(appended);
     },
   });
+  progressStore.configureResultExports(jobLocations, renderWorkflowReport);
   if (jobLocations !== null) {
     observeTerminalExports = observeTerminalResultExports(
-      (jobId) => progressStore.ensureResultArtifact(jobId),
-      (jobId, resultPath, seq) => {
+      (jobId) => progressStore.publishTerminalResult(jobId),
+      (jobId, seq) => {
         const detail = progressStore.loadJobProjectionDetail(jobId);
         if (detail.status === null) throw new Error(`Terminal has no job status: ${jobId}`);
         jobLocations.recordTerminal(
@@ -445,7 +449,7 @@ function createKbDaemonProgressStore({
             readiness: deriveLaunchReadiness(detail),
             exit: detail.exit,
           },
-          resultPath,
+          resultPathFor(runtime.paths.coral.exports.jobsRoot, jobId),
           seq,
         );
       },

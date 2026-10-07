@@ -14,7 +14,7 @@ import { AbortRegistry } from '#src/jobs/shell/abort-registry.js';
 import { JobStore } from '#src/jobs/store.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { appendJobTerminalRecorded } from '#src/jobs/terminal/recording.js';
-import type { WaitStreamEvent, WaitStreamRequest } from '#src/jobs/wait.js';
+import type { WaitStreamEvent, WaitStreamRequest } from '#src/jobs/wait/contract.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import { decodeEventBody } from '#src/store/body-codec.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
@@ -31,6 +31,7 @@ import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
+import { seedTestSessionProjection } from '#tests/helpers/session.js';
 
 const NOW = '2026-04-19T00:00:00.000Z';
 const TEST_NAMESPACE = 'test-ns';
@@ -142,16 +143,9 @@ function createWorkflowExecutionPort(
       waitRequests.push({
         ...req,
         jobIds: [...req.jobIds],
-        ...(req.cursor === undefined ? {} : { cursor: structuredClone(req.cursor) }),
+        ...(req.cursor === undefined ? {} : { cursor: req.cursor }),
       });
-      const baseSeq = Math.max(
-        req.cursor === undefined
-          ? 0
-          : 'afterSeq' in req.cursor
-            ? req.cursor.afterSeq
-            : Math.max(0, ...Object.values(req.cursor.positions)),
-        100,
-      );
+      const baseSeq = 100;
       return emitWaitEvents(
         req.jobIds.map((jobId, index): WaitStreamEvent => {
           const outcome = options.terminalOutcomeByJob?.get(jobId) ?? { kind: 'completed' };
@@ -161,11 +155,14 @@ function createWorkflowExecutionPort(
             seq: baseSeq + index + 1,
             remainingJobIds: req.jobIds.slice(index + 1),
             resultPath: `/tmp/coral-exports/jobs/${jobId}/result.md`,
+            availability: { kind: 'available', resultPath: `/tmp/coral-exports/jobs/${jobId}/result.md` },
             result: {
               content: options.terminalContentByJob?.get(jobId) ?? `result:${jobId}`,
               outcome,
               durationMs: 0,
             },
+            cursor: null,
+            exitCode: 0,
           };
         }),
       );
@@ -483,4 +480,3 @@ describe('journal commit atomicity invariant', () => {
     }
   });
 });
-import { seedTestSessionProjection } from '#tests/helpers/session.js';

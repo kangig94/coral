@@ -1,10 +1,5 @@
 import type { JobDetailResponse } from '../records.js';
 
-export type WaitCursorError = Readonly<{
-  code: 'wait_cursor_epoch_required' | 'wait_cursor_mismatch' | 'wait_epoch_unsupported';
-  message: string;
-}>;
-
 export type JobDetailLookup =
   | JobDetailResponse
   | Readonly<{
@@ -13,7 +8,8 @@ export type JobDetailLookup =
       epochKey: string;
     }>
   | Readonly<{
-      kind: 'outcome-unrecoverable';
+      kind: 'outcome-unrecoverable' | 'outcome-unreadable';
+      message?: string;
       jobId: string;
       epochKey: string;
     }>

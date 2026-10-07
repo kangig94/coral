@@ -1,8 +1,10 @@
+import type { WaitAdmission, WaitSnapshot } from '../../jobs/wait/session.js';
+import type { WaitSnapshotRequest } from '../../jobs/wait/contract.js';
 import type { DiscussDetailResponse, DiscussSummaryDto, DiscussView } from '../../discuss/read-contract.js';
 import type { ExpansionRequestPort } from '../../expansion/rpc-contract.js';
 import type { JobLaunchRequest, ProviderSessionLaunchDecision, WorkflowLaunchDecision } from '../../jobs/launch.js';
 import type { JobStatus } from '../../jobs/records.js';
-import type { WaitStreamEvent, WaitStreamRequest } from '../../jobs/wait.js';
+import type { WaitStreamEvent, CanonicalWaitStreamRequest } from '../../jobs/wait/contract.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type { Principal } from '../../security/principal.js';
 import type { AbortDecision } from '../../jobs/contracts/abort-registry.js';
@@ -26,7 +28,7 @@ import type {
 } from '../../recovery/unreadable-provider-operation.js';
 import type { JobScopeRelation, ScopeCheckResult } from '../../jobs/scope.js';
 import type { JobsListFilters } from '../../jobs/read-queries.js';
-import type { JobDetailLookup, WaitCursorError } from '../../jobs/contracts/addressing.js';
+import type { JobDetailLookup } from '../../jobs/contracts/addressing.js';
 
 type SessionStartInput = Pick<
   JobLaunchRequest,
@@ -56,16 +58,17 @@ interface SessionRequestPort {
 }
 
 interface JobsRequestPort {
+  admitWait(req: CanonicalWaitStreamRequest): WaitAdmission[];
+  snapshot(req: WaitSnapshotRequest): WaitSnapshot;
   scopeCheck(jobIds: string[], callerRoot: CanonicalWorkDir, relation: JobScopeRelation): ScopeCheckResult;
   abort(jobIds: string[]): AbortDecision;
-  validateWait(req: WaitStreamRequest): WaitCursorError | null;
-  waitStream(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent>;
+  waitStream(req: CanonicalWaitStreamRequest): AsyncGenerator<WaitStreamEvent>;
 
   waitHandoverSignal(): AbortSignal;
   list(filters: JobsListFilters): Array<{ jobId: string; status: JobStatus }>;
   detail(jobId: string): JobDetailLookup;
-  unknownJobDisposition(): 'pre-epoch-history' | 'not-found';
-  outcomeUnrecoverable(jobIds: readonly string[]): string[];
+  unknownJobDisposition(): 'pre-epoch-history' | 'not-found' | 'discovery-unknown' | 'discovery-unreadable';
+  unknownJobCaveat?(): string;
 }
 
 interface WorkflowRequestPort {

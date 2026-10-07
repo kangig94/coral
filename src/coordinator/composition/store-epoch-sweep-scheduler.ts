@@ -1,9 +1,15 @@
+import { sameEpoch } from '../../store/epoch/identity.js';
 import { formatError } from '../../infra/error-format.js';
 import type { TimerHandle } from '../../infra/port-types.js';
-import { retryUnknownHistoricalEpochs } from '../../jobs/historical-reader.js';
+import {
+  registerPresentHistoricalEpochs,
+  refreshHistoricalEpochs,
+  retryUnknownHistoricalEpochs,
+  onHistoricalHydrationHint,
+} from '../../jobs/historical-reader.js';
 import type { JobLocationIndex } from '../../jobs/location-index.js';
 import type { Runtime } from '../../runtime/ports.js';
-import { sweepStoreEpochsPostReady, type ResolvedStoreEpoch } from '../../store/epoch/index.js';
+import { listStoreEpochs, sweepStoreEpochsPostReady, type ResolvedStoreEpoch } from '../../store/epoch/index.js';
 import { settleSupersededEpochClosures } from '../services/recovery/epoch-closure.js';
 import type { CoordinatorWorld } from './world.js';
 
@@ -20,6 +26,8 @@ export function createStoreEpochSweepScheduler(input: {
   let timer: TimerHandle | null = null;
   let settleScheduled: (() => void) | null = null;
   let settlement = Promise.resolve();
+  let lastSweepStart = -Infinity;
+  let lastSweepDuration = 0;
 
   return {
     schedule: (openStore) => {
@@ -32,23 +40,41 @@ export function createStoreEpochSweepScheduler(input: {
         });
         timer = runtime.time.setTimeout(() => {
           timer = null;
+          lastSweepStart = Number(runtime.time.monotonicNow());
           void (async () => {
-            retryUnknownHistoricalEpochs(jobLocationIndex);
-            await settleSupersededEpochClosures(
-              runtime,
-              jobLocationIndex,
-              controller.signal,
-              undefined,
-              input.selectedStoreEpochKey() ?? undefined,
-              input.closeProxySetForEpochClosure,
-            );
+            const budget = { remaining: 0 };
+            try {
+              registerPresentHistoricalEpochs(
+                runtime,
+                jobLocationIndex,
+                listStoreEpochs(runtime),
+                input.selectedStoreEpochKey(),
+                budget,
+              );
+            } catch (error) {
+              world.log(`Historical epoch registration could not complete: ${formatError(error)}\n`);
+            }
+            await retryUnknownHistoricalEpochs(jobLocationIndex, budget);
+            try {
+              await settleSupersededEpochClosures(
+                runtime,
+                jobLocationIndex,
+                controller.signal,
+                undefined,
+                input.selectedStoreEpochKey() ?? undefined,
+                input.closeProxySetForEpochClosure,
+              );
+            } catch (error) {
+              world.log(`Superseded epoch closure could not complete: ${formatError(error)}\n`);
+            }
             if (!controller.signal.aborted) {
+              await refreshHistoricalEpochs(jobLocationIndex, budget);
               void (await sweepStoreEpochsPostReady(
                 runtime,
                 { ...openStore, storeRoot: openStore.canonicalStoreRoot ?? openStore.storeRoot },
                 {
                   signal: controller.signal,
-                  resultsReleased: (epochKey) => jobLocationIndex.resultsReleased(epochKey),
+                  resultsReleased: (epochKey, closedSource) => jobLocationIndex.resultsReleased(epochKey, closedSource),
                 },
               ));
             }
@@ -57,6 +83,7 @@ export function createStoreEpochSweepScheduler(input: {
               world.log(`Store epoch closure or retention sweep could not complete: ${formatError(error)}\n`);
             })
             .finally(() => {
+              lastSweepDuration = Number(runtime.time.monotonicNow()) - lastSweepStart;
               settleScheduled?.();
               settleScheduled = null;
               if (!controller.signal.aborted) schedule(5_000);
@@ -64,10 +91,22 @@ export function createStoreEpochSweepScheduler(input: {
         }, delayMs);
         timer.unref?.();
       };
+
+      onHistoricalHydrationHint(jobLocationIndex, (epochKey) => {
+        if (sameEpoch(epochKey, input.selectedStoreEpochKey()) || controller.signal.aborted || timer === null) return;
+        runtime.time.clearTimeout(timer);
+        timer = null;
+        settleScheduled?.();
+        // A hint may bring the next sweep forward to 5 s after the previous one began, but sweeping may never
+        // occupy more than half the time, however long one sweep takes.
+        const earliest = lastSweepStart + Math.max(5_000, 2 * lastSweepDuration);
+        schedule(Math.max(0, earliest - Number(runtime.time.monotonicNow())));
+      });
       schedule(0);
     },
     stop: async () => {
       abort?.abort();
+      onHistoricalHydrationHint(jobLocationIndex, null);
       if (timer !== null) {
         runtime.time.clearTimeout(timer);
         timer = null;

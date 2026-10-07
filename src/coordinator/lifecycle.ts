@@ -1,3 +1,5 @@
+import { sameEpoch } from '../store/epoch/identity.js';
+import { renderWorkflowReport } from '../workflow/result-report.js';
 import { removeTreeNoFollowSync, type TreeRemovalStorage } from '../infra/remove-tree.js';
 import { raceObserved } from '../infra/promise-signal.js';
 import { isRetentionChildName, readRetentionCursor } from '../store/retention-meta.js';
@@ -22,7 +24,6 @@ import type { RecoveredDiscussResume } from '../discuss/shell/recovery.js';
 import type { DiscussSessionStore } from '../discuss/shell/session-store.js';
 import { type ProviderRegistry } from '../providers/registry.js';
 import { isTerminalPhase } from '../jobs/phase.js';
-import { parsePositiveInt } from './live/worker-limits.js';
 import { createRecoveryCoordinator, type RecoveryCoordinator } from './services/recovery/index.js';
 import { createReplacementBackendOwnershipChecker } from './ownership-checker.js';
 import type { JobStore } from '../jobs/store.js';
@@ -431,13 +432,6 @@ export function waitForInflightDrain(
     interval.unref?.();
     check();
   });
-}
-
-const DAY_MS = 24 * 60 * 60 * 1000;
-const DEFAULT_JOB_RETENTION_DAYS = 14;
-
-export function resolveJobRetentionMs(raw: string | undefined): number {
-  return parsePositiveInt(raw, DEFAULT_JOB_RETENTION_DAYS) * DAY_MS;
 }
 
 function isAgedOut(updatedAt: string, nowMs: number, retentionMs: number): boolean {
@@ -1253,7 +1247,7 @@ async function resolveUnservedSuccession(
     deps.storeFormat,
     currentBuild,
     (epochKey) =>
-      new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot)
+      new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot, renderWorkflowReport)
         .locationsFor(epochKey)
         .some((location) => location.disposition !== 'terminal'),
   );
@@ -1719,7 +1713,7 @@ async function openSelectedStartupStore({
       if (preparedCommittedStore === null) {
         throw new SuccessionAttemptStartupHoldError('committed epoch was not prepared');
       }
-      const historical = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
+      const historical = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot, renderWorkflowReport);
       const opened = await openSuccessionAttemptStore(
         successionStoreContext,
         successionAttemptChild,
@@ -3085,7 +3079,7 @@ function protectRetiringStoreEpoch(
     throw new Error('Retiring store is unavailable.');
   }
   const current = inspectCurrentStore(runtime);
-  if (current.kind !== 'current' || encodeResolvedStoreEpoch(runtime, current.epoch) !== epochKey) {
+  if (current.kind !== 'current' || !sameEpoch(encodeResolvedStoreEpoch(runtime, current.epoch), epochKey)) {
     throw new Error('Retiring store changed before protection.');
   }
   handle.closeCurrent();

@@ -163,3 +163,13 @@ describe('forwardable CORAL_* env', () => {
     });
   });
 });
+
+it('does not forward CLI handoff state into a nested job', () => {
+  expect(
+    filterForwardableCoralEnv({
+      CORAL_CLI_HANDOFF_DELEGATED: '1',
+      CORAL_WAIT_INVOCATION_CONTEXT: '{}',
+      CORAL_JOBS_RETENTION_DAYS: '14',
+    }),
+  ).toEqual({ CORAL_JOBS_RETENTION_DAYS: '14' });
+});

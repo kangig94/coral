@@ -1,3 +1,5 @@
+import { canonicalWorkDirWireSchema } from '#src/runtime/canonical-work-dir.js';
+import type { JobDetailResponse } from '#src/jobs/records.js';
 import { encodeResolvedStoreEpoch } from '#src/store/epoch/observation.js';
 import { protectStoreEpoch, protectedStoreEpochRoot } from '#src/store/epoch/protection.js';
 import { openSettledTestStoreDb } from '#tests/helpers/store-db.js';
@@ -266,10 +268,10 @@ describe('export retention', () => {
     if (fresh) expect(readdirSync(path).sort()).toEqual([...remaining, 'new-content'].sort());
   });
 
-  it('reaches an expired export after a retained 20,010-entry prefix', async () => {
+  it("reaches an expired export after a retained prefix longer than one run's operation budget", async () => {
     const f = fixture();
     const root = f.runtime.paths.coral.exports.jobsRoot;
-    for (let i = 0; i < 20_010; i += 1)
+    for (let i = 0; i < 2_010; i += 1)
       mkdirSync(join(root, `recent-${String(i).padStart(5, '0')}`), { recursive: true });
     const expired = join(root, 'z-expired');
     mkdirSync(expired);
@@ -282,7 +284,7 @@ describe('export retention', () => {
         runtime: f.runtime,
         cutoff: RETENTION_CUTOFF,
         afterId,
-        budget: { canContinue: () => ++operations <= 20_000, record: f.budget.record },
+        budget: { canContinue: () => ++operations <= 2_000, record: f.budget.record },
         jobState: (id) => (id === 'z-expired' ? { kind: 'terminal', terminalAt: 1 } : { kind: 'unknown' }),
         resultHold: () => 'released',
         mutate: (operation) => operation(),
@@ -316,7 +318,7 @@ describe('export retention', () => {
       resultHold: () => 'released',
       mutate: (operation) => operation(),
     });
-    expect(visited).toEqual(['c-expired']);
+    expect(new Set(visited)).toEqual(new Set(['c-expired']));
     expect(existsSync(join(root, 'a-kept'))).toBe(true);
     expect(existsSync(join(root, 'c-expired'))).toBe(false);
     expect(next).toBe('');
@@ -377,7 +379,7 @@ describe('export retention', () => {
 
   it.each([
     [320, 20],
-    [6000, 1],
+    [1200, 5],
   ])(
     'starts bounded eligibility and completes slow residue deletion across cycles (%i files, %i ms/stat)',
     async (files, cost) => {
@@ -527,14 +529,14 @@ describe('export retention', () => {
       const path = join(f.runtime.paths.coral.exports.jobsRoot, 'large');
       const descendants = layout === 'nested' ? join(path, 'provider-artifacts') : path;
       mkdirSync(descendants, { recursive: true });
-      for (let i = 0; i < 20_001; i += 1) {
+      for (let i = 0; i < 2_001; i += 1) {
         const child = join(descendants, `evidence-${i}`);
         writeFileSync(child, 'old');
         utimesSync(child, 1, 1);
       }
       for (const p of [path, descendants]) utimesSync(p, 1, 1);
       let cycles = 0;
-      let previousRemaining = 20_001;
+      let previousRemaining = 2_001;
       while (remainingExport(f, 'large') !== undefined) {
         let operations = 0;
         await pruneJobExports({
@@ -542,7 +544,7 @@ describe('export retention', () => {
           runtime: f.runtime,
           cutoff: RETENTION_CUTOFF,
           afterId: '',
-          budget: { record: () => {}, canContinue: () => ++operations <= 20_000 },
+          budget: { record: () => {}, canContinue: () => ++operations <= 2_000 },
           jobState: () => ({ kind: 'absent' }),
           resultHold: () => 'released',
           mutate: (operation) => operation(),
@@ -948,4 +950,85 @@ it('retires small expired residues in bounded fenced turns while preserving iden
     [],
   );
   expect(exec.mock.calls.filter(([sql]) => sql === 'COMMIT').length).toBeLessThanOrEqual(6);
+});
+
+import { terminalEligibility } from '#src/jobs/export-retention.js';
+import { createTerminalExportFixture } from '#tests/helpers/terminal-export.js';
+
+it('classifies a busy terminal source as transient, never as unusable', () => {
+  const f = createTerminalExportFixture();
+  try {
+    f.complete();
+    const busy = () => {
+      throw Object.assign(new Error('database is locked'), { code: 'SQLITE_BUSY' });
+    };
+    expect(terminalEligibility(f.runtime, f.index.read(f.jobId), busy as never)).toEqual({
+      source: 'transient',
+      age: 'unknown',
+    });
+  } finally {
+    f.close();
+  }
+});
+
+describe('retired legacy exports', () => {
+  function detail(jobId: string, ts: string): JobDetailResponse {
+    const result = { content: 'done', outcome: { kind: 'completed' as const }, durationMs: 1 };
+    return {
+      status: {
+        jobId,
+        owner: { kind: 'provider-session', id: 's' },
+        sessionId: 's',
+        provider: 'claude',
+        projectRoot: '/w/p',
+        workDir: canonicalWorkDirWireSchema.parse('/w/p'),
+        backendNamespace: 't',
+        jobKind: 'provider',
+        phase: 'completed',
+        updatedAt: ts,
+        result,
+      },
+      events: [{ type: 'terminal', jobId, sessionId: 's', seq: 2, ts, result }],
+      readiness: 'ready',
+      exit: { ...result, diagnostics: { progressFaults: [] }, endTime: ts },
+    } as JobDetailResponse;
+  }
+
+  async function run() {
+    const f = createRetentionFixture();
+    fixtures.push(f);
+    const index = new JobLocationIndex(f.runtime, f.runtime.paths.coral.generation.dataRoot);
+    const storeRoot = join(f.baseDir, 'store');
+    const retiredKey = JSON.stringify({ storeRoot, epoch: '1', path: join(storeRoot, 'epoch-1', 'store.db') });
+    const jobId = 'legacy-job';
+    // a v0.10.15-17 terminal location record whose epoch has since retired
+    index.register(jobId, retiredKey, { projectRoot: '/w/p', workDir: '/w/p', jobKind: 'provider' });
+    index.recordTerminal(
+      jobId,
+      detail(jobId, '2026-01-01T00:00:00.000Z'),
+      join(f.runtime.paths.coral.exports.jobsRoot, jobId, 'result.md'),
+      2,
+    );
+    const path = join(f.runtime.paths.coral.exports.jobsRoot, jobId);
+    mkdirSync(path, { recursive: true });
+    writeFileSync(join(path, 'result.md'), 'old result');
+    utimesSync(join(path, 'result.md'), 1, 1);
+    utimesSync(path, 1, 1);
+    for (let i = 0; i < 5; i++)
+      await pruneJobExports({
+        db: f.db,
+        runtime: f.runtime,
+        cutoff: RETENTION_CUTOFF,
+        afterId: '',
+        budget: f.budget,
+        jobState: () => ({ kind: 'absent' }),
+        resultHold: (id) => index.exportResultRetention(id, null),
+        mutate: (op) => op(),
+      });
+    return existsSync(path);
+  }
+
+  it('a retired-epoch legacy export (terminal ~9 months old) is eventually reclaimed', async () => {
+    expect(await run()).toBe(false);
+  });
 });

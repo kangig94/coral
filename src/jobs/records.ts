@@ -1,3 +1,4 @@
+import type { ResultAvailability } from './terminal/export.js';
 import type { JobProgressFault, TerminalOutcome, TerminalOutcomeInput } from './outcome.js';
 import type { HostRef, UsageSummary, ProviderAction, ProviderInstruction } from '../providers/contract.js';
 import type { RetentionPolicy } from '../sessions/entry.js';
@@ -261,6 +262,7 @@ export type JobsListResponse = {
  *   while the job is still live.
  */
 export type JobDetailResponse = {
+  availability?: ResultAvailability;
   epochKey?: string;
   status: JobStatus;
   events: JobEvent[];

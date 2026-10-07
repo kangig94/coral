@@ -2575,3 +2575,35 @@ describe('recovery authority boundary', () => {
     // apart; the budget is at least twice the CI cost that ratio predicts for 17.5s.
   }, 80_000);
 });
+
+it('coordinator contracts never import CLI modules', () => {
+  expect(
+    PARSED_IMPORT_EDGES.filter(
+      (edge) => edge.source.startsWith('src/coordinator/') && edge.target.startsWith('src/cli/'),
+    ),
+  ).toEqual([]);
+});
+
+it('terminal and historical readers have no runtime import back into the location index', () => {
+  const readers = new Set([
+    'src/jobs/terminal/export.ts',
+    'src/jobs/terminal/identity.ts',
+    'src/jobs/historical-reader.ts',
+  ]);
+  expect(
+    PARSED_IMPORT_EDGES.filter(
+      (edge) => readers.has(edge.source) && edge.target === 'src/jobs/location-index.ts' && edge.runtime,
+    ),
+  ).toEqual([]);
+});
+
+it('keeps the wait invocation handoff contract out of infra', () => {
+  const contracts = PRODUCTION_SOURCE_FILES.filter(
+    (path) =>
+      path.startsWith('src/infra/') &&
+      /WaitInvocation(?:Handoff|Mode|ReadinessError)|WAIT_INVOCATION_CONTEXT_ENV/.test(
+        readFileSync(resolve(REPO_ROOT, path), 'utf8'),
+      ),
+  );
+  expect(contracts).toEqual([]);
+});

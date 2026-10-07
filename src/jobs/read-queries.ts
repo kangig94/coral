@@ -1,3 +1,4 @@
+import type { ProgressSource, ProgressVisitResult, WaitProgressRow } from './wait/contract.js';
 import type { Database } from '../store/db.js';
 import type { HostRef, UsageSummary } from '../providers/contract.js';
 
@@ -25,6 +26,12 @@ import {
   PROJECTION_JOB_COLUMNS,
   type ProjectionJobStoredRow,
 } from './projection-row.js';
+import { decodeBody, type StoreReadContext } from '../store/body-codec.js';
+import { decodeEventRefs, rowToCoralEvent } from '../store/envelope.js';
+import { prepareCached, sqlPlaceholders } from '../store/db.js';
+import { readLatestEvent } from '../store/event-queries.js';
+import type { EventsRow } from '../store/schema.js';
+import { aggregateWorkflowUsage } from './workflow-usage.js';
 
 export type JobProjectionDetail = {
   status: JobStatus | null;
@@ -32,12 +39,9 @@ export type JobProjectionDetail = {
   runtime: JobRuntime | null;
   exit: JobExit | null;
 };
-import { decodeBody, type StoreReadContext } from '../store/body-codec.js';
-import { decodeEventRefs, rowToCoralEvent } from '../store/envelope.js';
-import { prepareCached, sqlPlaceholders } from '../store/db.js';
-import { readLatestEvent } from '../store/event-queries.js';
-import type { EventsRow } from '../store/schema.js';
-import { aggregateWorkflowUsage } from './workflow-usage.js';
+
+/** What a wait reads of a job: its launch body, which can be arbitrarily large, is never part of it. */
+export type JobWaitDetail = Omit<JobProjectionDetail, 'launch'>;
 
 type JobLaunchProjection = JobLaunch;
 
@@ -485,7 +489,7 @@ function projectionRowToStatus(
   rejected: EventRow | null,
   runtime: EventRow | null,
   terminal: EventRow | null,
-  requested: EventRow | null,
+  requestedAt: string | null,
   ctx: StoreReadContext,
 ): JobStatus {
   const terminalRecord = decodeTerminalRecord(terminal, ctx);
@@ -513,9 +517,40 @@ function projectionRowToStatus(
       ? {}
       : { replacesWorkflowJobId: projection.replaces_workflow_job_id }),
     phase: projection.phase,
-    updatedAt: terminal?.ts ?? runtime?.ts ?? rejected?.ts ?? requested?.ts ?? projection.created_at,
+    updatedAt: terminal?.ts ?? runtime?.ts ?? rejected?.ts ?? requestedAt ?? projection.created_at,
     lastSeq: projection.last_seq,
     ...(terminalRecord ? { result: terminalRecord.record } : {}),
+  };
+}
+
+function hydrateJobWaitDetail(
+  jobId: string,
+  projection: ProjectionRow | null,
+  requestedAt: string | null,
+  rejected: EventRow | null,
+  runtime: EventRow | null,
+  terminal: EventRow | null,
+  ctx: StoreReadContext,
+  workflowUsage?: UsageSummary,
+): JobWaitDetail {
+  const terminalRecord = decodeTerminalRecord(terminal, ctx);
+  const terminalDiagnostics =
+    terminalRecord === null
+      ? decodeProjectionDiagnostics(projection)
+      : mergeDiagnostics(decodeProjectionDiagnostics(projection), terminalRecord.diagnostics);
+  const diagnostics = isWorkflowJobKind(projection?.job_kind)
+    ? applyWorkflowUsage(terminalDiagnostics, workflowUsage)
+    : terminalDiagnostics;
+  const exit = terminal && terminalRecord ? toJobExitProjection(terminal, terminalRecord, diagnostics) : null;
+
+  const status = projection
+    ? projectionRowToStatus(jobId, projection, rejected, runtime, terminal, requestedAt, ctx)
+    : null;
+
+  return {
+    status,
+    runtime: runtime ? jobRuntimeBodyFromEvent(runtime, ctx) : null,
+    exit,
   };
 }
 
@@ -530,26 +565,17 @@ function hydrateJobProjectionDetail(
   workflowUsage?: UsageSummary,
 ): JobProjectionDetail {
   const launch = decodeLaunch(jobId, requested, ctx);
-  const terminalRecord = decodeTerminalRecord(terminal, ctx);
-  const terminalDiagnostics =
-    terminalRecord === null
-      ? decodeProjectionDiagnostics(projection)
-      : mergeDiagnostics(decodeProjectionDiagnostics(projection), terminalRecord.diagnostics);
-  const diagnostics = isWorkflowJobKind(projection?.job_kind)
-    ? applyWorkflowUsage(terminalDiagnostics, workflowUsage)
-    : terminalDiagnostics;
-  const exit = terminal && terminalRecord ? toJobExitProjection(terminal, terminalRecord, diagnostics) : null;
-
-  const status = projection
-    ? projectionRowToStatus(jobId, projection, rejected, runtime, terminal, requested, ctx)
-    : null;
-
-  return {
-    status,
-    launch,
-    runtime: runtime ? jobRuntimeBodyFromEvent(runtime, ctx) : null,
-    exit,
-  };
+  const detail = hydrateJobWaitDetail(
+    jobId,
+    projection,
+    requested?.ts ?? null,
+    rejected,
+    runtime,
+    terminal,
+    ctx,
+    workflowUsage,
+  );
+  return { status: detail.status, launch, runtime: detail.runtime, exit: detail.exit };
 }
 
 export function loadJobProjectionDetail(db: Database, jobId: string, ctx: StoreReadContext): JobProjectionDetail {
@@ -560,6 +586,31 @@ export function loadJobProjectionDetail(db: Database, jobId: string, ctx: StoreR
   const terminal = readLatestEvent(db, jobId, 'job.terminal.recorded');
   const workflowUsage = isWorkflowJobKind(projection?.job_kind) ? aggregateWorkflowUsage(db, jobId) : undefined;
   return hydrateJobProjectionDetail(jobId, projection, requested, rejected, runtime, terminal, ctx, workflowUsage);
+}
+
+/** The job's own projection sequence: every event of that job moves it, and nothing else does. */
+export function readJobLastSeq(db: Database, jobId: string): number | null {
+  return (
+    prepareCached<[string], { last_seq: number }>(db, 'SELECT last_seq FROM projection_jobs WHERE job_id = ?').get(
+      jobId,
+    )?.last_seq ?? null
+  );
+}
+
+/** A job's status, runtime and exit; workflow usage is aggregated only once there is a terminal to carry it. */
+export function loadJobWaitDetail(db: Database, jobId: string, ctx: StoreReadContext): JobWaitDetail {
+  const projection = readProjectionRow(db, jobId);
+  const requestedAt =
+    prepareCached<[string], { ts: string }>(
+      db,
+      `SELECT ts FROM events WHERE stream_id = ? AND type = 'job.launch.requested' ORDER BY seq DESC LIMIT 1`,
+    ).get(jobId)?.ts ?? null;
+  const rejected = readLatestEvent(db, jobId, 'job.launch.rejected');
+  const runtime = readLatestEvent(db, jobId, 'job.runtime.started');
+  const terminal = readLatestEvent(db, jobId, 'job.terminal.recorded');
+  const workflowUsage =
+    terminal !== null && isWorkflowJobKind(projection?.job_kind) ? aggregateWorkflowUsage(db, jobId) : undefined;
+  return hydrateJobWaitDetail(jobId, projection, requestedAt, rejected, runtime, terminal, ctx, workflowUsage);
 }
 
 export function loadJobProjectionDetails(
@@ -667,14 +718,19 @@ export function loadJobDetail(db: Database, jobId: string, ctx: StoreReadContext
   };
 }
 
-export function readJobEvents(db: Database, jobId: string, ctx: StoreReadContext, terminalOnly = false): JobEvent[] {
-  const rows = prepareCached<[string], EventsRow>(
+export function readJobEvents(
+  db: Database,
+  jobId: string,
+  ctx: StoreReadContext,
+  terminalOnly = false,
+  afterSeq = 0,
+): JobEvent[] {
+  const rows = prepareCached<[string, number], EventsRow>(
     db,
-    `SELECT * FROM events
-     WHERE stream_id = ?
-       AND ${terminalOnly ? "type = 'job.terminal.recorded'" : "type IN ('job.progress.emitted', 'job.terminal.recorded')"}
-     ORDER BY seq ASC`,
-  ).all(jobId);
+    `SELECT * FROM events WHERE stream_id = ? AND seq > ?
+      AND ${terminalOnly ? "type = 'job.terminal.recorded'" : "type IN ('job.progress.emitted', 'job.terminal.recorded')"}
+      ORDER BY seq ASC`,
+  ).all(jobId, afterSeq);
 
   const projection = readProjectionRow(db, jobId);
   const sessionId = projection?.session_id ?? null;
@@ -730,4 +786,46 @@ export function readJobEvents(db: Database, jobId: string, ctx: StoreReadContext
   }
 
   return events;
+}
+
+function progressRows(rows: readonly EventsRow[], ctx: StoreReadContext): WaitProgressRow[] {
+  return rows.map((row) => {
+    rowToCoralEvent(row, null);
+    const body = decodeBody(row, jobProgressBodySchema, ctx);
+    return body.kind === 'message' ? { seq: row.seq, message: body.message, timing: body.timing } : { seq: row.seq };
+  });
+}
+
+/** Rows committed after the captured frontier must remain unconsumed for the next read. */
+export function visitJobProgress<T>(
+  db: Database,
+  ctx: StoreReadContext,
+  read: (source: ProgressSource) => T,
+): ProgressVisitResult<T> {
+  const frontier =
+    prepareCached<[], { seq: number }>(db, 'SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get()?.seq ?? 0;
+  return {
+    kind: 'read',
+    value: read({
+      frontier: () => frontier,
+      after: (jobId, afterSeq, rows) =>
+        progressRows(
+          prepareCached<[string, number, number, number], EventsRow>(
+            db,
+            "SELECT * FROM events WHERE type = 'job.progress.emitted' AND stream_id = ? AND seq > ? AND seq <= ? ORDER BY seq LIMIT ?",
+          ).all(jobId, afterSeq, frontier, rows),
+          ctx,
+        ),
+      newest: (jobId, rows) =>
+        progressRows(
+          prepareCached<[string, number, number], EventsRow>(
+            db,
+            "SELECT * FROM events WHERE type = 'job.progress.emitted' AND stream_id = ? AND seq <= ? ORDER BY seq DESC LIMIT ?",
+          )
+            .all(jobId, frontier, rows)
+            .reverse(),
+          ctx,
+        ),
+    }),
+  };
 }

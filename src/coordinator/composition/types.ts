@@ -1,3 +1,4 @@
+import type { JobLocationIndex } from '../../jobs/location-index.js';
 import type { SettlePendingLaunchesFn, TerminateRegisteredChildrenFn } from '../shutdown.js';
 import type { SuccessionInterposition } from '../succession/interposition.js';
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
@@ -60,6 +61,7 @@ export type CreateServerFn = (handler: (req: IncomingMessage, res: ServerRespons
 export type FetchFn = (url: string, init?: RequestInit) => Promise<Response>;
 
 export type CoordinatorCoreOptions = {
+  jobLocationIndex?: JobLocationIndex;
   runtime: Runtime;
   storeFormat: StoreFormatDescription;
   bootSnapshot?: CoordinatorBootSnapshot;

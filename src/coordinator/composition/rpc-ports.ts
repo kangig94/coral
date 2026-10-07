@@ -144,15 +144,16 @@ export function createCoordinatorRpcPorts({
         services.getExecutionService(ctx).start(providerName, input, ctx, signal),
     },
     jobs: {
+      admitWait: (request) => jobAddressing.admitWait(request),
+      snapshot: (request) => jobAddressing.snapshot(request),
       scopeCheck: (jobIds, callerRoot, relation) => jobAddressing.scopeCheck(jobIds, callerRoot, relation),
       abort: (jobIds) => jobAddressing.abort(jobIds),
-      validateWait: (request) => jobAddressing.validateWait(request),
       waitStream: (request) => jobAddressing.waitStream(request),
       waitHandoverSignal,
       list: createCoordinatorJobLister(getProgressStore),
       detail: (jobId) => jobAddressing.detail(jobId),
       unknownJobDisposition: () => jobAddressing.unknownJobDisposition(),
-      outcomeUnrecoverable: (jobIds) => jobAddressing.outcomeUnrecoverable(jobIds),
+      unknownJobCaveat: () => jobAddressing.unknownJobCaveat(),
     },
     workflows: {
       execute: async (request, ctx, signal) => {

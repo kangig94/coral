@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import type { JobTerminal } from '#src/jobs/records.js';
-import type { WaitRequest, WaitStreamEvent } from '#src/jobs/wait.js';
+import type { WaitRequest, WaitStreamEvent } from '#src/jobs/wait/contract.js';
 import { parseExpression } from '#src/workflow/parser.js';
 import { launchAtomWithRetry } from '#src/workflow/launch.js';
 import { executePipeline } from '#src/workflow/executor.js';
@@ -34,6 +34,9 @@ const workflowTime = {
   monotonicNow: () => {
     workflowMonotonicClock += 100n;
     return workflowMonotonicClock;
+  },
+  sleep: async (ms: number) => {
+    workflowMonotonicClock += BigInt(ms);
   },
 };
 const workflowIds = { uuid: () => randomUUID() };
@@ -70,7 +73,10 @@ function terminal(
     seq: ++terminalSeq,
     remainingJobIds: [],
     resultPath: `/tmp/coral-exports/jobs/${jobId}/result.md`,
+    availability: { kind: 'available', resultPath: `/tmp/coral-exports/jobs/${jobId}/result.md` },
     result: terminalResult,
+    cursor: null,
+    exitCode: 0,
   };
 }
 
@@ -78,6 +84,8 @@ function stillWaiting(waitingJobIds: string[]): WaitStreamEvent {
   return {
     type: 'waiting',
     waitingJobIds,
+    cursor: null,
+    exitCode: 75,
   };
 }
 

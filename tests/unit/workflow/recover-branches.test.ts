@@ -13,7 +13,7 @@ import { createSimulationBackend } from '#tools/simulation/core/backend.js';
 import { flushMicrotasks } from '#tools/simulation/core/virtual-time.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import type { JobTerminal } from '#src/jobs/records.js';
-import type { WaitStreamEvent, WaitStreamRequest } from '#src/jobs/wait.js';
+import type { WaitStreamEvent, WaitStreamRequest } from '#src/jobs/wait/contract.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { decodeEventBody, encodeEventBody } from '#src/store/body-codec.js';
@@ -51,6 +51,9 @@ const fixedTime = {
   monotonicNow: () => {
     recoverMonotonicClock += 100n;
     return recoverMonotonicClock;
+  },
+  sleep: async (ms: number) => {
+    recoverMonotonicClock += BigInt(ms);
   },
 };
 
@@ -100,7 +103,10 @@ function terminal(jobId: string, content: string, seq = 0): WaitStreamEvent {
     seq,
     remainingJobIds: [],
     resultPath: `/tmp/coral-exports/jobs/${jobId}/result.md`,
+    availability: { kind: 'available', resultPath: `/tmp/coral-exports/jobs/${jobId}/result.md` },
     result,
+    cursor: null,
+    exitCode: 0,
   };
 }
 
@@ -283,8 +289,7 @@ function createHarness(options: {
     abort: vi.fn(() => ({ aborted: [], notFound: [] })),
     awaitLaunch: vi.fn(async (): Promise<'ready'> => 'ready'),
     waitStream: vi.fn((req: WaitStreamRequest) => {
-      const nextSeq = req.cursor && 'afterSeq' in req.cursor ? req.cursor.afterSeq + 1 : 1;
-      return emit(req.jobIds.map((jobId, index) => terminal(jobId, `result:${jobId}`, nextSeq + index)));
+      return emit(req.jobIds.map((jobId, index) => terminal(jobId, `result:${jobId}`, index + 1)));
     }),
     waitForJobTerminal: vi.fn(async () => {}),
   };

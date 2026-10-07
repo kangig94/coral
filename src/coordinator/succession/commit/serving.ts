@@ -1,3 +1,4 @@
+import { sameEpoch } from '../../../store/epoch/identity.js';
 import { formatError } from '../../../infra/error-format.js';
 import type { AttemptRetry } from '../../../infra/upgrade-intent.js';
 import {
@@ -30,7 +31,8 @@ function createServingObservation(
   ): Promise<void> {
     const { attempt, preparation, recovering } = window;
     if (
-      (serving.epochKey !== preparation.epochKey && !retirementServes(attempt.attemptId, preparation.epochKey)) ||
+      (!sameEpoch(serving.epochKey, preparation.epochKey) &&
+        !retirementServes(attempt.attemptId, preparation.epochKey)) ||
       serving.controlGeneration <= writer.generation.generation
     ) {
       throw new Error('Durable serving record does not match the prepared takeover.');

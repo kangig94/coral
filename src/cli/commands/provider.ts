@@ -26,6 +26,11 @@ export function registerProviderCommands(program: Command, providerRegistry: Pro
       .option('-o, --owner <id>', 'Owner ID for memo isolation')
       .option('-b, --bypass-permissions', 'Bypass permission checks')
       .option('-d, --detach', 'Return launch decision without waiting')
+      .addHelpText(
+        'after',
+        '\nWhile following a launch, Ctrl+C stops following with exit 75 and a continuation; it never aborts the job.\n' +
+          'To abort the job, run coral-cli abort jobs <id>.\n',
+      )
       .action(async (agent: string | undefined, opts: ProviderRunOptions) => {
         try {
           if (opts.input === undefined) {
@@ -45,7 +50,7 @@ export function registerProviderCommands(program: Command, providerRegistry: Pro
             ...(agent !== undefined ? { agent } : {}),
             ...requestOptions,
           });
-          await handleLaunchResult(result, opts.detach, client);
+          await handleLaunchResult(result, opts.detach);
         } catch (error) {
           emitError(normalizeUsageError(error));
         }

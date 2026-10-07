@@ -182,7 +182,6 @@ function createFakeService(overrides: Partial<RecoveryCapableService> = {}): Rec
     adoptRunningJob: vi.fn(async () => ({ adopted: true, cleanup: vi.fn() })),
     recoverQueuedJob: vi.fn(async () => 'recovered-job'),
     interruptAppServerJob: vi.fn(async () => ({ kind: 'acknowledged' as const })),
-    completeRecoveredJob: vi.fn(),
     ...overrides,
   } as RecoveryCapableService;
 }

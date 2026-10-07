@@ -1,3 +1,4 @@
+import { sameEpoch } from '../../store/epoch/identity.js';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
 
@@ -875,7 +876,7 @@ export async function prepareSuccessionAttemptStore(
       !preparation.success ||
       preparation.data.stage !== 'prepared' ||
       preparation.data.ready !== null ||
-      preparation.data.epochKey !== child.epochKey ||
+      !sameEpoch(preparation.data.epochKey, child.epochKey) ||
       JSON.stringify(preparation.data.receipts.map((receipt) => receipt.receiptId)) !== JSON.stringify(child.receiptIds)
     ) {
       throw new SuccessionAttemptStartupHoldError('same-build recovery preparation changed');
@@ -936,7 +937,7 @@ export async function prepareSuccessionAttemptStore(
         currentBuild.claudeAppserverBundleHash,
         currentBuild.durableWrapperBundleHash,
       ]) ||
-    preparation.data.epochKey !== child.epochKey ||
+    !sameEpoch(preparation.data.epochKey, child.epochKey) ||
     JSON.stringify(preparation.data.receipts.map((receipt) => receipt.receiptId)) !== JSON.stringify(child.receiptIds)
   ) {
     throw new SuccessionAttemptStartupHoldError('prepared attempt or target changed');
@@ -971,7 +972,7 @@ function committedSuccessorMayControlWork(
     (entry) =>
       entry.kind === 'unreadable' ||
       (entry.kind !== 'absent' &&
-        (entry.intent.epochKey === epoch.lineageKey || entry.intent.epoch === dirname(epoch.path))),
+        (sameEpoch(entry.intent.epochKey, epoch.lineageKey) || entry.intent.epoch === dirname(epoch.path))),
   );
 }
 
@@ -1011,11 +1012,11 @@ async function reconcileServedAttempt(
     prepared.targetKey !== successionTargetKey(intent.target) ||
     prepared.ready.attemptId !== intent.attemptId ||
     prepared.ready.targetKey !== prepared.targetKey ||
-    prepared.ready.epochKey !== prepared.epochKey ||
+    !sameEpoch(prepared.ready.epochKey, prepared.epochKey) ||
     JSON.stringify(prepared.ready.receiptIds) !==
       JSON.stringify(prepared.receipts.map((receipt) => receipt.receiptId)) ||
-    (prepared.epochKey !== serving.epochKey &&
-      (retirement.kind !== 'recorded' || retirement.disposition.incumbentEpochKey !== prepared.epochKey))
+    (!sameEpoch(prepared.epochKey, serving.epochKey) &&
+      (retirement.kind !== 'recorded' || !sameEpoch(retirement.disposition.incumbentEpochKey, prepared.epochKey)))
   )
     return unattributable;
   const pid = prepared.ready.successorPid;
@@ -1094,8 +1095,16 @@ export async function prepareCommittedSuccessorRecovery(
   const holdOrAbandon = async (hold: SuccessionStartupHold): Promise<CommittedSuccessorRecovery> =>
     (await exhaustStartupPatience(runtime, identity.instanceId, hold)) ? { kind: 'none' } : { kind: 'hold', hold };
   const current = inspectCurrentStore(runtime);
-  if (current.kind !== 'current' || observeResolvedStoreEpochKey(runtime, current.epoch) !== receipt.epochKey)
-    return { kind: 'none' };
+  if (current.kind !== 'current') return { kind: 'none' };
+  const currentKey = observeResolvedStoreEpochKey(runtime, current.epoch);
+  if (currentKey === null)
+    return holdOrAbandon({
+      kind: 'committed-successor-unattributable',
+      attemptId: receipt.attemptId,
+      reason:
+        'current epoch identity is temporarily unreadable; startup recovery re-observes it within its bounded patience window',
+    });
+  if (!sameEpoch(currentKey, receipt.epochKey)) return { kind: 'none' };
   const serving = observeSuccessionServing(runtime, receipt.attemptId);
   const writer = observeSuccessionWriterGeneration(runtime);
   if (
@@ -1103,7 +1112,7 @@ export async function prepareCommittedSuccessorRecovery(
     writer.generation < receipt.controlGeneration ||
     (writer.generation === receipt.controlGeneration && serving === null) ||
     (serving !== null &&
-      (serving.epochKey !== receipt.epochKey || serving.controlGeneration < receipt.controlGeneration))
+      (!sameEpoch(serving.epochKey, receipt.epochKey) || serving.controlGeneration < receipt.controlGeneration))
   ) {
     return holdOrAbandon({
       kind: 'committed-successor-unattributable',
@@ -1419,7 +1428,7 @@ export async function openCommittedRecoveryStore(
     read.record.priorServings?.some(
       (serving) =>
         serving.attemptId === priorReceipt.attemptId &&
-        serving.epochKey === priorReceipt.epochKey &&
+        sameEpoch(serving.epochKey, priorReceipt.epochKey) &&
         serving.successorInstanceId === priorReceipt.successor.instanceId &&
         serving.controlGeneration === priorReceipt.controlGeneration &&
         serving.recordedAt === priorReceipt.recordedAt,
@@ -1453,8 +1462,9 @@ export async function openCommittedRecoveryStore(
     !preparation.success ||
     completionReceipt === null ||
     preparation.data.attemptId !== completionReceipt.attemptId ||
-    (preparation.data.epochKey !== completionReceipt.epochKey &&
-      (retirement?.kind !== 'recorded' || retirement.disposition.incumbentEpochKey !== preparation.data.epochKey))
+    (!sameEpoch(preparation.data.epochKey, completionReceipt.epochKey) &&
+      (retirement?.kind !== 'recorded' ||
+        !sameEpoch(retirement.disposition.incumbentEpochKey, preparation.data.epochKey)))
   ) {
     throw new SuccessionAttemptStartupHoldError('committed recovery has no matching accepted receipts');
   }
@@ -1516,7 +1526,7 @@ export async function openSuccessionAttemptStore(
   const disposition = recorded.disposition;
   const certificate = options.retirementCertificate.certificate(child.epochKey);
   if (
-    disposition.incumbentEpochKey !== child.epochKey ||
+    !sameEpoch(disposition.incumbentEpochKey, child.epochKey) ||
     disposition.successorFingerprint !== context.currentBuild.storeFormatFingerprint ||
     certificate === null ||
     certificate.revision !== disposition.certificateRevision ||

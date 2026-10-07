@@ -9,7 +9,7 @@ import {
   type Server as HttpServer,
 } from 'node:http';
 import { join } from 'node:path';
-import type { WaitStreamEvent } from '#src/jobs/wait.js';
+import type { WaitStreamEvent } from '#src/jobs/wait/contract.js';
 import type * as NodeOs from 'node:os';
 import type * as ServerMod from '#src/coordinator/index.js';
 import type * as BackendDiscoveryMod from '#src/infra/backend-discovery.js';
@@ -146,7 +146,10 @@ function createFakeExecutionService(overrides: Partial<FakeExecutionService> = {
         seq: 8,
         remainingJobIds: [],
         resultPath: jobResultPath('job-1'),
+        availability: { kind: 'available', resultPath: jobResultPath('job-1') },
         result: { content: 'done', durationMs: 1_000, outcome: { kind: 'completed' } },
+        cursor: null,
+        exitCode: 0,
       };
     }),
     waitStreamOnce: vi.fn(async () => ({
@@ -756,6 +759,10 @@ describe('execution backend server', () => {
         jobs: {
           scopeCheck: scopeCheckJobs,
           abort: abortJobs,
+          admitWait: (request: { jobIds: string[] }) =>
+            request.jobIds.map((jobId) => ({ jobId, disposition: 'admitted' as const })),
+          validateWait: () => null,
+          waitHandoverSignal: () => new AbortController().signal,
           waitStream: (request: unknown) => service.waitStream(request),
           list: () => [],
           detail: () => null,
@@ -914,6 +921,34 @@ describe('execution backend server', () => {
       }
     });
 
+    it('ends a passive SSE response when its ready frame hits backpressure', async () => {
+      const originalWrite = ServerResponse.prototype.write;
+      const responses: ServerResponse[] = [];
+      vi.spyOn(ServerResponse.prototype, 'write').mockImplementation(function (
+        this: ServerResponse,
+        ...args: unknown[]
+      ) {
+        if (String(args[0]).startsWith('event: ready')) {
+          responses.push(this);
+          return false;
+        }
+        return Reflect.apply(originalWrite, this, args) as boolean;
+      } as typeof originalWrite);
+      const { deps } = createHttpHandlerDeps();
+      const started = await startHttpHandlerServer(deps);
+      try {
+        const result = await fetch(`${started.baseUrl}/events/stream`, {
+          headers: { 'X-Coral-Backend-Token': 'test-token' },
+        });
+        expect(responses[0]?.writableEnded).toBe(true);
+        expect(deps.streamResponses.size).toBe(0);
+        await result.text();
+      } finally {
+        responses[0]?.destroy();
+        await _closeHttpServer(started.server);
+      }
+    });
+
     it('cleans up passive SSE subscriptions when an event write hits backpressure', async () => {
       type TestServerResponseWrite = (this: ServerResponse, ...args: unknown[]) => boolean;
       const originalWrite = ServerResponse.prototype.write as TestServerResponseWrite;
@@ -947,6 +982,7 @@ describe('execution backend server', () => {
 
         await stream.waitForText((text) => text.includes('event: ready'));
         expect(started.deps.streamResponses.size).toBe(1);
+        const response = [...started.deps.streamResponses][0] as ServerResponse;
 
         expect(
           started.deps.events.bus.emit('job:progress', {
@@ -957,6 +993,7 @@ describe('execution backend server', () => {
         ).toBe(true);
 
         await cleanedUp.promise;
+        expect(response.destroyed).toBe(true);
         expect(started.deps.streamResponses.size).toBe(0);
         expect(
           started.deps.events.bus.emit('job:progress', {
@@ -1137,12 +1174,12 @@ describe('execution backend server', () => {
       code: 'scope_mismatch',
       message: "Jobs are outside the caller's work directory scope",
       remediation:
-        "Rerun from the job's work directory, or from a directory that contains it — `coral-cli jobs` groups every job under the work directory it ran in.",
+        "Change cwd to the job's work directory, or a directory that contains it, then rerun. Use `coral-cli jobs --all` to find its work directory, including terminal jobs.",
       detail: { jobs: ['job-foreign-project'] },
     });
   });
 
-  it('returns 403 before streaming when /jobs/wait includes cross-project jobs', async () => {
+  it('answers a cross-project /jobs/wait member with a scope-mismatch disposition and exit 1', async () => {
     const fakeService = createFakeExecutionService();
     const progressStore = createProgressStore();
     createdJobIds.add('job-foreign');
@@ -1171,14 +1208,11 @@ describe('execution backend server', () => {
       }),
     });
 
-    expect(response.status).toBe(403);
-    expect(await response.json()).toEqual({
-      code: 'scope_mismatch',
-      message: "Jobs are outside the caller's work directory scope",
-      remediation:
-        "Rerun from the job's work directory, or from a directory that contains it — `coral-cli jobs` groups every job under the work directory it ran in.",
-      detail: { jobs: ['job-foreign'] },
-    });
+    expect(response.status).toBe(200);
+    const body = await response.text();
+    expect(body).toContain('event: disposition');
+    expect(body).toContain('"disposition":"scope-mismatch"');
+    expect(body).toMatch(/event: waiting\n(?:id: .*\n)?data: .*"exitCode":1/);
     expect(fakeService.waitStream).not.toHaveBeenCalled();
   });
 

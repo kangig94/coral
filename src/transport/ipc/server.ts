@@ -1,3 +1,5 @@
+import type { WaitCursor } from '../../jobs/wait/contract.js';
+import { waitSnapshotEnvelopeFits, waitSnapshotTooLarge } from '../../jobs/wait/snapshot.js';
 import { raceWithSignal } from '../../infra/promise-signal.js';
 import type { ProcessIncarnation } from '../../infra/node-process.js';
 import { timingSafeEqual } from 'node:crypto';
@@ -35,7 +37,6 @@ import {
   type RpcMethodSpec,
 } from '../rpc/catalog.js';
 import { readIpcOperationalSpec, type IpcOperationalSpec } from '../rpc/operational-catalog.js';
-import { JOBS_WAIT_EXTENSIONS } from '../rpc/jobs.js';
 import { authorizationFailurePayload, type CatalogRequestExecution, executeCatalogRequest } from '../dispatch.js';
 import { writeAuditEvent, writeAuthorizationDecisionAudit } from '../../infra/audit-log.js';
 import { buildJsonRpcError } from '../../infra/json-rpc.js';
@@ -363,7 +364,6 @@ function readPingSnapshot(rpcPorts: HttpHandlerPorts): {
   instanceId: string;
   pid: number;
   incarnation?: ProcessIncarnation;
-  jobsWaitExtensions: readonly string[];
   sentinel?: { version: 1; id: string };
 } {
   const health = rpcPorts.health.read();
@@ -377,7 +377,6 @@ function readPingSnapshot(rpcPorts: HttpHandlerPorts): {
     pid: health.pid,
     ...(health.incarnation === undefined ? {} : { incarnation: health.incarnation }),
     ...(health.sentinel === undefined ? {} : { sentinel: health.sentinel }),
-    jobsWaitExtensions: JOBS_WAIT_EXTENSIONS,
   };
 }
 
@@ -680,15 +679,6 @@ export function enableInheritedIpcCleanup(listener: IpcListener): void {
   for (const compatibility of listener.compatibilityListeners ?? []) enableInheritedIpcCleanup(compatibility);
 }
 
-function declaresHandover(request: JsonRpcRequestEnvelope): boolean {
-  return (
-    typeof request.params === 'object' &&
-    request.params !== null &&
-    'supportsHandover' in request.params &&
-    request.params.supportsHandover === true
-  );
-}
-
 async function streamSubscription(
   socket: Socket,
   request: JsonRpcRequestEnvelope,
@@ -780,7 +770,7 @@ async function handleIpcOperationalRequest(
     await finishUnaryResponse({
       kind: 'response',
       id: request.id,
-      result: { ...rpcPorts.health.read(), jobsWaitExtensions: JOBS_WAIT_EXTENSIONS },
+      result: rpcPorts.health.read(),
     });
     return true;
   }
@@ -943,6 +933,23 @@ async function dispatchIpcCatalogRequest(
         await finishUnaryResponse(requestErrorResponse(request.id, message, invocation.body));
         return;
       }
+      if (
+        request.method === 'jobs.wait.snapshot' &&
+        !waitSnapshotEnvelopeFits(
+          Buffer.byteLength(encode({ kind: 'response', id: request.id, result: invocation.body })),
+        )
+      ) {
+        const input = parsed.data as { jobIds: string[]; cursor?: WaitCursor };
+        const refusal = waitSnapshotTooLarge(input.jobIds, input.cursor);
+        const response = requestErrorResponse(request.id, refusal.message, {
+          code: refusal.code,
+          message: refusal.message,
+        });
+        await finishUnaryResponse(
+          waitSnapshotEnvelopeFits(Buffer.byteLength(encode(response))) ? response : { ...response, id: null },
+        );
+        return;
+      }
       const completeShutdownRecovery =
         drainingRecoveryIngress && acceptedDrainingRecovery(request.method) && onShutdownRecoveryAccepted !== null
           ? armShutdownRecoveryContinuation(socket, onShutdownRecoveryAccepted)
@@ -962,7 +969,8 @@ async function dispatchIpcCatalogRequest(
       invocation,
       subscriptionController,
       options,
-      declaresHandover(request) ? null : rpcPorts.jobs.waitHandoverSignal(),
+      // A wait stream carries its own handover notice; any other subscription is refused at handover.
+      request.method === 'jobs.wait' ? null : rpcPorts.jobs.waitHandoverSignal(),
     );
   } catch (error: unknown) {
     if (socket.destroyed) {

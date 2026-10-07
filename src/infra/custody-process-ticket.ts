@@ -1,3 +1,4 @@
+import { sameEpoch } from '../store/epoch/identity.js';
 import { randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import {
@@ -222,7 +223,7 @@ export function bindCustodyProcessTicket(
     intent.id !== ticket.intentId ||
     intent.processToken !== ticket.processToken ||
     intent.epoch !== ticket.epoch ||
-    intent.epochKey !== ticket.epochKey
+    !sameEpoch(intent.epochKey, ticket.epochKey)
   ) {
     throw new Error('Custody process ticket is invalid.');
   }

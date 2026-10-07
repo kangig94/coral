@@ -1,3 +1,4 @@
+import { sameEpoch } from './identity.js';
 import { removeTreeNoFollowSync } from '../../infra/remove-tree.js';
 import { basename, dirname, join } from 'node:path';
 import { z } from 'zod';
@@ -59,7 +60,7 @@ function observedAddress(
     const address = addressSchema.parse(
       JSON.parse(runtime.storage.readFileSync(addressPath(storeRoot, epochKey), 'utf-8')) as unknown,
     );
-    return address.epochKey === epochKey ? address : null;
+    return sameEpoch(address.epochKey, epochKey) ? address : null;
   } catch (error: unknown) {
     if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return null;
     throw error;
@@ -101,7 +102,7 @@ export function observeProtectedEpochAddresses(
     const epochKey = Buffer.from(name.slice(0, -'.json'.length), 'base64url').toString('utf8');
     try {
       const address = observedAddress(runtime, storeRoot, epochKey);
-      return address === null || scanned.some((entry) => entry.epochKey === epochKey) ? [] : [address];
+      return address === null || scanned.some((entry) => sameEpoch(entry.epochKey, epochKey)) ? [] : [address];
     } catch {
       return [];
     }
@@ -185,7 +186,7 @@ function observeProtectedCandidate(
     epoch,
     path: join(protectedPath, 'store.db'),
   });
-  if (epochKey !== `${lineageId}:${epoch}`) return null;
+  if (epochKey === null || !sameEpoch(epochKey, `${lineageId}:${epoch}`)) return null;
   const address = addressSchema.parse({ version: 'v1', epochKey, originalPath: join(storeRoot, name), protectedPath });
   let published: ProtectedEpochAddress | null;
   try {
@@ -326,8 +327,14 @@ export function observeProtectedEpoch(
       if (!entry.isDirectory() || entry.isSymbolicLink()) throw new Error('Protected epoch address is unobservable.');
     }
     if (
-      readEpochKey(runtime, { storeRoot: dirname(protectedPath), epoch, path: join(protectedPath, 'store.db') }) !==
-      epochKey
+      !sameEpoch(
+        readEpochKey(
+          runtime,
+          { storeRoot: dirname(protectedPath), epoch, path: join(protectedPath, 'store.db') },
+          5000,
+        ),
+        epochKey,
+      )
     )
       throw new Error('Protected epoch lineage is unobservable.');
   } catch (error: unknown) {
@@ -350,7 +357,7 @@ export function resolveProtectedEpoch(
 ): ResolvedStoreEpoch | null {
   const published = observedAddress(runtime, storeRoot, epochKey);
   if (published !== null) return resolvedProtectedAddress(storeRoot, epochKey, published);
-  const address = reconcileProtectedEpochs(runtime, storeRoot).find((entry) => entry.epochKey === epochKey);
+  const address = reconcileProtectedEpochs(runtime, storeRoot).find((entry) => sameEpoch(entry.epochKey, epochKey));
   return address === undefined ? null : resolvedProtectedAddress(storeRoot, epochKey, address);
 }
 

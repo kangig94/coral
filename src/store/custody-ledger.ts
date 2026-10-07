@@ -1,3 +1,4 @@
+import { sameEpoch } from './epoch/identity.js';
 import { basename, dirname, join } from 'node:path';
 import { setImmediate } from 'node:timers/promises';
 import { isDeepStrictEqual } from 'node:util';
@@ -199,12 +200,16 @@ export function recordCustodyIntent(
   const observedEpochKey =
     epochNumber === undefined
       ? null
-      : readEpochKey(runtime, {
-          storeRoot: dirname(input.epoch),
-          epoch: epochNumber,
-          path: join(input.epoch, 'store.db'),
-        });
-  if (input.epochKey !== undefined && observedEpochKey !== null && input.epochKey !== observedEpochKey) {
+      : readEpochKey(
+          runtime,
+          {
+            storeRoot: dirname(input.epoch),
+            epoch: epochNumber,
+            path: join(input.epoch, 'store.db'),
+          },
+          5000,
+        );
+  if (input.epochKey !== undefined && observedEpochKey !== null && !sameEpoch(input.epochKey, observedEpochKey)) {
     throw new Error('Custody epoch key does not match its directory lineage.');
   }
   if (

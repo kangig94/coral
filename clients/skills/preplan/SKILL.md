@@ -142,7 +142,7 @@ carries `## Pioneer Ledger` after the items, pointing at the sealed Pioneer Repo
     launch = Bash(`coral-cli <other-host> pioneer --work-dir "<work_dir>" -d -i - <<'CORAL_INPUT'
     <pioneer prompt>
     CORAL_INPUT`)
-    job = parse `Job <job> <launchState> (session <session>)` from launch
+    job = parse `Provider job <job> <launchState> (provider session <session>)` from launch
     terminal = Bash(`cd "<work_dir>" && coral-cli wait jobs ${job} --embed`)   // foreground; returns at terminal or the bound
     while true:
       if terminal begins `Still waiting` with `(cursor: <cursor>)`:

@@ -34,15 +34,54 @@ it('recovers terminals without loading progress and writes nothing on an unchang
   expect(read).toHaveBeenCalledWith('terminal', true);
   expect(read).toHaveBeenCalledWith('live');
   expect(index.read('terminal')?.detail).toMatchObject({ kind: 'recorded', value: { events: [{ type: 'terminal' }] } });
-  expect(index.read('live')?.detail).toMatchObject({ kind: 'recorded', value: { events: [{ type: 'progress' }] } });
+  expect(index.read('live')?.detail).toMatchObject({
+    kind: 'recorded',
+    value: { events: [{ type: 'progress', message: 'progress' }] },
+  });
+  expect(f.store.readJobEvents('live').filter((event) => event.type === 'progress')).toHaveLength(1);
   const write = vi.spyOn(f.runtime.storage, 'writeAtomicDurableSync');
   recoverJobLocations(index, 'epoch', f.store);
   expect(write).not.toHaveBeenCalled();
   f.store.appendProgress('live', 'live', 'later');
   recoverJobLocations(index, 'epoch', f.store);
   expect(write).toHaveBeenCalled();
+  expect(f.store.readJobEvents('live').filter((event) => event.type === 'progress')).toHaveLength(2);
   expect(index.read('live')?.detail).toMatchObject({
     kind: 'recorded',
-    value: { events: [{ type: 'progress' }, { type: 'progress' }] },
+    value: {
+      events: [
+        { type: 'progress', message: 'progress' },
+        { type: 'progress', message: 'later' },
+      ],
+    },
+  });
+});
+
+it('isolates a failing terminal record while recovering its siblings', () => {
+  const f = createRetentionFixture();
+  fixtures.push(f);
+  const index = new JobLocationIndex(f.runtime, f.runtime.paths.coral.generation.dataRoot);
+  for (const id of ['bad', 'good']) {
+    initTestJob(f.store, {
+      jobId: id,
+      sessionId: id,
+      provider: 'codex',
+      projectRoot: '/workspace',
+      backendNamespace: 'test',
+    });
+    commitJobTerminal(f.store, id, id, { content: 'done', outcome: { kind: 'completed' }, durationMs: 1 });
+  }
+  const record = index.recordTerminal.bind(index);
+  vi.spyOn(index, 'recordTerminal').mockImplementation((...args) => {
+    if (args[0] === 'bad') throw new Error('record failed');
+    return record(...args);
+  });
+  expect(() => recoverJobLocations(index, 'epoch', f.store)).toThrow('record failed');
+  expect(index.read('good')?.detail.kind).toBe('recorded');
+  expect(index.read('good')?.terminalSeq).toBeDefined();
+  expect(index.unknownLocationHolds()).toContainEqual({
+    epochKey: 'epoch',
+    reason: 'record failed',
+    retryScheduled: true,
   });
 });

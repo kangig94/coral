@@ -1,3 +1,8 @@
+import { isRecord } from '../infra/json.js';
+import type { WaitSnapshotRequest } from '../jobs/wait/contract.js';
+import type { WaitSnapshot } from '../jobs/wait/session.js';
+import { WaitBuildMismatchError } from '../coordinator/handoff-routing/wait-invocation.js';
+import { getWaitInvocation } from './wait-invocation.js';
 import type { Command } from 'commander';
 import { readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 
@@ -127,11 +132,8 @@ type DiscussSeedArgs = {
   demographics?: { origin_weights: Record<string, number>; outlier_ratio?: number };
 };
 
-export type AbortCapableClient = {
+type CliCommandClient = {
   abortJobs(jobIds: string[]): Promise<AbortResult>;
-};
-
-type CliCommandClient = AbortCapableClient & {
   createSession(
     provider: string,
     prompt: string,
@@ -140,6 +142,7 @@ type CliCommandClient = AbortCapableClient & {
   workflow(expression: string, options: WorkflowRequestOptions): Promise<AcceptedLaunchResponse>;
   listJobs(options?: JobsListOptions): Promise<JobsListResponse>;
   detailJob(jobId: string): Promise<JobDetailResponse>;
+  snapshotJobsWait(fields: WaitSnapshotRequest): Promise<WaitSnapshot>;
   discussSeed(args: DiscussSeedArgs): Promise<PersonaSeedOutput>;
   discussStart(args: {
     agents: Array<{
@@ -887,13 +890,27 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
     }
 
     const authOptions = ipcAuthOptions();
-    await reconcileKbBoot();
-    const client = await ensure(method, resolvePluginRoot());
-    return client.subscribe<TResult>(method, paramsFor(client), {
-      timeoutMs: HEALTH_TIMEOUT_MS,
-      ...options,
-      ...authOptions,
-    });
+    const invocation = path === 'wait jobs' ? getWaitInvocation() : undefined;
+    const run = <T>(work: () => Promise<T>) => (invocation ? invocation.run(work) : work());
+    await run(reconcileKbBoot);
+    const client = await run(() => ensure(method, resolvePluginRoot()));
+    invocation?.check();
+    return run(() =>
+      client.subscribe<TResult>(method, paramsFor(client), {
+        timeoutMs: HEALTH_TIMEOUT_MS,
+        ...options,
+        ...authOptions,
+        ...(invocation === undefined
+          ? {}
+          : {
+              signal: options?.signal ? AbortSignal.any([options.signal, invocation.signal]) : invocation.signal,
+              timeoutMs: Math.min(
+                options?.timeoutMs ?? HEALTH_TIMEOUT_MS,
+                Math.max(1, Math.ceil(invocation.remainingMs())),
+              ),
+            }),
+      }),
+    );
   };
   const subscribe = <TResult>(
     method: string,
@@ -919,8 +936,42 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
     ...createKbSourceCommunityClient(bindings),
     ...createKbMemoClient(bindings),
     subscribe,
-    subscribeJobsWait: (fields, options) =>
-      subscribeTo('jobs.wait', (coordinator) => jobsWaitRequest(fields, coordinator.jobsWaitExtensions), options),
+    snapshotJobsWait: async (fields) => {
+      const invocation = getWaitInvocation();
+      const run = <T>(work: () => Promise<T>) => (invocation ? invocation.run(work) : work());
+      await run(reconcileKbBoot);
+      const coordinator = await run(() => ensure('jobs.wait.snapshot', resolvePluginRoot()));
+      const request = {
+        jobIds: fields.jobIds,
+        projectRoot,
+        ...(fields.cursor === undefined ? {} : { cursor: fields.cursor }),
+        ...(fields.lines === undefined ? {} : { lines: fields.lines }),
+      };
+      try {
+        return await run(() =>
+          issueWithSuccessorAfterLifecycleRefusal(
+            'jobs.wait.snapshot',
+            resolvePluginRoot(),
+            (client) =>
+              client.request<WaitSnapshot>('jobs.wait.snapshot', request, {
+                timeoutMs: Math.max(1, Math.ceil(invocation?.remainingMs() ?? 30_000)),
+                ...ipcAuthOptions(),
+              }),
+            undefined,
+            coordinator,
+          ),
+        );
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          (/unknown.method|method not found/i.test(error.message) ||
+            (isRecord(error.cause) && error.cause.code === 'unknown_method'))
+        )
+          throw new WaitBuildMismatchError();
+        throw error;
+      }
+    },
+    subscribeJobsWait: (fields, options) => subscribeTo('jobs.wait', () => jobsWaitRequest(fields), options),
   };
 }
 

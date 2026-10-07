@@ -1,3 +1,5 @@
+import { nextDelivered } from '#tests/helpers/wait-stream.js';
+import { progressVisitFromEvents } from '#tests/helpers/wait-progress.js';
 import { describe, expect, it } from 'vitest';
 
 import { planCarrierWaitEvents, type CarrierWaitObservation } from '#src/jobs/shell/wait.js';
@@ -34,6 +36,11 @@ describe('planCarrierWaitEvents', () => {
     expect(pending).toEqual(new Set([JOB_A, JOB_B]));
   });
 
+  it('preserves unknown for a missing observer reply', () => {
+    const plan = planCarrierWaitEvents([observation(JOB_A, 'live')], new Set([JOB_A, JOB_B]), new Set());
+    expect(plan.unknownJobIds).toEqual([JOB_B]);
+  });
+
   it('collects unknowns for the waiting snapshot in sorted order and emits nothing for them', () => {
     const plan = planCarrierWaitEvents(
       [observation(JOB_B, 'unknown'), observation(JOB_A, 'unknown')],
@@ -44,4 +51,46 @@ describe('planCarrierWaitEvents', () => {
     expect(plan.interrupted).toEqual([]);
     expect(plan.unknownJobIds).toEqual([JOB_A, JOB_B]);
   });
+});
+
+it('the stream deadline bounds a carrier observation that never answers', async () => {
+  const { WaitCoordinator } = await import('#src/jobs/shell/wait.js');
+  const { VirtualTime, flushMicrotasks } = await import('#tools/simulation/core/virtual-time.js');
+  const time = new VirtualTime();
+  const stuck = new Promise<never>(() => {});
+  const wait = new WaitCoordinator({
+    visitProgress: progressVisitFromEvents(() => []),
+    time,
+    eventBus: { on: () => {}, off: () => {} },
+    sessionManager: { get: () => null },
+    launchQueue: { reservationFor: () => null, getActiveJobIds: () => [] },
+    readJobLastSeq: () => null,
+    loadJobWaitDetail: () => ({
+      status: { jobId: JOB_A, phase: 'running' },
+      runtime: null,
+      exit: null,
+    }),
+
+    aggregateWorkflowUsage: () => undefined,
+    getCurrentJournalSeq: () => 0,
+    resultJobsRoot: '/unused',
+    observeResultAvailability: (jobId: string) => ({
+      kind: 'available',
+      resultPath: `${'/unused'}/${jobId}/result.md`,
+    }),
+    subscribeJobEvents: () => ({ [Symbol.asyncIterator]: () => ({ next: () => stuck, return: () => stuck }) }),
+    observeCarriers: () => stuck,
+  } as never);
+  const stream = wait.waitForOutcomes({ jobIds: [JOB_A], timeoutSeconds: 1 });
+  const next = nextDelivered(stream);
+  await flushMicrotasks(20);
+  for (let i = 0; i < 4; i++) {
+    time.tick(250);
+    await flushMicrotasks(20);
+  }
+  await expect(next).resolves.toMatchObject({
+    done: false,
+    value: { type: 'waiting', waitingJobIds: [JOB_A], carrierUnknownJobIds: [JOB_A] },
+  });
+  await stream.return(undefined);
 });

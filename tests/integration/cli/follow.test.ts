@@ -1,9 +1,13 @@
+import { progressVisitFromDetails } from '#tests/helpers/wait-progress.js';
+import { JobAddressing } from '#src/jobs/addressing.js';
+import { admitted } from '#tests/helpers/wait-session.js';
+import { createRealTimePort } from '#src/infra/time.js';
+import { jobsWaitRequest, jobWaitSchema } from '#src/transport/rpc/jobs.js';
+import { savedCursor } from '#tests/helpers/wait-session.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { AbortResult } from '#src/jobs/contracts/abort-registry.js';
 import type { AcceptedLaunchResponse } from '#src/jobs/launch.js';
-import { type WaitStreamEvent } from '#src/jobs/wait.js';
-import { createDeferred } from '#tools/testing/deferred.js';
+import { type WaitStreamEvent } from '#src/jobs/wait/contract.js';
 import type * as FollowMod from '#src/cli/follow.js';
 import type * as HandoffRunnerMod from '#src/coordinator/handoff-routing/runner.js';
 
@@ -39,7 +43,6 @@ function makeBackend(instanceId = 'backend-1') {
     port: 4100,
     token: 'backend-token',
     version: '0.5.2',
-    jobsWaitExtensions: ['supportsInterrupted', 'supportsWaitV2', 'supportsHandover'],
     request: vi.fn(),
     subscribe: mockState.subscribe,
     health: vi.fn(),
@@ -74,19 +77,21 @@ function makeTerminalEvent(
     seq: 1,
     remainingJobIds: [],
     resultPath: '/tmp/result.md',
+    availability: { kind: 'available', resultPath: '/tmp/result.md' },
     result: {
       content: 'done',
       outcome: { kind: 'completed' },
       durationMs: 0,
       ...result,
     } as Extract<WaitStreamEvent, { type: 'terminal' }>['result'],
+    cursor: null,
+    exitCode: 0,
     ...overrides,
   };
 }
 
 type TestLaunchAndFollowOptions = {
   launchResult: AcceptedLaunchResponse;
-  abortJob: (jobId: string) => Promise<AbortResult>;
   pluginRoot: string;
   projectRoot: string;
   emitError: (error: unknown) => void;
@@ -103,7 +108,6 @@ function makeOptions(overrides: Partial<TestLaunchAndFollowOptions> = {}): TestL
       jobId: 'job-1',
       sessionId: 'session-1',
     } satisfies AcceptedLaunchResponse,
-    abortJob: async (jobId) => ({ aborted: [jobId], notFound: [] }),
     pluginRoot: '/plugin/root',
     projectRoot: '/project/root',
     emitError: (error: unknown) => {
@@ -196,7 +200,9 @@ describe('cli follow', () => {
     const handedOver = {
       close: vi.fn().mockResolvedValue(undefined),
       [Symbol.asyncIterator]: async function* (): AsyncGenerator<unknown> {
+        yield { type: 'cursor', cursor: savedCursor(0) };
         yield progressEvent;
+        yield { type: 'cursor', cursor: savedCursor(1) };
         yield { type: 'handover' };
       },
     };
@@ -216,7 +222,6 @@ describe('cli follow', () => {
       projectRoot: '/project/root',
       emitError,
       render: { isTTY: false, columns: 80, embed: false, verbose: false },
-      abortJobs: vi.fn(),
       connect,
       backoffScheduler,
     });
@@ -226,7 +231,7 @@ describe('cli follow', () => {
     expect(backoffScheduler).not.toHaveBeenCalled();
     expect(handedOver.close).toHaveBeenCalledOnce();
     expect(connect).toHaveBeenCalledTimes(2);
-    expect(connect.mock.calls[1]?.[0]).toMatchObject({ jobIds: ['job-1'], cursor: { afterSeq: 1 } });
+    expect(connect.mock.calls[1]?.[0]).toMatchObject({ jobIds: ['job-1'], cursor: savedCursor(1) });
   });
 
   it('returns the emitted envelope exit code on non-transient stream failures without retrying', async () => {
@@ -247,38 +252,69 @@ describe('cli follow', () => {
     expect(mockState.ensure).toHaveBeenCalledTimes(1);
     expect(mockState.subscribe).toHaveBeenCalledTimes(1);
   });
+});
 
-  it('warns on first SIGINT, aborts on second SIGINT, and calls abortJob once', async () => {
-    const { launchAndFollow } = await loadFollowModule();
-    const started = createDeferred<void>();
-    const abortJob = vi.fn().mockResolvedValue({ aborted: ['job-1'], notFound: [] });
-
-    mockState.ensure.mockResolvedValueOnce(makeBackend());
-    mockState.subscribe.mockImplementationOnce(
-      async (_method: string, _params: unknown, options?: { signal?: AbortSignal }) =>
-        makeSubscription(async function* () {
-          started.resolve();
-          await new Promise<never>((_resolve, reject) => {
-            options?.signal?.addEventListener('abort', () => reject(new TypeError('terminated')), { once: true });
-          });
-        }),
-    );
-
-    const followPromise = launchAndFollow(makeOptions({ abortJob }));
-    await started.promise;
-
-    expect(sigintHandler).not.toBeNull();
-    sigintHandler?.();
-    sigintHandler?.();
-
-    await expect(followPromise).resolves.toBe(1);
-
-    expect(stdout).toBe('Provider job job-1 launch accepted (provider session session-1)\n');
-    expect(stderr).toBe('\nPress Ctrl+C again to abort the job.\n');
-    expect(abortJob).toHaveBeenCalledTimes(1);
-    expect(abortJob).toHaveBeenCalledWith('job-1');
-    expect(mockState.ensure).toHaveBeenCalledTimes(1);
-    expect(mockState.subscribe).toHaveBeenCalledTimes(1);
-    expect(process.off).toHaveBeenCalledWith('SIGINT', expect.any(Function));
-  });
+it('launch-and-follow returns a failed terminal code and offers a continuation for its pending artifact', async () => {
+  const a = admitted('a', [], true, 'active-epoch', true);
+  const owner = new JobAddressing(
+    { time: createRealTimePort(), read: () => null, resultPathFor: () => '/r.md', unknownLocationHolds: () => [] },
+    {
+      visitProgress: progressVisitFromDetails(() => a.detail),
+      epochKey: () => 'active-epoch',
+      detail: () => a.detail,
+      abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
+    },
+    () => false,
+    () => 'decided',
+    undefined,
+    () => ({ kind: 'pending' }),
+  );
+  let stdout = '';
+  const write = vi.spyOn(process.stdout, 'write').mockImplementation(((
+    chunk: string | Uint8Array,
+    callback?: () => void,
+  ) => {
+    stdout += toText(chunk);
+    callback?.();
+    return true;
+  }) as typeof process.stdout.write);
+  try {
+    const { followJobs } = await loadFollowModule();
+    const code = await followJobs({
+      start: {
+        kind: 'launch',
+        launchResult: { kind: 'provider-session', jobId: 'a', sessionId: 's', launchState: 'running' },
+      },
+      reconnectPolicy: 'until-terminal',
+      projectRoot: '/tmp',
+      render: { isTTY: false, columns: 80, embed: false, verbose: false },
+      emitError: (error) => {
+        throw error;
+      },
+      connect: async ({ jobIds, cursor, signal, drainProgress }) => {
+        const { cursor: wireCursor, ...fields } = jobWaitSchema.parse(
+          jobsWaitRequest({ jobIds, projectRoot: '/tmp', timeoutSeconds: 1, cursor, drainProgress }),
+        );
+        const stream = owner.waitStream({
+          ...fields,
+          ...(typeof wireCursor === 'string' ? { cursor: wireCursor } : {}),
+          abortSignal: signal,
+        });
+        return {
+          kind: 'subscription',
+          subscription: {
+            close: async () => {
+              await stream.return(undefined);
+            },
+            [Symbol.asyncIterator]: () => stream,
+          },
+        };
+      },
+    });
+    // Following a launch exits with the outcome; a pending artifact is offered as a continuation, not awaited.
+    expect(code).toBe(42);
+    expect(stdout).toContain('Run coral-cli wait jobs a --cursor ');
+  } finally {
+    write.mockRestore();
+  }
 });

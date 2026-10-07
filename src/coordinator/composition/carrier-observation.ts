@@ -43,6 +43,7 @@ export type LocalCarrierRegistries = Readonly<{
   /** `LocalOperationRegistry.stateForJob` (W2.3) — `null` when this coordinator has no live entry for the
    *  job, which `evidenceFor` below maps to `'inherited'`, never to a guessed `'activated'`. */
   registryStateForJob: (jobId: string) => LocalOperationRegistryState | null;
+  holdsLocalAppServerExecution?: (jobId: string) => boolean;
 }>;
 
 /** True once the job is admitted (active or queued) in this coordinator process's own in-memory admission
@@ -79,16 +80,6 @@ function durableCliEvidence(
     : { carrierClass: 'durable-cli', process: { kind: 'recorded', alive: false, matchesRecordedIncarnation: false } };
 }
 
-/**
- * `app-server-acquired` reads `LocalOperationRegistry.stateForJob` (W2.3): `activated` or `attached` when this
- * coordinator generation holds a live entry for the job, and `inherited` — the registry's own `null` — for
- * an operation this coordinator never activated or attached, or for one whose operation already settled:
- * the registry deletes on settlement rather than marking it ended, so an ended operation reads the same as
- * one this coordinator never had. Either way that is locally `unknown`, never `absent`. The durable provider-
- * operation record, not runtime metadata, supplies the complete operation tuple for any later external
- * observation; `jobId` is enough for this local registry lookup because a job carries at most one live
- * operation at a time.
- */
 function evidenceFor(jobId: string, detail: JobProjectionDetail, registries: LocalCarrierRegistries): CarrierEvidence {
   const { runtime } = detail;
   if (runtime === null) {
@@ -105,7 +96,11 @@ function evidenceFor(jobId: string, detail: JobProjectionDetail, registries: Loc
             carrierClass: 'app-server-waiting',
             admittedByThisCoordinator: registries.isAdmittedByThisCoordinator(jobId),
           }
-        : { carrierClass: 'app-server-acquired', registryState: registries.registryStateForJob(jobId) ?? 'inherited' };
+        : {
+            carrierClass: 'app-server-acquired',
+            registryState: registries.registryStateForJob(jobId) ?? 'inherited',
+            ...(registries.holdsLocalAppServerExecution?.(jobId) === true ? { localExecutionHeld: true } : {}),
+          };
     case 'workflow':
       return { carrierClass: 'workflow', ownedByThisCoordinator: registries.isWorkflowOwnedByThisCoordinator(jobId) };
     case 'internal':
@@ -153,7 +148,9 @@ export function collectLocalCarrierInputs(
         recoveryCoverage: recoveryCoverageFor(jobId, registries),
       },
       providerOperation:
-        evidence.carrierClass === 'app-server-acquired' && evidence.registryState === 'inherited'
+        evidence.carrierClass === 'app-server-acquired' &&
+        evidence.registryState === 'inherited' &&
+        evidence.localExecutionHeld !== true
           ? readProviderOperationForJob(registries.getDb(), jobId)
           : null,
     });
@@ -166,7 +163,11 @@ export function withExternalStatus(
   input: CarrierObservationInput,
   status: CarrierStatusOutcome,
 ): CarrierObservationInput {
-  if (input.evidence.carrierClass !== 'app-server-acquired' || input.evidence.registryState !== 'inherited') {
+  if (
+    input.evidence.carrierClass !== 'app-server-acquired' ||
+    input.evidence.registryState !== 'inherited' ||
+    input.evidence.localExecutionHeld === true
+  ) {
     return input;
   }
   return {

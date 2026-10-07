@@ -1,3 +1,6 @@
+import type { ProgressVisit } from '../jobs/wait/contract.js';
+import type { WaitAdmission } from '../jobs/wait/session.js';
+import type { ResultAvailability } from '../jobs/terminal/export.js';
 import type {
   JobLaunchRequest,
   JobResumeRequest,
@@ -7,10 +10,15 @@ import type {
 import type { LaunchCoordinatorPort, SettlementRefusalRecorder } from '../jobs/contracts/admission.js';
 import type { ProviderDurableSpawner } from '../providers/cli-runner.js';
 import type { JobProgressStore } from '../jobs/contracts/job-store.js';
-import type { JobProjectionDetail } from '../jobs/read-queries.js';
+import type { JobProjectionDetail, JobWaitDetail } from '../jobs/read-queries.js';
 import type { JobEvent, LaunchReadiness } from '../jobs/records.js';
 import type { JobPhase } from '../jobs/phase.js';
-import type { WaitStreamEvent, WaitStreamOnceResult, WaitStreamRequest } from '../jobs/wait.js';
+import type {
+  WaitStreamEvent,
+  WaitStreamOnceResult,
+  WaitStreamRequest,
+  WaitCarrierCoverage,
+} from '../jobs/wait/contract.js';
 import type { ProviderStopCause, UsageSummary } from '../providers/contract.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { AbortResult } from '../jobs/contracts/abort-registry.js';
@@ -41,6 +49,10 @@ interface CoordinatorSessionOps {
 }
 
 interface CoordinatorJobOps {
+  readWaitAdmissions?(jobIds: readonly string[], epochKey: string, session?: object): WaitAdmission[];
+  observeWaitCarriers?(jobIds: readonly string[], signal: AbortSignal): Promise<WaitCarrierCoverage>;
+  readWaitAdmission?(jobId: string, epochKey: string, session?: object): WaitAdmission | null;
+  holdsLocalAppServerExecution?(jobId: string): boolean;
   abort(jobIds: string[]): AbortResult;
   waitStream(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent>;
   waitStreamOnce(jobId: string, timeoutMs?: number): Promise<WaitStreamOnceResult>;
@@ -86,7 +98,10 @@ export type ExecutionServiceDeps = {
   };
   coordinatorCommit: CommitEventsFn;
   loadJobProjectionDetail: (jobId: string) => JobProjectionDetail;
-  readJobEvents: (jobId: string) => JobEvent[];
+  loadJobWaitDetail: (jobId: string) => JobWaitDetail;
+  readJobLastSeq: (jobId: string) => number | null;
+  visitProgress: ProgressVisit;
+
   aggregateWorkflowUsage: (workflowJobId: string) => UsageSummary | undefined;
   subscribeJobEvents: (options: {
     afterSeq: number;
@@ -94,6 +109,15 @@ export type ExecutionServiceDeps = {
     abortSignal?: AbortSignal;
   }) => AsyncIterable<JobEvent>;
   getCurrentJournalSeq: () => number;
+  currentJobEpochKey?: () => string | null;
+  /** Internal waits admit children through job addressing and read each child's progress from its admitted epoch. */
+  internalWait?: Readonly<{
+    admissions: (jobIds: readonly string[], session: WaitStreamRequest) => WaitAdmission[];
+    visitProgress: ProgressVisit;
+  }>;
+  observeJobAbsence?: (jobId: string) => boolean;
+  observeResultAvailability: (jobId: string) => ResultAvailability;
+  hintResultRepair?: (jobId: string) => void;
   /** Tries to route an app-server operation through a live provider proxy set (W2.3). Optional because most
    *  compositions (every test, and any coordinator with no live set) never wire it — `LaunchOrchestrator`
    *  falls back to in-process execution when absent, identically to the port returning `null`. */

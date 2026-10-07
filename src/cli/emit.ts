@@ -4,14 +4,15 @@ import type { Command } from 'commander';
 import { HandoffRunError } from '../coordinator/handoff-routing/runner.js';
 import { BackendToolHttpError } from '../transport/http/errors.js';
 import type { AcceptedLaunchResponse } from '../jobs/launch.js';
-import { buildErrorEnvelope } from './errors.js';
+import { getWaitInvocation } from './wait-invocation.js';
+import { WaitResumeError, buildErrorEnvelope } from './errors.js';
 import { formatErrorEnvelope } from './format/error.js';
 import { formatDetachedLaunchStatus, formatLaunchWaitHint } from './format/jobs.js';
 import { launchAndFollow } from './follow.js';
 import { renderHandoffPublicationIncidents } from './handoff-notice.js';
 import { isJsonObject } from './parse.js';
 import { clearPendingReadStoreNote, flushPendingReadStoreNote } from './read-store.js';
-import { type AbortCapableClient, getPluginRoot } from './dispatch.js';
+import { getPluginRoot } from './dispatch.js';
 
 type CliOutputFormat = 'text' | 'json';
 
@@ -55,6 +56,7 @@ export function emitError(error: unknown): void {
   const { envelope, exitCode } = buildErrorEnvelope(originalError);
   const statusCode = originalError instanceof BackendToolHttpError ? originalError.statusCode : undefined;
   process.stderr.write(formatErrorEnvelope(envelope, statusCode) + '\n');
+  if (originalError instanceof WaitResumeError) getWaitInvocation()?.markContinuationPrinted();
   process.exitCode = exitCode;
 }
 
@@ -98,11 +100,7 @@ export function getTerminalContext(): { isTTY: boolean; columns: number } {
   };
 }
 
-export async function handleLaunchResult(
-  result: unknown,
-  detach: boolean | undefined,
-  client: AbortCapableClient,
-): Promise<void> {
+export async function handleLaunchResult(result: unknown, detach: boolean | undefined): Promise<void> {
   if (!isAcceptedLaunchResponse(result)) {
     emitError(new Error(`Expected accepted launch response, received: ${JSON.stringify(result)}`));
     return;
@@ -117,7 +115,6 @@ export async function handleLaunchResult(
   // Follow-level failures route through emitError and return the envelope exit code instead.
   process.exitCode = await launchAndFollow({
     launchResult: result,
-    abortJob: async (jobId) => client.abortJobs([jobId]),
     pluginRoot: getPluginRoot(),
     projectRoot: process.cwd(),
     emitError,

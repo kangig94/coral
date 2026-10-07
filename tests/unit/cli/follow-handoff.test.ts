@@ -1,11 +1,14 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type * as FollowModule from '#src/cli/follow.js';
 import type * as HandoffNoticeModule from '#src/cli/handoff-notice.js';
 import type * as HandoffRunnerModule from '#src/coordinator/handoff-routing/runner.js';
 import type { AcceptedLaunchResponse } from '#src/jobs/launch.js';
-import { serializeWaitCursor, type WaitStreamEvent } from '#src/jobs/wait.js';
+import { type WaitStreamEvent } from '#src/jobs/wait/contract.js';
+import { savedCursor } from '#tests/helpers/wait-session.js';
 import { createDeferred } from '#tools/testing/deferred.js';
+
+const frame = (seq: number): WaitStreamEvent => ({ type: 'cursor', cursor: savedCursor(seq) });
 
 const mockState = vi.hoisted(() => ({
   ensure: vi.fn(),
@@ -25,6 +28,10 @@ vi.mock('#src/coordinator/handoff-routing/runner.js', async (importOriginal) => 
 vi.mock('#src/cli/handoff-notice.js', async (importOriginal) => {
   const actual = await importOriginal<typeof HandoffNoticeModule>();
   return { ...actual, renderHandoffNotice: mockState.renderHandoffNotice };
+});
+
+beforeAll(async () => {
+  await import('#src/cli/follow.js');
 });
 
 const launchResult = {
@@ -52,7 +59,6 @@ function recorded(
 function makeOptions(overrides: Partial<FollowOptions> = {}): FollowOptions {
   return {
     launchResult,
-    abortJob: vi.fn().mockResolvedValue({ aborted: ['job-1'], notFound: [] }),
     pluginRoot: '/plugin/root',
     projectRoot: '/project/root',
     emitError: vi.fn(),
@@ -133,8 +139,13 @@ describe('cli follow handoff', () => {
       message: 'checkpoint-one',
       timing: waitTiming,
     };
-    const waitingEvent: WaitStreamEvent = { type: 'waiting', waitingJobIds: ['job-1'] };
-    const subscribe = vi.fn().mockResolvedValue(makeSubscription([progressEvent, waitingEvent]));
+    const waitingEvent: WaitStreamEvent = {
+      type: 'waiting',
+      waitingJobIds: ['job-1'],
+      cursor: savedCursor(4),
+      exitCode: 75,
+    };
+    const subscribe = vi.fn().mockResolvedValue(makeSubscription([frame(3), progressEvent, waitingEvent]));
 
     vi.spyOn(process.stdout, 'write').mockImplementation(((
       chunk: string | Uint8Array,
@@ -158,11 +169,7 @@ describe('cli follow handoff', () => {
       .mockImplementationOnce(async (operation) => {
         secondRunStarted.resolve();
         expect(progressAcknowledged).toBe(false);
-        expect(operation).toEqual({
-          kind: 'wait-jobs',
-          jobId: 'job-1',
-          serializedCursor: serializeWaitCursor({ afterSeq: 4 }),
-        });
+        expect(operation).toEqual({ kind: 'wait-jobs', jobId: 'job-1', serializedCursor: savedCursor(4) });
         return recorded({
           kind: 'delegated',
           version: '2.0.0',
@@ -180,7 +187,7 @@ describe('cli follow handoff', () => {
     expect(mockState.renderHandoffNotice).toHaveBeenCalledWith({ kind: 'handoff-success', version: '2.0.0' });
   });
 
-  it('should resume a transient retry from afterSeq and suppress replayed journal facts', async () => {
+  it('should resume a transient retry from the last cursor frame so no framed line repeats', async () => {
     const output: string[] = [];
     const progressEvent: WaitStreamEvent = {
       type: 'progress',
@@ -195,18 +202,23 @@ describe('cli follow handoff', () => {
       seq: 5,
       remainingJobIds: [],
       resultPath: '/tmp/result.md',
+      availability: { kind: 'available', resultPath: '/tmp/result.md' },
       result: { content: 'done', durationMs: 1_000, outcome: { kind: 'completed' } },
+      cursor: null,
+      exitCode: 0,
     };
     const firstSubscribe = vi.fn().mockResolvedValue({
       close: vi.fn().mockResolvedValue(undefined),
       async *[Symbol.asyncIterator]() {
+        yield frame(3);
         yield progressEvent;
+        yield frame(4);
         throw new TypeError('terminated');
       },
     });
     const secondSubscribe = vi.fn().mockImplementation(async (_method: string, params: Record<string, unknown>) => {
-      expect(params.cursor).toEqual({ afterSeq: 4 });
-      return makeSubscription([progressEvent, terminalEvent]);
+      expect(params.cursor).toEqual(savedCursor(4));
+      return makeSubscription([terminalEvent]);
     });
 
     vi.spyOn(process.stdout, 'write').mockImplementation(((
@@ -236,58 +248,148 @@ describe('cli follow handoff', () => {
     expect(output.join('')).toContain('Job job-1 completed');
   });
 
-  it.each(['aborted', 'stopRequested'] as const)(
-    'preserves double Ctrl-C %s evidence while delegated waits are active',
-    async (outcome) => {
-      const firstHandoff = createDeferred<HandoffRunnerModule.HandoffRunResult>();
-      const secondHandoff = createDeferred<HandoffRunnerModule.HandoffRunResult>();
-      const secondRunStarted = createDeferred<void>();
-      const abortJob = vi.fn().mockResolvedValue({
-        aborted: outcome === 'aborted' ? ['job-1'] : [],
-        ...(outcome === 'stopRequested'
-          ? {
-              stopRequested: ['job-1'],
-              held: [{ jobId: 'job-2', reason: 'provider_stop_pending', nextStep: 'Waiting for terminal evidence.' }],
-            }
-          : {}),
-        notFound: [],
-      });
-      vi.spyOn(process.stdout, 'write').mockImplementation(((
-        _chunk: string | Uint8Array,
-        callback?: (error?: Error | null) => void,
-      ) => {
-        callback?.();
-        return true;
-      }) as typeof process.stdout.write);
-      mockState.ensure.mockResolvedValue(makeBackend());
-      mockState.runHandoff.mockReturnValueOnce(firstHandoff.promise).mockImplementationOnce(async () => {
-        secondRunStarted.resolve();
-        return secondHandoff.promise;
-      });
+  it('stops a locally folded follow on Ctrl+C with a continuation at the folded cursor', async () => {
+    const output: string[] = [];
+    const progressApplied = createDeferred<void>();
+    const subscribe = vi
+      .fn()
+      .mockImplementation(async (_method: string, _params: unknown, options: { signal: AbortSignal }) => ({
+        close: vi.fn().mockResolvedValue(undefined),
+        async *[Symbol.asyncIterator]() {
+          yield frame(3);
+          yield {
+            type: 'progress',
+            jobId: 'job-1',
+            seq: 4,
+            message: 'checkpoint-one',
+            timing: waitTiming,
+          } satisfies WaitStreamEvent;
+          yield frame(4);
+          progressApplied.resolve();
+          await new Promise<void>((resolve) =>
+            options.signal.addEventListener('abort', () => resolve(), { once: true }),
+          );
+          throw options.signal.reason;
+        },
+      }));
+    vi.spyOn(process.stdout, 'write').mockImplementation(((
+      chunk: string | Uint8Array,
+      callback?: (error?: Error | null) => void,
+    ) => {
+      output.push(chunk.toString());
+      callback?.();
+      return true;
+    }) as typeof process.stdout.write);
+    mockState.ensure.mockResolvedValue(makeBackend(subscribe));
+    mockState.runHandoff.mockResolvedValue(
+      recorded({ kind: 'run-current', reason: { kind: 'routing', basis: { kind: 'incumbent-absent' } } }),
+    );
 
-      const { launchAndFollow } = await import('#src/cli/follow.js');
-      const follow = launchAndFollow(makeOptions({ abortJob }));
-      await vi.waitFor(() => expect(mockState.runHandoff).toHaveBeenCalledTimes(1));
+    const { launchAndFollow } = await import('#src/cli/follow.js');
+    const options = makeOptions();
+    const follow = launchAndFollow(options);
+    await progressApplied.promise;
+    sigintHandler?.();
 
-      sigintHandler?.();
-      expect(abortJob).not.toHaveBeenCalled();
-      firstHandoff.resolve(
-        recorded({ kind: 'delegated', version: '2.0.0', outcome: { kind: 'handoff-signal', signal: 'SIGINT' } }),
-      );
-      await secondRunStarted.promise;
+    await expect(follow).resolves.toBe(75);
+    expect(subscribe).toHaveBeenCalledOnce();
+    expect(options.emitError).not.toHaveBeenCalled();
+    const text = output.join('');
+    expect(text.match(/checkpoint-one/g)).toHaveLength(1);
+    expect(text).toContain(`Run coral-cli wait jobs job-1 --cursor ${savedCursor(4)} to continue waiting.`);
+    expect(text.match(/Run coral-cli wait jobs/g)).toHaveLength(1);
+  });
 
-      sigintHandler?.();
-      secondHandoff.resolve(
-        recorded({ kind: 'delegated', version: '2.0.0', outcome: { kind: 'handoff-signal', signal: 'SIGINT' } }),
-      );
-      await expect(follow).resolves.toBe(outcome === 'aborted' ? 1 : 3);
+  it('mirrors a delegated wait ending 75 after a Ctrl+C without retrying, since a terminal may carry 75', async () => {
+    const output: string[] = [];
+    const handoff = createDeferred<HandoffRunnerModule.HandoffRunResult>();
+    const runStarted = createDeferred<void>();
+    vi.spyOn(process.stdout, 'write').mockImplementation(((
+      chunk: string | Uint8Array,
+      callback?: (error?: Error | null) => void,
+    ) => {
+      output.push(chunk.toString());
+      callback?.();
+      return true;
+    }) as typeof process.stdout.write);
+    mockState.ensure.mockResolvedValue(makeBackend());
+    mockState.runHandoff.mockImplementationOnce(async () => {
+      runStarted.resolve();
+      return handoff.promise;
+    });
 
-      expect(abortJob).toHaveBeenCalledOnce();
-      expect(abortJob).toHaveBeenCalledWith('job-1');
-      expect(process.stderr.write).toHaveBeenCalledWith('\nPress Ctrl+C again to abort the job.\n');
-      if (outcome === 'stopRequested') {
-        expect(process.stdout.write).toHaveBeenCalledWith(expect.stringContaining('Stop requested for jobs: job-1'));
-      }
-    },
-  );
+    const { launchAndFollow } = await import('#src/cli/follow.js');
+    const options = makeOptions();
+    const follow = launchAndFollow(options);
+    await runStarted.promise;
+    expect(mockState.runHandoff.mock.calls[0][0]).toEqual({ kind: 'wait-jobs', jobId: 'job-1' });
+
+    sigintHandler?.();
+    handoff.resolve(recorded({ kind: 'delegated', version: '2.0.0', outcome: { kind: 'handoff-exit', exitCode: 75 } }));
+    await expect(follow).resolves.toBe(75);
+    expect(mockState.runHandoff).toHaveBeenCalledTimes(1);
+    expect(options.emitError).not.toHaveBeenCalled();
+    // The child printed its own continuation; the parent must not add a second one.
+    expect(output.join('')).not.toContain('Run coral-cli wait jobs');
+  });
+  it('forwards a SIGINT sent only to this process to the delegated child, which prints the one continuation', async () => {
+    const output: string[] = [];
+    const handoff = createDeferred<HandoffRunnerModule.HandoffRunResult>();
+    const child = { kill: vi.fn() };
+    vi.spyOn(process.stdout, 'write').mockImplementation(((
+      chunk: string | Uint8Array,
+      callback?: (error?: Error | null) => void,
+    ) => {
+      output.push(chunk.toString());
+      callback?.();
+      return true;
+    }) as typeof process.stdout.write);
+    const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+    mockState.ensure.mockResolvedValue(makeBackend());
+    const delegated = createDeferred<void>();
+    mockState.runHandoff.mockImplementationOnce(async (_operation, options: HandoffRunnerModule.RunHandoffOptions) => {
+      options.onDelegatedChild?.(child as never);
+      delegated.resolve();
+      return handoff.promise;
+    });
+
+    const { launchAndFollow } = await import('#src/cli/follow.js');
+    const options = makeOptions();
+    const follow = launchAndFollow(options);
+    await delegated.promise;
+    sigintHandler?.();
+    expect(child.kill).toHaveBeenCalledExactlyOnceWith('SIGINT');
+    sigintHandler?.();
+    expect(child.kill).toHaveBeenCalledTimes(2);
+    expect(exit).not.toHaveBeenCalled();
+    handoff.resolve(recorded({ kind: 'delegated', version: '2.0.0', outcome: { kind: 'handoff-exit', exitCode: 75 } }));
+    await expect(follow).resolves.toBe(75);
+    expect(output.join('')).not.toContain('Run coral-cli wait jobs');
+  });
+
+  it('answers a Ctrl+C before admission at once, without waiting for the coordinator to be ensured', async () => {
+    const output: string[] = [];
+    vi.spyOn(process.stdout, 'write').mockImplementation(((
+      chunk: string | Uint8Array,
+      callback?: (error?: Error | null) => void,
+    ) => {
+      output.push(chunk.toString());
+      callback?.();
+      return true;
+    }) as typeof process.stdout.write);
+    const ensuring = createDeferred<void>();
+    mockState.ensure.mockImplementation(() => {
+      ensuring.resolve();
+      return new Promise(() => {});
+    });
+
+    const { launchAndFollow } = await import('#src/cli/follow.js');
+    const options = makeOptions();
+    const follow = launchAndFollow(options);
+    await ensuring.promise;
+    sigintHandler?.();
+    await expect(follow).resolves.toBe(75);
+    expect(output.join('')).toContain('Run coral-cli wait jobs job-1 to continue waiting.');
+    expect(options.emitError).not.toHaveBeenCalled();
+  });
 });

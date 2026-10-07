@@ -1,3 +1,4 @@
+import { sameEpoch } from '../../../store/epoch/identity.js';
 import { join } from 'node:path';
 
 import {
@@ -84,7 +85,7 @@ async function reportReady(context: SettlementContext, report: SuccessionReady):
       preparation.ready !== null ||
       report.successorPid === options.incumbent().pid ||
       report.targetKey !== preparation.targetKey ||
-      report.epochKey !== preparation.epochKey ||
+      !sameEpoch(report.epochKey, preparation.epochKey) ||
       report.admissionRevision !== preparation.admissionRevision ||
       JSON.stringify([...report.receiptIds].sort()) !==
         JSON.stringify(preparation.receipts.map((receipt) => receipt.receiptId).sort())
@@ -147,7 +148,7 @@ async function commitAttempt(context: SettlementContext, attemptId: string): Pro
       return settle(
         serving !== null &&
           serving !== undefined &&
-          serving.epochKey === receipt.epochKey &&
+          sameEpoch(serving.epochKey, receipt.epochKey) &&
           serving.controlGeneration === receipt.controlGeneration &&
           serving.successorInstanceId === receipt.successor.instanceId
           ? { kind: 'committed', receipt }
@@ -166,7 +167,8 @@ async function commitAttempt(context: SettlementContext, attemptId: string): Pro
       if (
         preparation.ready === null ||
         preparation.targetKey !== successionTargetKey(intent.target) ||
-        (serving.epochKey !== preparation.epochKey && !options.retirementServing?.(attemptId, preparation.epochKey)) ||
+        (!sameEpoch(serving.epochKey, preparation.epochKey) &&
+          !options.retirementServing?.(attemptId, preparation.epochKey)) ||
         serving.successorInstanceId.length === 0 ||
         !Number.isSafeInteger(serving.controlGeneration) ||
         serving.controlGeneration < 1 ||

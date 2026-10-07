@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type * as HandoffNoticeMod from '#src/cli/handoff-notice.js';
 import type * as GenerationMutationMod from '#src/store/generation-mutation-coordination.js';
@@ -60,6 +60,10 @@ vi.mock('#src/cli/handoff-notice.js', async (importOriginal) => {
 vi.mock('#src/cli/plugin-root.js', () => ({
   resolvePluginRoot: mockState.resolvePluginRoot,
 }));
+
+beforeAll(async () => {
+  await import('#src/cli/program.js');
+});
 
 const GUARD_ENV = 'CORAL_CLI_HANDOFF_DELEGATED';
 
@@ -199,6 +203,107 @@ describe('program', () => {
     expect(mockState.runHandoff).toHaveBeenCalledWith({ kind: 'cli-invocation', argv }, { pluginRoot: '/plugin/root' });
     expect(mockState.renderHandoffNotice).toHaveBeenCalledOnce();
     expect(mockState.renderHandoffNotice).toHaveBeenCalledWith(success);
-    expect(filterForwardableCoralEnv({ [GUARD_ENV]: '1' })).toEqual({ [GUARD_ENV]: '1' });
+    expect(filterForwardableCoralEnv({ [GUARD_ENV]: '1' })).toEqual({});
   });
+});
+
+it('two SIGINTs during preflight preserve pre-admission argv and skip command dispatch', async () => {
+  vi.useFakeTimers();
+  const stdout: string[] = [];
+  const exit = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
+  const handlers = process.listeners('SIGINT');
+  vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: string | Uint8Array) => {
+    stdout.push(chunk.toString());
+    return true;
+  }) as typeof process.stdout.write);
+  mockState.runHandoff.mockImplementation(() => new Promise<never>(() => {}));
+  const { parseProgramWithHandoff } = await loadProgramFresh();
+  const program = new Command();
+  const action = vi.fn();
+  program
+    .command('wait')
+    .command('jobs')
+    .argument('<ids...>')
+    .option('--cursor <cursor>')
+    .option('--embed')
+    .action(action);
+  const argv = ['node', 'coral-cli', 'wait', 'jobs', 'a', 'ghost', '--embed', '--cursor', 'original'];
+  try {
+    const result = parseProgramWithHandoff(program, argv);
+    process.emit('SIGINT');
+    process.emit('SIGINT');
+    expect(exit).toHaveBeenCalledExactlyOnceWith(75);
+    await expect(result).resolves.toEqual({ kind: 'handoff-exit', exitCode: 75 });
+    expect(action).not.toHaveBeenCalled();
+    expect(stdout.join('')).toContain('admission did not complete');
+    expect(stdout.join('')).toContain(`Run coral-cli ${argv.slice(2).join(' ')}`);
+    expect(stdout.join('').match(/Run coral-cli/g)).toHaveLength(1);
+    expect(mockState.runHandoff.mock.calls[0][1].signal.aborted).toBe(true);
+  } finally {
+    for (const handler of process.listeners('SIGINT')) if (!handlers.includes(handler)) process.off('SIGINT', handler);
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  }
+});
+
+it('prints the relayed continuation when a delegated bounded monitor exits 75', async () => {
+  let output = '';
+  vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: string, callback?: (error?: Error) => void) => {
+    output += chunk;
+    callback?.();
+    return true;
+  }) as never);
+  mockState.runHandoff.mockImplementation(async (_operation, options) => {
+    options.waitInvocation.saveContinuation('Still waiting. Run coral-cli wait jobs a --cursor C1\n', false);
+    return recorded({
+      kind: 'delegated',
+      version: '2.3.4',
+      outcome: { kind: 'handoff-exit', exitCode: 75 },
+    });
+  });
+  const { buildProgram, parseProgramWithHandoff } = await loadProgramFresh();
+  expect(await parseProgramWithHandoff(buildProgram(), ['node', 'coral-cli', 'wait', 'jobs', 'a'])).toMatchObject({
+    kind: 'handoff-exit',
+    exitCode: 75,
+  });
+  expect(output).toContain('Run coral-cli wait jobs a --cursor C1');
+  expect(output.match(/Still waiting/g)).toHaveLength(1);
+});
+
+it('does not append a parent remediation after the delegated child error', async () => {
+  let output = '';
+  vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: string, callback?: (error?: Error) => void) => {
+    output += chunk;
+    callback?.();
+    return true;
+  }) as never);
+  mockState.runHandoff.mockImplementation(async () => {
+    process.stdout.write('Child readiness error. Run the child command.\n');
+    return recorded({ kind: 'delegated', version: '2.3.4', outcome: { kind: 'handoff-exit', exitCode: 75 } });
+  });
+  const { buildProgram, parseProgramWithHandoff } = await loadProgramFresh();
+  await parseProgramWithHandoff(buildProgram(), ['node', 'coral-cli', 'wait', 'jobs', 'a']);
+  expect(output).toBe('Child readiness error. Run the child command.\n');
+});
+
+it('injected clock bounds a stalled preflight without a process spawn', async () => {
+  const { buildProgram, parseProgramWithHandoff } = await loadProgramFresh();
+  vi.useFakeTimers();
+  let output = '';
+  vi.spyOn(process.stdout, 'write').mockImplementation(((text: string, callback?: () => void) => {
+    output += text;
+    callback?.();
+    return true;
+  }) as never);
+  mockState.runHandoff.mockImplementation(() => new Promise(() => {}));
+  const result = parseProgramWithHandoff(buildProgram(), ['node', 'coral-cli', 'wait', 'jobs', 'a'], {
+    now: () => Date.now(),
+  });
+  try {
+    await vi.advanceTimersByTimeAsync(590_000);
+    expect(await result).toMatchObject({ kind: 'handoff-exit', exitCode: 75 });
+    expect(output.match(/Run coral-cli wait jobs/g)).toHaveLength(1);
+  } finally {
+    vi.useRealTimers();
+  }
 });

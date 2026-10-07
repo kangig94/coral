@@ -1,3 +1,5 @@
+import { sameEpoch } from '../../store/epoch/identity.js';
+import { renderWorkflowReport } from '../../workflow/result-report.js';
 import { join } from 'node:path';
 
 import { probeCoordinator } from '../../infra/backend-discovery.js';
@@ -80,7 +82,7 @@ function probeRetainedEpochOpen(
   if (opened === null || epoch === undefined || opened.build.buildSetId !== manifest.buildSetId)
     return RETAINED_EPOCH_EXIT.controllerMismatch;
   try {
-    if (epoch.lineageKey === undefined || readEpochKey(runtime, epoch) !== epoch.lineageKey)
+    if (epoch.lineageKey === undefined || !sameEpoch(readEpochKey(runtime, epoch, 5000), epoch.lineageKey))
       return RETAINED_EPOCH_EXIT.epochUnsettled;
     const db = openReadOnlyStoreDatabase(runtime, {
       storeFormat,
@@ -109,10 +111,10 @@ function recoverRetainedEpoch(runtime: Runtime, manifest: StrictBundleManifest, 
     opened.build.buildSetId !== manifest.buildSetId ||
     opened.build.bundleHash !== manifest.bundleHash ||
     opened.build.storeFormatFingerprint !== manifest.storeFormatFingerprint ||
-    encodeResolvedStoreEpoch(runtime, epoch) !== epochKey
+    !sameEpoch(encodeResolvedStoreEpoch(runtime, epoch), epochKey)
   )
     return RETAINED_EPOCH_EXIT.controllerMismatch;
-  const index = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
+  const index = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot, renderWorkflowReport);
   const seeded = seedHistoricalEpoch(
     runtime,
     index,

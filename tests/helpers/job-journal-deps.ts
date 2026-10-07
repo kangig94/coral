@@ -1,3 +1,4 @@
+import type { ProgressSource } from '#src/jobs/wait/contract.js';
 import type { JobStore } from '#src/jobs/store.js';
 import type { JobEvent } from '#src/jobs/records.js';
 import type { Runtime } from '#src/runtime/ports.js';
@@ -78,7 +79,11 @@ export function createTestJobJournalDeps(progressStore: JobStore, runtime: Pick<
 
   return {
     loadJobProjectionDetail: (jobId: string) => progressStore.loadJobProjectionDetail(jobId),
-    readJobEvents: (jobId: string) => progressStore.readJobEvents(jobId),
+    loadJobWaitDetail: (jobId: string) => progressStore.loadJobWaitDetail(jobId),
+    readJobLastSeq: (jobId: string) => progressStore.readJobLastSeq(jobId),
+
+    visitProgress: <T>(_epoch: string, read: (source: ProgressSource) => T) => progressStore.visitProgress(read),
+    observeResultAvailability: (jobId: string) => progressStore.getResultExportOwner().observeResultAvailability(jobId),
     aggregateWorkflowUsage: (workflowJobId: string) => aggregateWorkflowUsage(progressStore.getDb(), workflowJobId),
     subscribeJobEvents,
     getCurrentJournalSeq,

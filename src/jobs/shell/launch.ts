@@ -248,6 +248,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
   // preparation boundary. Quiesce-for-handoff acts on this set; CLI/durable
   // jobs not in the set keep the existing handoff preservation behavior.
   private readonly appServerJobs = new Set<string>();
+  private readonly localAppServerExecutions = new Set<string>();
   // Once handoff quiesces a job, the dying generation must perform no
   // terminalization or local-ownership cleanup for it.
   private readonly quiescedAppServerJobs = new Set<string>();
@@ -258,6 +259,10 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
   private readonly deps: LaunchOrchestratorDeps;
   constructor(deps: LaunchOrchestratorDeps) {
     this.deps = deps;
+  }
+
+  holdsLocalAppServerExecution(jobId: string): boolean {
+    return this.localAppServerExecutions.has(jobId) && !this.quiescedAppServerJobs.has(jobId);
   }
 
   releaseProviderOperationLocalState(identity: ProviderOperationCleanupIdentity): boolean {
@@ -282,6 +287,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
     }
     this.deps.abortRegistry.remove(jobId);
     this.appServerJobs.delete(jobId);
+    this.localAppServerExecutions.delete(jobId);
     this.appServerHandoffAborts.delete(jobId);
     return true;
   }
@@ -910,6 +916,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
       } finally {
         if (permit !== null && releasesLaunchPermit(disposition)) void launchAdmission.releaseLaunch(permit);
         this.appServerJobs.delete(jobId);
+        this.localAppServerExecutions.delete(jobId);
         this.quiescedAppServerJobs.delete(jobId);
         this.appServerHandoffAborts.delete(jobId);
       }
@@ -1002,6 +1009,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
       } finally {
         if (permit !== null && releasesLaunchPermit(disposition)) void launchAdmission.releaseLaunch(permit);
         this.appServerJobs.delete(jobId);
+        this.localAppServerExecutions.delete(jobId);
         this.quiescedAppServerJobs.delete(jobId);
         this.appServerHandoffAborts.delete(jobId);
       }
@@ -1587,6 +1595,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
     launch: PreparedProviderLaunchContext,
   ): Extract<PreparedProviderExecutionResult, { kind: 'local' }> {
     const { runtime, jobId } = launch;
+    this.localAppServerExecutions.add(jobId);
     return {
       kind: 'local',
       stream: prepared.execute({

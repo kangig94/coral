@@ -1,16 +1,12 @@
-import { raceWithSignal } from '../../infra/promise-signal.js';
+import { WaitSessionError } from '../../jobs/wait/session.js';
 import type { ProcessIncarnation } from '../../infra/node-process.js';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { z, type ZodError } from 'zod';
-import {
-  parseSerializedWaitCursor,
-  serializeWaitCursor,
-  type WaitCursor,
-  type WaitStreamEvent,
-  type WaitStreamRequest,
-} from '../../jobs/wait.js';
-import { advanceWaitRenderCursor } from '../../jobs/wait-stream-event.js';
+import { type WaitCursor, type WaitStreamEvent } from '../../jobs/wait/contract.js';
+import { advanceWaitRenderCursor } from '../../jobs/wait/stream-event.js';
+import { decodeWaitCursor } from '../../jobs/wait/cursor.js';
+import { performance } from 'node:perf_hooks';
 import { writeAuditEvent, writeAuthorizationDecisionAudit } from '../../infra/audit-log.js';
 import { isRecord } from '../../infra/json.js';
 import { isLoopbackRemoteAddress, normalizeRemoteAddressLiteral } from '../../infra/remote-address.js';
@@ -328,9 +324,6 @@ export function writeSseEvent(res: ServerResponse, event: string, data: unknown,
     ? `event: ${event}\nid: ${cursorId}\ndata: ${JSON.stringify(data)}\n\n`
     : `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
   const accepted = res.write(payload);
-  if (!accepted && !res.destroyed) {
-    res.destroy(new Error('SSE client backpressure exceeded'));
-  }
   return accepted;
 }
 
@@ -783,32 +776,33 @@ async function handleCatalogUnaryRoute(
   sendCatalogResponse(res, result);
 }
 
-function writeWaitSseEvent(
+async function writeWaitSseEvent(
   res: ServerResponse,
-  event: WaitStreamEvent,
-  cursor: WaitCursor,
-): {
-  cursor: WaitCursor;
-  written: boolean;
-} {
-  const nextCursor = advanceWaitRenderCursor(cursor, event).cursor;
-  switch (event.type) {
-    case 'progress':
-    case 'terminal':
-      return { cursor: nextCursor, written: writeSseEvent(res, event.type, event, serializeWaitCursor(nextCursor)) };
-    case 'queued':
-    case 'interrupted':
-      // A derived interruption carries no Journal seq, so the cursor only follows recorded events.
-      return {
-        cursor: nextCursor,
-        written: writeSseEvent(res, event.type, event, event.cursor && serializeWaitCursor(nextCursor)),
-      };
-    default:
-      return {
-        cursor: nextCursor,
-        written: writeSseEvent(res, 'waiting', event, event.cursor && serializeWaitCursor(nextCursor)),
-      };
-  }
+  event: WaitStreamEvent | { type: 'handover'; code: string; message: string },
+  id: string | undefined,
+  deadline: number,
+  signal: AbortSignal,
+): Promise<boolean> {
+  if (writeSseEvent(res, event.type, event, id)) return true;
+  if (res.destroyed || res.writableEnded || signal.aborted) return false;
+  const budget = Math.min(1000, Math.max(0, deadline - performance.now()));
+  return new Promise<boolean>((resolve) => {
+    const finish = (drained: boolean) => {
+      clearTimeout(timer);
+      res.off('drain', onDrain);
+      res.off('close', onClose);
+      res.off('error', onClose);
+      signal.removeEventListener('abort', onClose);
+      resolve(drained);
+    };
+    const onDrain = () => finish(true);
+    const onClose = () => finish(false);
+    const timer = setTimeout(onClose, budget);
+    res.once('drain', onDrain);
+    res.once('close', onClose);
+    res.once('error', onClose);
+    signal.addEventListener('abort', onClose, { once: true });
+  });
 }
 
 async function handleJobsWaitSubscription(
@@ -816,13 +810,7 @@ async function handleJobsWaitSubscription(
   req: IncomingMessage,
   res: ServerResponse,
   deps: HttpHandlerPorts,
-  request: {
-    jobIds: string[];
-    projectRoot: string;
-    timeoutSeconds?: number;
-    cursor?: WaitCursor;
-    supportsWaitV2?: boolean;
-  },
+  request: Record<string, unknown> & { timeoutSeconds?: number; cursor?: unknown },
 ): Promise<void> {
   if (rejectRestrictedRemoteTransportOption(req, res, deps, request)) {
     return;
@@ -836,18 +824,16 @@ async function handleJobsWaitSubscription(
   const serializedCursorHeader = Array.isArray(req.headers['last-event-id'])
     ? req.headers['last-event-id'][0]
     : req.headers['last-event-id'];
-  const headerCursor = parseSerializedWaitCursor(serializedCursorHeader);
-  if (serializedCursorHeader && !headerCursor) {
-    sendJson(res, 400, { code: 'invalid_request', message: 'Invalid Last-Event-ID cursor' });
+  const decoded = serializedCursorHeader === undefined ? undefined : decodeWaitCursor(serializedCursorHeader);
+  if (decoded?.kind === 'rejected') {
+    sendJson(res, 400, decoded.error);
     return;
   }
 
-  let currentCursor: WaitCursor = headerCursor ?? { afterSeq: 0 };
+  const deadline = performance.now() + (request.timeoutSeconds ?? 600) * 1000;
   const controller = new AbortController();
-  const waitRequest: WaitStreamRequest = {
-    ...request,
-    ...(headerCursor === null ? {} : { cursor: headerCursor }),
-  };
+  // The SSE frontier rides Last-Event-ID; a request without one states the fresh collection of a null cursor.
+  const waitRequest = { ...request, cursor: serializedCursorHeader ?? null };
   const principal = authenticateCatalogPrincipal(req, deps);
   if (principal === null) {
     controller.abort();
@@ -878,6 +864,7 @@ async function handleJobsWaitSubscription(
   res.flushHeaders?.();
 
   let closed = false;
+  let folded: WaitCursor | undefined;
   const iterator = execution.notifications[Symbol.asyncIterator]();
   const close = () => {
     if (closed) {
@@ -892,17 +879,16 @@ async function handleJobsWaitSubscription(
   req.once('close', close);
   runOnResponseDone(res, close);
 
-  const handover = deps.jobs.waitHandoverSignal();
-
   try {
     while (true) {
-      const next = await raceWithSignal(iterator.next(), handover, () => 'handover' as const);
-      if (next === 'handover' || (!next.done && (next.value as { type?: unknown }).type === 'handover')) {
-        writeSseEvent(
+      const next = await iterator.next();
+      if (!next.done && (next.value as { type?: unknown }).type === 'handover') {
+        await writeWaitSseEvent(
           res,
-          'handover',
           { type: 'handover', ...lifecycleRefusalResult },
-          serializeWaitCursor(currentCursor),
+          undefined,
+          deadline,
+          controller.signal,
         );
         break;
       }
@@ -910,13 +896,24 @@ async function handleJobsWaitSubscription(
         break;
       }
 
-      const emitted = writeWaitSseEvent(res, next.value as WaitStreamEvent, currentCursor);
-      currentCursor = emitted.cursor;
-      if (!emitted.written) break;
+      const event = next.value as WaitStreamEvent;
+      // Last-Event-ID resumes from the cursor a client holds, so every event that moves it carries it.
+      const fold = advanceWaitRenderCursor(folded, event);
+      const id = fold.cursor !== folded ? fold.cursor : undefined;
+      folded = fold.cursor;
+      if (!(await writeWaitSseEvent(res, event, id, deadline, controller.signal))) {
+        if (!res.destroyed && !res.writableEnded)
+          writeSseEvent(res, 'error', {
+            code: 'transient',
+            message: 'Wait delivery paused by backpressure; resume with the last completely received cursor.',
+          });
+        break;
+      }
     }
   } catch (error) {
     if (!closed && !controller.signal.aborted) {
-      throw error;
+      if (error instanceof WaitSessionError) writeSseEvent(res, 'error', { code: error.code, message: error.message });
+      else throw error;
     }
   } finally {
     close();
@@ -940,7 +937,7 @@ async function handleCatalogSubscriptionRoute(
         req,
         res,
         deps,
-        request as { jobIds: string[]; projectRoot: string; timeoutSeconds?: number; cursor?: { afterSeq: number } },
+        request as Record<string, unknown> & { timeoutSeconds?: number; cursor?: unknown },
       );
       return;
     default:
@@ -1145,6 +1142,7 @@ async function handleEventStream(
   res.flushHeaders?.();
   if (!writeSseEvent(res, 'ready', { streamId, startedAt: deps.events.nowIsoString() })) {
     deps.events.removeResponse(res);
+    res.end();
     return;
   }
 
@@ -1164,6 +1162,7 @@ async function handleEventStream(
   };
   const writeOrClose = (event: string, payload: unknown): void => {
     if (!writeSseEvent(res, event, payload)) {
+      res.destroy();
       onClose();
     }
   };

@@ -1,3 +1,4 @@
+import { sameEpoch } from '../store/epoch/identity.js';
 import type { BuildFlavor } from '../infra/build-flavor.js';
 import { resolveStrictBundleIdentity, type StrictBundleManifest } from '../infra/bundle-manifest.js';
 import { createStoreResetInspectionFs } from '../infra/store-reset-inspection-fs.js';
@@ -233,7 +234,8 @@ export async function reportStoreResetLocal(
     const runtime = dependencies.runtime?.(manifest) ?? createRealRuntime(manifest.flavor);
     const epochs = listStoreEpochs(runtime);
     const matches = epochs.filter(
-      (candidate) => candidate.epochKey === reference || (isCanonicalEpoch(reference) && candidate.epoch === reference),
+      (candidate) =>
+        sameEpoch(candidate.epochKey, reference) || (isCanonicalEpoch(reference) && candidate.epoch === reference),
     );
     if (matches.length > 1) throw new StoreResetCliError('store_reset_epoch_ambiguous');
     const epoch = matches[0];

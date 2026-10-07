@@ -2,6 +2,17 @@ import { ZodError } from 'zod';
 import { BackendToolHttpError } from '../transport/http/errors.js';
 import { TransientHttpError } from '../infra/http-errors.js';
 import { isRecord } from '../infra/json.js';
+import { WaitBuildMismatchError } from '../coordinator/handoff-routing/wait-invocation.js';
+import { WAIT_BUILD_MISMATCH } from '../transport/rpc/jobs.js';
+import { IpcRpcError } from '../transport/ipc/client.js';
+import type { WaitCursorRejection } from '../jobs/wait/cursor.js';
+
+const JSON_RPC_INVALID_PARAMS = -32602;
+
+/** The coordinator's soft cursor refusal: the CLI drops its cursor and starts a fresh collection. */
+export const SOFT_CURSOR_REFUSALS: readonly string[] = [
+  'wait_cursor_malformed',
+] satisfies readonly WaitCursorRejection['code'][];
 
 function waitSubscriptionStatusCode(body: Record<string, unknown>): number {
   switch (body.code) {
@@ -29,16 +40,16 @@ function waitSubscriptionStatusCode(body: Record<string, unknown>): number {
  * 503-family codes are wrapped as `TransientHttpError` so the follow-loop
  * retry guard (`isTransientStreamError`) recognizes them as retryable.
  *
- * A decode failure can occur during a coordinator/plugin version transition. Retrying covers a short-lived
- * transition; if it persists, the public message points at upgrading without exposing schema diagnostics.
+ * A same-build coordinator accepts every wait request this CLI forms and emits only events it reads, so a rejected
+ * request shape or an unreadable event means the coordinator is another build; retrying cannot change that.
  */
 export function mapWaitSubscriptionError(error: unknown): unknown {
-  if (error instanceof ZodError) {
-    return new TransientHttpError(
-      503,
-      'The coordinator emitted a wait event this Coral build could not read. Rerun the command; if this keeps happening, upgrade the installed Coral plugin.',
-    );
-  }
+  if (error instanceof ZodError) return new WaitBuildMismatchError();
+  if (
+    error instanceof IpcRpcError &&
+    (error.rpcCode === JSON_RPC_INVALID_PARAMS || error.code === WAIT_BUILD_MISMATCH.code)
+  )
+    return new WaitBuildMismatchError();
 
   if (!(error instanceof Error) || !isRecord(error.cause) || typeof error.cause.message !== 'string') {
     return error;

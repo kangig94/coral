@@ -17,7 +17,7 @@ const PROJECT_ROOT = canonicalizeWorkDir(FIXTURE_ROOT, FIXTURE_ROOT);
 
 afterAll(() => rmSync(FIXTURE_ROOT, { recursive: true, force: true }));
 
-async function detailFor(lookup: JobDetailLookup): Promise<unknown> {
+async function detailFor(lookup: JobDetailLookup, caveat?: string): Promise<unknown> {
   const spec = rpcCatalog.find((candidate) => candidate.name === 'jobs.detail');
   if (spec === undefined) throw new Error('Missing RPC method jobs.detail.');
   const ports = {
@@ -27,13 +27,15 @@ async function detailFor(lookup: JobDetailLookup): Promise<unknown> {
     jobs: {
       scopeCheck: () => ({ mismatch: [], missing: [] }),
       detail: () => lookup,
+      unknownJobDisposition: () => 'not-found',
+      unknownJobCaveat: () => caveat,
     },
   } as unknown as HttpHandlerPorts;
   const request = spec.requestSchema.parse({ jobId: 'job-1', projectRoot: PROJECT_ROOT });
   return executeCatalogRequest(spec, request, ports, testProjectPrincipal(PROJECT_ROOT));
 }
 
-async function execute(method: 'jobs.wait' | 'jobs.abort', body: object, jobs: object): Promise<unknown> {
+async function execute(method: 'jobs.abort', body: object, jobs: object): Promise<unknown> {
   const spec = rpcCatalog.find((candidate) => candidate.name === method);
   if (spec === undefined) throw new Error(`Missing RPC method ${method}.`);
   const ports = {
@@ -47,14 +49,31 @@ async function execute(method: 'jobs.wait' | 'jobs.abort', body: object, jobs: o
 }
 
 describe('jobs.detail retained-epoch dispositions', () => {
-  it('should tell the caller an unresolved job recovers on its own and is worth retrying', async () => {
+  it('names maintenance or the next start as the unresolved job read exit', async () => {
     const result = await detailFor({ kind: 'unresolved', jobId: 'job-1', epochKey: 'lineage:7' });
 
     expect(result).toMatchObject({
       kind: 'unary',
-      body: { code: 'job_unresolved', remediation: expect.stringContaining('recovery is automatic') as unknown },
+      body: {
+        code: 'job_unresolved',
+        message: expect.stringContaining('scheduled maintenance retry or the next coordinator start') as unknown,
+      },
     });
     expect(errorCodeToExit('job_unresolved', 409)).toBe(75);
+  });
+
+  it('reports an unreadable outcome as final for this coordinator lifetime', async () => {
+    const result = await detailFor({ kind: 'outcome-unreadable', jobId: 'job-1', epochKey: 'lineage:7' });
+    expect(result).toMatchObject({
+      kind: 'unary',
+      statusCode: 409,
+      body: {
+        code: 'job_outcome_unreadable',
+        message: expect.stringContaining('next start'),
+        detail: { epochKey: 'lineage:7' },
+      },
+    });
+    expect(errorCodeToExit('job_outcome_unreadable', 409)).toBe(1);
   });
 
   it('should report an unreadable recorded detail distinctly from an unresolved job', async () => {
@@ -82,27 +101,7 @@ describe('jobs.detail retained-epoch dispositions', () => {
     expect(errorCodeToExit('job_outcome_unrecoverable', 409)).toBe(1);
   });
 
-  it('should refuse to open a wait on a job no recorded terminal will reach', async () => {
-    const waitStream = vi.fn();
-    const result = await execute(
-      'jobs.wait',
-      { jobIds: ['job-1', 'job-2'] },
-      {
-        scopeCheck: () => ({ valid: ['job-1', 'job-2'], mismatch: [], missing: [] }),
-        outcomeUnrecoverable: () => ['job-2'],
-        validateWait: () => null,
-        waitStream,
-      },
-    );
-
-    expect(result).toMatchObject({
-      kind: 'unary',
-      body: { code: 'job_outcome_unrecoverable', detail: { jobs: ['job-2'] } },
-    });
-    expect(waitStream).not.toHaveBeenCalled();
-  });
-
-  it.each(['jobs.wait', 'jobs.abort'] as const)(
+  it.each(['jobs.abort'] as const)(
     'should answer %s on ids no epoch knows the way jobs.detail does',
     async (method) => {
       const jobs = {
@@ -110,7 +109,7 @@ describe('jobs.detail retained-epoch dispositions', () => {
         unknownJobDisposition: () => 'pre-epoch-history',
         outcomeUnrecoverable: () => [],
       };
-      const body = method === 'jobs.wait' ? { jobIds: ['job-1'] } : { jobs: ['job-1'] };
+      const body = { jobs: ['job-1'] };
 
       expect(await execute(method, body, jobs)).toMatchObject({
         kind: 'unary',
@@ -122,28 +121,6 @@ describe('jobs.detail retained-epoch dispositions', () => {
       });
     },
   );
-
-  it('should give missing ids in a mixed wait the pre-epoch disposition before streaming', async () => {
-    const waitStream = vi.fn();
-    const result = await execute(
-      'jobs.wait',
-      { jobIds: ['known', 'possible-flat'] },
-      {
-        scopeCheck: () => ({ valid: ['known', 'possible-flat'], mismatch: [], missing: ['possible-flat'] }),
-        unknownJobDisposition: () => 'pre-epoch-history',
-        outcomeUnrecoverable: () => [],
-        validateWait: () => null,
-        waitStream,
-      },
-    );
-
-    expect(result).toMatchObject({
-      kind: 'unary',
-      statusCode: 404,
-      body: { code: 'job_pre_epoch_history', detail: { jobs: ['possible-flat'] } },
-    });
-    expect(waitStream).not.toHaveBeenCalled();
-  });
 
   it('should let addressing answer each id in a mixed pre-epoch abort', async () => {
     const abort = vi.fn(() => ({
@@ -172,5 +149,12 @@ describe('jobs.detail retained-epoch dispositions', () => {
         refused: [{ jobId: 'possible-flat', reason: 'job_pre_epoch_history' }],
       },
     });
+  });
+});
+
+it('keeps the singular missing-job detail code when an epoch caveat is present', async () => {
+  expect(await detailFor(null, 'Unreadable epoch retired: retained-store-root-missing.')).toMatchObject({
+    kind: 'unary',
+    body: { code: 'job_not_found', message: expect.stringContaining('retained-store-root-missing') },
   });
 });

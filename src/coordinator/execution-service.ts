@@ -1,7 +1,7 @@
+import type { ProgressVisit } from '../jobs/wait/contract.js';
 import { currentEventMetadata, withInvocationScope } from './invocation-scope.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { ExecutionServiceDeps, ListResult, ProjectRequestPort } from './contracts.js';
-import type { LaunchPermit } from '../jobs/contracts/admission.js';
 import type {
   ProviderRecoveryAuthority,
   RecoveredAppServerInterruptResult,
@@ -13,11 +13,9 @@ import type {
   ProviderSessionLaunchDecision,
   WorkflowLaunchDecision,
 } from '../jobs/launch.js';
-import type { JobPhase } from '../jobs/phase.js';
-import type { AppServerRuntime, JobLaunch, JobRuntime, JobTerminalInput, LaunchReadiness } from '../jobs/records.js';
-import type { TerminalWriteOptions } from '../jobs/contracts/job-store.js';
+import type { AppServerRuntime, JobLaunch, JobRuntime, LaunchReadiness } from '../jobs/records.js';
 import type { DurableCliRuntimeRecord } from '../runtime/durable-runtime.js';
-import type { WaitStreamEvent, WaitStreamOnceResult, WaitStreamRequest } from '../jobs/wait.js';
+import type { WaitStreamEvent, WaitStreamOnceResult, WaitStreamRequest } from '../jobs/wait/contract.js';
 import type { PipelineAST } from '../workflow/ast.js';
 import type { CanonicalWorkflowCommand } from '../workflow/compile.js';
 import type { CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
@@ -117,13 +115,19 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
       launchQueue: deps.launchCoordinator,
       eventBus: this.eventBus,
       time: this.runtime.time,
-      loadJobProjectionDetail: deps.loadJobProjectionDetail,
-      readJobEvents: deps.readJobEvents,
+      loadJobWaitDetail: deps.loadJobWaitDetail,
+      readJobLastSeq: deps.readJobLastSeq,
+
+      visitProgress: deps.visitProgress,
       aggregateWorkflowUsage: deps.aggregateWorkflowUsage,
       subscribeJobEvents: deps.subscribeJobEvents,
       getCurrentJournalSeq: deps.getCurrentJournalSeq,
+      currentJobEpochKey: deps.currentJobEpochKey,
+      internalWait: deps.internalWait,
+      observeJobAbsence: deps.observeJobAbsence,
       resultJobsRoot: this.runtime.paths.coral.exports.jobsRoot,
-      ensureResultArtifact: (jobId) => this.progressStore.ensureResultArtifact(jobId),
+      observeResultAvailability: deps.observeResultAvailability,
+      hintResultRepair: deps.hintResultRepair,
       observeCarriers: deps.observeCarriers,
     });
 
@@ -195,6 +199,10 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     this.abortService = new JobAbortService({
       abortRegistry: this.abortRegistry,
     });
+  }
+
+  holdsLocalAppServerExecution(jobId: string): boolean {
+    return this.launchOrchestrator.holdsLocalAppServerExecution(jobId);
   }
 
   private runWithInvocationScope<T>(ctx: InvocationContext, run: () => T): T {
@@ -285,16 +293,6 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     return this.recoveryService.adoptRunningJob(authority, runtimeRecord);
   }
 
-  completeRecoveredJob(
-    jobId: string,
-    sessionId: string,
-    result: JobTerminalInput,
-    phase: JobPhase,
-    options: TerminalWriteOptions & { permit: LaunchPermit },
-  ): ReturnType<RecoveryService['completeRecoveredJob']> {
-    return this.recoveryService.completeRecoveredJob(jobId, sessionId, result, phase, options);
-  }
-
   async finalizeInterruptedDurableJob(
     authority: ProviderRecoveryAuthority,
     runtimeRecord: DurableCliRuntimeRecord,
@@ -325,6 +323,23 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
 
   async awaitLaunch(jobId: string, timeoutMs: number): Promise<LaunchReadiness> {
     return this.waitService.awaitLaunch(jobId, timeoutMs);
+  }
+
+  visitProgress: ProgressVisit = (epoch, read) => this.waitService.visitProgress(epoch, read);
+
+  readWaitAdmissions(jobIds: readonly string[], epochKey: string, session?: object) {
+    return this.waitService.readWaitAdmissions?.(jobIds, epochKey, session) ?? [];
+  }
+
+  observeWaitCarriers(jobIds: readonly string[], signal: AbortSignal) {
+    return (
+      this.waitService.observeWaitCarriers?.(jobIds, signal) ??
+      Promise.resolve({ unknownJobIds: [...jobIds], interrupted: [], frontier: 0 })
+    );
+  }
+
+  readWaitAdmission(jobId: string, epochKey: string, session?: object) {
+    return this.waitService.readWaitAdmission(jobId, epochKey, session);
   }
 
   async *waitStream(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent> {

@@ -4,7 +4,7 @@
 import type { AbortResult } from '../jobs/contracts/abort-registry.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { LaunchReadiness } from '../jobs/records.js';
-import type { WaitCursor, WaitStreamEvent, WaitStreamRequest } from '../jobs/wait.js';
+import type { WaitCursor, WaitStreamEvent, WaitStreamRequest } from '../jobs/wait/contract.js';
 import type { CauseRef } from '../causality/cause-ref.js';
 import type { TerminalOutcome } from '../jobs/outcome.js';
 import type { ExecutionOwner } from '../runtime/execution-owner.js';
@@ -105,7 +105,7 @@ export type WaitFailure = {
 export type WaitInternalState = {
   atoms: LaunchedAtom[];
   completedOutputs: Map<string, string>;
-  cursor: WaitCursor;
+  cursor: WaitCursor | undefined;
   lastActivityAt: Map<string, number>;
   staleRetries: Map<string, number>;
   expectedStaleAborts: Set<string>;

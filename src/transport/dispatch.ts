@@ -1,9 +1,12 @@
+import type { WaitCursor, WaitSnapshotRequest, CanonicalWaitStreamRequest } from '../jobs/wait/contract.js';
 import { raceWithSignal } from '../infra/promise-signal.js';
 import { randomUUID } from 'node:crypto';
 import type { DiscussSessionsListResponse } from '../discuss/read-contract.js';
 import type { JobLaunchRequest } from '../jobs/launch.js';
 import type { JobsListResponse } from '../jobs/records.js';
-import type { WaitCursor, WaitHandoverNotice, WaitStreamEvent, WaitStreamRequest } from '../jobs/wait.js';
+import type { WaitHandoverNotice, WaitStreamEvent } from '../jobs/wait/contract.js';
+import { decodeWaitCursor, type WaitCursorRejection } from '../jobs/wait/cursor.js';
+import { WAIT_BUILD_MISMATCH, waitRequestFromAnotherBuild } from './rpc/jobs.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import {
   canonicalizeWorkDir,
@@ -82,7 +85,7 @@ function jobScopeMismatchResult(jobs: readonly string[]): ToolDomainResult {
     code: 'scope_mismatch',
     message: "Jobs are outside the caller's work directory scope",
     remediation:
-      "Rerun from the job's work directory, or from a directory that contains it — `coral-cli jobs` groups every job under the work directory it ran in.",
+      "Change cwd to the job's work directory, or a directory that contains it, then rerun. Use `coral-cli jobs --all` to find its work directory, including terminal jobs.",
     detail: { jobs: [...jobs] },
   };
 }
@@ -269,24 +272,6 @@ function withAbortSignal<T extends object>(request: T, abortSignal?: AbortSignal
     configurable: true,
   });
   return request;
-}
-
-/**
- * `interrupted` is withheld here rather than left to the wire consumer, because HTTP and IPC are two
- * separate emitters and a per-transport check would have to be kept in sync twice. An already-installed
- * CLI that never declared `supportsInterrupted` gets the pre-`interrupted` stream verbatim — indistinguishable
- * from talking to a coordinator that predates the event — instead of a type its renderer has no case for.
- */
-async function* withInterruptedGate(
-  events: AsyncIterable<WaitStreamEvent>,
-  supportsInterrupted: boolean,
-): AsyncGenerator<WaitStreamEvent> {
-  for await (const event of events) {
-    if (event.type === 'interrupted' && !supportsInterrupted) {
-      continue;
-    }
-    yield event;
-  }
 }
 
 /**
@@ -1016,7 +1001,32 @@ async function executeExpansionCatalogRequest({
   }
 }
 
-function unknownJobsAnswer(rpcPorts: HttpHandlerPorts, jobIds: readonly string[]): CatalogRequestExecution {
+function unknownJobsAnswer(
+  rpcPorts: HttpHandlerPorts,
+  jobIds: readonly string[],
+  continuation?: string,
+): CatalogRequestExecution {
+  const caveat = rpcPorts.jobs.unknownJobCaveat?.() ?? '';
+  if (rpcPorts.jobs.unknownJobDisposition() === 'discovery-unknown') {
+    return unary(
+      {
+        code: 'transient',
+        message: `Job discovery is unknown while location recovery has a scheduled retry. ${caveat}`,
+        detail: { jobs: [...jobIds], disposition: 'discovery-unknown' },
+        ...(continuation === undefined ? {} : { remediation: continuation }),
+      },
+      503,
+    );
+  }
+  if (rpcPorts.jobs.unknownJobDisposition() === 'discovery-unreadable')
+    return unary(
+      {
+        code: 'job_outcome_unreadable',
+        message: `Job discovery is unreadable: ${caveat}`,
+        detail: { jobs: [...jobIds], disposition: 'discovery-unreadable' },
+      },
+      409,
+    );
   if (rpcPorts.jobs.unknownJobDisposition() === 'pre-epoch-history') {
     return unary(
       {
@@ -1030,7 +1040,7 @@ function unknownJobsAnswer(rpcPorts: HttpHandlerPorts, jobIds: readonly string[]
   return unary(
     {
       code: 'jobs_not_found',
-      message: 'Requested jobs were not found',
+      message: `Requested jobs were not found${caveat ? `. ${caveat}` : ''}`,
       detail: { jobs: [...jobIds] },
     },
     404,
@@ -1096,11 +1106,26 @@ async function executeJobsDetailCatalogRequest({
 
   const detail = rpcPorts.jobs.detail(parsed.jobId);
   if (!detail) {
-    return unary({ code: 'job_not_found', message: `Job not found: ${parsed.jobId}` }, 404);
+    if (['discovery-unknown', 'discovery-unreadable'].includes(rpcPorts.jobs.unknownJobDisposition()))
+      return unknownJobsAnswer(rpcPorts, [parsed.jobId]);
+    const caveat = rpcPorts.jobs.unknownJobCaveat?.();
+    return unary(
+      { code: 'job_not_found', message: `Job not found: ${parsed.jobId}${caveat ? `. ${caveat}` : ''}` },
+      404,
+    );
   }
   if ('kind' in detail && detail.kind === 'pre-epoch-history') {
     return unknownJobsAnswer(rpcPorts, [parsed.jobId]);
   }
+  if ('kind' in detail && detail.kind === 'outcome-unreadable')
+    return unary(
+      {
+        code: 'job_outcome_unreadable',
+        message: `Job ${parsed.jobId}: outcome-unreadable. ${detail.message ?? 'The source cannot be read; this coordinator will not re-read it before its next start.'}`,
+        detail: { epochKey: detail.epochKey },
+      },
+      409,
+    );
   if ('kind' in detail && detail.kind === 'outcome-unrecoverable') {
     return unary(
       {
@@ -1115,8 +1140,7 @@ async function executeJobsDetailCatalogRequest({
     return unary(
       {
         code: 'job_unresolved',
-        message: `Job ${parsed.jobId} remains addressable while its retained epoch is recovered.`,
-        remediation: 'Retry shortly; recovery is automatic.',
+        message: `Job ${parsed.jobId} remains unresolved; a scheduled maintenance retry or the next coordinator start will re-read its epoch.`,
         detail: { epochKey: detail.epochKey },
       },
       409,
@@ -1141,53 +1165,40 @@ async function executeJobsWaitCatalogRequest({
   rpcPorts,
   abortSignal,
 }: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
-  const parsed = request as {
+  const parsed = request as Record<string, unknown> & {
     jobIds: string[];
     projectRoot: string;
     timeoutSeconds?: number;
-    cursor?: WaitCursor;
-    supportsInterrupted?: boolean;
-    supportsWaitV2?: boolean;
-    supportsHandover?: boolean;
+    drainProgress?: boolean;
+  };
+  if (waitRequestFromAnotherBuild(parsed)) return unary(WAIT_BUILD_MISMATCH, 409);
+  const decoded = parsed.cursor === null ? undefined : decodeWaitCursor(parsed.cursor);
+  if (decoded?.kind === 'rejected') return unary(decoded.error, 400);
+  const waitRequest: CanonicalWaitStreamRequest = {
+    jobIds: parsed.jobIds,
+    projectRoot: parsed.projectRoot,
+    ...(parsed.timeoutSeconds === undefined ? {} : { timeoutSeconds: parsed.timeoutSeconds }),
+    ...(decoded === undefined ? {} : { cursor: parsed.cursor as WaitCursor }),
+    drainProgress: parsed.drainProgress === true,
   };
   const callerRoot = canonicalRequest.projectRoot;
   if (callerRoot === undefined) return unaryHttp(domainResultToHttp(invalidRequestResult()));
-  const scopeCheck = rpcPorts.jobs.scopeCheck(parsed.jobIds, callerRoot, 'contains');
-  if (scopeCheck.mismatch.length > 0) {
-    return unaryHttp(domainResultToHttp(jobScopeMismatchResult(scopeCheck.mismatch)));
-  }
-  if (scopeCheck.missing.length === parsed.jobIds.length) {
-    return unknownJobsAnswer(rpcPorts, scopeCheck.missing);
-  }
-  if (scopeCheck.missing.length > 0 && rpcPorts.jobs.unknownJobDisposition() === 'pre-epoch-history') {
-    return unknownJobsAnswer(rpcPorts, scopeCheck.missing);
-  }
-  const unrecoverable = rpcPorts.jobs.outcomeUnrecoverable(parsed.jobIds);
-  if (unrecoverable.length > 0) {
-    return unary(
-      {
-        code: 'job_outcome_unrecoverable',
-        message: `${unrecoverable.join(', ')} never reached a recorded outcome in a superseded store epoch that nothing will write again, so no outcome will ever be recorded. Waiting cannot end; wait only on the other jobs.`,
-        detail: { jobs: unrecoverable },
-      },
-      409,
-    );
-  }
-
-  const { supportsInterrupted, supportsHandover, ...waitFields } = parsed;
-  const waitRequest: WaitStreamRequest = waitFields;
-  const cursorError = rpcPorts.jobs.validateWait(waitRequest);
-  if (cursorError) return unary(cursorError, 400);
+  const admissions = rpcPorts.jobs.admitWait(waitRequest);
+  const admittedRequest: CanonicalWaitStreamRequest = Object.assign(waitRequest, { admissions });
   return {
     kind: 'subscription',
     notifications: withSuccessionHandover(
-      withInterruptedGate(
-        rpcPorts.jobs.waitStream(withAbortSignal(waitRequest, abortSignal)) as AsyncIterable<WaitStreamEvent>,
-        supportsInterrupted === true,
-      ),
-      supportsHandover === true ? rpcPorts.jobs.waitHandoverSignal() : undefined,
+      rpcPorts.jobs.waitStream(withAbortSignal(admittedRequest, abortSignal)),
+      rpcPorts.jobs.waitHandoverSignal(),
     ),
   };
+}
+
+function snapshotRequest(request: unknown): WaitSnapshotRequest | WaitCursorRejection {
+  const parsed = request as WaitSnapshotRequest & { cursor?: unknown };
+  if (parsed.cursor === undefined) return parsed;
+  const decoded = decodeWaitCursor(parsed.cursor);
+  return decoded.kind === 'rejected' ? decoded.error : parsed;
 }
 
 function executeJobsCatalogRequest(context: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
@@ -1198,6 +1209,11 @@ function executeJobsCatalogRequest(context: AuthorizedCatalogRequest): Promise<C
       return executeJobsListCatalogRequest(context);
     case 'jobs.detail':
       return executeJobsDetailCatalogRequest(context);
+    case 'jobs.wait.snapshot': {
+      const snapshot = snapshotRequest(context.request);
+      if ('code' in snapshot) return Promise.resolve(unary(snapshot, 400));
+      return Promise.resolve(unary(context.rpcPorts.jobs.snapshot(withAbortSignal(snapshot, context.abortSignal))));
+    }
     case 'jobs.wait':
       return executeJobsWaitCatalogRequest(context);
     default:

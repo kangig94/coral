@@ -49,6 +49,7 @@ import {
 import { DEFAULT_STALE_ABORT_TIMEOUT_MS, recoverStaleAtom, STALE_RESUME_PROMPT } from './stale-recovery.js';
 
 import { waitForAtoms } from './wait.js';
+import { encodeWaitCursor } from '../jobs/wait/cursor.js';
 import type { WorkflowFinalizationIntent } from './finalization.js';
 import {
   providerSessionProvider,
@@ -133,13 +134,12 @@ type ResumeWorkflowContext = {
   workflowId: string;
   plan: WorkflowPlan;
   childRows: readonly ProjectionJobStoredRow[];
-  jobEpochKey?: (jobId: string) => string | null;
   slotDetailsByJob: Map<string, JobProjectionDetail>;
   providerSessionsById: ReadonlyMap<string, ProviderSession>;
   eventsBySeq: ReadonlyMap<number, EventsRow>;
   completion: ReturnType<typeof workflowCompletedBodySchema.parse> | null;
   drain: ReturnType<typeof workflowDrainEnteredBodySchema.parse> | null;
-  time: Pick<TimePort, 'now' | 'monotonicNow'>;
+  time: Pick<TimePort, 'now' | 'monotonicNow' | 'sleep'>;
   onProgress: (workflowId: string, message: string) => void;
   /**
    * A mandatory checkpoint, not a notification: recovery may not proceed past a committed replacement
@@ -894,9 +894,7 @@ async function assembleRelaunch(
 
 function buildWaitRecoveryPlan(deps: ResumeWorkflowDeps, snapshot: RecoverySnapshot): WaitRecoveryPlan {
   const completedOutputs = new Map<string, string>();
-  let pendingCursorSeq: number | null = null;
-  const locations: Record<string, string> = {};
-  const positions: Record<string, number> = {};
+  let watermark = Infinity;
   const drain = deps.drain;
   const projectionsByJob = new Map(deps.childRows.map((row) => [row.job_id, row]));
 
@@ -907,25 +905,14 @@ function buildWaitRecoveryPlan(deps: ResumeWorkflowDeps, snapshot: RecoverySnaps
       continue;
     }
 
-    const projection = projectionsByJob.get(slot.jobId);
-    if (deps.jobEpochKey !== undefined) {
-      const epochKey = deps.jobEpochKey(slot.jobId);
-      if (epochKey === null) throw new Error(`Workflow recovery has no epoch location for ${slot.jobId}`);
-      locations[slot.jobId] = epochKey;
-      positions[epochKey] = Math.min(positions[epochKey] ?? projection?.last_seq ?? 0, projection?.last_seq ?? 0);
-    } else if (projection) {
-      pendingCursorSeq =
-        pendingCursorSeq === null ? projection.last_seq : Math.min(pendingCursorSeq, projection.last_seq);
-    }
+    watermark = Math.min(watermark, projectionsByJob.get(slot.jobId)?.last_seq ?? 0);
   }
 
   const failure = firstTerminalFailure(snapshot.compiledSlots, drain, snapshot.slotDetailsByJob);
   const initialState: Partial<WaitInternalState> = {
     completedOutputs,
-    cursor:
-      deps.jobEpochKey === undefined
-        ? { afterSeq: pendingCursorSeq ?? 0 }
-        : { version: 'jobs.wait.v2', positions, locations },
+    // A child terminal at the watermark is still delivered: an internal read prints every requested terminal.
+    cursor: Number.isFinite(watermark) ? encodeWaitCursor(watermark) : undefined,
     lastActivityAt: new Map<string, number>(),
     staleRetries: new Map<string, number>(),
     expectedStaleAborts: new Set<string>(),
@@ -1400,7 +1387,6 @@ function atomicReleaser(
 type ResumeAllOptions = {
   db: Database;
   progressStore: StoreReadContext;
-  jobEpochKey?: (jobId: string) => string | null;
   loadJobDetails: unknown;
   getExecutionService: (ctx: InvocationContext) => WorkflowExecutionPort;
   createInvocationContext: (projectRoot: CanonicalWorkDir) => InvocationContext;
@@ -1414,7 +1400,7 @@ type ResumeAllOptions = {
   staleAbortTimeoutMs?: number;
   drainDeadlineMs?: number;
   ids: Pick<IdPort, 'uuid'>;
-  time: Pick<TimePort, 'now' | 'monotonicNow'>;
+  time: Pick<TimePort, 'now' | 'monotonicNow' | 'sleep'>;
 };
 
 const workflowRetryOptions = new WeakMap<Database, ResumeAllOptions>();
@@ -1535,7 +1521,6 @@ async function settleWorkflowRecovery(
         workflowId: status.jobId,
         plan: projection.plan,
         childRows: item.childRows,
-        jobEpochKey: options.jobEpochKey,
         slotDetailsByJob: item.slotDetailsByJob,
         providerSessionsById: item.providerSessionsById,
         eventsBySeq: item.eventsBySeq,

@@ -218,6 +218,7 @@ export class InMemoryStorage implements StoragePort {
   private readonly childIndex = new Map<string, Set<string>>();
   private readonly openFiles = new Map<number, OpenFile>();
   private readonly sqliteDatabases = new Map<string, SerializableDatabaseSync>();
+  private durableStageCounter = 0;
   private nextFd = 100;
   private nextIno = 1;
   private lastStamp: number;
@@ -1003,32 +1004,35 @@ export class InMemoryStorage implements StoragePort {
   writeAtomicDurableSync(
     path: string,
     data: StorageData,
-    options?: { encoding?: BufferEncoding; mode?: number },
+    options?: { encoding?: BufferEncoding; mode?: number; beforeRename?: () => boolean; stagePath?: string },
   ): boolean {
     const normalized = normalizePathForStorage(path);
     const parent = parentPath(normalized);
     this.mkdirSync(parent, { recursive: true });
 
-    const tempPath = `${normalized}.tmp`;
-    if (this.directories.has(tempPath)) {
-      throw createErrnoError('EISDIR', tempPath);
+    const tempPath =
+      options?.stagePath ?? `${normalized}.stage-${process.pid}-${++this.durableStageCounter}-${this.nextIno}`;
+    let fd: number | null = null;
+    let ownsStage = false;
+    try {
+      fd = this.openSync(tempPath, 'wx', options?.mode);
+      ownsStage = true;
+      if (options?.mode !== undefined) this.chmodSync(tempPath, durableAtomicMode(options.mode));
+      const content = bufferFromStorageData(data, options?.encoding);
+      this.writeSync(fd, content, 0, content.length, null);
+      this.fdatasyncSync(fd);
+      this.closeSync(fd);
+      fd = null;
+      if (options?.beforeRename?.() === false) return false;
+      this.renameSync(tempPath, normalized);
+      return this.syncDirectoryDurableSync(parent);
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+      throw error;
+    } finally {
+      if (fd !== null) this.closeSync(fd);
+      if (ownsStage && this.existsSync(tempPath)) this.unlinkSync(tempPath);
     }
-    const current = this.fileNode(tempPath);
-    const content = bufferFromStorageData(data, options?.encoding);
-    if (current !== undefined) {
-      this.removeSqliteDatabase(fileIdentityOf(current));
-      current.content = content;
-      current.mode = options?.mode === undefined ? current.mode : durableAtomicMode(options.mode);
-      const stamps = this.nextStamps();
-      current.mtimeMs = stamps.mtimeMs;
-      current.mtimeNs = stamps.mtimeNs;
-    } else {
-      this.createFile(tempPath, content, durableAtomicMode(options?.mode));
-    }
-    this.registerChild(tempPath);
-    this.touchAncestors(parent);
-    this.renameSync(tempPath, normalized);
-    return this.syncDirectoryDurableSync(parent);
   }
 
   syncDirectoryDurableSync(path: string): boolean {

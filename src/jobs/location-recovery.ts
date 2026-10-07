@@ -36,6 +36,8 @@ function retireUncommittedLaunches(index: JobLocationIndex, epochKey: string, db
 export function recoverJobLocations(index: JobLocationIndex, epochKey: string, store: JobProgressStore): void {
   try {
     const db = store.getDb();
+    if ('configureResultExports' in store && typeof store.configureResultExports === 'function')
+      store.configureResultExports(index);
     retireUncommittedLaunches(index, epochKey, db);
     const launches = db
       .prepare<[], LaunchIdentityRow>(
@@ -48,53 +50,69 @@ export function recoverJobLocations(index: JobLocationIndex, epochKey: string, s
     const highWaterSeq =
       db.prepare<[], { seq: number }>("SELECT COALESCE(MAX(seq), 0) AS seq FROM events WHERE stream_kind = 'job'").get()
         ?.seq ?? 0;
+    let recoveryError: Error | undefined;
     for (const row of launches) {
-      const launch = jobLaunchRequestBodySchema.parse(JSON.parse(Buffer.from(row.body).toString('utf8')) as unknown);
-      index.register(row.stream_id, epochKey, {
-        projectRoot: launch.projectRoot,
-        workDir: launch.jobKind === 'kb' ? null : launch.request.cwd,
-        jobKind: launch.jobKind,
-      });
-
-      const detail = store.loadJobProjectionDetail(row.stream_id);
-      const status = detail.status;
-      if (status === null) {
-        index.markUnresolved(row.stream_id);
-        continue;
-      }
-      if (!isTerminalPhase(status.phase)) {
-        index.recordObserved(row.stream_id, {
-          status,
-          events: store.readJobEvents(row.stream_id),
-          readiness: deriveLaunchReadiness(detail),
-          exit: detail.exit,
+      try {
+        const launch = jobLaunchRequestBodySchema.parse(JSON.parse(Buffer.from(row.body).toString('utf8')) as unknown);
+        index.register(row.stream_id, epochKey, {
+          projectRoot: launch.projectRoot,
+          workDir: launch.jobKind === 'kb' ? null : launch.request.cwd,
+          jobKind: launch.jobKind,
         });
-        index.markUnresolved(row.stream_id);
-        continue;
+
+        const detail = store.loadJobProjectionDetail(row.stream_id);
+        const status = detail.status;
+        if (status === null) {
+          index.markUnresolved(row.stream_id);
+          continue;
+        }
+        if (!isTerminalPhase(status.phase)) {
+          index.recordObserved(row.stream_id, {
+            status,
+            events: store.readJobEvents(row.stream_id),
+            readiness: deriveLaunchReadiness(detail),
+            exit: detail.exit,
+          });
+          index.markUnresolved(row.stream_id);
+          continue;
+        }
+        const events = store.readJobEvents(row.stream_id, true);
+        const terminal = [...events].reverse().find((event) => event.type === 'terminal');
+        if (terminal === undefined || detail.exit === null) {
+          index.markUnresolved(row.stream_id);
+          continue;
+        }
+        const resultPath = index.resultPathFor(row.stream_id);
+        index.recordTerminal(
+          row.stream_id,
+          {
+            status,
+            events,
+            readiness: deriveLaunchReadiness(detail),
+            exit: detail.exit,
+          },
+          resultPath,
+          terminal.seq,
+        );
+        try {
+          store.ensureResultArtifact(row.stream_id);
+        } catch {
+          /* Terminal recording is independent of export success. */
+        }
+      } catch (error) {
+        recoveryError ??= error instanceof Error ? error : new Error(String(error));
+        try {
+          index.markUnresolved(row.stream_id);
+        } catch {
+          // A row whose own location cannot be marked is covered by the epoch hold; it must not stop later rows.
+        }
       }
-      const events = store.readJobEvents(row.stream_id, true);
-      const terminal = [...events].reverse().find((event) => event.type === 'terminal');
-      if (terminal === undefined || detail.exit === null) {
-        index.markUnresolved(row.stream_id);
-        continue;
-      }
-      const resultPath = store.ensureResultArtifact(row.stream_id);
-      index.recordTerminal(
-        row.stream_id,
-        {
-          status,
-          events,
-          readiness: deriveLaunchReadiness(detail),
-          exit: detail.exit,
-        },
-        resultPath,
-        terminal.seq,
-      );
     }
+    if (recoveryError !== undefined) throw recoveryError;
     index.clearUnknownLocations(epochKey);
     void index.certify(epochKey, highWaterSeq);
   } catch (error: unknown) {
-    index.holdUnknownLocations(epochKey, error instanceof Error ? error.message : String(error));
+    index.holdUnknownLocations(epochKey, error instanceof Error ? error.message : String(error), true);
     for (const location of index.locationsFor(epochKey)) index.markUnresolved(location.jobId);
     throw error;
   }
@@ -116,7 +134,14 @@ export function createJobLocationRecoveryRetryPlan(
         recoverJobLocations(index, epochKey, store);
         return { kind: 'advanced', outcome: 'settled', facts: [], detail: 'Job location inventory recovered.' };
       },
-      onFault: (fault) => ({ kind: 'quarantine', detail: String(fault.error) }),
+      onFault: (fault) => {
+        index.holdUnknownLocations(
+          epochKey,
+          `${String(fault.error)}; recovery will re-run at the next coordinator start`,
+          false,
+        );
+        return { kind: 'quarantine', detail: String(fault.error) };
+      },
     },
   };
 }

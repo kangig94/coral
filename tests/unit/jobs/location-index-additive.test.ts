@@ -1,3 +1,4 @@
+import { loadReleasedBuild } from '#tests/helpers/released-build.js';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -120,7 +121,7 @@ describe('job location additive records', () => {
       })}\n`,
     );
 
-    index.recordObserved(jobId, detail);
+    index.recordTerminal(jobId, detail, join(root, 'result.md'), 2);
 
     expect(JSON.parse(readFileSync(path, 'utf-8')).detail).toMatchObject({
       futureRoot: 'keep',
@@ -201,7 +202,7 @@ describe('job location additive records', () => {
     expect(index.resultsReleased(epochKey)).toBe(false);
 
     writeFileSync(path, `${JSON.stringify({ ...record, detail: { ...terminalDetail(jobId), exit: null } })}\n`);
-    expect(index.read(jobId)?.detail.kind).toBe('recorded');
+    expect(index.read(jobId)?.detail.kind).toBe('unreadable');
     expect(index.certify(epochKey, 2)).toBeNull();
     expect(index.resultsReleased(epochKey)).toBe(false);
   });
@@ -331,7 +332,20 @@ it('durably refuses a damaged identity, advances past it, and retries it after r
     index.recordTerminal(jobId, terminalDetail(jobId), join(root, jobId), 2);
     const path = join(root, 'job-locations.v1', 'jobs', `${Buffer.from(jobId).toString('base64url')}.json`);
     const record = JSON.parse(readFileSync(path, 'utf8'));
-    record.detail.events.unshift({ ...record.detail.events[0], seq: 1 });
+    record.detail.events.unshift({
+      type: 'progress',
+      jobId,
+      sessionId: 'session-1',
+      seq: 1,
+      ts: '2026-09-25T00:00:00.000Z',
+      message: 'earlier',
+      timing: {
+        elapsedMs: 0,
+        origin: 'launch',
+        originAt: '2026-09-25T00:00:00.000Z',
+        emittedAt: '2026-09-25T00:00:00.000Z',
+      },
+    });
     writeFileSync(path, JSON.stringify(record));
     paths.push(path);
   }
@@ -355,4 +369,135 @@ it('durably refuses a damaged identity, advances past it, and retries it after r
   await index.compactTerminalRecords('', budget, (operation) => operation());
   expect(JSON.parse(readFileSync(paths[1], 'utf8')).detail.events).toHaveLength(1);
   expect(runtime.storage.existsSync(refusal)).toBe(false);
+});
+
+it('isolates an unknown-location hold a newer build wrote', () => {
+  const { root, index } = fixture();
+  index.holdUnknownLocations('epoch', 'known hold', true);
+  writeFileSync(
+    join(root, 'job-locations.v1', 'epochs', runtime.ids.sha256('epoch'), 'unknown-locations.v1.json'),
+    '{"version":"v99","reason":"future"}',
+  );
+  expect(index.unknownLocationHolds()).toEqual([
+    expect.objectContaining({ retryScheduled: false, reason: expect.stringContaining('cannot be decoded') }),
+  ]);
+  expect(index.unknownLocationHold('epoch')).toContain('cannot be decoded');
+});
+
+it('observes another index writer even when the jobs directory mtime is restored', () => {
+  const { root, index } = fixture();
+  index.register('a', 'epoch', { projectRoot: '/workspace', workDir: '/workspace', jobKind: 'provider' });
+  expect(index.locationsFor('epoch').map((item) => item.jobId)).toEqual(['a']);
+  const directory = join(root, 'job-locations.v1', 'jobs');
+  const lstat = runtime.storage.lstatSync.bind(runtime.storage);
+  const mtimeNs = lstat(directory, { bigint: true }).mtimeNs;
+  vi.spyOn(runtime.storage, 'lstatSync').mockImplementation((path, options) => {
+    const stat = lstat(path, options);
+    return path === directory
+      ? { ...stat, mtimeNs, isDirectory: () => stat.isDirectory(), isFile: () => stat.isFile() }
+      : stat;
+  });
+  const writer = new JobLocationIndex(runtime, root);
+  writer.register('b', 'epoch', { projectRoot: '/workspace', workDir: '/workspace', jobKind: 'kb' });
+  expect(
+    index
+      .locationsFor('epoch')
+      .map((item) => item.jobId)
+      .sort(),
+  ).toEqual(['a', 'b']);
+});
+
+it('invalidates a decided certificate on another owner revision', () => {
+  const { root, index } = fixture();
+  index.register('a', 'epoch', { projectRoot: '/workspace', workDir: null, jobKind: 'provider' });
+  index.recordTerminal('a', terminalDetail('a'), join(root, 'a'), 2);
+  expect(index.certify('epoch', 2)?.jobIds).toEqual(['a']);
+  expect(index.certificate('epoch')?.jobIds).toEqual(['a']);
+  const writer = new JobLocationIndex(runtime, root);
+  writer.register('b', 'epoch', { projectRoot: '/workspace', workDir: null, jobKind: 'provider' });
+  expect(index.certificate('epoch')).toBeNull();
+  writer.recordTerminal('b', terminalDetail('b'), join(root, 'b'), 2);
+  writer.certify('epoch', 2);
+  expect(index.certificate('epoch')?.jobIds).toEqual(['a', 'b']);
+});
+
+it('retains incremental nonterminal progress for the real rolled-back v0.10.17 reader', async () => {
+  const { root, index } = fixture();
+  const released = await loadReleasedBuild('v0.10.17', directories);
+  index.register('live', 'epoch', {
+    projectRoot: '/workspace/project',
+    workDir: '/workspace/project',
+    jobKind: 'provider',
+  });
+  const value = terminalDetail('live');
+  value.exit = null;
+  value.status.phase = 'running';
+  delete value.status.result;
+  const timing = {
+    origin: 'runtime',
+    originAt: value.status.updatedAt,
+    emittedAt: value.status.updatedAt,
+    elapsedMs: 1,
+  } as const;
+  const progress = (seq: number, message: string) => ({
+    type: 'progress' as const,
+    jobId: 'live',
+    sessionId: 'session-1',
+    seq,
+    ts: value.status.updatedAt,
+    message,
+    timing,
+  });
+  index.recordObserved('live', { ...value, events: [progress(1, 'first')] });
+  index.recordObserved('live', { ...value, events: [progress(2, 'second')] });
+  const rolledBack = new released.JobLocationIndex!(runtime, root);
+  expect(rolledBack.read('live')?.detail).toMatchObject({
+    kind: 'recorded',
+    value: { events: [expect.objectContaining({ message: 'first' }), expect.objectContaining({ message: 'second' })] },
+  });
+});
+
+it('discharges a released directory-only hold after complete absent inventory', () => {
+  const { root, index } = fixture();
+  index.holdUnknownLocations('retired', 'legacy hold', true);
+  const path = join(root, 'job-locations.v1', 'epochs', runtime.ids.sha256('retired'), 'unknown-locations.v1.json');
+  writeFileSync(path, JSON.stringify({ version: 'v1', reason: 'legacy hold' }));
+  index.reconcileUnknownLocationHolds([]);
+  expect(index.unknownLocationHolds()).toEqual([]);
+});
+
+it('resolves the hold and revision through the identity shared by lineage encodings', () => {
+  const { root, index } = fixture();
+  const full = JSON.stringify({ storeRoot: '/real/store', epoch: '7', lineageKey: 'lineage:7' });
+  const alias = JSON.stringify({ storeRoot: '/alias/store', epoch: '7', lineageKey: 'lineage:7' });
+  index.holdUnknownLocations(full, 'owner settled', false);
+  index.register('job', full, { projectRoot: '/project', workDir: '/project', jobKind: 'provider' });
+  const restarted = new JobLocationIndex(runtime, root);
+  expect(restarted.unknownLocationHold(alias)).toBe('owner settled');
+  expect(restarted.revision(alias)).toBe(index.revision(full));
+  expect(restarted.locationsFor(alias).map((job) => job.jobId)).toEqual(['job']);
+  restarted.clearUnknownLocations(alias);
+  expect(index.unknownLocationHold(full)).toBeNull();
+});
+
+it('leaves release unproven when a certified job record cannot be read, and propagates a code defect', () => {
+  const { root, index } = fixture();
+  const epochKey = 'lineage-1:1';
+  const resultPath = join(root, 'result.md');
+  writeFileSync(resultPath, 'done\n');
+  index.register('job-1', epochKey, {
+    projectRoot: '/workspace/project',
+    workDir: '/workspace/project',
+    jobKind: 'provider',
+  });
+  index.recordTerminal('job-1', terminalDetail('job-1'), resultPath, 2);
+  expect(index.certify(epochKey, 2)).not.toBeNull();
+  const read = vi.spyOn(index, 'read').mockImplementation(() => {
+    throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+  });
+  expect(index.resultsReleased(epochKey)).toBe(false);
+  read.mockImplementation(() => {
+    throw new TypeError('defect');
+  });
+  expect(() => index.resultsReleased(epochKey)).toThrow(TypeError);
 });

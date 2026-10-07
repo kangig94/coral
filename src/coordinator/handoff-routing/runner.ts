@@ -1,7 +1,16 @@
+import {
+  WaitBuildMismatchError,
+  WaitInvocationReadinessError,
+  WAIT_INVOCATION_CONTEXT_ENV,
+  WAIT_INVOCATION_CONTRACT_ARGUMENT,
+  type WaitInvocationHandoff,
+} from './wait-invocation.js';
+import { isRecord } from '../../infra/json.js';
 import { raceObserved } from '../../infra/promise-signal.js';
+import { gracefulKill } from '../../infra/process-supervision.js';
 import { processIncarnationSchema } from '../../infra/node-process.js';
 import { CLI_BUNDLE_FILE } from '../../infra/bundle-manifest-address.js';
-import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
+import { execFile, spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { z } from 'zod';
 
@@ -24,7 +33,7 @@ import {
 } from '../../infra/handoff-target.js';
 import { handoffRoutingStatusPathForRunDir } from '../../infra/path/index.js';
 import { assertNever } from '../../infra/error-format.js';
-import type { TimePort } from '../../infra/port-types.js';
+import type { ChildProcessLike, TimePort } from '../../infra/port-types.js';
 import { pluginRootNamespace } from '../../infra/plugin-identity.js';
 import type { RecordedProcessIdentity } from '../../infra/process-containment.js';
 import type { Runtime } from '../../runtime/ports.js';
@@ -58,6 +67,7 @@ import type {
   PublicationOutcome,
   SelectedHandoffDisposition,
 } from './status.js';
+import { CLI_HANDOFF_GUARD_ENV } from './wait-invocation.js';
 
 // A CLI's pre-dispatch budget: how long it waits for an incumbent's health before dispatching without one. It
 // is not a wire timeout and must not be retuned to track one — and could not be shared with one in any case,
@@ -65,7 +75,6 @@ import type {
 const INCUMBENT_HEALTH_PROBE_TIMEOUT_MS = 3_000;
 const STDOUT_HANDOFF_DRAIN_TIMEOUT_MS = 3_000;
 const BACKEND_STARTUP_LIVENESS_CONFIRMATION_MS = 100;
-const CLI_HANDOFF_GUARD_ENV = 'CORAL_CLI_HANDOFF_DELEGATED';
 
 const handoffSuccessBrand: unique symbol = Symbol('HandoffSuccess');
 const cliHandoffGuardSchema = z.enum(['0', '1']).optional();
@@ -84,7 +93,7 @@ const handoffOperationSchema = z.discriminatedUnion('kind', [
       jobId: z.string().min(1),
       // Opaque here on purpose: the caller already holds the serialized cursor, and decoding it would make
       // this coordinator module depend on the jobs domain's wait vocabulary just to re-encode the same string.
-      serializedCursor: z.string().min(1),
+      serializedCursor: z.string().min(1).optional(),
     })
     .strict(),
   z.object({ kind: z.literal('backend-startup') }).strict(),
@@ -135,7 +144,7 @@ type LiveIncumbentReading =
 
 export type HandoffOperation =
   | Readonly<{ kind: 'cli-invocation'; argv: readonly string[] }>
-  | Readonly<{ kind: 'wait-jobs'; jobId: string; serializedCursor: string }>
+  | Readonly<{ kind: 'wait-jobs'; jobId: string; serializedCursor?: string }>
   | Readonly<{ kind: 'backend-startup' }>;
 
 export type HandoffSuccess = Readonly<{
@@ -325,8 +334,12 @@ export type RunHandoffOptions = Readonly<{
   pluginRoot?: string;
   time?: TimePort;
   signal?: AbortSignal;
+  waitInvocation?: WaitInvocationHandoff;
+  waitProbeRemainingMs?: () => number;
   activeSelectionTarget?: ValidatedHandoffTarget;
   onSelectionPublicationIncident?: (incident: HandoffPublicationIncident) => void;
+  /** Hands the caller a delegated CLI child it must interrupt itself, since its stdio is the caller's own. */
+  onDelegatedChild?: (child: ChildProcess) => void;
 }>;
 
 export type ChildEnding = Readonly<{
@@ -337,6 +350,7 @@ export type ChildEnding = Readonly<{
 type ObservedChild = Readonly<{
   spawned: Promise<void>;
   ending: Promise<ChildEnding>;
+  closed: Promise<ChildEnding>;
 }>;
 
 /**
@@ -597,7 +611,12 @@ function observeChild(child: ChildProcess): ObservedChild {
   });
   void endingPromise.catch(() => undefined);
 
-  return { spawned: spawnedPromise, ending: endingPromise };
+  const closed = new Promise<ChildEnding>((resolve, reject) => {
+    child.once('error', reject);
+    child.once('close', (code, signal) => resolve({ code, signal }));
+  });
+  void closed.catch(() => undefined);
+  return { spawned: spawnedPromise, ending: endingPromise, closed };
 }
 
 function handoffSuccess(version: string): HandoffSuccess {
@@ -828,7 +847,12 @@ function delegatedArguments(operation: HandoffOperation): readonly string[] {
     case 'cli-invocation':
       return operation.argv.slice(2);
     case 'wait-jobs':
-      return ['wait', 'jobs', operation.jobId, '--cursor', operation.serializedCursor];
+      return [
+        'wait',
+        'jobs',
+        operation.jobId,
+        ...(operation.serializedCursor === undefined ? [] : ['--cursor', operation.serializedCursor]),
+      ];
     case 'backend-startup':
       return [];
   }
@@ -1096,6 +1120,8 @@ function terminalRecordingFor(continuation: HandoffContinuationResult): Terminal
             },
           };
         case 'handoff-abandoned':
+          if (continuation.reason.reason !== 'stdout-drain-incomplete')
+            throw new Error('Contract rejection must be observed before routing-status recording.');
           return {
             kind: 'publish',
             disposition: { kind: 'continued-current', reason: { kind: 'handoff-abandoned-stdout' } },
@@ -1193,6 +1219,129 @@ async function recordTerminal(
   );
 }
 
+function supportsWaitInvocation(
+  target: string,
+  invocation: Pick<WaitInvocationHandoff, 'signal' | 'remainingMs' | 'cleanupRemainingMs'>,
+  runtime: Runtime,
+): Promise<boolean | null> {
+  try {
+    if (!runtime.storage.readFileSync(target, 'utf-8').includes(WAIT_INVOCATION_CONTRACT_ARGUMENT))
+      return Promise.resolve(false);
+  } catch {
+    return Promise.resolve(null);
+  }
+  return new Promise((resolveContract) => {
+    let cancelling = false;
+    const finish = (supported: boolean | null) => {
+      runtime.time.clearTimeout(timeout);
+      invocation.signal.removeEventListener('abort', cancel);
+      resolveContract(supported);
+    };
+    const child = execFile(
+      process.execPath,
+      [target, WAIT_INVOCATION_CONTRACT_ARGUMENT],
+      { maxBuffer: 64 * 1024, env: { ...runtime.env.fullSnapshot(), [CLI_HANDOFF_GUARD_ENV]: '1' } },
+      (error, stdout) => {
+        if (cancelling) return;
+        if (error) return finish(typeof error.code === 'number' ? false : null);
+        try {
+          const contract: unknown = JSON.parse(stdout);
+          finish(isRecord(contract) && contract.version === 1 && contract.monitorOnly === true);
+        } catch {
+          finish(false);
+        }
+      },
+    );
+    const cancel = () => {
+      if (cancelling) return;
+      cancelling = true;
+      runtime.time.clearTimeout(timeout);
+      const termination = gracefulKill(
+        child as ChildProcessLike,
+        {
+          time: {
+            clearTimeout: runtime.time.clearTimeout,
+            setTimeout: (callback, delay) =>
+              runtime.time.setTimeout(
+                callback,
+                Math.max(0, Math.min(delay, 750, invocation.cleanupRemainingMs() - 50)),
+              ),
+          },
+        },
+        runtime.process.observeLiveness,
+      );
+      if ('settlement' in termination) void termination.settlement.then(() => finish(null));
+      else finish(null);
+    };
+    const timeout = runtime.time.setTimeout(cancel, Math.max(1, Math.ceil(invocation.remainingMs())));
+    invocation.signal.addEventListener('abort', cancel, { once: true });
+    if (invocation.signal.aborted) cancel();
+  });
+}
+
+/** Only the delegated monitor belongs to this cancellation set; jobs and providers do not. */
+function bindMonitorChild(
+  child: ChildProcess,
+  observation: ObservedChild,
+  invocation: WaitInvocationHandoff,
+  runtime: Runtime,
+): void {
+  invocation.monitorEnding = observation.closed;
+  let terminate: NodeJS.Timeout | undefined;
+  const onMessage = (message: unknown) => {
+    if (
+      isRecord(message) &&
+      message.type === 'wait-delivery' &&
+      typeof message.continuation === 'string' &&
+      Buffer.byteLength(message.continuation) <= 1024 * 1024
+    )
+      invocation.saveContinuation(
+        message.continuation,
+        message.complete === true,
+        message.delivered === true,
+        typeof message.exitCode === 'number' &&
+          Number.isInteger(message.exitCode) &&
+          message.exitCode >= 0 &&
+          message.exitCode <= 255
+          ? message.exitCode
+          : undefined,
+      );
+  };
+  const cancel = () => {
+    if (child.connected) child.send({ type: 'wait-cancel' }, () => {});
+    const remaining = invocation.cleanupRemainingMs();
+    terminate = setTimeout(
+      () =>
+        gracefulKill(
+          child as ChildProcessLike,
+          {
+            time: {
+              clearTimeout: runtime.time.clearTimeout,
+              setTimeout: (callback, delay) =>
+                runtime.time.setTimeout(
+                  callback,
+                  Math.max(0, Math.min(delay, 750, invocation.cleanupRemainingMs() - 50)),
+                ),
+            },
+          },
+          runtime.process.observeLiveness,
+        ),
+      Math.min(250, remaining / 3),
+    );
+    terminate.unref();
+  };
+  child.on('message', onMessage);
+  invocation.signal.addEventListener('abort', cancel, { once: true });
+  if (invocation.signal.aborted) cancel();
+  void observation.closed
+    .finally(() => {
+      clearTimeout(terminate);
+      child.off('message', onMessage);
+      invocation.signal.removeEventListener('abort', cancel);
+    })
+    .catch(() => undefined);
+}
+
 async function executeResolvedHandoff(
   operation: HandoffOperation,
   routing: HandoffRoutingResult,
@@ -1200,6 +1349,8 @@ async function executeResolvedHandoff(
   time: TimePort,
   signal: AbortSignal | undefined,
   executionPhase: { current: ExecutionThrowPhase },
+  waitInvocation?: WaitInvocationHandoff,
+  onDelegatedChild?: (child: ChildProcess) => void,
 ): Promise<HandoffContinuationResult> {
   switch (routing.kind) {
     case 'continue-current':
@@ -1238,6 +1389,8 @@ async function executeResolvedHandoff(
           : undefined;
       const executable = operation.kind === 'backend-startup' ? 'coral-backend.cjs' : CLI_BUNDLE_FILE;
       const target = join(execution.bundleDir, executable);
+      execution.assertExecutable();
+      if (signal?.aborted) throw signal.reason;
       const sentinel = join(dirname(process.argv[1] ?? ''), 'coral-sentinel.cjs');
       if (operation.kind === 'backend-startup' && !runtime.storage.existsSync(sentinel))
         throw new Error('The current build has no coordinator supervisor executable.');
@@ -1250,10 +1403,19 @@ async function executeResolvedHandoff(
         env: {
           ...runtime.env.fullSnapshot(),
           [CLI_HANDOFF_GUARD_ENV]: '1',
+          ...(waitInvocation === undefined
+            ? {}
+            : {
+                [WAIT_INVOCATION_CONTEXT_ENV]: JSON.stringify({
+                  mode: waitInvocation.mode,
+                  remainingMs: waitInvocation.remainingMs(),
+                  cleanupMs: Math.max(0, waitInvocation.cleanupRemainingMs() - waitInvocation.remainingMs()),
+                }),
+              }),
           ...(startup === undefined ? {} : { CORAL_STARTUP_ATTEMPT_ID: startup.expectedAttemptId }),
           ...(startup === undefined ? {} : { CORAL_SENTINEL_RUN_DIR: runtime.paths.coral.coordinator.runDir }),
         },
-        stdio: 'inherit',
+        stdio: waitInvocation === undefined ? 'inherit' : ['inherit', 'inherit', 'inherit', 'ipc'],
         ...(operation.kind === 'backend-startup' ? { detached: true } : {}),
       };
 
@@ -1263,6 +1425,8 @@ async function executeResolvedHandoff(
       // Runtime ports do not expose the executable for the current Node process.
       const child = spawn(process.execPath, childArguments, spawnOptions);
       const childObservation = observeChild(child);
+      if (waitInvocation !== undefined) bindMonitorChild(child, childObservation, waitInvocation, runtime);
+      else if (startup === undefined) onDelegatedChild?.(child);
       await childObservation.spawned;
       executionPhase.current = 'child-outcome-wait';
       if (startup !== undefined) {
@@ -1283,7 +1447,10 @@ async function executeResolvedHandoff(
           ),
         };
       }
-      const outcome = handoffOutcome(execution.manifest.version, await childObservation.ending);
+      const outcome = handoffOutcome(
+        execution.manifest.version,
+        await (waitInvocation ? childObservation.closed : childObservation.ending),
+      );
       return { kind: 'delegated', version: execution.manifest.version, outcome };
     }
     default:
@@ -1323,6 +1490,27 @@ export async function runHandoff(
   }
 
   const { routing, runtime, time } = await resolveHandoffRoutingForOperation(operation, options);
+  if (
+    routing.kind === 'handoff' &&
+    (options.waitInvocation !== undefined || options.waitProbeRemainingMs !== undefined)
+  ) {
+    const execution = withValidatedHandoffTarget(routing.target);
+    execution.assertExecutable();
+    const target = join(execution.bundleDir, CLI_BUNDLE_FILE);
+    const probe = options.waitInvocation ?? {
+      signal: options.signal ?? new AbortController().signal,
+      remainingMs: options.waitProbeRemainingMs ?? (() => 0),
+      cleanupRemainingMs: () => 100,
+    };
+    const supported = await supportsWaitInvocation(target, probe, runtime);
+    if (supported === null)
+      throw new WaitInvocationReadinessError(
+        options.waitInvocation?.originalCommand ??
+          `coral-cli wait jobs ${operation.kind === 'wait-jobs' ? operation.jobId : ''}`,
+      );
+    // A wait never runs on a build other than the coordinator's, so a target without the contract is refused here.
+    if (!supported) throw new WaitBuildMismatchError();
+  }
   const recordingApplicable =
     operation.kind !== 'cli-invocation' ||
     classifyHandoffRoutingStatusOperatorInvocation(operation.argv).kind === 'not-routing-status';
@@ -1337,14 +1525,18 @@ export async function runHandoff(
         time,
         options.signal,
         executionPhase,
+        options.waitInvocation,
+        options.onDelegatedChild,
       ),
     };
   }
 
+  if (options.signal?.aborted) throw options.signal.reason;
   const invocationId = runtime.ids.uuid();
   const incidents: HandoffPublicationIncident[] = [];
   const selection = await recordSelection(runtime, time, routing, invocationId, options.signal);
   const selectionIncident = recordIncident(incidents, invocationId, { phase: 'selection', publication: selection });
+  if (options.signal?.aborted) throw options.signal.reason;
   if (selectionIncident?.phase === 'selection') {
     options.onSelectionPublicationIncident?.(selectionIncident);
   }
@@ -1357,6 +1549,8 @@ export async function runHandoff(
       time,
       options.signal,
       executionPhase,
+      options.waitInvocation,
+      options.onDelegatedChild,
     );
     const recording = terminalRecordingFor(continuation);
     if (recording.kind === 'withhold') {

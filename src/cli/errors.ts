@@ -1,3 +1,7 @@
+import {
+  WaitBuildMismatchError,
+  WaitInvocationReadinessError,
+} from '../coordinator/handoff-routing/wait-invocation.js';
 import { CommanderError } from 'commander';
 import { ZodError } from 'zod';
 
@@ -125,6 +129,31 @@ export class WaitResumeError extends Error {
   }
 }
 
+export class WaitOutputError extends Error {
+  readonly code = 'transient';
+  readonly exitCode = 75;
+  readonly remediation: string;
+
+  constructor(cause: unknown, originalCommand: string) {
+    super(`Wait output could not be delivered: ${cause instanceof Error ? cause.message : String(cause)}`, { cause });
+    this.remediation = `Run ${originalCommand}`;
+  }
+}
+
+export class WaitSnapshotResponseError extends Error {
+  readonly code = 'transient';
+  readonly exitCode = 75;
+  readonly remediation: string;
+
+  constructor(
+    originalCommand: string,
+    message = 'The coordinator returned an invalid snapshot. No collection cursor advanced.',
+  ) {
+    super(message);
+    this.remediation = `Run ${originalCommand}`;
+  }
+}
+
 export function normalizeUsageError(error: unknown): unknown {
   if (!(error instanceof ZodError)) {
     return error;
@@ -166,6 +195,7 @@ export function errorCodeToExit(code: string, httpStatus?: number): number {
   }
   if (
     code === 'transient' ||
+    code === 'wait_snapshot_too_large' ||
     code === 'backend_shutting_down' ||
     code === 'coordinator_drain_unanswered' ||
     code === 'provider_host_inventory_unavailable' ||
@@ -244,7 +274,11 @@ function directErrorEnvelope(error: unknown): CliErrorResult | null {
   if (
     error instanceof StoreResetCliError ||
     error instanceof ChildPrincipalBindingError ||
-    error instanceof WaitResumeError
+    error instanceof WaitResumeError ||
+    error instanceof WaitBuildMismatchError ||
+    error instanceof WaitOutputError ||
+    error instanceof WaitSnapshotResponseError ||
+    error instanceof WaitInvocationReadinessError
   ) {
     return remediatedError(error);
   }

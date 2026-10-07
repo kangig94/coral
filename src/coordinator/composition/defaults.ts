@@ -11,8 +11,8 @@ import {
   closeServer as defaultCloseServer,
   listen as defaultListen,
   markJobsAsError,
-  resolveJobRetentionMs,
 } from '../lifecycle.js';
+import { resolveJobRetentionMs } from '../../jobs/export-retention.js';
 import type { RetentionRunBudget } from '../../store/retention-outcome.js';
 import type { JobStore } from '../../jobs/store.js';
 import * as discussRecovery from '../../discuss/shell/recovery.js';

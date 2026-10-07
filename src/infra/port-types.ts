@@ -63,6 +63,8 @@ export type StorageBigIntStat = {
   readonly uid?: bigint;
   readonly size: bigint;
   readonly mtimeNs: bigint;
+  readonly ctimeNs?: bigint;
+  readonly birthtimeNs?: bigint;
   isDirectory(): boolean;
   isFile(): boolean;
 };
@@ -118,7 +120,7 @@ export interface StorageMutationPort {
   writeAtomicDurableSync(
     path: string,
     data: StorageData,
-    options?: { encoding?: BufferEncoding; mode?: number },
+    options?: { encoding?: BufferEncoding; mode?: number; beforeRename?: () => boolean; stagePath?: string },
   ): boolean;
   syncDirectoryDurableSync(path: string): boolean;
   chmodSync(path: string, mode: number): void;

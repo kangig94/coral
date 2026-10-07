@@ -16,6 +16,60 @@ import { decodeBody, type StoreReadContext } from '../store/body-codec.js';
 import type { EventsRow } from '../store/schema.js';
 import { jobTerminalRecordedBodySchema } from './terminal/result.js';
 import { readJobTerminalAge } from './terminal-age.js';
+import type { JobLocation } from './location-index.js';
+import { retainedTerminal } from './terminal/identity.js';
+import { readAcceptedTerminal } from './terminal/source.js';
+import { sourceReadFailureDisposition } from './source-read.js';
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+export function resolveJobRetentionMs(raw: string | undefined): number {
+  const days = raw === undefined ? NaN : Number(raw);
+  return (Number.isSafeInteger(days) && days > 0 ? days : 14) * DAY_MS;
+}
+
+export function jobRetentionCutoff(runtime: Pick<Runtime, 'time' | 'env'>): number {
+  return runtime.time.now() - resolveJobRetentionMs(runtime.env.get('CORAL_JOBS_RETENTION_DAYS'));
+}
+
+/**
+ * Only the job's own intact source can prove its terminal's age: a retained timestamp alone never authorizes expiry.
+ * `absent` is a source epoch that is gone; `unusable` is one that cannot be decoded or disagrees with the retained
+ * terminal.
+ */
+export type TerminalEligibility = Readonly<{
+  source: 'readable' | 'absent' | 'transient' | 'unusable';
+  age: 'expired' | 'inside' | 'unknown';
+}>;
+
+export function terminalEligibility(
+  runtime: Pick<Runtime, 'time' | 'env'>,
+  location: JobLocation | null,
+  withSource: <T>(read: (db: Database) => T) => T | null,
+  sourceTerminal?: EventsRow,
+): TerminalEligibility {
+  const terminal = location === null ? null : retainedTerminal(location);
+  if (location === null || terminal === null) return { source: 'unusable', age: 'unknown' };
+  let observed: ReturnType<typeof readJobTerminalAge> | 'disagrees' | null;
+  try {
+    observed = withSource((db) => {
+      const accepted = sourceTerminal ?? readAcceptedTerminal(db, location.jobId);
+      if (!accepted || accepted.seq !== terminal.seq || accepted.ts !== terminal.ts) return 'disagrees';
+      return readJobTerminalAge(db, accepted);
+    });
+  } catch (error) {
+    return {
+      source: sourceReadFailureDisposition(error) === 'transient-unknown' ? 'transient' : 'unusable',
+      age: 'unknown',
+    };
+  }
+  if (observed === null) return { source: 'absent', age: 'unknown' };
+  if (observed === 'disagrees') return { source: 'unusable', age: 'unknown' };
+  return {
+    source: 'readable',
+    age: typeof observed !== 'number' ? 'unknown' : observed < jobRetentionCutoff(runtime) ? 'expired' : 'inside',
+  };
+}
 
 export type ExportJobRetentionState =
   | Readonly<{ kind: 'terminal'; terminalAt: number }>

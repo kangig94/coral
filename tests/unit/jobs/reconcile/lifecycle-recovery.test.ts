@@ -106,9 +106,6 @@ function fixture(transport: 'app-server' | 'durable-cli' = 'app-server') {
     interruptAppServerJob: vi.fn(async () => {
       throw new Error('unexpected app-server interruption');
     }),
-    completeRecoveredJob: vi.fn(() => {
-      throw new Error('unexpected recovered completion');
-    }),
     captureProviderRecoveryAuthority: vi.fn<RecoveryCapableService['captureProviderRecoveryAuthority']>(async () => ({
       ok: true,
       authority: {

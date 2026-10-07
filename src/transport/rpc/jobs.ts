@@ -3,63 +3,87 @@ import { z } from 'zod';
 import { parseBooleanQuery } from '../../infra/json.js';
 import { providerIdentPattern } from '../../infra/identifiers.js';
 import { jobPhaseSchema } from '../../jobs/phase.js';
-import { isWaitCursor, isWaitCursorV2, type WaitCursor } from '../../jobs/wait.js';
-import { MAX_WAIT_JOB_IDS } from '../../jobs/wait-stream-event.js';
+import { type WaitCursor } from '../../jobs/wait/contract.js';
+import { MAX_WAIT_JOB_IDS } from '../../jobs/wait/stream-event.js';
 
 const projectRootSchema = z.string().min(1, 'Project root is required');
 const jobIdSchema = z.string().min(1, 'Job ID is required');
-const waitCursorSchema = z.custom<WaitCursor>(isWaitCursor, {
-  message: 'cursor must be a valid wait cursor',
-});
 const providerNameSchema = z
   .string()
   .regex(providerIdentPattern, 'Provider name must be lowercase letters, digits, or hyphens');
 
-export const jobWaitSchema = z
-  .object({
-    jobIds: z
-      .array(z.string().min(1))
-      .min(1, 'At least one job required')
-      .max(MAX_WAIT_JOB_IDS, `At most ${MAX_WAIT_JOB_IDS} jobs may be waited on at once`),
-    projectRoot: projectRootSchema,
-    timeoutSeconds: z.number().int().min(1).max(1200).optional(),
-    cursor: waitCursorSchema.optional(),
-    // Absent on any CLI built before the `interrupted` event existed — that build's renderer has no case
-    // for it and no `default`, so the coordinator must not emit one unless the subscriber names itself able
-    // to render it. Never inferred from version or bundle identity: a client that predates the field and one
-    // that sends `false` are indistinguishable to the coordinator, and both get the pre-`interrupted` stream.
-    supportsInterrupted: z.boolean().optional(),
-    supportsWaitV2: z.boolean().optional(),
-    // A subscriber that omits this reads a clean end as final, so it must never be sent a handover notice.
-    supportsHandover: z.boolean().optional(),
-  })
-  .strict();
+const jobWaitFieldsSchema = z.object({
+  jobIds: z
+    .array(z.string().min(1))
+    .min(1, 'At least one job required')
+    .max(MAX_WAIT_JOB_IDS, `At most ${MAX_WAIT_JOB_IDS} jobs may be waited on at once`),
+  projectRoot: projectRootSchema,
+  timeoutSeconds: z.number().int().min(1).max(1200).optional(),
+  // Decoded by the wait owner, so an undecodable cursor is a soft typed refusal rather than invalid params.
+  cursor: z.unknown(),
+  drainProgress: z.boolean().optional(),
+});
 
-export const JOBS_WAIT_EXTENSIONS = ['supportsInterrupted', 'supportsWaitV2', 'supportsHandover'] as const;
+const uniqueJobIds = (value: { jobIds: readonly string[] }, ctx: z.RefinementCtx): void => {
+  if (new Set(value.jobIds).size !== value.jobIds.length)
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['jobIds'],
+      message: 'Each job ID must appear only once; remove duplicate job IDs.',
+    });
+};
+
+/** Unknown fields pass validation so that a request from another build is answered with the restart refusal. */
+export const jobWaitSchema = jobWaitFieldsSchema.passthrough().superRefine(uniqueJobIds);
+
+export const jobWaitSnapshotSchema = jobWaitFieldsSchema
+  .omit({ timeoutSeconds: true, drainProgress: true })
+  .extend({ cursor: z.unknown().optional(), lines: z.number().int().min(1).max(500).optional() })
+  .strict()
+  .superRefine((value, ctx) => {
+    uniqueJobIds(value, ctx);
+    if (value.lines !== undefined && value.cursor !== undefined)
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: '--lines cannot be used with --cursor' });
+  });
+
+const WAIT_REQUEST_FIELDS = new Set(['jobIds', 'projectRoot', 'timeoutSeconds', 'cursor', 'drainProgress']);
+
+export const WAIT_BUILD_MISMATCH_REASON =
+  'This Coral CLI and the running coordinator are different builds, and wait does not bridge builds.';
+export const WAIT_BUILD_MISMATCH_REMEDY =
+  'Restart the session so the current Coral plugin loads; the coordinator follows the installed build.';
+export const WAIT_BUILD_MISMATCH = {
+  code: 'wait_build_mismatch',
+  message: `${WAIT_BUILD_MISMATCH_REASON} ${WAIT_BUILD_MISMATCH_REMEDY}`,
+} as const;
+
+/**
+ * A current CLI always states its frontier, as a cursor string or null for a fresh collection, and sends no other
+ * field. A request without a frontier, with a frontier of another type, or with a field this build does not define
+ * was formed by another build.
+ */
+export function waitRequestFromAnotherBuild(request: Readonly<Record<string, unknown>>): boolean {
+  return (
+    Object.keys(request).some((key) => !WAIT_REQUEST_FIELDS.has(key)) ||
+    (request.cursor !== null && typeof request.cursor !== 'string')
+  );
+}
 
 export type JobsWaitFields = Readonly<{
   jobIds: readonly string[];
   projectRoot: string;
   timeoutSeconds?: number;
+  drainProgress?: boolean;
   cursor?: WaitCursor;
 }>;
 
-/** A vector cursor must be omitted for a coordinator without `supportsWaitV2`; it cannot parse one. */
-export function jobsWaitRequest(fields: JobsWaitFields, extensions: readonly string[]): Record<string, unknown> {
-  const waitV2 = extensions.includes('supportsWaitV2');
-  const cursor =
-    fields.cursor === undefined || (!waitV2 && isWaitCursorV2(fields.cursor))
-      ? undefined
-      : isWaitCursorV2(fields.cursor)
-        ? fields.cursor
-        : { afterSeq: fields.cursor.afterSeq };
+export function jobsWaitRequest(fields: JobsWaitFields): Record<string, unknown> {
   return {
     jobIds: [...fields.jobIds],
     projectRoot: fields.projectRoot,
     ...(fields.timeoutSeconds === undefined ? {} : { timeoutSeconds: fields.timeoutSeconds }),
-    ...(cursor === undefined ? {} : { cursor }),
-    // This CLI can render `interrupted`; advertise it only to a coordinator that accepts the field.
-    ...Object.fromEntries(JOBS_WAIT_EXTENSIONS.filter((flag) => extensions.includes(flag)).map((flag) => [flag, true])),
+    ...(fields.drainProgress === true ? { drainProgress: true } : {}),
+    cursor: fields.cursor ?? null,
   };
 }
 

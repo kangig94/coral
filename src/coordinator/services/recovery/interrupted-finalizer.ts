@@ -3,7 +3,6 @@ import { assertNever } from '../../../infra/error-format.js';
 import { elapsedDurationMs } from '../../../jobs/duration.js';
 import type { JobStatus, JobTerminalInput } from '../../../jobs/records.js';
 import type { InterruptedProbeOutcome } from '../../../jobs/reconcile/interrupted-reason.js';
-import { writeResultArtifact } from '../../../jobs/terminal/export.js';
 import type { JobAbortRegistryPort } from '../../../jobs/contracts/abort-registry.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import type { SessionRecoveryPort } from '../../../sessions/contracts.js';
@@ -48,6 +47,7 @@ type InterruptedFinalizerDeps = Readonly<{
   abortRegistry: JobAbortRegistryPort;
   launchAdmission: Pick<JobAdmissionPort, 'releaseLaunch'>;
   launchPermit: LaunchPermit | null;
+  publishTerminalResult(jobId: string): string;
 }>;
 
 type RecoveryCommitPlan = Pick<
@@ -108,19 +108,10 @@ async function finalizeSessionExact(
   return Object.freeze({ plan }) as RecoveryCommitReceipt;
 }
 
-function exportResultAndReleaseOwnership(
-  receipt: RecoveryCommitReceipt,
-  content: string,
-  deps: InterruptedFinalizerDeps,
-): void {
+function exportResultAndReleaseOwnership(receipt: RecoveryCommitReceipt, deps: InterruptedFinalizerDeps): void {
   const { plan } = receipt;
   try {
-    writeResultArtifact(
-      deps.runtime.storage,
-      deps.runtime.paths.coral.exports.jobsRoot,
-      plan.launchRecord.jobId,
-      content,
-    );
+    deps.publishTerminalResult(plan.launchRecord.jobId);
   } catch (error: unknown) {
     backendLog.warn(`Writing terminal artifact failed for ${plan.launchRecord.jobId}: ${String(error)}`);
   }
@@ -229,7 +220,7 @@ export async function finalizeInterruptedAppServerRecovery(
   }
 
   const receipt = await finalizeSessionExact(plan, expectedVersion, mutation, appendTerminal, deps);
-  exportResultAndReleaseOwnership(receipt, content, deps);
+  exportResultAndReleaseOwnership(receipt, deps);
 }
 
 function directTerminalAppender(status: JobStatus, terminal: JobTerminalInput): TerminalAppender {
@@ -299,5 +290,5 @@ export async function finalizeInterruptedDurableRecovery(
   }
 
   const receipt = await finalizeSessionExact(plan, expectedVersion, performed.mutation, appendTerminal, deps);
-  exportResultAndReleaseOwnership(receipt, content, deps);
+  exportResultAndReleaseOwnership(receipt, deps);
 }

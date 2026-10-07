@@ -1,3 +1,4 @@
+import { sameEpoch } from './identity.js';
 import { type Runtime } from '../../runtime/ports.js';
 import { type StoreFormatDescription } from '../format-fingerprint.js';
 import { type Database, openStoreDatabase, classifyStoreFile, openWritableStoreDatabase } from '../db.js';
@@ -276,7 +277,7 @@ export function openExactStoreEpoch(
   try {
     identityMatches =
       expected.lineageKey !== undefined
-        ? readOrCreateEpochKey(runtime, proven) === expected.lineageKey
+        ? sameEpoch(readOrCreateEpochKey(runtime, proven), expected.lineageKey)
         : proven.storeRoot === expected.storeRoot && proven.path === expected.path;
   } catch {
     identityMatches = false;
@@ -619,7 +620,7 @@ function selectStoreEpoch(runtime: Runtime, options: StoreEpochOptions, dbDir: s
         ? protectedAddresses[0].epochKey
         : (options.selectProtectedPredecessor?.(protectedAddresses) ?? null)
       : null;
-  const selectedProtected = protectedAddresses.find((address) => address.epochKey === selectedKey);
+  const selectedProtected = protectedAddresses.find((address) => sameEpoch(address.epochKey, selectedKey));
   const protectedIncumbent =
     selectedProtected === undefined ? null : resolveProtectedEpoch(runtime, dbDir, selectedProtected.epochKey);
   return { dbDir, observations, current, protectedAddresses, protectedIncumbent };

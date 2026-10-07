@@ -4,6 +4,8 @@ import { z } from 'zod';
 import { mapWaitSubscriptionError } from '#src/cli/wait-stream-error.js';
 import { BackendToolHttpError } from '#src/transport/http/errors.js';
 import { TransientHttpError } from '#src/infra/http-errors.js';
+import { WaitBuildMismatchError } from '#src/coordinator/handoff-routing/wait-invocation.js';
+import { IpcRpcError } from '#src/transport/ipc/client.js';
 
 function subscriptionError(code: string, detail?: unknown): Error {
   return new Error('wire message', { cause: { code, message: 'wire message', detail } });
@@ -59,12 +61,22 @@ describe('mapWaitSubscriptionError', () => {
     expect(mapWaitSubscriptionError('plain string')).toBe('plain string');
   });
 
-  it('should promote a ZodError to a transient 503 so the follow loop retries instead of dying', () => {
+  it('answers an event this build cannot read with the restart refusal, never a retry', () => {
     const zodError = z.object({ type: z.literal('progress') }).safeParse({ type: 'terminal' }).error!;
 
     const mapped = mapWaitSubscriptionError(zodError);
 
-    expect(mapped).toBeInstanceOf(TransientHttpError);
-    expect((mapped as TransientHttpError).status).toBe(503);
+    expect(mapped).toBeInstanceOf(WaitBuildMismatchError);
+    expect(mapped).toMatchObject({ code: 'wait_build_mismatch', exitCode: 1 });
+  });
+
+  it('answers a coordinator that rejects the shape of this build’s request with the restart refusal', () => {
+    const rejected = new IpcRpcError({ code: -32602, message: 'Invalid params', data: { issues: [] } });
+    expect(mapWaitSubscriptionError(rejected)).toMatchObject({
+      code: 'wait_build_mismatch',
+      remediation: expect.stringContaining('Restart the session'),
+    });
+    const refused = new IpcRpcError({ code: -32000, message: 'refused', data: { code: 'wait_build_mismatch' } });
+    expect(mapWaitSubscriptionError(refused)).toBeInstanceOf(WaitBuildMismatchError);
   });
 });

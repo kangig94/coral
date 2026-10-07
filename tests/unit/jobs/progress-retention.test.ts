@@ -112,6 +112,7 @@ describe('progress retention', () => {
     f.setNow(1);
     const first = launch(f, 'expired');
     const end = terminal(f, 'expired');
+    f.store.publishTerminalResult('expired');
     const session = seedTestSessionProjection(f.db, {
       sessionId: 'retained-session',
       provider: 'codex',

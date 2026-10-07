@@ -1403,19 +1403,23 @@ function writeAtomicSyncNode(
   }
 }
 
+let durableStageCounter = 0;
+
 function writeAtomicDurableSyncNode(
   path: string,
   data: StorageData,
-  options?: { encoding?: BufferEncoding; mode?: number },
+  options?: { encoding?: BufferEncoding; mode?: number; beforeRename?: () => boolean; stagePath?: string },
 ): boolean {
   const mode = options?.mode;
   const parent = dirname(path);
-  const tempPath = `${path}.tmp`;
+  const tempPath = options?.stagePath ?? `${path}.stage-${process.pid}-${++durableStageCounter}-${randomUUID()}`;
   mkdirSync(parent, { recursive: true });
 
   let fd: number | null = null;
+  let ownsStage = false;
   try {
-    fd = mode === undefined ? openSync(tempPath, 'w') : openSync(tempPath, 'w', mode);
+    fd = mode === undefined ? openSync(tempPath, 'wx') : openSync(tempPath, 'wx', mode);
+    ownsStage = true;
     if (mode !== undefined) {
       fchmodSync(fd, mode);
     }
@@ -1423,21 +1427,23 @@ function writeAtomicDurableSyncNode(
     fdatasyncSync(fd);
     closeSync(fd);
     fd = null;
+    if (options?.beforeRename?.() === false) return false;
     renameSync(tempPath, path);
     return syncDirectoryDurable(parent);
   } catch (error: unknown) {
     if (fd !== null) {
       closeSync(fd);
     }
-    try {
-      unlinkSync(tempPath);
-    } catch {
-      /* best effort */
-    }
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
       return false;
     }
     throw error;
+  } finally {
+    try {
+      if (ownsStage) unlinkSync(tempPath);
+    } catch {
+      // Owned-stage cleanup must not mask the publication outcome.
+    }
   }
 }
 

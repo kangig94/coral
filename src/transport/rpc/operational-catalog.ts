@@ -3,6 +3,7 @@ import { SUCCESSION_METHODS } from '../../infra/succession-address.js';
 import { CHILD_AUTH_CHALLENGE_METHOD } from '../../security/child-credential.js';
 import {
   jobsAbortRpcSpec,
+  jobWaitSnapshotRpcSpec,
   providerHostEvictRpcSpec,
   providerHostInspectRpcSpec,
   providerHostListRpcSpec,
@@ -62,6 +63,7 @@ export type IpcOperationalSpec = OperationalBaseSpec & {
       | 'transport.kb.restart'
       | (typeof SUCCESSION_METHODS)[keyof typeof SUCCESSION_METHODS]
       | typeof jobsAbortRpcSpec.name
+      | typeof jobWaitSnapshotRpcSpec.name
       | typeof providerProxySetContainBooleanRpcSpec.name
       | typeof providerProxySetContainRpcSpec.name
       | typeof providerHostListRpcSpec.name
@@ -174,6 +176,15 @@ export const operationalRouteSpecs: readonly OperationalRouteSpec[] = [
     dispatch: { kind: 'succession' as const },
     authentication: 'principal' as const,
   })),
+  {
+    id: 'ipc.jobs.wait.snapshot',
+    transport: 'ipc',
+    ipc: { method: jobWaitSnapshotRpcSpec.name },
+    requires: jobWaitSnapshotRpcSpec.requires,
+    requiresRunningLifecycle: true,
+    dispatch: { kind: 'catalog', onRefusal: 'spawn-successor' },
+    authentication: 'principal',
+  },
   {
     id: 'ipc.jobs.abort.drain-recovery',
     transport: 'ipc',

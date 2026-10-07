@@ -8,4 +8,4 @@ A running coordinator may read records written by a newer installed CLI or succe
 
 ## Start condition
 
-Inventory durable record schemas and their supported shipped readers. Add a mixed-build contract gate that fails on removing, renaming, retyping, or newly requiring a field at the same address. Include the job read and subscription records consumed by [`jobs-read-contract-schema-first.md`](./jobs-read-contract-schema-first.md) and [`result-artifact-availability.md`](./result-artifact-availability.md).
+Inventory durable record schemas and their supported shipped readers. Add a mixed-build contract gate that fails on removing, renaming, retyping, or newly requiring a field at the same address. Include the job read and subscription records consumed by [`jobs-read-contract-schema-first.md`](./jobs-read-contract-schema-first.md) and [wait artifact availability](../architecture.md#result-exports).

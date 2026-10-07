@@ -1,3 +1,4 @@
+import { sameEpoch } from './epoch/identity.js';
 import type { ForeignTargetValidator, InvalidTargetEvidence, ValidatedHandoffTarget } from '../infra/handoff-target.js';
 import type { Runtime } from '../runtime/ports.js';
 import {
@@ -62,7 +63,7 @@ export function prepareCommittedBackendStoreAtStartup(
             ...(expected.lineageKey === undefined ? {} : { lineageKey: expected.lineageKey }),
             ...(expected.canonicalStoreRoot === undefined ? {} : { canonicalStoreRoot: expected.canonicalStoreRoot }),
           };
-    if (addressed === null || observeResolvedStoreEpochKey(runtime, addressed) !== epochKey) {
+    if (addressed === null || !sameEpoch(observeResolvedStoreEpochKey(runtime, addressed), epochKey)) {
       return { kind: 'holding', reason: 'epoch-unproven' };
     }
     const classification = classifyStoreFile(addressed.path, runtime.storage, options.storeFormat);

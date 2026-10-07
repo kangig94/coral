@@ -1,18 +1,22 @@
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
 
-import { acquireSharedFileLockSync } from '../../infra/fs-lock.js';
+import { acquireSharedFileLockNoRepairSync, acquireSharedFileLockSync } from '../../infra/fs-lock.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { ResolvedStoreEpoch } from './types.js';
 
 const lineageSchema = z.object({ version: z.literal('v1'), lineageId: z.string().uuid() }).passthrough();
 const LINEAGE_FILE = '.coral-lineage.v1.json';
 
-export function readEpochKey(runtime: Pick<Runtime, 'storage'>, epoch: ResolvedStoreEpoch): string | null {
+export function readEpochKey(
+  runtime: Pick<Runtime, 'storage'>,
+  epoch: ResolvedStoreEpoch,
+  busyTimeoutMs = 0,
+): string | null {
   let release: (() => void) | null = null;
   let key: string | null;
   try {
-    release = acquireSharedFileLockSync(join(dirname(epoch.path), '.lock'));
+    release = acquireSharedFileLockNoRepairSync(join(dirname(epoch.path), '.lock'), busyTimeoutMs);
     const lineage = lineageSchema.parse(
       JSON.parse(runtime.storage.readFileSync(join(dirname(epoch.path), LINEAGE_FILE), 'utf-8')) as unknown,
     );

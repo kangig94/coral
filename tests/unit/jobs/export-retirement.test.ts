@@ -16,7 +16,7 @@ afterEach(() => {
   for (const f of fixtures.splice(0)) f.close();
 });
 
-it.each([false, true])('reclaims exports after an overlapping result read: %s', async (overlap) => {
+it.each([false, true])('reclaims exports after external recreation during retirement: %s', async (overlap) => {
   const f = createRetentionFixture();
   fixtures.push(f);
   f.setNow(1);
@@ -38,7 +38,7 @@ it.each([false, true])('reclaims exports after an overlapping result read: %s', 
   const root = f.runtime.paths.coral.exports.jobsRoot;
   const original = join(root, id);
   storage.mkdirSync(join(original, 'provider-artifacts'), { recursive: true });
-  f.store.ensureResultArtifact(id);
+  storage.writeFileSync(join(original, 'result.md'), 'retained result');
   storage.writeFileSync(join(original, 'provider-artifacts', 'original.jsonl'), 'old transcript');
   for (const child of ['', 'result.md', 'provider-artifacts', 'provider-artifacts/original.jsonl'])
     utimesSync(join(original, child), 1, 1);
@@ -47,7 +47,9 @@ it.each([false, true])('reclaims exports after an overlapping result read: %s', 
   storage.iterateDirectory = async function* (path) {
     if (overlap && !read && basename(path).startsWith('.retiring-')) {
       read = true;
-      expect(storage.readFileSync(f.store.ensureResultArtifact(id), 'utf-8')).toContain('retained result');
+      expect(storage.readFileSync(join(path, 'result.md'), 'utf-8')).toContain('retained result');
+      storage.mkdirSync(original, { recursive: true });
+      storage.writeFileSync(join(original, 'result.md'), 'retained result');
       for (const child of ['', 'result.md'])
         utimesSync(join(original, child), RETENTION_NOW / 1000, RETENTION_NOW / 1000);
     }

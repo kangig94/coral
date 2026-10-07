@@ -16,6 +16,7 @@ import { formatError } from '../../infra/error-format.js';
 import { isRecord } from '../../infra/json.js';
 import { KbJobRecorder, normalizeHostedKbFailureDetail } from '../../jobs/kb/recorder.js';
 import { isLivePhase, isTerminalPhase, type JobPhase } from '../../jobs/phase.js';
+import type { WaitStreamRequest } from '../../jobs/wait/contract.js';
 import type { KbDaemonRequestContextWire } from '../../kb-daemon/protocol.js';
 import type { KbToolResult } from '../../kb/result.js';
 import { readCorpusState } from '../../kb/state/corpus-state.js';
@@ -578,11 +579,26 @@ export function createCoordinatorCore(
   });
   const { settlementRefusalRecorder, recoveryQuarantine } = recovery;
 
+  const internalWaitRequests = new WeakMap<object, WaitStreamRequest>();
   const preparedExecution = prepareCoordinatorExecutionAssembly(core, options);
   const services = createExecutionServices({
     world,
     runtime,
     getActiveEpochPath: () => core.state.selectedStoreEpochPath,
+    currentJobEpochKey: core.currentJobEpochKey,
+    internalWait: {
+      admissions: (jobIds, session) => {
+        const request = internalWaitRequests.get(session) ?? {
+          ...session,
+          jobIds: [...jobIds],
+          drainProgress: true as const,
+        };
+        internalWaitRequests.set(session, request);
+        return requestPorts.jobAddressing.admitWait(request);
+      },
+      visitProgress: (epoch, read) => requestPorts.jobAddressing.visitProgress(epoch, read),
+    },
+    observeJobAbsence: (jobId) => getProgressStore().observeJobAbsence(jobId),
     bundleHash: world.identity.bundleHash,
     backendNamespace: world.namespace,
     settlementRefusalRecorder,

@@ -22,11 +22,9 @@ import {
 import { createWorkflowJournal } from '../../workflow/projections.js';
 import { type WorkflowLaunchDecision, refuseLaunch } from '../../jobs/launch.js';
 import type { AbortReason } from '../../jobs/outcome.js';
-import { writeResultArtifact } from '../../jobs/terminal/export.js';
 import type { JobAbortRegistryPort } from '../../jobs/contracts/abort-registry.js';
 import type { WorkflowJobLifecyclePort } from '../../jobs/contracts/job-runner.js';
 import { TerminalWriteError } from '../../jobs/terminal/write-error.js';
-import { serializeWorkflowResult } from './execution-policies.js';
 import { composeWorkflowFinalization } from './workflow-finalization.js';
 import type { WorkflowFinalizationIntent } from '../../workflow/finalization.js';
 import { workflowProviderNames } from '../../workflow/normalize.js';
@@ -166,9 +164,9 @@ export class WorkflowExecutionService {
     });
   }
 
-  private finishWorkflowJobPostCommit(jobId: string, markdown: string): void {
+  private finishWorkflowJobPostCommit(jobId: string): void {
     try {
-      writeResultArtifact(this.deps.runtime.storage, this.deps.runtime.paths.coral.exports.jobsRoot, jobId, markdown);
+      this.deps.progressStore.ensureResultArtifact(jobId);
     } catch (error: unknown) {
       backendLog.warn(`Writing terminal artifact failed for ${jobId}: ${errorMessage(error)}`);
     }
@@ -207,7 +205,6 @@ export class WorkflowExecutionService {
     })
       .then(
         (result: PipelineResult) => {
-          const serialized = serializeWorkflowResult(result.stepDetails);
           try {
             this.commitWorkflowJobTerminal(jobId, {
               outcome: 'completed',
@@ -215,7 +212,7 @@ export class WorkflowExecutionService {
               finalOutput: result.finalOutput,
               stepDetails: result.stepDetails,
             });
-            this.finishWorkflowJobPostCommit(jobId, serialized.markdown);
+            this.finishWorkflowJobPostCommit(jobId);
           } catch (error: unknown) {
             this.handleWorkflowFinalizationError(jobId, error);
           }
@@ -270,9 +267,8 @@ export class WorkflowExecutionService {
       };
     }
 
-    const serialized = serializeWorkflowResult(stepDetails);
     this.commitWorkflowJobTerminal(jobId, intent);
-    this.finishWorkflowJobPostCommit(jobId, serialized.markdown);
+    this.finishWorkflowJobPostCommit(jobId);
   }
 
   private abortReasonForWorkflowError(error: WorkflowExecutionError): AbortReason {

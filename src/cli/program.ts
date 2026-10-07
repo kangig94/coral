@@ -1,3 +1,10 @@
+import {
+  WaitInvocation,
+  WaitInvocationEnded,
+  getWaitInvocation,
+  installWaitInvocation,
+  waitInvocationMode,
+} from './wait-invocation.js';
 declare const __VERSION__: string;
 
 import { Command } from 'commander';
@@ -35,6 +42,7 @@ let cliHandoffPreflightPromise: Promise<HandoffOutcome | null> | null = null;
 let cliHandoffPreflightResult: LiveHandoffResult | null = null;
 
 async function executeCliHandoffPreflight(argv: readonly string[]): Promise<HandoffOutcome | null> {
+  const invocation = getWaitInvocation();
   const statusInvocation = argv[2] === 'backend' && argv[3] === 'status';
   let result: HandoffRunResult;
   try {
@@ -42,12 +50,19 @@ async function executeCliHandoffPreflight(argv: readonly string[]): Promise<Hand
       { kind: 'cli-invocation', argv },
       {
         pluginRoot: resolvePluginRoot(),
+        ...(invocation === undefined ? {} : { signal: invocation.signal, waitInvocation: invocation }),
         ...(statusInvocation
           ? {}
-          : { onSelectionPublicationIncident: (incident) => renderHandoffPublicationIncidents([incident]) }),
+          : {
+              onSelectionPublicationIncident: (incident) => {
+                invocation?.check();
+                renderHandoffPublicationIncidents([incident]);
+              },
+            }),
       },
     );
   } catch (error: unknown) {
+    invocation?.check();
     if (!(error instanceof HandoffRunError)) throw error;
     renderHandoffPublicationIncidents(
       statusInvocation ? error.incidents : error.incidents.filter((incident) => incident.phase === 'terminal'),
@@ -55,6 +70,7 @@ async function executeCliHandoffPreflight(argv: readonly string[]): Promise<Hand
     throw error.originalError;
   }
 
+  invocation?.check();
   let publicationIncidents: readonly HandoffPublicationIncident[] = [];
   const continuation = consumeHandoffRunResult(result, (incidents) => {
     publicationIncidents = incidents;
@@ -99,14 +115,44 @@ export function peekCliHandoffPreflightResult(): LiveHandoffResult | null {
 export async function parseProgramWithHandoff(
   program: Command,
   argv: readonly string[] = process.argv,
+  clock?: { now(): number },
 ): Promise<HandoffOutcome | null> {
-  const handoff = await runCliHandoffPreflight(argv);
-  if (handoff !== null) {
-    return handoff;
+  const mode = waitInvocationMode(program, argv);
+  const invocation = mode === undefined ? undefined : new WaitInvocation(mode, argv, clock);
+  installWaitInvocation(invocation);
+  const dispatch = async () => {
+    const handoff = await runCliHandoffPreflight(argv);
+    invocation?.check();
+    if (handoff !== null) return handoff;
+    await program.parseAsync([...argv]);
+    return null;
+  };
+  try {
+    const outcome = invocation === undefined ? await dispatch() : await invocation.run(dispatch);
+    if (outcome?.kind === 'handoff-exit' && outcome.exitCode === 75) invocation?.flushSavedContinuation();
+    await invocation?.flushOutput();
+    return outcome;
+  } catch (error: unknown) {
+    if (!(error instanceof WaitInvocationEnded) || invocation === undefined) throw error;
+    if (invocation.monitorEnding) {
+      let timer: NodeJS.Timeout | undefined;
+      try {
+        await Promise.race([
+          invocation.monitorEnding.catch(() => undefined),
+          new Promise<void>((resolve) => {
+            timer = setTimeout(resolve, Math.max(0, invocation.cleanupRemainingMs() - 25));
+          }),
+        ]);
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    invocation.flushContinuation();
+    return { kind: 'handoff-exit', exitCode: invocation.completedExitCode ?? 75 };
+  } finally {
+    invocation?.dispose();
+    installWaitInvocation(undefined);
   }
-
-  await program.parseAsync([...argv]);
-  return null;
 }
 
 export function buildProgram(providerRegistry: ProviderRegistry = createBuiltInProviderRegistry()): Command {

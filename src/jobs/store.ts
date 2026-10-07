@@ -1,3 +1,7 @@
+import type { ProgressSource, ProgressVisitResult } from './wait/contract.js';
+import { visitJobProgress } from './read-queries.js';
+import { sameEpoch } from '../store/epoch/identity.js';
+import { hasReadableTerminalDetail } from './terminal/identity.js';
 import type { Database } from '../store/db.js';
 import { join } from 'node:path';
 
@@ -17,10 +21,20 @@ import {
 import type { ResolvableCoralEventInput } from '../store/envelope.js';
 import type { EventBodyCodec } from '../store/event-body-codec.js';
 import { composeReducers, type ComposedReducers } from '../store/reducers.js';
-import { listJobProjections, loadJobProjectionDetail, readJobEvents } from './read-queries.js';
+import {
+  listJobProjections,
+  loadJobProjectionDetail,
+  loadJobWaitDetail,
+  readJobEvents,
+  readJobLastSeq,
+  type JobWaitDetail,
+} from './read-queries.js';
 import type { Runtime } from '../runtime/ports.js';
 import { jobsDir } from './paths.js';
-import { ensureResultMarkdownArtifact } from './terminal/export.js';
+import { TerminalResultExportOwner, resultPathFor, type WorkflowReportPort } from './terminal/export.js';
+import { type JobLocationIndex, type JobLocation } from './location-index.js';
+import { readAcceptedTerminal, withTerminalSource } from './terminal/source.js';
+import { deriveLaunchReadiness } from './launch-readiness.js';
 import type { DurableProcessExit } from '../runtime/durable-runtime.js';
 import { nowDate, nowIsoString } from '../infra/time.js';
 import { createNoopJobEventBus, jobCreatedEvent, type JobEventBus } from './event-bus.js';
@@ -538,18 +552,109 @@ export class JobStore implements JobProgressStore {
     return this.detail(jobId);
   }
 
-  readJobEvents(jobId: string, terminalOnly = false) {
-    return readJobEvents(this.db, jobId, this, terminalOnly);
+  loadJobWaitDetail(jobId: string): JobWaitDetail {
+    const detail = loadJobWaitDetail(this.db, jobId, this);
+    return detail.status === null
+      ? detail
+      : { ...detail, status: this.applyNamespaceOverrideToStatus(jobId, detail.status) };
+  }
+
+  readJobLastSeq(jobId: string): number | null {
+    return readJobLastSeq(this.db, jobId);
+  }
+
+  readJobEvents(jobId: string, terminalOnly = false, afterSeq = 0) {
+    return readJobEvents(this.db, jobId, this, terminalOnly, afterSeq);
+  }
+
+  visitProgress<T>(read: (source: ProgressSource) => T): ProgressVisitResult<T> {
+    return visitJobProgress(this.db, this, read);
+  }
+
+  observeJobAbsence(jobId: string): boolean {
+    return (
+      this.db.prepare("SELECT 1 FROM events WHERE stream_kind = 'job' AND stream_id = ? LIMIT 1").get(jobId) ===
+      undefined
+    );
+  }
+
+  private resultExports: TerminalResultExportOwner | null = null;
+  private exportLocations: JobLocationIndex | null = null;
+  private workflowReport?: WorkflowReportPort;
+
+  configureResultExports(locations: JobLocationIndex | null, workflowReport?: WorkflowReportPort): void {
+    if (this.exportLocations === locations && this.workflowReport === (workflowReport ?? locations?.workflowReport))
+      return;
+    this.exportLocations = locations;
+    this.workflowReport = workflowReport ?? locations?.workflowReport;
+    this.resultExports = null;
+  }
+
+  getResultExportOwner(): TerminalResultExportOwner {
+    if (this.resultExports !== null) return this.resultExports;
+    this.resultExports = new TerminalResultExportOwner({
+      runtime: this.runtime,
+      jobsRoot: this.runtime.paths.coral.exports.jobsRoot,
+      workflowReport: this.workflowReport,
+      failures: this.exportLocations?.resultRepairFailures,
+      repairScope: this.exportLocations ?? undefined,
+      hydrationRetry: (jobId) => {
+        const location = this.exportLocations?.read(jobId);
+        return location
+          ? this.exportLocations?.unknownLocationHolds().find((hold) => sameEpoch(hold.epochKey, location.epochKey))
+              ?.retryScheduled
+          : undefined;
+      },
+      prepareTerminal: (jobId, db) => {
+        const index = this.exportLocations;
+        const location = index?.read(jobId);
+        if (!index || !location || hasReadableTerminalDetail(location)) return;
+        index.prepareTerminal(jobId, db, location.epochKey, this.runtime.paths.coral.exports.jobsRoot);
+      },
+      location: (jobId): JobLocation | null => {
+        if (this.exportLocations) return this.exportLocations.read(jobId);
+        const detail = this.loadJobProjectionDetail(jobId);
+        if (!detail.status || !detail.exit) return null;
+        const accepted = readAcceptedTerminal(this.db, jobId);
+        if (!accepted) return null;
+        return {
+          version: 'v1',
+          jobId,
+          epochKey: ':memory:',
+          disposition: 'terminal',
+          terminalSeq: accepted.seq,
+          subject: {
+            projectRoot: detail.status.projectRoot,
+            workDir: detail.status.workDir,
+            jobKind: detail.status.jobKind,
+          },
+          resultPath: resultPathFor(this.runtime.paths.coral.exports.jobsRoot, jobId),
+          detail: {
+            kind: 'recorded',
+            value: {
+              status: detail.status,
+              events: this.readJobEvents(jobId, true),
+              exit: detail.exit,
+              readiness: deriveLaunchReadiness(detail),
+            },
+          },
+        };
+      },
+      withSource: (jobId, read, snapshot) => {
+        if (!this.exportLocations) return read(this.db, this);
+        const location = snapshot ?? this.exportLocations.read(jobId);
+        return location ? withTerminalSource(this.runtime, location.epochKey, (db) => read(db, this)) : null;
+      },
+    });
+    return this.resultExports;
+  }
+
+  publishTerminalResult(jobId: string): string {
+    return this.getResultExportOwner().publishTerminalResult(jobId);
   }
 
   ensureResultArtifact(jobId: string): string {
-    return ensureResultMarkdownArtifact(
-      this.db,
-      jobId,
-      this.runtime.paths.coral.exports.jobsRoot,
-      this.runtime.storage,
-      this,
-    );
+    return this.getResultExportOwner().ensureResultMarkdownArtifact(jobId);
   }
 
   listJobProjections() {

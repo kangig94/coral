@@ -1,6 +1,9 @@
+import { nextFinal, nextOfType } from '#tests/helpers/wait-stream.js';
+import { progressVisitFromDetails } from '#tests/helpers/wait-progress.js';
+import { admitted, savedCursor } from '#tests/helpers/wait-session.js';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { once } from 'node:events';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface, type Interface } from 'node:readline';
@@ -19,6 +22,11 @@ const roots: string[] = [];
 const runtime = createRealRuntime('prod', { baseDir: tmpdir() });
 const storage = runtime.storage;
 
+const origin = Date.now() - 20_000;
+const launchAt = new Date(origin).toISOString();
+const progressAt = new Date(origin + 5000).toISOString();
+const terminalAt = new Date(origin + 10_000).toISOString();
+
 const writer = `
 import { DatabaseSync } from 'node:sqlite';
 const db = new DatabaseSync(process.argv[1]);
@@ -33,10 +41,10 @@ db.exec(\`CREATE TABLE projection_jobs (
 db.prepare('INSERT INTO projection_jobs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
   'old-live', JSON.stringify({ kind: 'provider-session', id: 'session-1' }), 'running',
   JSON.stringify({ progressFaults: [] }), 'session-1', 'claude', '/workspace/project',
-  'old-namespace', null, 'provider', null, null, null, null, '2026-09-25T00:00:00.000Z', 1,
+  'old-namespace', null, 'provider', null, null, null, null, '${launchAt}', 1,
 );
 db.prepare('INSERT INTO events VALUES (?, ?, ?, ?, ?, ?)').run(
-  1, '2026-09-25T00:00:00.000Z', 'job.launch.requested', 'job', 'old-live',
+  1, '${launchAt}', 'job.launch.requested', 'job', 'old-live',
   Buffer.from(JSON.stringify({ projectRoot: '/workspace/project', jobKind: 'provider', request: { cwd: '/workspace/project' } })),
 );
 console.log('ready');
@@ -45,19 +53,22 @@ process.stdin.on('data', (input) => {
   if (input.includes('progress')) {
     db.prepare('UPDATE projection_jobs SET last_seq = ? WHERE job_id = ?').run(2, 'old-live');
     db.prepare('INSERT INTO events VALUES (?, ?, ?, ?, ?, ?)').run(
-      2, '2026-09-25T00:00:05.000Z', 'job.progress.emitted', 'job', 'old-live',
+      2, '${progressAt}', 'job.progress.emitted', 'job', 'old-live',
       Buffer.from(JSON.stringify({ kind: 'message', message: 'old progress', timing: {
-        origin: 'runtime', originAt: '2026-09-25T00:00:00.000Z',
-        emittedAt: '2026-09-25T00:00:05.000Z', elapsedMs: 5000,
+        origin: 'runtime', originAt: '${launchAt}',
+        emittedAt: '${progressAt}', elapsedMs: 5000,
       } })),
     );
     console.log('progressed');
   }
   if (input.includes('finish')) {
     db.exec('BEGIN IMMEDIATE');
+    db.prepare('INSERT INTO events SELECT ?, ?, ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM events WHERE seq = 2)').run(
+      2, '${progressAt}', 'fixture.preceding', 'workflow', 'unrelated', Buffer.from('{}'),
+    );
     db.prepare('UPDATE projection_jobs SET phase = ?, last_seq = ? WHERE job_id = ?').run('completed', 3, 'old-live');
     db.prepare('INSERT INTO events VALUES (?, ?, ?, ?, ?, ?)').run(
-      3, '2026-09-25T00:00:10.000Z', 'job.terminal.recorded', 'job', 'old-live',
+      3, '${terminalAt}', 'job.terminal.recorded', 'job', 'old-live',
       Buffer.from(JSON.stringify({ terminal: { content: 'old result', outcome: { kind: 'completed' }, durationMs: 10000 } })),
     );
     db.exec('COMMIT');
@@ -80,6 +91,10 @@ async function liveOlderEpoch(): Promise<{
   const lock = new DatabaseSync(join(epochDir, '.lock'));
   lock.exec('CREATE TABLE IF NOT EXISTS lock_marker (id INTEGER PRIMARY KEY)');
   lock.close();
+  writeFileSync(
+    join(epochDir, '.coral-lineage.v1.json'),
+    JSON.stringify({ version: 'v1', lineageId: oldEpochKey.split(':')[0] }),
+  );
   const child = spawn(process.execPath, ['--input-type=module', '-e', writer, join(epochDir, 'store.db')], {
     stdio: ['pipe', 'pipe', 'pipe'],
   });
@@ -120,6 +135,7 @@ afterEach(() => {
 describe('job addressing across a process-owned epoch switch', () => {
   it('keeps a completed old-format result addressable after switching the active epoch', async () => {
     const { root, epochDir, child, lines } = await liveOlderEpoch();
+    let source: DatabaseSync | undefined;
     try {
       await finish(child, lines);
       const index = new JobLocationIndex(runtime, root);
@@ -134,37 +150,44 @@ describe('job addressing across a process-owned epoch switch', () => {
       );
       expect(seeded.kind).toBe('uncertified');
       expect(index.certificate(oldEpochKey)).toBeNull();
+      source = new DatabaseSync(join(epochDir, 'store.db'), { readOnly: true });
+      const exporter = index.resultExportOwnerForSource(source as never, oldEpochKey, join(root, 'results'));
       let activeEpochKey = oldEpochKey;
       const addressing = new JobAddressing(
         index,
         {
+          visitProgress: progressVisitFromDetails(() => null),
           epochKey: () => activeEpochKey,
           detail: () => null,
           abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
-          waitStream: async function* () {},
         },
         () => false,
         () => 'pending',
+        undefined,
+        (jobId) => exporter.observeResultAvailability(jobId),
       );
       createNewFormatEpoch(root);
       activeEpochKey = newEpochKey;
       expect(addressing.detail('old-live')).toMatchObject({ exit: { content: 'old result' } });
-      const stream = addressing.waitStream({ jobIds: ['old-live'], supportsWaitV2: true });
-      expect((await stream.next()).value).toMatchObject({
+      const stream = addressing.waitStream({ jobIds: ['old-live'] });
+      expect((await nextFinal(stream)).value).toMatchObject({
         type: 'terminal',
         jobId: 'old-live',
         epochKey: oldEpochKey,
-        cursor: { positions: { [oldEpochKey]: 3 } },
+        cursor: null,
+        remainingJobIds: [],
       });
       await stream.return(undefined);
       expect(readFileSync(join(root, 'results', 'old-live', 'result.md'), 'utf8')).toBe('old result\n');
     } finally {
+      source?.close();
       await close(child);
     }
   });
 
-  it('refreshes a live WAL writer and resumes mixed waits with independent epoch positions', async () => {
+  it("delivers a live WAL writer's terminal without its progress and resumes mixed waits", async () => {
     const { root, epochDir, child, lines } = await liveOlderEpoch();
+    let source: DatabaseSync | undefined;
     try {
       const index = new JobLocationIndex(runtime, root);
       const seeded = seedHistoricalEpoch(
@@ -185,60 +208,67 @@ describe('job addressing across a process-owned epoch switch', () => {
         jobKind: 'provider',
       });
       createNewFormatEpoch(root);
+      source = new DatabaseSync(join(epochDir, 'store.db'), { readOnly: true });
+      const exporter = index.resultExportOwnerForSource(source as never, oldEpochKey, join(root, 'results'));
       const addressing = new JobAddressing(
         index,
         {
+          visitProgress: progressVisitFromDetails((jobId) =>
+            jobId === 'new-live' ? (admitted(jobId, [], false, newEpochKey).detail ?? null) : null,
+          ),
           epochKey: () => newEpochKey,
-          detail: () => null,
+          detail: (jobId) => (jobId === 'new-live' ? (admitted(jobId, [], false, newEpochKey).detail ?? null) : null),
           abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
-          waitStream: async function* () {},
         },
         () => false,
         () => 'pending',
+        undefined,
+        (jobId) => exporter.observeResultAvailability(jobId),
       );
       expect(addressing.detail('old-live')).toMatchObject({
         status: { jobId: 'old-live', phase: 'running' },
       });
       const jobIds = ['new-live', 'old-live'];
-      expect(addressing.validateWait({ jobIds, cursor: { afterSeq: 1 } })?.code).toBe('wait_cursor_epoch_required');
-      const pending = addressing.waitStream({ jobIds, supportsWaitV2: true, timeoutSeconds: 5 });
-      const nextProgress = pending.next();
+      const pending = addressing.waitStream({ jobIds, timeoutSeconds: 5 });
+      const nextNotice = nextOfType(pending, 'notice');
       await progress(child, lines);
-      expect((await nextProgress).value).toMatchObject({
-        type: 'progress',
-        jobId: 'old-live',
-        epochKey: oldEpochKey,
-        cursor: { positions: { [newEpochKey]: 0, [oldEpochKey]: 2 } },
+      expect(await nextNotice).toMatchObject({
+        message: 'Progress from a previous store epoch is not shown for old-live.',
       });
-      const next = pending.next();
+      const next = nextFinal(pending);
       await finish(child, lines);
+      seedHistoricalEpoch(
+        runtime,
+        index,
+        { storeRoot: join(root, 'db'), epoch: '7', path: join(epochDir, 'store.db') },
+        oldEpochKey,
+        fingerprint,
+        join(root, 'results'),
+        storage,
+      );
       const terminal = (await next).value;
       if (terminal === undefined || terminal.type !== 'terminal') throw new Error('Expected an old-epoch terminal');
       expect(terminal).toMatchObject({
         type: 'terminal',
         jobId: 'old-live',
         epochKey: oldEpochKey,
-        cursor: { positions: { [newEpochKey]: 0, [oldEpochKey]: 3 } },
+        cursor: savedCursor(0),
       });
       await pending.return(undefined);
       expect(addressing.detail('old-live')).toMatchObject({ exit: { content: 'old result' } });
-      if (terminal.cursor === undefined) throw new Error('Expected a vector cursor');
-      expect(addressing.validateWait({ jobIds, cursor: terminal.cursor })).toBeNull();
-      expect(addressing.validateWait({ jobIds: ['old-live'], cursor: terminal.cursor })?.code).toBe(
-        'wait_cursor_mismatch',
-      );
+      expect(terminal.remainingJobIds).toEqual(['new-live']);
       const resumed = addressing.waitStream({
-        jobIds,
-        cursor: terminal.cursor,
-        supportsWaitV2: true,
+        jobIds: terminal.remainingJobIds,
+        cursor: terminal.cursor ?? undefined,
         timeoutSeconds: 0.01,
       });
-      expect((await resumed.next()).value).toMatchObject({
+      expect((await nextFinal(resumed)).value).toMatchObject({
         type: 'waiting',
-        cursor: { positions: { [newEpochKey]: 0, [oldEpochKey]: 3 } },
+        cursor: savedCursor(0),
       });
       await resumed.return(undefined);
     } finally {
+      source?.close();
       await close(child);
     }
   });

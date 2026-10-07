@@ -66,12 +66,12 @@ afterEach(async () => {
   vi.restoreAllMocks();
   vi.useRealTimers();
 });
-function fixture(f = createRetentionFixture()) {
+function fixture(f = createRetentionFixture(), getProgressStore: () => typeof f.store | null = () => f.store) {
   if (!fixtures.includes(f)) fixtures.push(f);
   const statuses: RetentionRunStatus[] = [];
   const scheduler = createStorageRetentionScheduler({
     runtime: f.runtime,
-    getProgressStore: () => f.store,
+    getProgressStore,
     openEpoch: () => ({
       storeRoot: f.runtime.paths.coral.store.dbDir,
       epoch: '1',
@@ -587,4 +587,26 @@ it('runs a held owner at its daily deadline while another owner keeps draining',
   } finally {
     owners.exports.mockResolvedValue('');
   }
+});
+
+it('rebinds repair hints when lifecycle recovery starts with a replacement progress store', async () => {
+  const first = createRetentionFixture();
+  const second = createRetentionFixture();
+  fixtures.push(second);
+  let selected = first.store;
+  const { scheduler } = fixture(first, () => selected);
+  const oldOwner = first.store.getResultExportOwner();
+  const newOwner = second.store.getResultExportOwner();
+  const detach = vi.spyOn(oldOwner, 'onRepairHint');
+  const repair = vi.spyOn(newOwner, 'repairPass').mockResolvedValue();
+  scheduler.start();
+  await vi.advanceTimersByTimeAsync(0);
+  selected = second.store;
+  scheduler.start();
+  newOwner.hintRepair('replacement-job');
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(detach).toHaveBeenLastCalledWith(null);
+  expect(repair).toHaveBeenCalledOnce();
+  await scheduler.stop();
+  expect(detach).toHaveBeenLastCalledWith(null);
 });

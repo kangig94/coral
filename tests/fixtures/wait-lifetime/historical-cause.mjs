@@ -97,7 +97,10 @@ console.log(
       epochKey: oldKey,
       result: { output: '', outcome: { kind: 'failed', causeRef: ref } },
       resultPath: '/tmp/result.md',
+      availability: { kind: 'available', resultPath: '/tmp/result.md' },
       remainingJobIds: [],
+      cursor: null,
+      exitCode: 1,
     },
     null,
     false,
@@ -119,7 +122,10 @@ const event = {
   seq: 2,
   result: { content: '', durationMs: 0, outcome: { kind: 'failed', causeRef: ref } },
   resultPath: '/tmp/result.md',
+  availability: { kind: 'available', resultPath: '/tmp/result.md' },
   remainingJobIds: [],
+  cursor: null,
+  exitCode: 1,
 };
 let output = '';
 const write = process.stdout.write;

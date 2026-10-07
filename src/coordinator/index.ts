@@ -1,3 +1,6 @@
+import type { ProgressSource } from '../jobs/wait/contract.js';
+import { visitJobProgress } from '../jobs/read-queries.js';
+import { renderWorkflowReport } from '../workflow/result-report.js';
 import { registerBuiltInProviders } from '../providers/bootstrap.js';
 import { providerLookupPortFromCatalog } from '../providers/catalog.js';
 import { ProviderRegistry } from '../providers/registry.js';
@@ -34,11 +37,11 @@ import {
 } from '../store/append.js';
 import { prepareCached, type Database } from '../store/db.js';
 import { createEventBodyCodec } from '../store/event-body-codec.js';
-import { readJobEvents, loadJobProjectionDetail, loadJobProjectionDetails } from '../jobs/read-queries.js';
+import { loadJobProjectionDetail, loadJobProjectionDetails } from '../jobs/read-queries.js';
 import { composeReducers } from '../store/reducers.js';
 import { sealCoralStoreFormat } from '../store-format.js';
 import { publishJobEvents, subscribeJobEvents } from '../jobs/shell/event-subscription.js';
-import { observeTerminalResultExports } from '../jobs/terminal/export.js';
+import { observeTerminalResultExports, resultPathFor } from '../jobs/terminal/export.js';
 import { jobsRegistry } from '../jobs/events.js';
 import { sessionsRegistry } from '../sessions/events.js';
 import { discussRegistry } from '../discuss/event-registry.js';
@@ -187,7 +190,6 @@ function createCoordinatorStartupRecoveryRunner({
     await workflowRecover.resumeAll({
       db,
       progressStore: recoveryProgressStore,
-      jobEpochKey: (jobId) => jobLocations.read(jobId)?.epochKey ?? null,
       loadJobDetails: loadJobProjectionDetails,
       getExecutionService: (ctx) => getExecutionService(ctx) as never,
       createInvocationContext,
@@ -393,9 +395,10 @@ function createCoordinatorJournalAssembly({
 }) {
   const { getStoreServices, getStoreDb, getQueryDb, getConsumerDriver } = createCoordinatorStoreAccess(readCore);
   const exportTerminalResults = observeTerminalResultExports(
-    (jobId) => getStoreServices().progressStore.ensureResultArtifact(jobId),
-    (jobId, resultPath, seq) => {
+    (jobId) => getStoreServices().progressStore.publishTerminalResult(jobId),
+    (jobId, seq) => {
       const progressStore = getStoreServices().progressStore;
+      progressStore.configureResultExports(jobLocations);
       const detail = progressStore.loadJobProjectionDetail(jobId);
       if (detail.status === null) throw new Error(`Terminal has no job status: ${jobId}`);
       jobLocations.recordTerminal(
@@ -406,7 +409,7 @@ function createCoordinatorJournalAssembly({
           readiness: deriveLaunchReadiness(detail),
           exit: detail.exit,
         },
-        resultPath,
+        resultPathFor(runtime.paths.coral.exports.jobsRoot, jobId),
         seq,
       );
     },
@@ -831,7 +834,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions): Coor
   } = options;
   const flavor = deriveCoordinatorFlavor(options);
   const runtime = providedRuntime ?? createRealRuntime(flavor);
-  const jobLocations = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
+  const jobLocations = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot, renderWorkflowReport);
   let core: CoordinatorCoreResult | null = null;
   const activeStoreEpoch = (): ResolvedStoreEpoch | null => {
     const opened = core?.openedStoreEpoch() ?? null;
@@ -895,6 +898,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions): Coor
   core = createCoordinatorCore(
     {
       ...coreOptions,
+      jobLocationIndex: jobLocations,
       providerRegistry,
       providerHostAdmission: createCoordinatorProviderHostAdmission(),
       eventBus,
@@ -913,7 +917,9 @@ export function createCoordinatorServer(options: CoordinatorServerOptions): Coor
           ...deps,
           coordinatorCommit,
           loadJobProjectionDetail: (jobId: string) => loadJobProjectionDetail(getQueryDb(), jobId, readCtx),
-          readJobEvents: (jobId: string) => readJobEvents(getQueryDb(), jobId, readCtx),
+
+          visitProgress: <T>(_epoch: string, read: (source: ProgressSource) => T) =>
+            visitJobProgress(getQueryDb(), readCtx, read),
           aggregateWorkflowUsage: (workflowJobId: string) => aggregateWorkflowUsage(getQueryDb(), workflowJobId),
           subscribeJobEvents,
           getCurrentJournalSeq,

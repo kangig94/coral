@@ -1,7 +1,8 @@
-import { mkdtempSync, readFileSync, readdirSync, existsSync, rmSync, writeFileSync } from 'node:fs';
+import * as locks from '#src/infra/fs-lock.js';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, existsSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { bindCustodyProcessTicket, parseCustodyProcessTicket } from '../../../src/infra/custody-process-ticket.js';
 import { processIncarnationSchema } from '../../../src/infra/node-process.js';
 import { createRealRuntime } from '../../../src/runtime/real.js';
@@ -362,3 +363,34 @@ it.each([' ', 'lineage:1', '00000000-0000-4000-8000-000000000001:01'])(
     ).toThrow();
   },
 );
+
+it('gives a custody write a bounded lock wait without repairing the guard', () => {
+  const run = runDir();
+  const runtime = runtimeFor(run);
+  const epoch = join(dirname(run), 'db', 'epoch-1');
+  mkdirSync(epoch, { recursive: true });
+  writeFileSync(
+    join(epoch, '.coral-lineage.v1.json'),
+    JSON.stringify({ version: 'v1', lineageId: '00000000-0000-4000-8000-000000000001' }),
+  );
+  writeFileSync(join(epoch, '.coral-custody-coverage.v1.json'), '{}');
+  const lock = vi.spyOn(locks, 'acquireSharedFileLockNoRepairSync').mockImplementation((_path, budget = 0) => {
+    if (!budget) throw Object.assign(new Error('database is locked'), { code: 'SQLITE_BUSY' });
+    return () => {};
+  });
+  try {
+    const intent = recordCustodyIntent(runtime, run, {
+      effect: 'process-spawn',
+      epoch,
+      owner: 'durable-cli',
+      operationId: 'one',
+      capsule: null,
+      bindWithinMs: 100,
+      nowMs: 0,
+    });
+    expect(intent.epochKey).toBe('00000000-0000-4000-8000-000000000001:1');
+    expect(lock).toHaveBeenCalledWith(join(epoch, '.lock'), 5000);
+  } finally {
+    lock.mockRestore();
+  }
+});

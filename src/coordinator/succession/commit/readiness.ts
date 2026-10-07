@@ -1,3 +1,4 @@
+import { sameEpoch } from '../../../store/epoch/identity.js';
 import type { TimerHandle } from '../../../infra/port-types.js';
 import { readUpgradeIntent } from '../../../infra/upgrade-intent.js';
 import type { SuccessionAttempt } from '../attempt-child.js';
@@ -94,7 +95,7 @@ export function createCommitReadiness(ports: SuccessionCommitPorts) {
   ): Promise<void> {
     const ready = await waitForAttemptReady(runtime, attempt);
     if (
-      ready.epochKey !== preparation.epochKey ||
+      !sameEpoch(ready.epochKey, preparation.epochKey) ||
       JSON.stringify([...ready.receiptIds].sort()) !==
         JSON.stringify(preparation.receipts.map((receipt) => receipt.receiptId).sort())
     ) {

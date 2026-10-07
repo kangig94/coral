@@ -1,3 +1,4 @@
+import { WAIT_INVOCATION_CONTRACT_ARGUMENT } from '../coordinator/handoff-routing/wait-invocation.js';
 import { handleExpansionCommanderFailure, isCommanderDisplayOnlyError } from './commands/expansion.js';
 import { emitError } from './emit.js';
 import { buildProgram, parseProgramWithHandoff } from './program.js';
@@ -11,6 +12,10 @@ import { resolveStrictBundleIdentity } from '../infra/bundle-manifest.js';
  * on one already-transformed module instead. Do not move the invocation back into this file.
  */
 export function runCli(): Promise<unknown> {
+  if (process.argv.length === 3 && process.argv[2] === WAIT_INVOCATION_CONTRACT_ARGUMENT) {
+    process.stdout.write(`${JSON.stringify({ version: 1, monitorOnly: true })}\n`);
+    return Promise.resolve();
+  }
   if (process.argv.length === 3 && process.argv[2] === '--print-store-reset-build-identity') {
     const identity = resolveStrictBundleIdentity();
     if (!identity.ok) {

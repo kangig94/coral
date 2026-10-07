@@ -1,6 +1,9 @@
 import * as transfers from '#src/coordinator/services/durable-cli-transfer.js';
 import { processIncarnationSchema } from '#src/infra/node-process.js';
 import { recoverJobLocations } from '#src/jobs/location-recovery.js';
+import { JobStore } from '#src/jobs/store.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
+import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { writeDurableCliProcessRuntimeMeta } from '#src/jobs/runtime-meta-store.js';
 import { bindCustodyIdentity, readCustodyLedger, recordCustodyIntent } from '#src/store/custody-ledger.js';
 import { readOrCreateEpochKey } from '#src/store/epoch/key.js';
@@ -14,8 +17,10 @@ import { afterEach, expect, it, vi } from 'vitest';
 
 import { createCustodyRetentionFixture } from '#tests/helpers/custody-retention.js';
 const fixtures: ReturnType<typeof createRetentionFixture>[] = [];
+const epochDbs: ReturnType<typeof openSettledTestStoreDb>[] = [];
 afterEach(() => {
   vi.restoreAllMocks();
+  for (const db of epochDbs.splice(0)) db.close();
   for (const f of fixtures.splice(0)) f.close();
 });
 function fixture() {
@@ -27,6 +32,12 @@ it('discharges a durable carrier only with an exact terminal result and discharg
   const f = fixture();
   const jobId = f.runtime.ids.uuid();
   const epochDb = openSettledTestStoreDb(f.runtime);
+  epochDbs.push(epochDb);
+  const store = new JobStore('test', f.runtime, createEventBodyCodec(), {
+    db: epochDb,
+    reducers: f.reducers,
+    providers: permissiveProviderLookupPort,
+  });
   const lineageKey = readOrCreateEpochKey(f.runtime, {
     storeRoot: f.runtime.paths.coral.store.dbDir,
     epoch: '1',
@@ -39,7 +50,7 @@ it('discharges a durable carrier only with an exact terminal result and discharg
     path: join(epochPath, 'store.db'),
     lineageKey,
   });
-  initTestJob(f.store, {
+  initTestJob(store, {
     jobId: jobId,
     sessionId: 'session',
     provider: 'codex',
@@ -68,16 +79,15 @@ it('discharges a durable carrier only with an exact terminal result and discharg
     processGroupId: 4321,
     childRoot: { pid: 4323, incarnation: processIncarnationSchema.parse('linux:boot:124') },
   });
-  epochDb.close();
-  recoverJobLocations(f.index, epochKey, f.store);
+  recoverJobLocations(f.index, epochKey, store);
   await f.reconcile();
   expect(readCustodyLedger(f.runtime, f.runDir)).toMatchObject([{ kind: 'bound' }]);
-  commitJobTerminal(f.store, jobId, 'session', {
+  commitJobTerminal(store, jobId, 'session', {
     content: 'result',
     outcome: { kind: 'completed' },
     durationMs: 1,
   });
-  recoverJobLocations(f.index, epochKey, f.store);
+  recoverJobLocations(f.index, epochKey, store);
   const location = f.index.read(jobId)!;
   const readLocation = vi.spyOn(f.index, 'read').mockReturnValue({
     ...location,

@@ -1,3 +1,4 @@
+import * as epochObservation from '#src/store/epoch/observation.js';
 import type * as MockedNodeProcessModule from '#src/infra/node-process.js';
 import { cpSync, existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type Socket } from 'node:net';
@@ -252,72 +253,78 @@ describe('incomplete succession at startup', () => {
     });
   });
 
-  it('should hold a committed successor whose writer generation cannot be attributed, then abandon it for good', async () => {
-    const runtime = runtimeFixture();
-    const format = currentCoralStoreFormat();
-    const current = { ...build, version: format.productVersion, storeFormatFingerprint: format.fingerprint };
-    const settled = settleStoreEpoch(runtime, {
-      storeFormat: format,
-      build: current,
-      authorizeMint: authorizeFixtureStoreMint,
-    });
-    settled.db.close();
-    const dead = await exitedPid();
-    const owner = { kind: 'incumbent' as const, instanceId: 'incumbent', pid: dead, incarnation: null };
-    const written = await compareAndSwapUpgradeIntent(runtime.paths.coral.coordinator.runDir, null, {
-      requestId: 'request-1',
-      incumbent: { ...owner, version: '0.10.13', bundleHash: 'fedcba9876543210', flavor: 'prod' },
-      target: { build: current, pluginRootLabel: '/installed/coral/0.11.0' },
-      attemptId: 'attempt-1',
-      attemptOwner: owner,
-      attemptChild: null,
-      disposition: 'completed',
-      blockers: [],
-      retryCondition: null,
-      attemptDeadline: null,
-      completionReceipt: {
-        kind: 'serving',
+  it.each([false, true])(
+    'holds and bounds an unattributable committed successor, unreadable identity=%s',
+    async (unreadableIdentity) => {
+      const runtime = runtimeFixture();
+      const format = currentCoralStoreFormat();
+      const current = { ...build, version: format.productVersion, storeFormatFingerprint: format.fingerprint };
+      const settled = settleStoreEpoch(runtime, {
+        storeFormat: format,
+        build: current,
+        authorizeMint: authorizeFixtureStoreMint,
+      });
+      settled.db.close();
+      const dead = await exitedPid();
+      const owner = { kind: 'incumbent' as const, instanceId: 'incumbent', pid: dead, incarnation: null };
+      const written = await compareAndSwapUpgradeIntent(runtime.paths.coral.coordinator.runDir, null, {
+        requestId: 'request-1',
+        incumbent: { ...owner, version: '0.10.13', bundleHash: 'fedcba9876543210', flavor: 'prod' },
+        target: { build: current, pluginRootLabel: '/installed/coral/0.11.0' },
         attemptId: 'attempt-1',
-        successor: { instanceId: 'successor', pid: dead, incarnation: null, build: current },
-        epochKey: encodeResolvedStoreEpoch(runtime, settled.store),
-        controlGeneration: 1,
-        acceptedObligations: [],
-        recordedAt: new Date().toISOString(),
-      },
-    });
-    if (written.kind !== 'written') throw new Error(`intent seed was ${written.kind}`);
-    const recoverAt = (instanceId: string) => {
-      atStartup(runtime, instanceId);
-      return prepareCommittedSuccessorRecovery(
-        runtime,
-        { pluginRoot: '/plugin', instanceId },
-        format,
-        current,
-        () => false,
-      );
-    };
+        attemptOwner: owner,
+        attemptChild: null,
+        disposition: 'completed',
+        blockers: [],
+        retryCondition: null,
+        attemptDeadline: null,
+        completionReceipt: {
+          kind: 'serving',
+          attemptId: 'attempt-1',
+          successor: { instanceId: 'successor', pid: dead, incarnation: null, build: current },
+          epochKey: encodeResolvedStoreEpoch(runtime, settled.store),
+          controlGeneration: 1,
+          acceptedObligations: [],
+          recordedAt: new Date().toISOString(),
+        },
+      });
+      if (written.kind !== 'written') throw new Error(`intent seed was ${written.kind}`);
+      if (unreadableIdentity) vi.spyOn(epochObservation, 'observeResolvedStoreEpochKey').mockReturnValue(null);
+      const recoverAt = (instanceId: string) => {
+        atStartup(runtime, instanceId);
+        return prepareCommittedSuccessorRecovery(
+          runtime,
+          { pluginRoot: '/plugin', instanceId },
+          format,
+          current,
+          () => false,
+        );
+      };
 
-    await expect(recoverAt('startup-1')).resolves.toEqual({
-      kind: 'hold',
-      hold: {
-        kind: 'committed-successor-unattributable',
-        attemptId: 'attempt-1',
-        reason: 'committed successor generation cannot be attributed',
-      },
-    });
-    expect(readUpgradeIntent(runtime.paths.coral.coordinator.runDir)).toMatchObject({
-      intent: { disposition: 'completed', blockers: [{ owner: 'succession-startup' }] },
-    });
-    await expect(recoverAt('startup-2')).resolves.toMatchObject({ kind: 'hold' });
-    await expect(recoverAt('startup-3')).resolves.toEqual({ kind: 'none' });
-    expect(readUpgradeIntent(runtime.paths.coral.coordinator.runDir)).toMatchObject({
-      intent: { disposition: 'completed', completionReceipt: { attemptId: 'attempt-1' } },
-    });
-    // Nothing changes a completed intent, so the abandonment must outlive it: every later startup proceeds.
-    for (const startupId of ['startup-4', 'startup-5', 'startup-6']) {
-      await expect(recoverAt(startupId)).resolves.toEqual({ kind: 'none' });
-    }
-  });
+      await expect(recoverAt('startup-1')).resolves.toEqual({
+        kind: 'hold',
+        hold: {
+          kind: 'committed-successor-unattributable',
+          attemptId: 'attempt-1',
+          reason: unreadableIdentity
+            ? 'current epoch identity is temporarily unreadable; startup recovery re-observes it within its bounded patience window'
+            : 'committed successor generation cannot be attributed',
+        },
+      });
+      expect(readUpgradeIntent(runtime.paths.coral.coordinator.runDir)).toMatchObject({
+        intent: { disposition: 'completed', blockers: [{ owner: 'succession-startup' }] },
+      });
+      await expect(recoverAt('startup-2')).resolves.toMatchObject({ kind: 'hold' });
+      await expect(recoverAt('startup-3')).resolves.toEqual({ kind: 'none' });
+      expect(readUpgradeIntent(runtime.paths.coral.coordinator.runDir)).toMatchObject({
+        intent: { disposition: 'completed', completionReceipt: { attemptId: 'attempt-1' } },
+      });
+      // Nothing changes a completed intent, so the abandonment must outlive it: every later startup proceeds.
+      for (const startupId of ['startup-4', 'startup-5', 'startup-6']) {
+        await expect(recoverAt(startupId)).resolves.toEqual({ kind: 'none' });
+      }
+    },
+  );
 
   it('should record serving at the instant its deadline check passed, even when the clock crosses it after', async () => {
     const base = runtimeFixture();

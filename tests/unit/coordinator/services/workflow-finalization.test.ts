@@ -89,6 +89,7 @@ describe('selectFinalCauseRef precedence', () => {
       runtime,
       progressStore: {
         readStatus: () => null,
+        ensureResultArtifact: () => 'result.md',
         readRuntimeProjection: () => null,
       },
       coordinatorCommit: coordinatorCommit as never,

@@ -1,3 +1,4 @@
+import { sameEpoch } from '../../../store/epoch/identity.js';
 import { join } from 'node:path';
 
 import { SUCCESSION_CAPABILITY_VERSION } from '../../../infra/bundle-manifest-address.js';
@@ -56,7 +57,7 @@ export function readPreparation(intent: UpgradeIntent): SuccessionPreparation | 
     (preparation.ready === null ||
       preparation.ready.attemptId !== preparation.attemptId ||
       preparation.ready.targetKey !== preparation.targetKey ||
-      preparation.ready.epochKey !== preparation.epochKey ||
+      !sameEpoch(preparation.ready.epochKey, preparation.epochKey) ||
       preparation.ready.admissionRevision !== preparation.admissionRevision ||
       JSON.stringify([...preparation.ready.receiptIds].sort()) !==
         JSON.stringify(preparation.receipts.map((receipt) => receipt.receiptId).sort()))
@@ -86,7 +87,7 @@ export function currentPreparation(
     preparation.incumbentKey === incumbentKey(intent.incumbent) &&
     preparation.targetKey === successionTargetKey(intent.target) &&
     preparation.capabilitiesKey === JSON.stringify(capabilities) &&
-    preparation.epochKey === options.epochKey() &&
+    sameEpoch(preparation.epochKey, options.epochKey()) &&
     preparation.admissionRevision === options.admissionRevision()
   );
 }

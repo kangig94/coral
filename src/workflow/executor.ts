@@ -34,7 +34,7 @@ import { DEFAULT_STALE_ABORT_TIMEOUT_MS, recoverStaleAtom } from './stale-recove
 import { waitForAtoms } from './wait.js';
 
 type ExecutePlannedStepsOptions = {
-  time: Pick<TimePort, 'now' | 'monotonicNow'>;
+  time: Pick<TimePort, 'now' | 'monotonicNow' | 'sleep'>;
   jobIds: ReadonlyMap<string, string>;
   context?: string;
   workDir?: CanonicalWorkDir;
@@ -66,7 +66,7 @@ async function drainLaunchedAtoms(
   executionSvc: WorkflowExecutionPort,
   ctx: InvocationContext,
   options: {
-    time: Pick<TimePort, 'now' | 'monotonicNow'>;
+    time: Pick<TimePort, 'now' | 'monotonicNow' | 'sleep'>;
     signal?: AbortSignal;
     staleTimeoutMs: number;
     staleCheckIntervalMs: number;
@@ -110,7 +110,7 @@ async function awaitLaunchedStepResults(
   executionSvc: WorkflowExecutionPort,
   ctx: InvocationContext,
   options: {
-    time: Pick<TimePort, 'now' | 'monotonicNow'>;
+    time: Pick<TimePort, 'now' | 'monotonicNow' | 'sleep'>;
     signal?: AbortSignal;
     staleTimeoutMs: number;
     staleCheckIntervalMs: number;
@@ -284,7 +284,7 @@ export async function executePipeline(
     journal?: WorkflowJournal;
     declaredPlan?: WorkflowPlan;
     ids: Pick<IdPort, 'uuid'>;
-    time: Pick<TimePort, 'now' | 'monotonicNow'>;
+    time: Pick<TimePort, 'now' | 'monotonicNow' | 'sleep'>;
   },
 ): Promise<PipelineResult> {
   const onProgress = options.onProgress ?? (() => {});

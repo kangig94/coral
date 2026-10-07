@@ -149,13 +149,27 @@ function openSharedFileLockSync(path: string, readOnly: boolean, busyTimeoutMs: 
   );
 }
 
-export function createSharedFileLockSync(path: string): FileLockLease {
+export function createSharedFileLockSync(path: string, busyTimeoutMs = 5_000): FileLockLease {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  return openSharedFileLockSync(path, false, 5_000);
+  return openSharedFileLockSync(path, false, busyTimeoutMs);
 }
 
 export function acquireSharedFileLockSync(path: string, busyTimeoutMs = 5_000): FileLockLease {
   return openSharedFileLockSync(path, true, busyTimeoutMs);
+}
+
+/** Observation cannot repair or initialize a source guard. */
+export function acquireSharedFileLockNoRepairSync(path: string, busyTimeoutMs = 0): FileLockLease {
+  const entry = lstatSync(path);
+  if (!entry.isFile() || entry.isSymbolicLink() || entry.nlink !== 1) throw new Error('Source lock is malformed.');
+  const db = new DatabaseSync(path, { readOnly: true, timeout: busyTimeoutMs });
+  try {
+    db.exec(`PRAGMA busy_timeout = ${busyTimeoutMs}; BEGIN; SELECT count(*) FROM sqlite_schema`);
+    return sqliteLockLease(db);
+  } catch (error) {
+    db.close();
+    throw error;
+  }
 }
 
 export function attemptExclusiveFileLockSync(path: string, busyTimeoutMs = 0): ExclusiveFileLockAttempt {

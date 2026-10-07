@@ -1,6 +1,8 @@
 import { resolveStrictBundleIdentity } from '../../infra/bundle-manifest.js';
+import { writeAuditEvent } from '../../infra/audit-log.js';
+import { formatError } from '../../infra/error-format.js';
 import type { Runtime } from '../../runtime/ports.js';
-import { seedHistoricalEpoch } from '../../jobs/historical-reader.js';
+import { registerPresentHistoricalEpochs, seedHistoricalEpoch } from '../../jobs/historical-reader.js';
 import type { JobLocationIndex } from '../../jobs/location-index.js';
 import { createStartupMintAuthorizer, prepareRetainedControllerHandoff } from '../services/startup-retirement.js';
 import { recordControllerOpen, recordControllerServing } from '../succession/controller-open.js';
@@ -9,6 +11,7 @@ import { readOrCreateEpochKey } from '../../store/epoch/index.js';
 import {
   decodeResolvedStoreEpoch,
   encodeResolvedStoreEpoch,
+  inspectResolvedStoreEpochKey,
   listStoreEpochs,
   type ResolvedStoreEpoch,
 } from '../../store/epoch/index.js';
@@ -67,26 +70,34 @@ function createStoreOpenedObserver(input: LifecycleRecoveryInput): NonNullable<L
     }
     onOpenedStore(openStore);
     if (openStore.path !== ':memory:') {
-      for (const historical of listStoreEpochs(runtime)) {
-        if (
-          historical.role !== 'protected' ||
-          historical.resolved === null ||
-          historical.epochKey === null ||
-          historical.epochKey === undefined
-        )
-          continue;
-        const historicalKey = encodeResolvedStoreEpoch(runtime, historical.resolved);
-        const fingerprint =
-          historical.epochJson.kind === 'valid' ? historical.epochJson.value.build.storeFormatFingerprint : '';
-        void seedHistoricalEpoch(
-          runtime,
-          jobLocationIndex,
-          historical.resolved,
-          historicalKey,
-          fingerprint,
-          runtime.paths.coral.exports.jobsRoot,
-          runtime.storage,
-        );
+      let epochs: ReturnType<typeof listStoreEpochs> = [];
+      let inventoryComplete = true;
+      try {
+        epochs = listStoreEpochs(runtime);
+      } catch (error) {
+        inventoryComplete = false;
+        writeAuditEvent('historical_inventory_unavailable', { reason: formatError(error) }, 'warn');
+      }
+      const active = encodeResolvedStoreEpoch(runtime, openStore);
+      try {
+        registerPresentHistoricalEpochs(runtime, jobLocationIndex, epochs, active, { remaining: 0 });
+      } catch (error) {
+        writeAuditEvent('historical_registration_unavailable', { reason: formatError(error) }, 'warn');
+      }
+      const present: string[] = [active];
+      for (const epoch of epochs) {
+        try {
+          const key = epoch.epochKey ?? (epoch.resolved ? inspectResolvedStoreEpochKey(runtime, epoch.resolved) : null);
+          if (key) present.push(key);
+          else inventoryComplete = false;
+        } catch {
+          inventoryComplete = false;
+        }
+      }
+      try {
+        jobLocationIndex.reconcileUnknownLocationHolds(present, inventoryComplete);
+      } catch (error) {
+        writeAuditEvent('historical_holds_unavailable', { reason: formatError(error) }, 'warn');
       }
     }
   };

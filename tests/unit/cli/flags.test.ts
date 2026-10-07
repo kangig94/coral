@@ -36,3 +36,8 @@ describe('resolveInput', () => {
     expect(() => resolveInput(['-'])).toThrow(/stdin/);
   });
 });
+
+it('accepts duplicate job IDs once in their original order', async () => {
+  const { parseJobIds } = await import('#src/cli/flags.js');
+  expect(parseJobIds('a,b a b,c')).toEqual(['a', 'b', 'c']);
+});
