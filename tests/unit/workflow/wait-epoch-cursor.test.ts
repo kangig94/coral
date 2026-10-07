@@ -181,7 +181,7 @@ it('resumes recovery through ExecutionService and the real WaitCoordinator using
         staleAbortTimeoutMs: 1000,
         drainDeadlineMs: 1000,
         onProgress: (text) => progress.push(text),
-        initialState: { cursor: savedCursor(seq - 1, 'new-selected-epoch') },
+        initialState: { cursor: savedCursor(seq - 1) },
       },
     );
     expect(results.get('0:0')).toBe('canonical result');

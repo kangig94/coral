@@ -71,7 +71,7 @@ it('resumes after a budget cut through the active journal, skipping a fault row 
     for (let i = 1; i < 600; i++) f.store.appendProgress(f.jobId, 'session-1', `line ${i}`);
     f.complete({ terminal: { content: 'done', outcome: { kind: 'completed' }, durationMs: 1 } });
     f.store.publishTerminalResult(f.jobId);
-    const cursor = savedCursor(launchSeq, f.epochKey);
+    const cursor = savedCursor(launchSeq);
     const first = addressing.snapshot({ jobIds: [f.jobId], cursor });
     // A 500-row page holds the fault row and 499 lines; the budget cut leaves the rest for the continuation.
     expect(first.jobs[0].progress).toEqual(Array.from({ length: 499 }, (_, i) => `line ${i}`));

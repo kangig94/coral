@@ -49,7 +49,7 @@ import {
 import { DEFAULT_STALE_ABORT_TIMEOUT_MS, recoverStaleAtom, STALE_RESUME_PROMPT } from './stale-recovery.js';
 
 import { waitForAtoms } from './wait.js';
-import { encodeWaitCursor, waitEpochTag } from '../jobs/wait/cursor.js';
+import { encodeWaitCursor } from '../jobs/wait/cursor.js';
 import type { WorkflowFinalizationIntent } from './finalization.js';
 import {
   providerSessionProvider,
@@ -134,7 +134,6 @@ type ResumeWorkflowContext = {
   workflowId: string;
   plan: WorkflowPlan;
   childRows: readonly ProjectionJobStoredRow[];
-  activeEpochKey?: string;
   slotDetailsByJob: Map<string, JobProjectionDetail>;
   providerSessionsById: ReadonlyMap<string, ProviderSession>;
   eventsBySeq: ReadonlyMap<number, EventsRow>;
@@ -913,10 +912,7 @@ function buildWaitRecoveryPlan(deps: ResumeWorkflowDeps, snapshot: RecoverySnaps
   const initialState: Partial<WaitInternalState> = {
     completedOutputs,
     // A child terminal at the watermark is still delivered: an internal read prints every requested terminal.
-    cursor:
-      deps.activeEpochKey === undefined || !Number.isFinite(watermark)
-        ? undefined
-        : (encodeWaitCursor({ epochTag: waitEpochTag(deps.activeEpochKey), seq: watermark }) ?? undefined),
+    cursor: Number.isFinite(watermark) ? encodeWaitCursor(watermark) : undefined,
     lastActivityAt: new Map<string, number>(),
     staleRetries: new Map<string, number>(),
     expectedStaleAborts: new Set<string>(),
@@ -1391,7 +1387,6 @@ function atomicReleaser(
 type ResumeAllOptions = {
   db: Database;
   progressStore: StoreReadContext;
-  activeEpochKey?: string;
   loadJobDetails: unknown;
   getExecutionService: (ctx: InvocationContext) => WorkflowExecutionPort;
   createInvocationContext: (projectRoot: CanonicalWorkDir) => InvocationContext;
@@ -1526,7 +1521,6 @@ async function settleWorkflowRecovery(
         workflowId: status.jobId,
         plan: projection.plan,
         childRows: item.childRows,
-        activeEpochKey: options.activeEpochKey,
         slotDetailsByJob: item.slotDetailsByJob,
         providerSessionsById: item.providerSessionsById,
         eventsBySeq: item.eventsBySeq,

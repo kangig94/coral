@@ -208,7 +208,7 @@ describe('WaitCoordinator', () => {
 
   it('replays a terminal arriving after timeout on the next request with the unchanged cursor', async () => {
     const f = fixture();
-    const cursor = savedCursor(0, 'epoch');
+    const cursor = savedCursor(0);
     const stream = f.clientWait({ jobIds: ['job-1'], timeoutSeconds: 1, cursor });
     const next = nextFinal(stream);
     await f.pollStarted;

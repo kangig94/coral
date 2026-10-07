@@ -147,7 +147,7 @@ describe('job addressing', () => {
     });
     index.recordTerminal('old', detail('old', 'completed'), resultPath, 12);
     const addressing = historicalAddressing(index);
-    const cursor: WaitCursor = savedCursor(100, 'lineage-new:8');
+    const cursor: WaitCursor = savedCursor(100);
     expect(addressing.detail('old')).toMatchObject({ epochKey: 'lineage-old:7' });
     const stream = addressing.waitStream({ jobIds: ['old'], cursor });
     expect((await nextFinal(stream)).value).toMatchObject({

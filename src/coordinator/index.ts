@@ -190,7 +190,6 @@ function createCoordinatorStartupRecoveryRunner({
     await workflowRecover.resumeAll({
       db,
       progressStore: recoveryProgressStore,
-      activeEpochKey: encodeResolvedStoreEpoch(runtime, activeEpoch),
       loadJobDetails: loadJobProjectionDetails,
       getExecutionService: (ctx) => getExecutionService(ctx) as never,
       createInvocationContext,

@@ -13,7 +13,6 @@ import type { WaitStreamEvent, WaitCursor } from '#src/jobs/wait/contract.js';
 
 import { advanceWaitRenderCursor, parseWaitStreamEventValue } from '#src/jobs/wait/stream-event.js';
 import { isFinalWaitEvent, type ProgressVisit, type WaitProgressRow } from '#src/jobs/wait/contract.js';
-import { WAIT_CURSOR_REPLAY_NOTICE } from '#src/jobs/wait/cursor.js';
 import { progressVisitFromEvents } from '#tests/helpers/wait-progress.js';
 import { formatWaitSnapshot, formatWaitProgress } from '#src/cli/format/wait.js';
 
@@ -156,22 +155,6 @@ it('delivers every line of a job whose launch follows the watermark, not only it
   expect(events.filter((event) => event.type === 'progress').map((event) => event.message)).toEqual(
     lines.map(([, message]) => message),
   );
-});
-
-it('starts fresh from the newest lines with the replay notice when the cursor names another epoch', async () => {
-  const lines = Array.from({ length: 30 }, (_, index) => [1 + index, `line-${index + 1}`] as [number, string]);
-  const events = await collect(
-    readWaitSession({
-      request: { jobIds: ['a'], cursor: savedCursor(5, 'epoch-other'), timeoutSeconds: 0 },
-      time: new VirtualTime(),
-      read: observeWaitRead(() => [admitted('a', lines, false)]),
-      visit: testProgressVisit,
-    }),
-  );
-  expect(events[0]).toEqual({ type: 'notice', message: WAIT_CURSOR_REPLAY_NOTICE });
-  const progress = events.filter((event) => event.type === 'progress');
-  expect(progress).toHaveLength(20);
-  expect(progress[0]).toMatchObject({ message: 'line-11' });
 });
 
 it('downgrades coverage after a failed refresh', async () => {

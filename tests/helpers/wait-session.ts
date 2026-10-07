@@ -1,7 +1,6 @@
-import assert from 'node:assert/strict';
 import type { JobDetailResponse } from '#src/jobs/records.js';
 import type { WaitCursor } from '#src/jobs/wait/contract.js';
-import { encodeWaitCursor, waitEpochTag } from '#src/jobs/wait/cursor.js';
+import { encodeWaitCursor } from '#src/jobs/wait/cursor.js';
 import { WaitSession, type WaitAdmission } from '#src/jobs/wait/session.js';
 
 /** The active epoch every fixture admission below is read from. */
@@ -56,11 +55,9 @@ export function admitted(
   };
 }
 
-/** A saved cursor whose watermark is `seq` in the given epoch. */
-export function savedCursor(seq: number, epochKey = TEST_EPOCH): WaitCursor {
-  const cursor = encodeWaitCursor({ epochTag: waitEpochTag(epochKey), seq });
-  assert(cursor !== null);
-  return cursor;
+/** A saved cursor whose watermark is `seq`. */
+export function savedCursor(seq: number): WaitCursor {
+  return encodeWaitCursor(seq);
 }
 
 /** A client session whose active epoch is the fixtures' epoch. */

@@ -2,13 +2,11 @@ import { createHash } from 'node:crypto';
 import { epochIdentity } from '../../store/epoch/identity.js';
 import type { WaitCursor } from './contract.js';
 
-/** Every requested active-epoch job of the tagged epoch had each of its rows at or below `seq` delivered. */
-export type WaitWatermark = Readonly<{ epochTag: number; seq: number }>;
-
 export type WaitCursorRejection = Readonly<{ code: 'wait_cursor_malformed'; message: string }>;
 
+/** `watermark`: every requested active-epoch job had each of its rows at or below this seq delivered. */
 export type WaitCursorDecoded =
-  | Readonly<{ kind: 'decoded'; watermark: WaitWatermark }>
+  | Readonly<{ kind: 'decoded'; watermark: number }>
   | Readonly<{ kind: 'rejected'; error: WaitCursorRejection }>;
 
 const REJECTED: WaitCursorDecoded = {
@@ -22,32 +20,21 @@ const REJECTED: WaitCursorDecoded = {
 export const WAIT_CURSOR_REPLAY_NOTICE =
   'saved cursor not accepted by this coordinator; the current progress tail and retained results are collected again, so earlier results may repeat';
 
-const SEQ_BYTES = 5;
-const MAX_WATERMARK_SEQ = 2 ** (SEQ_BYTES * 8) - 1;
-const EPOCHLESS_STORE_KEY = ':memory:';
+const CANONICAL_DECIMAL = /^(0|[1-9][0-9]*)$/;
 
 /** Tokens label an accepted epoch in messages; they cannot reconstruct filesystem paths. */
 export function waitEpochToken(epochKey: string): string {
   return createHash('sha256').update(epochIdentity(epochKey)).digest().subarray(0, 16).toString('hex');
 }
 
-/** Two keys `sameEpoch` treats as one epoch always share a tag; distinct epochs collide one time in 256. */
-export function waitEpochTag(epochKey: string): number {
-  return epochKey === EPOCHLESS_STORE_KEY ? 0 : createHash('sha256').update(epochIdentity(epochKey)).digest()[0];
+/** The cursor is the bare watermark seq: it carries no epoch, so an epoch change cannot be detected from it. */
+export function encodeWaitCursor(watermark: number): WaitCursor {
+  return String(watermark);
 }
 
-/** Layout: the epoch tag byte, then the seq as a 40-bit big-endian integer. A seq past 40 bits has no cursor. */
-export function encodeWaitCursor(watermark: WaitWatermark): WaitCursor | null {
-  if (!Number.isSafeInteger(watermark.seq) || watermark.seq < 0 || watermark.seq > MAX_WATERMARK_SEQ) return null;
-  const bytes = Buffer.alloc(1 + SEQ_BYTES);
-  bytes[0] = watermark.epochTag;
-  bytes.writeUIntBE(watermark.seq, 1, SEQ_BYTES);
-  return bytes.toString('base64url');
-}
-
-/** Six bytes are exactly eight base64url characters, so any other string is not a cursor this build reads. */
+/** Every other string, a cursor an older build printed included, is malformed; no shape is translated. */
 export function decodeWaitCursor(raw: unknown): WaitCursorDecoded {
-  if (typeof raw !== 'string' || !/^[A-Za-z0-9_-]{8}$/.test(raw)) return REJECTED;
-  const bytes = Buffer.from(raw, 'base64url');
-  return { kind: 'decoded', watermark: { epochTag: bytes[0], seq: bytes.readUIntBE(1, SEQ_BYTES) } };
+  if (typeof raw !== 'string' || !CANONICAL_DECIMAL.test(raw)) return REJECTED;
+  const watermark = Number(raw);
+  return Number.isSafeInteger(watermark) ? { kind: 'decoded', watermark } : REJECTED;
 }

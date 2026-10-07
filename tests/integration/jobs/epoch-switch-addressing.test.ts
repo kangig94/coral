@@ -252,7 +252,7 @@ describe('job addressing across a process-owned epoch switch', () => {
         type: 'terminal',
         jobId: 'old-live',
         epochKey: oldEpochKey,
-        cursor: savedCursor(0, newEpochKey),
+        cursor: savedCursor(0),
       });
       await pending.return(undefined);
       expect(addressing.detail('old-live')).toMatchObject({ exit: { content: 'old result' } });
@@ -264,7 +264,7 @@ describe('job addressing across a process-owned epoch switch', () => {
       });
       expect((await nextFinal(resumed)).value).toMatchObject({
         type: 'waiting',
-        cursor: savedCursor(0, newEpochKey),
+        cursor: savedCursor(0),
       });
       await resumed.return(undefined);
     } finally {

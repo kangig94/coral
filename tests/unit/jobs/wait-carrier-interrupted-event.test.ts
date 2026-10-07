@@ -27,7 +27,7 @@ describe('carrier interrupted wait event', () => {
   });
 
   it('never advances the render cursor', () => {
-    const cursor = 'AAAAAAAA';
+    const cursor = '7';
     const decision = advanceWaitRenderCursor(cursor, INTERRUPTED);
 
     // `observedMaxJournalSeq` is what was seen, not what was consumed. Advancing the resume cursor past it

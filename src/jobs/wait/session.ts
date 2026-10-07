@@ -14,7 +14,7 @@ import {
   type WaitProgressRow,
   type WaitStreamEvent,
 } from './contract.js';
-import { decodeWaitCursor, encodeWaitCursor, waitEpochTag, WAIT_CURSOR_REPLAY_NOTICE } from './cursor.js';
+import { decodeWaitCursor, encodeWaitCursor } from './cursor.js';
 
 /** `unknown` is retryable and stays in the continuation; `unreadable` is permanent and carries its reason. */
 export type WaitDisposition = 'admitted' | 'missing' | 'scope-mismatch' | 'unknown' | 'unreadable';
@@ -138,7 +138,6 @@ export class WaitSession {
   readonly input?: WaitCursor;
   private readonly internal: boolean;
   private readonly activeEpochKey: string;
-  private readonly epochTag: number;
   /** The request's watermark: every requested active-epoch row at or below it was delivered by an earlier read. */
   private readonly base: number | undefined;
   constructor(jobIds: readonly string[], input: WaitCursor | undefined, activeEpochKey: string, internal = false) {
@@ -146,10 +145,9 @@ export class WaitSession {
     this.input = input;
     this.internal = internal;
     this.activeEpochKey = activeEpochKey;
-    this.epochTag = waitEpochTag(activeEpochKey);
     const decoded = input === undefined ? undefined : decodeWaitCursor(input);
-    if (decoded?.kind === 'decoded' && decoded.watermark.epochTag === this.epochTag) this.base = decoded.watermark.seq;
-    else if (decoded !== undefined) this.notice(WAIT_CURSOR_REPLAY_NOTICE);
+    assert(decoded?.kind !== 'rejected', 'a wait cursor is decoded where it enters the coordinator');
+    this.base = decoded?.watermark;
   }
 
   reconcile(admissions: WaitAdmission[]): void {
@@ -477,7 +475,7 @@ export class WaitSession {
       watermark = Math.min(watermark, consumed);
     }
     const seq = Number.isFinite(watermark) ? Math.max(0, watermark) : this.base;
-    return seq === undefined ? null : encodeWaitCursor({ epochTag: this.epochTag, seq });
+    return seq === undefined ? null : encodeWaitCursor(seq);
   }
   observeCoverage(jobIds: readonly string[], unknownJobIds: readonly string[], frontier: number): void {
     for (const id of jobIds) this.coverage.set(id, { kind: unknownJobIds.includes(id) ? 'unknown' : 'live', frontier });

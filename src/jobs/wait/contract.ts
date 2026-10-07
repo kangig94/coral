@@ -14,7 +14,7 @@ export const WAIT_PROGRESS_BYTES = 64 * 1024;
 
 export const WAIT_FOR_JOB_TERMINAL_TIMEOUT_MS = 30_000;
 
-/** The one wait frontier shape: eight base64url characters whatever the job count. Any other shape is refused. */
+/** The one wait frontier shape: the watermark seq in canonical decimal. Any other shape is refused. */
 export type WaitCursor = string;
 
 export interface WaitRequest {

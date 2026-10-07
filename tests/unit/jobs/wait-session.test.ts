@@ -11,7 +11,6 @@ import { createRealTimePort } from '#src/infra/time.js';
 import { admitted, savedCursor, testSession, TEST_EPOCH } from '#tests/helpers/wait-session.js';
 import { describe, expect, it } from 'vitest';
 import type { WaitSession, WaitAdmission } from '#src/jobs/wait/session.js';
-import { WAIT_CURSOR_REPLAY_NOTICE } from '#src/jobs/wait/cursor.js';
 
 const texts = (rows: ReadonlyArray<{ message: string }>) => rows.map((row) => row.message);
 
@@ -146,22 +145,6 @@ describe('wait session', () => {
     session.observeAbsent('b', 10);
     expect(session.remaining()).toEqual(['a', 'b']);
     expect(session.exitCode()).toBe(75);
-  });
-
-  it('drops a cursor from another epoch and starts fresh with the replay notice', () => {
-    const session = testSession(['a'], savedCursor(500, 'epoch-other'));
-    session.reconcile([admitted('a', [[1, 'a1']], false)]);
-    expect(session.notices).toEqual([WAIT_CURSOR_REPLAY_NOTICE]);
-    expect(texts(selectTestProgress(session))).toEqual(['a1']);
-  });
-
-  it('prints its cursor in exactly eight characters for one job and for 128', () => {
-    for (const count of [1, 128]) {
-      const ids = Array.from({ length: count }, (_, index) => `job-${index}`);
-      const session = testSession(ids, savedCursor(2 ** 40 - 1));
-      session.reconcile(ids.map((id) => admitted(id, [], false)));
-      expect(session.cursor()).toHaveLength(8);
-    }
   });
 });
 
