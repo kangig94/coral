@@ -117,7 +117,6 @@ function workflowIdentityMarkdown(db: Database, jobId: string): string {
   return `${lines.join('\n')}\n\n`;
 }
 
-/** Validates a workflow's report facts against its accepted terminal; the returned function serializes the report. */
 export type WorkflowReportPort = (
   input: Readonly<{
     db: Database;
@@ -126,7 +125,7 @@ export type WorkflowReportPort = (
     accepted: EventsRow;
     terminal: JobTerminal;
   }>,
-) => (() => string) | null;
+) => string | null;
 
 /** `pending` is every state a write owner will still retry; `failed` is one nothing will retry. */
 export type ResultAvailability =
@@ -214,7 +213,7 @@ export class TerminalResultExportOwner {
       this.input.runtime,
       location,
       (read) => this.withSource(jobId, (db) => read(db)),
-      this.publicationTerminal,
+      this.publicationTerminal?.accepted,
     );
   }
 
@@ -253,7 +252,7 @@ export class TerminalResultExportOwner {
   private render(jobId: string, location: JobLocation): string | null {
     return this.withAgreedTerminal(jobId, location, (db, ctx, accepted, terminal) => {
       if (location.subject.jobKind === 'workflow')
-        return this.input.workflowReport?.({ db, epochKey: location.epochKey, jobId, accepted, terminal })?.() ?? null;
+        return this.input.workflowReport?.({ db, epochKey: location.epochKey, jobId, accepted, terminal }) ?? null;
       const identity = workflowIdentityMarkdown(db, jobId);
       const content = terminal.content.trimEnd();
       return `${identity}${content || describeTerminalOutcome(terminal.outcome, { describeCauseRef: (ref) => describeResolvedCauseRef(db, ctx, ref) })}\n`;

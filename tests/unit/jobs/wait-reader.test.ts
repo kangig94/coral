@@ -477,7 +477,7 @@ describe('paged progress delivery', () => {
         request: { jobIds: ['a'], timeoutSeconds: 60, cursor: savedCursor(0) },
         internal: true,
         time: steppedTime(),
-        read: () => [admitted('a', [], true, 'E')],
+        read: () => [admitted('a', [], true, TEST_EPOCH)],
         visit: rowSource({ a: [message(1, text)] }),
       }),
     );
@@ -499,9 +499,9 @@ describe('paged progress delivery', () => {
       c: ['c-0', 'c-1', 'c-2', 'c-3', 'c-4'],
     };
     const jobs = [
-      admitted('a', [], true, 'E1', false, 20_000),
-      admitted('b', [], true, 'E1', false, 20_000),
-      admitted('c', [], true, 'E2', false, 20_000),
+      admitted('a', [], true, TEST_EPOCH, false, 20_000),
+      admitted('b', [], true, TEST_EPOCH, false, 20_000),
+      admitted('c', [], true, TEST_EPOCH, false, 20_000),
     ];
     const run = async (cut: number) => {
       const visit = rowSource(history);
@@ -563,7 +563,7 @@ it('moves the client cursor with a frame after a poll that delivered rows', asyn
           [2, 'two'],
         ],
         false,
-        'E',
+        TEST_EPOCH,
       ),
     ]),
     visit: testProgressVisit,

@@ -16,9 +16,8 @@ import { decodeBody, type StoreReadContext } from '../store/body-codec.js';
 import type { EventsRow } from '../store/schema.js';
 import { jobTerminalRecordedBodySchema } from './terminal/result.js';
 import { readJobTerminalAge } from './terminal-age.js';
-import type { JobTerminal } from './records.js';
 import type { JobLocation } from './location-index.js';
-import { retainedTerminal, sameTerminal } from './terminal/identity.js';
+import { retainedTerminal } from './terminal/identity.js';
 import { readAcceptedTerminal } from './terminal/source.js';
 import { sourceReadFailureDisposition } from './source-read.js';
 
@@ -47,19 +46,16 @@ export function terminalEligibility(
   runtime: Pick<Runtime, 'time' | 'env'>,
   location: JobLocation | null,
   withSource: <T>(read: (db: Database) => T) => T | null,
-  sourceTerminal?: { accepted: EventsRow; terminal: JobTerminal },
+  sourceTerminal?: EventsRow,
 ): TerminalEligibility {
   const terminal = location === null ? null : retainedTerminal(location);
   if (location === null || terminal === null) return { source: 'unusable', age: 'unknown' };
   let observed: ReturnType<typeof readJobTerminalAge> | 'disagrees' | null;
   try {
     observed = withSource((db) => {
-      const accepted = sourceTerminal?.accepted ?? readAcceptedTerminal(db, location.jobId);
+      const accepted = sourceTerminal ?? readAcceptedTerminal(db, location.jobId);
       if (!accepted || accepted.seq !== terminal.seq || accepted.ts !== terminal.ts) return 'disagrees';
-      const body = sourceTerminal
-        ? { terminal: sourceTerminal.terminal }
-        : jobTerminalRecordedBodySchema.parse(JSON.parse(Buffer.from(accepted.body).toString('utf8')));
-      return sameTerminal(terminal.result, body.terminal) ? readJobTerminalAge(db, accepted) : 'disagrees';
+      return readJobTerminalAge(db, accepted);
     });
   } catch (error) {
     return {

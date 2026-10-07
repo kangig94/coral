@@ -129,7 +129,7 @@ describe('terminal export owner', () => {
     });
     f.store.publishTerminalResult(f.jobId);
     const report = readFileSync(f.resultPath, 'utf8');
-    expect(report).toContain('intermediate output');
+    expect(report).toBe('# Step 0.0: intermediate\n\nintermediate output\n\n# Step 1.0: final\n\nfinal output\n');
     rmSync(f.resultPath);
     f.store.ensureResultArtifact(f.jobId);
     expect(readFileSync(f.resultPath, 'utf8')).toBe(report);
@@ -188,13 +188,13 @@ describe('terminal export owner', () => {
     if (offset < 0) expect(f.index.resultDurable(f.jobId, f.db)).toBe(true);
   });
 
-  it('denies retirement proof for a retained terminal that disagrees with its source or is missing', () => {
+  it('denies retirement proof for a retained terminal whose timestamp disagrees with its source or is missing', () => {
     const f = fixture();
     f.complete({ terminalAt: TERMINAL_EXPORT_CUTOFF - 1 });
     expect(f.index.resultDurable(f.jobId, f.db)).toBe(true);
     const record = JSON.parse(readFileSync(f.locationPath, 'utf8'));
     const corrupt = structuredClone(record);
-    corrupt.detail.events[0].result.content = 'stale';
+    corrupt.detail.events[0].ts = new Date(TERMINAL_EXPORT_CUTOFF - 2).toISOString();
     writeFileSync(f.locationPath, JSON.stringify(corrupt));
     expect(f.index.resultDurable(f.jobId, f.db)).toBe(false);
     delete record.detail;
@@ -228,19 +228,21 @@ describe('terminal export owner', () => {
     expect(f.index.resultDurable(f.jobId)).toBe(false);
   });
 
-  it('observation makes no write or fsync', () => {
+  it('repeated observation makes no write, fsync or terminal body parse', () => {
     const f = fixture();
     f.complete();
     const owner = f.store.getResultExportOwner();
     const write = vi.spyOn(f.runtime.storage, 'writeAtomicDurableSync');
     const sync = vi.spyOn(f.runtime.storage, 'fdatasyncSync');
-    expect(owner.observeResultAvailability(f.jobId)).toEqual({ kind: 'pending' });
+    const parse = vi.spyOn(JSON, 'parse');
+    for (let i = 0; i < 4; i++) expect(owner.observeResultAvailability(f.jobId)).toEqual({ kind: 'pending' });
     expect(write).not.toHaveBeenCalled();
     expect(sync).not.toHaveBeenCalled();
+    expect(parse.mock.calls.filter(([body]) => body.startsWith('{"terminal":'))).toHaveLength(0);
   });
 });
 
-it('reports contradictory accepted source facts as unusable without promising a retry', () => {
+it('checks accepted source content at publication rather than observation', () => {
   const f = fixture();
   f.complete();
   f.db
@@ -251,9 +253,13 @@ it('reports contradictory accepted source facts as unusable without promising a 
       ),
       f.jobId,
     );
-  expect(f.store.getResultExportOwner().observeResultAvailability(f.jobId)).toEqual({
+  const owner = f.store.getResultExportOwner();
+  expect(owner.observeResultAvailability(f.jobId)).toEqual({ kind: 'pending' });
+  owner.publishTerminalResult(f.jobId);
+  expect(existsSync(f.resultPath)).toBe(false);
+  expect(owner.observeResultAvailability(f.jobId)).toEqual({
     kind: 'failed',
-    reason: 'the retained terminal does not match its source journal',
+    reason: 'the source facts needed to write the result file are unavailable',
   });
 });
 

@@ -6,7 +6,6 @@ import type { Database } from '../../store/db.js';
 import type { EventsRow } from '../../store/schema.js';
 import { observeResolvedStoreEpoch, inspectResolvedStoreEpochKey } from '../../store/epoch/observation.js';
 import { acquireSharedFileLockNoRepairSync } from '../../infra/fs-lock.js';
-import { jobTerminalRecordedBodySchema } from './result.js';
 import { observeStorePath } from '../../store/path-observation.js';
 
 export function readAcceptedTerminal(db: Database, jobId: string): EventsRow | null {
@@ -17,7 +16,6 @@ export function readAcceptedTerminal(db: Database, jobId: string): EventsRow | n
     >("SELECT * FROM events WHERE type = 'job.terminal.recorded' AND stream_kind = 'job' AND stream_id = ? ORDER BY seq DESC LIMIT 1")
     .get(jobId);
   if (!row || row.type !== 'job.terminal.recorded') return null;
-  jobTerminalRecordedBodySchema.parse(JSON.parse(Buffer.from(row.body).toString('utf8')));
   return row;
 }
 
