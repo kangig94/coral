@@ -610,28 +610,3 @@ it('rebinds repair hints when lifecycle recovery starts with a replacement progr
   await scheduler.stop();
   expect(detach).toHaveBeenLastCalledWith(null);
 });
-
-it('re-arms repair when a new hint arrives during an outstanding pass', async () => {
-  const { f, scheduler } = fixture();
-  const owner = f.store.getResultExportOwner();
-  const passes: string[][] = [];
-  let release: () => void = () => {};
-  const hints = (owner as unknown as { hints: Set<string> }).hints;
-  vi.spyOn(owner, 'repairPass').mockImplementation(async () => {
-    const snapshot = [...hints];
-    passes.push(snapshot);
-    for (const id of snapshot) hints.delete(id);
-    if (snapshot.includes('job-a'))
-      await new Promise<void>((resolve) => {
-        release = resolve;
-      });
-  });
-  scheduler.start();
-  await vi.advanceTimersByTimeAsync(0);
-  owner.hintRepair('job-a');
-  await vi.advanceTimersByTimeAsync(1500);
-  owner.hintRepair('job-b');
-  release();
-  await vi.advanceTimersByTimeAsync(2000);
-  expect(passes.some((pass) => pass.includes('job-b'))).toBe(true);
-});

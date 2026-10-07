@@ -211,89 +211,8 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
       throw new UsageError(`At most ${MAX_WAIT_JOB_IDS} jobs may be waited on at once. Split the IDs across commands.`);
     const projectRoot = process.cwd();
     const client = makeClient(projectRoot, command);
-    if (opts.now) {
-      const invocation = getWaitInvocation();
-      let cursor: WaitCursor | undefined;
-      if (opts.cursor !== undefined) {
-        if (decodeWaitCursor(opts.cursor).kind === 'decoded') cursor = opts.cursor;
-        else process.stdout.write(`${WAIT_CURSOR_REPLAY_NOTICE} This snapshot shows the latest progress tail.\n`);
-      }
-      const reset = () => {
-        cursor = undefined;
-        process.stdout.write(`${WAIT_CURSOR_REPLAY_NOTICE} This snapshot shows the latest progress tail.\n`);
-      };
-      const read = () =>
-        client.snapshotJobsWait({
-          jobIds,
-          projectRoot,
-          ...(cursor === undefined ? {} : { cursor }),
-          ...(lines === undefined ? {} : { lines }),
-        });
-      let response;
-      try {
-        response = await read();
-      } catch (error) {
-        const mapped = mapWaitSubscriptionError(error);
-        if (mapped instanceof WaitBuildMismatchError) throw mapped;
-        if (
-          !(mapped instanceof BackendToolHttpError) ||
-          !isRecord(mapped.body) ||
-          !SOFT_CURSOR_REFUSALS.includes(String(mapped.body.code))
-        )
-          throw error;
-        reset();
-        response = await read();
-      }
-      invocation?.check();
-      let snapshot;
-      try {
-        snapshot = parseWaitSnapshot(response, jobIds);
-      } catch {
-        throw new WaitSnapshotResponseError(
-          invocation?.originalCommand ??
-            `coral-cli wait jobs ${jobIds.join(' ')} --now${opts.cursor === undefined ? '' : ` --cursor ${opts.cursor}`}${opts.lines === undefined ? '' : ` --lines ${opts.lines}`}`,
-        );
-      }
-      const output = formatWaitSnapshot(snapshot) + '\n';
-      const continuation = formatWaitContinuation(snapshot.remainingJobIds, snapshot.cursor, true) + '\n';
-      const write = () =>
-        new Promise<void>((resolve, reject) =>
-          process.stdout.write(output, (error) => (error ? reject(error) : resolve())),
-        );
-      try {
-        await (invocation ? invocation.writeSnapshotOutput(output, continuation, snapshot.exitCode) : write());
-      } catch (error) {
-        if (error instanceof WaitInvocationEnded) throw error;
-        throw new WaitOutputError(
-          error,
-          invocation?.originalCommand ??
-            `coral-cli wait jobs ${jobIds.join(' ')} --now${opts.cursor === undefined ? '' : ` --cursor ${opts.cursor}`}${opts.lines === undefined ? '' : ` --lines ${opts.lines}`}`,
-        );
-      }
-
-      process.exitCode = snapshot.exitCode;
-      return;
-    }
-
-    process.exitCode = await followJobs({
-      start: { kind: 'jobs', jobIds, ...(opts.cursor === undefined ? {} : { serializedCursor: opts.cursor }) },
-      reconnectPolicy: 'bounded',
-      invocation: getWaitInvocation(),
-      projectRoot,
-      emitError,
-      render: {
-        ...getTerminalContext(),
-        embed: opts.embed === true,
-        verbose: opts.verbose === true,
-      },
-      connect: async ({ jobIds: activeJobIds, cursor, timeoutSeconds, signal, drainProgress }) => ({
-        kind: 'subscription',
-        subscription: await client.subscribeJobsWait(
-          { jobIds: activeJobIds, timeoutSeconds, projectRoot, drainProgress, ...(cursor ? { cursor } : {}) },
-          { signal },
-        ),
-      }),
-    });
+    if (opts.now) await runWaitSnapshot(client, jobIds, projectRoot, opts, lines);
+    else await runBoundedWaitJobs(client, jobIds, projectRoot, opts);
   }
 
   const waitCommand = program.command('wait');
@@ -385,4 +304,100 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
         emitError(normalizeUsageError(error));
       }
     });
+}
+
+async function runWaitSnapshot(
+  client: ReturnType<typeof makeClient>,
+  jobIds: string[],
+  projectRoot: string,
+  opts: WaitJobsOptions,
+  lines: number | undefined,
+): Promise<void> {
+  const invocation = getWaitInvocation();
+  let cursor: WaitCursor | undefined;
+  if (opts.cursor !== undefined) {
+    if (decodeWaitCursor(opts.cursor).kind === 'decoded') cursor = opts.cursor;
+    else process.stdout.write(`${WAIT_CURSOR_REPLAY_NOTICE} This snapshot shows the latest progress tail.\n`);
+  }
+  const reset = () => {
+    cursor = undefined;
+    process.stdout.write(`${WAIT_CURSOR_REPLAY_NOTICE} This snapshot shows the latest progress tail.\n`);
+  };
+  const read = () =>
+    client.snapshotJobsWait({
+      jobIds,
+      projectRoot,
+      ...(cursor === undefined ? {} : { cursor }),
+      ...(lines === undefined ? {} : { lines }),
+    });
+  let response;
+  try {
+    response = await read();
+  } catch (error) {
+    const mapped = mapWaitSubscriptionError(error);
+    if (mapped instanceof WaitBuildMismatchError) throw mapped;
+    if (
+      !(mapped instanceof BackendToolHttpError) ||
+      !isRecord(mapped.body) ||
+      !SOFT_CURSOR_REFUSALS.includes(String(mapped.body.code))
+    )
+      throw error;
+    reset();
+    response = await read();
+  }
+  invocation?.check();
+  let snapshot;
+  try {
+    snapshot = parseWaitSnapshot(response, jobIds);
+  } catch {
+    throw new WaitSnapshotResponseError(
+      invocation?.originalCommand ??
+        `coral-cli wait jobs ${jobIds.join(' ')} --now${opts.cursor === undefined ? '' : ` --cursor ${opts.cursor}`}${opts.lines === undefined ? '' : ` --lines ${opts.lines}`}`,
+    );
+  }
+  const output = formatWaitSnapshot(snapshot) + '\n';
+  const continuation = formatWaitContinuation(snapshot.remainingJobIds, snapshot.cursor, true) + '\n';
+  const write = () =>
+    new Promise<void>((resolve, reject) =>
+      process.stdout.write(output, (error) => (error ? reject(error) : resolve())),
+    );
+  try {
+    await (invocation ? invocation.writeSnapshotOutput(output, continuation, snapshot.exitCode) : write());
+  } catch (error) {
+    if (error instanceof WaitInvocationEnded) throw error;
+    throw new WaitOutputError(
+      error,
+      invocation?.originalCommand ??
+        `coral-cli wait jobs ${jobIds.join(' ')} --now${opts.cursor === undefined ? '' : ` --cursor ${opts.cursor}`}${opts.lines === undefined ? '' : ` --lines ${opts.lines}`}`,
+    );
+  }
+
+  process.exitCode = snapshot.exitCode;
+}
+
+async function runBoundedWaitJobs(
+  client: ReturnType<typeof makeClient>,
+  jobIds: string[],
+  projectRoot: string,
+  opts: WaitJobsOptions,
+): Promise<void> {
+  process.exitCode = await followJobs({
+    start: { kind: 'jobs', jobIds, ...(opts.cursor === undefined ? {} : { serializedCursor: opts.cursor }) },
+    reconnectPolicy: 'bounded',
+    invocation: getWaitInvocation(),
+    projectRoot,
+    emitError,
+    render: {
+      ...getTerminalContext(),
+      embed: opts.embed === true,
+      verbose: opts.verbose === true,
+    },
+    connect: async ({ jobIds: activeJobIds, cursor, timeoutSeconds, signal, drainProgress }) => ({
+      kind: 'subscription',
+      subscription: await client.subscribeJobsWait(
+        { jobIds: activeJobIds, timeoutSeconds, projectRoot, drainProgress, ...(cursor ? { cursor } : {}) },
+        { signal },
+      ),
+    }),
+  });
 }

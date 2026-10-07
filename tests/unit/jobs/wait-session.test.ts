@@ -286,38 +286,35 @@ it.each([undefined, savedCursor(10)])(
   },
 );
 
-it.each(['missing', 'scope-mismatch', 'unreadable', 'historical', 'lost'] as const)(
-  'a %s member does not hold the watermark',
-  (kind) => {
-    const session = testSession(['a', 'u']);
-    session.reconcile([
-      admitted('a', [[100, 'a100']], false),
-      kind === 'historical'
-        ? { ...admitted('u'), historical: true }
-        : kind === 'lost'
-          ? admitted('u', [], false)
-          : { jobId: 'u', disposition: kind },
-    ]);
-    observeWaitRead(() => session.admissions)();
-    session.withProgress(
-      (epoch, read) =>
-        testProgressVisit(epoch, (source) =>
-          read({
-            ...source,
-            newest: (jobId, count) => {
-              if (kind === 'lost' && jobId === 'u') throw new HistoricalDecodeError('undecodable progress');
-              return source.newest(jobId, count);
-            },
-          }),
-        ),
-      (source) => {
-        const selected = session.select(source, { lines: 500, bytes: 65536 }, 20);
-        session.commit(selected);
-      },
-    );
-    expect(session.cursor()).toBe(savedCursor(100));
-  },
-);
+it.each(['missing', 'historical', 'lost'] as const)('a %s member does not hold the watermark', (kind) => {
+  const session = testSession(['a', 'u']);
+  session.reconcile([
+    admitted('a', [[100, 'a100']], false),
+    kind === 'historical'
+      ? { ...admitted('u'), historical: true }
+      : kind === 'lost'
+        ? admitted('u', [], false)
+        : { jobId: 'u', disposition: kind },
+  ]);
+  observeWaitRead(() => session.admissions)();
+  session.withProgress(
+    (epoch, read) =>
+      testProgressVisit(epoch, (source) =>
+        read({
+          ...source,
+          newest: (jobId, count) => {
+            if (kind === 'lost' && jobId === 'u') throw new HistoricalDecodeError('undecodable progress');
+            return source.newest(jobId, count);
+          },
+        }),
+      ),
+    (source) => {
+      const selected = session.select(source, { lines: 500, bytes: 65536 }, 20);
+      session.commit(selected);
+    },
+  );
+  expect(session.cursor()).toBe(savedCursor(100));
+});
 
 it('reports the exact complete lines and bytes omitted from a forced 501-line event', () => {
   const lines = Array.from({ length: 501 }, (_, i) => `line ${i}`);

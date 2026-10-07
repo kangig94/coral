@@ -234,13 +234,6 @@ export class WaitSession {
     }
   }
 
-  /**
-   * A job's first readable visit reads its newest rows, `tail` lines at most, within its share of the budget; with no
-   * `tail` it reads from its origin instead. Every later read takes the rows after its seq, oldest first across jobs,
-   * and the budget cuts only between rows. A budget nothing has been spent from always admits one row, shortened.
-   * Each read job is then consumed through the journal frontier when nothing of it below that frontier is left, and
-   * otherwise through the last row the cut leaves behind it.
-   */
   select(source: ProgressSource | undefined, budget: WaitBudget, tail: number | null): WaitSelection {
     if (source === undefined) return { rows: [], reached: new Map(), full: false };
     const readable = this.admissions.filter((job) => this.readable(job));
@@ -258,83 +251,89 @@ export class WaitSession {
       bytes -= row.bytes;
     };
 
-    const unpositioned = tail === null ? [] : readable.filter((job) => this.member(job.jobId).seq === undefined);
-    if (unpositioned.length > 0) {
-      const lineShare = Math.floor(budget.lines / readable.length);
-      const byteShare = Math.floor(budget.bytes / readable.length);
-      const target = Math.min(tail ?? lineShare, lineShare);
-      if (target < 1 || byteShare < MIN_SHARE_BYTES) full = true;
-      else {
-        const omitted: string[] = [];
-        for (const job of unpositioned) {
-          const newest = this.readRows(job.jobId, () => source.newest(job.jobId, target + 1));
-          const through = newest === null ? null : frontier(job);
-          if (newest === null || through === null) continue;
-          const candidates = newest.slice(-target);
-          const room = { lines: target, bytes: byteShare };
-          const chosen: WaitSelectedRow[] = [];
-          let index = candidates.length - 1;
-          for (; index >= 0; index--) {
-            const selected = this.fit(job.jobId, candidates[index], room, chosen.length === 0, true);
-            if (selected === undefined) continue;
-            if (selected === null) break;
-            chosen.unshift(selected);
-            room.lines -= selected.lines;
-            room.bytes -= selected.bytes;
+    const selectFirstTail = (): void => {
+      const unpositioned = tail === null ? [] : readable.filter((job) => this.member(job.jobId).seq === undefined);
+      if (unpositioned.length > 0) {
+        const lineShare = Math.floor(budget.lines / readable.length);
+        const byteShare = Math.floor(budget.bytes / readable.length);
+        const target = Math.min(tail ?? lineShare, lineShare);
+        if (target < 1 || byteShare < MIN_SHARE_BYTES) full = true;
+        else {
+          const omitted: string[] = [];
+          for (const job of unpositioned) {
+            const newest = this.readRows(job.jobId, () => source.newest(job.jobId, target + 1));
+            const through = newest === null ? null : frontier(job);
+            if (newest === null || through === null) continue;
+            const candidates = newest.slice(-target);
+            const room = { lines: target, bytes: byteShare };
+            const chosen: WaitSelectedRow[] = [];
+            let index = candidates.length - 1;
+            for (; index >= 0; index--) {
+              const selected = this.fit(job.jobId, candidates[index], room, chosen.length === 0, true);
+              if (selected === undefined) continue;
+              if (selected === null) break;
+              chosen.unshift(selected);
+              room.lines -= selected.lines;
+              room.bytes -= selected.bytes;
+            }
+            chosen.forEach(spend);
+            if (index >= 0 || newest.length > target) omitted.push(job.jobId);
+            reached.set(job.jobId, { seq: through, exhausted: true });
           }
-          chosen.forEach(spend);
-          if (index >= 0 || newest.length > target) omitted.push(job.jobId);
-          reached.set(job.jobId, { seq: through, exhausted: true });
+          if (omitted.length > 0)
+            this.notice(`Earlier progress for ${omitted.join(', ')} was not shown; showing the most recent lines.`);
         }
-        if (omitted.length > 0)
-          this.notice(`Earlier progress for ${omitted.join(', ')} was not shown; showing the most recent lines.`);
       }
-    }
+    };
 
-    const later = readable.filter(
-      (job) => !reached.has(job.jobId) && (tail === null || this.member(job.jobId).seq !== undefined),
-    );
-    if (later.length > 0 && lines <= 0) full = true;
-    else if (later.length > 0) {
-      const pageRows = Math.max(1, Math.min(MAX_PAGE_ROWS, Math.ceil(lines / later.length)));
-      const order = new Map(later.map((job, index) => [job.jobId, index]));
-      const pages = later
-        .flatMap((job) => {
-          const page = this.readRows(job.jobId, () =>
-            source.after(job.jobId, this.member(job.jobId).seq ?? 0, pageRows),
-          );
-          return page === null ? [] : [{ job, page }];
-        })
-        .flatMap(({ job, page }) => {
-          const through = frontier(job);
-          return through === null ? [] : [{ jobId: job.jobId, page, through }];
-        });
-      const queue = pages
-        .flatMap(({ jobId, page }) => page.map((row) => ({ jobId, row })))
-        .sort((a, b) => a.row.seq - b.row.seq || (order.get(a.jobId) ?? 0) - (order.get(b.jobId) ?? 0));
-      const walked = new Map<string, number>();
-      // Rows are walked in seq order, so a job the cut stops inside has no unwalked row at or below the last walked one.
-      let cut = 0;
-      for (const { jobId, row } of queue) {
-        const selected = this.fit(jobId, row, { lines, bytes }, fresh && rows.length === 0);
-        if (selected === null) {
-          full = true;
-          break;
+    const selectLaterPages = (): void => {
+      const later = readable.filter(
+        (job) => !reached.has(job.jobId) && (tail === null || this.member(job.jobId).seq !== undefined),
+      );
+      if (later.length > 0 && lines <= 0) full = true;
+      else if (later.length > 0) {
+        const pageRows = Math.max(1, Math.min(MAX_PAGE_ROWS, Math.ceil(lines / later.length)));
+        const order = new Map(later.map((job, index) => [job.jobId, index]));
+        const pages = later
+          .flatMap((job) => {
+            const page = this.readRows(job.jobId, () =>
+              source.after(job.jobId, this.member(job.jobId).seq ?? 0, pageRows),
+            );
+            return page === null ? [] : [{ job, page }];
+          })
+          .flatMap(({ job, page }) => {
+            const through = frontier(job);
+            return through === null ? [] : [{ jobId: job.jobId, page, through }];
+          });
+        const queue = pages
+          .flatMap(({ jobId, page }) => page.map((row) => ({ jobId, row })))
+          .sort((a, b) => a.row.seq - b.row.seq || (order.get(a.jobId) ?? 0) - (order.get(b.jobId) ?? 0));
+        const walked = new Map<string, number>();
+        // Rows are walked in seq order, so a job the cut stops inside has no unwalked row at or below the last walked one.
+        let cut = 0;
+        for (const { jobId, row } of queue) {
+          const selected = this.fit(jobId, row, { lines, bytes }, fresh && rows.length === 0);
+          if (selected === null) {
+            full = true;
+            break;
+          }
+          if (selected !== undefined) spend(selected);
+          walked.set(jobId, (walked.get(jobId) ?? 0) + 1);
+          cut = row.seq;
         }
-        if (selected !== undefined) spend(selected);
-        walked.set(jobId, (walked.get(jobId) ?? 0) + 1);
-        cut = row.seq;
+        for (const { jobId, page, through } of pages) {
+          const exhausted = page.length < pageRows && (walked.get(jobId) ?? 0) === page.length;
+          const seq = exhausted
+            ? through
+            : (walked.get(jobId) ?? 0) === page.length
+              ? (page.at(-1)?.seq ?? 0)
+              : Math.max(this.member(jobId).seq ?? 0, cut);
+          reached.set(jobId, { seq, exhausted });
+        }
       }
-      for (const { jobId, page, through } of pages) {
-        const exhausted = page.length < pageRows && (walked.get(jobId) ?? 0) === page.length;
-        const seq = exhausted
-          ? through
-          : (walked.get(jobId) ?? 0) === page.length
-            ? (page.at(-1)?.seq ?? 0)
-            : Math.max(this.member(jobId).seq ?? 0, cut);
-        reached.set(jobId, { seq, exhausted });
-      }
-    }
+    };
+    selectFirstTail();
+    selectLaterPages();
     return { rows, reached, full };
   }
 
@@ -483,13 +482,13 @@ function byteLength(lines: readonly string[]): number {
   return lines.reduce((sum, line) => sum + Buffer.byteLength(line), 0);
 }
 
-export function splitWaitProgress(message: string): string[] {
+function splitWaitProgress(message: string): string[] {
   const lines = message.split('\n');
   if (message.endsWith('\n')) lines.pop();
   return lines.length === 0 ? [''] : lines;
 }
 
-export function shortenWaitLine(line: string): string {
+function shortenWaitLine(line: string): string {
   const bytes = Buffer.byteLength(line);
   if (bytes <= 4096) return line;
   const buffer = Buffer.from(line);

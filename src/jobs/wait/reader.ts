@@ -100,13 +100,7 @@ export async function* readWaitSession(input: WaitReadInput): AsyncGenerator<Wai
           observing = false;
         });
       }
-      yield* admissionEvents(session, state);
-      yield* progressEvents(progress, state);
-      session.commit(progress);
-      const terminals = yield* terminalEvents(session, !bounded);
-      if (terminals === 'final') return;
-      if (progress.rows.length > 0 || terminals === 'repeated') yield* cursorFrame(session, state);
-      yield* carrierEvents(session, state.absentReported);
+      if (yield* pollEvents(session, state, progress, bounded)) return;
       if (session.remaining().length === 0) {
         yield waitingEvent(session);
         return;
@@ -276,4 +270,20 @@ function* carrierEvents(session: WaitSession, absentReported: Set<string>): Gene
       outcome: 'unknown',
     };
   }
+}
+
+function* pollEvents(
+  session: WaitSession,
+  state: DeliveryState,
+  progress: WaitSelection,
+  bounded: boolean,
+): Generator<WaitStreamEvent, boolean> {
+  yield* admissionEvents(session, state);
+  yield* progressEvents(progress, state);
+  session.commit(progress);
+  const terminals = yield* terminalEvents(session, !bounded);
+  if (terminals === 'final') return true;
+  if (progress.rows.length > 0 || terminals === 'repeated') yield* cursorFrame(session, state);
+  yield* carrierEvents(session, state.absentReported);
+  return false;
 }

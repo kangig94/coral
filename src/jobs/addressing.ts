@@ -502,40 +502,13 @@ export class JobAddressing {
           return activeJournalReadFailure(jobId, location.epochKey, error);
         }
       }
-      const closure = closures.get(epochIdentity(location.epochKey));
-      const source = historical.get(epochIdentity(location.epochKey));
-      if (!source) throw new Error(`Missing historical read for epoch ${location.epochKey}`);
-      const classified = historicalDisposition(location, closure ?? 'pending', source, jobId);
-      const { message } = classified;
-      const accepted = classified.location;
-      if (classified.kind !== 'admitted')
-        return { jobId, disposition: 'unreadable', epochKey: location.epochKey, message };
-      if (!hasReadableTerminalDetail(accepted))
-        return classified.sourceRead === 'transient-unknown'
-          ? {
-              jobId,
-              disposition: 'unknown',
-              epochKey: location.epochKey,
-              message:
-                message ??
-                'Its store epoch cannot be read right now; epoch maintenance re-reads it every 5 s and settles after 3 failed probes',
-            }
-          : {
-              jobId,
-              disposition: 'admitted',
-              epochKey: location.epochKey,
-              historical: true,
-              ...(accepted.detail.kind === 'recorded' ? { detail: waitDetail(accepted.detail.value) } : {}),
-            };
-      const detail = accepted.detail.kind === 'recorded' ? accepted.detail.value : undefined;
-      return {
+      return historicalAdmission(
         jobId,
-        disposition: 'admitted',
-        epochKey: location.epochKey,
-        historical: true,
-        ...(detail ? { detail: waitDetail(detail) } : {}),
-        availability: this.availability(jobId),
-      };
+        location,
+        closures.get(epochIdentity(location.epochKey)),
+        historical.get(epochIdentity(location.epochKey)),
+        (id) => this.availability(id),
+      );
     });
   }
 
@@ -617,5 +590,45 @@ function waitDetail(
       'events' in detail
         ? (detail.events.find((event) => event.type === 'terminal')?.seq ?? detail.status.lastSeq)
         : detail.terminalSeq,
+  };
+}
+
+function historicalAdmission(
+  jobId: string,
+  location: JobLocation,
+  closure: ReturnType<HistoricalClosureProbe> | undefined,
+  source: HistoricalSourceRead | undefined,
+  availability: (jobId: string) => ResultAvailability,
+): WaitAdmission {
+  if (!source) throw new Error(`Missing historical read for epoch ${location.epochKey}`);
+  const classified = historicalDisposition(location, closure ?? 'pending', source, jobId);
+  const { message } = classified;
+  const accepted = classified.location;
+  if (classified.kind !== 'admitted') return { jobId, disposition: 'unreadable', epochKey: location.epochKey, message };
+  if (!hasReadableTerminalDetail(accepted))
+    return classified.sourceRead === 'transient-unknown'
+      ? {
+          jobId,
+          disposition: 'unknown',
+          epochKey: location.epochKey,
+          message:
+            message ??
+            'Its store epoch cannot be read right now; epoch maintenance re-reads it every 5 s and settles after 3 failed probes',
+        }
+      : {
+          jobId,
+          disposition: 'admitted',
+          epochKey: location.epochKey,
+          historical: true,
+          ...(accepted.detail.kind === 'recorded' ? { detail: waitDetail(accepted.detail.value) } : {}),
+        };
+  const detail = accepted.detail.kind === 'recorded' ? accepted.detail.value : undefined;
+  return {
+    jobId,
+    disposition: 'admitted',
+    epochKey: location.epochKey,
+    historical: true,
+    ...(detail ? { detail: waitDetail(detail) } : {}),
+    availability: availability(jobId),
   };
 }

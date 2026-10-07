@@ -170,16 +170,15 @@ function jobLabelsFor(projectRoot: string, jobIds: readonly string[]): Map<strin
   return jobIds.length > 1 || hasWorkflowLabel ? labels : null;
 }
 
-function emitWaitEvent(
+function formatFollowWaitEvent(
   event: WaitStreamEvent,
   cursor: string | null,
   jobLabels: ReadonlyMap<string, JobLabel> | null,
   resumeJobIds: readonly string[],
   renderOptions: FollowJobsOptions['render'],
   renderCauseRef?: (ref: CauseRef, terminalOutcomeDiagnostic?: TerminalOutcome, epochKey?: string) => string,
-  onDelivered?: () => void,
-): Promise<void> {
-  let line: string;
+): string {
+  let line!: string;
   switch (event.type) {
     case 'notice':
       line = event.message;
@@ -212,6 +211,20 @@ function emitWaitEvent(
       line = formatWaitWaiting(event, cursor, resumeJobIds);
       break;
   }
+
+  return line;
+}
+
+function emitWaitEvent(
+  event: WaitStreamEvent,
+  cursor: string | null,
+  jobLabels: ReadonlyMap<string, JobLabel> | null,
+  resumeJobIds: readonly string[],
+  renderOptions: FollowJobsOptions['render'],
+  renderCauseRef?: (ref: CauseRef, terminalOutcomeDiagnostic?: TerminalOutcome, epochKey?: string) => string,
+  onDelivered?: () => void,
+): Promise<void> {
+  const line = formatFollowWaitEvent(event, cursor, jobLabels, resumeJobIds, renderOptions, renderCauseRef);
 
   const trailingNewline =
     renderOptions.isTTY && ['terminal', 'waiting', 'notice', 'disposition'].includes(event.type) ? '\n' : '';
@@ -319,72 +332,9 @@ async function connectFollowStream(
   deadlineMs: number,
 ): Promise<FollowStep | { kind: 'connected'; connection: FollowConnection }> {
   try {
-    if (options.reconnectPolicy === 'bounded' && deadlineMs - performance.now() <= 1000) {
-      options.invocation?.stop();
-      throw new WaitInvocationEnded();
-    }
-    const cursor = state.currentCursor;
-    state.sendCursor = cursor !== undefined;
-    const connection = await options
-      .connect({
-        drainProgress: options.reconnectPolicy === 'until-terminal',
-        jobIds: state.remainingJobIds,
-        ...(cursor === undefined ? {} : { cursor }),
-        timeoutSeconds:
-          options.reconnectPolicy === 'bounded' ? boundedTimeoutSeconds(deadlineMs) : FOLLOW_TIMEOUT_SECONDS,
-        signal: controller.signal,
-        onDelegatedChild: (child) => {
-          state.delegatedChild = child;
-          if (state.interrupted) child.kill('SIGINT');
-        },
-      })
-      .finally(() => {
-        state.delegatedChild = undefined;
-      });
-    options.invocation?.check();
-    return { kind: 'connected', connection };
+    return await openFollowConnection(options, state, controller, deadlineMs);
   } catch (error) {
-    options.invocation?.check();
-    if (state.interrupted) {
-      return { kind: 'exit', code: finishInterruptedFollow(state) };
-    }
-    const handledError = mapWaitSubscriptionError(error);
-    if (
-      handledError instanceof BackendToolHttpError &&
-      isRecord(handledError.body) &&
-      SOFT_CURSOR_REFUSALS.includes(String(handledError.body.code))
-    ) {
-      if (!state.sendCursor) {
-        options.emitError(withWaitRecovery(handledError, state.remainingJobIds, state.currentCursor));
-        return { kind: 'exit', code: fallbackExitCode() };
-      }
-      writeStdout(`${WAIT_CURSOR_REPLAY_NOTICE}\n`);
-      state.currentCursor = undefined;
-      state.sendCursor = false;
-      return { kind: 'retry' };
-    }
-    if (!(handledError instanceof Error) || !isTransientStreamError(handledError)) {
-      options.emitError(withWaitRecovery(handledError, state.remainingJobIds, state.currentCursor));
-      return { kind: 'exit', code: fallbackExitCode() };
-    }
-    if (state.retriesLeft === 0) {
-      if (
-        state.hasOpenedSubscription ||
-        handledError instanceof TransientHttpError ||
-        handledError instanceof IpcRequestTimeout
-      ) {
-        options.emitError(new WaitResumeError(handledError.message, state.remainingJobIds, state.currentCursor));
-        return { kind: 'exit', code: errorCodeToExit('transient') };
-      }
-      options.emitError(withWaitRecovery(handledError, state.remainingJobIds, state.currentCursor));
-      return { kind: 'exit', code: fallbackExitCode() };
-    }
-    state.retriesLeft -= 1;
-    const shouldRetry = await waitForRetry(controller.signal, options.backoffScheduler);
-    if (state.interrupted) {
-      return { kind: 'exit', code: finishInterruptedFollow(state) };
-    }
-    return shouldRetry ? { kind: 'retry' } : { kind: 'exit', code: 1 };
+    return recoverFollowConnection(options, state, controller, error);
   }
 }
 
@@ -833,4 +783,85 @@ export async function launchAndFollow(options: FollowOptions): Promise<number> {
     },
     ...(options.backoffScheduler ? { backoffScheduler: options.backoffScheduler } : {}),
   });
+}
+
+async function openFollowConnection(
+  options: FollowJobsOptions,
+  state: FollowSessionState,
+  controller: AbortController,
+  deadlineMs: number,
+): Promise<{ kind: 'connected'; connection: FollowConnection }> {
+  if (options.reconnectPolicy === 'bounded' && deadlineMs - performance.now() <= 1000) {
+    options.invocation?.stop();
+    throw new WaitInvocationEnded();
+  }
+  const cursor = state.currentCursor;
+  state.sendCursor = cursor !== undefined;
+  const connection = await options
+    .connect({
+      drainProgress: options.reconnectPolicy === 'until-terminal',
+      jobIds: state.remainingJobIds,
+      ...(cursor === undefined ? {} : { cursor }),
+      timeoutSeconds:
+        options.reconnectPolicy === 'bounded' ? boundedTimeoutSeconds(deadlineMs) : FOLLOW_TIMEOUT_SECONDS,
+      signal: controller.signal,
+      onDelegatedChild: (child) => {
+        state.delegatedChild = child;
+        if (state.interrupted) child.kill('SIGINT');
+      },
+    })
+    .finally(() => {
+      state.delegatedChild = undefined;
+    });
+  options.invocation?.check();
+  return { kind: 'connected', connection };
+}
+
+async function recoverFollowConnection(
+  options: FollowJobsOptions,
+  state: FollowSessionState,
+  controller: AbortController,
+  error: unknown,
+): Promise<FollowStep> {
+  options.invocation?.check();
+  if (state.interrupted) {
+    return { kind: 'exit', code: finishInterruptedFollow(state) };
+  }
+  const handledError = mapWaitSubscriptionError(error);
+  if (
+    handledError instanceof BackendToolHttpError &&
+    isRecord(handledError.body) &&
+    SOFT_CURSOR_REFUSALS.includes(String(handledError.body.code))
+  ) {
+    if (!state.sendCursor) {
+      options.emitError(withWaitRecovery(handledError, state.remainingJobIds, state.currentCursor));
+      return { kind: 'exit', code: fallbackExitCode() };
+    }
+    writeStdout(`${WAIT_CURSOR_REPLAY_NOTICE}\n`);
+    state.currentCursor = undefined;
+    state.sendCursor = false;
+    return { kind: 'retry' };
+  }
+  if (!(handledError instanceof Error) || !isTransientStreamError(handledError)) {
+    options.emitError(withWaitRecovery(handledError, state.remainingJobIds, state.currentCursor));
+    return { kind: 'exit', code: fallbackExitCode() };
+  }
+  if (state.retriesLeft === 0) {
+    if (
+      state.hasOpenedSubscription ||
+      handledError instanceof TransientHttpError ||
+      handledError instanceof IpcRequestTimeout
+    ) {
+      options.emitError(new WaitResumeError(handledError.message, state.remainingJobIds, state.currentCursor));
+      return { kind: 'exit', code: errorCodeToExit('transient') };
+    }
+    options.emitError(withWaitRecovery(handledError, state.remainingJobIds, state.currentCursor));
+    return { kind: 'exit', code: fallbackExitCode() };
+  }
+  state.retriesLeft -= 1;
+  const shouldRetry = await waitForRetry(controller.signal, options.backoffScheduler);
+  if (state.interrupted) {
+    return { kind: 'exit', code: finishInterruptedFollow(state) };
+  }
+  return shouldRetry ? { kind: 'retry' } : { kind: 'exit', code: 1 };
 }

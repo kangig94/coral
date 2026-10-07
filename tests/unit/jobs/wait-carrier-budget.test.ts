@@ -7,7 +7,7 @@ import { admitted, savedCursor, TEST_EPOCH } from '#tests/helpers/wait-session.j
 const lines = (from: number, to: number, prefix: string): Array<[number, string]> =>
   Array.from({ length: to - from + 1 }, (_, i) => [from + i, `${prefix}${from + i}`]);
 
-it('a live job with a >500-line backlog is reported carrier-unconfirmed on a continuation', async () => {
+it('a live job with a >500-line backlog is not reported carrier-unconfirmed on a continuation', async () => {
   // Earlier wait consumed through seq 10.
   const cursor = savedCursor(10);
   const events: unknown[] = [];
