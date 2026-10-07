@@ -6,6 +6,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 
 import { acquireDirectoryLockSync } from '../infra/fs-lock.js';
+import { backendLog } from '../infra/backend-log.js';
 import type { TimePort } from '../infra/port-types.js';
 import type { Runtime } from '../runtime/ports.js';
 import type { ResolvableCoralEventInput } from '../store/envelope.js';
@@ -285,6 +286,7 @@ export class JobLocationIndex {
   private locationsUnreadable: Array<{ file: string; epochKey: string | null }> = [];
   private readonly locationsByEpoch = new Map<string, JobLocation[]>();
   private readonly runtime: Runtime;
+  private strayEpochEntryReported = false;
 
   readonly workflowReport?: WorkflowReportPort;
 
@@ -657,7 +659,14 @@ export class JobLocationIndex {
         reason: hold.reason,
         retryScheduled: hold.retryScheduled === true,
       };
-    } catch {
+    } catch (error) {
+      // Every hold lives in a directory: a stray file under epochs/ holds nothing, and as a hold it could never clear.
+      if (directory && error instanceof Error && 'code' in error && error.code === 'ENOTDIR') {
+        if (!this.strayEpochEntryReported)
+          backendLog.warn(`[job-locations] ignoring non-directory entry under epochs/: ${identity}`);
+        this.strayEpochEntryReported = true;
+        return null;
+      }
       return {
         ...(directory ? { directory: identity } : { epochKey: identity }),
         reason: 'Location recovery hold cannot be decoded or read by this build; no automatic retry is scheduled',

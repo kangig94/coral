@@ -149,9 +149,9 @@ function openSharedFileLockSync(path: string, readOnly: boolean, busyTimeoutMs: 
   );
 }
 
-export function createSharedFileLockSync(path: string): FileLockLease {
+export function createSharedFileLockSync(path: string, busyTimeoutMs = 5_000): FileLockLease {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  return openSharedFileLockSync(path, false, 5_000);
+  return openSharedFileLockSync(path, false, busyTimeoutMs);
 }
 
 export function acquireSharedFileLockSync(path: string, busyTimeoutMs = 5_000): FileLockLease {

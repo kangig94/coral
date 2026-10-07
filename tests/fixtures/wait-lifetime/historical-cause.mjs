@@ -99,7 +99,7 @@ console.log(
       resultPath: '/tmp/result.md',
       availability: { kind: 'available', resultPath: '/tmp/result.md' },
       remainingJobIds: [],
-      cursor: { jobs: [] },
+      cursor: null,
       exitCode: 1,
     },
     null,
@@ -124,7 +124,7 @@ const event = {
   resultPath: '/tmp/result.md',
   availability: { kind: 'available', resultPath: '/tmp/result.md' },
   remainingJobIds: [],
-  cursor: { jobs: [] },
+  cursor: null,
   exitCode: 1,
 };
 let output = '';

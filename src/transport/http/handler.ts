@@ -5,8 +5,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { z, type ZodError } from 'zod';
 import { type WaitCursor, type WaitStreamEvent } from '../../jobs/wait/contract.js';
 import { advanceWaitRenderCursor } from '../../jobs/wait/stream-event.js';
-import { serializeWaitCursor } from '../../jobs/wait/cursor.js';
-import { decodeSerializedWaitCursor } from '../../jobs/wait/cursor.js';
+import { decodeWaitCursor } from '../../jobs/wait/cursor.js';
 import { performance } from 'node:perf_hooks';
 import { writeAuditEvent, writeAuthorizationDecisionAudit } from '../../infra/audit-log.js';
 import { isRecord } from '../../infra/json.js';
@@ -825,17 +824,16 @@ async function handleJobsWaitSubscription(
   const serializedCursorHeader = Array.isArray(req.headers['last-event-id'])
     ? req.headers['last-event-id'][0]
     : req.headers['last-event-id'];
-  const decoded = serializedCursorHeader === undefined ? undefined : decodeSerializedWaitCursor(serializedCursorHeader);
+  const decoded = serializedCursorHeader === undefined ? undefined : decodeWaitCursor(serializedCursorHeader);
   if (decoded?.kind === 'rejected') {
     sendJson(res, 400, decoded.error);
     return;
   }
-  const headerCursor = decoded?.kind === 'decoded' ? decoded.cursor : undefined;
 
   const deadline = performance.now() + (request.timeoutSeconds ?? 600) * 1000;
   const controller = new AbortController();
-  // The SSE frontier rides Last-Event-ID; a request without one states the empty frontier of a fresh collection.
-  const waitRequest = { ...request, cursor: headerCursor ?? { jobs: [] } };
+  // The SSE frontier rides Last-Event-ID; a request without one states the fresh collection of a null cursor.
+  const waitRequest = { ...request, cursor: serializedCursorHeader ?? null };
   const principal = authenticateCatalogPrincipal(req, deps);
   if (principal === null) {
     controller.abort();
@@ -899,9 +897,9 @@ async function handleJobsWaitSubscription(
       }
 
       const event = next.value as WaitStreamEvent;
-      // Last-Event-ID resumes from the frontier a client has folded, so every event that moves it carries it.
+      // Last-Event-ID resumes from the cursor a client holds, so every event that moves it carries it.
       const fold = advanceWaitRenderCursor(folded, event);
-      const id = fold.cursor !== folded && fold.cursor !== undefined ? serializeWaitCursor(fold.cursor) : undefined;
+      const id = fold.cursor !== folded ? fold.cursor : undefined;
       folded = fold.cursor;
       if (!(await writeWaitSseEvent(res, event, id, deadline, controller.signal))) {
         if (!res.destroyed && !res.writableEnded)

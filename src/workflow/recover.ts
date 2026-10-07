@@ -49,8 +49,7 @@ import {
 import { DEFAULT_STALE_ABORT_TIMEOUT_MS, recoverStaleAtom, STALE_RESUME_PROMPT } from './stale-recovery.js';
 
 import { waitForAtoms } from './wait.js';
-import { waitJobHash } from '../jobs/wait/cursor.js';
-import type { WaitCursorEntry } from '../jobs/wait/contract.js';
+import { encodeWaitCursor, waitEpochTag } from '../jobs/wait/cursor.js';
 import type { WorkflowFinalizationIntent } from './finalization.js';
 import {
   providerSessionProvider,
@@ -135,7 +134,7 @@ type ResumeWorkflowContext = {
   workflowId: string;
   plan: WorkflowPlan;
   childRows: readonly ProjectionJobStoredRow[];
-  jobEpochKey?: (jobId: string) => string | null;
+  activeEpochKey?: string;
   slotDetailsByJob: Map<string, JobProjectionDetail>;
   providerSessionsById: ReadonlyMap<string, ProviderSession>;
   eventsBySeq: ReadonlyMap<number, EventsRow>;
@@ -896,7 +895,7 @@ async function assembleRelaunch(
 
 function buildWaitRecoveryPlan(deps: ResumeWorkflowDeps, snapshot: RecoverySnapshot): WaitRecoveryPlan {
   const completedOutputs = new Map<string, string>();
-  const entries: WaitCursorEntry[] = [];
+  let watermark = Infinity;
   const drain = deps.drain;
   const projectionsByJob = new Map(deps.childRows.map((row) => [row.job_id, row]));
 
@@ -907,17 +906,17 @@ function buildWaitRecoveryPlan(deps: ResumeWorkflowDeps, snapshot: RecoverySnaps
       continue;
     }
 
-    // A child whose location is unknown stays unpositioned, so the recovered wait delivers it from its origin. A
-    // terminal is its job's last event, so a seq one below it leaves that terminal still to be delivered.
-    const lastSeq = projectionsByJob.get(slot.jobId)?.last_seq ?? 0;
-    if ((deps.jobEpochKey?.(slot.jobId) ?? null) !== null)
-      entries.push({ hash: waitJobHash(slot.jobId), seq: detail.exit ? Math.max(0, lastSeq - 1) : lastSeq });
+    watermark = Math.min(watermark, projectionsByJob.get(slot.jobId)?.last_seq ?? 0);
   }
 
   const failure = firstTerminalFailure(snapshot.compiledSlots, drain, snapshot.slotDetailsByJob);
   const initialState: Partial<WaitInternalState> = {
     completedOutputs,
-    cursor: { jobs: entries },
+    // A child terminal at the watermark is still delivered: an internal read prints every requested terminal.
+    cursor:
+      deps.activeEpochKey === undefined || !Number.isFinite(watermark)
+        ? undefined
+        : (encodeWaitCursor({ epochTag: waitEpochTag(deps.activeEpochKey), seq: watermark }) ?? undefined),
     lastActivityAt: new Map<string, number>(),
     staleRetries: new Map<string, number>(),
     expectedStaleAborts: new Set<string>(),
@@ -1392,7 +1391,7 @@ function atomicReleaser(
 type ResumeAllOptions = {
   db: Database;
   progressStore: StoreReadContext;
-  jobEpochKey?: (jobId: string) => string | null;
+  activeEpochKey?: string;
   loadJobDetails: unknown;
   getExecutionService: (ctx: InvocationContext) => WorkflowExecutionPort;
   createInvocationContext: (projectRoot: CanonicalWorkDir) => InvocationContext;
@@ -1527,7 +1526,7 @@ async function settleWorkflowRecovery(
         workflowId: status.jobId,
         plan: projection.plan,
         childRows: item.childRows,
-        jobEpochKey: options.jobEpochKey,
+        activeEpochKey: options.activeEpochKey,
         slotDetailsByJob: item.slotDetailsByJob,
         providerSessionsById: item.providerSessionsById,
         eventsBySeq: item.eventsBySeq,

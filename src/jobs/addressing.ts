@@ -165,13 +165,24 @@ export class JobAddressing {
     );
   }
 
-  /** A wait poll resolves unknown IDs through its own session-cached hold reads, so it skips the uncached hold scan. */
+  /**
+   * A wait poll resolves unknown IDs through its own session-cached hold reads, so it skips the uncached hold scan. A
+   * location record that cannot be read is no evidence against the active journal, which still answers for its jobs.
+   */
   private location(jobId: string, activeEpochKey?: string, scanHolds = true): JobLocation | null {
-    const existing = this.locations.read(jobId);
+    let existing: JobLocation | null = null;
+    let unreadable: { error: unknown } | undefined;
+    try {
+      existing = this.locations.read(jobId);
+    } catch (error) {
+      if (isCodeDefect(error)) throw error;
+      unreadable = { error };
+    }
     if (existing !== null) return existing;
     const detail = this.active.detail(jobId);
     const epochKey = activeEpochKey ?? this.active.epochKey() ?? ':memory:';
     if (detail === null) {
+      if (unreadable) throw unreadable.error;
       if (!scanHolds) return null;
       for (const hold of this.locations.unknownLocationHolds()) {
         if (!hold.epochKey || sameEpoch(hold.epochKey, epochKey)) continue;
@@ -562,7 +573,7 @@ export class JobAddressing {
       : { kind: 'unreadable', disposition: 'transient-unknown' };
 
   snapshot(request: WaitSnapshotRequest): WaitSnapshot {
-    const session = new WaitSession(request.jobIds, request.cursor);
+    const session = new WaitSession(request.jobIds, request.cursor, this.waitEpoch(request));
     session.reconcile(this.admitWait(request, false));
     return selectWaitSnapshot(session, request.lines ?? 20, this.visitProgress);
   }
@@ -572,6 +583,7 @@ export class JobAddressing {
     let firstRead = true;
     yield* readWaitSession({
       request,
+      activeEpochKey,
       time: this.locations.time,
       visit: this.visitProgress,
       read: () => {

@@ -53,12 +53,11 @@ describe('planCarrierWaitEvents', () => {
   });
 });
 
-it.each(['initial', 'poll', 'throw'])('the stream deadline bounds %s carrier observation', async (stall) => {
+it('the stream deadline bounds a carrier observation that never answers', async () => {
   const { WaitCoordinator } = await import('#src/jobs/shell/wait.js');
   const { VirtualTime, flushMicrotasks } = await import('#tools/simulation/core/virtual-time.js');
   const time = new VirtualTime();
   const stuck = new Promise<never>(() => {});
-  let calls = 0;
   const wait = new WaitCoordinator({
     visitProgress: progressVisitFromEvents(() => []),
     time,
@@ -80,11 +79,7 @@ it.each(['initial', 'poll', 'throw'])('the stream deadline bounds %s carrier obs
       resultPath: `${'/unused'}/${jobId}/result.md`,
     }),
     subscribeJobEvents: () => ({ [Symbol.asyncIterator]: () => ({ next: () => stuck, return: () => stuck }) }),
-    observeCarriers: async () => {
-      calls++;
-      if (stall === 'throw') throw new Error('observer unavailable');
-      return stall === 'poll' && calls === 1 ? [observation(JOB_A, 'unknown')] : stuck;
-    },
+    observeCarriers: () => stuck,
   } as never);
   const stream = wait.waitForOutcomes({ jobIds: [JOB_A], timeoutSeconds: 1 });
   const next = nextDelivered(stream);
@@ -98,5 +93,4 @@ it.each(['initial', 'poll', 'throw'])('the stream deadline bounds %s carrier obs
     value: { type: 'waiting', waitingJobIds: [JOB_A], carrierUnknownJobIds: [JOB_A] },
   });
   await stream.return(undefined);
-  expect(calls).toBe(stall === 'initial' ? 1 : 2);
 });

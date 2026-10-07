@@ -24,6 +24,7 @@ import {
   inspectResolvedStoreEpochKey,
 } from '../store/epoch/index.js';
 import { inspectEpochKey } from '../store/epoch/key.js';
+import { SQLITE_BUSY_ERRCODE } from '../store/epoch/constants.js';
 import { jobProgressTimingSchema } from './event-bodies.js';
 import {
   type JobLocationIndex,
@@ -1090,6 +1091,7 @@ export async function refreshHistoricalEpochs(index: JobLocationIndex, budget?: 
         locations.map((location) => location.jobId),
         budget,
       );
+      if (result.kind === 'contended') continue;
       if (result.kind === 'read') {
         source.refreshAttempts = 0;
         if (!source.refreshPending) index.clearUnknownLocations(epochKey);
@@ -1109,7 +1111,7 @@ export function refreshHistoricalEpoch(
   epochKey: string,
   jobIds: readonly string[],
   budget?: { remaining: number },
-): { kind: 'read' } | { kind: 'unreadable'; reason: string } {
+): { kind: 'read' } | { kind: 'contended' } | { kind: 'unreadable'; reason: string } {
   const source = historicalSources.get(index)?.get(epochIdentity(epochKey));
   if (source === undefined) return { kind: 'unreadable', reason: 'Source is not registered' };
   if (source.seed) return { kind: 'unreadable', reason: 'Historical hydration has not completed' };
@@ -1134,7 +1136,14 @@ export function refreshHistoricalEpoch(
       const guard = source.storage.lstatSync(lockPath, { bigint: true });
       if (!guard.isFile() || guard.nlink !== 1n) throw new Error('Source lock is malformed.');
     }
-    releaseLock = createSharedFileLockSync(lockPath);
+    // A sweep runs on the event loop, so a contended guard defers the epoch to the next tick rather than block it.
+    try {
+      releaseLock = createSharedFileLockSync(lockPath, 0);
+    } catch (error) {
+      if (error instanceof Error && 'errcode' in error && error.errcode === SQLITE_BUSY_ERRCODE)
+        return { kind: 'contended' };
+      throw error;
+    }
     verifyHistoricalIdentity(source, epochKey, addressedEpoch);
     db = source.storage.openSqliteDatabaseSync(dbPath, { readOnly: true });
     db.exec('BEGIN');

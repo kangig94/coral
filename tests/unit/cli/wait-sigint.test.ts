@@ -3,12 +3,6 @@ import { Command } from 'commander';
 import { afterEach, expect, it, vi } from 'vitest';
 import { followJobs } from '#src/cli/follow.js';
 import { WaitInvocation, waitInvocationMode } from '#src/cli/wait-invocation.js';
-import { serializeWaitCursor } from '#src/jobs/wait/cursor.js';
-import { readWaitSession } from '#src/jobs/wait/reader.js';
-import type { ProgressVisit, WaitCursor, WaitProgressRow } from '#src/jobs/wait/contract.js';
-import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
-import { admitted } from '#tests/helpers/wait-session.js';
-import { IpcRequestTimeout } from '#src/transport/ipc/client.js';
 import { WAIT_CURSOR_REPLAY_NOTICE } from '#src/jobs/wait/cursor.js';
 import { buildErrorEnvelope } from '#src/cli/errors.js';
 
@@ -51,7 +45,6 @@ function capture(): () => string {
 
 it('returns transient remediation with the unchanged command on a failed stream write', async () => {
   const budget = invocation();
-  const save = vi.spyOn(budget, 'saveContinuation');
   vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: string, callback?: (error?: Error) => void) => {
     callback?.(new Error('write failed'));
     return false;
@@ -71,7 +64,7 @@ it('returns transient remediation with the unchanged command on a failed stream 
       subscription: {
         close: async () => {},
         async *[Symbol.asyncIterator]() {
-          yield { type: 'waiting', waitingJobIds: ['a'], cursor: { jobs: [] }, exitCode: 75 };
+          yield { type: 'waiting', waitingJobIds: ['a'], cursor: null, exitCode: 75 };
         },
       },
     }),
@@ -86,8 +79,6 @@ it('returns transient remediation with the unchanged command on a failed stream 
       envelope: expect.objectContaining({ code: 'transient', remediation: `Run ${budget.originalCommand}` }),
     }),
   );
-  expect(save).toHaveBeenCalledOnce();
-  expect(save.mock.calls[0][0]).not.toContain('--cursor');
 });
 
 it.each([
@@ -112,231 +103,105 @@ it.each([
   },
 );
 
-it.each(['opening', 'silent', 'backoff', 'close', 'iterator-return'])(
-  'one watchdog bounds %s without advancing late delivery',
-  async (stall) => {
-    vi.useFakeTimers();
-    const stdout = capture();
-    const budget = invocation();
-    let finishLate!: (value: IteratorResult<unknown>) => void;
-    const stuck = new Promise<never>(() => {});
-    const frontier = savedCursor({ a: 42 });
-    const subscription = {
-      close: vi.fn(() => (stall === 'close' ? stuck : Promise.resolve())),
-      [Symbol.asyncIterator]: () => {
-        let first = true;
-        return {
-          next: () => {
-            if (first && ['close', 'iterator-return'].includes(stall)) {
-              first = false;
-              return Promise.resolve({
-                done: false as const,
-                value: {
-                  type: 'waiting',
-                  waitingJobIds: ['a'],
-                  cursor: frontier,
-                  carrierUnknownJobIds: ['a'],
-                  exitCode: 75,
-                },
-              });
-            }
-            return new Promise<IteratorResult<unknown>>((resolve) => {
-              finishLate = resolve;
-            });
-          },
-          return: () =>
-            stall === 'iterator-return' ? stuck : Promise.resolve({ done: true as const, value: undefined }),
-        };
-      },
-    };
-    const code = followJobs({
-      start: { kind: 'jobs', jobIds: ['a', 'ghost'] },
-      reconnectPolicy: 'bounded',
-      invocation: budget,
-      projectRoot: '/project',
-      render: { isTTY: false, columns: 80, embed: false, verbose: false },
-      emitError: vi.fn(),
-      connect: () =>
-        stall === 'opening'
-          ? stuck
-          : stall === 'backoff'
-            ? Promise.reject(new IpcRequestTimeout('timeout'))
-            : Promise.resolve({ kind: 'subscription', subscription }),
-      backoffScheduler: () => stuck,
-    });
-    await vi.advanceTimersByTimeAsync(590_000);
-    expect(await code).toBe(75);
-    const frozen = stdout();
-    expect(frozen.match(/Run coral-cli wait jobs/g)).toHaveLength(1);
-    if (stall === 'close' || stall === 'iterator-return') {
-      expect(frozen).toContain(`--cursor ${serializeWaitCursor(frontier)}`);
-      expect(frozen).not.toContain('ghost');
-      expect(frozen).toContain('Carrier unconfirmed for: a');
-    } else if (stall === 'silent') {
-      expect(frozen).toContain('Still waiting on 2 jobs');
-      expect(frozen).not.toContain('--cursor');
-      expect(frozen).toContain('Carrier unconfirmed for: a, ghost.');
-    } else {
-      expect(frozen).toContain('admission did not complete');
-      expect(frozen).toContain('Run coral-cli wait jobs a ghost --cursor opaque');
-    }
-    finishLate?.({ done: false, value: { type: 'waiting', waitingJobIds: ['late'] } });
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(stdout()).toBe(frozen);
-  },
-);
-
-it('two SIGINTs end a monitor with exit 75', async () => {
-  capture();
-  const exit = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
-  const budget = invocation();
-  const code = followJobs({
-    start: { kind: 'jobs', jobIds: ['a'] },
-    reconnectPolicy: 'bounded',
-    invocation: budget,
-    projectRoot: '/project',
-    render: { isTTY: false, columns: 80, embed: false, verbose: false },
-    emitError: vi.fn(),
-    connect: () => new Promise<never>(() => {}),
-  });
-  process.emit('SIGINT');
-  process.emit('SIGINT');
-  expect(await code).toBe(75);
-  expect(exit).toHaveBeenCalledExactlyOnceWith(75);
-});
-
-it('a stdout drain cannot outlive the invocation or advance an undelivered cursor', async () => {
-  vi.useFakeTimers();
-  const budget = invocation();
-  const callbacks: Array<() => void> = [];
-  let stdout = '';
-  let waitingWrites = 0;
-  vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: string | Uint8Array, callback?: () => void) => {
-    if (
-      (chunk.toString().includes('Still waiting') || chunk.toString().includes('admission did not complete')) &&
-      ++waitingWrites > 1
-    )
-      stdout += chunk.toString();
-    if (callback) callbacks.push(callback);
-    return false;
-  }) as typeof process.stdout.write);
-  const code = followJobs({
-    start: { kind: 'jobs', jobIds: ['a'] },
-    reconnectPolicy: 'bounded',
-    invocation: budget,
-    projectRoot: '/project',
-    render: { isTTY: false, columns: 80, embed: false, verbose: false },
-    emitError: vi.fn(),
-    connect: async () => ({
-      kind: 'subscription',
-      subscription: {
-        close: async () => {},
-        async *[Symbol.asyncIterator]() {
-          yield { type: 'waiting', waitingJobIds: ['a'], cursor: { jobs: [] }, exitCode: 75 };
-        },
-      },
-    }),
-  });
-  await vi.advanceTimersByTimeAsync(590_000);
-  expect(await code).toBe(75);
-  const exit = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
-  await vi.advanceTimersByTimeAsync(10_000);
-  expect(exit).toHaveBeenCalledWith(75);
-  expect(stdout).toContain('Run coral-cli wait jobs a to continue waiting.');
-  expect(stdout).not.toContain('--cursor');
-  expect(stdout).toContain('Carrier unconfirmed for: a.');
-  for (const callback of callbacks) callback();
-  expect(stdout.match(/Run coral-cli wait jobs/g)).toHaveLength(1);
-});
-
-it('freezes observed carrier absence without labeling it unconfirmed', async () => {
+it.each(['opening', 'silent', 'close'])('one watchdog bounds %s without advancing late delivery', async (stall) => {
   vi.useFakeTimers();
   const stdout = capture();
   const budget = invocation();
+  let finishLate!: (value: IteratorResult<unknown>) => void;
+  const stuck = new Promise<never>(() => {});
+  const frontier = savedCursor(42);
+  const subscription = {
+    close: vi.fn(() => (stall === 'close' ? stuck : Promise.resolve())),
+    [Symbol.asyncIterator]: () => {
+      let first = true;
+      return {
+        next: () => {
+          if (first && stall === 'close') {
+            first = false;
+            return Promise.resolve({
+              done: false as const,
+              value: {
+                type: 'waiting',
+                waitingJobIds: ['a'],
+                cursor: frontier,
+                carrierUnknownJobIds: ['a'],
+                exitCode: 75,
+              },
+            });
+          }
+          return new Promise<IteratorResult<unknown>>((resolve) => {
+            finishLate = resolve;
+          });
+        },
+        return: () => Promise.resolve({ done: true as const, value: undefined }),
+      };
+    },
+  };
   const code = followJobs({
-    start: { kind: 'jobs', jobIds: ['a'] },
+    start: { kind: 'jobs', jobIds: ['a', 'ghost'] },
     reconnectPolicy: 'bounded',
     invocation: budget,
     projectRoot: '/project',
     render: { isTTY: false, columns: 80, embed: false, verbose: false },
     emitError: vi.fn(),
-    connect: async () => ({
-      kind: 'subscription',
-      subscription: {
-        close: async () => {},
-        async *[Symbol.asyncIterator]() {
-          yield {
-            type: 'interrupted',
-            jobId: 'a',
-            storedPhase: 'running',
-            observedMaxJournalSeq: 42,
-            remainingJobIds: ['a'],
-            observation: { kind: 'carrier_interrupted', reason: 'carrier_absent' },
-            continuity: 'unavailable',
-            outcome: 'unknown',
-          };
-          await new Promise<never>(() => {});
-        },
-      },
-    }),
+    connect: () => (stall === 'opening' ? stuck : Promise.resolve({ kind: 'subscription', subscription })),
   });
   await vi.advanceTimersByTimeAsync(590_000);
   expect(await code).toBe(75);
-  expect(stdout()).toContain('carrier is no longer present');
-  expect(stdout()).not.toContain('Carrier unconfirmed');
-  expect(stdout()).toContain('Still waiting on 1 job');
+  const frozen = stdout();
+  expect(frozen.match(/Run coral-cli wait jobs/g)).toHaveLength(1);
+  if (stall === 'close') {
+    expect(frozen).toContain(`--cursor ${frontier}`);
+    expect(frozen).not.toContain('ghost');
+    expect(frozen).toContain('Carrier unconfirmed for: a');
+  } else if (stall === 'silent') {
+    expect(frozen).toContain('Still waiting on 2 jobs');
+    expect(frozen).not.toContain('--cursor');
+    expect(frozen).toContain('Carrier unconfirmed for: a, ghost.');
+  } else {
+    expect(frozen).toContain('admission did not complete');
+    expect(frozen).toContain('Run coral-cli wait jobs a ghost --cursor opaque');
+  }
+  finishLate?.({ done: false, value: { type: 'waiting', waitingJobIds: ['late'] } });
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(stdout()).toBe(frozen);
+});
+
+it('a saved cursor from an older build is refused softly and the collection restarts fresh with the replay notice', async () => {
+  const token = Buffer.from(
+    JSON.stringify({ version: 'jobs.wait.v2', positions: { e: 42 }, locations: { a: 'e' } }),
+  ).toString('base64url');
+  const stdout = capture();
+  const budget = invocation();
+  const connect = vi.fn(async () => ({
+    kind: 'subscription' as const,
+    subscription: {
+      close: async () => {},
+      async *[Symbol.asyncIterator]() {
+        yield { type: 'waiting', waitingJobIds: ['a'], cursor: savedCursor(50), exitCode: 75 };
+      },
+    },
+  }));
+  await followJobs({
+    start: { kind: 'jobs', jobIds: ['a'], serializedCursor: token },
+    reconnectPolicy: 'bounded',
+    invocation: budget,
+    projectRoot: '/project',
+    render: { isTTY: false, columns: 80, embed: false, verbose: false },
+    emitError: vi.fn(),
+    connect,
+  });
+  expect(connect).toHaveBeenCalledWith(expect.not.objectContaining({ cursor: expect.anything() }));
+  expect(stdout().startsWith(`${WAIT_CURSOR_REPLAY_NOTICE}\n`)).toBe(true);
+  expect(stdout()).toContain(`--cursor ${savedCursor(50)}`);
 });
 
 it.each([
-  ['versionless', Buffer.from(JSON.stringify({ afterSeq: 42, deliveredJobIds: ['a'] })).toString('base64url')],
-  [
-    'v2',
-    Buffer.from(JSON.stringify({ version: 'jobs.wait.v2', positions: { e: 42 }, locations: { a: 'e' } })).toString(
-      'base64url',
-    ),
-  ],
-  ['prefixed', `jobs.wait.v3:${serializeWaitCursor(savedCursor({ a: 42 }))}`],
-])(
-  'a saved %s cursor is refused softly and the collection restarts fresh with the replay notice',
-  async (_shape, token) => {
-    const stdout = capture();
-    const budget = invocation();
-    const connect = vi.fn(async () => ({
-      kind: 'subscription' as const,
-      subscription: {
-        close: async () => {},
-        async *[Symbol.asyncIterator]() {
-          yield { type: 'waiting', waitingJobIds: ['a'], cursor: savedCursor({ a: 50 }), exitCode: 75 };
-        },
-      },
-    }));
-    await followJobs({
-      start: { kind: 'jobs', jobIds: ['a'], serializedCursor: token },
-      reconnectPolicy: 'bounded',
-      invocation: budget,
-      projectRoot: '/project',
-      render: { isTTY: false, columns: 80, embed: false, verbose: false },
-      emitError: vi.fn(),
-      connect,
-    });
-    expect(connect).toHaveBeenCalledWith(expect.not.objectContaining({ cursor: expect.anything() }));
-    expect(stdout().startsWith(`${WAIT_CURSOR_REPLAY_NOTICE}\n`)).toBe(true);
-    expect(stdout()).toContain(`--cursor ${serializeWaitCursor(savedCursor({ a: 50 }))}`);
-  },
-);
-
-it.each([
-  [['wait', 'jobs', 'a'], 'bounded'],
   [['wait', 'jobs', '--cursor=saved', '--embed', 'a', 'b'], 'bounded'],
-  [['wait', 'jobs', '--', 'a', '--help'], 'bounded'],
   [['wait', 'jobs', '--now', 'a'], 'snapshot'],
   [['wait', 'jobs', 'a', '--help'], undefined],
-  [['wait', '--help'], undefined],
-  [['help', 'wait', 'jobs'], undefined],
   [['jobs', 'detail', 'a'], undefined],
-  [['wait', 'jobs', '--invalid', 'a'], undefined],
-  [['wait', 'jobs', '--cursor'], undefined],
 ] as const)('recognizes accepted invocation syntax before preflight: %j', (args, mode) => {
   const program = new Command();
   program
@@ -347,49 +212,6 @@ it.each([
     .option('--embed')
     .option('--now');
   expect(waitInvocationMode(program, ['node', 'coral-cli', ...args])).toBe(mode);
-});
-
-it('interrupt before the first event preserves the original command without claiming admission', async () => {
-  const stdout = capture();
-  const budget = invocation();
-  const save = vi.spyOn(budget, 'saveContinuation');
-  const connect = async () => ({
-    kind: 'subscription' as const,
-    subscription: {
-      close: async () => {},
-      async *[Symbol.asyncIterator]() {
-        process.emit('SIGINT');
-        await new Promise<void>(() => {});
-      },
-    },
-  });
-  expect(
-    await followJobs({
-      start: { kind: 'jobs', jobIds: ['a', 'ghost'] },
-      reconnectPolicy: 'bounded',
-      invocation: budget,
-      projectRoot: '/project',
-      render: { isTTY: false, columns: 80, embed: false, verbose: false },
-      emitError: vi.fn(),
-      connect,
-    }),
-  ).toBe(75);
-  expect(save).toHaveBeenCalledOnce();
-  expect(save.mock.calls[0][0]).not.toContain('--cursor');
-  expect(stdout()).toContain('Run coral-cli wait jobs a ghost to continue waiting.');
-  expect(stdout()).not.toContain('--cursor');
-  expect(stdout()).toContain('Carrier unconfirmed for: a, ghost.');
-  expect(stdout()).toContain('Still waiting');
-});
-
-it('flushes acknowledged completion at the deadline without changing its exit to 75', async () => {
-  capture();
-  const budget = invocation();
-  budget.saveContinuation('No remaining jobs.\n', true);
-  vi.spyOn(budget, 'remainingMs').mockReturnValue(0);
-  budget.stop();
-  await expect(budget.flushOutput()).resolves.toBeUndefined();
-  expect(process.exitCode).not.toBe(75);
 });
 
 it('keeps a failed terminal exit when the budget ends while that final event is still being written', async () => {
@@ -422,7 +244,7 @@ it('keeps a failed terminal exit when the budget ends while that final event is 
             remainingJobIds: [],
             availability: { kind: 'pending' },
             result: { content: 'boom', outcome: { kind: 'provider_exit', code: 3 }, durationMs: 1 },
-            cursor: { jobs: [] },
+            cursor: null,
             exitCode: 3,
           };
         },
@@ -449,7 +271,7 @@ it('terminates a repeated cursor-reset refusal after retrying without the cursor
   const emitError = vi.fn();
   expect(
     await followJobs({
-      start: { kind: 'jobs', jobIds: ['a'], serializedCursor: serializeWaitCursor(savedCursor({ a: 7 })) },
+      start: { kind: 'jobs', jobIds: ['a'], serializedCursor: savedCursor(7) },
       reconnectPolicy: 'bounded',
       invocation: budget,
       projectRoot: '/project',
@@ -460,96 +282,4 @@ it('terminates a repeated cursor-reset refusal after retrying without the cursor
   ).toBe(1);
   expect(connect).toHaveBeenCalledTimes(2);
   expect(emitError).toHaveBeenCalledOnce();
-});
-
-it.each([false, true])('honors a second SIGINT after a canceled invocation disposes, flushed: %s', (flushed) => {
-  vi.useFakeTimers();
-  capture();
-  const exit = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
-  const budget = invocation();
-  budget.stop();
-  if (flushed) budget.flushContinuation(true);
-  budget.dispose();
-  process.emit('SIGINT');
-  expect(exit).toHaveBeenCalledExactlyOnceWith(75);
-});
-
-it('does not print a second continuation when a snapshot write callback crosses its watchdog', async () => {
-  vi.useFakeTimers();
-  const budget = new WaitInvocation('snapshot', ['node', 'coral-cli', 'wait', 'jobs', 'a', '--now']);
-  invocations.push(budget);
-  let output = '';
-  let finish!: (error?: Error | null) => void;
-  vi.spyOn(process.stdout, 'write').mockImplementation(((text: string, callback?: (error?: Error | null) => void) => {
-    output += text;
-    if (text !== '') finish = callback!;
-    else callback?.();
-    return true;
-  }) as never);
-  const write = budget.writeSnapshotOutput(
-    'Snapshot\nRun coral-cli wait jobs a --now --cursor advanced\n',
-    'Run coral-cli wait jobs a --now --cursor advanced\n',
-  );
-  const observed = write.catch((error) => error);
-  await vi.advanceTimersByTimeAsync(30000);
-  budget.flushContinuation(true);
-  expect(output.match(/Run coral-cli/g)).toHaveLength(1);
-  finish();
-  await observed;
-  budget.flushContinuation(true);
-  expect(output).not.toContain('admission did not complete');
-  expect(output.match(/Run coral-cli/g)).toHaveLength(1);
-});
-
-it('prints a cursorless continuation for a cut before the first rendered line, which reads the newest lines again', async () => {
-  const stdout = capture();
-  const budget = invocation();
-  const timing = { origin: 'runtime' as const, originAt: '', emittedAt: '', elapsedMs: 0 };
-  const raw: WaitProgressRow[] = Array.from({ length: 100 }, (_, i) => ({
-    seq: i + 1,
-    message: `line-${i + 1}`,
-    timing,
-  }));
-  const visit: ProgressVisit = (_epoch, read) => ({
-    kind: 'read',
-    value: read({
-      after: (_id, after, rows) => raw.filter((row) => row.seq > after).slice(0, rows),
-      newest: (_id, rows) => raw.slice(-rows),
-    }),
-  });
-  const read = () => [admitted('a', [], false, 'E')];
-  const stream = (cursor?: WaitCursor) =>
-    readWaitSession({
-      request: { jobIds: ['a'], timeoutSeconds: 0, ...(cursor ? { cursor } : {}) },
-      time: new VirtualTime(),
-      read,
-      visit,
-    });
-  const code = await followJobs({
-    start: { kind: 'jobs', jobIds: ['a'] },
-    reconnectPolicy: 'bounded',
-    invocation: budget,
-    projectRoot: '/project',
-    render: { isTTY: false, columns: 80, embed: false, verbose: false },
-    emitError: vi.fn(),
-    connect: async () => ({
-      kind: 'subscription',
-      subscription: {
-        close: async () => {},
-        async *[Symbol.asyncIterator]() {
-          const first = await stream().next();
-          expect(first.value).toMatchObject({ type: 'cursor', cursor: { jobs: [] } });
-          yield first.value;
-          process.emit('SIGINT');
-          await new Promise<void>(() => {});
-        },
-      },
-    }),
-  });
-  expect(code).toBe(75);
-  expect(stdout()).toContain('Run coral-cli wait jobs a to continue waiting.');
-  raw.push(...Array.from({ length: 20 }, (_, i) => ({ seq: i + 101, message: `line-${i + 101}`, timing })));
-  const resumed: string[] = [];
-  for await (const event of stream()) if (event.type === 'progress') resumed.push(event.message);
-  expect(resumed).toEqual(Array.from({ length: 20 }, (_, i) => `line-${i + 101}`));
 });

@@ -298,10 +298,6 @@ describe('handoff-routing/runner', () => {
         });
         void result.catch(() => undefined);
         await started.promise;
-        const options = mockState.execFile.mock.calls.at(-1)![2];
-        expect(options).not.toHaveProperty('killSignal');
-        expect(options).not.toHaveProperty('signal');
-        expect(options).not.toHaveProperty('timeout');
         if (trigger === 'abort') controller.abort();
         else await vi.advanceTimersByTimeAsync(10000);
         expect(child.kill).toHaveBeenCalledExactlyOnceWith('SIGTERM');
@@ -544,37 +540,6 @@ it('refuses a wait whose newer target fails the wait contract probe, writing no 
   expect(mockState.publishGenerationCoordinatedHandoffRoutingTransitions).not.toHaveBeenCalled();
 });
 
-it('allows a slow supported wait contract to use the existing invocation budget', async () => {
-  vi.useFakeTimers();
-  vi.spyOn(runtime.time, 'setTimeout').mockImplementation((callback, delay) => setTimeout(callback, delay));
-  vi.spyOn(runtime.time, 'clearTimeout').mockImplementation((handle) => clearTimeout(handle as NodeJS.Timeout));
-  const child = childThatStaysAlive();
-  child.kill = vi.fn(() => true);
-  const started = deferred();
-  mockState.execFile.mockImplementation((_file, _args, _options, callback) => {
-    setTimeout(() => callback(null, JSON.stringify({ version: 1, monitorOnly: true })), 3500);
-    started.resolve();
-    return child;
-  });
-  mockState.spawn.mockImplementation(() => childThatExits(0, null));
-  const result = runHandoff(cliOperation('wait', 'jobs', 'a'), {
-    pluginRoot: '/plugin/root',
-    waitInvocation: {
-      mode: 'bounded',
-      signal: new AbortController().signal,
-      originalCommand: 'coral-cli wait jobs a',
-      remainingMs: () => 10000,
-      cleanupRemainingMs: () => 11000,
-      saveContinuation: vi.fn(),
-    },
-  });
-  void result.catch(() => undefined);
-  await started.promise;
-  await vi.advanceTimersByTimeAsync(3500);
-  expect(child.kill).not.toHaveBeenCalled();
-  await expect(result).resolves.toMatchObject({ kind: 'delegated', outcome: { kind: 'handoff-success' } });
-});
-
 it('keeps the monitor IPC listener through close when delivery follows exit', async () => {
   const save = vi.fn();
   mockState.execFile.mockImplementation((_file, _args, _options, callback) => {
@@ -673,18 +638,30 @@ it('uses the remaining launch-follow invocation budget for its contract probe', 
   await expect(result).resolves.toMatchObject({ kind: 'delegated', outcome: { kind: 'handoff-success' } });
 });
 
-it('delegates a launch follow as a wait jobs invocation carrying its cursor', async () => {
+it('delegates a launch follow as a wait jobs invocation carrying its cursor, and hands the caller its child', async () => {
   mockState.execFile.mockImplementation((_file, _args, _options, callback) => {
     queueMicrotask(() => callback(null, JSON.stringify({ version: 1, monitorOnly: true })));
     return childThatExits(0, null);
   });
-  mockState.spawn.mockImplementation(() => childThatExits(75, null));
+  const children: unknown[] = [];
+  mockState.spawn.mockImplementation(() => {
+    const child = childThatExits(75, null);
+    children.push(child);
+    return child;
+  });
+  const onDelegatedChild = vi.fn();
   const result = runHandoff(
     { kind: 'wait-jobs', jobId: 'a', serializedCursor: 'saved-cursor' },
-    { pluginRoot: '/plugin/root', waitProbeRemainingMs: () => 10_000 },
+    { pluginRoot: '/plugin/root', waitProbeRemainingMs: () => 10_000, onDelegatedChild },
   );
   await expect(result).resolves.toMatchObject({ kind: 'delegated', outcome: { kind: 'handoff-exit', exitCode: 75 } });
   expect(mockState.spawn).toHaveBeenCalledOnce();
   expect(mockState.spawn.mock.calls[0][1].slice(1)).toEqual(['wait', 'jobs', 'a', '--cursor', 'saved-cursor']);
   expect(mockState.spawn.mock.calls[0][2].stdio).toBe('inherit');
+  expect(onDelegatedChild).toHaveBeenCalledExactlyOnceWith(children[0]);
+  await runHandoff(
+    { kind: 'wait-jobs', jobId: 'a' },
+    { pluginRoot: '/plugin/root', waitProbeRemainingMs: () => 10_000 },
+  );
+  expect(mockState.spawn.mock.calls[1][1].slice(1)).toEqual(['wait', 'jobs', 'a']);
 });

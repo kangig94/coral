@@ -200,19 +200,17 @@ describe('wait SSE reconnect', () => {
 
     const firstIterator = coordinator.waitForOutcomes({ jobIds: [jobId], timeoutSeconds: 5 })[Symbol.asyncIterator]();
     let clientCursor: WaitCursor | undefined;
-    let first = await firstIterator.next();
-    while (!first.done && first.value.type === 'cursor') {
-      clientCursor = advanceWaitRenderCursor(clientCursor, first.value).cursor;
-      first = await firstIterator.next();
-    }
-    expect(first.done).toBe(false);
-    if (!first.done) clientCursor = advanceWaitRenderCursor(clientCursor, first.value).cursor;
+    const first = await firstIterator.next();
     expect(first.value).toMatchObject({
       type: 'progress',
       jobId,
       seq: 3,
       message: 'progress-1',
     });
+    // The poll that delivered the row frames the cursor a cut after it resumes from.
+    const framed = await firstIterator.next();
+    expect(framed.value).toMatchObject({ type: 'cursor' });
+    if (!framed.done) clientCursor = advanceWaitRenderCursor(clientCursor, framed.value).cursor;
     await firstIterator.return?.(undefined);
 
     appendProgress('progress-2');

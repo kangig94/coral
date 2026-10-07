@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { epochIdentity } from '../../store/epoch/identity.js';
+import { epochIdentity, sameEpoch } from '../../store/epoch/identity.js';
 import { isCodeDefect, sourceReadFailureDisposition, type SourceReadDisposition } from '../source-read.js';
 import type { JobDetailResponse, JobTerminal } from '../records.js';
 import type { JobProgressTiming } from '../event-bodies.js';
@@ -14,7 +14,7 @@ import {
   type WaitProgressRow,
   type WaitStreamEvent,
 } from './contract.js';
-import { waitJobHash } from './cursor.js';
+import { decodeWaitCursor, encodeWaitCursor, waitEpochTag, WAIT_CURSOR_REPLAY_NOTICE } from './cursor.js';
 
 /** `unknown` is retryable and stays in the continuation; `unreadable` is permanent and carries its reason. */
 export type WaitDisposition = 'admitted' | 'missing' | 'scope-mismatch' | 'unknown' | 'unreadable';
@@ -83,7 +83,6 @@ export type WaitSnapshotJob = {
   disposition: WaitDisposition;
   message?: string;
   phase?: string;
-  alreadyCollected?: boolean;
   progress: string[];
   terminal?: WaitTerminalSummary;
   availability?: ResultAvailability;
@@ -91,7 +90,7 @@ export type WaitSnapshotJob = {
 export type WaitSnapshot = {
   jobs: WaitSnapshotJob[];
   notices: string[];
-  cursor: WaitCursor;
+  cursor: WaitCursor | null;
   remainingJobIds: string[];
   exitCode: number;
 };
@@ -118,8 +117,11 @@ export function waitTerminalExitCode(result: JobTerminal): number {
 }
 
 type ProgressState = 'exhausted' | 'unread' | 'unknown' | 'lost' | 'refused';
-/** A job the cursor never positioned has no seq yet: its first readable visit reads its newest rows. */
-type Member = { seq: number | undefined; progress: ProgressState };
+/**
+ * `seq` is the position the job is consumed through: each of its rows at or below it was delivered or skipped by a
+ * first-read tail. A job no cursor positioned has none yet, so its first readable visit reads its newest rows.
+ */
+type Member = { seq: number | undefined; progress: ProgressState; delivered: boolean; awaitingArtifact: boolean };
 
 /** A first read that cannot give each job this many bytes waits for a fresh budget instead of shortening to nothing. */
 const MIN_SHARE_BYTES = 128;
@@ -135,10 +137,19 @@ export class WaitSession {
   readonly jobIds: readonly string[];
   readonly input?: WaitCursor;
   private readonly internal: boolean;
-  constructor(jobIds: readonly string[], input?: WaitCursor, internal = false) {
+  private readonly activeEpochKey: string;
+  private readonly epochTag: number;
+  /** The request's watermark: every requested active-epoch row at or below it was delivered by an earlier read. */
+  private readonly base: number | undefined;
+  constructor(jobIds: readonly string[], input: WaitCursor | undefined, activeEpochKey: string, internal = false) {
     this.jobIds = jobIds;
     this.input = input;
     this.internal = internal;
+    this.activeEpochKey = activeEpochKey;
+    this.epochTag = waitEpochTag(activeEpochKey);
+    const decoded = input === undefined ? undefined : decodeWaitCursor(input);
+    if (decoded?.kind === 'decoded' && decoded.watermark.epochTag === this.epochTag) this.base = decoded.watermark.seq;
+    else if (decoded !== undefined) this.notice(WAIT_CURSOR_REPLAY_NOTICE);
   }
 
   reconcile(admissions: WaitAdmission[]): void {
@@ -149,8 +160,7 @@ export class WaitSession {
     for (const job of this.admissions) {
       let member = this.members.get(job.jobId);
       if (!member) {
-        const hash = waitJobHash(job.jobId);
-        member = { seq: this.input?.jobs.find((entry) => entry.hash === hash)?.seq, progress: 'unknown' };
+        member = { seq: this.base, progress: 'unknown', delivered: false, awaitingArtifact: false };
         this.members.set(job.jobId, member);
       }
       if (job.disposition !== 'admitted') {
@@ -223,7 +233,7 @@ export class WaitSession {
   }
 
   /** A failed page read is evidence about that job alone: decode failures settle its progress, others hold it. */
-  private readRows(jobId: string, read: () => readonly WaitProgressRow[]): readonly WaitProgressRow[] | null {
+  private readRows<T>(jobId: string, read: () => T): T | null {
     try {
       return read();
     } catch (error) {
@@ -244,6 +254,8 @@ export class WaitSession {
    * A job's first readable visit reads its newest rows, `tail` lines at most, within its share of the budget; with no
    * `tail` it reads from its origin instead. Every later read takes the rows after its seq, oldest first across jobs,
    * and the budget cuts only between rows. A budget nothing has been spent from always admits one row, shortened.
+   * Each read job is then consumed through the journal frontier when nothing of it below that frontier is left, and
+   * otherwise through the last row the cut leaves behind it.
    */
   select(sources: ReadonlyMap<string, ProgressSource>, budget: WaitBudget, tail: number | null): WaitSelection {
     const readable = this.admissions.filter(
@@ -252,6 +264,9 @@ export class WaitSession {
     );
     const source = (job: WaitAdmission & { epochKey: string }): ProgressSource =>
       sources.get(epochIdentity(job.epochKey)) as ProgressSource;
+    // Read after the job's rows within one visit, so a job whose page ran out has no unread row at or below it.
+    const frontier = (job: WaitAdmission & { epochKey: string }): number | null =>
+      this.readRows(job.jobId, () => source(job).frontier());
     const rows: WaitSelectedRow[] = [];
     const reached = new Map<string, { seq: number; exhausted: boolean }>();
     const fresh = budget.lines === WAIT_PROGRESS_LINES && budget.bytes === WAIT_PROGRESS_BYTES;
@@ -274,7 +289,8 @@ export class WaitSession {
         const omitted: string[] = [];
         for (const job of unpositioned) {
           const newest = this.readRows(job.jobId, () => source(job).newest(job.jobId, target + 1));
-          if (newest === null) continue;
+          const through = newest === null ? null : frontier(job);
+          if (newest === null || through === null) continue;
           const candidates = newest.slice(-target);
           const room = { lines: target, bytes: byteShare };
           const chosen: WaitSelectedRow[] = [];
@@ -289,7 +305,7 @@ export class WaitSession {
           }
           chosen.forEach(spend);
           if (index >= 0 || newest.length > target) omitted.push(job.jobId);
-          reached.set(job.jobId, { seq: newest.at(-1)?.seq ?? 0, exhausted: true });
+          reached.set(job.jobId, { seq: through, exhausted: true });
         }
         if (omitted.length > 0)
           this.notice(`Earlier progress for ${omitted.join(', ')} was not shown; showing the most recent lines.`);
@@ -303,16 +319,23 @@ export class WaitSession {
     else if (later.length > 0) {
       const pageRows = Math.max(1, Math.min(MAX_PAGE_ROWS, Math.ceil(lines / later.length)));
       const order = new Map(later.map((job, index) => [job.jobId, index]));
-      const pages = later.flatMap((job) => {
-        const page = this.readRows(job.jobId, () =>
-          source(job).after(job.jobId, this.member(job.jobId).seq ?? 0, pageRows),
-        );
-        return page === null ? [] : [{ jobId: job.jobId, page }];
-      });
+      const pages = later
+        .flatMap((job) => {
+          const page = this.readRows(job.jobId, () =>
+            source(job).after(job.jobId, this.member(job.jobId).seq ?? 0, pageRows),
+          );
+          return page === null ? [] : [{ job, page }];
+        })
+        .flatMap(({ job, page }) => {
+          const through = frontier(job);
+          return through === null ? [] : [{ jobId: job.jobId, page, through }];
+        });
       const queue = pages
         .flatMap(({ jobId, page }) => page.map((row) => ({ jobId, row })))
         .sort((a, b) => a.row.seq - b.row.seq || (order.get(a.jobId) ?? 0) - (order.get(b.jobId) ?? 0));
       const walked = new Map<string, number>();
+      // Rows are walked in seq order, so a job the cut stops inside has no unwalked row at or below the last walked one.
+      let cut = 0;
       for (const { jobId, row } of queue) {
         const selected = this.fit(jobId, row, { lines, bytes }, fresh && rows.length === 0);
         if (selected === null) {
@@ -320,15 +343,18 @@ export class WaitSession {
           break;
         }
         if (selected !== undefined) spend(selected);
-        reached.set(jobId, { seq: row.seq, exhausted: false });
         walked.set(jobId, (walked.get(jobId) ?? 0) + 1);
+        cut = row.seq;
       }
-      for (const { jobId, page } of pages)
-        if ((walked.get(jobId) ?? 0) === page.length)
-          reached.set(jobId, {
-            seq: page.at(-1)?.seq ?? this.member(jobId).seq ?? 0,
-            exhausted: page.length < pageRows,
-          });
+      for (const { jobId, page, through } of pages) {
+        const exhausted = page.length < pageRows && (walked.get(jobId) ?? 0) === page.length;
+        const seq = exhausted
+          ? through
+          : (walked.get(jobId) ?? 0) === page.length
+            ? (page.at(-1)?.seq ?? 0)
+            : Math.max(this.member(jobId).seq ?? 0, cut);
+        reached.set(jobId, { seq, exhausted });
+      }
     }
     return { rows, reached, full };
   }
@@ -380,11 +406,6 @@ export class WaitSession {
   private terminalSeq(job: WaitAdmission): number {
     return job.detail?.terminalSeq ?? job.detail?.status.lastSeq ?? 0;
   }
-  /** A job whose seq has reached its terminal's seq has had its outcome collected. */
-  collected(job: WaitAdmission): boolean {
-    const { seq } = this.member(job.jobId);
-    return seq !== undefined && seq >= this.terminalSeq(job);
-  }
   /** A terminal follows every progress row of its job that can still be read, so nothing it reads follows the outcome. */
   terminalDeliverable(job: WaitAdmission): boolean {
     const progress = this.progressState(job.jobId);
@@ -392,13 +413,24 @@ export class WaitSession {
       job.disposition === 'admitted' && Boolean(job.detail?.exit) && progress !== 'unread' && progress !== 'unknown'
     );
   }
-  collect(job: WaitAdmission): void {
+  /**
+   * How printing a deliverable terminal now would count. Only a terminal above the request's watermark, or one from a
+   * historical epoch, is new and ends the read; any other is a repeat that ends nothing, and once printed it ends the
+   * read only if it was printed with a pending artifact that has since settled.
+   */
+  terminalDelivery(job: WaitAdmission): 'final' | 'repeat' | null {
     const member = this.member(job.jobId);
-    member.seq = Math.max(member.seq ?? 0, this.terminalSeq(job));
+    if (member.delivered) return member.awaitingArtifact && !this.artifactPending(job) ? 'final' : null;
+    return job.historical === true || this.base === undefined || this.terminalSeq(job) > this.base ? 'final' : 'repeat';
   }
-  /** A collected job stays in the continuation while its artifact is still pending. */
+  deliverTerminal(job: WaitAdmission): void {
+    const member = this.member(job.jobId);
+    member.awaitingArtifact = this.terminalDelivery(job) === 'repeat' && this.artifactPending(job);
+    member.delivered = true;
+  }
+  /** A delivered job stays in the continuation while its artifact is still pending. */
   artifactPending(job: WaitAdmission): boolean {
-    return !this.internal && job.availability?.kind === 'pending';
+    return !this.internal && !job.historical && job.availability?.kind === 'pending';
   }
   unknown(jobId: string): boolean {
     return this.progressState(jobId) === 'unknown';
@@ -408,29 +440,44 @@ export class WaitSession {
       .filter(
         (job) =>
           job.disposition === 'unknown' ||
-          (job.disposition === 'admitted' && (!job.detail?.exit || !this.collected(job) || this.artifactPending(job))),
+          (job.disposition === 'admitted' &&
+            (!job.detail?.exit || !this.member(job.jobId).delivered || this.artifactPending(job))),
       )
       .map((job) => job.jobId);
   }
   exitCode(): number {
     for (const job of this.admissions)
-      if (job.disposition === 'admitted' && job.detail?.exit && this.collected(job)) {
+      if (job.disposition === 'admitted' && job.detail?.exit && this.member(job.jobId).delivered) {
         const code = waitTerminalExitCode(job.detail.exit);
         if (code !== 0) return code;
       }
     if (this.admissions.some((job) => job.disposition !== 'admitted' && job.disposition !== 'unknown')) return 1;
     return this.remaining().length || this.unknownCarriers().length ? 75 : 0;
   }
-  cursor(jobIds: readonly string[] = this.jobIds): WaitCursor {
-    return {
-      jobs: jobIds.flatMap((id) => {
-        const job = this.admissions.find((job) => job.jobId === id);
-        const seq = this.members.get(id)?.seq;
-        return job && (job.disposition === 'admitted' || job.disposition === 'unknown') && seq !== undefined
-          ? [{ hash: waitJobHash(id), seq }]
-          : [];
-      }),
-    };
+  /** A job read from another epoch, or refused, never holds the active epoch's watermark back. */
+  private holdsWatermark(job: WaitAdmission): boolean {
+    if (job.disposition === 'admitted') return !job.historical;
+    return (
+      job.disposition === 'unknown' && (job.epochKey === undefined || sameEpoch(job.epochKey, this.activeEpochKey))
+    );
+  }
+  /**
+   * The minimum over the requested active-epoch jobs of how far each was consumed, a terminal not yet printed by this
+   * read counting as an undelivered row. A job this read never positioned does not hold it back; every other job has
+   * no undelivered row at or below it, so a resume repeats their rows at worst and loses none.
+   */
+  cursor(): WaitCursor | null {
+    let watermark = Infinity;
+    for (const job of this.admissions) {
+      if (!this.holdsWatermark(job)) continue;
+      const member = this.member(job.jobId);
+      let consumed = member.progress === 'lost' ? Infinity : member.seq;
+      if (consumed === undefined) continue;
+      if (job.detail?.exit && !member.delivered) consumed = Math.min(consumed, this.terminalSeq(job) - 1);
+      watermark = Math.min(watermark, consumed);
+    }
+    const seq = Number.isFinite(watermark) ? Math.max(0, watermark) : this.base;
+    return seq === undefined ? null : encodeWaitCursor({ epochTag: this.epochTag, seq });
   }
   observeCoverage(jobIds: readonly string[], unknownJobIds: readonly string[], frontier: number): void {
     for (const id of jobIds) this.coverage.set(id, { kind: unknownJobIds.includes(id) ? 'unknown' : 'live', frontier });

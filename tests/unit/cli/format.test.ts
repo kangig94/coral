@@ -47,7 +47,7 @@ it('includes every remaining job in the wait continuation', () => {
       resultPath: '/tmp/result.md',
       availability: { kind: 'available', resultPath: '/tmp/result.md' },
       result: { content: '', durationMs: 0, outcome: { kind: 'completed' } },
-      cursor: { jobs: [] },
+      cursor: null,
       exitCode: 75,
     },
     null,

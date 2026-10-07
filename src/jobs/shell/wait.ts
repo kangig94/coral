@@ -394,6 +394,7 @@ export class WaitCoordinator {
     const addressed = this.deps.internalWait;
     yield* readWaitSession({
       request: req,
+      activeEpochKey: epochKey,
       internal: true,
       time: this.deps.time,
       visit: addressed?.visitProgress ?? this.deps.visitProgress,

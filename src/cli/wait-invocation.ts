@@ -77,7 +77,8 @@ export class WaitInvocation implements WaitInvocationHandoff {
   private continuationFlushPending = false;
   private snapshotOutputPending = false;
   private monitorFlushPending = false;
-  private readonly delegated: boolean;
+  /** A parent that disconnects can no longer print for this child, so the child prints its own continuation. */
+  private delegated: boolean;
   private readonly onSigint = () => {
     if (!this.continuationFlushed && !this.signal.aborted) this.stop();
     else if (this.signal.aborted) {
@@ -88,6 +89,9 @@ export class WaitInvocation implements WaitInvocationHandoff {
   };
   private readonly onMessage = (message: unknown) => {
     if (isRecord(message) && message.type === 'wait-cancel') this.stop();
+  };
+  private readonly onDisconnect = () => {
+    this.delegated = false;
   };
 
   constructor(mode: WaitInvocationMode, argv: readonly string[], clock = { now: () => performance.now() }) {
@@ -122,6 +126,7 @@ export class WaitInvocation implements WaitInvocationHandoff {
         budget -= 100;
       }
       process.on('message', this.onMessage);
+      process.once('disconnect', this.onDisconnect);
     }
     const start = this.clock.now();
     this.deadline = start + budget;
@@ -272,6 +277,7 @@ export class WaitInvocation implements WaitInvocationHandoff {
   dispose(force = false): void {
     clearTimeout(this.watchdog);
     process.off('message', this.onMessage);
+    process.off('disconnect', this.onDisconnect);
     if (this.signal.aborted && !force) return;
     process.off('SIGINT', this.onSigint);
     clearTimeout(this.backstop);

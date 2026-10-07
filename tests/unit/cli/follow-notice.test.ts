@@ -4,7 +4,7 @@ import { followJobs } from '#src/cli/follow.js';
 import { WaitInvocation } from '#src/cli/wait-invocation.js';
 import { readWaitSession } from '#src/jobs/wait/reader.js';
 import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
-import { admitted } from '#tests/helpers/wait-session.js';
+import { admitted, TEST_EPOCH } from '#tests/helpers/wait-session.js';
 import type { WaitStreamEvent } from '#src/jobs/wait/contract.js';
 
 const invocations: WaitInvocation[] = [];
@@ -35,6 +35,7 @@ async function firstPollEvents(): Promise<WaitStreamEvent[]> {
   const events: WaitStreamEvent[] = [];
   for await (const e of readWaitSession({
     request: { jobIds: ['a'], timeoutSeconds: 0 },
+    activeEpochKey: TEST_EPOCH,
     time: new VirtualTime(),
     read: observeWaitRead(() => [job]),
     visit: testProgressVisit,

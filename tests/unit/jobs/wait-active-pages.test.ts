@@ -4,7 +4,7 @@ import { createTerminalExportFixture } from '#tests/helpers/terminal-export.js';
 import { JobAddressing } from '#src/jobs/addressing.js';
 import { WaitCoordinator } from '#src/jobs/shell/wait.js';
 import { deriveLaunchReadiness } from '#src/jobs/launch-readiness.js';
-import { waitJobHash } from '#src/jobs/wait/cursor.js';
+import { savedCursor } from '#tests/helpers/wait-session.js';
 import { buildJobEventRefs } from '#src/jobs/refs.js';
 
 function setup() {
@@ -71,13 +71,13 @@ it('resumes after a budget cut through the active journal, skipping a fault row 
     for (let i = 1; i < 600; i++) f.store.appendProgress(f.jobId, 'session-1', `line ${i}`);
     f.complete({ terminal: { content: 'done', outcome: { kind: 'completed' }, durationMs: 1 } });
     f.store.publishTerminalResult(f.jobId);
-    const cursor = { jobs: [{ hash: waitJobHash(f.jobId), seq: launchSeq }] };
+    const cursor = savedCursor(launchSeq, f.epochKey);
     const first = addressing.snapshot({ jobIds: [f.jobId], cursor });
     // A 500-row page holds the fault row and 499 lines; the budget cut leaves the rest for the continuation.
     expect(first.jobs[0].progress).toEqual(Array.from({ length: 499 }, (_, i) => `line ${i}`));
     expect(first.jobs[0].terminal).toBeUndefined();
     expect(first.remainingJobIds).toEqual([f.jobId]);
-    const second = addressing.snapshot({ jobIds: [f.jobId], cursor: first.cursor });
+    const second = addressing.snapshot({ jobIds: [f.jobId], cursor: first.cursor ?? undefined });
     const delivered = new Set([...first.jobs[0].progress, ...second.jobs[0].progress]);
     expect(delivered).toEqual(new Set(Array.from({ length: 600 }, (_, i) => `line ${i}`)));
     expect(second.jobs[0].terminal).toBeDefined();

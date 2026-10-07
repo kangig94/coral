@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { isRecord, parseBooleanQuery } from '../../infra/json.js';
+import { parseBooleanQuery } from '../../infra/json.js';
 import { providerIdentPattern } from '../../infra/identifiers.js';
 import { jobPhaseSchema } from '../../jobs/phase.js';
 import { type WaitCursor } from '../../jobs/wait/contract.js';
@@ -58,14 +58,14 @@ export const WAIT_BUILD_MISMATCH = {
 } as const;
 
 /**
- * A current CLI always states its frontier in the single cursor shape and sends no other field. A request without a
- * frontier, with a frontier in another shape, or with a field this build does not define was formed by another build.
+ * A current CLI always states its frontier, as a cursor string or null for a fresh collection, and sends no other
+ * field. A request without a frontier, with a frontier of another type, or with a field this build does not define
+ * was formed by another build.
  */
 export function waitRequestFromAnotherBuild(request: Readonly<Record<string, unknown>>): boolean {
   return (
     Object.keys(request).some((key) => !WAIT_REQUEST_FIELDS.has(key)) ||
-    request.cursor === undefined ||
-    (isRecord(request.cursor) && Object.keys(request.cursor).some((key) => key !== 'jobs'))
+    (request.cursor !== null && typeof request.cursor !== 'string')
   );
 }
 
@@ -83,7 +83,7 @@ export function jobsWaitRequest(fields: JobsWaitFields): Record<string, unknown>
     projectRoot: fields.projectRoot,
     ...(fields.timeoutSeconds === undefined ? {} : { timeoutSeconds: fields.timeoutSeconds }),
     ...(fields.drainProgress === true ? { drainProgress: true } : {}),
-    cursor: fields.cursor ?? { jobs: [] },
+    cursor: fields.cursor ?? null,
   };
 }
 

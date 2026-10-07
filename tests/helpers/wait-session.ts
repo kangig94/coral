@@ -1,13 +1,17 @@
+import assert from 'node:assert/strict';
 import type { JobDetailResponse } from '#src/jobs/records.js';
 import type { WaitCursor } from '#src/jobs/wait/contract.js';
-import { waitJobHash } from '#src/jobs/wait/cursor.js';
-import type { WaitAdmission } from '#src/jobs/wait/session.js';
+import { encodeWaitCursor, waitEpochTag } from '#src/jobs/wait/cursor.js';
+import { WaitSession, type WaitAdmission } from '#src/jobs/wait/session.js';
+
+/** The active epoch every fixture admission below is read from. */
+export const TEST_EPOCH = 'epoch-E';
 
 export function admitted(
   jobId: string,
   messages: Array<[number, string]> = [],
   terminal = true,
-  epochKey = 'epoch-E',
+  epochKey = TEST_EPOCH,
   failed = false,
   terminalSeq = 1000,
 ): WaitAdmission & { detail: JobDetailResponse } {
@@ -52,7 +56,14 @@ export function admitted(
   };
 }
 
-/** A saved cursor positioning each named job at its sequence. */
-export function savedCursor(positions: Record<string, number>): WaitCursor {
-  return { jobs: Object.entries(positions).map(([jobId, seq]) => ({ hash: waitJobHash(jobId), seq })) };
+/** A saved cursor whose watermark is `seq` in the given epoch. */
+export function savedCursor(seq: number, epochKey = TEST_EPOCH): WaitCursor {
+  const cursor = encodeWaitCursor({ epochTag: waitEpochTag(epochKey), seq });
+  assert(cursor !== null);
+  return cursor;
+}
+
+/** A client session whose active epoch is the fixtures' epoch. */
+export function testSession(jobIds: readonly string[], cursor?: WaitCursor): WaitSession {
+  return new WaitSession(jobIds, cursor, TEST_EPOCH);
 }

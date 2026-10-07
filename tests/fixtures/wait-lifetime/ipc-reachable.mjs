@@ -83,7 +83,7 @@ client.write(
       jobIds: ['job-1'],
       projectRoot: '/tmp',
       timeoutSeconds: 600,
-      cursor: { jobs: [] },
+      cursor: null,
     },
   }) + '\n',
 );

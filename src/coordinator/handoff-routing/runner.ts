@@ -93,7 +93,7 @@ const handoffOperationSchema = z.discriminatedUnion('kind', [
       jobId: z.string().min(1),
       // Opaque here on purpose: the caller already holds the serialized cursor, and decoding it would make
       // this coordinator module depend on the jobs domain's wait vocabulary just to re-encode the same string.
-      serializedCursor: z.string().min(1),
+      serializedCursor: z.string().min(1).optional(),
     })
     .strict(),
   z.object({ kind: z.literal('backend-startup') }).strict(),
@@ -144,7 +144,7 @@ type LiveIncumbentReading =
 
 export type HandoffOperation =
   | Readonly<{ kind: 'cli-invocation'; argv: readonly string[] }>
-  | Readonly<{ kind: 'wait-jobs'; jobId: string; serializedCursor: string }>
+  | Readonly<{ kind: 'wait-jobs'; jobId: string; serializedCursor?: string }>
   | Readonly<{ kind: 'backend-startup' }>;
 
 export type HandoffSuccess = Readonly<{
@@ -338,6 +338,8 @@ export type RunHandoffOptions = Readonly<{
   waitProbeRemainingMs?: () => number;
   activeSelectionTarget?: ValidatedHandoffTarget;
   onSelectionPublicationIncident?: (incident: HandoffPublicationIncident) => void;
+  /** Hands the caller a delegated CLI child it must interrupt itself, since its stdio is the caller's own. */
+  onDelegatedChild?: (child: ChildProcess) => void;
 }>;
 
 export type ChildEnding = Readonly<{
@@ -845,7 +847,12 @@ function delegatedArguments(operation: HandoffOperation): readonly string[] {
     case 'cli-invocation':
       return operation.argv.slice(2);
     case 'wait-jobs':
-      return ['wait', 'jobs', operation.jobId, '--cursor', operation.serializedCursor];
+      return [
+        'wait',
+        'jobs',
+        operation.jobId,
+        ...(operation.serializedCursor === undefined ? [] : ['--cursor', operation.serializedCursor]),
+      ];
     case 'backend-startup':
       return [];
   }
@@ -1343,6 +1350,7 @@ async function executeResolvedHandoff(
   signal: AbortSignal | undefined,
   executionPhase: { current: ExecutionThrowPhase },
   waitInvocation?: WaitInvocationHandoff,
+  onDelegatedChild?: (child: ChildProcess) => void,
 ): Promise<HandoffContinuationResult> {
   switch (routing.kind) {
     case 'continue-current':
@@ -1418,6 +1426,7 @@ async function executeResolvedHandoff(
       const child = spawn(process.execPath, childArguments, spawnOptions);
       const childObservation = observeChild(child);
       if (waitInvocation !== undefined) bindMonitorChild(child, childObservation, waitInvocation, runtime);
+      else if (startup === undefined) onDelegatedChild?.(child);
       await childObservation.spawned;
       executionPhase.current = 'child-outcome-wait';
       if (startup !== undefined) {
@@ -1517,6 +1526,7 @@ export async function runHandoff(
         options.signal,
         executionPhase,
         options.waitInvocation,
+        options.onDelegatedChild,
       ),
     };
   }
@@ -1540,6 +1550,7 @@ export async function runHandoff(
       options.signal,
       executionPhase,
       options.waitInvocation,
+      options.onDelegatedChild,
     );
     const recording = terminalRecordingFor(continuation);
     if (recording.kind === 'withhold') {

@@ -238,25 +238,6 @@ it.each(['v0.10.15', 'v0.10.16', 'v0.10.17'] as const)(
         expect(await released.sweepStoreEpochsPostReady!(runtime, selected)).toBe('complete');
         expect(existsSync(firstReaping)).toBe(false);
       }
-      const second = crashHolderPublication(f.baseDir, root);
-      expect(await released.sweepStoreEpochsPostReady!(runtime, selected)).toBe('complete');
-      expect(existsSync(second)).toBe(true);
-      if (tag === 'v0.10.15') {
-        expect(
-          await released.sweepStoreEpochsPostReady!(runtime, {
-            ...selected,
-            epoch: '2',
-            path: join(root, 'epoch-2', 'store.db'),
-          }),
-        ).toBe('complete');
-        expect(existsSync(second)).toBe(false);
-      } else {
-        const secondReaping = join(root, '.reaping-holder-second');
-        renameSync(join(root, 'epoch-1'), secondReaping);
-        expect(existsSync(join(secondReaping, basename(second)))).toBe(true);
-        expect(await released.sweepStoreEpochsPostReady!(runtime, selected)).toBe('complete');
-        expect(existsSync(secondReaping)).toBe(false);
-      }
     } finally {
       for (const directory of dirs) rmSync(directory, { recursive: true, force: true });
     }

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { z } from 'zod';
-import { decodeWaitCursor, waitJobHash, serializeWaitCursor } from './cursor.js';
+import { decodeWaitCursor } from './cursor.js';
 import {
   WAIT_PROGRESS_BYTES,
   WAIT_PROGRESS_LINES,
@@ -31,7 +31,7 @@ function preview(text: string, budget: number): { text: string; omitted: boolean
   return { text: `${selected}[preview shortened: content omitted]`, omitted: true };
 }
 
-/** One poll: the outcome of a job is summarized, and so collected, only once its readable progress is delivered. */
+/** One poll: a terminal is summarized on every read, once its job's readable progress is delivered. */
 export function selectWaitSnapshot(session: WaitSession, lines = 20, visit: ProgressVisit): WaitSnapshot {
   return session.withProgress(visit, (sources) => {
     const selection = session.select(sources, { lines: WAIT_PROGRESS_LINES, bytes: WAIT_PROGRESS_BYTES }, lines);
@@ -48,7 +48,7 @@ export function selectWaitSnapshot(session: WaitSession, lines = 20, visit: Prog
     const snapshot: WaitSnapshot = {
       jobs,
       notices,
-      cursor: session.cursor(remainingJobIds),
+      cursor: session.cursor(),
       remainingJobIds,
       exitCode: session.exitCode(),
     };
@@ -64,11 +64,8 @@ function snapshotJob(session: WaitSession, admission: WaitAdmission): WaitSnapsh
   row.phase = detail?.status.phase ?? 'unresolved';
   if (!detail?.exit || !session.terminalDeliverable(admission)) return row;
   row.availability = availability;
-  row.alreadyCollected = session.collected(admission);
-  if (!row.alreadyCollected) {
-    row.terminal = terminalSummary(detail, detail.exit);
-    session.collect(admission);
-  }
+  row.terminal = terminalSummary(detail, detail.exit);
+  session.deliverTerminal(admission);
   return row;
 }
 
@@ -132,8 +129,7 @@ function snapshotEnvelopeBytes(snapshot: unknown): number {
 /** An oversized snapshot never advances the input cursor; each subset retry repeats that unchanged cursor. */
 export function waitSnapshotTooLarge(jobIds: readonly string[], input: WaitCursor | undefined): WaitSessionError {
   const retries = jobIds.map(
-    (jobId) =>
-      `coral-cli wait jobs '${jobId.replaceAll("'", "'\\''")}' --now${input ? ` --cursor ${serializeWaitCursor(input)}` : ''}`,
+    (jobId) => `coral-cli wait jobs '${jobId.replaceAll("'", "'\\''")}' --now${input ? ` --cursor ${input}` : ''}`,
   );
   return new WaitSessionError(
     'wait_snapshot_too_large',
@@ -175,7 +171,6 @@ const waitSnapshotSchema = z
             disposition: z.enum(['admitted', 'missing', 'scope-mismatch', 'unknown', 'unreadable']),
             message: z.string().optional(),
             phase: z.string().optional(),
-            alreadyCollected: z.boolean().optional(),
             progress: z.array(z.string()),
             terminal: z
               .object({
@@ -196,7 +191,7 @@ const waitSnapshotSchema = z
       )
       .max(128),
     notices: z.array(z.string()),
-    cursor: z.custom<WaitCursor>((value) => decodeWaitCursor(value).kind === 'decoded'),
+    cursor: z.custom<WaitCursor>((value) => decodeWaitCursor(value).kind === 'decoded').nullable(),
     remainingJobIds: z.array(z.string()).max(128),
     exitCode: z.number().int().min(0).max(255),
   })
@@ -213,21 +208,16 @@ const waitSnapshotSchema = z
         const job = snapshot.jobs.find((row) => row.jobId === id);
         return !job || (job.disposition !== 'admitted' && job.disposition !== 'unknown');
       }) ||
-      snapshot.cursor.jobs.some((entry) => !snapshot.remainingJobIds.some((id) => waitJobHash(id) === entry.hash)) ||
       snapshot.jobs.some((job) =>
         job.disposition === 'admitted'
           ? !job.phase || (job.terminal !== undefined && !job.availability)
-          : job.terminal !== undefined ||
-            job.alreadyCollected !== undefined ||
-            job.availability !== undefined ||
-            job.progress.length > 0,
+          : job.terminal !== undefined || job.availability !== undefined || job.progress.length > 0,
       ) ||
       lines.some((line) => Buffer.byteLength(line) > 4096) ||
       snapshot.jobs.some(
         (job) =>
           job.terminal &&
-          (encodedBytes(job.terminal.contentPreview) + encodedBytes(job.terminal.diagnosticPreview) > 4096 ||
-            job.alreadyCollected === true),
+          encodedBytes(job.terminal.contentPreview) + encodedBytes(job.terminal.diagnosticPreview) > 4096,
       )
     )
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Invalid snapshot delivery contract' });

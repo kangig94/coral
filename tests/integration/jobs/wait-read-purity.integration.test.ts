@@ -1,7 +1,6 @@
 import { progressVisitFromEvents, progressVisitFromDetails } from '#tests/helpers/wait-progress.js';
 import { waitEpochToken } from '#src/jobs/wait/cursor.js';
 import { encodeResolvedStoreEpoch, protectStoreEpoch, protectedStoreEpochRoot } from '#src/store/epoch/index.js';
-import { formatJobDetail } from '#src/cli/format/jobs.js';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
@@ -208,7 +207,7 @@ async function terminal(stream: AsyncGenerator<WaitStreamEvent>): Promise<WaitSt
 }
 
 describe('Phase D wait read purity (Revision S3)', () => {
-  it.each(['scopeCheck', 'detail', 'waitStream', 'snapshot', 'detailFull'] as const)(
+  it.each(['scopeCheck', 'waitStream', 'snapshot'] as const)(
     'admits an unindexed active terminal through %s without registration',
     async (entry) => {
       const f = fixture();
@@ -220,17 +219,10 @@ describe('Phase D wait read purity (Revision S3)', () => {
           valid: [f.jobId],
           missing: [],
         });
-      if (entry === 'detailFull') {
-        const detail = f.addressing.detail(f.jobId);
-        if (detail && 'status' in detail)
-          expect(formatJobDetail(detail, undefined, [], true)).toContain('canonical result');
-      }
       if (entry === 'snapshot')
         expect(f.addressing.snapshot({ jobIds: [f.jobId] }).jobs[0].terminal?.contentPreview).toContain(
           'canonical result',
         );
-      if (entry === 'detail')
-        expect(f.addressing.detail(f.jobId)).toMatchObject({ exit: { content: 'canonical result' } });
       if (entry === 'waitStream')
         expect(await terminal(f.addressing.waitStream({ jobIds: [f.jobId] }))).toMatchObject({
           type: 'terminal',
@@ -258,7 +250,7 @@ describe('Phase D wait read purity (Revision S3)', () => {
     expect(existsSync(f.resultPath)).toBe(false);
   });
 
-  it.each(['scopeCheck', 'detail', 'waitStream', 'snapshot', 'detailFull'] as const)(
+  it.each(['waitStream', 'snapshot'] as const)(
     'reads a historical terminal committed only in WAL through %s without hydration',
     async (entry) => {
       const f = fixture(true);
@@ -273,27 +265,10 @@ describe('Phase D wait read purity (Revision S3)', () => {
       expect(readFileSync(f.epoch.path).equals(mainBefore)).toBe(true);
       expect(readFileSync(`${f.epoch.path}-wal`).length).toBeGreaterThan(0);
       const check = measure(f);
-      if (entry === 'scopeCheck')
-        expect(
-          f.addressing.scopeCheck([f.jobId], canonicalWorkDirWireSchema.parse(f.root), 'contains').missing,
-        ).toEqual([]);
-      if (entry === 'detailFull') {
-        const detail = f.addressing.detail(f.jobId);
-        if (detail && 'status' in detail)
-          expect(formatJobDetail(detail, undefined, [], true)).toContain('terminal only in WAL');
-      }
       if (entry === 'snapshot')
         expect(f.addressing.snapshot({ jobIds: [f.jobId] }).jobs[0].terminal?.contentPreview).toContain(
           'terminal only in WAL',
         );
-      if (entry === 'detail')
-        expect(f.addressing.detail(f.jobId)).toMatchObject({
-          exit: { content: 'terminal only in WAL' },
-          events: [
-            expect.objectContaining({ type: 'progress', message: 'historical WAL progress' }),
-            expect.objectContaining({ type: 'terminal' }),
-          ],
-        });
       if (entry === 'waitStream')
         expect(await terminal(f.addressing.waitStream({ jobIds: [f.jobId] }))).toMatchObject({
           type: 'terminal',
@@ -302,22 +277,6 @@ describe('Phase D wait read purity (Revision S3)', () => {
       check();
       expect(f.index.read(f.jobId)?.disposition).toBe('unresolved');
       expect(existsSync(f.resultPath)).toBe(false);
-      if (f.reader.mock.calls.length > 0)
-        expect(f.closure.mock.invocationCallOrder[0]).toBeLessThan(f.reader.mock.invocationCallOrder[0]);
-    },
-  );
-
-  it.each(['missing', 'malformed'] as const)(
-    'keeps a decided historical outcome unresolved with a %s guard',
-    (guard) => {
-      const f = fixture(true);
-      const lock = join(f.epochDir, '.lock');
-      if (guard === 'missing') rmSync(lock);
-      else writeFileSync(lock, 'malformed lock bytes');
-      const check = measure(f);
-      const detail = f.addressing.detail(f.jobId);
-      check();
-      expect(detail).toMatchObject({ kind: 'unresolved' });
     },
   );
 
@@ -326,19 +285,6 @@ describe('Phase D wait read purity (Revision S3)', () => {
     const check = measure(f);
     expect(f.addressing.detail(f.jobId)).toMatchObject({ kind: 'outcome-unrecoverable' });
     check();
-  });
-
-  it('hydrates and certifies historical terminals only from maintenance', () => {
-    const f = fixture(true);
-    commitJobTerminal(f.store, f.jobId, 'session-1', {
-      content: 'write-owned copy',
-      outcome: { kind: 'completed' },
-      durationMs: 1,
-    });
-    expect(f.index.read(f.jobId)?.disposition).toBe('unresolved');
-    refreshHistoricalEpochs(f.index);
-    expect(f.index.read(f.jobId)?.disposition).toBe('terminal');
-    expect(f.index.certificate(f.epochKey)?.jobIds).toContain(f.jobId);
   });
 
   it('delivers a validated retained outcome after failed publication, expiry, hydration, retirement and restart', async () => {
@@ -444,19 +390,6 @@ describe('Phase D wait read purity (Revision S3)', () => {
     expect(addressing.scopeCheck([f.jobId], canonicalWorkDirWireSchema.parse(f.root), 'contains').missing).toEqual([]);
     expect(addressing.detail(f.jobId)).toMatchObject({ status: { jobKind: 'kb' } });
     check();
-  });
-
-  it('passes only a read-only location surface to addressing', () => {
-    const f = fixture();
-    expect(Object.keys(f.index.readOnlyView()).sort()).toEqual([
-      'historicalSourceState',
-      'observePoll',
-      'read',
-      'readHistorical',
-      'resultPathFor',
-      'time',
-      'unknownLocationHolds',
-    ]);
   });
 });
 

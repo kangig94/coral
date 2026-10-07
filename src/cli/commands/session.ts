@@ -1,9 +1,7 @@
-import { WAIT_CURSOR_REPLAY_NOTICE } from '../../jobs/wait/cursor.js';
-import { decodeSerializedWaitCursor } from '../../jobs/wait/cursor.js';
+import { decodeWaitCursor, WAIT_CURSOR_REPLAY_NOTICE } from '../../jobs/wait/cursor.js';
 import type { WaitCursor } from '../../jobs/wait/contract.js';
 import { parseWaitSnapshot } from '../../jobs/wait/snapshot.js';
 import { formatWaitSnapshot, formatWaitContinuation } from '../format/wait.js';
-import { serializeWaitCursor } from '../../jobs/wait/cursor.js';
 import { mapWaitSubscriptionError, SOFT_CURSOR_REFUSALS } from '../wait-stream-error.js';
 import { MAX_WAIT_JOB_IDS } from '../../jobs/wait/stream-event.js';
 import { BackendToolHttpError } from '../../transport/http/errors.js';
@@ -217,8 +215,7 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
       const invocation = getWaitInvocation();
       let cursor: WaitCursor | undefined;
       if (opts.cursor !== undefined) {
-        const decoded = decodeSerializedWaitCursor(opts.cursor);
-        if (decoded.kind === 'decoded') cursor = decoded.cursor;
+        if (decodeWaitCursor(opts.cursor).kind === 'decoded') cursor = opts.cursor;
         else process.stdout.write(`${WAIT_CURSOR_REPLAY_NOTICE} This snapshot shows the latest progress tail.\n`);
       }
       const reset = () => {
@@ -258,8 +255,7 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
         );
       }
       const output = formatWaitSnapshot(snapshot) + '\n';
-      const continuation =
-        formatWaitContinuation(snapshot.remainingJobIds, serializeWaitCursor(snapshot.cursor), true) + '\n';
+      const continuation = formatWaitContinuation(snapshot.remainingJobIds, snapshot.cursor, true) + '\n';
       const write = () =>
         new Promise<void>((resolve, reject) =>
           process.stdout.write(output, (error) => (error ? reject(error) : resolve())),

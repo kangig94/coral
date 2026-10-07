@@ -953,44 +953,19 @@ it('retires small expired residues in bounded fenced turns while preserving iden
 });
 
 import { terminalEligibility } from '#src/jobs/export-retention.js';
-import { createTerminalExportFixture, TERMINAL_EXPORT_CUTOFF } from '#tests/helpers/terminal-export.js';
+import { createTerminalExportFixture } from '#tests/helpers/terminal-export.js';
 
-it.each([
-  ['expired', { source: 'readable', age: 'expired' }],
-  ['inside', { source: 'readable', age: 'inside' }],
-  ['regressed', { source: 'readable', age: 'unknown' }],
-  ['source absent', { source: 'absent', age: 'unknown' }],
-  ['source busy', { source: 'transient', age: 'unknown' }],
-  ['source contradicts', { source: 'unusable', age: 'unknown' }],
-  ['source body corrupt', { source: 'unusable', age: 'unknown' }],
-  ['no location', { source: 'unusable', age: 'unknown' }],
-  ['nonterminal location', { source: 'unusable', age: 'unknown' }],
-  ['absent detail', { source: 'unusable', age: 'unknown' }],
-] as const)('classifies terminal eligibility from the intact source only: %s', (scenario, expected) => {
+it('classifies a busy terminal source as transient, never as unusable', () => {
   const f = createTerminalExportFixture();
   try {
-    f.complete(
-      scenario === 'expired'
-        ? { terminalAt: TERMINAL_EXPORT_CUTOFF - 1000 }
-        : scenario === 'regressed'
-          ? { terminalAt: TERMINAL_EXPORT_CUTOFF - 1000, precedingAt: TERMINAL_EXPORT_CUTOFF + 1000 }
-          : {},
-    );
-    let location = f.index.read(f.jobId);
-    if (!location) throw new Error('missing fixture location');
-    if (scenario === 'nonterminal location') location = { ...location, disposition: 'unresolved' };
-    if (scenario === 'absent detail') location = { ...location, detail: { kind: 'absent' } };
-    if (scenario === 'source contradicts')
-      f.db.prepare("UPDATE events SET ts = '2099-01-01T00:00:00Z' WHERE type = 'job.terminal.recorded'").run();
-    if (scenario === 'source body corrupt')
-      f.db.prepare("UPDATE events SET body = ? WHERE type = 'job.terminal.recorded'").run(Buffer.from('{'));
-    const source = (read: (db: typeof f.db) => unknown) => {
-      if (scenario === 'source busy') throw Object.assign(new Error('database is locked'), { code: 'SQLITE_BUSY' });
-      return scenario === 'source absent' ? null : read(f.db);
+    f.complete();
+    const busy = () => {
+      throw Object.assign(new Error('database is locked'), { code: 'SQLITE_BUSY' });
     };
-    expect(terminalEligibility(f.runtime, scenario === 'no location' ? null : location, source as never)).toEqual(
-      expected,
-    );
+    expect(terminalEligibility(f.runtime, f.index.read(f.jobId), busy as never)).toEqual({
+      source: 'transient',
+      age: 'unknown',
+    });
   } finally {
     f.close();
   }

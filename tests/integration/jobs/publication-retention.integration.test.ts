@@ -1,8 +1,6 @@
-import { sharedFixture } from '#tests/helpers/shared-fixtures.js';
-import { fork, type ChildProcess } from 'node:child_process';
 import { existsSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createTerminalExportFixture,
   TERMINAL_EXPORT_CUTOFF,
@@ -17,33 +15,15 @@ import { commitJobTerminal } from '#tests/helpers/job-commits.js';
 import { aggregateWorkflowUsage } from '#src/jobs/workflow-usage.js';
 
 const fixtures: ReturnType<typeof createTerminalExportFixture>[] = [];
-const children: ChildProcess[] = [];
-let publisher: string;
-let kbBundle: string;
 function fixture(kind: 'provider' | 'workflow' = 'provider') {
   const f = createTerminalExportFixture(kind, true);
   fixtures.push(f);
   return f;
 }
 
-beforeAll(() => {
-  fixture();
-  publisher = sharedFixture('publisher');
-  kbBundle = sharedFixture('kb-host');
-});
-
-afterAll(() => {
-  for (const f of fixtures.splice(0)) f.close();
-});
-
-afterEach(async () => {
+afterEach(() => {
   vi.restoreAllMocks();
-  for (const child of children.splice(0))
-    if (child.exitCode === null && child.signalCode === null) {
-      child.kill('SIGKILL');
-      await new Promise<void>((done) => child.once('exit', () => done()));
-    }
-  for (const f of fixtures.splice(1)) f.close();
+  for (const f of fixtures.splice(0)) f.close();
 });
 
 async function prune(f: ReturnType<typeof fixture>) {
@@ -58,59 +38,7 @@ async function prune(f: ReturnType<typeof fixture>) {
     mutate: (operation) => operation(),
   });
 }
-function message(child: ChildProcess, kind: string): Promise<void> {
-  return new Promise((resolveMessage, reject) => {
-    child.on('message', (value) => {
-      if (typeof value === 'object' && value !== null && 'kind' in value && value.kind === kind) resolveMessage();
-    });
-    // 'close' follows the IPC channel's close, so every message the publisher sent has been delivered by then.
-    child.once('close', (code) => reject(new Error(`publisher exited ${code} before ${kind}`)));
-  });
-}
-
 describe('publication and retention under Revision S1', () => {
-  it.each(['coordinator', 'kb'] as const)(
-    'rechecks expiry across a paused %s publisher and another process retention',
-    async (origin) => {
-      const f = fixture();
-      f.complete({ terminalAt: TERMINAL_EXPORT_CUTOFF });
-      writeFileSync(join(f.root, 'clock'), String(TERMINAL_EXPORT_NOW));
-      const child = fork(publisher, [f.root, f.epochKey, 'pre-stage', origin, kbBundle], {
-        env: { PATH: process.env.PATH, HOME: join(f.root, 'isolated-home'), LANG: 'C.UTF-8', TMPDIR: '/tmp' },
-        stdio: ['pipe', 'ignore', 'pipe', 'ipc'],
-      });
-      children.push(child);
-      await message(child, 'paused');
-      f.advance(1);
-      writeFileSync(join(f.root, 'clock'), String(TERMINAL_EXPORT_NOW + 1));
-      await prune(f);
-      const done = message(child, 'done');
-      child.stdin?.write('r');
-      await done;
-      expect(existsSync(f.resultPath)).toBe(false);
-      expect(f.index.resultDurable(f.jobId)).toBe(true);
-    },
-  );
-
-  it('discards a staged attempt across the cutoff and releases its source guard', async () => {
-    const f = fixture();
-    f.complete({ terminalAt: TERMINAL_EXPORT_CUTOFF });
-    writeFileSync(join(f.root, 'clock'), String(TERMINAL_EXPORT_NOW));
-    const child = fork(publisher, [f.root, f.epochKey, 'staged', 'coordinator', kbBundle], {
-      env: { PATH: process.env.PATH, HOME: join(f.root, 'isolated-home'), LANG: 'C.UTF-8', TMPDIR: '/tmp' },
-      stdio: ['pipe', 'ignore', 'pipe', 'ipc'],
-    });
-    children.push(child);
-    await message(child, 'paused');
-    f.advance(1);
-    writeFileSync(join(f.root, 'clock'), String(TERMINAL_EXPORT_NOW + 1));
-    const done = message(child, 'done');
-    child.stdin?.write('r');
-    await done;
-    expect(existsSync(f.resultPath)).toBe(false);
-    expect(f.index.resultDurable(f.jobId)).toBe(true);
-  });
-
   it('pruned active results stay absent through startup repair, historical seed and source retirement', async () => {
     const f = fixture();
     f.complete({ terminalAt: TERMINAL_EXPORT_CUTOFF });

@@ -1,10 +1,9 @@
 import { formatResultAvailability } from './result-availability.js';
 import type { WaitSnapshot } from '../../jobs/wait/session.js';
-import { serializeWaitCursor } from '../../jobs/wait/cursor.js';
 import { assertNever } from '../../infra/error-format.js';
 import { describeTerminalOutcome } from '../../jobs/outcome.js';
 import type { JobTerminal } from '../../jobs/records.js';
-import type { WaitStreamEvent } from '../../jobs/wait/contract.js';
+import { isFinalWaitEvent, type WaitStreamEvent } from '../../jobs/wait/contract.js';
 import {
   type CauseRefDescriber,
   pickTerminalPreviewSource,
@@ -67,7 +66,7 @@ export function formatWaitContinuation(jobIds: readonly string[], cursor: string
   return `Run coral-cli wait jobs ${jobIds.join(' ')}${now ? ' --now' : ''}${cursor === null ? '' : ` --cursor ${cursor}`} to continue waiting.`;
 }
 
-export function formatWaitProgress(event: Omit<WaitProgressEvent, 'entry'>, label?: string): string {
+export function formatWaitProgress(event: WaitProgressEvent, label?: string): string {
   return formatTimedMessage(event.timing.elapsedMs, event.message, label);
 }
 
@@ -96,7 +95,8 @@ export function formatWaitTerminal(
     .filter((segment): segment is string => segment !== undefined)
     .join(' · ')
     .replace(/\r\n|[\r\n\u2028\u2029]/g, '\n> ');
-  const continuation = formatWaitContinuation(event.remainingJobIds, cursor);
+  // A terminal that ends nothing leaves the continuation to the event that ends the read.
+  const continuation = isFinalWaitEvent(event) ? formatWaitContinuation(event.remainingJobIds, cursor) : undefined;
   const fullDetail =
     event.availability.kind !== 'available' || (inline && event.result.content.length > 10_000)
       ? `Full retained outcome: ${renderJobsOperatorCommand({ kind: 'jobs-detail-full', jobId: event.jobId })}`
@@ -111,7 +111,9 @@ export function formatWaitTerminal(
     formatResultAvailability(event.availability),
     frameWaitContent(truncatePreview(pickTerminalPreviewSource(event.result, options.describeCauseRef))),
     continuation,
-    cursor === null || event.remainingJobIds.length === 0 ? undefined : `Cursor: ${cursor}`,
+    continuation === undefined || cursor === null || event.remainingJobIds.length === 0
+      ? undefined
+      : `Cursor: ${cursor}`,
   ]);
 }
 
@@ -156,9 +158,7 @@ export function formatWaitSnapshot(snapshot: WaitSnapshot): string {
     const header =
       job.disposition !== 'admitted'
         ? `Job ${job.jobId}: ${job.disposition}${job.message ? ` — ${job.message}` : ''}`
-        : job.terminal || job.alreadyCollected
-          ? `Job ${job.jobId}: terminal${job.alreadyCollected ? '/already collected' : ''}`
-          : `Job ${job.jobId}: ${job.phase ?? 'nonterminal'}`;
+        : `Job ${job.jobId}: ${job.terminal ? 'terminal' : (job.phase ?? 'nonterminal')}`;
     const terminal = job.terminal;
     return joinLines([
       header,
@@ -180,7 +180,7 @@ export function formatWaitSnapshot(snapshot: WaitSnapshot): string {
     ...snapshot.notices,
     ...blocks,
     snapshot.remainingJobIds.length
-      ? formatWaitContinuation(snapshot.remainingJobIds, serializeWaitCursor(snapshot.cursor), true)
+      ? formatWaitContinuation(snapshot.remainingJobIds, snapshot.cursor, true)
       : undefined,
   ]);
 }

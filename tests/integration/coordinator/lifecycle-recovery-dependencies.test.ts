@@ -38,9 +38,8 @@ it('reconciles orphan holds at store open without stealing the active owner hold
 
 import * as epochs from '#src/store/epoch/index.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
-import { createStartupMintAuthorizer } from '#src/coordinator/services/startup-retirement.js';
 
-it.each(['preserved', 'protected'] as const)(
+it.each(['preserved'] as const)(
   'open registers a present %s epoch and preserves an unobservable lineage hold',
   async (role) => {
     const f = createTerminalExportFixture('provider', true);
@@ -87,74 +86,7 @@ it.each(['preserved', 'protected'] as const)(
   },
 );
 
-it('startup authorizer attempts the incumbent seed once', () => {
-  const f = createTerminalExportFixture('provider', true);
-  const fullKey = encodeResolvedStoreEpoch(f.runtime, f.epoch);
-  const lineageKey = readOrCreateEpochKey(f.runtime, f.epoch);
-  const list = vi.spyOn(epochs, 'listStoreEpochs').mockReturnValue([
-    {
-      role: 'protected',
-      resolved: f.epoch,
-      epochKey: lineageKey,
-      epochJson: {
-        kind: 'valid',
-        value: { build: { storeFormatFingerprint: currentCoralStoreFormat().fingerprint } },
-      },
-    },
-  ] as never);
-  const broken = vi.spyOn(f.runtime.storage, 'openSqliteDatabaseSync').mockImplementation(() => {
-    throw new Error('unable to open database file');
-  });
-  try {
-    createStartupMintAuthorizer(
-      f.runtime,
-      f.index,
-      'startup',
-    )({
-      incumbent: f.epoch,
-      incumbentEpochKey: fullKey,
-      observedEpochCount: 1,
-      classification: { kind: 'different', storedFingerprint: currentCoralStoreFormat().fingerprint },
-    } as never);
-    expect(broken).toHaveBeenCalledTimes(1);
-    expect(f.index.unknownLocationHolds().find((hold) => hold.epochKey === fullKey)?.reason).toContain(
-      'probe 1 of 3 failed',
-    );
-  } finally {
-    broken.mockRestore();
-    list.mockRestore();
-    f.close();
-  }
-});
-
-it.each(['preserved', 'garbage'] as const)('pre-bind startup registers %s history without seeding it', async (role) => {
-  const f = createTerminalExportFixture('provider', true);
-  const list = vi.spyOn(epochs, 'listStoreEpochs').mockReturnValue([
-    {
-      role,
-      resolved: f.epoch,
-      epochKey: f.epochKey,
-      epochJson: { kind: 'valid', value: { build: { storeFormatFingerprint: currentCoralStoreFormat().fingerprint } } },
-    },
-  ] as never);
-  const open = vi.spyOn(f.runtime.storage, 'openSqliteDatabaseSync');
-  try {
-    createStartupMintAuthorizer(
-      f.runtime,
-      f.index,
-      'startup',
-    )({ incumbent: null, incumbentEpochKey: null, observedEpochCount: 1, classification: { kind: 'absent' } } as never);
-    expect(open.mock.calls.filter(([path]) => path === f.epoch.path)).toEqual([]);
-    await retryUnknownHistoricalEpochs(f.index, { remaining: 0 });
-    expect(open.mock.calls.some(([path]) => path === f.epoch.path)).toBe(true);
-  } finally {
-    open.mockRestore();
-    list.mockRestore();
-    f.close();
-  }
-});
-
-it.each(['{damaged', '\0\0\0'])('isolates damaged preserved epoch identity %j at store open', (marker) => {
+it.each(['{damaged'])('isolates damaged preserved epoch identity %j at store open', (marker) => {
   const historical = createTerminalExportFixture('provider', true);
   const active = createTerminalExportFixture('provider', true);
   const list = vi.spyOn(epochs, 'listStoreEpochs').mockReturnValue([

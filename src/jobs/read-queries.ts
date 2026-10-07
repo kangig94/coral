@@ -796,7 +796,10 @@ function progressRows(rows: readonly EventsRow[], ctx: StoreReadContext): WaitPr
   });
 }
 
-/** A page shorter than requested is everything the job had when it was read; no frontier certifies more than that. */
+/**
+ * A visit runs synchronously on the connection the journal's only writer appends through, so its frontier and every
+ * page it returns observe one journal state.
+ */
 export function visitJobProgress<T>(
   db: Database,
   ctx: StoreReadContext,
@@ -805,6 +808,8 @@ export function visitJobProgress<T>(
   return {
     kind: 'read',
     value: read({
+      frontier: () =>
+        prepareCached<[], { seq: number }>(db, 'SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get()?.seq ?? 0,
       after: (jobId, afterSeq, rows) =>
         progressRows(
           prepareCached<[string, number, number], EventsRow>(

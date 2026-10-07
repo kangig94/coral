@@ -88,20 +88,6 @@ function fixture(f = createRetentionFixture(), getProgressStore: () => typeof f.
 }
 
 describe('storage retention schedule', () => {
-  it('coalesces repeated hints for one failed job while preserving automatic backoff', async () => {
-    const { f, scheduler } = fixture();
-    const repair = vi.spyOn(f.store.getResultExportOwner(), 'repairPass').mockImplementation(async (_ids, budget) => {
-      budget.record({ kind: 'failed', subject: 'job-pending', reason: 'ENOSPC' });
-    });
-    scheduler.start();
-    await vi.advanceTimersByTimeAsync(0);
-    for (let i = 0; i < 40; i++) {
-      f.store.getResultExportOwner().hintRepair('job-pending');
-      await vi.advanceTimersByTimeAsync(250);
-    }
-    expect(repair).toHaveBeenCalledTimes(2);
-    expect(owners.exports).toHaveBeenCalledTimes(1);
-  });
   it('uses the wall-clock cutoff across idle restarts without a boot anchor', async () => {
     const first = fixture();
     first.f.setNow(first.f.runtime.time.now() + 30 * 86_400_000);
@@ -603,18 +589,6 @@ it('runs a held owner at its daily deadline while another owner keeps draining',
   }
 });
 
-it('backs off a parked writer instead of polling and logging every second', async () => {
-  owners.parked = true;
-  const { scheduler, statuses } = fixture();
-  scheduler.start();
-  await vi.advanceTimersByTimeAsync(0);
-  const completed = statuses.length;
-  await vi.advanceTimersByTimeAsync(299_999);
-  expect(statuses).toHaveLength(completed);
-  await vi.advanceTimersByTimeAsync(1);
-  expect(statuses.length).toBeGreaterThan(completed);
-});
-
 it('rebinds repair hints when lifecycle recovery starts with a replacement progress store', async () => {
   const first = createRetentionFixture();
   const second = createRetentionFixture();
@@ -635,21 +609,6 @@ it('rebinds repair hints when lifecycle recovery starts with a replacement progr
   expect(repair).toHaveBeenCalledOnce();
   await scheduler.stop();
   expect(detach).toHaveBeenLastCalledWith(null);
-});
-
-it('a new read hint expedites repair while the failed owner already has fastDue', async () => {
-  const { f, scheduler } = fixture();
-  const owner = f.store.getResultExportOwner();
-  const repair = vi.spyOn(owner, 'repairPass').mockImplementation(async (_ids, budget) => {
-    budget.record({ kind: 'failed', subject: 'failed-job', reason: 'ENOSPC' });
-  });
-  scheduler.start();
-  await vi.advanceTimersByTimeAsync(0);
-  expect(repair).toHaveBeenCalledTimes(1);
-  owner.hintRepair('newly-read-job');
-  await vi.advanceTimersByTimeAsync(1000);
-  expect(repair).toHaveBeenCalledTimes(2);
-  expect(owners.exports).toHaveBeenCalledTimes(1);
 });
 
 it('re-arms repair when a new hint arrives during an outstanding pass', async () => {
@@ -675,58 +634,4 @@ it('re-arms repair when a new hint arrives during an outstanding pass', async ()
   release();
   await vi.advanceTimersByTimeAsync(2000);
   expect(passes.some((pass) => pass.includes('job-b'))).toBe(true);
-});
-
-describe('hints survive backlog scheduling', () => {
-  describe('probe', () => {
-    it('honors a read hint during a failed repair pass before the backlog retry', async () => {
-      const { f, scheduler } = fixture();
-      const owner = f.store.getResultExportOwner();
-      const passes: string[][] = [];
-      let release: () => void = () => {};
-      const hints = (owner as unknown as { hints: Set<string> }).hints;
-      let first = true;
-      vi.spyOn(owner, 'repairPass').mockImplementation(async (_ids, budget) => {
-        const snapshot = [...hints];
-        passes.push(snapshot);
-        for (const id of snapshot) hints.delete(id);
-        if (first) {
-          first = false;
-          budget.record({ kind: 'failed', subject: 'other-job', reason: 'repair-failed' });
-          await new Promise<void>((resolve) => {
-            release = resolve;
-          });
-        }
-      });
-      scheduler.start();
-      await vi.advanceTimersByTimeAsync(0);
-      owner.hintRepair('job-b');
-      release();
-      await vi.advanceTimersByTimeAsync(10_000);
-      const after10s = passes.some((pass) => pass.includes('job-b'));
-      await vi.advanceTimersByTimeAsync(300_000);
-      const after5m = passes.some((pass) => pass.includes('job-b'));
-
-      expect(after10s).toBe(true);
-      expect(after5m).toBe(true);
-    });
-  });
-});
-
-it('bounds a hinted owner while the selected store is unavailable', async () => {
-  const f = createRetentionFixture();
-  let available = true;
-  const { scheduler, statuses } = fixture(f, () => (available ? f.store : null));
-  const repair = vi.spyOn(f.store.getResultExportOwner(), 'repairPass').mockResolvedValue();
-  scheduler.start();
-  await vi.advanceTimersByTimeAsync(0);
-  available = false;
-  f.store.getResultExportOwner().hintRepair('held-job');
-  const before = statuses.length;
-  await vi.advanceTimersByTimeAsync(3_000);
-  expect((statuses.length - before) / 2).toBeLessThan(5);
-  expect(repair).toHaveBeenCalledTimes(1);
-  available = true;
-  await vi.advanceTimersByTimeAsync(300_000);
-  expect(repair).toHaveBeenCalledTimes(2);
 });

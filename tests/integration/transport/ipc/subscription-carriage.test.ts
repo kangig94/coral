@@ -7,7 +7,6 @@ import { tmpdir } from 'node:os';
 import { parseSseBlock } from '#src/transport/http/sse.js';
 import { parseWaitStreamEvent } from '#src/jobs/wait/stream-event.js';
 import { type WaitStreamEvent } from '#src/jobs/wait/contract.js';
-import { serializeWaitCursor } from '#src/jobs/wait/cursor.js';
 import { createHttpHandler } from '#src/transport/http/handler.js';
 import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
 import type { WaitStreamRequest } from '#src/jobs/wait/contract.js';
@@ -49,7 +48,6 @@ function makeWaitEvents(): WaitStreamEvent[] {
       seq: 5,
       message: 'working',
       timing: waitTiming,
-      entry: savedCursor({ 'job-1': 5 }).jobs[0],
     },
     {
       type: 'terminal',
@@ -59,7 +57,7 @@ function makeWaitEvents(): WaitStreamEvent[] {
       resultPath: '/tmp/result.md',
       availability: { kind: 'available', resultPath: '/tmp/result.md' },
       result: { content: 'done', outcome: { kind: 'completed' }, durationMs: 0 },
-      cursor: { jobs: [] },
+      cursor: null,
       exitCode: 0,
     },
   ];
@@ -247,7 +245,7 @@ describe('subscription carriage', () => {
           jobIds: ['job-1'],
           projectRoot: PROJECT_ROOT,
           timeoutSeconds: 30,
-          cursor: { jobs: [] },
+          cursor: null,
         });
         const received: unknown[] = [];
         for await (const event of subscription) {
@@ -304,7 +302,7 @@ describe('subscription carriage', () => {
         jobIds: ['job-1'],
         projectRoot: PROJECT_ROOT,
         timeoutSeconds: 30,
-        cursor: { jobs: [] },
+        cursor: null,
       });
 
       expect(listener.sockets.size).toBe(1);
@@ -330,7 +328,7 @@ describe('subscription carriage', () => {
     const socketPath = makeSocketPath();
     const listener = createIpcServer(ports);
     const baseUrl = await startHttpServer(ports);
-    const expectedCursor = savedCursor({ 'job-1': 4 });
+    const expectedCursor = savedCursor(4);
 
     await listenIpcServer(listener, socketPath);
     try {
@@ -352,7 +350,7 @@ describe('subscription carriage', () => {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Last-Event-ID': serializeWaitCursor(expectedCursor),
+          'Last-Event-ID': expectedCursor,
           'X-Coral-Backend-Token': ports.identity.token,
         },
         body: JSON.stringify({

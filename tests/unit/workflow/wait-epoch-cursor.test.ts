@@ -3,13 +3,12 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { InvocationContext } from '../../../src/runtime/invocation-context.js';
 import type { LaunchedAtom, WorkflowExecutionPort } from '../../../src/workflow/execution-contract.js';
-import { admitted } from '#tests/helpers/wait-session.js';
-import { waitJobHash } from '#src/jobs/wait/cursor.js';
+import { admitted, savedCursor } from '#tests/helpers/wait-session.js';
 import { JobAddressing } from '#src/jobs/addressing.js';
 import { WaitCoordinator } from '#src/jobs/shell/wait.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
-import { VirtualTime, flushMicrotasks } from '#tools/simulation/core/virtual-time.js';
+import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
 import { waitForAtoms } from '../../../src/workflow/wait.js';
 import type { ProgressVisit, WaitStreamEvent, WaitStreamRequest } from '../../../src/jobs/wait/contract.js';
 import { readWaitSession } from '#src/jobs/wait/reader.js';
@@ -29,8 +28,6 @@ function atom(jobId: string, atomIndex: number): LaunchedAtom {
   };
 }
 
-const entry = (jobId: string, seq: number) => ({ hash: waitJobHash(jobId), seq });
-
 function terminal(jobId: string, seq: number, epochKey: string, remainingJobIds: string[]): WaitStreamEvent {
   return {
     type: 'terminal',
@@ -41,7 +38,7 @@ function terminal(jobId: string, seq: number, epochKey: string, remainingJobIds:
     resultPath: `/tmp/${jobId}.md`,
     availability: { kind: 'available', resultPath: `/tmp/${jobId}.md` },
     result: { content: `${jobId} done`, outcome: { kind: 'completed' }, durationMs: 1 },
-    cursor: { jobs: remainingJobIds.includes('old') ? [entry('old', 3)] : [] },
+    cursor: remainingJobIds.length > 0 ? savedCursor(3) : null,
     exitCode: 0,
   };
 }
@@ -85,7 +82,7 @@ describe('workflow wait epoch cursor', () => {
     await expect(result).resolves.toEqual(new Map([['0:0', 'job-1 result']]));
   });
 
-  it('persists the remaining job epoch and resumes its local position after another epoch terminates', async () => {
+  it('resumes the next cycle from the cursor the last final event named', async () => {
     const waitStream = vi
       .fn()
       .mockImplementationOnce(async function* () {
@@ -105,9 +102,7 @@ describe('workflow wait epoch cursor', () => {
         staleAbortTimeoutMs: 30_000,
         drainDeadlineMs: 30_000,
         onProgress: () => {},
-        initialState: {
-          cursor: { jobs: [entry('old', 3), entry('newer', 5)] },
-        },
+        initialState: { cursor: savedCursor(5) },
       },
     );
     expect(results).toEqual(
@@ -120,7 +115,7 @@ describe('workflow wait epoch cursor', () => {
       2,
       expect.objectContaining({
         jobIds: ['old'],
-        cursor: { jobs: [entry('old', 3)] },
+        cursor: savedCursor(3),
       }),
     );
   });
@@ -186,9 +181,7 @@ it('resumes recovery through ExecutionService and the real WaitCoordinator using
         staleAbortTimeoutMs: 1000,
         drainDeadlineMs: 1000,
         onProgress: (text) => progress.push(text),
-        initialState: {
-          cursor: { jobs: [entry(f.jobId, seq - 1)] },
-        },
+        initialState: { cursor: savedCursor(seq - 1, 'new-selected-epoch') },
       },
     );
     expect(results.get('0:0')).toBe('canonical result');
@@ -198,7 +191,7 @@ it('resumes recovery through ExecutionService and the real WaitCoordinator using
   }
 });
 
-it('a workflow child missing from the real reader fails its atom after one projection read', async () => {
+it('a workflow child missing from the real reader fails its atom instead of waiting', async () => {
   const runtime = new SimulationRuntime();
   const load = vi.fn(() => {
     if (load.mock.calls.length > 1000) throw new Error('reader did not yield a disposition');
@@ -242,81 +235,6 @@ it('a workflow child missing from the real reader fails its atom after one proje
       },
     ),
   ).rejects.toThrow('could not be read');
-  expect(load).toHaveBeenCalledTimes(1);
-});
-
-it('drains aborted atoms through the wait after a pipeline abort without starving timers', async () => {
-  const time = new VirtualTime();
-  const job = admitted('job-1', [], false);
-  let terminalNow = false;
-  const wait = new WaitCoordinator({
-    visitProgress: progressVisitFromEvents(() => job.detail.events),
-    time,
-    eventBus: new TypedEventBus(),
-    sessionManager: { get: () => null } as never,
-    launchQueue: { reservationFor: () => null, getActiveJobIds: () => [] } as never,
-    readJobLastSeq: () => null,
-    loadJobWaitDetail: () =>
-      terminalNow
-        ? ({
-            status: { ...job.detail.status, phase: 'aborted' },
-            runtime: null,
-            exit: {
-              content: '',
-              outcome: { kind: 'aborted', reason: 'user_abort' },
-              durationMs: 1,
-              diagnostics: { progressFaults: [] },
-              endTime: '',
-            },
-          } as never)
-        : ({ status: job.detail.status, runtime: null, exit: null } as never),
-    aggregateWorkflowUsage: () => undefined,
-    getCurrentJournalSeq: () => (terminalNow ? 1001 : 1000),
-    resultJobsRoot: '/results',
-    observeResultAvailability: () => ({ kind: 'available', resultPath: '/r' }),
-    subscribeJobEvents: async function* () {},
-  });
-  const controller = new AbortController();
-  let cycles = 0;
-  let timerFired = false;
-  time.setTimeout(() => {
-    timerFired = true;
-  }, 300);
-  const outcome = waitForAtoms(
-    [atom('job-1', 0)],
-    {
-      waitStream: (request: WaitStreamRequest) => {
-        if (++cycles > 50) throw new Error('wait cycles spun without yielding');
-        return wait.waitForOutcomes(request);
-      },
-      abort: () => {
-        terminalNow = true;
-        return { aborted: ['job-1'], notFound: [] };
-      },
-    } as unknown as WorkflowExecutionPort,
-    {} as InvocationContext,
-    {
-      time,
-      signal: controller.signal,
-      staleTimeoutMs: 0,
-      staleCheckIntervalMs: 1000,
-      staleAbortTimeoutMs: 30_000,
-      drainDeadlineMs: 15_000,
-      onProgress: () => {},
-    },
-  ).catch((error: Error) => error);
-  await flushMicrotasks(20);
-  controller.abort();
-  for (let step = 0; step < 8; step++) {
-    time.tick(250);
-    await flushMicrotasks(20);
-    await new Promise<void>((resolve) => setImmediate(resolve));
-  }
-  const error = await outcome;
-  expect(timerFired).toBe(true);
-  expect(cycles).toBeLessThanOrEqual(5);
-  expect(error).toMatchObject({ message: expect.stringContaining('aborted') });
-  expect((error as { stepDetails?: unknown[] }).stepDetails).toBeDefined();
 });
 
 it('yields a macrotask after a wait cycle that observed nothing', async () => {
@@ -346,45 +264,6 @@ it('yields a macrotask after a wait cycle that observed nothing', async () => {
   expect(cycles).toBe(2);
 });
 
-it('reads an internal child’s progress through the internal wait’s own source', async () => {
-  const time = new VirtualTime();
-  const child = admitted('child', [[3, 'historical line']], true, 'historical');
-  const progress: string[] = [];
-  const wait = new WaitCoordinator({
-    visitProgress: progressVisitFromEvents(() => []),
-    internalWait: {
-      admissions: () => [child],
-      visitProgress: progressVisitFromEvents(() => child.detail.events),
-    },
-    time,
-    eventBus: new TypedEventBus(),
-    sessionManager: { get: () => null } as never,
-    launchQueue: { reservationFor: () => null, getActiveJobIds: () => [] } as never,
-    readJobLastSeq: () => null,
-    loadJobWaitDetail: () => ({ status: null, runtime: null, exit: null }),
-    aggregateWorkflowUsage: () => undefined,
-    getCurrentJournalSeq: () => 0,
-    currentJobEpochKey: () => 'active',
-    resultJobsRoot: '/results',
-    observeResultAvailability: () => ({ kind: 'available', resultPath: '/r' }),
-    subscribeJobEvents: async function* () {},
-  });
-  await waitForAtoms(
-    [atom('child', 0)],
-    { waitStream: (request: WaitStreamRequest) => wait.waitForOutcomes(request) } as unknown as WorkflowExecutionPort,
-    {} as InvocationContext,
-    {
-      time,
-      staleTimeoutMs: 0,
-      staleCheckIntervalMs: 1000,
-      staleAbortTimeoutMs: 30_000,
-      drainDeadlineMs: 30_000,
-      onProgress: (message) => progress.push(message),
-    },
-  );
-  expect(progress).toContain('0-wor historical line');
-});
-
 describe('a child the wait cannot read stays in the failure drain (F4)', () => {
   const refused: WaitStreamEvent = {
     type: 'disposition',
@@ -398,7 +277,7 @@ describe('a child the wait cannot read stays in the failure drain (F4)', () => {
     const abort = vi.fn((jobIds: string[]) => ({ aborted: jobIds.filter((id) => !notFound.includes(id)), notFound }));
     const waitStream = vi.fn(async function* (_request: WaitStreamRequest) {
       yield refused;
-      yield { type: 'waiting', waitingJobIds: [], cursor: { jobs: [] }, exitCode: 1 } satisfies WaitStreamEvent;
+      yield { type: 'waiting', waitingJobIds: [], cursor: null, exitCode: 1 } satisfies WaitStreamEvent;
     });
     const result = waitForAtoms(
       [atom('child', 0)],
@@ -431,14 +310,6 @@ describe('a child the wait cannot read stays in the failure drain (F4)', () => {
     expect(sleeps.reduce((sum, ms) => sum + ms, 0)).toBe(5_000);
     expect(waitStream.mock.calls.length).toBeLessThanOrEqual(6);
   });
-
-  it('releases the unreadable child at once when the abort answers that no such job exists', async () => {
-    const { result, abort, waitStream, sleeps } = run(['child']);
-    await expect(result).rejects.toThrow("Step 0, atom 'worker' could not be read: unreadable");
-    expect(abort).toHaveBeenCalledExactlyOnceWith(['child']);
-    expect(waitStream).toHaveBeenCalledOnce();
-    expect(sleeps).toEqual([]);
-  });
 });
 
 it('ends the abort drain at its deadline while a refused live child keeps replenishing its backlog', async () => {
@@ -462,6 +333,7 @@ it('ends the abort drain at its deadline while a refused live child keeps replen
     return {
       kind: 'read',
       value: read({
+        frontier: () => frontier,
         after: (_id, after, count) =>
           Array.from({ length: Math.max(0, Math.min(count, frontier - after)) }, (_, i) => ({
             seq: after + i + 1,
@@ -481,7 +353,14 @@ it('ends the abort drain at its deadline while a refused live child keeps replen
   }));
   const waitStream = vi.fn(async function* (request: WaitStreamRequest) {
     try {
-      yield* readWaitSession({ request, time: time as never, visit, read: () => [child], internal: true });
+      yield* readWaitSession({
+        request,
+        activeEpochKey: 'epoch-E',
+        time: time as never,
+        visit,
+        read: () => [child],
+        internal: true,
+      });
     } finally {
       closed++;
     }

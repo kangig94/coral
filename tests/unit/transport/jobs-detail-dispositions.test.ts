@@ -1,17 +1,11 @@
-import { savedCursor } from '#tests/helpers/wait-session.js';
-import { progressVisitFromDetails } from '#tests/helpers/wait-progress.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterAll, describe, expect, it, vi } from 'vitest';
 
-import { JobAddressing } from '#src/jobs/addressing.js';
-import { createRealTimePort } from '#src/infra/time.js';
-import { admitted } from '#tests/helpers/wait-session.js';
 import { errorCodeToExit } from '#src/cli/errors.js';
 import type { JobDetailLookup } from '#src/jobs/contracts/addressing.js';
-import type { WaitStreamRequest } from '#src/jobs/wait/contract.js';
 import { canonicalizeWorkDir } from '#src/runtime/canonical-work-dir.js';
 import { executeCatalogRequest } from '#src/transport/dispatch.js';
 import { rpcCatalog } from '#src/transport/rpc/catalog.js';
@@ -41,66 +35,14 @@ async function detailFor(lookup: JobDetailLookup, caveat?: string): Promise<unkn
   return executeCatalogRequest(spec, request, ports, testProjectPrincipal(PROJECT_ROOT));
 }
 
-async function execute(method: 'jobs.wait' | 'jobs.abort', body: object, jobs: object): Promise<unknown> {
+async function execute(method: 'jobs.abort', body: object, jobs: object): Promise<unknown> {
   const spec = rpcCatalog.find((candidate) => candidate.name === method);
   if (spec === undefined) throw new Error(`Missing RPC method ${method}.`);
-  const supplied = jobs as HttpHandlerPorts['jobs'] & { outcomeUnrecoverable?(ids: readonly string[]): string[] };
-  const fields = body as { jobIds?: string[] };
-  const scope = supplied.scopeCheck(fields.jobIds ?? [], PROJECT_ROOT, 'contains');
-  const unknown = supplied.unknownJobDisposition?.() ?? 'not-found';
-  const unrecoverable = supplied.outcomeUnrecoverable?.(fields.jobIds ?? []) ?? [];
-  const owner = new JobAddressing(
-    {
-      time: createRealTimePort(),
-      read: (jobId: string) =>
-        unrecoverable.includes(jobId)
-          ? {
-              version: 'v1',
-              jobId,
-              epochKey: 'old',
-              subject: { projectRoot: PROJECT_ROOT, workDir: PROJECT_ROOT, jobKind: 'provider' },
-              disposition: 'unresolved',
-              detail: { kind: 'absent' },
-            }
-          : null,
-      unknownLocationHolds: () =>
-        unknown === 'discovery-unknown' || supplied.unknownJobCaveat
-          ? [
-              {
-                epochKey: unknown === 'discovery-unknown' ? 'historical' : 'permanently-lost',
-                reason: unknown === 'discovery-unknown' ? 'recovery retry pending' : 'retained-store-root-missing',
-                retryScheduled: unknown === 'discovery-unknown',
-              },
-            ]
-          : [],
-    } as never,
-    {
-      visitProgress: progressVisitFromDetails((jobId: string) => {
-        if (scope.missing.includes(jobId) || unrecoverable.includes(jobId)) return null;
-        const detail = admitted(jobId, [], false, 'e').detail;
-        detail.status.projectRoot = PROJECT_ROOT;
-        detail.status.workDir = PROJECT_ROOT;
-        return detail;
-      }),
-      epochKey: () => 'e',
-      detail: (jobId: string) => {
-        if (scope.missing.includes(jobId) || unrecoverable.includes(jobId)) return null;
-        const detail = admitted(jobId, [], false, 'e').detail;
-        detail.status.projectRoot = PROJECT_ROOT;
-        detail.status.workDir = PROJECT_ROOT;
-        return detail;
-      },
-    } as never,
-    () => unknown === 'pre-epoch-history',
-    () => 'decided',
-    () => ({ kind: 'read', dispositions: new Map(), locations: new Map(unrecoverable.map((id) => [id, null])) }),
-    () => ({ kind: 'failed', reason: 'the retained terminal does not match its source journal' }),
-  );
   const ports = {
     identity: { pluginRoot: '/plugin' },
     coralEnvSnapshot: {},
     admin: { isLaunchFenceActive: () => false },
-    jobs: method === 'jobs.wait' ? { ...supplied, admitWait: owner.admitWait.bind(owner) } : supplied,
+    jobs,
   } as unknown as HttpHandlerPorts;
   const request = spec.requestSchema.parse({ ...body, projectRoot: PROJECT_ROOT });
   return executeCatalogRequest(spec, request, ports, testProjectPrincipal(PROJECT_ROOT));
@@ -208,43 +150,6 @@ describe('jobs.detail retained-epoch dispositions', () => {
       },
     });
   });
-});
-
-it('maps jobs-owned admission without filtering the request or its saved cursor', async () => {
-  const cursor = savedCursor({ known: 12, ghost: 9 });
-  const waitStream = vi.fn(async function* (request: WaitStreamRequest) {
-    yield {
-      type: 'waiting' as const,
-      waitingJobIds: request.admissions?.filter((job) => job.disposition === 'admitted').map((job) => job.jobId) ?? [],
-      cursor: { jobs: [] },
-      exitCode: 75,
-    };
-  });
-  const result = await execute(
-    'jobs.wait',
-    { jobIds: ['known', 'ghost'], cursor },
-    {
-      scopeCheck: () => ({ valid: ['known', 'ghost'], mismatch: [], missing: ['ghost'] }),
-      unknownJobDisposition: () => 'not-found',
-      outcomeUnrecoverable: () => [],
-      waitStream,
-      waitHandoverSignal: () => new AbortController().signal,
-    },
-  );
-  expect(result).toMatchObject({ kind: 'subscription' });
-  expect(waitStream).toHaveBeenCalledWith(
-    expect.objectContaining({
-      jobIds: ['known', 'ghost'],
-      cursor,
-      admissions: [
-        expect.objectContaining({ jobId: 'known', disposition: 'admitted' }),
-        { jobId: 'ghost', disposition: 'missing', message: undefined },
-      ],
-    }),
-  );
-  const stream = (result as { notifications: AsyncIterable<unknown> }).notifications;
-  for await (const event of stream) expect(event).toMatchObject({ waitingJobIds: ['known'] });
-  expect(waitStream.mock.calls[0][0]).toMatchObject({ jobIds: ['known', 'ghost'], cursor });
 });
 
 it('keeps the singular missing-job detail code when an epoch caveat is present', async () => {

@@ -9,8 +9,6 @@ import {
   type Server as HttpServer,
 } from 'node:http';
 import { join } from 'node:path';
-import { decodeSerializedWaitCursor } from '#src/jobs/wait/cursor.js';
-import { savedCursor } from '#tests/helpers/wait-session.js';
 import type { WaitStreamEvent } from '#src/jobs/wait/contract.js';
 import type * as NodeOs from 'node:os';
 import type * as ServerMod from '#src/coordinator/index.js';
@@ -135,14 +133,12 @@ function createFakeExecutionService(overrides: Partial<FakeExecutionService> = {
     })),
     abort: vi.fn((jobIds: string[]) => ({ aborted: jobIds, notFound: [] })),
     waitStream: vi.fn(async function* (): AsyncGenerator<WaitStreamEvent> {
-      yield { type: 'cursor', cursor: savedCursor({ 'job-1': 6 }) };
       yield {
         type: 'progress',
         jobId: 'job-1',
         seq: 7,
         message: 'working',
         timing: waitTiming,
-        entry: savedCursor({ 'job-1': 7 }).jobs[0],
       };
       yield {
         type: 'terminal',
@@ -152,7 +148,7 @@ function createFakeExecutionService(overrides: Partial<FakeExecutionService> = {
         resultPath: jobResultPath('job-1'),
         availability: { kind: 'available', resultPath: jobResultPath('job-1') },
         result: { content: 'done', durationMs: 1_000, outcome: { kind: 'completed' } },
-        cursor: { jobs: [] },
+        cursor: null,
         exitCode: 0,
       };
     }),
@@ -921,71 +917,6 @@ describe('execution backend server', () => {
         release.resolve();
         await request.catch(() => undefined);
         idleTimer.stopWatching();
-        await _closeHttpServer(started.server);
-      }
-    });
-
-    it('gives every SSE event that moves the folded frontier that frontier as its id', async () => {
-      const { deps } = createHttpHandlerDeps();
-      const started = await startHttpHandlerServer(deps);
-      try {
-        const response = await fetch(`${started.baseUrl}/jobs/wait`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Coral-Backend-Token': 'test-token' },
-          body: JSON.stringify({ jobIds: ['job-1'], timeoutSeconds: 1, projectRoot: DEFAULT_PROJECT_ROOT }),
-        });
-        const text = await response.text();
-        expect(response.status).toBe(200);
-        const ids = [...text.matchAll(/^id: (.+)$/gm)].map((match) => decodeSerializedWaitCursor(match[1]));
-        // A progress event's id folds its entry into the frame, so a reconnect resumes past every delivered line.
-        expect(ids).toEqual([
-          { kind: 'decoded', cursor: savedCursor({ 'job-1': 6 }) },
-          { kind: 'decoded', cursor: savedCursor({ 'job-1': 7 }) },
-          { kind: 'decoded', cursor: { jobs: [] } },
-        ]);
-      } finally {
-        await _closeHttpServer(started.server);
-      }
-    });
-
-    it('ends an HTTP wait at succession with the handover notice', async () => {
-      const handover = new AbortController();
-      const service = createFakeExecutionService({
-        waitStream: vi.fn(async function* () {
-          yield {
-            type: 'progress',
-            jobId: 'job-1',
-            seq: 1,
-            message: 'started',
-            timing: waitTiming,
-            entry: savedCursor({ 'job-1': 1 }).jobs[0],
-          };
-          await new Promise<void>((resolve) =>
-            handover.signal.addEventListener('abort', () => resolve(), { once: true }),
-          );
-        }),
-      });
-      const { deps } = createHttpHandlerDeps({ executionService: service });
-      deps.jobs.waitHandoverSignal = () => handover.signal;
-      const started = await startHttpHandlerServer(deps);
-      try {
-        const response = await fetch(`${started.baseUrl}/jobs/wait`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Coral-Backend-Token': 'test-token' },
-          body: JSON.stringify({ jobIds: ['job-1'], timeoutSeconds: 1, projectRoot: DEFAULT_PROJECT_ROOT }),
-        });
-        const reader = response.body!.getReader();
-        let text = new TextDecoder().decode((await reader.read()).value);
-        handover.abort();
-        for (;;) {
-          const next = await reader.read();
-          if (next.done) break;
-          text += new TextDecoder().decode(next.value);
-        }
-        expect(text).toContain('event: handover');
-        expect(deps.streamResponses.size).toBe(0);
-      } finally {
-        handover.abort();
         await _closeHttpServer(started.server);
       }
     });

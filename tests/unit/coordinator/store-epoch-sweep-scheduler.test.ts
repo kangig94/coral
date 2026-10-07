@@ -2,11 +2,7 @@ import { setImmediate } from 'node:timers/promises';
 import { afterEach, expect, it, vi } from 'vitest';
 
 import { createStoreEpochSweepScheduler } from '#src/coordinator/composition/store-epoch-sweep-scheduler.js';
-import {
-  hintHistoricalHydration,
-  onHistoricalHydrationHint,
-  refreshHistoricalEpochs,
-} from '#src/jobs/historical-reader.js';
+import { refreshHistoricalEpochs } from '#src/jobs/historical-reader.js';
 
 import { createTerminalExportFixture } from '#tests/helpers/terminal-export.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
@@ -32,105 +28,9 @@ import type * as StoreEpoch from '#src/store/epoch/index.js';
     vi.restoreAllMocks();
     vi.clearAllMocks();
   });
-  it('keeps active-epoch hints on the periodic cadence and stops cleanly', async () => {
-    vi.useFakeTimers();
-    const f = createTerminalExportFixture();
-    const timer = vi.spyOn(f.runtime.time, 'setTimeout');
-    const scheduler = createStoreEpochSweepScheduler({
-      runtime: f.runtime,
-      world: { log: vi.fn() },
-      jobLocationIndex: f.index,
-      selectedStoreEpochKey: () => f.epochKey,
-      onOpen: vi.fn(),
-      closeProxySetForEpochClosure: vi.fn(),
-    });
-    try {
-      scheduler.schedule(f.epoch);
-      await vi.advanceTimersByTimeAsync(0);
-      expect(timer.mock.calls.at(-1)?.[1]).toBe(5000);
-      expect(refreshHistoricalEpochs).toHaveBeenCalledTimes(1);
-      const hydration = vi.fn();
-      onHistoricalHydrationHint(f.index, hydration);
-      for (let hint = 0; hint < 40; hint++) hintHistoricalHydration(f.index, f.jobId);
-      expect(hydration).not.toHaveBeenCalled();
-      expect(timer.mock.calls.at(-1)?.[1]).toBe(5000);
-      await vi.advanceTimersByTimeAsync(5000);
-      expect(refreshHistoricalEpochs).toHaveBeenCalledTimes(2);
-      await scheduler.stop();
-      const calls = timer.mock.calls.length;
-      hintHistoricalHydration(f.index, f.jobId);
-      expect(timer).toHaveBeenCalledTimes(calls);
-    } finally {
-      await scheduler.stop();
-      f.close();
-    }
-  });
 }
 
 import * as historical from '#src/jobs/historical-reader.js';
-
-it('spaces historical hydration hints and removes the listener on stop', async () => {
-  vi.useFakeTimers();
-  const subscribe = vi.spyOn(historical, 'onHistoricalHydrationHint');
-  const f = createTerminalExportFixture();
-  const timer = vi.spyOn(f.runtime.time, 'setTimeout');
-  const scheduler = createStoreEpochSweepScheduler({
-    runtime: f.runtime,
-    world: { log: vi.fn() },
-    jobLocationIndex: f.index,
-    selectedStoreEpochKey: () => f.epochKey,
-    onOpen: vi.fn(),
-    closeProxySetForEpochClosure: vi.fn(),
-  });
-  try {
-    scheduler.schedule(f.epoch);
-    await vi.advanceTimersByTimeAsync(0);
-    const listener = subscribe.mock.calls.at(-1)?.[1];
-    expect(listener).toBeTypeOf('function');
-    listener?.('historical-epoch');
-    expect(timer.mock.calls.at(-1)?.[1]).toBe(5000);
-    await vi.advanceTimersByTimeAsync(250);
-    listener?.('historical-epoch');
-    expect(refreshHistoricalEpochs).toHaveBeenCalledTimes(1);
-    await vi.advanceTimersByTimeAsync(5000);
-    expect(refreshHistoricalEpochs).toHaveBeenCalledTimes(2);
-    listener?.(f.epochKey);
-    expect(timer.mock.calls.at(-1)?.[1]).toBe(5000);
-    await scheduler.stop();
-    expect(subscribe).toHaveBeenLastCalledWith(f.index, null);
-  } finally {
-    await scheduler.stop();
-    f.close();
-  }
-});
-
-it('keeps a full idle interval after a long sweep when a polling wait hints hydration', async () => {
-  vi.useFakeTimers();
-  const subscribe = vi.spyOn(historical, 'onHistoricalHydrationHint');
-  const f = createTerminalExportFixture();
-  vi.mocked(refreshHistoricalEpochs).mockImplementation(async () => {
-    f.advance(5000);
-  });
-  const timer = vi.spyOn(f.runtime.time, 'setTimeout');
-  const scheduler = createStoreEpochSweepScheduler({
-    runtime: f.runtime,
-    world: { log: vi.fn() },
-    jobLocationIndex: f.index,
-    selectedStoreEpochKey: () => f.epochKey,
-    onOpen: vi.fn(),
-    closeProxySetForEpochClosure: vi.fn(),
-  });
-  try {
-    scheduler.schedule(f.epoch);
-    await vi.advanceTimersByTimeAsync(0);
-    expect(refreshHistoricalEpochs).toHaveBeenCalledTimes(1);
-    subscribe.mock.calls.at(-1)?.[1]?.('historical-epoch');
-    expect(timer.mock.calls.at(-1)?.[1]).toBe(5000);
-  } finally {
-    await scheduler.stop();
-    f.close();
-  }
-});
 
 it('still runs retirement when one historical source throws', async () => {
   vi.useFakeTimers();

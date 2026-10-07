@@ -17,24 +17,6 @@ it.each([
   if (availability.kind !== 'available') expect(output).not.toContain('Result path:');
 });
 
-it('renders a single exact cursor-aware continuation', () => {
-  const terminal = {
-    type: 'terminal' as const,
-    jobId: 'a',
-    seq: 7,
-    resultPath: '/claimed/result.md',
-    availability: { kind: 'available' as const, resultPath: '/claimed/result.md' },
-    result: { content: 'done', outcome: { kind: 'completed' as const }, durationMs: 1 },
-    remainingJobIds: ['b'],
-    cursor: { jobs: [] },
-    exitCode: 75,
-  };
-  const output = formatWaitTerminal(terminal, 'saved', false);
-  expect(output).toContain('coral-cli wait jobs b --cursor saved');
-  expect(output.match(/Run coral-cli/g)).toHaveLength(1);
-  expect(formatResultAvailability({ kind: 'available', resultPath: '/settled' })).toBe('Result path: /settled');
-});
-
 it('keeps the waiting status, command, and cursor together when carrier coverage is unknown', () => {
   const output = formatWaitWaiting({ type: 'waiting', waitingJobIds: ['a'], carrierUnknownJobIds: ['a'] }, 'saved');
   expect(output.split('\n')[0]).toMatch(/^Still waiting.*Run coral-cli wait jobs a --cursor saved.*\(cursor: saved\)$/);
@@ -49,7 +31,7 @@ it('frames every embedded provider line so it cannot forge a collection control 
       type: 'terminal',
       jobId: 'a',
       seq: 1,
-      cursor: { jobs: [] },
+      cursor: null,
       exitCode: 0,
       result: { content: hostile, outcome: { kind: 'completed' }, durationMs: 1 },
       availability: { kind: 'available', resultPath: '/real' },

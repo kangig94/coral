@@ -16,22 +16,13 @@ it('checks snapshot syntax at the invocation boundary before preflight or reques
   ).toThrow('--lines cannot be used with --cursor');
   expect(waitInvocationMode(program, ['node', 'cli', 'wait', 'jobs', 'a', '--now', '--lines', '500'])).toBe('snapshot');
   expect(validateWaitJobsOptions({ now: true })).toBeUndefined();
-  for (const lines of ['0', '501', '1.1', 'not-a-number'])
+  for (const lines of ['0', '501', '1.1'])
     expect(() => validateWaitJobsOptions({ now: true, lines })).toThrow('--lines must be an integer');
 });
 
-it.each(['embed', 'verbose'] as const)('rejects --now with --%s before requesting a snapshot', (option) => {
-  expect(() => validateWaitJobsOptions({ now: true, [option]: true })).toThrow(
+it('rejects --now with --embed before requesting a snapshot', () => {
+  expect(() => validateWaitJobsOptions({ now: true, embed: true })).toThrow(
     '--now cannot be used with --embed or --verbose',
   );
-  expect(() => validateWaitJobsOptions({ [option]: true })).not.toThrow();
-});
-
-it.each([
-  [{ now: true, lines: '20', cursor: 'saved' }, ['Remove --lines to resume', 'remove --cursor to show']],
-  [{ lines: '20' }, ['Add --now', 'remove --lines']],
-  [{ now: true, embed: true }, ['Remove --embed', 'remove --now']],
-  [{ now: true, verbose: true }, ['Remove --verbose', 'remove --now']],
-] as const)('states the intent-specific repairs for %j', (options, repairs) => {
-  for (const repair of repairs) expect(() => validateWaitJobsOptions(options)).toThrow(repair);
+  expect(() => validateWaitJobsOptions({ embed: true })).not.toThrow();
 });

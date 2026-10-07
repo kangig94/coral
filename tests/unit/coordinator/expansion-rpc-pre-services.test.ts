@@ -4,8 +4,6 @@ import { createServer, IncomingMessage, ServerResponse, type Server } from 'node
 import { Socket } from 'node:net';
 import { describe, expect, it, vi } from 'vitest';
 import { createCoordinatorCore } from '#src/coordinator/composition/index.js';
-import * as executionServices from '#src/coordinator/composition/execution-services.js';
-import { JobAddressing } from '#src/jobs/addressing.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { createMockKbDaemonSupervisor, createOnlineKbDaemonHealth } from '#tools/testing/kb-daemon-supervisor.js';
 
@@ -88,51 +86,6 @@ function makeRuntime(): Runtime {
     },
   } as unknown as Runtime;
 }
-
-it('reuses internal historical admission requests within their stable wait session', () => {
-  const bindings = vi.spyOn(executionServices, 'createExecutionServices');
-  const admission = vi.spyOn(JobAddressing.prototype, 'admitWait').mockReturnValue([]);
-  try {
-    createCoordinatorCore(
-      {
-        onFatalShutdownError: vi.fn(),
-        storeFormat: currentCoralStoreFormat(),
-        runtime: makeRuntime(),
-        bootSnapshot: {
-          version: 'test-version',
-          bundleHash: 'test-bundle',
-          flavor: 'prod',
-          instanceId: 'test-instance',
-          token: 'token',
-          bootToken: 'boot-token',
-          now: () => 1000,
-          log: () => {},
-        },
-        createServerFn: (handler) => createServer(handler),
-        kbDaemonSupervisor: createMockKbDaemonSupervisor(),
-        getConsumerStuck: () => [],
-      },
-      async () => [],
-    );
-    const admitInternal = bindings.mock.calls.at(-1)![0].internalWait!.admissions;
-    const cursor = { jobs: [] };
-    const session = { jobIds: ['child', 'sibling'], cursor, projectRoot: '/workspace' };
-    admitInternal(['child', 'sibling'], session);
-    admitInternal(['child', 'sibling'], session);
-    admitInternal(['child', 'sibling'], { jobIds: ['child', 'sibling'] });
-    expect(admission.mock.calls[0][0]).toBe(admission.mock.calls[1][0]);
-    expect(admission.mock.calls[2][0]).not.toBe(admission.mock.calls[0][0]);
-    expect(admission.mock.calls[0][0]).toMatchObject({
-      jobIds: ['child', 'sibling'],
-      cursor,
-      projectRoot: '/workspace',
-      drainProgress: true,
-    });
-  } finally {
-    bindings.mockRestore();
-    admission.mockRestore();
-  }
-});
 
 function request(
   server: Server,

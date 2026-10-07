@@ -1,7 +1,6 @@
 import { nextFinal, nextOfType } from '#tests/helpers/wait-stream.js';
-import { waitJobHash } from '#src/jobs/wait/cursor.js';
 import { progressVisitFromDetails } from '#tests/helpers/wait-progress.js';
-import { admitted } from '#tests/helpers/wait-session.js';
+import { admitted, savedCursor } from '#tests/helpers/wait-session.js';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { once } from 'node:events';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -175,7 +174,7 @@ describe('job addressing across a process-owned epoch switch', () => {
         type: 'terminal',
         jobId: 'old-live',
         epochKey: oldEpochKey,
-        cursor: { jobs: [] },
+        cursor: null,
         remainingJobIds: [],
       });
       await stream.return(undefined);
@@ -253,19 +252,19 @@ describe('job addressing across a process-owned epoch switch', () => {
         type: 'terminal',
         jobId: 'old-live',
         epochKey: oldEpochKey,
-        cursor: { jobs: [{ hash: waitJobHash('new-live'), seq: 0 }] },
+        cursor: savedCursor(0, newEpochKey),
       });
       await pending.return(undefined);
       expect(addressing.detail('old-live')).toMatchObject({ exit: { content: 'old result' } });
       expect(terminal.remainingJobIds).toEqual(['new-live']);
       const resumed = addressing.waitStream({
         jobIds: terminal.remainingJobIds,
-        cursor: terminal.cursor,
+        cursor: terminal.cursor ?? undefined,
         timeoutSeconds: 0.01,
       });
       expect((await nextFinal(resumed)).value).toMatchObject({
         type: 'waiting',
-        cursor: { jobs: [{ hash: waitJobHash('new-live'), seq: 0 }] },
+        cursor: savedCursor(0, newEpochKey),
       });
       await resumed.return(undefined);
     } finally {

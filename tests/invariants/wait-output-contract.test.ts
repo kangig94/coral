@@ -9,16 +9,14 @@ import {
   formatWaitTerminal,
   formatWaitWaiting,
 } from '#src/cli/format/wait.js';
-import { WaitSession } from '#src/jobs/wait/session.js';
 import { selectWaitSnapshot } from '#tests/helpers/wait-progress.js';
-import { serializeWaitCursor } from '#src/jobs/wait/cursor.js';
 import { ProviderRegistry } from '#src/providers/registry.js';
 import { rpcCatalog } from '#src/transport/rpc/catalog.js';
 import { executeCatalogRequest } from '#src/transport/dispatch.js';
 import { jobsWaitRequest } from '#src/transport/rpc/jobs.js';
 import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
-import { admitted } from '#tests/helpers/wait-session.js';
+import { admitted, savedCursor, testSession } from '#tests/helpers/wait-session.js';
 
 const root = resolve('.');
 const read = (path: string) => readFileSync(resolve(root, path), 'utf8');
@@ -55,14 +53,15 @@ it('canonicalizes a current wait request, which always states its frontier, befo
   await result.notifications[Symbol.asyncIterator]().next();
   expect(observed).toHaveLength(2);
   for (const request of observed) {
-    expect(request).toMatchObject({ jobIds: ['a'], cursor: { jobs: [] }, drainProgress: false });
+    expect(request).toMatchObject({ jobIds: ['a'], drainProgress: false });
+    expect(request).not.toHaveProperty('cursor');
     expect(Object.keys(request as object).filter((key) => key.startsWith('supports'))).toEqual([]);
   }
 });
 
 it.each([
   ['no frontier', {}],
-  ['a capability flag', { supportsInterrupted: true, cursor: { jobs: [] } }],
+  ['a capability flag', { supportsInterrupted: true, cursor: null }],
   ['a versionless cursor', { cursor: { afterSeq: 4 } }],
   ['a v2 cursor', { cursor: { version: 'jobs.wait.v2', positions: {}, locations: {} } }],
 ])('refuses a request with %s from another build with restart guidance and admits nothing', async (_shape, fields) => {
@@ -86,7 +85,7 @@ it('refuses an undecodable single-shape cursor softly so the client restarts fre
   const observed: unknown[] = [];
   const result = await executeCatalogRequest(
     spec,
-    spec.requestSchema.parse({ jobIds: ['a'], projectRoot: root, cursor: { jobs: [{ hash: 'x' }] } }),
+    spec.requestSchema.parse({ jobIds: ['a'], projectRoot: root, cursor: 'not-a-cursor' }),
     waitPorts(observed),
     testProjectPrincipal(root),
   );
@@ -97,7 +96,7 @@ it('refuses an undecodable single-shape cursor softly so the client restarts fre
 it.each([false, true])(
   'M1 terminal and waiting output contain one runnable cursor-aware command, embed=%s',
   (embed) => {
-    const cursor = serializeWaitCursor({ jobs: [] });
+    const cursor = savedCursor(0);
     const terminal = formatWaitTerminal(
       {
         type: 'terminal',
@@ -107,7 +106,7 @@ it.each([false, true])(
         availability: { kind: 'available', resultPath: '/result.md' },
         result: { content: 'done', durationMs: 1, outcome: { kind: 'completed' } },
         remainingJobIds: ['b', 'u'],
-        cursor: { jobs: [] },
+        cursor,
         exitCode: 75,
       },
       cursor,
@@ -147,9 +146,9 @@ it('M2 help and exit documentation preserve failure precedence even with sibling
   }
   const failed = admitted('a', [], true, 'epoch-E', true);
   const pending = admitted('b', [], false);
-  const session = new WaitSession(['a', 'b']);
+  const session = testSession(['a', 'b']);
   session.reconcile([failed, pending]);
-  session.collect(failed);
+  session.deliverTerminal(failed);
   expect(session.exitCode()).toBe(42);
   session.reconcile([admitted('a'), pending]);
   expect(session.exitCode()).toBe(75);
@@ -183,12 +182,11 @@ it('M3 scope remediation changes cwd and lists terminal jobs', async () => {
 });
 
 it('a snapshot continuation keeps --now and the snapshot cursor', () => {
-  const session = new WaitSession(['a']);
+  const session = testSession(['a'], savedCursor(0));
   session.reconcile([admitted('a', [], false)]);
   const snapshot = selectWaitSnapshot(session, 20);
-  expect(formatWaitSnapshot(snapshot)).toContain(
-    formatWaitContinuation(['a'], serializeWaitCursor(snapshot.cursor), true),
-  );
+  expect(snapshot.cursor).not.toBeNull();
+  expect(formatWaitSnapshot(snapshot)).toContain(formatWaitContinuation(['a'], snapshot.cursor, true));
 });
 
 it.each(['docs/architecture.md', 'docs/core-modules.md'])('F11 and owner contracts are accurate in %s', (path) => {
@@ -213,13 +211,13 @@ it.each(['docs/architecture.md', 'docs/core-modules.md'])('F11 and owner contrac
 });
 
 it('progress holds name their retry without instructions', () => {
-  const session = new WaitSession(['a']);
+  const session = testSession(['a']);
   session.reconcile([admitted('a', [], false)]);
   const busy = (): never => {
     throw new Error('database is locked');
   };
   session.withProgress(
-    (_epoch, read) => ({ kind: 'read', value: read({ after: busy, newest: busy }) }),
+    (_epoch, read) => ({ kind: 'read', value: read({ frontier: busy, after: busy, newest: busy }) }),
     (sources) => session.select(sources, { lines: 500, bytes: 64 * 1024 }, 20),
   );
   const notice = session.notices.join(' ');

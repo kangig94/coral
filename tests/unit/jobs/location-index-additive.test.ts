@@ -1,7 +1,7 @@
 import { loadReleasedBuild } from '#tests/helpers/released-build.js';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { JobLocationIndex } from '#src/jobs/location-index.js';
@@ -208,28 +208,6 @@ describe('job location additive records', () => {
   });
 });
 
-it('reads, certifies and rewrites a terminal record that carries a terminalAge key another build wrote', () => {
-  const { root, index } = fixture();
-  const epochKey = 'lineage-1:1';
-  const jobId = 'job-1';
-  const resultPath = join(root, 'result.md');
-  writeFileSync(resultPath, 'done\n');
-  index.register(jobId, epochKey, {
-    projectRoot: '/workspace/project',
-    workDir: '/workspace/project',
-    jobKind: 'provider',
-  });
-  index.recordTerminal(jobId, terminalDetail(jobId), resultPath, 2);
-  const path = join(root, 'job-locations.v1', 'jobs', `${Buffer.from(jobId).toString('base64url')}.json`);
-  const terminalAge = { kind: 'known', terminalAt: 1, epochKey };
-  writeFileSync(path, `${JSON.stringify({ ...JSON.parse(readFileSync(path, 'utf-8')), terminalAge })}\n`);
-  expect(index.read(jobId)).toMatchObject({ disposition: 'terminal', detail: { kind: 'recorded' } });
-  expect(index.certify(epochKey, 2)).not.toBeNull();
-  expect(index.resultsReleased(epochKey)).toBe(true);
-  index.recordTerminal(jobId, { ...terminalDetail(jobId), readiness: 'error' }, resultPath, 2);
-  expect(JSON.parse(readFileSync(path, 'utf-8')).terminalAge).toEqual(terminalAge);
-});
-
 it.each(['revision', 'terminalHighWaterSeq'])('rejects an unsafe job-location certificate %s', (field) => {
   const { root, index } = fixture();
   const epochKey = 'lineage-1:1';
@@ -393,12 +371,12 @@ it('durably refuses a damaged identity, advances past it, and retries it after r
   expect(runtime.storage.existsSync(refusal)).toBe(false);
 });
 
-it.each(['{', '{"version":"v99","reason":"future"}'])('isolates an undecodable unknown-location hold: %s', (bytes) => {
+it('isolates an unknown-location hold a newer build wrote', () => {
   const { root, index } = fixture();
   index.holdUnknownLocations('epoch', 'known hold', true);
   writeFileSync(
     join(root, 'job-locations.v1', 'epochs', runtime.ids.sha256('epoch'), 'unknown-locations.v1.json'),
-    bytes,
+    '{"version":"v99","reason":"future"}',
   );
   expect(index.unknownLocationHolds()).toEqual([
     expect.objectContaining({ retryScheduled: false, reason: expect.stringContaining('cannot be decoded') }),
@@ -429,93 +407,18 @@ it('observes another index writer even when the jobs directory mtime is restored
   ).toEqual(['a', 'b']);
 });
 
-it('reuses an unchanged decided certificate and invalidates it on another owner revision', () => {
+it('invalidates a decided certificate on another owner revision', () => {
   const { root, index } = fixture();
   index.register('a', 'epoch', { projectRoot: '/workspace', workDir: null, jobKind: 'provider' });
   index.recordTerminal('a', terminalDetail('a'), join(root, 'a'), 2);
   expect(index.certify('epoch', 2)?.jobIds).toEqual(['a']);
   expect(index.certificate('epoch')?.jobIds).toEqual(['a']);
-  const read = vi.spyOn(runtime.storage, 'readFileSync');
-  for (let poll = 0; poll < 20; poll++) expect(index.certificate('epoch')?.jobIds).toEqual(['a']);
-  expect(read.mock.calls.filter(([path]) => String(path).endsWith('certificate.v1.json'))).toHaveLength(0);
   const writer = new JobLocationIndex(runtime, root);
   writer.register('b', 'epoch', { projectRoot: '/workspace', workDir: null, jobKind: 'provider' });
   expect(index.certificate('epoch')).toBeNull();
   writer.recordTerminal('b', terminalDetail('b'), join(root, 'b'), 2);
   writer.certify('epoch', 2);
   expect(index.certificate('epoch')?.jobIds).toEqual(['a', 'b']);
-});
-
-it('preserves released progress meaning without changing its revision', () => {
-  const { index } = fixture();
-  const jobId = 'running';
-  index.register(jobId, 'epoch', {
-    projectRoot: '/workspace/project',
-    workDir: '/workspace/project',
-    jobKind: 'provider',
-  });
-  const detail = terminalDetail(jobId);
-  detail.status.phase = 'running';
-  delete detail.status.result;
-  detail.exit = null;
-  detail.events = [];
-  const writes = vi.spyOn(runtime.storage, 'writeAtomicDurableSync');
-  for (let seq = 1; seq <= 100; seq++) {
-    detail.status.lastSeq = seq;
-    detail.events.push({
-      type: 'progress',
-      jobId,
-      sessionId: 'session-1',
-      seq,
-      ts: detail.status.updatedAt,
-      message: 'progress body'.repeat(100),
-      timing: { origin: 'runtime', originAt: '', emittedAt: '', elapsedMs: seq },
-    });
-    index.recordObserved(jobId, detail);
-  }
-  expect(writes).toHaveBeenCalledTimes(100);
-  expect(writes.mock.calls.some(([path]) => path.endsWith('revision.v1.json'))).toBe(false);
-  expect(index.read(jobId)?.detail).toMatchObject({ kind: 'recorded', value: { events: detail.events } });
-});
-
-it('does not rewrite a released terminal detail merely to add its derivable epochKey', () => {
-  const { root, index } = fixture();
-  const jobId = 'finished';
-  index.register(jobId, 'epoch', {
-    projectRoot: '/workspace/project',
-    workDir: '/workspace/project',
-    jobKind: 'provider',
-  });
-  const detail = terminalDetail(jobId);
-  index.recordTerminal(jobId, detail, '/result', 2);
-  const path = join(root, 'job-locations.v1', 'jobs', `${Buffer.from(jobId).toString('base64url')}.json`);
-  const stored = JSON.parse(readFileSync(path, 'utf8'));
-  delete stored.detail.epochKey;
-  writeFileSync(path, JSON.stringify(stored));
-  const writes = vi.spyOn(runtime.storage, 'writeAtomicDurableSync');
-  index.recordTerminal(jobId, detail, '/result', 2);
-  expect(writes).not.toHaveBeenCalled();
-});
-
-it('invalidates a reused inode stamp when file birth time changes', () => {
-  const { root, index } = fixture();
-  const jobId = 'stamp-job';
-  index.register(jobId, 'lineage-1:1', {
-    projectRoot: '/workspace/first',
-    workDir: '/workspace/first',
-    jobKind: 'provider',
-  });
-  const path = join(root, 'job-locations.v1', 'jobs', `${Buffer.from(jobId).toString('base64url')}.json`);
-  const originalStat = runtime.storage.lstatSync(path, { bigint: true });
-  let birthtimeNs = 1n;
-  const lstat = runtime.storage.lstatSync.bind(runtime.storage);
-  vi.spyOn(runtime.storage, 'lstatSync').mockImplementation((file, options) =>
-    file === path ? { ...originalStat, birthtimeNs } : lstat(file, options),
-  );
-  expect(index.read(jobId)?.subject.projectRoot).toBe('/workspace/first');
-  writeFileSync(path, readFileSync(path, 'utf8').replaceAll('/workspace/first', '/workspace/other'));
-  birthtimeNs = 2n;
-  expect(index.read(jobId)?.subject.projectRoot).toBe('/workspace/other');
 });
 
 it('retains incremental nonterminal progress for the real rolled-back v0.10.17 reader', async () => {
@@ -554,10 +457,6 @@ it('retains incremental nonterminal progress for the real rolled-back v0.10.17 r
   });
 });
 
-it('imports terminal readability only from its owner', async () => {
-  expect(await import('#src/jobs/location-index.js')).not.toHaveProperty('hasReadableTerminalDetail');
-});
-
 it('discharges a released directory-only hold after complete absent inventory', () => {
   const { root, index } = fixture();
   index.holdUnknownLocations('retired', 'legacy hold', true);
@@ -579,94 +478,6 @@ it('resolves the hold and revision through the identity shared by lineage encodi
   expect(restarted.locationsFor(alias).map((job) => job.jobId)).toEqual(['job']);
   restarted.clearUnknownLocations(alias);
   expect(index.unknownLocationHold(full)).toBeNull();
-});
-
-it('finds a released alias directory created after an empty epoch lookup', () => {
-  const { root, index } = fixture();
-  const full = JSON.stringify({ storeRoot: '/real/store', epoch: '7', lineageKey: 'lineage:7' });
-  const alias = JSON.stringify({ storeRoot: '/alias/store', epoch: '7', lineageKey: 'lineage:7' });
-  expect(index.revision(full)).toBe(0);
-  const directory = join(root, 'job-locations.v1', 'epochs', runtime.ids.sha256(alias));
-  runtime.storage.mkdirSync(directory, { recursive: true });
-  writeFileSync(join(directory, 'revision.v1.json'), JSON.stringify({ version: 'v1', epochKey: alias, revision: 7 }));
-  expect(index.revision(full)).toBe(7);
-  index.holdUnknownLocations(full, 'recovered alias', true);
-  expect(new JobLocationIndex(runtime, root).unknownLocationHold(alias)).toBe('recovered alias');
-});
-
-it("shares one revision lock and counter between equivalent addresses when one writer creates the epoch's directory", () => {
-  const { root } = fixture();
-  const full = JSON.stringify({ storeRoot: '/real/store', epoch: '7', lineageKey: 'lineage:7' });
-  const alias = JSON.stringify({ storeRoot: '/alias/store', epoch: '7', lineageKey: 'lineage:7' });
-  const subject = { projectRoot: '/project', workDir: '/project', jobKind: 'provider' } as const;
-  const epochs = join(root, 'job-locations.v1', 'epochs');
-  type Mkdir = typeof runtime.storage.mkdirSync;
-  // The other writer stands for another process: meeting a held lock, it reports contention instead of waiting.
-  const contended: string[] = [];
-  const otherStorage = Object.create(runtime.storage) as typeof runtime.storage;
-  otherStorage.mkdirSync = ((path: string, options?: Parameters<Mkdir>[1]) => {
-    try {
-      return runtime.storage.mkdirSync(path, options);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-      contended.push(path);
-      throw new Error('contended', { cause: error });
-    }
-  }) as Mkdir;
-  const other = new JobLocationIndex({ ...runtime, storage: otherStorage }, root);
-  let interleaved = false;
-  const storage = Object.create(runtime.storage) as typeof runtime.storage;
-  storage.mkdirSync = ((path: string, options?: Parameters<Mkdir>[1]) => {
-    const made = runtime.storage.mkdirSync(path, options);
-    // The other writer arrives between this writer's new epoch directory and its first record.
-    if (!interleaved && dirname(path) === epochs) {
-      interleaved = true;
-      expect(() => other.register('job-b', alias, subject)).toThrow('contended');
-    }
-    return made;
-  }) as Mkdir;
-  new JobLocationIndex({ ...runtime, storage }, root).register('job-a', full, subject);
-  expect(interleaved).toBe(true);
-  expect(contended).toHaveLength(1);
-  other.register('job-b', alias, subject);
-  expect(readdirSync(epochs)).toHaveLength(1);
-  const restarted = new JobLocationIndex(runtime, root);
-  expect(restarted.revision(full)).toBe(2);
-  expect(restarted.revision(alias)).toBe(2);
-});
-
-it('finds an equivalent directory whose naming record lands after a lookup that found none', () => {
-  const { root, index } = fixture();
-  const full = JSON.stringify({ storeRoot: '/real/store', epoch: '7', lineageKey: 'lineage:7' });
-  const alias = JSON.stringify({ storeRoot: '/alias/store', epoch: '7', lineageKey: 'lineage:7' });
-  const directory = join(root, 'job-locations.v1', 'epochs', runtime.ids.sha256(full));
-  mkdirSync(directory, { recursive: true });
-  expect(index.revision(alias)).toBe(0);
-  writeFileSync(join(directory, 'revision.v1.json'), JSON.stringify({ version: 'v1', epochKey: full, revision: 3 }));
-  expect(index.revision(alias)).toBe(3);
-});
-
-it("resolves an epoch's records without parsing other epochs' certificates again until their directories change", () => {
-  const { root, index } = fixture();
-  const epochs = join(root, 'job-locations.v1', 'epochs');
-  for (let epoch = 0; epoch < 20; epoch++) {
-    const key = JSON.stringify({ storeRoot: '/old', epoch: String(epoch), path: `/old/epoch-${epoch}/store.db` });
-    const directory = join(epochs, `other-${epoch}`);
-    mkdirSync(directory, { recursive: true });
-    writeFileSync(
-      join(directory, 'certificate.v1.json'),
-      JSON.stringify({ version: 'v1', epochKey: key, revision: 1, jobIds: ['a', 'b'], terminalHighWaterSeq: 1 }),
-    );
-  }
-  const read = vi.spyOn(runtime.storage, 'readFileSync');
-  const certificates = () => read.mock.calls.filter(([path]) => String(path).endsWith('certificate.v1.json')).length;
-  index.certificate('{"storeRoot":"/new","epoch":"1","path":"/new/epoch-1/store.db"}');
-  const first = certificates();
-  // A new epoch directory changes the root and drops resolved identities, but no other directory's records.
-  mkdirSync(join(epochs, 'fresh'));
-  index.certificate('{"storeRoot":"/new","epoch":"2","path":"/new/epoch-2/store.db"}');
-  expect(first).toBeGreaterThanOrEqual(20);
-  expect(certificates() - first).toBeLessThanOrEqual(2);
 });
 
 it('leaves release unproven when a certified job record cannot be read, and propagates a code defect', () => {

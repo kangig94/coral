@@ -1,4 +1,4 @@
-import type { WaitSnapshotRequest, CanonicalWaitStreamRequest } from '../jobs/wait/contract.js';
+import type { WaitCursor, WaitSnapshotRequest, CanonicalWaitStreamRequest } from '../jobs/wait/contract.js';
 import { raceWithSignal } from '../infra/promise-signal.js';
 import { randomUUID } from 'node:crypto';
 import type { DiscussSessionsListResponse } from '../discuss/read-contract.js';
@@ -1172,13 +1172,13 @@ async function executeJobsWaitCatalogRequest({
     drainProgress?: boolean;
   };
   if (waitRequestFromAnotherBuild(parsed)) return unary(WAIT_BUILD_MISMATCH, 409);
-  const decoded = decodeWaitCursor(parsed.cursor);
-  if (decoded.kind === 'rejected') return unary(decoded.error, 400);
+  const decoded = parsed.cursor === null ? undefined : decodeWaitCursor(parsed.cursor);
+  if (decoded?.kind === 'rejected') return unary(decoded.error, 400);
   const waitRequest: CanonicalWaitStreamRequest = {
     jobIds: parsed.jobIds,
     projectRoot: parsed.projectRoot,
     ...(parsed.timeoutSeconds === undefined ? {} : { timeoutSeconds: parsed.timeoutSeconds }),
-    cursor: decoded.cursor,
+    ...(decoded === undefined ? {} : { cursor: parsed.cursor as WaitCursor }),
     drainProgress: parsed.drainProgress === true,
   };
   const callerRoot = canonicalRequest.projectRoot;
@@ -1198,7 +1198,7 @@ function snapshotRequest(request: unknown): WaitSnapshotRequest | WaitCursorReje
   const parsed = request as WaitSnapshotRequest & { cursor?: unknown };
   if (parsed.cursor === undefined) return parsed;
   const decoded = decodeWaitCursor(parsed.cursor);
-  return decoded.kind === 'rejected' ? decoded.error : { ...parsed, cursor: decoded.cursor };
+  return decoded.kind === 'rejected' ? decoded.error : parsed;
 }
 
 function executeJobsCatalogRequest(context: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {

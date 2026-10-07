@@ -14,10 +14,8 @@ export const WAIT_PROGRESS_BYTES = 64 * 1024;
 
 export const WAIT_FOR_JOB_TERMINAL_TIMEOUT_MS = 30_000;
 
-/** A job's seq is the last of its rows fully consumed; a seq at or past its terminal means the outcome was collected. */
-export type WaitCursorEntry = Readonly<{ hash: string; seq: number }>;
-/** The one wait frontier shape: an entry per job and no version tag. Any other shape is refused, never translated. */
-export type WaitCursor = Readonly<{ jobs: readonly WaitCursorEntry[] }>;
+/** The one wait frontier shape: eight base64url characters whatever the job count. Any other shape is refused. */
+export type WaitCursor = string;
 
 export interface WaitRequest {
   jobIds: string[];
@@ -67,10 +65,12 @@ type TerminalWaitEvent = {
   continuity?: ContinuitySnapshot | null;
   usage?: UsageSummary;
 };
-type Final = { cursor: WaitCursor; exitCode: number };
+/** A null cursor resumes as a fresh collection. */
+type Final = { cursor: WaitCursor | null; exitCode: number };
+type TerminalBlock = TerminalWaitEvent & { availability: ResultAvailability; resultPath?: string; epochKey?: string };
 export type WaitStreamEvent =
   | { type: 'notice'; message: string }
-  // The complete frontier for a cut before the final event: it replaces the client's base and never completes.
+  // The frontier for a cut before the final event: it replaces the client's cursor and never completes.
   | { type: 'cursor'; cursor: WaitCursor }
   | {
       type: 'disposition';
@@ -78,18 +78,18 @@ export type WaitStreamEvent =
       disposition: Exclude<WaitAdmission['disposition'], 'admitted'>;
       message?: string;
     }
-  | (ProgressWaitEvent & { entry: WaitCursorEntry })
+  | ProgressWaitEvent
   | (QueuedWaitEventBase & { jobKind: 'provider'; sessionId: string })
   | (QueuedWaitEventBase & { jobKind: 'workflow'; workflowId: string })
   | (QueuedWaitEventBase & { jobKind: 'kb'; systemTaskId: string })
-  | (TerminalWaitEvent & Final & { availability: ResultAvailability; resultPath?: string; epochKey?: string })
+  // A terminal at or below the request's watermark carries no final fields: it is printed and ends nothing.
+  | (TerminalBlock & Final)
+  | TerminalBlock
   | CarrierInterruptedWaitEvent
   | (Final & { type: 'waiting'; waitingJobIds: string[]; carrierUnknownJobIds?: string[] });
 
-export function isFinalWaitEvent(
-  event: WaitStreamEvent,
-): event is Extract<WaitStreamEvent, { type: 'terminal' | 'waiting' }> {
-  return event.type === 'terminal' || event.type === 'waiting';
+export function isFinalWaitEvent(event: WaitStreamEvent): event is Extract<WaitStreamEvent, Final> {
+  return 'exitCode' in event && event.exitCode !== undefined;
 }
 
 /** A handover notice tells the subscriber the clean end that follows is not final; it reconnects to the successor. */
@@ -127,6 +127,8 @@ export interface JobWaitPort {
 export type WaitProgressRow = Readonly<{ seq: number; message?: string; timing?: JobProgressTiming }>;
 
 export interface ProgressSource {
+  /** The journal's highest seq, read in the same transaction as every row this source returns. */
+  frontier(): number;
   /** The job's rows after `afterSeq`, oldest first, at most `rows` of them. */
   after(jobId: string, afterSeq: number, rows: number): readonly WaitProgressRow[];
   /** The job's newest `rows` rows, oldest first. */

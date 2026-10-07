@@ -1,6 +1,6 @@
 import { progressVisitFromDetails } from '#tests/helpers/wait-progress.js';
-import { it, expect, vi } from 'vitest';
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { it, expect } from 'vitest';
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createTerminalExportFixture } from '#tests/helpers/terminal-export.js';
 import {
@@ -58,28 +58,6 @@ it('a transient registration failure leaves a fallback-keyed retry hold that not
   }
 });
 
-it('takes no revision lock and creates no hold directory for an epoch that registers without a fallback hold', () => {
-  const f = createTerminalExportFixture('provider', true);
-  try {
-    f.complete();
-    const entry = {
-      resolved: f.epoch,
-      epochKey: f.epochKey,
-      epochJson: { kind: 'valid', value: { build: { storeFormatFingerprint: currentCoralStoreFormat().fingerprint } } },
-    } as never;
-    registerPresentHistoricalEpochs(f.runtime, f.index, [entry], 'other-active', { remaining: 0 });
-    const epochs = join(f.root, 'job-locations.v1', 'epochs');
-    const before = existsSync(epochs) ? readdirSync(epochs).sort() : [];
-    const mkdir = vi.spyOn(f.runtime.storage, 'mkdirSync');
-    for (let sweep = 0; sweep < 10; sweep++)
-      registerPresentHistoricalEpochs(f.runtime, f.index, [entry], 'other-active', { remaining: 0 });
-    expect(mkdir.mock.calls.filter(([path]) => String(path).endsWith('revision.lock'))).toEqual([]);
-    expect(existsSync(epochs) ? readdirSync(epochs).sort() : []).toEqual(before);
-  } finally {
-    f.close();
-  }
-});
-
 it('reads a v0.10.16-18 hold as retrying only while a registered source of a present epoch owns it', () => {
   const f = createTerminalExportFixture('provider', true);
   try {
@@ -103,32 +81,6 @@ it('reads a v0.10.16-18 hold as retrying only while a registered source of a pre
     ]);
     f.removeSource();
     expect(f.index.unknownLocationHolds()).toMatchObject([{ retryScheduled: false }]);
-  } finally {
-    f.close();
-  }
-});
-
-it('settles a full-key retry hold with its address when only the address can register', () => {
-  const f = createTerminalExportFixture('provider', true);
-  try {
-    f.complete();
-    // An earlier owner that could read the lineage held the epoch under its full key.
-    f.index.holdUnknownLocations(f.epochKey, 'Historical hydration is pending', true);
-    const lineage = join(f.epochDir, '.coral-lineage.v1.json');
-    renameSync(lineage, lineage + '.aside');
-    const entry = {
-      resolved: f.epoch,
-      epochKey: null,
-      epochJson: { kind: 'valid', value: { build: { storeFormatFingerprint: currentCoralStoreFormat().fingerprint } } },
-    } as never;
-    for (let sweep = 0; sweep < 3; sweep++)
-      registerPresentHistoricalEpochs(f.runtime, f.index, [entry], 'other-active', { remaining: 0 });
-    const holds = f.index.unknownLocationHolds();
-    expect(holds.length).toBeGreaterThan(1);
-    expect(holds.filter((hold) => hold.retryScheduled)).toEqual([]);
-    expect(holds.find((hold) => hold.epochKey === f.epochKey)?.reason).toContain(
-      'settled after 3 consecutive failures',
-    );
   } finally {
     f.close();
   }

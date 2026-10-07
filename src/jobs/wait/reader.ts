@@ -1,20 +1,20 @@
 import { setImmediate } from 'node:timers/promises';
 import { raceWithSignal } from '../../infra/promise-signal.js';
 import type { TimePort } from '../../infra/port-types.js';
-import { waitJobHash } from './cursor.js';
 import type { WaitAdmission, WaitSelection } from './session.js';
 import { WaitSession } from './session.js';
 import {
   WAIT_PROGRESS_BYTES,
   WAIT_PROGRESS_LINES,
   type ProgressVisit,
-  type WaitCursorEntry,
+  type WaitCursor,
   type WaitStreamEvent,
   type WaitStreamRequest,
 } from './contract.js';
 
 type WaitReadInput = {
   request: WaitStreamRequest;
+  activeEpochKey: string;
   time: TimePort;
   read: () => WaitAdmission[];
   visit: ProgressVisit;
@@ -23,10 +23,8 @@ type WaitReadInput = {
 };
 
 type DeliveryState = {
-  /** The frontier the client folds from this stream: the last cursor frame plus every later progress entry. */
-  frontier: Map<string, WaitCursorEntry>;
-  /** A client folds from no cursor, so its stream's first frame is its base even when it equals the request cursor. */
-  framed: boolean;
+  /** The cursor the client holds: the request's, until a frame or the final event replaces it. */
+  cursor: WaitCursor | null;
   progressLines: number;
   progressBytes: number;
   dispositions: Map<string, string>;
@@ -40,7 +38,7 @@ type FinalPayload =
   | { type: 'waiting'; waitingJobIds: string[]; carrierUnknownJobIds?: string[] };
 
 function finalWaitEvent(session: WaitSession, payload: FinalPayload): WaitStreamEvent {
-  return { ...payload, cursor: session.cursor(session.remaining()), exitCode: session.exitCode() };
+  return { ...payload, cursor: session.cursor(), exitCode: session.exitCode() };
 }
 
 function waitingEvent(session: WaitSession): WaitStreamEvent {
@@ -56,14 +54,13 @@ function waitingEvent(session: WaitSession): WaitStreamEvent {
 export async function* readWaitSession(input: WaitReadInput): AsyncGenerator<WaitStreamEvent> {
   const { request, time, read } = input;
   const internal = input.internal === true;
-  const session = new WaitSession(request.jobIds, request.cursor, internal);
+  const session = new WaitSession(request.jobIds, request.cursor, input.activeEpochKey, internal);
   const deadline = Number(time.monotonicNow()) + (request.timeoutSeconds ?? 600) * 1000;
   const controller = new AbortController();
   const signal = request.abortSignal ? AbortSignal.any([controller.signal, request.abortSignal]) : controller.signal;
   const bounded = request.drainProgress !== true && !internal;
   const state: DeliveryState = {
-    frontier: new Map(),
-    framed: false,
+    cursor: request.cursor ?? null,
     progressLines: 0,
     progressBytes: 0,
     dispositions: new Map(),
@@ -103,12 +100,12 @@ export async function* readWaitSession(input: WaitReadInput): AsyncGenerator<Wai
           observing = false;
         });
       }
-      yield* cursorFrame(session, state);
       yield* admissionEvents(session, state);
       yield* progressEvents(progress, state);
       session.commit(progress);
-      yield* cursorFrame(session, state);
-      if (yield* terminalEvents(session)) return;
+      const terminals = yield* terminalEvents(session);
+      if (terminals === 'final') return;
+      if (progress.rows.length > 0 || terminals === 'repeated') yield* cursorFrame(session, state);
       yield* carrierEvents(session, state.absentReported);
       if (session.remaining().length === 0) {
         yield waitingEvent(session);
@@ -177,13 +174,11 @@ async function observeCarriers(input: WaitReadInput, session: WaitSession, signa
   }
 }
 
-/** Any entry the client does not already hold, however it changed, reaches the client before the next cut. */
+/** A poll that delivered something moves the client's cursor before the next cut; one that delivered nothing need not. */
 function* cursorFrame(session: WaitSession, state: DeliveryState): Generator<WaitStreamEvent> {
   const cursor = session.cursor();
-  const held = (entry: WaitCursorEntry): boolean => state.frontier.get(entry.hash)?.seq === entry.seq;
-  if (state.framed && cursor.jobs.length === state.frontier.size && cursor.jobs.every(held)) return;
-  state.framed = true;
-  state.frontier = new Map(cursor.jobs.map((entry) => [entry.hash, entry]));
+  if (cursor === null || cursor === state.cursor) return;
+  state.cursor = cursor;
   yield { type: 'cursor', cursor };
 }
 
@@ -206,14 +201,11 @@ function* admissionEvents(session: WaitSession, state: DeliveryState): Generator
   }
 }
 
-/** Each delivered row carries the entry it establishes, so a cut after any row resumes after that row. */
 function* progressEvents(selection: WaitSelection, state: DeliveryState): Generator<WaitStreamEvent> {
   for (const row of selection.rows) {
-    const entry = { hash: waitJobHash(row.jobId), seq: row.seq };
     state.progressLines += row.lines;
     state.progressBytes += row.bytes;
-    state.frontier.set(entry.hash, entry);
-    yield { type: 'progress', jobId: row.jobId, seq: row.seq, message: row.message, timing: row.timing, entry };
+    yield { type: 'progress', jobId: row.jobId, seq: row.seq, message: row.message, timing: row.timing };
   }
 }
 
@@ -221,14 +213,15 @@ function terminalEvent(
   session: WaitSession,
   job: WaitAdmission,
   result: NonNullable<NonNullable<WaitAdmission['detail']>['exit']>,
+  final: boolean,
 ): WaitStreamEvent {
   const availability = job.availability ?? {
     kind: 'failed',
     reason: 'the retained terminal outcome could not be validated',
   };
   const { content, outcome, durationMs } = result;
-  return finalWaitEvent(session, {
-    type: 'terminal',
+  const block = {
+    type: 'terminal' as const,
     jobId: job.jobId,
     seq: job.detail?.terminalSeq ?? job.detail?.status.lastSeq ?? 0,
     result: { content, outcome, durationMs },
@@ -238,23 +231,26 @@ function terminalEvent(
     epochKey: job.epochKey,
     remainingJobIds: session.remaining(),
     ...(availability.kind === 'available' ? { resultPath: availability.resultPath } : {}),
-  });
+  };
+  return final ? finalWaitEvent(session, block) : block;
 }
 
-/**
- * A collected job is requested again only while its artifact was pending; once that settles, its terminal is
- * delivered again with the settled availability.
- */
-function* terminalEvents(session: WaitSession): Generator<WaitStreamEvent, boolean> {
-  for (const job of session.admissions) {
-    if (!job.detail?.exit || !session.terminalDeliverable(job)) continue;
-    const collected = session.collected(job);
-    if (collected && session.artifactPending(job)) continue;
-    if (!collected) session.collect(job);
-    yield terminalEvent(session, job, job.detail.exit);
-    return true;
+/** Every repeat is printed before a new terminal ends the read, so each read prints every requested terminal. */
+function* terminalEvents(session: WaitSession): Generator<WaitStreamEvent, 'final' | 'repeated' | 'none'> {
+  const deliveries = session.admissions.flatMap((job) => {
+    if (!job.detail?.exit || !session.terminalDeliverable(job)) return [];
+    const delivery = session.terminalDelivery(job);
+    return delivery === null ? [] : [{ job, exit: job.detail.exit, delivery }];
+  });
+  for (const { job, exit } of deliveries.filter(({ delivery }) => delivery === 'repeat')) {
+    session.deliverTerminal(job);
+    yield terminalEvent(session, job, exit, false);
   }
-  return false;
+  const final = deliveries.find(({ delivery }) => delivery === 'final');
+  if (final === undefined) return deliveries.length > 0 ? 'repeated' : 'none';
+  session.deliverTerminal(final.job);
+  yield terminalEvent(session, final.job, final.exit, true);
+  return 'final';
 }
 
 function* carrierEvents(session: WaitSession, absentReported: Set<string>): Generator<WaitStreamEvent> {

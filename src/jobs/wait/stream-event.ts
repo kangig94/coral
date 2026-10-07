@@ -1,5 +1,4 @@
-import type { WaitCursor, WaitCursorEntry } from './contract.js';
-import { waitJobHash, decodeWaitCursor, upsertWaitCursorEntry } from './cursor.js';
+import { decodeWaitCursor } from './cursor.js';
 import { z } from 'zod';
 
 import { isRecord } from '../../infra/json.js';
@@ -8,7 +7,7 @@ import { jobPhaseSchema } from '../phase.js';
 import { jobProgressTimingSchema } from '../event-bodies.js';
 import { jobTerminalSchema } from '../terminal/result.js';
 import { usageSummarySchema } from '../../providers/contract.js';
-import { type WaitHandoverNotice, type WaitStreamEvent } from './contract.js';
+import { isFinalWaitEvent, type WaitCursor, type WaitHandoverNotice, type WaitStreamEvent } from './contract.js';
 
 const KNOWN_WAIT_STREAM_EVENT_TYPES = new Set<string>([
   'progress',
@@ -29,24 +28,14 @@ export type WaitRenderDecision = Readonly<{
   shouldRender: boolean;
 }>;
 
-/** The client frontier is the last complete cursor plus each later entry; a cursor frame is never rendered. */
+/** The client's cursor is the last one a frame or final event named; a cursor frame is never rendered. */
 export function advanceWaitRenderCursor(cursor: WaitCursor | undefined, event: WaitStreamEvent): WaitRenderDecision {
-  switch (event.type) {
-    case 'cursor':
-      return { cursor: event.cursor, shouldRender: false };
-    case 'progress':
-      // An entry is meaningful only against a complete frontier, which the server sends before any progress.
-      return { cursor: cursor ? upsertWaitCursorEntry(cursor, event.entry) : cursor, shouldRender: true };
-    case 'terminal':
-    case 'waiting':
-      return { cursor: event.cursor, shouldRender: true };
-    default:
-      return { cursor, shouldRender: true };
-  }
+  if (event.type === 'cursor') return { cursor: event.cursor, shouldRender: false };
+  return { cursor: isFinalWaitEvent(event) ? (event.cursor ?? undefined) : cursor, shouldRender: true };
 }
 
 const finalFields = {
-  cursor: waitCursorSchema,
+  cursor: waitCursorSchema.nullable(),
   exitCode: z.number().int().min(0).max(255),
 };
 const nonFinalFields = {
@@ -61,7 +50,6 @@ const waitProgressEventSchema = z
     seq: z.number().int().nonnegative(),
     message: z.string(),
     timing: jobProgressTimingSchema,
-    entry: z.custom<WaitCursorEntry>((value) => decodeWaitCursor({ jobs: [value] }).kind === 'decoded'),
     ...nonFinalFields,
   })
   .strip();
@@ -88,21 +76,18 @@ export const resultAvailabilitySchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('failed'), reason: z.string().min(1) }).strip(),
 ]);
 
-const waitTerminalEventSchema = z
-  .object({
-    type: z.literal('terminal'),
-    jobId: z.string(),
-    seq: z.number().int().nonnegative(),
-    remainingJobIds: z.array(z.string()).max(MAX_WAIT_JOB_IDS),
-    resultPath: z.string().min(1).optional(),
-    availability: resultAvailabilitySchema,
-    result: jobTerminalSchema,
-    continuity: continuitySnapshotSchema.nullable().optional(),
-    usage: usageSummarySchema.optional(),
-    epochKey: z.string().min(1).optional(),
-    ...finalFields,
-  })
-  .strip();
+const waitTerminalBlockSchema = z.object({
+  type: z.literal('terminal'),
+  jobId: z.string(),
+  seq: z.number().int().nonnegative(),
+  remainingJobIds: z.array(z.string()).max(MAX_WAIT_JOB_IDS),
+  resultPath: z.string().min(1).optional(),
+  availability: resultAvailabilitySchema,
+  result: jobTerminalSchema,
+  continuity: continuitySnapshotSchema.nullable().optional(),
+  usage: usageSummarySchema.optional(),
+  epochKey: z.string().min(1).optional(),
+});
 
 /** Carrier interruption must reject terminal fields and cannot acknowledge an outcome. */
 const waitCarrierInterruptedEventSchema = z
@@ -115,6 +100,10 @@ const waitCarrierInterruptedEventSchema = z
     observation: z.object({ kind: z.literal('carrier_interrupted'), reason: z.literal('carrier_absent') }).strip(),
     continuity: z.literal('unavailable'),
     outcome: z.literal('unknown'),
+    result: z.never().optional(),
+    resultPath: z.never().optional(),
+    availability: z.never().optional(),
+    usage: z.never().optional(),
     ...nonFinalFields,
   })
   .strip();
@@ -155,7 +144,8 @@ const waitDispositionSchema = z
 const waitStreamEventSchema = z
   .union([
     waitProgressEventSchema,
-    waitTerminalEventSchema,
+    waitTerminalBlockSchema.extend(finalFields).strip(),
+    waitTerminalBlockSchema.extend(nonFinalFields).strip(),
     waitWaitingEventSchema,
     waitCarrierInterruptedEventSchema,
     waitNoticeSchema,
@@ -164,8 +154,6 @@ const waitStreamEventSchema = z
     waitQueuedEventSchema,
   ])
   .superRefine((event, ctx) => {
-    if (event.type === 'progress' && event.entry.hash !== waitJobHash(event.jobId))
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Progress entry belongs to another job' });
     if (
       event.type === 'terminal' &&
       (event.availability.kind === 'available'
@@ -193,11 +181,6 @@ export function parseWaitStreamEventValue(value: unknown): WaitStreamEvent | nul
   if (!isRecord(value) || typeof value.type !== 'string' || !KNOWN_WAIT_STREAM_EVENT_TYPES.has(value.type)) {
     return null;
   }
-  if (
-    value.type === 'interrupted' &&
-    ['result', 'resultPath', 'availability', 'exitCode', 'usage'].some((key) => key in value)
-  )
-    throw new Error('Carrier interruption cannot deliver a terminal outcome');
   return waitStreamEventSchema.parse(value) as WaitStreamEvent;
 }
 
