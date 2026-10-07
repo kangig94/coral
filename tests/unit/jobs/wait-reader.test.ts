@@ -107,6 +107,33 @@ it('prints every repeated terminal before a new one ends the read', async () => 
   expect(events.at(-1)).toMatchObject({ exitCode: 42, remainingJobIds: [] });
 });
 
+it('prints both observed terminals before the final event and agrees with the snapshot exit', async () => {
+  for (const failed of [true, false]) {
+    const jobs = [admitted('a'), admitted('b', [], true, TEST_EPOCH, failed)];
+    const events = await collect(
+      readWaitSession({
+        request: { jobIds: ['a', 'b'], timeoutSeconds: 0 },
+        time: new VirtualTime(),
+        read: observeWaitRead(() => jobs),
+        visit: testProgressVisit,
+      }),
+    );
+    expect(events.map((event) => [event.type, 'jobId' in event ? event.jobId : '', isFinalWaitEvent(event)])).toEqual([
+      ['terminal', 'a', false],
+      ['terminal', 'b', true],
+    ]);
+    expect(events).toMatchObject([
+      { availability: jobs[0].availability, result: { outcome: jobs[0].detail.exit?.outcome } },
+      { availability: jobs[1].availability, result: { outcome: jobs[1].detail.exit?.outcome } },
+    ]);
+    const session = testSession(['a', 'b']);
+    session.reconcile(jobs);
+    const snapshot = selectWaitSnapshot(session);
+    expect(snapshot).toMatchObject({ exitCode: failed ? 42 : 0, remainingJobIds: [] });
+    expect(events.at(-1)).toMatchObject({ exitCode: snapshot.exitCode, remainingJobIds: [] });
+  }
+});
+
 it('keeps a pending artifact in the continuation without returning at once, and returns when it settles', async () => {
   const time = new VirtualTime();
   const a = admitted('a');

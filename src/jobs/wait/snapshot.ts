@@ -33,8 +33,8 @@ function preview(text: string, budget: number): { text: string; omitted: boolean
 
 /** Terminal truth must remain visible while unread progress stays in the continuation. */
 export function selectWaitSnapshot(session: WaitSession, lines = 20, visit: ProgressVisit): WaitSnapshot {
-  return session.withProgress(visit, (sources) => {
-    const selection = session.select(sources, { lines: WAIT_PROGRESS_LINES, bytes: WAIT_PROGRESS_BYTES }, lines);
+  return session.withProgress(visit, (source) => {
+    const selection = session.select(source, { lines: WAIT_PROGRESS_LINES, bytes: WAIT_PROGRESS_BYTES }, lines);
     session.commit(selection);
     const jobs = session.admissions.map((admission) => snapshotJob(session, admission));
     for (const row of selection.rows) {

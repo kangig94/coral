@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { epochIdentity, sameEpoch } from '../../store/epoch/identity.js';
+import { sameEpoch } from '../../store/epoch/identity.js';
 import { isCodeDefect, sourceReadFailureDisposition, type SourceReadDisposition } from '../source-read.js';
 import type { JobDetailResponse, JobTerminal } from '../records.js';
 import type { JobProgressTiming } from '../event-bodies.js';
@@ -193,27 +193,13 @@ export class WaitSession {
     );
   }
 
-  /** Each source is opened and classified once; selection then runs outside every source's error scope. */
-  withProgress<T>(visit: ProgressVisit, read: (sources: ReadonlyMap<string, ProgressSource>) => T): T {
-    const epochs = new Map<string, string>();
-    for (const job of this.admissions) if (this.readable(job)) epochs.set(epochIdentity(job.epochKey), job.epochKey);
-    const order = [...epochs];
-    const sources = new Map<string, ProgressSource>();
-    const open = (index: number): T => {
-      const next = order[index];
-      if (next === undefined) return read(sources);
-      const [identity, epochKey] = next;
-      const result = visit(epochKey, (source) => {
-        sources.set(identity, source);
-        return open(index + 1);
-      });
-      if (result.kind === 'read') return result.value;
-      for (const job of this.admissions)
-        if (this.readable(job) && epochIdentity(job.epochKey) === identity)
-          this.markUnreadable(job.jobId, result.disposition, result.reason);
-      return open(index + 1);
-    };
-    return open(0);
+  withProgress<T>(visit: ProgressVisit, read: (source: ProgressSource | undefined) => T): T {
+    if (!this.admissions.some((job) => this.readable(job))) return read(undefined);
+    const result = visit(this.activeEpochKey, read);
+    if (result.kind === 'read') return result.value;
+    for (const job of this.admissions)
+      if (this.readable(job)) this.markUnreadable(job.jobId, result.disposition, result.reason);
+    return read(undefined);
   }
 
   private markUnreadable(
@@ -255,15 +241,11 @@ export class WaitSession {
    * Each read job is then consumed through the journal frontier when nothing of it below that frontier is left, and
    * otherwise through the last row the cut leaves behind it.
    */
-  select(sources: ReadonlyMap<string, ProgressSource>, budget: WaitBudget, tail: number | null): WaitSelection {
-    const readable = this.admissions.filter(
-      (job): job is WaitAdmission & { epochKey: string } =>
-        this.readable(job) && sources.has(epochIdentity(job.epochKey)),
-    );
-    const source = (job: WaitAdmission & { epochKey: string }): ProgressSource =>
-      sources.get(epochIdentity(job.epochKey)) as ProgressSource;
+  select(source: ProgressSource | undefined, budget: WaitBudget, tail: number | null): WaitSelection {
+    if (source === undefined) return { rows: [], reached: new Map(), full: false };
+    const readable = this.admissions.filter((job) => this.readable(job));
     const frontier = (job: WaitAdmission & { epochKey: string }): number | null =>
-      this.readRows(job.jobId, () => source(job).frontier());
+      this.readRows(job.jobId, () => source.frontier());
     const rows: WaitSelectedRow[] = [];
     const reached = new Map<string, { seq: number; exhausted: boolean }>();
     const fresh = budget.lines === WAIT_PROGRESS_LINES && budget.bytes === WAIT_PROGRESS_BYTES;
@@ -285,7 +267,7 @@ export class WaitSession {
       else {
         const omitted: string[] = [];
         for (const job of unpositioned) {
-          const newest = this.readRows(job.jobId, () => source(job).newest(job.jobId, target + 1));
+          const newest = this.readRows(job.jobId, () => source.newest(job.jobId, target + 1));
           const through = newest === null ? null : frontier(job);
           if (newest === null || through === null) continue;
           const candidates = newest.slice(-target);
@@ -319,7 +301,7 @@ export class WaitSession {
       const pages = later
         .flatMap((job) => {
           const page = this.readRows(job.jobId, () =>
-            source(job).after(job.jobId, this.member(job.jobId).seq ?? 0, pageRows),
+            source.after(job.jobId, this.member(job.jobId).seq ?? 0, pageRows),
           );
           return page === null ? [] : [{ job, page }];
         })

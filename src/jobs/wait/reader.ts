@@ -81,9 +81,9 @@ export async function* readWaitSession(input: WaitReadInput): AsyncGenerator<Wai
       const deferred = new Set(admissions.filter((job) => job.observationDeferred).map((job) => job.jobId));
       session.reconcile(admissions);
       // A bounded read spends one budget over the whole request; drain and internal reads spend one per poll.
-      const progress = session.withProgress(input.visit, (sources) =>
+      const progress = session.withProgress(input.visit, (source) =>
         session.select(
-          sources,
+          source,
           bounded
             ? { lines: WAIT_PROGRESS_LINES - state.progressLines, bytes: WAIT_PROGRESS_BYTES - state.progressBytes }
             : { lines: WAIT_PROGRESS_LINES, bytes: WAIT_PROGRESS_BYTES },
@@ -235,7 +235,7 @@ function terminalEvent(
   return final ? finalWaitEvent(session, block) : block;
 }
 
-/** Every repeat is printed before a new terminal ends the read, so each read prints every requested terminal. */
+/** A bounded read delivers every observed terminal before its single final event. */
 function* terminalEvents(
   session: WaitSession,
   drainProgress: boolean,
@@ -249,10 +249,13 @@ function* terminalEvents(
     session.deliverTerminal(job);
     yield terminalEvent(session, job, exit, false);
   }
-  const final = deliveries.find(({ delivery }) => delivery === 'final');
+  const final = deliveries.filter(({ delivery }) => delivery === 'final').at(drainProgress ? 0 : -1);
   if (final === undefined) return deliveries.length > 0 ? 'repeated' : 'none';
-  session.deliverTerminal(final.job);
-  yield terminalEvent(session, final.job, final.exit, true);
+  for (const { job, exit } of deliveries.filter(({ delivery }) => delivery === 'final')) {
+    session.deliverTerminal(job);
+    yield terminalEvent(session, job, exit, job === final.job);
+    if (job === final.job) break;
+  }
   return 'final';
 }
 

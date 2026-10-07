@@ -127,7 +127,6 @@ type HistoricalReadFrontier = {
 };
 type HistoricalReadCache = {
   jobs: Map<string, HistoricalReadFrontier>;
-  terminals: Map<string, JobLocation>;
   /** The source stamp and frontier of this session's last opened read; it vouches only for answers taken there. */
   observed?: { path: string; stamp: string; frontier: number };
 };
@@ -352,7 +351,6 @@ function historicalDetail(
   db: SqliteDatabasePort,
   row: Projection,
   events: readonly z.infer<typeof eventSchema>[],
-  previous?: { frontier: number; detail: JobDetailResponse },
 ): JobDetailResponse {
   const launch = events.find((event) => event.type === 'job.launch.requested');
   const launchBody =
@@ -404,9 +402,8 @@ function historicalDetail(
     const usage = aggregateWorkflowUsage(db as Database, row.job_id);
     if (usage !== undefined) diagnostics.usage = usage;
   }
-  const renderedEvents: JobEvent[] = [...(previous?.detail.events ?? [])];
+  const renderedEvents: JobEvent[] = [];
   for (const event of events) {
-    if (previous && event.seq <= previous.frontier) continue;
     if (event.type === 'job.progress.emitted') {
       const progress = progressBodySchema.safeParse(parseBody(event.body));
       if (!progress.success) continue;
@@ -917,7 +914,7 @@ export function readHistoricalSource(
     jobIds.every(vouched) &&
     sourceReadStamp(source.storage, observed.observed.path) === observed.observed.stamp
   )
-    return cachedHistoricalRead(observed, epochKey, jobIds);
+    return cachedHistoricalRead(observed, jobIds);
   let release: (() => void) | null = null;
   let db: SqliteDatabasePort | null = null;
   try {
@@ -933,7 +930,6 @@ export function readHistoricalSource(
     if (session) source.readCache ??= new WeakMap();
     const readCache = (session ? source.readCache?.get(session) : undefined) ?? {
       jobs: new Map<string, HistoricalReadFrontier>(),
-      terminals: new Map<string, JobLocation>(),
     };
     if (session && source.readCache) source.readCache.set(session, readCache);
     const locations = new Map<string, JobLocation | null>();
@@ -950,12 +946,7 @@ export function readHistoricalSource(
         }
         const cached = fullHistory ? undefined : readCache.jobs.get(jobId);
         if (cached?.frontier === frontier || cached?.location?.disposition === 'terminal') {
-          const terminal = cached.location?.terminalSeq;
-          const key = JSON.stringify([epochIdentity(epochKey), jobId, terminal]);
-          locations.set(
-            jobId,
-            terminal === undefined ? cached.location : (readCache.terminals.get(key) ?? cached.location),
-          );
+          locations.set(jobId, cached.location);
           if (cached.absent) absentJobs.add(jobId);
           continue;
         }
@@ -1001,8 +992,6 @@ export function readHistoricalSource(
         locations.set(jobId, location);
         if (!fullHistory) {
           readCache.jobs.set(jobId, { frontier, location, jobSeq: row.last_seq });
-          if (terminal)
-            readCache.terminals.set(JSON.stringify([epochIdentity(epochKey), jobId, terminal.seq]), location);
         }
       } catch (error) {
         if (isCodeDefect(error)) throw error;
@@ -1040,22 +1029,12 @@ export function readHistoricalSource(
   }
 }
 
-function cachedHistoricalRead(
-  cache: HistoricalReadCache,
-  epochKey: string,
-  jobIds: readonly string[],
-): HistoricalSourceRead {
+function cachedHistoricalRead(cache: HistoricalReadCache, jobIds: readonly string[]): HistoricalSourceRead {
   const locations = new Map<string, JobLocation | null>();
   const absentJobs = new Set<string>();
   for (const jobId of jobIds) {
     const cached = cache.jobs.get(jobId) as HistoricalReadFrontier;
-    const terminal = cached.location?.terminalSeq;
-    locations.set(
-      jobId,
-      terminal === undefined
-        ? cached.location
-        : (cache.terminals.get(JSON.stringify([epochIdentity(epochKey), jobId, terminal])) ?? cached.location),
-    );
+    locations.set(jobId, cached.location);
     if (cached.absent) absentJobs.add(jobId);
   }
   return {

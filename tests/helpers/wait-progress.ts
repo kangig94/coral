@@ -44,8 +44,8 @@ export function progressVisitFromDetails(read: (jobId: string) => JobDetailRespo
 }
 export function selectTestProgress(session: WaitSession, limit = Infinity) {
   observeWaitRead(() => session.admissions)();
-  return session.withProgress(testProgressVisit, (sources) => {
-    const selected = session.select(sources, { lines: limit, bytes: Infinity }, null);
+  return session.withProgress(testProgressVisit, (source) => {
+    const selected = session.select(source, { lines: limit, bytes: Infinity }, null);
     session.commit(selected);
     return selected.rows;
   });

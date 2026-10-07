@@ -68,8 +68,8 @@ describe('wait session', () => {
     );
     const read = (session: WaitSession) => {
       observeWaitRead(() => session.admissions)();
-      return session.withProgress(testProgressVisit, (sources) => {
-        const selected = session.select(sources, { lines: 500, bytes: 65536 }, null);
+      return session.withProgress(testProgressVisit, (source) => {
+        const selected = session.select(source, { lines: 500, bytes: 65536 }, null);
         session.commit(selected);
         return selected.rows.map((row) => row.message.slice(0, 1));
       });
@@ -210,13 +210,12 @@ it('a budget deferral preserves the previous admission', () => {
 
 describe('progress source faults are attributed per job', () => {
   const timing = { origin: 'runtime' as const, originAt: '', emittedAt: '', elapsedMs: 0 };
-  type Row = { seq: number; message?: string } | 'undecodable' | 'fault';
+  type Row = { seq: number; message?: string } | 'fault';
   const visitRows =
     (rows: Record<string, Row[]>): ProgressVisit =>
-    (epoch, read) => {
+    (_epoch, read) => {
       const raw = (id: string): WaitProgressRow[] =>
         (rows[id] ?? []).map((row, index) => {
-          if (row === 'undecodable') throw new HistoricalDecodeError(`row ${index} of ${id} in ${epoch}`);
           if (row === 'fault') return { seq: 50 + index };
           return { seq: row.seq, message: row.message ?? `${id}-${row.seq}`, timing };
         });
@@ -239,21 +238,11 @@ describe('progress source faults are attributed per job', () => {
       };
     };
   const select = (session: WaitSession, visit: ProgressVisit) =>
-    session.withProgress(visit, (sources) => {
-      const selected = session.select(sources, { lines: 500, bytes: 65536 }, null);
+    session.withProgress(visit, (source) => {
+      const selected = session.select(source, { lines: 500, bytes: 65536 }, null);
       session.commit(selected);
       return selected;
     });
-
-  it('settles only the job whose row failed to decode and keeps its other-epoch sibling readable', () => {
-    const session = testSession(['a1', 'b1']);
-    session.reconcile([admitted('a1', [], true, 'epoch-E1'), admitted('b1', [], true, 'epoch-E2')]);
-    const selected = select(session, visitRows({ a1: [{ seq: 5 }, 'undecodable'], b1: [{ seq: 7 }, { seq: 8 }] }));
-    expect(texts(selected.rows)).toEqual(['b1-7', 'b1-8']);
-    expect(session.progressState('a1')).toBe('lost');
-    expect(session.notices.join(' ')).toContain('Earlier progress for a1 cannot be read by this build');
-    expect(session.notices.join(' ')).not.toContain('b1 cannot be read');
-  });
 
   it('propagates a code defect instead of holding the job behind it', () => {
     const session = testSession(['a']);
@@ -269,29 +258,6 @@ describe('progress source faults are attributed per job', () => {
       }),
     });
     expect(() => select(session, defect)).toThrow(TypeError);
-  });
-
-  it('holds only the job whose page read failed transiently', () => {
-    const session = testSession(['a', 'b']);
-    session.reconcile([admitted('a', [], false, 'epoch-E1'), admitted('b', [[3, 'b-3']], false, 'epoch-E2')]);
-    const busy: ProgressVisit = (epoch, read) =>
-      epoch === 'epoch-E1'
-        ? {
-            kind: 'read',
-            value: read({
-              frontier: () => 0,
-              after: () => {
-                throw Object.assign(new Error('database is locked'), { code: 'ERR_SQLITE_ERROR' });
-              },
-              newest: () => [],
-            }),
-          }
-        : testProgressVisit(epoch, read);
-    observeWaitRead(() => session.admissions)();
-    const selected = select(session, busy);
-    expect(texts(selected.rows)).toEqual(['b-3']);
-    expect(session.progressState('a')).toBe('unknown');
-    expect(session.remaining()).toContain('a');
   });
 
   it('skips fault rows in order and moves past them like any consumed row', () => {
@@ -329,15 +295,23 @@ it.each(['missing', 'scope-mismatch', 'unreadable', 'historical', 'lost'] as con
       kind === 'historical'
         ? { ...admitted('u'), historical: true }
         : kind === 'lost'
-          ? admitted('u', [], false, 'other')
+          ? admitted('u', [], false)
           : { jobId: 'u', disposition: kind },
     ]);
     observeWaitRead(() => session.admissions)();
     session.withProgress(
       (epoch, read) =>
-        epoch === 'other' ? { kind: 'unreadable', disposition: 'settled-unreadable' } : testProgressVisit(epoch, read),
-      (sources) => {
-        const selected = session.select(sources, { lines: 500, bytes: 65536 }, 20);
+        testProgressVisit(epoch, (source) =>
+          read({
+            ...source,
+            newest: (jobId, count) => {
+              if (kind === 'lost' && jobId === 'u') throw new HistoricalDecodeError('undecodable progress');
+              return source.newest(jobId, count);
+            },
+          }),
+        ),
+      (source) => {
+        const selected = session.select(source, { lines: 500, bytes: 65536 }, 20);
         session.commit(selected);
       },
     );
@@ -368,26 +342,23 @@ it('takes the end of a multiline event for a first-read tail and marks earlier o
 
 it('holds a fresh member whose progress page fails transiently until its seq-50 row can be read', () => {
   const a = admitted('a', [[100, 'a100']], false);
-  const u = admitted('u', [[50, 'u50']], false, 'other');
+  const u = admitted('u', [[50, 'u50']], false);
   const session = testSession(['a', 'u']);
   session.reconcile([a, u]);
   observeWaitRead(() => session.admissions)();
   session.withProgress(
     (epoch, read) =>
-      epoch === 'other'
-        ? {
-            kind: 'read',
-            value: read({
-              frontier: () => 100,
-              newest: () => {
-                throw Object.assign(new Error('database is locked'), { code: 'ERR_SQLITE_ERROR' });
-              },
-              after: () => [],
-            }),
-          }
-        : testProgressVisit(epoch, read),
-    (sources) => {
-      const selected = session.select(sources, { lines: 500, bytes: 65536 }, 20);
+      testProgressVisit(epoch, (source) =>
+        read({
+          ...source,
+          newest: (jobId, count) => {
+            if (jobId === 'u') throw Object.assign(new Error('database is locked'), { code: 'ERR_SQLITE_ERROR' });
+            return source.newest(jobId, count);
+          },
+        }),
+      ),
+    (source) => {
+      const selected = session.select(source, { lines: 500, bytes: 65536 }, 20);
       session.commit(selected);
       expect(texts(selected.rows)).toEqual(['a100']);
     },
