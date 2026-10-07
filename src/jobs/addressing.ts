@@ -1,7 +1,6 @@
 import type { ProgressVisit } from './wait/contract.js';
-import { epochIdentity, sameEpoch } from '../store/epoch/identity.js';
+import { epochIdentity, epochToken, sameEpoch } from '../store/epoch/identity.js';
 import { isCodeDefect, sourceReadFailureDisposition, type SourceReadDisposition } from './source-read.js';
-import { waitEpochToken } from './wait/cursor.js';
 import { activeJournalReadFailure, WaitSession, type WaitAdmission, type WaitSnapshot } from './wait/session.js';
 import { selectWaitSnapshot } from './wait/snapshot.js';
 import { readWaitSession } from './wait/reader.js';
@@ -90,7 +89,7 @@ function historicalDisposition(
       message:
         sourceRead === 'retired'
           ? 'Source retired and retained copy unusable; no build can recover the outcome'
-          : `Epoch ${waitEpochToken(retained.epochKey).slice(0, 8)}: ${message ?? "this build cannot decode this job's journal; epoch maintenance re-reads it at the next coordinator start"}`,
+          : `Epoch ${epochToken(retained.epochKey).slice(0, 8)}: ${message ?? "this build cannot decode this job's journal; epoch maintenance re-reads it at the next coordinator start"}`,
     };
   if (closure === 'decided' && sourceRead === 'readable' && read.kind === 'read' && read.locations.has(jobId))
     return {
@@ -149,7 +148,7 @@ export class JobAddressing {
       .filter((hold) => !sameEpoch(hold.epochKey, this.active.epochKey() ?? ':memory:'))
       .map((hold) => {
         const reason = epochHoldReason(hold.reason, hold.retryScheduled);
-        return `${hold.retryScheduled ? 'Retry scheduled for epoch' : 'Unreadable epoch'} ${hold.epochKey === undefined ? hold.directory.slice(0, 8) : waitEpochToken(hold.epochKey).slice(0, 8)}: ${reason}.`;
+        return `${hold.retryScheduled ? 'Retry scheduled for epoch' : 'Unreadable epoch'} ${hold.epochKey === undefined ? hold.directory.slice(0, 8) : epochToken(hold.epochKey).slice(0, 8)}: ${reason}.`;
       })
       .join(' ');
   }

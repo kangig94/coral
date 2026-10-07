@@ -1,5 +1,10 @@
-import { waitEpochToken } from './wait/cursor.js';
-import { epochHoldDirectory, epochIdentity, sameEpoch, sameEpochOrFallbackAddress } from '../store/epoch/identity.js';
+import {
+  epochHoldDirectory,
+  epochIdentity,
+  epochToken,
+  sameEpoch,
+  sameEpochOrFallbackAddress,
+} from '../store/epoch/identity.js';
 import { setImmediate } from 'node:timers/promises';
 import { hasReadableTerminalDetail } from './terminal/identity.js';
 import {
@@ -887,8 +892,8 @@ export function readHistoricalSource(
           reason:
             hold?.reason ??
             (view.historicalSourceState?.(epochKey) === 'present'
-              ? `Epoch ${waitEpochToken(epochKey).slice(0, 8)} is present but not yet registered by this coordinator; epoch maintenance registers present epochs every 5 s`
-              : `Epoch ${waitEpochToken(epochKey).slice(0, 8)} cannot be observed by this coordinator; epoch maintenance re-observes it every 5 s and settles after 3 consecutive failures`),
+              ? `Epoch ${epochToken(epochKey).slice(0, 8)} is present but not yet registered by this coordinator; epoch maintenance registers present epochs every 5 s`
+              : `Epoch ${epochToken(epochKey).slice(0, 8)} cannot be observed by this coordinator; epoch maintenance re-observes it every 5 s and settles after 3 consecutive failures`),
         };
   }
   if (source.retired) return { kind: 'unreadable', disposition: 'retired', retired: true };

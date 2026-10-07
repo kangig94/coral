@@ -1,5 +1,5 @@
 import { progressVisitFromEvents, progressVisitFromDetails } from '#tests/helpers/wait-progress.js';
-import { waitEpochToken } from '#src/jobs/wait/cursor.js';
+import { epochToken } from '#src/store/epoch/identity.js';
 import { encodeResolvedStoreEpoch, protectStoreEpoch, protectedStoreEpochRoot } from '#src/store/epoch/index.js';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
@@ -350,7 +350,7 @@ describe('Phase D wait read purity (Revision S3)', () => {
     const caveat = f.addressing.unknownJobCaveat();
     check();
     expect(disposition).toBe(retryScheduled ? 'discovery-unknown' : 'discovery-unreadable');
-    expect(caveat).toContain(waitEpochToken(f.epochKey).slice(0, 8));
+    expect(caveat).toContain(epochToken(f.epochKey).slice(0, 8));
   });
 
   it('keeps pending closure and source identity uncertainty unresolved', () => {

@@ -24,6 +24,11 @@ export function sameEpoch(left: EpochIdentity, right: EpochIdentity): boolean {
   return epochIdentity(left) === epochIdentity(right);
 }
 
+/** Tokens label an accepted epoch in messages; they cannot reconstruct filesystem paths. */
+export function epochToken(epochKey: string): string {
+  return createHash('sha256').update(epochIdentity(epochKey)).digest().subarray(0, 16).toString('hex');
+}
+
 /** Released hold directories hash the full stored key, rather than its lineage. */
 export function epochHoldDirectory(key: string): string {
   return createHash('sha256').update(key).digest('hex');
