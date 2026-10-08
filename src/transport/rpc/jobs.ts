@@ -94,12 +94,16 @@ export const jobAbortSchema = z
   })
   .strict();
 
+export const jobsReleaseRequestSchema = jobAbortSchema.strict();
+
 export const jobsListRequestSchema = z
   .object({
     projectRoot: projectRootSchema.optional(),
     phase: jobPhaseSchema.optional(),
     all: z.preprocess(parseBooleanQuery, z.boolean()).optional(),
     provider: providerNameSchema.optional(),
+    owner: z.string().min(1).optional(),
+    unwaited: z.preprocess(parseBooleanQuery, z.boolean()).optional(),
   })
   .strict();
 

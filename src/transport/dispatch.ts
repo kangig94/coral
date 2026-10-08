@@ -1086,6 +1086,8 @@ async function executeJobsListCatalogRequest({
     ...(parsed.phase === undefined ? {} : { phase: parsed.phase }),
     ...(parsed.provider === undefined ? {} : { provider: parsed.provider }),
     all: parsed.all === true,
+    ...(parsed.owner === undefined ? {} : { owner: parsed.owner }),
+    ...(parsed.unwaited === undefined ? {} : { unwaited: parsed.unwaited }),
   });
   jobs.sort((left, right) => right.status.updatedAt.localeCompare(left.status.updatedAt));
   return unary({ jobs } satisfies JobsListResponse);
@@ -1201,8 +1203,19 @@ function snapshotRequest(request: unknown): WaitSnapshotRequest | WaitCursorReje
   return decoded.kind === 'rejected' ? decoded.error : parsed;
 }
 
-function executeJobsCatalogRequest(context: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
+async function executeJobsCatalogRequest(context: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
   switch (context.spec.name) {
+    case 'jobs.release': {
+      const { request, canonicalRequest, rpcPorts } = context;
+      const parsed = request as { jobs: string[]; projectRoot: string };
+      const callerRoot = canonicalRequest.projectRoot;
+      if (callerRoot === undefined) return unaryHttp(domainResultToHttp(invalidRequestResult()));
+      const scopeCheck = rpcPorts.jobs.scopeCheck(parsed.jobs, callerRoot, 'contains');
+      if (scopeCheck.mismatch.length > 0) {
+        return unaryHttp(domainResultToHttp(jobScopeMismatchResult(scopeCheck.mismatch)));
+      }
+      return unary(rpcPorts.jobs.release(parsed.jobs));
+    }
     case 'jobs.abort':
       return executeJobsAbortCatalogRequest(context);
     case 'jobs.list':

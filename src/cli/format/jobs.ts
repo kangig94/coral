@@ -188,9 +188,9 @@ export function formatWorkflowSlot(
 }
 
 export function formatJobsList(data: JobsListResponse, now = Date.now()): JobsListItem[] {
-  return data.jobs.map(({ jobId, status }) => ({
+  return data.jobs.map(({ jobId, status, released }) => ({
     jobId,
-    phase: status.phase,
+    phase: released === true ? `${status.phase} (released)` : status.phase,
     provider: status.provider ?? status.jobKind,
     cwd: status.workDir ?? status.projectRoot,
     jobKind: status.jobKind,

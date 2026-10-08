@@ -19,6 +19,7 @@ import {
 } from './discuss.js';
 import {
   jobAbortSchema,
+  jobsReleaseRequestSchema,
   jobDetailRequestSchema,
   jobsListRequestSchema,
   jobWaitSchema,
@@ -710,6 +711,15 @@ export const rpcCatalog = [
     http: { method: 'GET', path: '/coordinator/bindings/:binding' },
   },
   jobsAbortRpcSpec,
+  {
+    name: 'jobs.release',
+    kind: 'unary',
+    requires: 'jobs:control',
+    requestSchema: jobsReleaseRequestSchema,
+    responseKind: 'json',
+    portKey: 'jobs',
+    http: { method: 'POST', path: '/jobs/release' },
+  },
   {
     name: 'jobs.list',
     kind: 'unary',

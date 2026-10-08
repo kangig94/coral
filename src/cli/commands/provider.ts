@@ -1,4 +1,4 @@
-import type { Command } from 'commander';
+import { Option, type Command } from 'commander';
 
 import type { ProviderRegistry } from '../../providers/registry.js';
 import { markProviderCommand } from '../classify.js';
@@ -23,7 +23,7 @@ export function registerProviderCommands(program: Command, providerRegistry: Pro
       )
       .option('-w, --work-dir <path>', 'Working directory')
       .option('-m, --model <model>', 'Model override')
-      .option('-o, --owner <id>', 'Owner ID for memo isolation')
+      .addOption(new Option('-o, --owner <id>').hideHelp())
       .option('-b, --bypass-permissions', 'Bypass permission checks')
       .option('-d, --detach', 'Return launch decision without waiting')
       .addHelpText(

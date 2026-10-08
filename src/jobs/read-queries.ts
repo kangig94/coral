@@ -115,6 +115,8 @@ type DecodedTerminalRow = {
 };
 
 export type JobsListFilters = {
+  owner?: string;
+  unwaited?: boolean;
   projectRoot?: CanonicalWorkDir;
   phase?: JobPhase;
   all?: boolean;

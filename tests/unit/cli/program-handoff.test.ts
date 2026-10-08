@@ -119,6 +119,32 @@ afterEach(() => {
 });
 
 describe('program', () => {
+  it('session job guard: prints an empty JSON array without handoff or coordinator startup', async () => {
+    vi.stubEnv('CORAL_OWNER', 'session-guard');
+    const output: string[] = [];
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+      output.push(String(chunk));
+      return true;
+    });
+    try {
+      const { buildProgram, parseProgramWithHandoff } = await loadProgramFresh();
+      const result = await parseProgramWithHandoff(buildProgram(), [
+        'node',
+        'coral-cli',
+        'jobs',
+        '--mine',
+        '--unwaited',
+        '--json',
+      ]);
+      expect(result).toBeNull();
+      expect(output.join('')).toBe('[]\n');
+      expect(process.exitCode ?? 0).toBe(0);
+      expect(mockState.runHandoff).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('should expose the completed preflight to the production status action', async () => {
     const stdout: string[] = [];
     vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: string | Uint8Array) => {

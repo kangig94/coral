@@ -7,6 +7,8 @@ import { workflowCommands } from '../../workflow/dispatch.js';
 import { isLivePhase } from '../../jobs/phase.js';
 import { jobInCallerScope } from '../../jobs/scope.js';
 import { type JobAddressing } from '../../jobs/addressing.js';
+import type { JobAttention } from '../services/job-attention.js';
+import type { JobsListResponse, JobsReleaseResult } from '../../jobs/records.js';
 import type { JobStore } from '../../jobs/store.js';
 import {
   providerHostEvictResponseSchema,
@@ -84,12 +86,15 @@ function providerProxySetContainBooleanResponse(
   return providerProxySetContainBooleanResponseSchema.parse(response);
 }
 
-function createCoordinatorJobLister(getProgressStore: () => JobStore): RpcPorts['jobs']['list'] {
+function createCoordinatorJobLister(
+  getProgressStore: () => JobStore,
+  attention: JobAttention,
+): RpcPorts['jobs']['list'] {
   return (filters) => {
     const progressStore = getProgressStore();
-    const jobs: ReturnType<typeof progressStore.listJobProjections> = [];
+    const jobs: JobsListResponse['jobs'] = [];
     for (const entry of progressStore.listJobProjections()) {
-      if (filters.all !== true && !isLivePhase(entry.status.phase)) {
+      if ((filters.all !== true || filters.owner !== undefined) && !isLivePhase(entry.status.phase)) {
         continue;
       }
       if (filters.projectRoot !== undefined && !jobInCallerScope(entry.status, filters.projectRoot, 'exact')) {
@@ -101,7 +106,18 @@ function createCoordinatorJobLister(getProgressStore: () => JobStore): RpcPorts[
       if (filters.provider !== undefined && entry.status.provider !== filters.provider) {
         continue;
       }
-      jobs.push(entry);
+      if (filters.owner !== undefined) {
+        const launch = progressStore.loadJobProjectionDetail(entry.jobId).launch;
+        if (
+          launch === null ||
+          !('coralEnv' in launch.request) ||
+          launch.request.coralEnv.CORAL_OWNER !== filters.owner
+        ) {
+          continue;
+        }
+      }
+      if (filters.unwaited === true && !attention.isUnwaited(entry.jobId)) continue;
+      jobs.push({ ...entry, ...(attention.isReleased(entry.jobId) ? { released: true } : {}) });
     }
 
     return jobs;
@@ -148,9 +164,29 @@ export function createCoordinatorRpcPorts({
       snapshot: (request) => jobAddressing.snapshot(request),
       scopeCheck: (jobIds, callerRoot, relation) => jobAddressing.scopeCheck(jobIds, callerRoot, relation),
       abort: (jobIds) => jobAddressing.abort(jobIds),
-      waitStream: (request) => jobAddressing.waitStream(request),
+      release: (jobIds) => {
+        const result: JobsReleaseResult = { released: [], unknown: [], terminal: [] };
+        for (const jobId of jobIds) {
+          const status = getProgressStore().loadJobProjectionDetail(jobId).status;
+          if (status === null) result.unknown.push(jobId);
+          else if (!isLivePhase(status.phase)) result.terminal.push(jobId);
+          else {
+            services.jobAttention.release(jobId);
+            result.released.push(jobId);
+          }
+        }
+        return result;
+      },
+      waitStream: async function* (request) {
+        const endWait = services.jobAttention.beginWait(request.jobIds);
+        try {
+          yield* jobAddressing.waitStream(request);
+        } finally {
+          endWait();
+        }
+      },
       waitHandoverSignal,
-      list: createCoordinatorJobLister(getProgressStore),
+      list: createCoordinatorJobLister(getProgressStore, services.jobAttention),
       detail: (jobId) => jobAddressing.detail(jobId),
       unknownJobDisposition: () => jobAddressing.unknownJobDisposition(),
       unknownJobCaveat: () => jobAddressing.unknownJobCaveat(),

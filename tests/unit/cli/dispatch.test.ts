@@ -1,3 +1,5 @@
+import type * as BackendDiscoveryMod from '#src/infra/backend-discovery.js';
+import type * as IpcClientMod from '#src/transport/ipc/client.js';
 import { Command } from 'commander';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
@@ -5,10 +7,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const mockState = vi.hoisted(() => ({
+  liveRequest: vi.fn(),
+  discovery: vi.fn(() => ({ kind: 'missing' }) as unknown),
+  createLiveClient: vi.fn(),
   request: vi.fn(),
   subscribe: vi.fn(),
   health: vi.fn(async () => ({ components: [] as Array<Record<string, unknown>> })),
   readStore: {
+    kb: { listMemos: vi.fn(() => []) },
     discuss: {
       watch: vi.fn(),
     },
@@ -42,6 +48,15 @@ vi.mock('#src/transport/ipc/ensure.js', () => {
   };
 });
 
+vi.mock('#src/infra/backend-discovery.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof BackendDiscoveryMod>()),
+  readDiscoveryRecordDisposition: mockState.discovery,
+}));
+vi.mock('#src/transport/ipc/client.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof IpcClientMod>()),
+  createIpcClient: mockState.createLiveClient,
+}));
+
 vi.mock('#src/cli/read-store.js', () => ({
   getSharedReadCoralStore: vi.fn(() => mockState.readStore),
 }));
@@ -70,8 +85,10 @@ function buildProgram(): Command {
   const program = new Command();
   const jobs = program.command('jobs');
   jobs.command('detail');
+  jobs.command('release');
   const kb = program.command('kb');
   kb.command('reindex');
+  kb.command('memo').command('list');
   const discuss = program.command('discuss');
   discuss.command('watch');
   markProviderCommand(program.command('claude'));
@@ -89,6 +106,8 @@ function stubNonChildInvocationEnv(): void {
 describe('command client routing', () => {
   beforeEach(() => {
     stubNonChildInvocationEnv();
+    mockState.discovery.mockReturnValue({ kind: 'missing' });
+    mockState.createLiveClient.mockReturnValue({ request: mockState.liveRequest });
     projectRoot = makeTempDir();
   });
 
@@ -98,6 +117,83 @@ describe('command client routing', () => {
     for (const root of tempDirs.splice(0)) {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  it('session job guard: prefers environment ownership and forwards it on provider and workflow launches', async () => {
+    const program = buildProgram();
+    vi.stubEnv('CLAUDE_CONFIG_DIR', makeTempDir());
+    for (const envOwner of ['session-env', undefined]) {
+      vi.stubEnv('CORAL_OWNER', envOwner);
+      mockState.request.mockResolvedValue({ state: 'accepted', jobId: 'job-1' });
+      await makeClient(projectRoot, findCommand(program, 'claude')).createSession('claude', 'hi', {
+        owner: 'legacy-flag',
+      });
+      expect(mockState.request.mock.lastCall?.[1]).toMatchObject({ owner: envOwner ?? 'legacy-flag' });
+      expect((mockState.request.mock.lastCall?.[1] as { coralEnv: Record<string, string> }).coralEnv.CORAL_OWNER).toBe(
+        envOwner,
+      );
+      await makeClient(projectRoot, findCommand(program, 'workflow')).workflow('architect', {
+        startPrompt: 'hi',
+        owner: 'legacy-flag',
+      });
+      expect(mockState.request.mock.lastCall?.[1]).toMatchObject({ owner: envOwner ?? 'legacy-flag' });
+    }
+  });
+
+  it('session job guard: prefers the environment for memo owner filters and retains the legacy fallback', async () => {
+    mockState.readStore.kb = { listMemos: vi.fn(() => []) };
+    for (const envOwner of ['session-env', undefined]) {
+      vi.stubEnv('CORAL_OWNER', envOwner);
+      const client = makeClient(projectRoot, findCommand(buildProgram(), 'kb', 'memo', 'list'));
+      await client.kbMemoList({ owner: 'legacy-flag' });
+      expect(mockState.readStore.kb.listMemos).toHaveBeenLastCalledWith({ owner: envOwner ?? 'legacy-flag' });
+    }
+  });
+
+  it('session job guard: sends release through the strict RPC request schema', async () => {
+    const { jobsReleaseRequestSchema } = await import('#src/transport/rpc/jobs.js');
+    mockState.request.mockImplementationOnce(async (method: string, params: unknown) => {
+      expect(method).toBe('jobs.release');
+      expect(jobsReleaseRequestSchema.parse(params)).toEqual({ jobs: ['job-1'], projectRoot });
+      return { released: ['job-1'], unknown: [], terminal: [] };
+    });
+    const client = makeClient(projectRoot, findCommand(buildProgram(), 'jobs', 'release'));
+    expect(await client.releaseJobs(['job-1'])).toEqual({ released: ['job-1'], unknown: [], terminal: [] });
+  });
+
+  it('session job guard: authenticates live owner-scoped queries without starting a coordinator', async () => {
+    const { jobsListRequestSchema } = await import('#src/transport/rpc/jobs.js');
+    vi.stubEnv('CORAL_OWNER', 'session-env');
+    mockState.discovery.mockReturnValue({
+      kind: 'record',
+      record: { socketPath: '/test/socket', bootToken: 'test-boot-token' },
+    });
+    mockState.liveRequest.mockImplementationOnce(async (method: string, params: unknown) => {
+      expect(method).toBe('jobs.list');
+      expect(jobsListRequestSchema.parse(params)).toEqual({ owner: 'session-env', unwaited: true });
+      return { jobs: [{ jobId: 'job-live', released: true }] };
+    });
+    const client = makeClient(projectRoot, findCommand(buildProgram(), 'jobs'));
+    expect(await client.listJobs({ mine: true, unwaited: true, allProjects: true })).toEqual({
+      jobs: [{ jobId: 'job-live', released: true }],
+    });
+    expect(mockState.createLiveClient).toHaveBeenCalledWith('/test/socket', expect.any(Object), {
+      kind: 'boot',
+      token: 'test-boot-token',
+    });
+    expect(ensure).not.toHaveBeenCalled();
+  });
+
+  it('session job guard: returns no owned unwaited jobs without starting a coordinator', async () => {
+    vi.stubEnv('CORAL_OWNER', 'session-env');
+    const client = makeClient(projectRoot, findCommand(buildProgram(), 'jobs'));
+    await expect(client.listJobs({ mine: true, unwaited: true, allProjects: true })).resolves.toEqual({ jobs: [] });
+    expect(ensure).not.toHaveBeenCalled();
+    expect(mockState.request).not.toHaveBeenCalled();
+    vi.stubEnv('CORAL_OWNER', undefined);
+    await expect(makeClient(projectRoot, findCommand(buildProgram(), 'jobs')).listJobs({ mine: true })).rejects.toThrow(
+      'Set CORAL_OWNER',
+    );
   });
 
   it('sends the canonical target when the invocation project root is a symlink', async () => {

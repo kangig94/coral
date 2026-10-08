@@ -26,7 +26,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, readdirSync, rmdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 
 import { claudeConfigDir, isValidSessionId, STANDING_PROBE_ERRNOS } from './hook-utils.mjs';
@@ -60,6 +60,37 @@ function subagentsPath(projectDir, sessionId) {
 
 function bgPath(projectDir, sessionId) {
   return join(sessionRoot(projectDir, sessionId), BG_DIR);
+}
+
+const JOB_GUARD_FILE = 'job-guard.json';
+
+function readJobGuard(projectDir, sessionId) {
+  try {
+    return JSON.parse(readFileSync(join(sessionRoot(projectDir, sessionId), JOB_GUARD_FILE), 'utf8'));
+  } catch (error) {
+    if (error?.code === 'ENOENT') return {};
+    throw error;
+  }
+}
+
+export function jobGuardAlreadyBlocked(projectDir, sessionId) {
+  if (!isValidSessionId(sessionId)) return false;
+  return readJobGuard(projectDir, sessionId).blockedAt !== undefined;
+}
+
+export function recordJobGuardBlock(projectDir, sessionId) {
+  if (!isValidSessionId(sessionId)) return;
+  const state = readJobGuard(projectDir, sessionId);
+  const root = sessionRoot(projectDir, sessionId);
+  mkdirSync(root, { recursive: true });
+  writeFileSync(join(root, JOB_GUARD_FILE), JSON.stringify({ ...state, blockedAt: Date.now() }));
+}
+
+export function recordCoralWait(projectDir, sessionId) {
+  if (!isValidSessionId(sessionId)) return;
+  const root = sessionRoot(projectDir, sessionId);
+  mkdirSync(root, { recursive: true });
+  writeFileSync(join(root, JOB_GUARD_FILE), JSON.stringify({ waitedAt: Date.now() }));
 }
 
 // === Subagent recording (SubagentStart / SubagentStop hooks) ===

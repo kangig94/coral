@@ -122,6 +122,7 @@ function createPorts(requests: WaitStreamRequest[]): HttpHandlerPorts {
       start: vi.fn(),
     },
     jobs: {
+      release: vi.fn(() => ({ released: [], unknown: [], terminal: [] })),
       scopeCheck: vi.fn(() => ({ valid: ['job-1'], missing: [], mismatch: [] })),
       abort: vi.fn(),
       admitWait: vi.fn((req: { jobIds: string[] }) =>

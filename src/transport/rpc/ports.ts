@@ -3,6 +3,7 @@ import type { WaitSnapshotRequest } from '../../jobs/wait/contract.js';
 import type { DiscussDetailResponse, DiscussSummaryDto, DiscussView } from '../../discuss/read-contract.js';
 import type { ExpansionRequestPort } from '../../expansion/rpc-contract.js';
 import type { JobLaunchRequest, ProviderSessionLaunchDecision, WorkflowLaunchDecision } from '../../jobs/launch.js';
+import type { JobsReleaseResult } from '../../jobs/records.js';
 import type { JobStatus } from '../../jobs/records.js';
 import type { WaitStreamEvent, CanonicalWaitStreamRequest } from '../../jobs/wait/contract.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
@@ -62,10 +63,11 @@ interface JobsRequestPort {
   snapshot(req: WaitSnapshotRequest): WaitSnapshot;
   scopeCheck(jobIds: string[], callerRoot: CanonicalWorkDir, relation: JobScopeRelation): ScopeCheckResult;
   abort(jobIds: string[]): AbortDecision;
+  release(jobIds: string[]): JobsReleaseResult;
   waitStream(req: CanonicalWaitStreamRequest): AsyncGenerator<WaitStreamEvent>;
 
   waitHandoverSignal(): AbortSignal;
-  list(filters: JobsListFilters): Array<{ jobId: string; status: JobStatus }>;
+  list(filters: JobsListFilters): Array<{ jobId: string; status: JobStatus; released?: boolean }>;
   detail(jobId: string): JobDetailLookup;
   unknownJobDisposition(): 'pre-epoch-history' | 'not-found' | 'discovery-unknown' | 'discovery-unreadable';
   unknownJobCaveat?(): string;

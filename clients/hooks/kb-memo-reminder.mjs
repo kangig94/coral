@@ -40,7 +40,7 @@ try {
   writeHookOutput({
     hookSpecificOutput: {
       hookEventName: 'UserPromptSubmit',
-      additionalContext: `Memo reminder: When you discover something that would save someone hours (painful root cause, gotcha contradicting docs), write with ${cliPath} kb memo write --owner "${sessionId}" --topic "<kebab-case-topic>" --content "one paragraph + context". Do not memo routine findings.`,
+      additionalContext: `Memo reminder: When you discover something that would save someone hours (painful root cause, gotcha contradicting docs), write with ${cliPath} kb memo write --topic "<kebab-case-topic>" --content "one paragraph + context". Do not memo routine findings.`,
     },
   });
 } catch {

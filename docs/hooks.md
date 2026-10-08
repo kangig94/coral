@@ -14,11 +14,11 @@ Hook registration is split per client, each `plugin.json` pointing at its own fi
 | `PreCompact`               | `pre-compact.mjs`                                                                       | Snapshot active jobs before compaction                                           |
 | `UserPromptSubmit`         | `kb-promote-gate.mjs`, `ralph-loop.mjs`, `kb-memo-reminder.mjs`, `coral-skill-vars.mjs` | KB flags, Ralph loop state, memo reminders, skill vars                           |
 | `PreToolUse` (`Skill`)     | `kb-promote-gate.mjs`, `ralph-loop.mjs`, `coral-skill-vars.mjs`                         | Same state setup for skill-initiated flows                                       |
-| `PreToolUse` (`Bash`)      | `bash-rewrite.mjs`                                                                      | Put `coral-cli` on PATH + wrap `run_in_background` for lifecycle tracking        |
+| `PreToolUse` (`Bash`)      | `bash-rewrite.mjs`                                                                      | Put `coral-cli` on PATH, default session owner, track background work        |
 | `PreToolUse` (`Monitor`)   | `monitor-track.mjs`                                                                     | Wrap the Monitor command for lifecycle tracking (skips ws + persistent monitors) |
 | `PostToolUseFailure`       | `kb-lookup-reminder.mjs`                                                                | KB reminder on explicit tool failures                                            |
 | `PostToolUse` (`Bash`)     | `kb-lookup-reminder.mjs`                                                                | KB reminder on silent-failure command output                                     |
-| `Stop`                     | `ralph-loop.mjs`, `kb-promote-gate.mjs`                                                 | Prompt-mode looping and KB promotion enforcement                                 |
+| `Stop`                     | `ralph-loop.mjs`, `kb-promote-gate.mjs`, `session-job-guard.mjs`                        | Looping, KB promotion, and waiting for session jobs                                 |
 
 All hook scripts are Node.js ESM files that read JSON from stdin, write JSON to stdout, and fail open.
 
@@ -60,10 +60,10 @@ The `clients/inject/` directory separates behavioral guidelines, tools, and audi
 | -------------------- | -------------------------------------------------------------------- |
 | `core.md`            | Shared behavioral guidelines                                         |
 | `tools.md`           | Path aliases and the live equipped-tools placeholder                 |
-| `cli.md`             | The `coral-cli` command and its sandbox guidance                     |
+| `cli.md`             | The CLI, sandbox guidance, and session job wait rule                     |
 | `orchestrator.md`    | How the top-level session launches project and Coral agents          |
 | `kb/common.md`       | KB search and verification guidance                                  |
-| `kb/orchestrator.md` | Top-level owner propagation, wiki maintenance, and source management |
+| `kb/orchestrator.md` | Top-level wiki maintenance and source management |
 | `kb/session.md`      | Session-scoped memo, promotion, update, and invalidation guidance    |
 
 Renderers select fragments explicitly for each surface. There is no conditional-block markup inside the Markdown files. Host hooks emit the base and KB groups as separate payloads because the host applies its 8,000-byte inline-size threshold per payload. Before emission, the session and KB start hooks retain their fixed contract text and fit appended notices or project wake-up text into the bytes that remain. An oversized wake-up is cut on a UTF-8 boundary and ends with a notice naming the full project wiki path.
@@ -113,7 +113,7 @@ The `tools.md` fragment's `{{EQUIPPED_TOOLS}}` placeholder lists agent-facing to
 
 ## SessionStart
 
-`clients/hooks/session-start.mjs` renders only `core.md`, `tools.md`, and `orchestrator.md`, adds the session header, and fits any backend-startup, migration, or project-ignore notices into the remaining payload budget. Independently, `clients/hooks/kb-start.mjs` renders the owner KB group and, when a project source is available, fits the project wiki wake-up into that payload's remaining bytes. Each script returns its payload through `hookSpecificOutput.additionalContext`, so one payload crossing the host threshold cannot discard the other.
+`clients/hooks/session-start.mjs` renders `core.md`, `tools.md`, `cli.md`, and `orchestrator.md`, adds the session header, and fits any backend-startup, migration, or project-ignore notices into the remaining payload budget. Independently, `clients/hooks/kb-start.mjs` renders the owner KB group and, when a project source is available, fits the project wiki wake-up into that payload's remaining bytes. Each script returns its payload through `hookSpecificOutput.additionalContext`, so one payload crossing the host threshold cannot discard the other.
 
 KB wake-up reads no runtime database. `readProjectScopedWakeUp()` reads the project wiki directly from the configured Markdown KB root and fails open with `null` on missing or malformed content. An owner session without a project source still receives the fixed KB contract; only the wake-up is omitted. The separate PreCompact snapshot hook mirrors the canonical store path as `~/.coral/gen2/data/store/store.db` or `~/.coral/gen2/data-dev/store/store.db`; it validates the installed fingerprint before opening that projection read-only.
 
@@ -249,3 +249,13 @@ Rules:
 - write machine-readable JSON to stdout
 - fail open on any exception
 - avoid external runtime dependencies except documented hook-local fallbacks such as the read-only `better-sqlite3` corpus snapshot reader
+
+## Session job guard
+
+`bash-rewrite.mjs` defaults `CORAL_OWNER` to the hook's `session_id` for commands invoking `coral-cli`, preserving an already-set value. It also records each Coral wait command in the session's live-work registry.
+
+`session-job-guard.mjs` runs on Stop for Claude, Codex, and Copilot. It queries `coral-cli jobs --mine --unwaited --json` with the session owner and the plugin bridge on PATH, with a two-second subprocess timeout. A nonempty result blocks the stop with the exact `coral-cli wait jobs <ids>` command. Empty results, missing session ids, query errors, and timeouts allow the stop. All hosts receive flat `{ decision: "block", reason }` output through `writeHookOutput`.
+
+The registry records the block time. A further stop is allowed until a Coral wait command records its time and clears the previous block. This bounds the guard when a session ignores its instruction while allowing another reminder after a wait.
+
+`jobs --mine` lists live jobs whose launch environment matches `CORAL_OWNER`. `--unwaited` excludes active wait streams and released jobs; snapshots do not count as waits. The query never starts a coordinator, and with none running prints `[]`. Human job lists mark released jobs. Only when the user explicitly asks to leave a job unattended, use `coral-cli jobs release <job-id>`; release neither stops nor aborts a job, and the exemption disappears when the coordinator restarts.

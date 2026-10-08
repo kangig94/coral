@@ -27,6 +27,9 @@ import { followJobs } from '../follow.js';
 const ABORT_REFUSED_EXIT_CODE = 3;
 
 type JobsOptions = {
+  mine?: boolean;
+  unwaited?: boolean;
+  json?: boolean;
   phase?: string;
   provider?: string;
   all?: boolean;
@@ -56,6 +59,9 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
       phase: jobPhaseSchema.optional(),
       provider: z.string().optional(),
       all: z.boolean().optional(),
+      mine: z.boolean().optional(),
+      unwaited: z.boolean().optional(),
+      json: z.boolean().optional(),
     })
     .superRefine((value, ctx) => {
       if (value.phase !== undefined && value.all === true) {
@@ -138,6 +144,9 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
     .option('--phase <phase>', 'Limit jobs to a single phase')
     .option('--provider <name>', 'Limit jobs to a registered provider')
     .option('--all', 'Include terminal jobs in addition to live jobs')
+    .option('--mine', 'List live jobs launched by this session (CORAL_OWNER)')
+    .option('--unwaited', 'Exclude jobs with an active wait or a release')
+    .option('--json', 'Print a JSON array of jobs')
     .action(async (opts: JobsOptions) => {
       try {
         const parsed = jobsOptionsSchema.parse(opts);
@@ -145,10 +154,16 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
         const client = makeClient(projectRoot, jobsCommand);
         const result = await client.listJobs({
           allProjects: true,
+          ...(parsed.mine === true ? { mine: true } : {}),
+          ...(parsed.unwaited === true ? { unwaited: true } : {}),
           ...(parsed.phase !== undefined ? { phase: parsed.phase } : {}),
           ...(parsed.provider !== undefined ? { provider: parsed.provider } : {}),
           ...(parsed.all === true ? { all: true } : {}),
         });
+        if (parsed.json === true) {
+          process.stdout.write(JSON.stringify(result.jobs) + '\n');
+          return;
+        }
         const rows = formatJobsList(result);
 
         process.stdout.write(
@@ -160,6 +175,23 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
           }) + '\n',
         );
         flushPendingReadStoreNote('text');
+      } catch (error) {
+        emitError(normalizeUsageError(error));
+      }
+    });
+
+  const jobsReleaseCommand = jobsCommand.command('release');
+  jobsReleaseCommand
+    .description('Exempt jobs from the session wait requirement without stopping them')
+    .argument('<jobIds...>', 'Job IDs')
+    .action(async (jobIds: string[]) => {
+      try {
+        const result = await makeClient(process.cwd(), jobsReleaseCommand).releaseJobs(jobIds.flatMap(parseJobIds));
+        for (const jobId of result.released) process.stdout.write(`Job ${jobId} released; it continues running.\n`);
+        for (const jobId of result.unknown)
+          process.stdout.write(`Job ${jobId} is unknown; nothing released. Run coral-cli jobs to check the job ID.\n`);
+        for (const jobId of result.terminal)
+          process.stdout.write(`Job ${jobId} is already terminal; nothing released.\n`);
       } catch (error) {
         emitError(normalizeUsageError(error));
       }

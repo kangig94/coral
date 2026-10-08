@@ -125,6 +125,7 @@ function createPorts(succession?: (method: string, params: unknown) => Promise<u
     },
     sessions: { start: vi.fn() },
     jobs: {
+      release: vi.fn(() => ({ released: [], unknown: [], terminal: [] })),
       scopeCheck: vi.fn(() => ({ valid: [], missing: [], mismatch: [] })),
       abort: vi.fn(),
       admitWait: vi.fn((req: { jobIds: string[] }) =>

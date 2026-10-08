@@ -16,7 +16,7 @@ import type { DiscussAbortResponse, DiscussStartResponse } from '../discuss/read
 import type { BidResult, PersonaSeedOutput, SpeechResult } from '../discuss/session-types.js';
 import type { WatchState } from '../discuss/watch.js';
 import type { AcceptedLaunchResponse } from '../jobs/launch.js';
-import type { JobDetailResponse, JobStatus, JobsListResponse } from '../jobs/records.js';
+import type { JobDetailResponse, JobStatus, JobsListResponse, JobsReleaseResult } from '../jobs/records.js';
 import type { RetentionPolicy } from '../sessions/entry.js';
 import type {
   KbDiagnoseInput,
@@ -81,6 +81,10 @@ import {
   type EnsuredIpcClient,
   type RawCoordinatorHealth,
 } from '../transport/ipc/ensure.js';
+import { readDiscoveryRecordDisposition } from '../infra/backend-discovery.js';
+import { createIpcClient } from '../transport/ipc/client.js';
+import { createRealRuntime } from '../runtime/real.js';
+import { readBuildFlavor } from '../infra/bundle-manifest.js';
 import { jobsWaitRequest, type JobsWaitFields } from '../transport/rpc/jobs.js';
 import { childPrincipalAuthFromEnv, childPrincipalAuthOptions } from '../transport/ipc/child-principal-auth.js';
 import { CORAL_KB_ENABLE_ENV, KB_DISABLED_REASON, resolveKbEnabled } from '../infra/kb-toggle.js';
@@ -88,7 +92,7 @@ import { filterForwardableCoralEnv } from '../infra/env-sanitize.js';
 import { collectForwardedNetworkEnv } from '../infra/network-env.js';
 import type { Principal } from '../security/principal.js';
 import { classifyCommand, commandPath, type CommandClass } from './classify.js';
-import { ProviderSelectionError } from './errors.js';
+import { ProviderSelectionError, UsageError } from './errors.js';
 import { parseExpression } from '../workflow/parser.js';
 import { normalizeAst, workflowProviderNames } from '../workflow/normalize.js';
 
@@ -118,6 +122,8 @@ type WorkflowRequestOptions = {
 };
 
 type JobsListOptions = {
+  mine?: boolean;
+  unwaited?: boolean;
   projectRoot?: string;
   phase?: JobStatus['phase'];
   all?: boolean;
@@ -133,6 +139,7 @@ type DiscussSeedArgs = {
 };
 
 type CliCommandClient = {
+  releaseJobs(jobIds: string[]): Promise<JobsReleaseResult>;
   abortJobs(jobIds: string[]): Promise<AbortResult>;
   createSession(
     provider: string,
@@ -380,6 +387,10 @@ function buildTransportContextBody(args: Record<string, unknown>, context: Invoc
   };
 
   for (const field of TRANSPORT_CONTEXT_FIELDS) {
+    if (field === 'owner' && context.coralEnv.CORAL_OWNER !== undefined) {
+      body.owner = context.coralEnv.CORAL_OWNER;
+      continue;
+    }
     if (body[field] !== undefined) {
       continue;
     }
@@ -465,12 +476,7 @@ function buildProjectScopedQuery(args: Record<string, unknown>, context: Invocat
 }
 
 function resolveMemoOwner(owner: string | undefined, context: InvocationContext): string | undefined {
-  if (owner !== undefined) {
-    return owner;
-  }
-
-  const fallback = context.coralEnv.CORAL_OWNER;
-  return typeof fallback === 'string' && fallback.length > 0 ? fallback : undefined;
+  return context.coralEnv.CORAL_OWNER ?? owner;
 }
 
 function createSessionDiscussionClient(
@@ -482,6 +488,7 @@ function createSessionDiscussionClient(
   | 'listJobs'
   | 'detailJob'
   | 'abortJobs'
+  | 'releaseJobs'
   | 'discussSeed'
   | 'discussStart'
   | 'discussWatch'
@@ -513,6 +520,10 @@ function createSessionDiscussionClient(
       );
     },
     listJobs: async (options = {}) => {
+      const owner = defaultContext.coralEnv.CORAL_OWNER;
+      if (options.mine === true && (owner === undefined || owner.length === 0)) {
+        throw new UsageError('Set CORAL_OWNER to the session ID to use jobs --mine.');
+      }
       const filters = {
         ...(options.allProjects === true
           ? {}
@@ -525,14 +536,41 @@ function createSessionDiscussionClient(
         ...(options.phase !== undefined ? { phase: options.phase } : {}),
         ...(options.provider !== undefined ? { provider: options.provider } : {}),
         ...(options.all === true ? { all: true } : {}),
+        ...(options.mine === true ? { owner } : {}),
+        ...(options.unwaited === true ? { unwaited: true } : {}),
       };
       if (commandClass === 'directRead') {
+        const runtime = createRealRuntime(readBuildFlavor(defaultContext.pluginRoot));
+        const discovery = readDiscoveryRecordDisposition(runtime);
+        if (discovery.kind === 'undecodable') {
+          throw new BackendUnreachableError(
+            'Coral coordinator discovery is unreadable. Run `coral-cli backend status` and retry.',
+          );
+        }
+        if (discovery.kind === 'record') {
+          const ipcAuth = childPrincipalAuthFromEnv();
+          const bootAuth = { kind: 'boot' as const, token: discovery.record.bootToken };
+          try {
+            return await createIpcClient(
+              discovery.record.socketPath,
+              runtime.time,
+              ipcAuth === undefined ? bootAuth : undefined,
+            ).request<JobsListResponse>('jobs.list', filters, {
+              timeoutMs: 500,
+              ...childPrincipalAuthOptions(ipcAuth),
+            });
+          } catch (error) {
+            if (!isRecord(error) || error.code !== 'ipc_connect_failed') throw error;
+          }
+        }
+        if (options.mine === true || options.unwaited === true) return { jobs: [] };
         return { jobs: readStore().jobs.list(filters) };
       }
       return request<JobsListResponse>('jobs.list', filters);
     },
     detailJob: async (jobId) =>
       request<JobDetailResponse>('jobs.detail', buildProjectScopedQuery({ jobId }, defaultContext)),
+    releaseJobs: async (jobIds) => request('jobs.release', buildProjectScopedQuery({ jobs: jobIds }, defaultContext)),
     abortJobs: async (jobIds) =>
       request<AbortResult>('jobs.abort', buildProjectScopedQuery({ jobs: jobIds }, defaultContext)),
     discussSeed: async (args) => request<PersonaSeedOutput>('discuss.persona.generate', args),

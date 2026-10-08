@@ -1,3 +1,4 @@
+import type { JobAttention } from './job-attention.js';
 import type { ProgressVisit } from '../../jobs/wait/contract.js';
 import { raceObserved } from '../../infra/promise-signal.js';
 import type { Runtime } from '../../runtime/ports.js';
@@ -12,6 +13,7 @@ import type {
 } from '../../jobs/wait/contract.js';
 
 export interface JobWaitServiceDeps {
+  jobAttention?: JobAttention;
   runtime: Pick<Runtime, 'time'>;
   waitCoordinator: JobWaitPort;
   loadJobProjectionDetail: (jobId: string) => JobProjectionDetail;
@@ -30,7 +32,12 @@ export class JobWaitService {
   }
 
   async waitForJobTerminal(jobId: string, timeoutMs?: number): Promise<void> {
-    return this.deps.waitCoordinator.waitForJobTerminal(jobId, timeoutMs);
+    const endWait = this.deps.jobAttention?.beginWait([jobId]);
+    try {
+      return await this.deps.waitCoordinator.waitForJobTerminal(jobId, timeoutMs);
+    } finally {
+      endWait?.();
+    }
   }
 
   async awaitLaunch(jobId: string, timeoutMs: number): Promise<LaunchReadiness> {
@@ -88,10 +95,20 @@ export class JobWaitService {
   }
 
   async *waitStream(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent> {
-    yield* this.deps.waitCoordinator.waitForOutcomes(req);
+    const endWait = this.deps.jobAttention?.beginWait(req.jobIds);
+    try {
+      yield* this.deps.waitCoordinator.waitForOutcomes(req);
+    } finally {
+      endWait?.();
+    }
   }
 
   async waitStreamOnce(jobId: string, timeoutMs?: number): Promise<WaitStreamOnceResult> {
-    return this.deps.waitCoordinator.waitStreamOnce(jobId, timeoutMs);
+    const endWait = this.deps.jobAttention?.beginWait([jobId]);
+    try {
+      return await this.deps.waitCoordinator.waitStreamOnce(jobId, timeoutMs);
+    } finally {
+      endWait?.();
+    }
   }
 }

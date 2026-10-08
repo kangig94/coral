@@ -1,3 +1,4 @@
+import type { JobAttention } from './services/job-attention.js';
 import type { ProgressVisit } from '../jobs/wait/contract.js';
 import type { WaitAdmission } from '../jobs/wait/session.js';
 import type { ResultAvailability } from '../jobs/terminal/export.js';
@@ -97,6 +98,7 @@ export type ExecutionServiceDeps = {
     discoverPluginRoot: (namespace: string) => string | null;
   };
   coordinatorCommit: CommitEventsFn;
+  jobAttention?: JobAttention;
   loadJobProjectionDetail: (jobId: string) => JobProjectionDetail;
   loadJobWaitDetail: (jobId: string) => JobWaitDetail;
   readJobLastSeq: (jobId: string) => number | null;
