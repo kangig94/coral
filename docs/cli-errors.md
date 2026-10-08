@@ -545,3 +545,15 @@ function classify(
 ```
 
 `inspect-backend` is a separate verdict from `retry` and from `restart-backend` because a refused method is not re-issued blindly: the coordinator answered, and where a successor could have discharged the method the CLI already spawned one. The drain is bounded and ends on its own, so the wrapper reads `coral-cli backend status` and retries the refused command once it no longer reports that coordinator as draining.
+
+## Session job queries and release
+
+| Command / result | Exit | Meaning / remedy |
+| --- | --- | --- |
+| `jobs --mine` without `CORAL_OWNER` | `2` | Set `CORAL_OWNER` to the session ID and retry. |
+| `jobs --mine --unwaited --json` without a running coordinator | `0` | Prints `[]`; this query does not start a coordinator. |
+| `jobs release <ids...>`: released | `0` | The named jobs continue running and are exempt from the session wait guard until coordinator restart. |
+| `jobs release <ids...>`: unknown or terminal | `0` | Prints one line per job; no exemption is added for that job. |
+| `jobs.release`: `scope_mismatch` | `1` | Retry from the job's project or an ancestor directory. |
+| `jobs.release`: `missing_capability` | `77` | The caller needs `jobs:control`. |
+| `jobs.release`: `invalid_request` | `1` | Supply at least one job ID and a project root; the request schema rejects unknown fields. |

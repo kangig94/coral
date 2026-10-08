@@ -1,3 +1,4 @@
+import { JobAttention } from '../services/job-attention.js';
 import { readLaunchStatus, recordControllerEvidenceRefusals } from '../../infra/launch-status.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import { join } from 'node:path';
@@ -116,6 +117,7 @@ function listInstantiatedExecutionServices(services: ReadonlyMap<string, Project
 
 function createExecutionServiceRegistry(input: {
   services: Map<string, ProjectRequestPort>;
+  jobAttention: JobAttention;
   deps: CreateExecutionServicesDeps;
   getProgressStore: () => ReturnType<CoordinatorWorld['storeServicesRef']['get']>['progressStore'];
   providerOperationReconciler: ProviderOperationReconciler;
@@ -135,6 +137,7 @@ function createExecutionServiceRegistry(input: {
         'SELECT COALESCE(MAX(seq), 0) AS seq FROM events',
       ).get()?.seq ?? 0;
     const created = createExecutionService(ctx, {
+      jobAttention: input.jobAttention,
       runningWorkflowJobs: world.runningWorkflowJobs,
       runtime,
       progressStore,
@@ -665,6 +668,7 @@ function createUnreadableProviderOperationRelease(input: {
 }
 
 type ExecutionServices = {
+  jobAttention: JobAttention;
   getExecutionService: (ctx: InvocationContext) => ProjectRequestPort;
   getRecoveryService: (ctx: InvocationContext) => RecoveryCapableService;
   listExecutionServices: () => ProjectRequestPort[];
@@ -689,6 +693,7 @@ type ExecutionServices = {
 
 function createExecutionServicePorts(input: {
   state: ExecutionServicesState;
+  jobAttention: JobAttention;
   services: Pick<ExecutionServices, 'getExecutionService' | 'getRecoveryService' | 'listExecutionServices'>;
   adoptRepairedProviderOperation: ExecutionServices['adoptRepairedProviderOperation'];
   providerOperationReconciler: ProviderOperationReconciler;
@@ -703,6 +708,7 @@ function createExecutionServicePorts(input: {
   } = input;
   const { getExecutionService, getRecoveryService, listExecutionServices } = services;
   return {
+    jobAttention: input.jobAttention,
     getExecutionService,
     getRecoveryService,
     listExecutionServices,
@@ -892,7 +898,9 @@ export function createExecutionServices(deps: CreateExecutionServicesDeps): Exec
     state.providerProxyLifecycleInitialized = true;
   };
 
+  const jobAttention = new JobAttention();
   const servicesPorts = createExecutionServiceRegistry({
+    jobAttention,
     services,
     deps,
     getProgressStore,
@@ -901,6 +909,7 @@ export function createExecutionServices(deps: CreateExecutionServicesDeps): Exec
   });
 
   return createExecutionServicePorts({
+    jobAttention,
     state,
     services: servicesPorts,
     adoptRepairedProviderOperation,

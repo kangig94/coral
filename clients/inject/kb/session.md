@@ -4,9 +4,9 @@
 Write a memo only when a discovery would save someone hours — painful root causes, gotchas that contradict docs, or decisions not derivable from code.
 Do not memo routine findings, general observations, or things git log can answer.
 
-`CLI kb memo write --owner "{{SESSION_ID}}" --topic "<kebab-case-topic>" --content "one paragraph + context"`
-`CLI kb memo list --owner "{{SESSION_ID}}"`
-`CLI kb memo delete "<pattern>" --owner "{{SESSION_ID}}"`
+`CLI kb memo write --topic "<kebab-case-topic>" --content "one paragraph + context"`
+`CLI kb memo list`
+`CLI kb memo delete "<pattern>"`
 
 Timestamps, paths, and frontmatter are generated automatically.
 

@@ -121,7 +121,9 @@ export async function parseProgramWithHandoff(
   const invocation = mode === undefined ? undefined : new WaitInvocation(mode, argv, clock);
   installWaitInvocation(invocation);
   const dispatch = async () => {
-    const handoff = await runCliHandoffPreflight(argv);
+    const sessionJobQuery =
+      argv[2] === 'jobs' && argv.includes('--mine') && argv.includes('--unwaited') && argv.includes('--json');
+    const handoff = sessionJobQuery ? null : await runCliHandoffPreflight(argv);
     invocation?.check();
     if (handoff !== null) return handoff;
     await program.parseAsync([...argv]);

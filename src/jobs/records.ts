@@ -245,9 +245,15 @@ export interface JobTerminalEvent extends JobEventBase {
 
 export type JobEvent = JobProgressEvent | JobTerminalEvent;
 
+export type JobsReleaseResult = {
+  released: string[];
+  unknown: string[];
+  terminal: string[];
+};
+
 /** Response shape for jobs.list. */
 export type JobsListResponse = {
-  jobs: Array<{ jobId: string; status: JobStatus }>;
+  jobs: Array<{ jobId: string; status: JobStatus; released?: boolean }>;
 };
 
 /** Response shape for jobs.detail. Includes:

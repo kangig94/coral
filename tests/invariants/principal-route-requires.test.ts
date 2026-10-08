@@ -21,6 +21,7 @@ const expectedRpcRequires = {
   'coordinator.listExpansion': 'expansion:manage',
   'coordinator.readBinding': 'expansion:manage',
   'jobs.abort': 'jobs:control',
+  'jobs.release': 'jobs:control',
   'jobs.list': 'jobs:read',
   'jobs.detail': 'jobs:read',
   'jobs.wait': 'jobs:read',

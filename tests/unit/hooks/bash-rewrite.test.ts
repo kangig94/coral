@@ -32,6 +32,31 @@ function splitPrefix(rewritten: string): { prefix: string; rest: string } {
 }
 
 describe('bash-rewrite.mjs', () => {
+  it('session job guard: defaults the owner safely and preserves an existing owner', () => {
+    const sessionId = "sess-'$value`literal`";
+    const result = runHook(BASH_REWRITE_HOOK, {
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      session_id: sessionId,
+      tool_input: { command: 'coral-cli jobs' },
+    });
+    const { prefix } = splitPrefix(expectBashRewriteOutput(result).hookSpecificOutput.updatedInput.command);
+    for (const existing of [undefined, 'existing-owner', '']) {
+      const env = { PATH: '/usr/bin:/bin', ...(existing === undefined ? {} : { CORAL_OWNER: existing }) };
+      const owner = execFileSync('bash', ['-c', `${prefix}\nprintf %s "$CORAL_OWNER"`], { encoding: 'utf8', env });
+      expect(owner).toBe(existing ?? sessionId);
+    }
+    expect(splitPrefix(rewrittenCommand('coral-cli jobs')).prefix).not.toContain('CORAL_OWNER');
+    expect(
+      runHook(BASH_REWRITE_HOOK, {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        session_id: 'sess',
+        tool_input: { command: 'echo hi' },
+      }).stdout,
+    ).toBe('');
+  });
+
   it('keeps the rewrite enveloped under Copilot, which ignores a top-level updatedInput', () => {
     const fixture = createFixture();
     const result = runBashHook('coral-cli kb search foo', { COPILOT_PLUGIN_ROOT: fixture.pluginRoot });

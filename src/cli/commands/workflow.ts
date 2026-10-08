@@ -1,4 +1,4 @@
-import type { Command } from 'commander';
+import { Option, type Command } from 'commander';
 
 import { normalizeUsageError, UsageError } from '../errors.js';
 import { makeClient, type WorkflowOptions } from '../dispatch.js';
@@ -20,7 +20,7 @@ export function registerWorkflowCommands(program: Command): void {
     )
     .option('-p, --provider <name>', 'Provider name (registered provider)')
     .option('-w, --work-dir <path>', 'Working directory')
-    .option('-o, --owner <id>', 'Session owner ID for memo isolation')
+    .addOption(new Option('-o, --owner <id>').hideHelp())
     .option('-d, --detach', 'Return launch decision without waiting')
     .addHelpText(
       'after',

@@ -24,6 +24,8 @@ export type JobsListDisplayFilters = {
   phase?: string;
   provider?: string;
   all?: boolean;
+  mine?: boolean;
+  unwaited?: boolean;
   /** The caller's own directory. Jobs whose work directory equals it are the primary group,
    * because that is the relation an ambient selector uses. */
   cwd?: string;
@@ -106,6 +108,8 @@ function describeJobsMatch(filters: JobsListDisplayFilters): string {
   if (filters.provider) {
     parts.push(`provider=${filters.provider}`);
   }
+  if (filters.mine === true) parts.push('--mine (launched by this session)');
+  if (filters.unwaited === true) parts.push('--unwaited (no active wait or release)');
 
   return parts.join(', ');
 }
@@ -188,9 +192,9 @@ export function formatWorkflowSlot(
 }
 
 export function formatJobsList(data: JobsListResponse, now = Date.now()): JobsListItem[] {
-  return data.jobs.map(({ jobId, status }) => ({
+  return data.jobs.map(({ jobId, status, released }) => ({
     jobId,
-    phase: status.phase,
+    phase: released === true ? `${status.phase} (released)` : status.phase,
     provider: status.provider ?? status.jobKind,
     cwd: status.workDir ?? status.projectRoot,
     jobKind: status.jobKind,

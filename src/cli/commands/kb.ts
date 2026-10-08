@@ -382,7 +382,7 @@ function registerKbMemoCommands(kb: Command): void {
     .requiredOption('--topic <slug>', 'Kebab-case topic slug (e.g. orama-threshold)')
     .option('--content <text>', 'Memo body text')
     .option('--content-file <path>', 'Read memo body from file')
-    .option('--owner <id>', 'Session owner ID (falls back to CORAL_OWNER env var)')
+    .addOption(new Option('-o, --owner <id>').hideHelp())
     .action(async (opts: KbMemoWriteOptions) => {
       try {
         const content =
@@ -390,9 +390,9 @@ function registerKbMemoCommands(kb: Command): void {
         if (content === undefined) {
           throw new UsageError('Either --content or --content-file is required');
         }
-        const rawOwner = opts.owner ?? process.env.CORAL_OWNER;
+        const rawOwner = process.env.CORAL_OWNER ?? opts.owner;
         if (!rawOwner) {
-          throw new UsageError('--owner is required (or set CORAL_OWNER env var)');
+          throw new UsageError('Set CORAL_OWNER to the session ID before writing a memo.');
         }
         const owner = assertOwnerId(rawOwner, 'owner');
         const client = makeClient(process.cwd(), kbMemoWriteCommand);
@@ -406,7 +406,7 @@ function registerKbMemoCommands(kb: Command): void {
   const kbMemoListCommand = kbMemoCommand.command('list');
   kbMemoListCommand
     .description('List project memos')
-    .option('--owner <id>', 'Filter by owner session ID')
+    .addOption(new Option('-o, --owner <id>').hideHelp())
     .addOption(createOutputFormatOption())
     .action(async (opts: KbMemoListOptions) => {
       const outputFormat = getOutputFormat(kbMemoListCommand);
@@ -424,7 +424,7 @@ function registerKbMemoCommands(kb: Command): void {
   kbMemoDeleteCommand
     .description('Delete project memos by simple glob pattern')
     .argument('<pattern>', 'Simple glob pattern (supports * and ?)')
-    .option('--owner <id>', 'Only delete memos owned by this session ID')
+    .addOption(new Option('-o, --owner <id>').hideHelp())
     .action(async (pattern: string, opts: KbMemoDeleteOptions) => {
       try {
         const client = makeClient(process.cwd(), kbMemoDeleteCommand);
@@ -438,7 +438,7 @@ function registerKbMemoCommands(kb: Command): void {
   const kbMemoPurgeCommand = kbMemoCommand.command('purge');
   kbMemoPurgeCommand
     .description('Delete all project memos')
-    .option('--owner <owner>', 'Only purge memos owned by this session')
+    .addOption(new Option('-o, --owner <id>').hideHelp())
     .action(async (opts: KbMemoPurgeOptions) => {
       try {
         const client = makeClient(process.cwd(), kbMemoPurgeCommand);
