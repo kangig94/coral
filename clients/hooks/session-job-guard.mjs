@@ -51,11 +51,14 @@ try {
   for (const [workDir, ids] of otherDirectories) {
     commands.push(`cd '${workDir.replaceAll("'", "'\\''")}' && coral-cli wait jobs ${ids.join(' ')}`);
   }
+  const waitInstruction = commands.length > 1
+    ? `Run each command below separately to wait for them:\n${commands.join('\n')}`
+    : `Run ${commands[0]} to wait for them.`;
 
   recordJobGuardBlock(projectDir, input.session_id);
   writeHookOutput({
     decision: 'block',
-    reason: `${jobs.length} Coral job(s) launched in this session are still running with no wait attached. Run ${commands.join('; ')} to wait for them.`,
+    reason: `${jobs.length} Coral job(s) launched in this session are still running with no wait attached. ${waitInstruction}`,
   });
 } catch {
   process.exit(0);

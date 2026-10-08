@@ -88,7 +88,7 @@ describe('session job guard', () => {
       ]),
     );
     expect((await stop())?.reason).toBe(
-      "3 Coral job(s) launched in this session are still running with no wait attached. Run cd '/other'\\''s project' && coral-cli wait jobs job-1 job-3; cd '/third-project' && coral-cli wait jobs job-2 to wait for them.",
+      "3 Coral job(s) launched in this session are still running with no wait attached. Run each command below separately to wait for them:\ncd '/other'\\''s project' && coral-cli wait jobs job-1 job-3\ncd '/third-project' && coral-cli wait jobs job-2",
     );
   });
 
@@ -103,7 +103,7 @@ describe('session job guard', () => {
       ]),
     );
     expect((await stop())?.reason).toBe(
-      "4 Coral job(s) launched in this session are still running with no wait attached. Run coral-cli wait jobs job-here job-child job-kb; cd '/other-project' && coral-cli wait jobs job-other to wait for them.",
+      "4 Coral job(s) launched in this session are still running with no wait attached. Run each command below separately to wait for them:\ncoral-cli wait jobs job-here job-child job-kb\ncd '/other-project' && coral-cli wait jobs job-other",
     );
   });
 
