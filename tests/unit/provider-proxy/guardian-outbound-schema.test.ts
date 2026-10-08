@@ -3,6 +3,16 @@ import { strictControlExchangeResult } from '#tests/support/control-exchange.js'
 import { connectControlClient } from '#src/provider-proxy/control-client.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { randomUUID } from 'node:crypto';
+import { establishRoleControl } from '#src/coordinator/live/provider-proxy/role-control.js';
+import { guardianHandoffRedeemResultSchema } from '#src/coordinator/live/provider-proxy/control-redemption.js';
+import { providerProxySetIdentityFromCapsule } from '#src/coordinator/services/provider-proxy-set/identity.js';
+import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
+import { ProviderOperationMutationSetClosedError } from '#src/store/provider-operation-journal.js';
+import {
+  guardianHandoffRedeemParamsSchema,
+  handoffSecretDigest,
+  type HandoffCapsuleV3,
+} from '#src/provider-proxy/handoff-capsule.js';
 
 import type { z } from 'zod';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -205,6 +215,8 @@ async function createGuardianHarness(
     receipt += 1;
     return `receipt-${receipt}`;
   });
+  const deadlines = deadlinesFor(clock);
+  const controlIsLive = vi.fn(deadlines.controlIsLive);
   const guardian = createGuardian({
     capsule: {
       role: 'guardian',
@@ -217,7 +229,8 @@ async function createGuardianHarness(
     },
     clock,
     deadlines: {
-      ...deadlinesFor(clock),
+      ...deadlines,
+      controlIsLive,
       ...(containmentFailure === undefined ? {} : { latchTeardown: containmentFailure.latchTeardown }),
     },
     containmentEnvironment: {
@@ -311,6 +324,8 @@ async function createGuardianHarness(
     abandonUnattributable,
     operation,
     holderAuthority,
+    control,
+    controlIsLive,
   };
 }
 
@@ -319,7 +334,162 @@ async function armGuardian(harness: GuardianHarness): Promise<void> {
   harness.reaperExchange.mockClear();
 }
 
+async function installRedemptionGrant(harness: GuardianHarness): Promise<HandoffCapsuleV3> {
+  const { coordinatorIdentity, guardianIdentity, reaperIdentity, proxyIdentity } = harness;
+  const capsule: HandoffCapsuleV3 = {
+    version: 3,
+    grantId: randomUUID(),
+    secret: 'd'.repeat(64),
+    generation: coordinatorIdentity.generation,
+    flavor: coordinatorIdentity.flavor,
+    buildSetId: coordinatorIdentity.buildSetId,
+    hostFingerprint: FINGERPRINT,
+    guardianInstanceId: guardianIdentity.guardianInstanceId,
+    guardianPid: guardianIdentity.pid,
+    guardianIncarnation: guardianIdentity.incarnation,
+    guardianControlEndpoint: guardianIdentity.canonicalControlEndpoint,
+    reaperInstanceId: reaperIdentity.reaperInstanceId,
+    reaperPid: reaperIdentity.pid,
+    reaperIncarnation: reaperIdentity.incarnation,
+    reaperControlEndpoint: reaperIdentity.canonicalControlEndpoint,
+    proxyInstanceId: proxyIdentity.proxyInstanceId,
+    proxyPid: proxyIdentity.pid,
+    proxyIncarnation: proxyIdentity.incarnation,
+    proxyProcessGroupId: proxyIdentity.processGroupId,
+    proxyEndpoint: proxyIdentity.canonicalEndpoint,
+    containmentKind: CONTAINMENT.containmentKind,
+    orphanTimeoutMs: 30_000,
+    teardownReserveMs: 14_000,
+  };
+  await harness.call('guardian.handoff-install.v1', {
+    grantId: capsule.grantId,
+    secretSha256: handoffSecretDigest(capsule.secret),
+    operations: [],
+    orphanTimeoutMs: capsule.orphanTimeoutMs,
+    teardownReserveMs: capsule.teardownReserveMs,
+    successor: coordinatorIdentity,
+  });
+  harness.control.close();
+  harness.controlIsLive.mockReturnValue(false);
+  return capsule;
+}
+
+async function dispatchFailedRedemption(harness: GuardianHarness, capsule: HandoffCapsuleV3) {
+  const fatal = vi.fn();
+  const retry = vi.fn();
+  const evidence = vi.fn();
+  const dispatcher = createTestProviderProxyRecoveryDispatcher(
+    {
+      'capsule-redemption': async ({ signal }) => {
+        const opened: ControlClient[] = [];
+        try {
+          await establishRoleControl(
+            opened,
+            { setTimeout: () => ({}), clearTimeout: () => {} },
+            {
+              connectTimeoutMs: 1_000,
+              retryIntervalMs: 20,
+              overallDeadlineMs: 1_000,
+              monotonicNow: () => 0n,
+              sleep: async () => {},
+            },
+            {
+              role: 'guardian',
+              endpoint: capsule.guardianControlEndpoint,
+              openMethod: 'guardian.handoff-redeem.v1',
+              openParams: { grantId: capsule.grantId, secret: capsule.secret, successor: harness.coordinatorIdentity },
+              openParamsSchema: guardianHandoffRedeemParamsSchema,
+              openResultSchema: guardianHandoffRedeemResultSchema,
+              identity: (result) => result.guardian,
+              expectedIdentity: {},
+              heartbeatMethod: 'guardian.heartbeat.v1',
+            },
+            signal,
+          );
+          throw new Error('Expected redemption to fail before control establishment.');
+        } finally {
+          for (const client of opened) client.close();
+        }
+      },
+      'containment-proof': async () => {
+        throw new ProviderOperationMutationSetClosedError();
+      },
+    },
+    fatal,
+  );
+  const setIdentity = providerProxySetIdentityFromCapsule(capsule);
+  const signal = new AbortController().signal;
+  await new Promise<void>((resolve) => {
+    const turn = dispatcher.begin(
+      'exact-capsule-recovery',
+      { setIdentity, capsule },
+      {
+        evidence,
+        retry: (value) => {
+          retry(value);
+          resolve();
+        },
+        fatal: () => resolve(),
+      },
+    );
+    turn.start({
+      sourceId: 'redemption',
+      producerId: 'capsule-redemption',
+      input: { capsule, capsulePath: '/capsule.json', signal },
+    });
+    turn.start({ sourceId: 'absence', producerId: 'containment-proof', input: { identity: setIdentity, signal } });
+  });
+  return { fatal, retry, evidence };
+}
+
 describe('guardian outbound schemas', () => {
+  it('retries paired-reaper transport failure during redemption without a lifecycle fatal', async () => {
+    const harness = await createGuardianHarness();
+    const capsule = await installRedemptionGrant(harness);
+    harness.reaperExchange.mockResolvedValueOnce(
+      controlExchangeForTest({
+        kind: 'not-sent',
+        cause: 'connection-already-closed',
+        error: new Error('connect ENOENT /reaper.sock'),
+      }),
+    );
+
+    const { fatal, retry, evidence } = await dispatchFailedRedemption(harness, capsule);
+
+    expect(retry).toHaveBeenCalledWith({
+      producerId: 'capsule-redemption',
+      incident: { kind: 'paired-reaper-unavailable', role: 'guardian', method: 'guardian.handoff-redeem.v1' },
+    });
+    expect(fatal).not.toHaveBeenCalled();
+    expect(evidence).not.toHaveBeenCalled();
+  });
+
+  it('keeps an invalid redemption grant fatal even when the paired reaper is unavailable', async () => {
+    const harness = await createGuardianHarness();
+    const capsule = await installRedemptionGrant(harness);
+    capsule.secret = 'e'.repeat(64);
+    harness.reaperExchange.mockClear();
+    harness.reaperExchange.mockResolvedValueOnce(
+      controlExchangeForTest({
+        kind: 'not-sent',
+        cause: 'connection-already-closed',
+        error: new Error('connect ENOENT /reaper.sock'),
+      }),
+    );
+
+    const { fatal, retry } = await dispatchFailedRedemption(harness, capsule);
+
+    expect(fatal).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message:
+          "Provider proxy recovery 'exact-capsule-recovery' received refused evidence from 'capsule-redemption'.",
+        cause: expect.objectContaining({ remoteFailure: expect.objectContaining({ protocolCode: 'grant_invalid' }) }),
+      }),
+    );
+    expect(retry).not.toHaveBeenCalled();
+    expect(harness.reaperExchange).not.toHaveBeenCalled();
+  });
+
   it('does not latch activation after active control changes during reaper confirmation', async () => {
     const harness = await createGuardianHarness();
     await armGuardian(harness);
