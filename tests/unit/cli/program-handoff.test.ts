@@ -119,6 +119,34 @@ afterEach(() => {
 });
 
 describe('program', () => {
+  it('session job guard: names active filters when no jobs match', async () => {
+    vi.stubEnv('CORAL_OWNER', 'session-guard');
+    let output = '';
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+      output += String(chunk);
+      return true;
+    });
+    try {
+      const { buildProgram } = await loadProgramFresh();
+      for (const [flags, label] of [
+        [[], 'live phases'],
+        [['--mine'], 'live phases, --mine (launched by this session)'],
+        [['--unwaited'], 'live phases, --unwaited (no active wait or release)'],
+        [
+          ['--mine', '--unwaited'],
+          'live phases, --mine (launched by this session), --unwaited (no active wait or release)',
+        ],
+      ] as const) {
+        output = '';
+        await buildProgram().parseAsync(['node', 'coral-cli', 'jobs', ...flags]);
+        expect(output.split('\n')[0]).toBe(`No jobs match ${label}`);
+        expect(process.exitCode ?? 0).toBe(0);
+      }
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('session job guard: prints an empty JSON array without handoff or coordinator startup', async () => {
     vi.stubEnv('CORAL_OWNER', 'session-guard');
     const output: string[] = [];

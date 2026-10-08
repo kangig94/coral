@@ -171,6 +171,8 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
             phase: parsed.phase,
             provider: parsed.provider,
             all: parsed.all,
+            mine: parsed.mine,
+            unwaited: parsed.unwaited,
             cwd: projectRoot,
           }) + '\n',
         );

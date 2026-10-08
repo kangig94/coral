@@ -46,7 +46,9 @@ beforeEach(() => {
     output += String(chunk);
     return true;
   });
-  state.exec.mockReturnValue('[{"jobId":"job-1"},{"jobId":"job-2"}]');
+  state.exec.mockReturnValue(
+    JSON.stringify(['job-1', 'job-2'].map((jobId) => ({ jobId, status: { jobKind: 'provider', workDir: root } }))),
+  );
 });
 afterEach(() => {
   vi.restoreAllMocks();
@@ -76,6 +78,43 @@ describe('session job guard', () => {
       );
     },
   );
+
+  it('session job guard: groups other directories and safely quotes them', async () => {
+    state.exec.mockReturnValue(
+      JSON.stringify([
+        { jobId: 'job-1', status: { jobKind: 'provider', workDir: "/other's project" } },
+        { jobId: 'job-2', status: { jobKind: 'provider', workDir: '/third-project' } },
+        { jobId: 'job-3', status: { jobKind: 'provider', workDir: "/other's project" } },
+      ]),
+    );
+    expect((await stop())?.reason).toBe(
+      "3 Coral job(s) launched in this session are still running with no wait attached. Run cd '/other'\\''s project' && coral-cli wait jobs job-1 job-3; cd '/third-project' && coral-cli wait jobs job-2 to wait for them.",
+    );
+  });
+
+  it('session job guard: lists the plain command first for mixed scopes, including descendants and KB jobs', async () => {
+    vi.stubEnv('CLAUDE_PROJECT_DIR', join(root, 'scratch'));
+    state.exec.mockReturnValue(
+      JSON.stringify([
+        { jobId: 'job-other', status: { jobKind: 'provider', workDir: '/other-project' } },
+        { jobId: 'job-here', status: { jobKind: 'provider', workDir: root } },
+        { jobId: 'job-child', status: { jobKind: 'provider', workDir: join(root, 'child') } },
+        { jobId: 'job-kb', status: { jobKind: 'kb', workDir: null } },
+      ]),
+    );
+    expect((await stop())?.reason).toBe(
+      "4 Coral job(s) launched in this session are still running with no wait attached. Run coral-cli wait jobs job-here job-child job-kb; cd '/other-project' && coral-cli wait jobs job-other to wait for them.",
+    );
+  });
+
+  it('session job guard: does not treat a directory with the same prefix as in scope', async () => {
+    state.exec.mockReturnValue(
+      JSON.stringify([{ jobId: 'job-other', status: { jobKind: 'provider', workDir: `${root}-other` } }]),
+    );
+    expect((await stop())?.reason).toBe(
+      `1 Coral job(s) launched in this session are still running with no wait attached. Run cd '${root}-other' && coral-cli wait jobs job-other to wait for them.`,
+    );
+  });
 
   it('session job guard: allows empty results, failures, timeout and missing session', async () => {
     state.exec.mockReturnValueOnce('[]');

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { execFileSync } from 'node:child_process';
-import { dirname, join } from 'node:path';
+import { realpathSync } from 'node:fs';
+import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { exitIfChildProcess, exitIfWrongFlavor, readStdin, writeHookOutput } from './lib/hook-utils.mjs';
 import { projectDirFromInput } from './lib/plugin-paths.mjs';
@@ -8,6 +9,12 @@ import { jobGuardAlreadyBlocked, recordJobGuardBlock } from './lib/live-work-reg
 
 exitIfChildProcess();
 exitIfWrongFlavor();
+
+function jobInWaitScope(job, scopeRoot) {
+  if (job.status.jobKind === 'kb') return true;
+  const descendant = relative(scopeRoot, job.status.workDir);
+  return descendant === '' || (!descendant.startsWith(`..${sep}`) && descendant !== '..' && !isAbsolute(descendant));
+}
 
 try {
   const input = JSON.parse(await readStdin());
@@ -25,12 +32,30 @@ try {
     env: { ...process.env, CORAL_OWNER: input.session_id, PATH: `${bridgeDir}:${process.env.PATH ?? ''}` },
   }));
   if (!Array.isArray(jobs) || jobs.length === 0 ||
-      jobs.some((job) => typeof job?.jobId !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(job.jobId))) process.exit(0);
+      jobs.some((job) => typeof job?.jobId !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(job.jobId) ||
+        (job.status?.jobKind !== 'kb' && typeof job.status?.workDir !== 'string'))) process.exit(0);
+
+  const waitScope = realpathSync(input.cwd ?? projectDir);
+  const inScopeIds = [];
+  const otherDirectories = new Map();
+  for (const job of jobs) {
+    if (jobInWaitScope(job, waitScope)) {
+      inScopeIds.push(job.jobId);
+    } else {
+      const ids = otherDirectories.get(job.status.workDir) ?? [];
+      ids.push(job.jobId);
+      otherDirectories.set(job.status.workDir, ids);
+    }
+  }
+  const commands = inScopeIds.length > 0 ? [`coral-cli wait jobs ${inScopeIds.join(' ')}`] : [];
+  for (const [workDir, ids] of otherDirectories) {
+    commands.push(`cd '${workDir.replaceAll("'", "'\\''")}' && coral-cli wait jobs ${ids.join(' ')}`);
+  }
 
   recordJobGuardBlock(projectDir, input.session_id);
   writeHookOutput({
     decision: 'block',
-    reason: `${jobs.length} Coral job(s) launched in this session are still running with no wait attached. Run coral-cli wait jobs ${jobs.map((job) => job.jobId).join(' ')} to wait for them.`,
+    reason: `${jobs.length} Coral job(s) launched in this session are still running with no wait attached. Run ${commands.join('; ')} to wait for them.`,
   });
 } catch {
   process.exit(0);
