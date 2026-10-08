@@ -98,6 +98,7 @@ export const PROXY_CONTROL_PROTOCOL_ERROR_CODES = [
   // wire-safe in both directions, and a newer peer can only detect this build's capabilities once this build
   // actually emits it.
   'method_not_found',
+  'paired_reaper_unavailable',
 ] as const;
 
 export type ProxyControlProtocolErrorCode = (typeof PROXY_CONTROL_PROTOCOL_ERROR_CODES)[number];

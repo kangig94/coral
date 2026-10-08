@@ -1,6 +1,6 @@
 import type { ServerResponse } from 'node:http';
 import type { EventStreamHandlers } from '../../transport/server-ports.js';
-import { formatError } from '../../infra/error-format.js';
+import { formatError, serializeThrown } from '../../infra/error-format.js';
 import { createDiscussRuntime } from '../../discuss/shell/runtime-services.js';
 import type { createExecutionServices } from './execution-services.js';
 import { createCoordinatorControl } from './job-control.js';
@@ -9,6 +9,23 @@ import type { createCoordinatorCoreContext } from './core-context.js';
 import type { CoordinatorCoreOptions } from './types.js';
 
 type CoreContext = ReturnType<typeof createCoordinatorCoreContext>;
+
+function renderProviderProxyLifecycleFatalError(error: unknown): string {
+  const lines = [formatError(error)];
+  const serialized = serializeThrown(error);
+  let cause = serialized.kind === 'error' ? serialized.cause : undefined;
+  while (cause !== undefined) {
+    const identity = [
+      cause.kind === 'error' ? cause.name : undefined,
+      cause.code === undefined ? undefined : `[${cause.code}]`,
+    ]
+      .filter((field) => field !== undefined)
+      .join(' ');
+    lines.push(`Caused by: ${identity === '' ? '' : `${identity}: `}${cause.message}`);
+    cause = cause.kind === 'error' ? cause.cause : undefined;
+  }
+  return lines.join('\n');
+}
 
 export function prepareCoordinatorExecutionAssembly(core: CoreContext, options: CoordinatorCoreOptions) {
   const { world, state, defaultsPlan, storeServicesRef } = core;
@@ -28,7 +45,7 @@ export function prepareCoordinatorExecutionAssembly(core: CoreContext, options: 
   const streamResponses = new Set<ServerResponse>();
   const eventStreamSubscriptions = new WeakMap<EventStreamHandlers, () => void>();
   const onProviderProxyLifecycleFatal = (error: unknown): void => {
-    world.log(`Fatal provider proxy lifecycle error: ${formatError(error)}\n`);
+    world.log(`Fatal provider proxy lifecycle error: ${renderProviderProxyLifecycleFatalError(error)}\n`);
     void state.lifecycleController
       ?.shutdown('provider-proxy-lifecycle-fatal', { kind: 'provider-proxy-lifecycle-fatal', error })
       .catch(() => undefined);

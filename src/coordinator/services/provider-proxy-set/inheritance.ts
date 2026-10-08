@@ -273,6 +273,8 @@ function heartbeatObservationAvailabilityReason(observation: HeartbeatObservatio
 
 export function providerProxySetAvailabilityReason(incident: ProviderProxySetAvailabilityIncident): string {
   switch (incident.kind) {
+    case 'paired-reaper-unavailable':
+      return [incident.kind, incident.role, incident.method].join(':');
     case 'role-control-teardown-latched':
       return [incident.kind, incident.role, incident.stage, incident.method ?? 'none'].join(':');
     case 'role-control-unavailable':

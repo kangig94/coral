@@ -38,6 +38,11 @@ export type ProviderProxyRecoveryOpenMethod = Extract<
 
 export type ProviderProxyRoleControlAvailabilityIncident =
   | Readonly<{
+      kind: 'paired-reaper-unavailable';
+      role: 'guardian';
+      method: 'guardian.handoff-redeem.v1';
+    }>
+  | Readonly<{
       kind: 'role-control-teardown-latched';
       role: ProviderProxyRole;
       stage: 'open' | 'heartbeat';
@@ -172,6 +177,18 @@ function classifyRoleControlFailure(
     );
   }
   const remote = error.remoteFailure;
+  if (
+    role === 'guardian' &&
+    stage === 'open' &&
+    method === 'guardian.handoff-redeem.v1' &&
+    remote?.kind === 'json-rpc-error' &&
+    remote.protocolCode === 'paired_reaper_unavailable'
+  ) {
+    throw new ProviderProxyRoleControlUnavailableError(
+      { kind: 'paired-reaper-unavailable', role, method },
+      { cause: error },
+    );
+  }
   const recoveryOpenMethod = stage === 'open' && method !== null && isRecoveryOpenMethod(method) ? method : null;
   if (
     stage === 'open' &&

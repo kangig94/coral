@@ -1,5 +1,6 @@
 import type { AsyncRecordedProcessObserver, ProcessIncarnation } from '../infra/node-process.js';
 import { truncate } from '../infra/text.js';
+import { errorMessage } from '../infra/error-format.js';
 import type { z } from 'zod';
 
 import type { MonotonicClock } from '../infra/monotonic-clock.js';
@@ -428,14 +429,22 @@ function guardianRedemptionMethods<Scope extends symbol>(
             operations: redemption.grant.operations,
             redemptionReceipt: redemption.redemptionReceipt,
           });
-          const reaperResult = requireReaperResult(
+          const exchange = await options.reaperChannel.exchange(
             'reaper.record-redemption.v1',
-            await options.reaperChannel.exchange(
-              'reaper.record-redemption.v1',
-              reaperParams,
-              PROXY_CONTROL_RPC_TIMEOUT_MS,
-            ),
+            reaperParams,
+            PROXY_CONTROL_RPC_TIMEOUT_MS,
           );
+          if (
+            exchange.kind === 'no-response' ||
+            exchange.kind === 'delivery-unconfirmed' ||
+            (exchange.kind === 'not-sent' && exchange.cause !== 'encode-failed')
+          ) {
+            throw new ProxyControlProtocolError(
+              'paired_reaper_unavailable',
+              `reaper.record-redemption.v1 could not reach the paired reaper: ${errorMessage(exchange.error)}`,
+            );
+          }
+          const reaperResult = requireReaperResult('reaper.record-redemption.v1', exchange);
           reaperRecordRedemptionResultSchema.parse(reaperResult);
           return {
             holder: controlTenancyHolderOf(request.successor),
