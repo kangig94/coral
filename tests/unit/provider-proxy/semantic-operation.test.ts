@@ -786,6 +786,7 @@ describe('semantic-operation send admission', () => {
 
   async function fixture(
     options: {
+      provider?: 'codex' | 'claude';
       supportsInterrupt?: boolean;
       steering?: ProviderSteeringPort | null;
       continuity?: Record<string, unknown> | null;
@@ -795,7 +796,8 @@ describe('semantic-operation send admission', () => {
   ) {
     const { proxy, ledger, emittedEvents } = createTestProxy();
     const key = testKey();
-    const prepared = preparedFixture({ provider: 'codex', persistedContinuity: { threadId: 'old', turnId: 'old' } });
+    const provider = options.provider ?? 'codex';
+    const prepared = preparedFixture({ provider, persistedContinuity: { threadId: 'old', turnId: 'old' } });
     prepareAndActivate(ledger, key, prepared);
     const submit = deferred();
     const submitted = deferred();
@@ -833,10 +835,10 @@ describe('semantic-operation send admission', () => {
     providerRegistryDouble.rehydrateBinding.mockReturnValue({
       ok: true,
       value: fakeBoundProvider({
-        name: 'codex',
+        name: provider,
         supportsInterrupt: options.supportsInterrupt,
         send,
-        openReplacement: async () => ({ hostRef: fakeHostRef('codex'), close: closeStaged }),
+        openReplacement: async () => ({ hostRef: fakeHostRef(provider), close: closeStaged }),
         execute: async function* (activeRuntime) {
           executionRuntime = activeRuntime;
           if (steering !== null) activeRuntime.onProviderSteering?.(steering);
@@ -872,7 +874,7 @@ describe('semantic-operation send admission', () => {
       runtime,
       hostAuthority,
       hostRoot: '/plugin',
-      hostFingerprint: hostFingerprintFromSpec(fakeHostSpec('codex')),
+      hostFingerprint: hostFingerprintFromSpec(fakeHostSpec(provider)),
       getProxy: () => proxy,
     });
     await semantic.ensureProviderRoot(key, prepared);
@@ -934,6 +936,22 @@ describe('semantic-operation send admission', () => {
     await expect(h.sendMessage()).resolves.toEqual({ state: 'delivered', providerTurnId: 'turn-current' });
     expect(h.steering?.admit).toHaveBeenCalledWith(continuity, input.clientMessageId);
     await h.close();
+  });
+
+  it('uses committed Claude brokerTurnId for send without requiring a Codex turnId', async () => {
+    const claudeContinuity = { brokerSessionKey: 'broker-current', brokerTurnId: 'claude-turn-current' };
+    const h = await fixture({ provider: 'claude', continuity: claudeContinuity });
+    try {
+      await h.submit();
+      await h.checkpoint();
+      expect(h.admit()).toMatchObject({ state: 'refused', code: 'turn_not_started' });
+      await h.ack();
+      await expect(h.sendMessage()).resolves.toEqual({ state: 'delivered', providerTurnId: 'claude-turn-current' });
+      expect(h.steering?.admit).toHaveBeenCalledWith(claudeContinuity, input.clientMessageId);
+      expect(h.send.mock.calls[0]?.[1]).toEqual(claudeContinuity);
+    } finally {
+      await h.close();
+    }
   });
 
   it.each([true, false])(

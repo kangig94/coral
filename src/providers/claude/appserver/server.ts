@@ -9,6 +9,7 @@ import { resolveStrictBundleIdentity } from '../../../infra/bundle-manifest.js';
 import { shouldUseWindowsCommandShell, windowsCommandName } from '../../../infra/windows-shell.js';
 import {
   CLAUDE_BROKER_BUSY_RPC_CODE,
+  ClaudeBrokerSendUnansweredError,
   buildJsonRpcFailure,
   buildJsonRpcFailureFromError,
   buildJsonRpcSuccess,
@@ -19,6 +20,7 @@ import {
   requireSessionProbeParams,
   requireTurnInterruptParams,
   requireTurnStartParams,
+  requireTurnSendParams,
 } from './protocol.js';
 import type { ProviderServerShutdownResult } from '../../contract.js';
 import type { JsonRpcRequest } from '../../../infra/json-rpc.js';
@@ -116,6 +118,9 @@ export function createClaudeBrokerServer(options: CreateClaudeBrokerServerOption
             buildJsonRpcSuccess(message.id, await session.turnInterrupt(requireTurnInterruptParams(message.params))),
           );
           return;
+        case 'turn/send':
+          send(buildJsonRpcSuccess(message.id, await session.turnSend(requireTurnSendParams(message.params))));
+          return;
         case 'broker/shutdown': {
           shutdownRequested = true;
           const disposition = await session.shutdown();
@@ -158,6 +163,7 @@ export function createClaudeBrokerServer(options: CreateClaudeBrokerServerOption
           send(buildJsonRpcFailure(message.id, -32601, `Unsupported broker method: ${message.method}`));
       }
     } catch (error) {
+      if (error instanceof ClaudeBrokerSendUnansweredError) return;
       send(buildJsonRpcFailureFromError(message.id, error));
     }
   }
@@ -444,7 +450,15 @@ export function buildClaudeChildArgs(options: SpawnClaudeChildOptions): string[]
 }
 
 export function buildClaudePrintChildArgs(options: SpawnClaudePrintChildOptions): string[] {
-  const args = ['-p', '--verbose', '--input-format', 'stream-json', '--output-format', 'stream-json'];
+  const args = [
+    '-p',
+    '--verbose',
+    '--input-format',
+    'stream-json',
+    '--output-format',
+    'stream-json',
+    '--replay-user-messages',
+  ];
   if (options.conversationRef !== undefined) {
     args.push(options.resume ? '--resume' : '--session-id', options.conversationRef);
   }

@@ -7,6 +7,7 @@ import {
   buildClaudePrintChildArgs,
   createClaudeBrokerServer,
 } from '#src/providers/claude/appserver/server.js';
+import { ClaudeBrokerSendUnansweredError } from '#src/providers/claude/appserver/protocol.js';
 import type {
   BrokerShutdownDisposition,
   ClaudeBrokerSession,
@@ -91,6 +92,7 @@ describe('claude appserver print child args', () => {
       'stream-json',
       '--output-format',
       'stream-json',
+      '--replay-user-messages',
       '--resume',
       'session-existing',
       '--append-system-prompt',
@@ -102,6 +104,63 @@ describe('claude appserver print child args', () => {
       '--permission-mode',
       'acceptEdits',
     ]);
+  });
+});
+
+describe('Claude broker turn/send dispatch', () => {
+  it('dispatches validated input and leaves an ambiguous write unanswered', async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const replies: Array<{ id: number; result?: unknown; error?: { code: number } }> = [];
+    output.setEncoding('utf8');
+    let pending = '';
+    output.on('data', (chunk: string) => {
+      pending += chunk;
+      const lines = pending.split('\n');
+      pending = lines.pop() ?? '';
+      replies.push(...lines.map((line) => JSON.parse(line)));
+    });
+    const turnSend = vi
+      .fn()
+      .mockResolvedValueOnce({ state: 'delivered' })
+      .mockRejectedValueOnce(new ClaudeBrokerSendUnansweredError(new Error('stdin write failed')))
+      .mockResolvedValueOnce({ state: 'refused', code: 'transport_unsupported', reason: 'TUI send is unsupported.' });
+    const session = {
+      closed: new Promise(() => {}),
+      turnSend,
+      subscribeNotifications: () => () => {},
+    } as unknown as ClaudeBrokerSession;
+    createClaudeBrokerServer({ input, output, session, exit: vi.fn() }).start();
+    const params = {
+      brokerSessionKey: 'broker-1',
+      brokerTurnId: 'turn-1',
+      text: 'Change direction',
+      clientMessageId: '22222222-2222-4222-8222-222222222222',
+    };
+    try {
+      input.write(`${JSON.stringify({ id: 1, method: 'turn/send', params })}\n`);
+      await vi.waitFor(() => expect(replies).toHaveLength(1));
+      expect(replies[0]).toEqual({ id: 1, result: { state: 'delivered' } });
+      expect(turnSend).toHaveBeenNthCalledWith(1, params);
+      input.write(
+        `${JSON.stringify({ id: 2, method: 'turn/send', params: { ...params, clientMessageId: 'invalid' } })}\n`,
+      );
+      await vi.waitFor(() => expect(replies).toHaveLength(2));
+      expect(replies[1]).toMatchObject({ id: 2, error: { code: -32602 } });
+      expect(turnSend).toHaveBeenCalledTimes(1);
+      input.write(`${JSON.stringify({ id: 3, method: 'turn/send', params })}\n`);
+      input.write(`${JSON.stringify({ id: 4, method: 'turn/send', params })}\n`);
+      await vi.waitFor(() => expect(replies).toHaveLength(3));
+      expect(replies.map((reply) => reply.id)).toEqual([1, 2, 4]);
+      expect(replies[2]).toEqual({
+        id: 4,
+        result: { state: 'refused', code: 'transport_unsupported', reason: 'TUI send is unsupported.' },
+      });
+      expect(turnSend).toHaveBeenCalledTimes(3);
+    } finally {
+      input.end();
+      output.end();
+    }
   });
 });
 

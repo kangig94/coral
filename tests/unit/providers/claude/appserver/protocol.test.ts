@@ -6,9 +6,30 @@ import {
   JsonRpcLineTooLargeError,
   parseJsonRpcInboundLine,
   requireSessionEnsureParams,
+  requireTurnSendParams,
 } from '#src/providers/claude/appserver/protocol.js';
 
 describe('claude appserver protocol helpers', () => {
+  const send = {
+    brokerSessionKey: 'broker-1',
+    brokerTurnId: 'turn-1',
+    text: 'Change direction',
+    clientMessageId: '22222222-2222-4222-8222-222222222222',
+  };
+
+  it('validates the turn/send address, text and UUID before dispatch', () => {
+    expect(requireTurnSendParams(send)).toEqual(send);
+    for (const invalid of [
+      { ...send, brokerSessionKey: '' },
+      { ...send, brokerTurnId: '' },
+      { ...send, text: '' },
+      { ...send, clientMessageId: 'not-a-uuid' },
+      { ...send, extra: true },
+    ]) {
+      expectRpcError(() => requireTurnSendParams(invalid), -32602, 'Invalid params for turn/send.');
+    }
+  });
+
   it('throws structured RPC errors for invalid wire input', () => {
     expectRpcError(() => parseJsonRpcInboundLine('{'), -32700, /Invalid JSON:/);
     expectRpcError(

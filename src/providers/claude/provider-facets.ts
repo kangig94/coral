@@ -1,4 +1,8 @@
 import { dirname, join } from 'node:path';
+import { ProviderRpcError } from '../app-server-transport.js';
+import { ProviderHostUnserviceableResponseError } from '../host-admission.js';
+import { errorMessage } from '../../infra/error-format.js';
+import { turnSendParamsSchema, turnSendResultSchema } from './appserver/protocol.js';
 
 import { detectClaudeCli } from './cli-detection.js';
 import type {
@@ -8,6 +12,7 @@ import type {
   ProviderPreflightRuntime,
   ProviderAppServerCapability,
   ProviderRecoveryContract,
+  ProviderSendOutcome,
 } from '../contract.js';
 import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
 import { isRecord, readString } from '../../infra/json.js';
@@ -171,12 +176,41 @@ export const claudeAppServerLifecycle: ProviderAppServerCapability<ClaudeExecuti
     }),
   compileStableHost: (host) =>
     buildClaudeProviderServerSpec(compileClaudeBrokerHost({ platform: host.platform, broker: host.broker })),
-  async send() {
-    return {
-      state: 'refused',
-      code: 'transport_unsupported',
-      reason: 'This Coral build does not support sending to Claude jobs.',
-    };
+  async send(transport, continuity, input): Promise<ProviderSendOutcome> {
+    if (continuity.brokerSessionKey === undefined && continuity.brokerTurnId === undefined) {
+      return {
+        state: 'refused',
+        code: 'transport_unsupported',
+        reason: 'Claude send requires a job-owned session turn; one-shot curation is unsupported.',
+      };
+    }
+    const parsed = readClaudePersistedContinuity(continuity);
+    if (parsed.brokerSessionKey === undefined || parsed.brokerTurnId === undefined) {
+      return {
+        state: 'refused',
+        code: 'turn_not_started',
+        reason: 'Claude continuity is missing the active broker session or turn id.',
+      };
+    }
+    const params = turnSendParamsSchema.parse({
+      brokerSessionKey: parsed.brokerSessionKey,
+      brokerTurnId: parsed.brokerTurnId,
+      text: input.text,
+      clientMessageId: input.clientMessageId,
+    });
+    try {
+      return turnSendResultSchema.parse(await transport.rpc<unknown>('turn/send', params));
+    } catch (error) {
+      const providerError = error instanceof ProviderHostUnserviceableResponseError ? error.providerCause : error;
+      if (providerError instanceof ProviderRpcError) {
+        return {
+          state: 'refused',
+          code: 'provider_rejected',
+          reason: providerError.providerMessage ?? providerError.message,
+        };
+      }
+      return { state: 'unknown', reason: errorMessage(providerError) };
+    }
   },
   async interrupt(
     transport: AppServerTransport,

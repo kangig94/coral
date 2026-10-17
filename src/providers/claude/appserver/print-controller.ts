@@ -22,6 +22,7 @@ import {
   type SDKControlSetModelRequest,
   type SDKPermissionRequestMessage,
   type SDKResultMessage,
+  type SDKReplayUserMessage,
   type SDKSystemMessage,
 } from './print-control-protocol.js';
 import {
@@ -30,6 +31,7 @@ import {
   CLAUDE_BROKER_CHILD_EXIT_RPC_CODE,
   CLAUDE_BROKER_STATE_RPC_CODE,
   ClaudeBrokerRpcError,
+  ClaudeBrokerSendUnansweredError,
   isAutoAllowPermissionMode,
   readSessionId,
   systemProgressMessage,
@@ -44,6 +46,8 @@ import {
   type TurnInterruptResult,
   type TurnStartParams,
   type TurnStartResult,
+  type TurnSendParams,
+  type TurnSendResult,
 } from './protocol.js';
 import type {
   BrokerSessionController,
@@ -82,6 +86,8 @@ type ActiveTurnState = {
   interruptRequested: boolean;
   interruptSent: boolean;
   model: string | null;
+  initialPromptId: string;
+  pendingSends: Map<string, { text: string; state: 'pending' | 'consumed' }>;
 };
 
 type ControllerSessionEnsureResult = Omit<SessionEnsureResult, 'brokerSessionKey'>;
@@ -225,12 +231,15 @@ export class PrintSessionController implements BrokerSessionController {
       interruptRequested: false,
       interruptSent: false,
       model: this.defaultModel,
+      initialPromptId: this.ids.uuid(),
+      pendingSends: new Map(),
     };
     this.activeTurn = turn;
 
     try {
       this.writeChild({
         type: 'user',
+        uuid: turn.initialPromptId,
         message: {
           role: 'user',
           content: params.prompt,
@@ -258,6 +267,30 @@ export class PrintSessionController implements BrokerSessionController {
       this.lastTerminalTurnId = turn.brokerTurnId;
       throw this.asRpcError(error, 'Failed to start Claude turn.');
     }
+  }
+
+  async turnSend(params: Omit<TurnSendParams, 'brokerSessionKey'>): Promise<TurnSendResult> {
+    const turn = this.activeTurn;
+    if (turn === null || turn.brokerTurnId !== params.brokerTurnId || turn.interruptRequested || this.shuttingDown) {
+      return { state: 'refused', code: 'turn_ended', reason: 'The Claude print turn is not active.' };
+    }
+    if (!turn.userMessageSent || this.childBinding === null) {
+      return { state: 'refused', code: 'turn_not_started', reason: 'The Claude print turn has not started.' };
+    }
+    if (params.clientMessageId === turn.initialPromptId) {
+      return { state: 'refused', code: 'provider_rejected', reason: 'The message id belongs to the initial prompt.' };
+    }
+    turn.pendingSends.set(params.clientMessageId, { text: params.text, state: 'pending' });
+    try {
+      this.writeChild({
+        type: 'user',
+        uuid: params.clientMessageId,
+        message: { role: 'user', content: params.text },
+      });
+    } catch (error) {
+      throw new ClaudeBrokerSendUnansweredError(error);
+    }
+    return { state: 'delivered' };
   }
 
   async turnInterrupt(params: ControllerTurnInterruptParams): Promise<TurnInterruptResult> {
@@ -445,6 +478,9 @@ export class PrintSessionController implements BrokerSessionController {
       case 'assistant':
         this.handleAssistantMessage(message);
         return;
+      case 'user':
+        this.handleReplayUserMessage(message);
+        return;
       case 'system':
         this.handleSystemMessage(message);
         return;
@@ -579,6 +615,15 @@ export class PrintSessionController implements BrokerSessionController {
     this.emitTurnProgress(this.activeTurn.brokerTurnId, progressMessage);
   }
 
+  private handleReplayUserMessage(message: SDKReplayUserMessage): void {
+    const turn = this.activeTurn;
+    if (turn === null || message.uuid === turn.initialPromptId) return;
+    const sent = turn.pendingSends.get(message.uuid);
+    if (sent === undefined || sent.state !== 'pending') return;
+    sent.state = 'consumed';
+    this.emitTurnProgress(turn.brokerTurnId, `Sent message ${message.uuid} read by the agent`);
+  }
+
   private handleResultMessage(message: SDKResultMessage): void {
     const turn = this.activeTurn;
     if (turn === null) {
@@ -602,6 +647,21 @@ export class PrintSessionController implements BrokerSessionController {
         : undefined,
     };
 
+    if ([...turn.pendingSends.values()].some((send) => send.state === 'pending')) {
+      this.finishResultWithUnconsumedSends(turn, completed);
+      return;
+    }
+    this.completeTurnResult(turn, completed);
+  }
+
+  private finishResultWithUnconsumedSends(
+    turn: ActiveTurnState,
+    completed: ControllerNotificationMap['turn/completed'],
+  ): void {
+    this.completeTurnResult(turn, completed);
+  }
+
+  private completeTurnResult(turn: ActiveTurnState, completed: ControllerNotificationMap['turn/completed']): void {
     this.activeTurn = null;
     this.lastTerminalTurnId = turn.brokerTurnId;
     this.emitNotification({

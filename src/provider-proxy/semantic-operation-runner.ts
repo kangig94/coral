@@ -319,6 +319,11 @@ function operationKeyString(key: ProviderOperationKey): string {
   return `${key.jobId} ${key.operationId}`;
 }
 
+function activeContinuityTurnId(continuity: DerivedPersistedContinuity | null | undefined): string | null {
+  const turnId = continuity?.turnId ?? continuity?.brokerTurnId;
+  return typeof turnId === 'string' && turnId.length > 0 ? turnId : null;
+}
+
 type StagedOperation = {
   readonly key: ProviderOperationKey;
   readonly abortController: AbortController;
@@ -546,7 +551,7 @@ function createSemanticOperationEventPump(
             if (step.value.kind === 'continuity') {
               entry.committedContinuity = step.value.providerContinuity;
               entry.continuityCommitted = true;
-              if (typeof step.value.providerContinuity?.turnId === 'string') entry.turnClaimed = true;
+              if (activeContinuityTurnId(step.value.providerContinuity) !== null) entry.turnClaimed = true;
             }
           } finally {
             if (entry.activeContinuitySettlement === settlement) entry.activeContinuitySettlement = null;
@@ -1304,7 +1309,8 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
       return { state: 'refused', code: 'transport_unsupported', reason: 'The provider does not support send.' };
     }
     const continuity = entry.committedContinuity;
-    if (continuity === null || typeof continuity.turnId !== 'string' || continuity.turnId.length === 0) {
+    const providerTurnId = activeContinuityTurnId(continuity);
+    if (continuity === null || providerTurnId === null) {
       return {
         state: 'refused',
         code: entry.turnClaimed ? 'turn_ended' : 'turn_not_started',
@@ -1316,7 +1322,6 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
     }
     const admission = steering.admit(continuity, input.clientMessageId);
     if (admission.state === 'refused') return admission;
-    const providerTurnId = continuity.turnId;
     return {
       state: 'admitted',
       refuse: (outcome) => steering.reportOutcome(input.clientMessageId, outcome),

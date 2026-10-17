@@ -17,6 +17,8 @@ import {
   type TurnInterruptResult,
   type TurnStartParams,
   type TurnStartResult,
+  type TurnSendParams,
+  type TurnSendResult,
 } from './protocol.js';
 import type {
   BrokerShutdownDisposition,
@@ -222,6 +224,18 @@ export class BrokerSessionPool implements ClaudeBrokerSession {
 
     return entry.controller.turnInterrupt({
       brokerTurnId: params.brokerTurnId,
+    });
+  }
+
+  async turnSend(params: TurnSendParams): Promise<TurnSendResult> {
+    const entry = this.controllers.get(params.brokerSessionKey);
+    if (!entry) {
+      return { state: 'refused', code: 'turn_ended', reason: 'The Claude broker session is no longer active.' };
+    }
+    return entry.controller.turnSend({
+      brokerTurnId: params.brokerTurnId,
+      text: params.text,
+      clientMessageId: params.clientMessageId,
     });
   }
 
