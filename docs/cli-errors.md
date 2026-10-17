@@ -1,6 +1,6 @@
 # CLI Errors
 
-`coral-cli` writes a text error envelope to `stderr` for all commands. The envelope is human/LLM-facing and contains only the public message, stable tags, and optional authored remediation. Backend diagnostic context stays out of this default text surface. Parsers should not assume the message/head portion is single-line because Commander-surfaced errors may contain newlines.
+`coral-cli` normally writes a text error envelope to `stderr`. The envelope is human/LLM-facing and contains only the public message, stable tags, and optional authored remediation. Backend diagnostic context stays out of this default text surface. Parsers should not assume the message/head portion is single-line because Commander-surfaced errors may contain newlines. [`jobs send`](#jobs-send-outcomes) renders its send outcome as dedicated text instead.
 
 `jobs wait` and follow-mode commands keep successful human-readable text on `stdout`. Only failures move to `stderr`.
 
@@ -33,6 +33,38 @@ When a backend HTTP response body is missing, non-JSON, or does not carry a `cod
 This only affects malformed or truncated backend responses. In normal operation every backend error path emits `{code, message}` and is surfaced unchanged.
 
 ## Code Catalog
+
+### `jobs send` outcomes
+
+`coral-cli jobs send <jobId> -i <text|file|->` adds a message to a running provider turn. Input follows provider-launch semantics: each token supplies stdin for `-`, file contents for an existing path, or literal text otherwise; resolved tokens are joined with spaces. Missing or blank input is a usage error, exit `2`, before dispatch.
+
+| Outcome | CLI exit | Meaning and next action |
+| --- | --- | --- |
+| `delivered` | `0` | The provider received the input. Whether the agent follows it is the agent's decision. Claude delivery acknowledges the live stdin write; consumption is reported separately. |
+| `refused` | `1` | Nothing was written. The reason code selects the remedy below. |
+| `unknown` | `75` | The message may have been delivered. Do not resend; inspect progress and the result with `coral-cli jobs wait <jobId>`. |
+
+Delivery text goes to `stdout`; refusal and unknown text go to `stderr`. Refusals include their code and reason. Authored command lines use `command=` with the actual job id and shell-quoted arguments.
+
+| Refusal code | Meaning and remedy |
+| --- | --- |
+| `turn_not_started` | The current turn is not steerable yet. Nothing was written; run the same send request again. For stdin input, supply the same message again; no replayable command is printed. |
+| `turn_ended` | The turn has ended, or Claude is between result segments. Read the result with `coral-cli jobs wait <jobId>`. To carry on, start a new job with the message; this starts a new conversation. When launch details and replayable input are available, the CLI prints a launch command preserving provider and agent, but not the original `-w`, `-m` or `-b` options. Stdin input or unavailable launch details receive prose guidance instead of a launch command. |
+| `job_not_running` | The job is being stopped. Read its result with `coral-cli jobs wait <jobId>`. |
+| `transport_unsupported` | The job or provider transport cannot receive sends. Workflow, KB/internal work, one-shot curation, Claude TUI, and providers without send support are unsupported. Read the result with `coral-cli jobs wait <jobId>`. |
+| `control_unavailable` | Usable proxy control or the exact active host is unavailable, or the send record cannot be admitted. Nothing was written; run the same request again. Stdin input receives prose guidance to supply the same message again. |
+| `unsupported_by_running_build` | The running coordinator or proxy predates send support. Restart the session so the current Coral plugin loads; the coordinator follows the installed build. The remedy is prose, with no command line. |
+| `provider_rejected` | The provider answered with an error. Its message is surfaced as the refusal reason, with multiline text indented. Read the result with `coral-cli jobs wait <jobId>`. |
+| `scope_mismatch` | The job belongs to another project. Nothing was written; run from the job's project directory, then run the same request again. The remedy is prose, with no command line. |
+| `not_found` | The job was not found. List available jobs with `coral-cli jobs list`. |
+
+Once the CLI has issued the request, a lost response, timeout, disconnected channel, or invalid result becomes `unknown`; an exception or invalid result during coordinator send dispatch does too. No component automatically resends an uncertain delivery. A lifecycle refusal is different: it establishes that no effect occurred, so the CLI may re-issue the same request to a successor coordinator. Failures before issuance and an unresolved lifecycle refusal retain their ordinary CLI error handling.
+
+Each CLI invocation generates a `clientMessageId`. Within the live proxy operation, repeating that id is idempotent: it shares the original in-flight request or returns its settled outcome, without another send record or write. Running the CLI again generates a new id, so this does not authorize resending after `unknown`.
+
+An older coordinator's unknown `jobs.send` RPC (`-32601`) maps to `refused: unsupported_by_running_build`. An older proxy's method-not-found answer for `operation.send.v1` maps to the same refusal. Other proxy-level errors are `unknown`; an answered provider error is a refusal, with recognized ended-turn errors mapped to `turn_ended` and other errors to `provider_rejected`.
+
+The `Sending message …` progress record proves only that a write may have been attempted. `Sent message … read by the agent` is consumption evidence from a Codex echo or Claude replay. A missing record proves nothing while the job runs; after a clean provider terminal, the ordered record's absence proves nothing was written. Proxy loss does not provide that guarantee.
 
 ### Upgrade, shutdown, and historical jobs
 
@@ -176,6 +208,8 @@ Provider-host `list` and `inspect` can report `reclamation-failed`. This status 
 `list`, `inspect`, and `evict` are also served while the coordinator drains, because eviction is the operator exit of a hold only a drain creates. The `list` response shape that carries released owners is its own generation: `coordinator.provider_host.list.v2` always answers `tornDownOwnerIds`, while `coordinator.provider_host.list` keeps its exact `{ hosts }` shape for a shipped CLI and refuses the whole listing as `provider_host_inventory_unavailable` when it cannot represent one. `coral-cli backend provider-host list` asks for v2 and falls back to v1 against a coordinator that does not serve it, and prints `provider_host_owner_torn_down: administration control released for <ids>; their hosts are not listed.` above the header. A selector that resolves on none of the owners that answered — and, for a work directory, one that resolves on exactly one of them, since uniqueness across the unasked owners is unproven — answers `provider_host_owner_torn_down` rather than `provider_host_not_found`; for a work directory the rendered remediation therefore starts with `coral-cli backend provider-host list`, because an exact reference on an owner that answered is served now. A drain releases administration control, and so do containment and succession, so this code is not by itself a drain: run `coral-cli backend status`; if it reports this coordinator as draining, the drain ends by itself when its budget is exhausted. Otherwise status reports the released set's automatic retry or bounded wait, its timing, and the evidence that ends it. Retry once status no longer reports that released owner; neither this refusal nor status asks the reader to choose containment or abandonment.
 
 ## Exit Codes
+
+`jobs send` uses the [outcome-specific exits](#jobs-send-outcomes) above: delivered `0`, refused `1`, unknown `75`. An unknown send must not enter a generic retry loop.
 
 `coral-cli jobs abort` distinguishes an accepted provider stop intent from a completed abort. Recorded
 stops stay in `aborted` for released-reader compatibility and are annotated by `stopRequested`.

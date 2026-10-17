@@ -40,7 +40,7 @@ Claude Code
       ▼
 clients/bridge/coral-cli
   ├── Provider commands (`codex`, `claude`)
-  ├── Workflow commands (`workflow`, `jobs list|wait|abort|detail|release`)
+  ├── Workflow commands (`workflow`, `jobs list|wait|abort|send|detail|release`)
   ├── Admin commands (`backend start|status|shutdown`, `backend provider-proxy-set contain|abandon`, `backend routing-status resolve|discard|quarantine list|quarantine clear`, `backend provider-host list|inspect|evict`, `backend store-reset list|report|discard|release`, `backend recovery-quarantine list|clear|discard-provider-operation`, `backend kb-commit quarantine`)
   ├── Discuss commands (`discuss *`)
   └── KB commands (`kb *`)
@@ -435,6 +435,31 @@ The operational health snapshot uses the same conservative but network-free loca
 2. `coral-cli jobs detail <jobId>` reads the detailed job projection and renders terminal diagnostics, including usage when present
 3. `coral-cli jobs abort <id...>` dispatches `jobs.abort` over IPC for local calls
 4. `coral-cli jobs abort --all` or `coral-cli jobs abort --phase <phase> [--provider <name>]` (or `--provider <name>` alone) resolves matching live jobs in the current work directory, including shared KB jobs, through the same read surface, then aborts the resulting job IDs
+5. `coral-cli jobs send <jobId> -i <text|file|->` delivers additional input to the current provider turn through `jobs.send` IPC
+
+#### Sending to a running turn
+
+The CLI supplies the caller's project root, resolved input, and one `clientMessageId`. The `jobs.send` route canonicalizes the root and requires `jobs:control`. `JobSendService` gates job existence, caller scope, provider-job kind, turn lifecycle, run intent, and usable proxy authority before contacting the provider proxy. It records no durable control intent. An answered lifecycle refusal is pre-effect and permits re-issue to a successor; response loss after issuance becomes `unknown`, with no resend. [CLI outcomes and remedies](./cli-errors.md#jobs-send-outcomes) distinguish receipt from consumption and from following the instruction.
+
+The coordinator calls `operation.send.v1` under the mutation policy `indeterminate: 'caller-reported'`. Send uncertainty returns to the caller without authorizing replay, fencing, settlement, or containment. A closed control channel still reports its independent channel incident. The proxy method uses the caller's deadline; the runner bounds the provider attempt and releases its temporary attachment when that attempt expires, without interrupting execution.
+
+`OperationSupervisor` admits the send outside its stop/settle queue. Eligibility, replay-budget preflight, ordered send-record emission, and handoff to the write run in one synchronous section. The record is in the proxy replay ledger before the write starts; the proxy does not wait for the coordinator's store commit. A later write-time refusal can therefore leave a record, which does not prove delivery. Repeated `clientMessageId` values on the live operation share the original result and cannot append another record or write.
+
+The semantic runner uses current continuity only after its checkpoint commit is acknowledged and asks the kernel for steering admission. Bound send attaches a temporary lease to the staged operation's exact existing host, invokes its provider facet, and releases the attachment in `finally`. It never opens a replacement host to deliver a message. Capability and active-turn checks apply independently of the operation's cancellation mode.
+
+#### Codex steering
+
+The Codex facet calls `turn/steer` with the committed `expectedTurnId` and the message's client id. The kernel refuses admission after a final answer and holds inferred completion while an admitted steer remains unread. A matching `userMessage.clientId` echo reports consumption and releases that message's hold; a definitive refusal also releases it. An authoritative `turn/completed` or cancellation ends the wait with unread-message diagnostics. A missing send response leaves the hold in place until one of those exits. Codex does not create a follow-on turn for send. The observed no-active-turn and expected-id-mismatch errors map to `turn_ended`; other answered provider errors map to `provider_rejected`.
+
+#### Claude print delivery and follow-on results
+
+The Claude facet routes broker `turn/send` to the active print child. Print mode keeps stdin open and uses `--replay-user-messages`: each sent user frame carries `uuid: clientMessageId`, and a validated user replay with `isReplay: true` and the matching UUID reports that the agent read it. The initial prompt's replay and ordinary tool-result user frames cannot acknowledge a send. `delivered` acknowledges the write without waiting for a replay. Claude TUI and one-shot curation are unsupported.
+
+If the replay arrives before the current result, the message was absorbed into that segment. If a result arrives with unread sends, the controller retains aggregate ownership under the same broker turn id and job, closes send eligibility, and waits for follow-on activity. Validated system init, a matching replay, or assistant activity reopens eligibility for the active segment; sends in the gap or while stopping refuse `turn_ended`. The follow-on start wait is bounded. Expiry reports the unread ids and retains the last segment's outcome; it does not resend.
+
+Every result, including the final one, contributes text joined with `--- Message sent while the agent was finishing (jobs send) ---` on a separate line. The last segment supplies success/failure, subtype, and errors, while earlier text is retained even on failure. Accounting follows the pinned [Claude Code probe](../tests/unit/providers/claude/appserver/fixtures/haiku-follow-on-2.1.302.jsonl): supported token counters, turns, and wall duration are per segment and summed; cost is cumulative and takes the last value. A recognized field missing from any segment leaves its aggregate unavailable; zero remains valid. Tokens and cost use the existing usage summary, duration uses terminal `durationMs`, and the turn total is emitted as message progress before completion. API duration and unsupported raw usage fields are not added to the normalized summary.
+
+Cancellation with unread sends and follow-on expiry enter owned cleanup of the exact print child. Terminal completion waits for observed child absence or an accepted shutdown hold owned by the broker session pool; queued input cannot escape into a reused session. An interrupt acknowledgement alone is insufficient. With no unread sends, cancellation keeps the existing interrupt path. Cleanup never force-closes the shared broker host.
 
 ### Generation boundary and operator recovery
 

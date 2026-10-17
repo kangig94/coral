@@ -74,6 +74,12 @@ Each domain is self-contained: its own contract (events, projection, read-models
 
 `jobs/export-retention.ts:terminalEligibility` is the common epoch-aware age authority for availability, repair and retirement. It reads a terminal's age only from the job's own intact source, with the same `readJobTerminalAge` rule retention uses, and expires only `terminalAt < cutoff`. `JobLocationIndex.resultDurable` first requires readable retained terminal detail, then accepts a regular nonempty durable file or a known past-window age read from that intact source. Unknown or regressed age never discharges by age. A retired source leaves only the retained timestamp, which may choose the `retained-away` label but never discharges by age. Retained-copy agreement is validated when a terminal is recorded, not on every read.
 
+### Jobs send owners
+
+`providers/contract.ts:providerSendOutcomeSchema` is the single canonical home of the send outcome vocabulary. `coordinator/services/job-send.ts:JobSendService` owns scope, job-kind, lifecycle, run-intent, and proxy-authority gating. `provider-proxy/operation-supervisor.ts:OperationSupervisor` owns the record-before-write decision. `providers/claude/appserver/print-controller.ts:PrintSessionController` owns Claude follow-on aggregation into the same job.
+
+The send record must use the existing strict `job.progress.emitted` shape, with no new durable event or body field. See [Sending to a running turn](./architecture.md#sending-to-a-running-turn).
+
 ## Provider Adapters
 
 Provider adapters translate between the domain contract and external CLIs. Codex uses the Codex app-server surface; Claude uses a broker helper around Claude CLI, defaulting to `claude -p` stream-json and retaining an opt-in PTY TUI transport. Adapter-level changes must preserve wire-compatibility with the adapted provider. Adapters normalize provider usage at this boundary to the canonical additive `UsageSummary` (`inputTokens`, `cacheReadTokens`, `cacheWriteTokens`, `outputTokens`, optional `costUsd`) before it reaches jobs. Provider-owned profile, binding, and continuity parsers contribute their exact persisted contracts to the application-wide store format. `ProviderRegistry.register` rejects a managed provider unless it declares `provider-artifact-discard.v1` with both `discardArtifacts` and `reconcileDiscard`; reconciliation is closed over `applied | not-applied | definitive-failure | unknown`.
