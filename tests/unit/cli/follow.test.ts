@@ -268,6 +268,199 @@ import { BackendUnreachableError } from '#src/infra/http-errors.js';
     expect(out).toContain('Job job-w: missing');
     expect(code).toBe(1);
   });
+
+  it('an unbounded wait reconnects past the server cut silently and ends at the first terminal, keeping --unbounded', async () => {
+    let out = '';
+    vi.spyOn(process.stdout, 'write').mockImplementation(((c: string | Uint8Array, cb?: (e?: Error | null) => void) => {
+      out += c.toString();
+      cb?.();
+      return true;
+    }) as typeof process.stdout.write);
+    const requests: { jobIds: readonly string[]; cursor?: string; timeoutSeconds: number; drainProgress: boolean }[] =
+      [];
+    const code = await followJobs({
+      start: { kind: 'jobs', jobIds: ['a', 'b'] },
+      reconnectPolicy: 'unbounded',
+      projectRoot: '/project',
+      render: { isTTY: false, columns: 80, embed: false, verbose: false },
+      emitError: (e) => {
+        out += `ERR ${String(e)}\n`;
+      },
+      connect: async ({ jobIds, cursor: requestCursor, timeoutSeconds, drainProgress }) => {
+        requests.push({ jobIds, cursor: requestCursor, timeoutSeconds, drainProgress });
+        const events =
+          requests.length === 1
+            ? [
+                { type: 'progress', jobId: 'a', seq: 7, message: 'line', timing },
+                {
+                  type: 'waiting',
+                  waitingJobIds: ['a', 'b'],
+                  cursor: savedCursor(7),
+                  exitCode: 75,
+                  endedBy: 'deadline',
+                },
+              ]
+            : [
+                {
+                  type: 'terminal',
+                  jobId: 'a',
+                  seq: 9,
+                  remainingJobIds: ['b'],
+                  result: { content: 'done', outcome: { kind: 'completed' }, durationMs: 1 },
+                  availability: { kind: 'available', resultPath: '/r.md' },
+                  resultPath: '/r.md',
+                  epochKey: 'epoch',
+                  cursor: savedCursor(9),
+                  exitCode: 75,
+                },
+              ];
+        return {
+          kind: 'subscription',
+          subscription: {
+            close: async () => {},
+            async *[Symbol.asyncIterator]() {
+              for (const e of events) yield e as never;
+            },
+          },
+        };
+      },
+    });
+    expect(code).toBe(75);
+    expect(requests).toHaveLength(2);
+    expect(requests[1]).toMatchObject({ jobIds: ['a', 'b'], cursor: savedCursor(7) });
+    for (const request of requests) {
+      expect(request.drainProgress).toBe(false);
+      expect(request.timeoutSeconds).toBeGreaterThanOrEqual(1);
+      expect(request.timeoutSeconds).toBeLessThanOrEqual(1200);
+    }
+    expect(out).not.toContain('Still waiting');
+    expect(out).not.toContain('ERR');
+    expect(out).toContain('Job a completed');
+    expect(out).toContain(
+      `Run coral-cli wait jobs b --unbounded --cursor ${savedCursor(9)} in a background shell to continue waiting.`,
+    );
+  });
+
+  it.each([
+    ['settles a refusal', { exitCode: 1, endedBy: 'deadline' }, [], 1],
+    ['comes from a coordinator that names no reason', { exitCode: 75 }, [], 75],
+    ['is unanswered', { exitCode: 75, endedBy: 'unanswered' }, [], 75],
+    ['reports an unconfirmed carrier', { exitCode: 75, endedBy: 'deadline', carrierUnknownJobIds: ['b'] }, [], 75],
+    [
+      'follows an absent carrier',
+      { exitCode: 75, endedBy: 'progress-budget' },
+      [
+        {
+          type: 'interrupted',
+          jobId: 'b',
+          storedPhase: 'running',
+          observedMaxJournalSeq: 3,
+          remainingJobIds: ['b'],
+          observation: { kind: 'carrier_interrupted', reason: 'carrier_absent' },
+          continuity: 'unavailable',
+          outcome: 'unknown',
+        },
+      ],
+      75,
+    ],
+    ['names no cursor to resume from', { exitCode: 75, endedBy: 'deadline', cursor: null }, [], 75],
+    ['leaves the cursor where it opened', { exitCode: 75, endedBy: 'progress-budget' }, [], 75, savedCursor(7)],
+  ])('an unbounded wait ends as a bounded wait on a cut that %s', async (_case, cut, before, expected, opened?) => {
+    let out = '';
+    vi.spyOn(process.stdout, 'write').mockImplementation(((c: string | Uint8Array, cb?: (e?: Error | null) => void) => {
+      out += c.toString();
+      cb?.();
+      return true;
+    }) as typeof process.stdout.write);
+    let connects = 0;
+    const code = await followJobs({
+      start: { kind: 'jobs', jobIds: ['a', 'b'], ...(opened === undefined ? {} : { serializedCursor: opened }) },
+      reconnectPolicy: 'unbounded',
+      projectRoot: '/project',
+      render: { isTTY: false, columns: 80, embed: false, verbose: false },
+      emitError: (e) => {
+        out += `ERR ${String(e)}\n`;
+      },
+      connect: async () => {
+        connects += 1;
+        // A wrongful resume must end here, or it reconnects forever and the case hangs instead of failing.
+        const events =
+          connects === 1
+            ? [...before, { type: 'waiting', waitingJobIds: ['b'], cursor: savedCursor(7), ...cut }]
+            : [
+                {
+                  type: 'terminal',
+                  jobId: 'b',
+                  seq: 9,
+                  remainingJobIds: [],
+                  result: { content: 'done', outcome: { kind: 'completed' }, durationMs: 1 },
+                  availability: { kind: 'available', resultPath: '/r.md' },
+                  resultPath: '/r.md',
+                  epochKey: 'epoch',
+                  cursor: savedCursor(9),
+                  exitCode: 0,
+                },
+              ];
+        return {
+          kind: 'subscription',
+          subscription: {
+            close: async () => {},
+            async *[Symbol.asyncIterator]() {
+              for (const e of events) yield e as never;
+            },
+          },
+        };
+      },
+    });
+    expect(connects).toBe(1);
+    expect(code).toBe(expected);
+    const cursorFlag = 'cursor' in cut ? '' : ` --cursor ${savedCursor(7)}`;
+    expect(out).toContain(
+      `Run coral-cli wait jobs b --unbounded${cursorFlag} in a background shell to continue waiting.`,
+    );
+  });
+
+  it('an interrupted unbounded wait prints a --unbounded continuation and exits 75', async () => {
+    let sigint: (() => void) | undefined;
+    vi.spyOn(process, 'on').mockImplementation(((event: string, listener: () => void) => {
+      if (event === 'SIGINT') sigint = listener;
+      return process;
+    }) as typeof process.on);
+    vi.spyOn(process, 'off').mockImplementation((() => process) as typeof process.off);
+    let out = '';
+    vi.spyOn(process.stdout, 'write').mockImplementation(((c: string | Uint8Array, cb?: (e?: Error | null) => void) => {
+      out += c.toString();
+      cb?.();
+      return true;
+    }) as typeof process.stdout.write);
+    const opened = createDeferred();
+    const code = followJobs({
+      start: { kind: 'jobs', jobIds: ['a'] },
+      reconnectPolicy: 'unbounded',
+      projectRoot: '/project',
+      render: { isTTY: false, columns: 80, embed: false, verbose: false },
+      emitError: (e) => {
+        out += `ERR ${String(e)}\n`;
+      },
+      connect: async ({ signal }) => ({
+        kind: 'subscription',
+        subscription: {
+          close: async () => {},
+          async *[Symbol.asyncIterator]() {
+            opened.resolve();
+            await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));
+          },
+        },
+      }),
+    });
+    await opened.promise;
+    expect(sigint).toBeDefined();
+    sigint?.();
+    expect(await code).toBe(75);
+    expect(out).toContain(
+      'Still waiting on 1 job. Run coral-cli wait jobs a --unbounded in a background shell to continue waiting.',
+    );
+  });
 }
 
 it('leaves a stop that is still in progress on a second SIGINT with exit 75, its continuation printed once first', async () => {

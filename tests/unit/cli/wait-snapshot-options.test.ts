@@ -8,21 +8,34 @@ it('checks snapshot syntax at the invocation boundary before preflight or reques
     .command('wait')
     .command('jobs')
     .argument('<jobIds...>')
-    .option('--now')
+    .option('--snapshot')
     .option('--lines <N>')
     .option('--cursor <c>');
   expect(() =>
-    waitInvocationMode(program, ['node', 'cli', 'wait', 'jobs', 'a', '--now', '--lines', '20', '--cursor', 'saved']),
+    waitInvocationMode(program, [
+      'node',
+      'cli',
+      'wait',
+      'jobs',
+      'a',
+      '--snapshot',
+      '--lines',
+      '20',
+      '--cursor',
+      'saved',
+    ]),
   ).toThrow('--lines cannot be used with --cursor');
-  expect(waitInvocationMode(program, ['node', 'cli', 'wait', 'jobs', 'a', '--now', '--lines', '500'])).toBe('snapshot');
-  expect(validateWaitJobsOptions({ now: true })).toBeUndefined();
+  expect(waitInvocationMode(program, ['node', 'cli', 'wait', 'jobs', 'a', '--snapshot', '--lines', '500'])).toBe(
+    'snapshot',
+  );
+  expect(validateWaitJobsOptions({ snapshot: true })).toBeUndefined();
   for (const lines of ['0', '501', '1.1'])
-    expect(() => validateWaitJobsOptions({ now: true, lines })).toThrow('--lines must be an integer');
+    expect(() => validateWaitJobsOptions({ snapshot: true, lines })).toThrow('--lines must be an integer');
 });
 
-it('rejects --now with --embed before requesting a snapshot', () => {
-  expect(() => validateWaitJobsOptions({ now: true, embed: true })).toThrow(
-    '--now cannot be used with --embed or --verbose',
+it('rejects --snapshot with --embed before requesting a snapshot', () => {
+  expect(() => validateWaitJobsOptions({ snapshot: true, embed: true })).toThrow(
+    '--snapshot cannot be used with --embed or --verbose',
   );
   expect(() => validateWaitJobsOptions({ embed: true })).not.toThrow();
 });

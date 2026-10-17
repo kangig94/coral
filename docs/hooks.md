@@ -200,7 +200,7 @@ These hooks set up runtime state for KB-producing skills and prompt-mode Ralph:
 - `kb-promote-gate.mjs` creates session-scoped KB activity flags
 - `ralph-loop.mjs` creates or updates the prompt-loop state file
 - `coral-skill-vars.mjs` injects short `CORAL_PROJECT` / `CORAL_METHODS` lines for host skill flows (aliases also live in `inject/tools.md` for all inject surfaces)
-- `bash-rewrite.mjs` prefixes any Bash command that runs `coral-cli` with `export PATH='<plugin root>/bridge':"$PATH"`, so the shell resolves `coral-cli` to the active plugin's executable CLI bundle; the command itself is never parsed or edited. It gives a `coral-cli wait` the full 600 s Bash timeout, and wraps `run_in_background` commands so they record start / liveness / exit in the live-work registry (`lib/live-work-registry.mjs`)
+- `bash-rewrite.mjs` prefixes any Bash command that runs `coral-cli` with `export PATH='<plugin root>/bridge':"$PATH"`, so the shell resolves `coral-cli` to the active plugin's executable CLI bundle; the command itself is never parsed or edited. It gives a `coral-cli wait` the full 600 s Bash timeout — a bounded wait finishes inside it, while `wait jobs --unbounded` does not and belongs in `run_in_background` — and wraps `run_in_background` commands so they record start / liveness / exit in the live-work registry (`lib/live-work-registry.mjs`)
 
 ## Failure-aware KB Reminder
 

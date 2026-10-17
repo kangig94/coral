@@ -65,9 +65,50 @@ it('keeps completed live coverage when a later refresh outlives the deadline', a
     time.tick(250);
     await flushMicrotasks(20);
   }
-  expect((await next).value).toMatchObject({ type: 'waiting' });
+  expect((await next).value).toMatchObject({ type: 'waiting', endedBy: 'deadline' });
   expect((await next).value).not.toHaveProperty('carrierUnknownJobIds');
   await stream.return(undefined);
+});
+
+it('names a progress-budget cut and an unanswered read apart from a deadline', async () => {
+  const backlog = Array.from({ length: 800 }, (_, i): [number, string] => [i + 1, `a${i + 1}`]);
+  const budget = await collect(
+    readWaitSession({
+      request: { jobIds: ['a'], cursor: savedCursor(0), timeoutSeconds: 60 },
+      time: new VirtualTime(),
+      read: observeWaitRead(() => [admitted('a', backlog, false)]),
+      visit: testProgressVisit,
+    }),
+  );
+  expect(budget.at(-1)).toMatchObject({ type: 'waiting', waitingJobIds: ['a'], endedBy: 'progress-budget' });
+
+  const held = await collect(
+    readWaitSession({
+      request: { jobIds: ['a', 'b'], cursor: savedCursor(0), timeoutSeconds: 60 },
+      time: new VirtualTime(),
+      read: observeWaitRead(() => [admitted('a', backlog, false), { jobId: 'b', disposition: 'unknown' }]),
+      visit: testProgressVisit,
+    }),
+  );
+  expect(held.at(-1)).toMatchObject({ type: 'waiting', cursor: savedCursor(0), endedBy: 'unanswered' });
+
+  const time = new VirtualTime();
+  const events: WaitStreamEvent[] = [];
+  const run = (async () => {
+    for await (const event of readWaitSession({
+      request: { jobIds: ['a'], timeoutSeconds: 60 },
+      time,
+      read: observeWaitRead(() => [{ jobId: 'a', disposition: 'unknown' }]),
+      visit: testProgressVisit,
+    }))
+      events.push(event);
+  })();
+  for (let poll = 0; poll < 40; poll++) {
+    time.tick(250);
+    await flushMicrotasks(30);
+  }
+  await run;
+  expect(events.at(-1)).toMatchObject({ type: 'waiting', waitingJobIds: ['a'], endedBy: 'unanswered' });
 });
 
 it('prints a terminal at or below the watermark without ending the bounded wait it is read in', async () => {
@@ -232,7 +273,7 @@ it('names a runnable smaller snapshot retry with the unchanged input cursor', ()
     { jobId: 'a', disposition: 'missing', message: 'x'.repeat(2 * 1024 * 1024) },
     { jobId: 'b', disposition: 'missing' },
   ]);
-  expect(() => selectWaitSnapshot(session, 20)).toThrow(`coral-cli wait jobs 'a' --now --cursor ${input}`);
+  expect(() => selectWaitSnapshot(session, 20)).toThrow(`coral-cli wait jobs 'a' --snapshot --cursor ${input}`);
 });
 
 it('internal outcomes drain every progress line before completion without a page waiting event', async () => {

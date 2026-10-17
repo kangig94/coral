@@ -39,6 +39,9 @@ import {
   formatWaitCarrierInterrupted,
   formatWaitWaiting,
   renderWaitLine,
+  waitContinuationCommand,
+  waitContinuationShell,
+  type WaitContinuationMode,
   type WaitRenderContext,
 } from './format/wait.js';
 
@@ -56,7 +59,7 @@ const TRANSIENT_RETRY_LIMIT = 2;
 const TRANSIENT_RETRY_DELAY_MS = 1_000;
 
 type BackoffScheduler = (delayMs: number) => Promise<void>;
-type ReconnectPolicy = 'bounded' | 'until-terminal';
+type ReconnectPolicy = 'bounded' | 'unbounded' | 'until-terminal';
 
 type FollowStart =
   | Readonly<{ kind: 'launch'; launchResult: AcceptedLaunchResponse }>
@@ -97,6 +100,8 @@ type FollowJobsOptions = {
   };
   backoffScheduler?: BackoffScheduler;
 };
+
+type FollowRender = FollowJobsOptions['render'] & { continuationMode: WaitContinuationMode };
 
 type FollowOptions = {
   launchResult: AcceptedLaunchResponse;
@@ -175,7 +180,7 @@ function formatFollowWaitEvent(
   cursor: string | null,
   jobLabels: ReadonlyMap<string, JobLabel> | null,
   resumeJobIds: readonly string[],
-  renderOptions: FollowJobsOptions['render'],
+  renderOptions: FollowRender,
   renderCauseRef?: (ref: CauseRef, terminalOutcomeDiagnostic?: TerminalOutcome, epochKey?: string) => string,
 ): string {
   let line!: string;
@@ -199,6 +204,7 @@ function formatFollowWaitEvent(
           : undefined,
         verbose: renderOptions.verbose,
         label: jobLabels?.get(event.jobId)?.terminal,
+        continuationMode: renderOptions.continuationMode,
       });
       break;
     case 'interrupted':
@@ -208,7 +214,7 @@ function formatFollowWaitEvent(
       });
       break;
     case 'waiting':
-      line = formatWaitWaiting(event, cursor, resumeJobIds);
+      line = formatWaitWaiting(event, cursor, resumeJobIds, renderOptions.continuationMode);
       break;
   }
 
@@ -220,7 +226,7 @@ function emitWaitEvent(
   cursor: string | null,
   jobLabels: ReadonlyMap<string, JobLabel> | null,
   resumeJobIds: readonly string[],
-  renderOptions: FollowJobsOptions['render'],
+  renderOptions: FollowRender,
   renderCauseRef?: (ref: CauseRef, terminalOutcomeDiagnostic?: TerminalOutcome, epochKey?: string) => string,
   onDelivered?: () => void,
 ): Promise<void> {
@@ -297,7 +303,7 @@ function boundedTimeoutSeconds(deadlineMs: number): number {
   return Math.max(1, Math.floor(remaining / 1000) - 1);
 }
 
-function withWaitRecovery(error: unknown, jobIds: readonly string[], cursor: WaitCursor | undefined): unknown {
+function withWaitRecovery(error: unknown, state: FollowSessionState): unknown {
   const body = error instanceof BackendToolHttpError && isRecord(error.body) ? error.body : null;
   if (!(error instanceof BackendUnreachableError) && body?.code !== 'backend_unreachable') {
     return error;
@@ -306,12 +312,16 @@ function withWaitRecovery(error: unknown, jobIds: readonly string[], cursor: Wai
   const message = body !== null && typeof body.message === 'string' ? body.message : (error as Error).message;
   return new BackendUnreachableError(
     `${message} Run \`coral-cli backend status\` and follow its recovery guidance, then rerun ` +
-      `\`coral-cli wait jobs ${jobIds.join(' ')}${cursor === undefined ? '' : ` --cursor ${cursor}`}\` to continue waiting.`,
+      `\`${waitContinuationCommand(state.remainingJobIds, state.currentCursor ?? null, state.continuationMode)}\`` +
+      `${waitContinuationShell(state.continuationMode)} to continue waiting.`,
   );
 }
 
 type FollowSessionState = {
+  readonly continuationMode: WaitContinuationMode;
+  readonly carrierAbsentJobIds: Set<string>;
   currentCursor?: WaitCursor;
+  openedCursor?: WaitCursor;
   lastExitCode?: number;
   remainingJobIds: string[];
   sendCursor: boolean;
@@ -355,6 +365,7 @@ function finishDelegatedFollow(
       `Delegated wait command ended from signal ${outcome.signal}; the jobs may still be running.`,
       state.remainingJobIds,
       state.currentCursor,
+      state.continuationMode,
     ),
   );
   return { kind: 'exit', code: errorCodeToExit('transient') };
@@ -382,7 +393,7 @@ function eventRemainingJobs(event: WaitStreamEvent, current: readonly string[]):
 function followOriginalCommand(options: FollowJobsOptions): string {
   if (options.invocation) return options.invocation.originalCommand;
   const cursor = initialSerializedCursor(options.start);
-  return `coral-cli wait jobs ${jobIdsFromStart(options.start).join(' ')}${cursor === undefined ? '' : ` --cursor ${cursor}`}${options.render.embed ? ' --embed' : ''}${options.render.verbose ? ' --verbose' : ''}`;
+  return `${waitContinuationCommand(jobIdsFromStart(options.start), cursor ?? null, continuationModeFor(options.reconnectPolicy))}${options.render.embed ? ' --embed' : ''}${options.render.verbose ? ' --verbose' : ''}`;
 }
 
 function deliveredFollowExitCode(event: WaitStreamEvent, context: FollowContext): number | undefined {
@@ -392,7 +403,24 @@ function deliveredFollowExitCode(event: WaitStreamEvent, context: FollowContext)
   if (event.type === 'terminal')
     return options.reconnectPolicy === 'until-terminal' ? toExitCode(event.result) : event.exitCode;
   // An empty set is final under either policy, and a refused member makes it a failure that must not read as success.
-  return options.reconnectPolicy === 'bounded' || event.waitingJobIds.length === 0 ? event.exitCode : undefined;
+  if (options.reconnectPolicy === 'bounded' || event.waitingJobIds.length === 0) return event.exitCode;
+  // A reconnect requests only the waiting jobs and forgets what the cut decided or reported, so an unbounded wait
+  // resumes only past a cut that decided nothing and left nothing unanswered; any other ends it as a bounded wait ends.
+  if (options.reconnectPolicy !== 'unbounded') return undefined;
+  const carrierAbsent = event.waitingJobIds.some((jobId) => context.state.carrierAbsentJobIds.has(jobId));
+  // A null cursor resumes as a fresh read that prints the recent lines again, and a budget cut that left the cursor
+  // where this connection opened serves the same page again with no delay between them.
+  const resumable =
+    event.exitCode === 75 &&
+    !carrierAbsent &&
+    event.cursor !== null &&
+    ((event.endedBy === 'progress-budget' && event.cursor !== context.state.openedCursor) ||
+      (event.endedBy === 'deadline' && (event.carrierUnknownJobIds ?? []).length === 0));
+  return resumable ? undefined : event.exitCode;
+}
+
+function continuationModeFor(policy: ReconnectPolicy): WaitContinuationMode {
+  return policy === 'unbounded' ? 'unbounded' : 'bounded';
 }
 
 function foldedContinuation(state: FollowSessionState): string {
@@ -407,6 +435,7 @@ function foldedContinuation(state: FollowSessionState): string {
       },
       state.currentCursor ?? null,
       remaining,
+      state.continuationMode,
     ) + '\n'
   );
 }
@@ -430,7 +459,7 @@ async function deliverFollowEvent(event: WaitStreamEvent, context: FollowContext
     cursor,
     jobLabels,
     renderedEvent.type === 'terminal' ? renderedEvent.remainingJobIds : remaining,
-    options.render,
+    { ...options.render, continuationMode: state.continuationMode },
     causeRenderer.render,
     () => {
       options.invocation?.saveContinuation(
@@ -479,17 +508,25 @@ async function applyFollowStreamEvent(
 ): Promise<FollowStep | { kind: 'continue' }> {
   const { options, state } = context;
   options.invocation?.check();
-  if (event.type === 'interrupted')
+  if (event.type === 'interrupted') {
     state.carrierUnknownJobIds = state.carrierUnknownJobIds.filter((id) => id !== event.jobId);
-  else if (event.type === 'waiting') state.carrierUnknownJobIds = [...(event.carrierUnknownJobIds ?? [])];
+    state.carrierAbsentJobIds.add(event.jobId);
+  } else if (event.type === 'waiting') state.carrierUnknownJobIds = [...(event.carrierUnknownJobIds ?? [])];
   if ('exitCode' in event && event.exitCode !== undefined) state.lastExitCode = event.exitCode;
   const decision = advanceWaitRenderCursor(state.currentCursor, event);
   state.currentCursor = decision.cursor;
+  const step = followEventDecision(event, context);
+  if (options.reconnectPolicy === 'unbounded' && step.kind === 'retry') {
+    // A cut this follow resumes past prints nothing, since its continuation would name a wait still open, and it
+    // proves the stream healthy: transient retries bound consecutive failures, not the whole unbounded wait.
+    state.retriesLeft = TRANSIENT_RETRY_LIMIT;
+    return step;
+  }
   if (decision.shouldRender) await deliverFollowEvent(event, context);
   // A frame renders nothing, so no delivery saves it, yet a cut before the next rendered event must print it; it is
   // never saved ahead of a rendered event that is still being written.
   else if (context.pendingOutput.size === 0) options.invocation?.saveContinuation(foldedContinuation(state));
-  return followEventDecision(event, context);
+  return step;
 }
 
 async function readFollowSubscription(
@@ -528,11 +565,13 @@ async function followReadFailure(error: unknown, context: FollowContext): Promis
   }
 
   if (!(handledError instanceof Error) || !isTransientStreamError(handledError)) {
-    options.emitError(withWaitRecovery(handledError, state.remainingJobIds, state.currentCursor));
+    options.emitError(withWaitRecovery(handledError, state));
     return { kind: 'exit', code: fallbackExitCode() };
   }
   if (state.retriesLeft === 0) {
-    options.emitError(new WaitResumeError(handledError.message, state.remainingJobIds, state.currentCursor));
+    options.emitError(
+      new WaitResumeError(handledError.message, state.remainingJobIds, state.currentCursor, state.continuationMode),
+    );
     return { kind: 'exit', code: errorCodeToExit('transient') };
   }
   state.retriesLeft -= 1;
@@ -567,6 +606,7 @@ async function consumeFollowSubscription(
       'The wait stream ended before a terminal event; the jobs may still be running.',
       state.remainingJobIds,
       state.currentCursor,
+      state.continuationMode,
     ),
   );
   return { kind: 'exit', code: errorCodeToExit('transient') };
@@ -611,11 +651,13 @@ function installFollowSignals(context: FollowContext): () => void {
     state.interrupted = true;
     controller.abort();
   };
+  // A bounded follow's interrupt belongs to its invocation.
+  const ownsSigint = options.reconnectPolicy !== 'bounded';
   options.invocation?.signal.addEventListener('abort', onInvocationEnd, { once: true });
-  if (options.reconnectPolicy === 'until-terminal') process.on('SIGINT', onSigint);
+  if (ownsSigint) process.on('SIGINT', onSigint);
   return () => {
     options.invocation?.signal.removeEventListener('abort', onInvocationEnd);
-    if (options.reconnectPolicy === 'until-terminal') process.off('SIGINT', onSigint);
+    if (ownsSigint) process.off('SIGINT', onSigint);
   };
 }
 
@@ -630,6 +672,8 @@ function createFollowContext(prepared: ReturnType<typeof prepareFollowOptions>):
     pendingOutput: new Set(),
     outputFailure: new AbortController(),
     state: {
+      continuationMode: continuationModeFor(options.reconnectPolicy),
+      carrierAbsentJobIds: new Set(),
       currentCursor: parsedCursor,
       remainingJobIds: allJobIds,
       sendCursor: parsedCursor !== undefined,
@@ -666,7 +710,7 @@ async function monitorFollowJobs(context: FollowContext): Promise<number> {
       );
     }
     if (connection.kind === 'fatal-error') {
-      options.emitError(withWaitRecovery(connection.error, state.remainingJobIds, state.currentCursor));
+      options.emitError(withWaitRecovery(connection.error, state));
       return fallbackExitCode();
     }
     const decision =
@@ -796,6 +840,7 @@ async function openFollowConnection(
     throw new WaitInvocationEnded();
   }
   const cursor = state.currentCursor;
+  state.openedCursor = cursor;
   state.sendCursor = cursor !== undefined;
   const connection = await options
     .connect({
@@ -834,7 +879,7 @@ async function recoverFollowConnection(
     SOFT_CURSOR_REFUSALS.includes(String(handledError.body.code))
   ) {
     if (!state.sendCursor) {
-      options.emitError(withWaitRecovery(handledError, state.remainingJobIds, state.currentCursor));
+      options.emitError(withWaitRecovery(handledError, state));
       return { kind: 'exit', code: fallbackExitCode() };
     }
     writeStdout(`${WAIT_CURSOR_REPLAY_NOTICE}\n`);
@@ -843,7 +888,7 @@ async function recoverFollowConnection(
     return { kind: 'retry' };
   }
   if (!(handledError instanceof Error) || !isTransientStreamError(handledError)) {
-    options.emitError(withWaitRecovery(handledError, state.remainingJobIds, state.currentCursor));
+    options.emitError(withWaitRecovery(handledError, state));
     return { kind: 'exit', code: fallbackExitCode() };
   }
   if (state.retriesLeft === 0) {
@@ -852,10 +897,12 @@ async function recoverFollowConnection(
       handledError instanceof TransientHttpError ||
       handledError instanceof IpcRequestTimeout
     ) {
-      options.emitError(new WaitResumeError(handledError.message, state.remainingJobIds, state.currentCursor));
+      options.emitError(
+        new WaitResumeError(handledError.message, state.remainingJobIds, state.currentCursor, state.continuationMode),
+      );
       return { kind: 'exit', code: errorCodeToExit('transient') };
     }
-    options.emitError(withWaitRecovery(handledError, state.remainingJobIds, state.currentCursor));
+    options.emitError(withWaitRecovery(handledError, state));
     return { kind: 'exit', code: fallbackExitCode() };
   }
   state.retriesLeft -= 1;

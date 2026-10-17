@@ -1,5 +1,8 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { WaitInvocation } from '#src/cli/wait-invocation.js';
+import { Command } from 'commander';
+import { registerSessionCommands } from '#src/cli/commands/session.js';
+import { WaitInvocation, waitInvocationMode } from '#src/cli/wait-invocation.js';
+import { ProviderRegistry } from '#src/providers/registry.js';
 import {
   CLI_HANDOFF_GUARD_ENV,
   WAIT_INVOCATION_CONTEXT_ENV,
@@ -18,7 +21,7 @@ it('preserves a failed snapshot exit when the watchdog fires during the final wr
     if (callback) finish = callback;
     return true;
   }) as typeof process.stdout.write);
-  const invocation = new WaitInvocation('snapshot', ['node', 'coral-cli', 'wait', 'jobs', 'a', '--now'], {
+  const invocation = new WaitInvocation('snapshot', ['node', 'coral-cli', 'wait', 'jobs', 'a', '--snapshot'], {
     now: () => Date.now(),
   });
   try {
@@ -61,4 +64,22 @@ it('prints its own continuation once the parent it was delegated by disconnects'
     invocation.dispose(true);
     process.send = send;
   }
+});
+
+const waitProgram = () => {
+  const program = new Command();
+  registerSessionCommands(program, new ProviderRegistry());
+  return program;
+};
+const waitArgv = (...flags: string[]) => ['node', 'coral-cli', 'wait', 'jobs', 'a', ...flags];
+
+it('gives a --unbounded wait no invocation budget', () => {
+  expect(waitInvocationMode(waitProgram(), waitArgv())).toBe('bounded');
+  expect(waitInvocationMode(waitProgram(), waitArgv('--unbounded', '--cursor', '7'))).toBeUndefined();
+});
+
+it('refuses --unbounded alongside --snapshot', () => {
+  expect(() => waitInvocationMode(waitProgram(), waitArgv('--snapshot', '--unbounded'))).toThrow(
+    '--snapshot cannot be used with --unbounded',
+  );
 });

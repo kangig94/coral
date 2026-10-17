@@ -129,7 +129,7 @@ function snapshotEnvelopeBytes(snapshot: unknown): number {
 /** An oversized snapshot never advances the input cursor; each subset retry repeats that unchanged cursor. */
 export function waitSnapshotTooLarge(jobIds: readonly string[], input: WaitCursor | undefined): WaitSessionError {
   const retries = jobIds.map(
-    (jobId) => `coral-cli wait jobs '${jobId.replaceAll("'", "'\\''")}' --now${input ? ` --cursor ${input}` : ''}`,
+    (jobId) => `coral-cli wait jobs '${jobId.replaceAll("'", "'\\''")}' --snapshot${input ? ` --cursor ${input}` : ''}`,
   );
   return new WaitSessionError(
     'wait_snapshot_too_large',

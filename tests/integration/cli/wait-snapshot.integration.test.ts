@@ -23,7 +23,7 @@ function program() {
   return p;
 }
 
-it('commits only a complete validated snapshot, preserves --now, and cannot acknowledge a malformed response', async () => {
+it('commits only a complete validated snapshot, preserves --snapshot, and cannot acknowledge a malformed response', async () => {
   const a = admitted('a', [[1, Array.from({ length: 501 }, (_, i) => `${i}`).join('\n')]], false);
   const session = testSession(['a'], savedCursor(0));
   session.reconcile([a]);
@@ -36,7 +36,7 @@ it('commits only a complete validated snapshot, preserves --now, and cannot ackn
     callback?.();
     return true;
   }) as never);
-  invocation = new WaitInvocation('snapshot', ['node', 'coral-cli', 'wait', 'jobs', 'a', '--now']);
+  invocation = new WaitInvocation('snapshot', ['node', 'coral-cli', 'wait', 'jobs', 'a', '--snapshot']);
   installWaitInvocation(invocation);
   await program().parseAsync([
     'node',
@@ -44,12 +44,12 @@ it('commits only a complete validated snapshot, preserves --now, and cannot ackn
     'wait',
     'jobs',
     'a',
-    '--now',
+    '--snapshot',
     '--cursor',
     Buffer.from(JSON.stringify({ afterSeq: 0 })).toString('base64url'),
   ]);
   expect(output).toContain(WAIT_CURSOR_REPLAY_NOTICE);
-  expect(output).toContain(' --now --cursor ');
+  expect(output).toContain(' --snapshot --cursor ');
   expect(process.exitCode).toBe(75);
   client.snapshotJobsWait.mockResolvedValue({ ...snapshot, jobs: [{ jobId: 'a' }] });
   let errorOutput = '';
@@ -57,12 +57,12 @@ it('commits only a complete validated snapshot, preserves --now, and cannot ackn
     errorOutput += text;
     return true;
   }) as never);
-  await program().parseAsync(['node', 'coral-cli', 'wait', 'jobs', 'a', '--now']);
+  await program().parseAsync(['node', 'coral-cli', 'wait', 'jobs', 'a', '--snapshot']);
   expect(process.exitCode).toBe(75);
   expect(errorOutput).toContain('transient');
   expect(errorOutput).toContain('invalid snapshot');
   expect(errorOutput).toContain('No collection cursor advanced');
-  expect(errorOutput).toContain('Run coral-cli wait jobs a --now');
+  expect(errorOutput).toContain('Run coral-cli wait jobs a --snapshot');
 });
 
 it('answers an older coordinator without the snapshot method with the restart refusal', async () => {

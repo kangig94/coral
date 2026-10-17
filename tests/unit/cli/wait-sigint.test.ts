@@ -199,7 +199,7 @@ it('a saved cursor from an older build is refused softly and the collection rest
 
 it.each([
   [['wait', 'jobs', '--cursor=saved', '--embed', 'a', 'b'], 'bounded'],
-  [['wait', 'jobs', '--now', 'a'], 'snapshot'],
+  [['wait', 'jobs', '--snapshot', 'a'], 'snapshot'],
   [['wait', 'jobs', 'a', '--help'], undefined],
   [['jobs', 'detail', 'a'], undefined],
 ] as const)('recognizes accepted invocation syntax before preflight: %j', (args, mode) => {
@@ -210,7 +210,7 @@ it.each([
     .argument('<ids...>')
     .option('--cursor <cursor>')
     .option('--embed')
-    .option('--now');
+    .option('--snapshot');
   expect(waitInvocationMode(program, ['node', 'coral-cli', ...args])).toBe(mode);
 });
 

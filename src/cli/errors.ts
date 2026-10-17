@@ -17,6 +17,7 @@ import {
 } from '../runtime/errors.js';
 import { ChildPrincipalBindingError } from '../transport/ipc/child-principal-auth.js';
 import { IpcDrainRequestUnanswered, IpcLifecycleRefusal, IpcRpcError } from '../transport/ipc/client.js';
+import { waitContinuationCommand, waitContinuationShell, type WaitContinuationMode } from './format/wait.js';
 
 export type StoreResetCliErrorCode =
   | 'invalid_store_reset_incident_id'
@@ -121,11 +122,15 @@ export class WaitResumeError extends Error {
   readonly exitCode = 75;
   readonly remediation: string;
 
-  constructor(message: string, jobIds: readonly string[], serializedCursor?: string) {
+  constructor(
+    message: string,
+    jobIds: readonly string[],
+    serializedCursor: string | undefined,
+    continuationMode: WaitContinuationMode,
+  ) {
     super(message);
     this.name = 'WaitResumeError';
-    const cursorArg = serializedCursor === undefined ? '' : ` --cursor ${serializedCursor}`;
-    this.remediation = `Rerun \`coral-cli wait jobs ${jobIds.join(' ')}${cursorArg}\` to continue waiting.`;
+    this.remediation = `Rerun \`${waitContinuationCommand(jobIds, serializedCursor ?? null, continuationMode)}\`${waitContinuationShell(continuationMode)} to continue waiting.`;
   }
 }
 

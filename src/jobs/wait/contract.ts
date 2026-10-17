@@ -67,6 +67,12 @@ type TerminalWaitEvent = {
 };
 /** A null cursor resumes as a fresh collection. */
 type Final = { cursor: WaitCursor | null; exitCode: number };
+/**
+ * Why a read ended without a new terminal. Only `deadline` and `progress-budget` are cuts a reader may resume past
+ * without asking again; `unanswered` means a remaining job could not be read, or the cut names no new position to resume from. A coordinator older than this
+ * field omits it, and a reader treats an absent value as one it may not resume past.
+ */
+export type WaitEndedBy = 'settled' | 'deadline' | 'progress-budget' | 'unanswered';
 type TerminalBlock = TerminalWaitEvent & { availability: ResultAvailability; resultPath?: string; epochKey?: string };
 export type WaitStreamEvent =
   | { type: 'notice'; message: string }
@@ -86,7 +92,7 @@ export type WaitStreamEvent =
   | (TerminalBlock & Final)
   | TerminalBlock
   | CarrierInterruptedWaitEvent
-  | (Final & { type: 'waiting'; waitingJobIds: string[]; carrierUnknownJobIds?: string[] });
+  | (Final & { type: 'waiting'; waitingJobIds: string[]; carrierUnknownJobIds?: string[]; endedBy?: WaitEndedBy });
 
 export function isFinalWaitEvent(event: WaitStreamEvent): event is Extract<WaitStreamEvent, Final> {
   return 'exitCode' in event && event.exitCode !== undefined;
