@@ -242,6 +242,46 @@ export type ProviderInterruptRequestOutcome =
   | Readonly<{ kind: 'accepted' }>
   | Readonly<{ kind: 'not-accepted'; reason: string }>;
 
+export const providerSendInputSchema = z
+  .object({ text: z.string().min(1), clientMessageId: z.string().uuid() })
+  .strict();
+export type ProviderSendInput = Readonly<z.infer<typeof providerSendInputSchema>>;
+
+export const providerSendOutcomeSchema = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('delivered') }).strict(),
+  z
+    .object({
+      state: z.literal('refused'),
+      code: z.enum([
+        'turn_not_started',
+        'turn_ended',
+        'job_not_running',
+        'control_unavailable',
+        'transport_unsupported',
+        'unsupported_by_running_build',
+        'scope_mismatch',
+        'not_found',
+        'provider_rejected',
+      ]),
+      reason: z.string(),
+    })
+    .strict(),
+  z.object({ state: z.literal('unknown'), reason: z.string() }).strict(),
+]);
+/** An unknown send outcome must never authorize replay. */
+export type ProviderSendOutcome = Readonly<z.infer<typeof providerSendOutcomeSchema>>;
+
+export type ProviderSteeringAdmission =
+  | Readonly<{ state: 'admitted' }>
+  | Readonly<{ state: 'refused'; code: 'turn_not_started' | 'turn_ended'; reason: string }>;
+
+export interface ProviderSteeringPort {
+  /** Admission must run synchronously before the send write. */
+  admit(continuity: ProviderContinuityBlob, clientMessageId: string): ProviderSteeringAdmission;
+  /** Delivered and unknown outcomes must retain an unread steer. */
+  reportOutcome(clientMessageId: string, outcome: ProviderSendOutcome): void;
+}
+
 export type ProviderTurnTerminalEvidence = Readonly<{
   kind: 'provider-turn-terminal';
   providerTurnId: string;
@@ -256,6 +296,7 @@ export type ProviderTurnSettlement = Readonly<{
 
 export interface AppServerSession extends AppServerTransport {
   interrupt(continuity: ProviderContinuityBlob): Promise<ProviderInterruptRequestOutcome>;
+  send?(continuity: ProviderContinuityBlob, input: ProviderSendInput): Promise<ProviderSendOutcome>;
 }
 
 export type ProviderCurationRequest = {
@@ -570,6 +611,7 @@ export type ProviderAppServerRuntime<Plan extends ProviderExecutionPlan = Provid
   ProviderRuntimeCommon<Plan> & {
     readonly transport: 'app-server';
     readonly appServerSession: AppServerSession;
+    onProviderSteering?(port: ProviderSteeringPort): void;
     onProviderTurnStart?(): void;
     onProviderTurnNotSubmitted?(): void;
     onProviderTurnTerminal(evidence: ProviderTurnTerminalEvidence): void;
@@ -632,6 +674,11 @@ export interface ProviderAppServerCapability<
   planHost(input: ProviderHostPlanningInput<Access>): Plan['host'];
   compileStableHost(host: Plan['host']): ProviderServerSpec;
   interrupt?(session: AppServerTransport, continuity: ProviderContinuityBlob): Promise<ProviderInterruptRequestOutcome>;
+  send?(
+    session: AppServerTransport,
+    continuity: ProviderContinuityBlob,
+    input: ProviderSendInput,
+  ): Promise<ProviderSendOutcome>;
   probe?(
     session: AppServerTransport,
     continuity: ProviderContinuityBlob,

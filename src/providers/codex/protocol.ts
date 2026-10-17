@@ -93,6 +93,19 @@ export interface TurnStartResponse {
   turn: Turn;
 }
 
+export const turnSteerParamsSchema = z
+  .object({
+    threadId: z.string().min(1),
+    clientUserMessageId: z.string().nullable().optional(),
+    input: z.array(z.object({ type: z.string(), text: z.string(), text_elements: z.array(z.unknown()) })),
+    expectedTurnId: z.string().min(1),
+  })
+  .strict();
+export type TurnSteerParams = z.infer<typeof turnSteerParamsSchema>;
+
+export const turnSteerResponseSchema = z.object({ turnId: z.string().min(1) }).strict();
+export type TurnSteerResponse = z.infer<typeof turnSteerResponseSchema>;
+
 interface TurnInterruptParams {
   threadId: string;
   turnId: string;
@@ -131,6 +144,7 @@ interface AppServerMethodMap {
   'thread/start': { params: ThreadStartParams; result: ThreadStartResponse };
   'thread/resume': { params: ThreadResumeParams; result: ThreadResumeResponse };
   'turn/start': { params: TurnStartParams; result: TurnStartResponse };
+  'turn/steer': { params: TurnSteerParams; result: TurnSteerResponse };
   'turn/interrupt': { params: TurnInterruptParams; result: TurnInterruptResponse };
 }
 

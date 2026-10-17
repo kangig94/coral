@@ -156,6 +156,11 @@ function capability(overrides: Partial<BoundProviderAppServerCapability> = {}): 
   return {
     supportsInterrupt: false,
     supportsProbe: true,
+    send: vi.fn(async () => ({
+      state: 'refused' as const,
+      code: 'transport_unsupported' as const,
+      reason: 'test refusal',
+    })),
     openReplacement: vi.fn(),
     interrupt: vi.fn(async () => ({ kind: 'not-accepted' as const, reason: 'test refusal' })),
     probe: vi.fn(async () => ({ kind: 'probed' as const, result: { resumable: true } })),

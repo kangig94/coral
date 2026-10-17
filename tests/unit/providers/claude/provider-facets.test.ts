@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { TEST_CLAUDE_ACCESS } from '../../../helpers/provider-credentials.js';
-import { claudePreflight } from '#src/providers/claude/provider-facets.js';
+import { claudeAppServerLifecycle, claudePreflight } from '#src/providers/claude/provider-facets.js';
 import { claudeArtifactCapability } from '#src/providers/claude/artifacts.js';
-import type { ArtifactCleanupRuntime, ProviderPreflightRuntime } from '#src/providers/contract.js';
+import type { AppServerTransport, ArtifactCleanupRuntime, ProviderPreflightRuntime } from '#src/providers/contract.js';
 import type { ClaudeProviderAccess } from '#src/providers/claude/execution-plan.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 
@@ -123,5 +123,27 @@ describe('claudeArtifactCapability', () => {
     expect(reconciled).toEqual({ kind: 'applied', outcome: { kind: 'discarded' } });
     if (reconciled.kind !== 'applied') await claudeArtifactCapability.discardArtifacts(action);
     expect(unlink).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('claudeAppServerLifecycle.send', () => {
+  it('refuses send in PR1 without contacting the print or TUI transport', async () => {
+    const rpc = vi.fn();
+    const transport: AppServerTransport = {
+      rpc: rpc as AppServerTransport['rpc'],
+      subscribe: () => () => {},
+      closed: new Promise(() => {}),
+    };
+    await expect(
+      claudeAppServerLifecycle.send!(
+        transport,
+        {},
+        {
+          text: 'Change direction',
+          clientMessageId: '33333333-3333-4333-8333-333333333333',
+        },
+      ),
+    ).resolves.toMatchObject({ state: 'refused', code: 'transport_unsupported' });
+    expect(rpc).not.toHaveBeenCalled();
   });
 });

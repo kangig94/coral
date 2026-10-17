@@ -12,8 +12,11 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import type { AppServerTransport, HostRef } from '#src/providers/contract.js';
+import { TEST_CODEX_BINDING } from '#tests/helpers/provider-credentials.js';
+import { createDeferred } from '#tools/testing/deferred.js';
 import type { ProviderBindingRuntime } from '#src/providers/contracts/binding.js';
 import { createBuiltInProviderRegistry as createUnconnectedBuiltInProviderRegistry } from '#src/providers/bootstrap.js';
 import { providerLookupPortFromCatalog } from '#src/providers/catalog.js';
@@ -274,5 +277,114 @@ describe('provider binding lifecycle', () => {
     expect(durableBytes).not.toContain(secret);
     expect(durableBytes).not.toContain('private@example.test');
     db.close();
+  });
+});
+
+describe('bound provider send', () => {
+  const input = { text: 'Change direction', clientMessageId: '33333333-3333-4333-8333-333333333333' };
+  const continuity = { cwd: '/workspace', threadId: 'thread-1', turnId: 'turn-1' };
+  const hostPreparation = {
+    hostRoot: '/test/plugin/bridge',
+    jobId: 'job-send',
+    request: {
+      action: 'exec' as const,
+      sessionId: 'session-send',
+      prompt: 'Initial prompt',
+      cwd: fixtureCanonicalWorkDir('/workspace'),
+      bypassPermissions: false,
+      coralEnv: {},
+    },
+    persistedContinuity: continuity,
+    baseEnv: {},
+    platform: 'linux',
+    storage: { existsSync: () => false },
+  };
+
+  function fixture(options: { missing?: boolean; answer?: Promise<unknown> } = {}) {
+    const hostRef: HostRef = {
+      provider: 'codex',
+      fingerprint: 'host-fingerprint',
+      instanceId: 'host-instance',
+      leaseMode: 'shared',
+    };
+    const rpc = vi.fn(() => options.answer ?? Promise.resolve({ turnId: 'turn-1' }));
+    const transport: AppServerTransport = {
+      rpc: rpc as AppServerTransport['rpc'],
+      subscribe: () => () => {},
+      closed: new Promise(() => {}),
+    };
+    const close = vi.fn();
+    const openSession = vi.fn(async () => {
+      throw new Error('send must never open a host');
+    });
+    const attachSession = vi.fn(async () => (options.missing ? null : { session: transport, hostRef, close }));
+    const registry = createUnconnectedBuiltInProviderRegistry();
+    registry.connectAppServerHost({ openSession, attachSession });
+    const bound = registry.rehydrateBinding(TEST_CODEX_BINDING);
+    if (!bound.ok || bound.value.appServer === undefined) throw new Error('Expected bound Codex app-server');
+    return { appServer: bound.value.appServer, hostRef, rpc, close, openSession, attachSession };
+  }
+
+  it('attaches the exact retained host with the compiled execution spec and job id, then releases only its temporary lease', async () => {
+    const h = fixture();
+    await expect(h.appServer.send(h.hostRef, continuity, input, hostPreparation)).resolves.toEqual({
+      state: 'delivered',
+    });
+    expect(h.attachSession).toHaveBeenCalledExactlyOnceWith(h.hostRef, {
+      spec: expect.objectContaining({ provider: 'codex', command: 'codex', leaseMode: 'shared' }),
+      jobId: hostPreparation.jobId,
+    });
+    expect(h.rpc).toHaveBeenCalledExactlyOnceWith(
+      'turn/steer',
+      expect.objectContaining({
+        expectedTurnId: 'turn-1',
+        clientUserMessageId: input.clientMessageId,
+      }),
+    );
+    expect(h.close).toHaveBeenCalledTimes(1);
+    expect(h.openSession).not.toHaveBeenCalled();
+  });
+
+  it('refuses when the exact host is gone instead of opening a replacement', async () => {
+    const h = fixture({ missing: true });
+    await expect(h.appServer.send(h.hostRef, continuity, input, hostPreparation)).resolves.toMatchObject({
+      state: 'refused',
+      code: 'control_unavailable',
+    });
+    expect(h.rpc).not.toHaveBeenCalled();
+    expect(h.openSession).not.toHaveBeenCalled();
+    expect(h.close).not.toHaveBeenCalled();
+  });
+
+  it('refuses a host for a different provider before attaching or writing', async () => {
+    const h = fixture();
+    await expect(
+      h.appServer.send({ ...h.hostRef, provider: 'claude' }, continuity, input, hostPreparation),
+    ).resolves.toMatchObject({
+      state: 'refused',
+      code: 'control_unavailable',
+    });
+    expect(h.attachSession).not.toHaveBeenCalled();
+    expect(h.openSession).not.toHaveBeenCalled();
+    expect(h.rpc).not.toHaveBeenCalled();
+  });
+
+  it('releases the temporary lease after an unanswerable send without touching the live host', async () => {
+    const answer = createDeferred<unknown>();
+    const h = fixture({ answer: answer.promise });
+    const pending = h.appServer.send(h.hostRef, continuity, input, hostPreparation);
+    answer.reject(new Error('transport closed'));
+    await expect(pending).resolves.toEqual({ state: 'unknown', reason: 'transport closed' });
+    expect(h.close).toHaveBeenCalledTimes(1);
+    expect(h.openSession).not.toHaveBeenCalled();
+  });
+
+  it('validates send input before attaching the provider host', async () => {
+    const h = fixture();
+    await expect(
+      h.appServer.send(h.hostRef, continuity, { ...input, clientMessageId: 'not-a-uuid' }, hostPreparation),
+    ).rejects.toThrow();
+    expect(h.attachSession).not.toHaveBeenCalled();
+    expect(h.rpc).not.toHaveBeenCalled();
   });
 });

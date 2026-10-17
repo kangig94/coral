@@ -1,3 +1,4 @@
+import { providerSendInputSchema } from '../contract.js';
 import {
   bindingFailure,
   bindingSuccess,
@@ -150,10 +151,20 @@ function providerAppServerSession<Plan extends ProviderExecutionPlan>(
   transport: AppServerTransport,
   capability: ProviderAppServerImplementation<Plan>['appServer'],
 ): AppServerSession {
-  return Object.freeze({
+  return Object.freeze<AppServerSession>({
     rpc: transport.rpc.bind(transport),
     subscribe: transport.subscribe.bind(transport),
     closed: transport.closed,
+    send: async (continuity, input) => {
+      if (capability.send === undefined) {
+        return { state: 'refused', code: 'transport_unsupported', reason: 'The provider does not support send.' };
+      }
+      return capability.send(
+        transport,
+        snapshotBoundaryData(continuity, 'Provider send continuity'),
+        providerSendInputSchema.parse(snapshotBoundaryData(input, 'Provider send input')),
+      );
+    },
     interrupt: async (continuity: NonNullable<ProviderRuntime['persistedContinuity']>) => {
       if (capability.interrupt === undefined) {
         return { kind: 'not-accepted' as const, reason: 'The provider does not support interruption.' };
@@ -357,6 +368,30 @@ async function interruptBoundAppServer<Plan extends ProviderExecutionPlan>(
   }
   try {
     return await attached.session.interrupt(continuity);
+  } finally {
+    attached.managed.close();
+  }
+}
+
+async function sendBoundAppServer<Plan extends ProviderExecutionPlan>(
+  tools: BoundAppServerTools<Plan>,
+  hostRef: HostRef,
+  continuity: NonNullable<ProviderRuntime['persistedContinuity']>,
+  input: Parameters<BoundProviderAppServerCapability['send']>[2],
+  hostPreparation: Parameters<BoundProviderAppServerCapability['send']>[3],
+): ReturnType<BoundProviderAppServerCapability['send']> {
+  const canonicalInput = providerSendInputSchema.parse(snapshotBoundaryData(input, 'Provider send input'));
+  const canonicalContinuity = snapshotBoundaryData(continuity, 'Provider send continuity');
+  if (tools.capability.send === undefined) {
+    return { state: 'refused', code: 'transport_unsupported', reason: 'The provider does not support send.' };
+  }
+  const attached = await attachExpectedBoundSession(tools, hostRef, hostPreparation, 'Provider send host reference');
+  if (attached === null) {
+    return { state: 'refused', code: 'control_unavailable', reason: 'The active provider host could not be attached.' };
+  }
+  try {
+    const session = wrapAppServerSession(attached.session, 'Provider send session');
+    return await session.send!(canonicalContinuity, canonicalInput);
   } finally {
     attached.managed.close();
   }
@@ -606,6 +641,8 @@ function createBoundAppServerLifecycle<Plan extends ProviderExecutionPlan, Acces
       completeBoundAppServerCuration(tools, hostPlan, signal, operation),
     openReplacement: (input, runtime) => openBoundReplacement(tools, input, runtime),
     interrupt: (hostRef, continuity, input) => interruptBoundAppServer(tools, hostRef, continuity, input),
+    send: (hostRef, continuity, input, hostPreparation) =>
+      sendBoundAppServer(tools, hostRef, continuity, input, hostPreparation),
     probe: (hostRef, continuity, input) => probeBoundAppServer(tools, decodeContinuity, hostRef, continuity, input),
   };
   return Object.freeze(lifecycle);

@@ -13,6 +13,7 @@ import type {
   HostRef,
   ProviderTurnTerminalEvidence,
   ProviderTurnSettlement,
+  ProviderSteeringPort,
 } from '../contract.js';
 import { buildProviderFailureMessage } from '../app-server.js';
 import { providerHostUnserviceableTerminalWarning, ProviderHostUnserviceableResponseError } from '../host-admission.js';
@@ -106,6 +107,7 @@ export type TurnAttempt = {
   subagentThreadIds: Set<string>;
   interruptRequest: Promise<'accepted' | 'failed'> | null;
   finalAnswerSeen: boolean;
+  unreadSteers: Set<string>;
   pendingCollaborations: Set<string>;
   activeSubagentTurns: Set<string>;
   completionTimer: ReturnType<TimePort['setTimeout']> | null;
@@ -171,6 +173,7 @@ function createAttempt(sequence: number): TurnAttempt {
     subagentThreadIds: new Set(),
     interruptRequest: null,
     finalAnswerSeen: false,
+    unreadSteers: new Set(),
     pendingCollaborations: new Set(),
     activeSubagentTurns: new Set(),
     completionTimer: null,
@@ -434,7 +437,8 @@ function scheduleInferredCompletion(state: CodexTurnState, attempt = state.activ
     attempt.completed ||
     attempt.finalTurn ||
     !attempt.finalAnswerSeen ||
-    attempt.awaitingExplicitCompletion
+    attempt.awaitingExplicitCompletion ||
+    attempt.unreadSteers.size > 0
   ) {
     return;
   }
@@ -451,7 +455,8 @@ function scheduleInferredCompletion(state: CodexTurnState, attempt = state.activ
       attempt.completed ||
       attempt.finalTurn ||
       !attempt.finalAnswerSeen ||
-      attempt.awaitingExplicitCompletion
+      attempt.awaitingExplicitCompletion ||
+      attempt.unreadSteers.size > 0
     ) {
       return;
     }
@@ -509,6 +514,36 @@ function shorten(text: unknown, limit = 72): string {
     return normalized;
   }
   return `${normalized.slice(0, limit - 3)}...`;
+}
+
+function createSteeringPort(state: CodexTurnState): ProviderSteeringPort {
+  return Object.freeze<ProviderSteeringPort>({
+    admit(continuity, clientMessageId) {
+      const attempt = state.activeAttempt;
+      if (state.finalized || attempt.completed || attempt.finalAnswerSeen) {
+        return { state: 'refused', code: 'turn_ended', reason: 'The Codex turn has ended.' };
+      }
+      const parsed = readCodexPersistedContinuity(continuity);
+      if (attempt.turnId === null || parsed.turnId !== attempt.turnId || parsed.threadId !== state.threadId) {
+        return { state: 'refused', code: 'turn_not_started', reason: 'The current Codex turn has not been claimed.' };
+      }
+      attempt.unreadSteers.add(clientMessageId);
+      clearCompletionTimer(state, attempt);
+      return { state: 'admitted' };
+    },
+    reportOutcome(clientMessageId, outcome) {
+      if (outcome.state !== 'refused') return;
+      const attempt = state.activeAttempt;
+      if (attempt.unreadSteers.delete(clientMessageId)) scheduleInferredCompletion(state, attempt);
+    },
+  });
+}
+
+function emitUnreadSteers(attempt: TurnAttempt, emit: (event: ProviderEventBody) => void): void {
+  for (const clientMessageId of attempt.unreadSteers) {
+    emitProgress(emit, `Sent message ${clientMessageId} was not read before the turn ended`);
+  }
+  attempt.unreadSteers.clear();
 }
 
 function describeStartedItem(item: Record<string, unknown>): string | null {
@@ -599,6 +634,19 @@ function handleItemNotification(
   const params = notification.params as { item?: Record<string, unknown>; threadId?: unknown } | undefined;
   if (!params?.item) {
     return;
+  }
+
+  if (
+    lifecycle === 'started' &&
+    params.item.type === 'userMessage' &&
+    params.threadId === state.threadId &&
+    notification.params?.turnId === attempt.turnId &&
+    typeof params.item.clientId === 'string' &&
+    attempt.unreadSteers.delete(params.item.clientId)
+  ) {
+    attempt.finalAnswerSeen = false;
+    clearCompletionTimer(state, attempt);
+    emitProgress(emit, `Sent message ${params.item.clientId} read by the agent`);
   }
 
   recordItem(state, attempt, params.item, lifecycle, readString(params.threadId) ?? null);
@@ -1257,6 +1305,7 @@ async function finishInvocation(
     return null;
   }
   state.finalized = true;
+  if (result.kind !== 'suspended') emitUnreadSteers(state.activeAttempt, emit);
 
   if (result.kind === 'completed') {
     state.finalErrorMessage = turnFailureMessage(result.turn, result.attempt.terminalErrors);
@@ -1316,6 +1365,7 @@ export const codexTurnKernel: Provider<
     const lease = runtime.appServerSession;
     const state = createState(request, runtime);
     state.lease = lease;
+    runtime.onProviderSteering?.(createSteeringPort(state));
     const clearNotificationBinding = lease.subscribe((message) => {
       applyNotification(state, message, emit);
     });
@@ -1362,6 +1412,7 @@ export const codexTurnKernel: Provider<
         ) {
           turnSettlement?.close();
           turnSettlement = null;
+          emitUnreadSteers(attempt, emit);
           await retireAttempt(state, attempt);
           emitProgress(
             emit,

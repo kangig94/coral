@@ -154,6 +154,7 @@ function fakeBoundProvider(options: {
       supportsInterrupt: options.supportsInterrupt ?? false,
       supportsProbe: false,
       openReplacement: options.openReplacement ?? (async () => ({ hostRef: fakeHostRef(name), close: vi.fn() })),
+      send: unreachable('appServer.send') as unknown as BoundProviderAppServerCapability['send'],
       interrupt: unreachable('appServer.interrupt') as unknown as BoundProviderAppServerCapability['interrupt'],
       probe: unreachable('appServer.probe') as unknown as BoundProviderAppServerCapability['probe'],
     },

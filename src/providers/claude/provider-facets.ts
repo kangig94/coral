@@ -171,6 +171,13 @@ export const claudeAppServerLifecycle: ProviderAppServerCapability<ClaudeExecuti
     }),
   compileStableHost: (host) =>
     buildClaudeProviderServerSpec(compileClaudeBrokerHost({ platform: host.platform, broker: host.broker })),
+  async send() {
+    return {
+      state: 'refused',
+      code: 'transport_unsupported',
+      reason: 'This Coral build does not support sending to Claude jobs.',
+    };
+  },
   async interrupt(
     transport: AppServerTransport,
     continuity: ProviderContinuityBlob,
