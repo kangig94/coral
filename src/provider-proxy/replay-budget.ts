@@ -51,7 +51,7 @@ export class ReplayBudget {
     this.#completionCapacityBytes = completionCapacityBytes;
   }
 
-  commit(
+  preflight(
     input: Readonly<{ kind: ReplayAdmissionKind; frameBytes: number; completionSlotLimitBytes: number }>,
   ): ReplayCharge {
     requireByteCount(input.frameBytes, 'Replay frame bytes');
@@ -67,7 +67,13 @@ export class ReplayBudget {
       throw new ReplayAdmissionError('completion-frame-bytes', 'The proxy completion replay slots are exhausted.');
     }
 
-    const charge = Object.freeze({ sharedBytes, completionSlotBytes });
+    return Object.freeze({ sharedBytes, completionSlotBytes });
+  }
+
+  commit(
+    input: Readonly<{ kind: ReplayAdmissionKind; frameBytes: number; completionSlotLimitBytes: number }>,
+  ): ReplayCharge {
+    const charge = this.preflight(input);
     this.#sharedBytes += charge.sharedBytes;
     this.#completionSlotBytes += charge.completionSlotBytes;
     return charge;

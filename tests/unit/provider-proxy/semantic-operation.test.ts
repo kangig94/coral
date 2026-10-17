@@ -973,6 +973,20 @@ describe('semantic-operation send admission', () => {
     await h.close();
   });
 
+  it('releases the kernel steering latch when the supervisor refuses record admission without writing', async () => {
+    const h = await fixture();
+    await h.submit();
+    await h.checkpoint();
+    await h.ack();
+    const admission = h.admit();
+    if (admission.state !== 'admitted') throw new Error('Expected send admission');
+    const refusal = { state: 'refused', code: 'control_unavailable', reason: 'Replay budget exhausted.' } as const;
+    admission.refuse(refusal);
+    expect(h.steering?.reportOutcome).toHaveBeenCalledExactlyOnceWith(input.clientMessageId, refusal);
+    expect(h.send).not.toHaveBeenCalled();
+    await h.close();
+  });
+
   it('refuses a thread checkpoint without a current turn as not started', async () => {
     const h = await fixture({ continuity: { threadId: 'thread-current' } });
     await h.submit();

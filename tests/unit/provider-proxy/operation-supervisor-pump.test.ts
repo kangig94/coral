@@ -7,7 +7,11 @@ import type { HostRef } from '#src/providers/contract.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { attachContinuityCommit } from '#src/providers/internal/continuity-commit.js';
 import { ControlEndpointError, type ControlEndpointTimer } from '#src/provider-proxy/control-endpoint.js';
-import { operationPrepareAttemptKey } from '#src/provider-proxy/ledger.js';
+import {
+  MAX_PROVIDER_REPLAY_BYTES,
+  MAX_PROVIDER_REPLAY_EVENTS,
+  operationPrepareAttemptKey,
+} from '#src/provider-proxy/ledger.js';
 import {
   OPERATION_RELEASE_RETRY_MS,
   OperationSupervisor,
@@ -16,7 +20,11 @@ import {
   type ProviderEventControlFault,
   type SemanticOperationHost,
 } from '#src/provider-proxy/operation-supervisor.js';
-import { PROXY_EVENT_COMMIT_TIMEOUT_MS, type OperationIdentity } from '#src/provider-proxy/protocol.js';
+import {
+  PROXY_EVENT_COMMIT_TIMEOUT_MS,
+  providerEventRequestSchema,
+  type OperationIdentity,
+} from '#src/provider-proxy/protocol.js';
 import type { ProxyPreparedAppServerOperation } from '#src/provider-proxy/protocol.js';
 import {
   asJointActivationReceipt,
@@ -450,6 +458,7 @@ it('refuses a send before publication without calling runner admission', async (
       }),
     ).resolves.toMatchObject({ state: 'refused', code: 'turn_not_started' });
     expect(admitSend).not.toHaveBeenCalled();
+    expect(h.supervisor.ledger().get(h.operation)?.bufferedEvents).toEqual([]);
   } finally {
     h.supervisor.close();
   }
@@ -458,7 +467,7 @@ it('refuses a send before publication without calling runner admission', async (
 it('starts an admitted send synchronously and lets stop finish while its write is pending', async () => {
   const answer = deferred<{ state: 'unknown'; reason: string }>();
   const write = vi.fn(() => answer.promise);
-  const admitSend = vi.fn(() => ({ state: 'admitted' as const, write }));
+  const admitSend = vi.fn(() => ({ state: 'admitted' as const, refuse: vi.fn(), write }));
   const h = await executingSupervisor(
     () => {
       throw new Error('Unexpected event');
@@ -495,7 +504,7 @@ it('starts an admitted send synchronously and lets stop finish while its write i
 it('refuses a send after terminal and permits settlement while an earlier send is pending', async () => {
   const answer = deferred<{ state: 'unknown'; reason: string }>();
   const write = vi.fn(() => answer.promise);
-  const admitSend = vi.fn(() => ({ state: 'admitted' as const, write }));
+  const admitSend = vi.fn(() => ({ state: 'admitted' as const, refuse: vi.fn(), write }));
   const h = await executingSupervisor(
     () => {
       throw new Error('Unexpected event');
@@ -503,6 +512,7 @@ it('refuses a send after terminal and permits settlement while an earlier send i
     true,
     admitSend,
   );
+  const emit = vi.spyOn(h.supervisor, 'emitProviderEvent');
   const input = { text: 'Change direction', clientMessageId: '33333333-3333-4333-8333-333333333333' };
   try {
     const pending = h.supervisor.send(h.operation, input);
@@ -528,6 +538,219 @@ it('refuses a send after terminal and permits settlement while an earlier send i
     expect(admitSend).toHaveBeenCalledTimes(1);
     answer.resolve({ state: 'unknown', reason: 'Released host' });
     await expect(pending).resolves.toMatchObject({ state: 'unknown' });
+    expect(emit).toHaveBeenCalledTimes(2);
+  } finally {
+    emit.mockRestore();
+    h.supervisor.close();
+  }
+});
+
+it.each(['stop', 'terminal'] as const)('refuses without a send record when %s wins admission', async (winner) => {
+  const write = vi.fn(async () => ({ state: 'delivered' as const, providerTurnId: 'turn-current' }));
+  const admitSend = vi.fn(() => ({ state: 'admitted' as const, refuse: vi.fn(), write }));
+  const h = await executingSupervisor(
+    () => {
+      throw new Error('Unexpected push');
+    },
+    true,
+    admitSend,
+  );
+  try {
+    if (winner === 'stop') {
+      await h.supervisor.stop(h.operation, 'user_abort');
+    } else {
+      h.supervisor.emitProviderEvent(h.operation, {
+        kind: 'terminal',
+        terminal: { content: 'done', durationMs: 1, outcome: { kind: 'completed' } },
+        diagnostics: {},
+      });
+    }
+    const before = h.supervisor.ledger().get(h.operation)?.bufferedEvents;
+    await expect(
+      h.supervisor.send(h.operation, { text: 'Change direction', clientMessageId: randomUUID() }),
+    ).resolves.toMatchObject({
+      state: 'refused',
+      code: 'turn_ended',
+    });
+    expect(h.supervisor.ledger().get(h.operation)?.bufferedEvents).toEqual(before);
+    expect(admitSend).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
+  } finally {
+    h.supervisor.close();
+  }
+});
+
+it('records the send synchronously before the write and an immediate completion, then settles the final sequence', async () => {
+  const input = { text: 'Change direction', clientMessageId: '33333333-3333-4333-8333-333333333333' };
+  const write = vi.fn(async () => ({ state: 'delivered' as const, providerTurnId: 'turn-current' }));
+  const h = await executingSupervisor(
+    () => {
+      throw new Error('Unexpected push before the controlled clock advances');
+    },
+    true,
+    () => ({ state: 'admitted', refuse: vi.fn(), write }),
+  );
+  write.mockImplementation(async () => {
+    const buffered = h.supervisor.ledger().get(h.operation)?.bufferedEvents ?? [];
+    expect(buffered).toHaveLength(1);
+    const record = providerEventRequestSchema.parse((JSON.parse(buffered[0]!.frame) as { params: unknown }).params);
+    expect(record).toMatchObject({
+      operation: h.operation,
+      providerSeq: 1,
+      event: {
+        kind: 'progress',
+        message: `Sending message ${input.clientMessageId} (jobs send): Change direction. This line does not prove delivery.`,
+      },
+    });
+    expect(
+      h.supervisor.emitProviderEvent(h.operation, {
+        kind: 'terminal',
+        terminal: { content: 'done', durationMs: 1, outcome: { kind: 'completed' } },
+        diagnostics: {},
+      }),
+    ).toEqual({ kind: 'recorded', providerSeq: 2 });
+    return { state: 'delivered', providerTurnId: 'turn-current' };
+  });
+  try {
+    const pending = h.supervisor.send(h.operation, input);
+    expect(write).toHaveBeenCalledOnce();
+    expect(
+      h.supervisor
+        .ledger()
+        .get(h.operation)
+        ?.bufferedEvents.map(({ providerSeq }) => providerSeq),
+    ).toEqual([1, 2]);
+    await expect(pending).resolves.toEqual({ state: 'delivered', providerTurnId: 'turn-current' });
+    expect(h.supervisor.ledger().nextProviderSeq(h.operation)).toBe(3);
+    await h.supervisor.attach(h.operation, 2);
+    await expect(h.supervisor.settle(h.operation, 2)).resolves.toMatchObject({
+      state: 'released-after-terminal',
+      settledThroughProviderSeq: 2,
+    });
+  } finally {
+    h.supervisor.close();
+  }
+});
+
+it('keeps the send record after a write-time refusal without claiming delivery', async () => {
+  const outcome = { state: 'refused', code: 'turn_ended', reason: 'Provider turn ended before the write.' } as const;
+  const write = vi.fn(async () => outcome);
+  const h = await executingSupervisor(
+    () => {
+      throw new Error('Unexpected push');
+    },
+    true,
+    () => ({ state: 'admitted', refuse: vi.fn(), write }),
+  );
+  const clientMessageId = '33333333-3333-4333-8333-333333333333';
+  try {
+    await expect(h.supervisor.send(h.operation, { text: 'Change direction', clientMessageId })).resolves.toEqual(
+      outcome,
+    );
+    const buffered = h.supervisor.ledger().get(h.operation)?.bufferedEvents ?? [];
+    expect(buffered).toHaveLength(1);
+    expect(
+      providerEventRequestSchema.parse((JSON.parse(buffered[0]!.frame) as { params: unknown }).params),
+    ).toMatchObject({
+      providerSeq: 1,
+      event: { kind: 'progress', message: expect.stringContaining(`Sending message ${clientMessageId}`) },
+    });
+    expect(buffered[0]!.frame).toContain('This line does not prove delivery.');
+    expect(write).toHaveBeenCalledOnce();
+  } finally {
+    h.supervisor.close();
+  }
+});
+
+it.each(['events', 'bytes'] as const)(
+  'refuses an exhausted replay %s budget without writing or emitting an emergency terminal',
+  async (budget) => {
+    const refuse = vi.fn();
+    const write = vi.fn(async () => ({ state: 'delivered' as const, providerTurnId: 'turn-current' }));
+    const h = await executingSupervisor(
+      () => {
+        throw new Error('Unexpected push');
+      },
+      true,
+      () => ({ state: 'admitted', refuse, write }),
+    );
+    try {
+      const ledger = h.supervisor.ledger();
+      if (budget === 'events') {
+        for (let providerSeq = 1; providerSeq <= MAX_PROVIDER_REPLAY_EVENTS; providerSeq += 1) {
+          ledger.recordEvent(h.operation, { providerSeq, frame: 'x' }, { kind: 'ordinary' });
+        }
+      } else {
+        ledger.recordEvent(
+          h.operation,
+          { providerSeq: 1, frame: 'x'.repeat(MAX_PROVIDER_REPLAY_BYTES - 1) },
+          { kind: 'ordinary' },
+        );
+      }
+      const before = ledger.get(h.operation);
+      const emit = vi.spyOn(h.supervisor, 'emitProviderEvent');
+      const outcome = await h.supervisor.send(h.operation, {
+        text: 'Change direction',
+        clientMessageId: '33333333-3333-4333-8333-333333333333',
+      });
+      expect(outcome).toMatchObject({ state: 'refused', code: 'control_unavailable' });
+      expect(refuse).toHaveBeenCalledExactlyOnceWith(outcome);
+      expect(write).not.toHaveBeenCalled();
+      expect(emit).not.toHaveBeenCalled();
+      expect(ledger.get(h.operation)).toEqual(before);
+      expect(ledger.get(h.operation)).toMatchObject({ state: 'executing', completionRecorded: false });
+    } finally {
+      h.supervisor.close();
+    }
+  },
+);
+
+it('does not write unless record emission returns recorded', async () => {
+  const refuse = vi.fn();
+  const write = vi.fn(async () => ({ state: 'delivered' as const, providerTurnId: 'turn-current' }));
+  const h = await executingSupervisor(
+    () => {
+      throw new Error('Unexpected push');
+    },
+    true,
+    () => ({ state: 'admitted', refuse, write }),
+  );
+  const emit = vi.spyOn(h.supervisor, 'emitProviderEvent').mockReturnValue({ kind: 'proxy-emergency-terminal' });
+  try {
+    const outcome = await h.supervisor.send(h.operation, {
+      text: 'Change direction',
+      clientMessageId: '33333333-3333-4333-8333-333333333333',
+    });
+    expect(outcome).toMatchObject({ state: 'refused', code: 'control_unavailable' });
+    expect(refuse).toHaveBeenCalledExactlyOnceWith(outcome);
+    expect(write).not.toHaveBeenCalled();
+  } finally {
+    emit.mockRestore();
+    h.supervisor.close();
+  }
+});
+
+it('bounds and flattens the send preview before recording it', async () => {
+  const h = await executingSupervisor(
+    () => {
+      throw new Error('Unexpected push');
+    },
+    true,
+    () => ({
+      state: 'admitted',
+      refuse: vi.fn(),
+      write: async () => ({ state: 'delivered', providerTurnId: 'turn-current' }),
+    }),
+  );
+  try {
+    await h.supervisor.send(h.operation, { text: '\n' + '界'.repeat(300), clientMessageId: randomUUID() });
+    const buffered = h.supervisor.ledger().get(h.operation)?.bufferedEvents ?? [];
+    expect(buffered).toHaveLength(1);
+    const { event } = providerEventRequestSchema.parse((JSON.parse(buffered[0]!.frame) as { params: unknown }).params);
+    expect(event).toMatchObject({ kind: 'progress', message: expect.stringContaining('界'.repeat(239) + '…') });
+    if (event.kind !== 'progress') throw new Error('Expected send progress');
+    expect(event.message).not.toContain('\n');
+    expect(Buffer.byteLength(buffered[0]!.frame, 'utf8')).toBeLessThan(2_000);
   } finally {
     h.supervisor.close();
   }

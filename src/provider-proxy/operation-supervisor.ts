@@ -133,7 +133,11 @@ export interface SemanticOperationHost {
 
 export type SemanticOperationSendAdmission =
   | Extract<ProviderSendOutcome, { state: 'refused' }>
-  | Readonly<{ state: 'admitted'; write(): Promise<ProxyOperationSendResult> }>;
+  | Readonly<{
+      state: 'admitted';
+      refuse(outcome: Extract<ProviderSendOutcome, { state: 'refused' }>): void;
+      write(): Promise<ProxyOperationSendResult>;
+    }>;
 
 export type OperationStageResult =
   | Readonly<{
@@ -615,7 +619,35 @@ export class OperationSupervisor {
       });
     }
     if (admission.state === 'refused') return Promise.resolve(admission);
-    // SEND_RECORD_BEFORE_WRITE: record admission must succeed here, synchronously, before write starts.
+    const preview = input.text.slice(0, 240).replace(/\s+/gu, ' ') + (input.text.length > 240 ? '…' : '');
+    const event: ProviderEventBody = {
+      kind: 'progress',
+      message: `Sending message ${input.clientMessageId} (jobs send): ${preview}. This line does not prove delivery.`,
+    };
+    const message = this.#providerEventMessage(record.key, event);
+    try {
+      // Admission and emission must stay synchronous so no other event can consume the preflighted budget.
+      this.#ledger.preflightEvent(
+        record.key,
+        { providerSeq: message.params.providerSeq, frame: encodeProxyControlFrame(message) },
+        { kind: 'ordinary' },
+      );
+    } catch (error: unknown) {
+      if (!(error instanceof ReplayAdmissionError)) throw error;
+      const refused = { state: 'refused', code: 'control_unavailable', reason: error.message } as const;
+      admission.refuse(refused);
+      return Promise.resolve(refused);
+    }
+    const emission = this.emitProviderEvent(record.key, event);
+    if (emission.kind !== 'recorded') {
+      const refused = {
+        state: 'refused',
+        code: 'control_unavailable',
+        reason: 'The send record was not admitted.',
+      } as const;
+      admission.refuse(refused);
+      return Promise.resolve(refused);
+    }
     return admission.write();
   }
 
@@ -931,15 +963,7 @@ export class OperationSupervisor {
     }
   }
 
-  emitProviderEvent(key: ProviderOperationKey, event: ProviderEventBody): ProviderEventEmissionResult {
-    const record = this.#requireRecord(key);
-    const recordedEvent =
-      record.stopCause === 'coordinator_rekey_refused' && (event.kind === 'terminal' || event.kind === 'suspended')
-        ? providerProxyRekeyRefusalEvent(
-            this.#requireLedger(key).prepared.provider,
-            event.kind === 'suspended' ? event.reason : undefined,
-          )
-        : event;
+  #providerEventMessage(key: ProviderOperationKey, event: ProviderEventBody) {
     const providerSeq = this.#ledger.nextProviderSeq(key);
     const request = providerEventRequestSchema.parse({
       operation: {
@@ -949,14 +973,27 @@ export class OperationSupervisor {
         buildSetId: this.#options.buildSetId,
       },
       providerSeq,
-      event: recordedEvent,
+      event,
     });
-    const message = {
+    return {
       jsonrpc: '2.0',
       id: this.#nextProviderEventFrameId,
       method: PROVIDER_EVENT_METHOD,
       params: request,
     } as const;
+  }
+
+  emitProviderEvent(key: ProviderOperationKey, event: ProviderEventBody): ProviderEventEmissionResult {
+    const record = this.#requireRecord(key);
+    const recordedEvent =
+      record.stopCause === 'coordinator_rekey_refused' && (event.kind === 'terminal' || event.kind === 'suspended')
+        ? providerProxyRekeyRefusalEvent(
+            this.#requireLedger(key).prepared.provider,
+            event.kind === 'suspended' ? event.reason : undefined,
+          )
+        : event;
+    const message = this.#providerEventMessage(key, recordedEvent);
+    const providerSeq = message.params.providerSeq;
     if (encodedProxyControlFrameByteLength(message) > MAX_PROVIDER_REPLAY_BYTES) {
       const emission = this.#recordProxyEmergencyCompletion(
         record,

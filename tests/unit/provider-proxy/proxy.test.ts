@@ -637,6 +637,7 @@ it('serves operation.send.v1 past the endpoint default budget and still accepts 
   const host = fakeHost();
   host.admitSend = () => ({
     state: 'admitted',
+    refuse: vi.fn(),
     write: () => {
       started.resolve();
       return answer.promise;
@@ -645,6 +646,7 @@ it('serves operation.send.v1 past the endpoint default budget and still accepts 
   const controlled = controlledTimer();
   const { control, operation } = await startProxy(host, controlled.timer, {
     readMilliseconds: controlled.readMilliseconds,
+    onProviderEvent: async ({ providerSeq }) => ({ kind: 'ack', committedThroughProviderSeq: providerSeq }),
   });
   const prepared = proxyOperationPrepareResultSchema.parse(
     await strictTestExchange(

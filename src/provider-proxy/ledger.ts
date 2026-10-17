@@ -171,6 +171,11 @@ export interface OperationLedger<Prepared = unknown> {
   completeActivation(key: ProviderOperationKey, fingerprint: string, ack: ProxyOperationActivationReceipt): void;
   beginRelease(key: ProviderOperationKey): void;
   transition(key: ProviderOperationKey, next: ProviderOperationState | 'released'): void;
+  preflightEvent(
+    key: ProviderOperationKey,
+    event: ReplayEvent,
+    admission: Readonly<{ kind: 'ordinary' }> | Readonly<{ kind: 'completion' }>,
+  ): void;
   recordEvent(
     key: ProviderOperationKey,
     event: ReplayEvent,
@@ -316,6 +321,40 @@ export function createOperationLedger<Prepared = unknown>(
     return (last?.providerSeq ?? entry.committedThroughProviderSeq) + 1;
   };
 
+  const preflightEvent: OperationLedger<Prepared>['preflightEvent'] = (key, event, admission) => {
+    const entry = requireEventTarget(key, event);
+    const cost = frameBytes(event);
+    if (admission.kind !== 'ordinary' && admission.kind !== 'completion') {
+      throw new TypeError(`Unsupported replay admission kind '${String((admission as { kind?: unknown }).kind)}'.`);
+    }
+
+    if (admission.kind === 'ordinary') {
+      if (entry.ordinaryEventCount + 1 > MAX_PROVIDER_REPLAY_EVENTS) {
+        throw new ReplayAdmissionError('operation-events', 'The operation replay event budget is exhausted.');
+      }
+      if (entry.sharedBytes + cost > MAX_PROVIDER_REPLAY_BYTES) {
+        throw new ReplayAdmissionError('operation-bytes', 'The operation replay byte budget is exhausted.');
+      }
+    } else {
+      if (entry.completionRecorded) {
+        throw new LedgerError('operation_invalid_transition', 'The operation already recorded a completion.');
+      }
+      const sharedRemainder = Math.max(0, cost - MAX_EMERGENCY_COMPLETION_FRAME_BYTES);
+      if (entry.sharedBytes + sharedRemainder > MAX_PROVIDER_REPLAY_BYTES) {
+        throw new ReplayAdmissionError(
+          'completion-frame-bytes',
+          'The provider completion cannot fit the operation replay byte budget.',
+        );
+      }
+    }
+
+    replayBudget.preflight({
+      kind: admission.kind,
+      frameBytes: cost,
+      completionSlotLimitBytes: MAX_EMERGENCY_COMPLETION_FRAME_BYTES,
+    });
+  };
+
   return {
     prepare({
       key,
@@ -448,36 +487,14 @@ export function createOperationLedger<Prepared = unknown>(
       entry.state = next;
     },
 
+    preflightEvent,
+
     recordEvent(key, event, admission): void {
+      preflightEvent(key, event, admission);
       const entry = requireEventTarget(key, event);
-      const cost = frameBytes(event);
-      if (admission.kind !== 'ordinary' && admission.kind !== 'completion') {
-        throw new TypeError(`Unsupported replay admission kind '${String((admission as { kind?: unknown }).kind)}'.`);
-      }
-
-      if (admission.kind === 'ordinary') {
-        if (entry.ordinaryEventCount + 1 > MAX_PROVIDER_REPLAY_EVENTS) {
-          throw new ReplayAdmissionError('operation-events', 'The operation replay event budget is exhausted.');
-        }
-        if (entry.sharedBytes + cost > MAX_PROVIDER_REPLAY_BYTES) {
-          throw new ReplayAdmissionError('operation-bytes', 'The operation replay byte budget is exhausted.');
-        }
-      } else {
-        if (entry.completionRecorded) {
-          throw new LedgerError('operation_invalid_transition', 'The operation already recorded a completion.');
-        }
-        const sharedRemainder = Math.max(0, cost - MAX_EMERGENCY_COMPLETION_FRAME_BYTES);
-        if (entry.sharedBytes + sharedRemainder > MAX_PROVIDER_REPLAY_BYTES) {
-          throw new ReplayAdmissionError(
-            'completion-frame-bytes',
-            'The provider completion cannot fit the operation replay byte budget.',
-          );
-        }
-      }
-
       const charge = replayBudget.commit({
         kind: admission.kind,
-        frameBytes: cost,
+        frameBytes: frameBytes(event),
         completionSlotLimitBytes: MAX_EMERGENCY_COMPLETION_FRAME_BYTES,
       });
       try {

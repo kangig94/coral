@@ -1320,6 +1320,7 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
     const providerTurnId = continuity.turnId;
     return {
       state: 'admitted',
+      refuse: (outcome) => steering.reportOutcome(input.clientMessageId, outcome),
       write: async (): Promise<ProxyOperationSendResult> => {
         const deadline = new AbortController();
         const timer = runtime.time.setTimeout(() => {

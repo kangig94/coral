@@ -1,10 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 import type * as NodeOs from 'node:os';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { JobStore } from '#src/jobs/store.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
+import { decodeStoredBody } from '#src/store/body-codec.js';
+import type { EventsRow } from '#src/store/schema.js';
+import { loadJobDetail } from '#src/jobs/read-queries.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
@@ -262,6 +266,90 @@ describe('createStoreProviderEventEffectPort', () => {
 });
 
 describe('createProviderEventHandler', () => {
+  it('keeps send, consumption and accounting as separate strict legacy progress records readable by detail and wait', async () => {
+    const { identity } = seedOperation();
+    const handler = createProviderEventHandler(testDeps());
+    const clientMessageId = '33333333-3333-4333-8333-333333333333';
+    const messages = [
+      `Sending message ${clientMessageId} (jobs send): Change direction. This line does not prove delivery.`,
+      `Sent message ${clientMessageId} read by the agent`,
+      'Claude aggregate: 2 result segments; turns=5',
+    ];
+    for (const [index, message] of messages.entries()) {
+      expect(
+        await handler({
+          operation: identity,
+          providerSeq: index + 1,
+          event: { kind: 'progress', message },
+        }),
+      ).toEqual({ kind: 'ack', committedThroughProviderSeq: index + 1 });
+    }
+    expect(
+      await handler({
+        operation: identity,
+        providerSeq: 4,
+        event: {
+          kind: 'terminal',
+          terminal: { content: 'done', durationMs: 5, outcome: { kind: 'completed' } },
+          diagnostics: {},
+        },
+      }),
+    ).toEqual({ kind: 'ack', committedThroughProviderSeq: 4 });
+    expect(
+      await handler({
+        operation: identity,
+        providerSeq: 1,
+        event: { kind: 'progress', message: messages[0]! },
+      }),
+    ).toEqual({ kind: 'ack', committedThroughProviderSeq: 4 });
+
+    const rows = progressStore
+      .getDb()
+      .prepare("SELECT * FROM events WHERE stream_id = ? AND type = 'job.progress.emitted' ORDER BY seq")
+      .all(identity.jobId) as EventsRow[];
+    expect(rows).toHaveLength(3);
+    const legacyMessageSchema = z
+      .object({
+        kind: z.literal('message'),
+        message: z.string(),
+        timing: z
+          .object({
+            origin: z.enum(['runtime', 'queued', 'launch']),
+            originAt: z.string(),
+            emittedAt: z.string(),
+            elapsedMs: z.number().int().nonnegative(),
+          })
+          .strict(),
+      })
+      .strict();
+    const legacyReadContext = {
+      schemas: new Map([['job.progress.emitted', legacyMessageSchema]]),
+      streamKinds: new Map([['job.progress.emitted', 'job' as const]]),
+      bodyCodec: createEventBodyCodec(),
+    };
+    for (const [index, row] of rows.entries()) {
+      expect(decodeStoredBody(row, legacyReadContext)).toEqual({
+        kind: 'message',
+        message: messages[index],
+        timing: expect.any(Object),
+      });
+    }
+    const detail = loadJobDetail(progressStore.getDb(), identity.jobId, progressStore);
+    expect(detail?.events.filter((event) => event.type === 'progress').map((event) => event.message)).toEqual(messages);
+    expect(detail?.events.at(-1)?.type).toBe('terminal');
+    expect(
+      progressStore.visitProgress((source) => source.after(identity.jobId, 0, 10).map((row) => row.message)),
+    ).toEqual({
+      kind: 'read',
+      value: messages,
+    });
+    expect(readProviderOperation(progressStore.getDb(), identity)).toMatchObject({
+      phase: 'settlement-pending',
+      committedThroughProviderSeq: 4,
+      terminalProviderSeq: 4,
+    });
+  });
+
   it('acknowledges only after the durable commit, and effect-free acks a seq already applied', async () => {
     const { identity } = seedOperation();
     const handler = createProviderEventHandler(testDeps());
