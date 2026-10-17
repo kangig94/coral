@@ -201,6 +201,7 @@ function fakeBoundProviderStuckUntilAborted(closeStaged: () => void): BoundProvi
       supportsInterrupt: false,
       supportsProbe: false,
       openReplacement: async () => ({ hostRef: fakeHostRef(), close: closeStaged }),
+      send: unreachable('appServer.send') as unknown as BoundProviderAppServerCapability['send'],
       interrupt: unreachable('appServer.interrupt') as unknown as BoundProviderAppServerCapability['interrupt'],
       probe: unreachable('appServer.probe') as unknown as BoundProviderAppServerCapability['probe'],
     },

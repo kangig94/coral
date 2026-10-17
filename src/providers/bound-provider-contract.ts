@@ -12,6 +12,9 @@ import type {
   ProviderPreflightInput,
   ProviderPreflightOutcome,
   ProviderInterruptRequestOutcome,
+  ProviderSendInput,
+  ProviderSendOutcome,
+  ProviderSteeringPort,
   ProviderTurnTerminalEvidence,
   ProviderTurnSettlement,
   ProviderRecoveryContract,
@@ -95,6 +98,7 @@ type BoundProviderExecutionRuntimeCommon = Omit<
   | 'executionPlan'
   | 'appServerSession'
   | 'runCli'
+  | 'onProviderSteering'
   | 'onProviderTurnStart'
   | 'onProviderTurnNotSubmitted'
   | 'onProviderTurnTerminal'
@@ -109,6 +113,7 @@ export type BoundProviderAppServerExecutionRuntime = BoundProviderExecutionRunti
     transport: 'app-server';
     onAppServerWaiting(observation: { provider: string }): void;
     onHostRef(hostRef: HostRef): void;
+    onProviderSteering?(port: ProviderSteeringPort): void;
     onProviderTurnStart?(): void;
     onProviderTurnNotSubmitted?(): void;
     onProviderTurnTerminal(evidence: ProviderTurnTerminalEvidence): void;
@@ -130,6 +135,14 @@ export interface BoundProviderAppServerCapability {
     continuity: NonNullable<ProviderRuntime['persistedContinuity']>,
     input: BoundProviderHostPreparationInput & Readonly<{ jobId: string }>,
   ): Promise<ProviderInterruptRequestOutcome>;
+  send(
+    hostRef: HostRef,
+    continuity: NonNullable<ProviderRuntime['persistedContinuity']>,
+    input: ProviderSendInput,
+    hostPreparation: BoundProviderHostPreparationInput & Readonly<{ jobId: string }>,
+    /** Expiry must release only the temporary lease, never cancel the provider turn. */
+    attemptSignal?: AbortSignal,
+  ): Promise<ProviderSendOutcome>;
   probe(
     hostRef: HostRef,
     continuity: NonNullable<ProviderRuntime['persistedContinuity']>,

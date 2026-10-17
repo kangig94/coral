@@ -24,7 +24,15 @@ const commanderRemediations = new WeakMap<CommanderError, string>();
 export function configureCommanderHelp(program: Command): void {
   const configure = (command: Command, path: string[]) => {
     command.exitOverride((error) => {
-      if (['commander.unknownCommand', 'commander.unknownOption', 'commander.excessArguments'].includes(error.code)) {
+      if (
+        [
+          'commander.unknownCommand',
+          'commander.unknownOption',
+          'commander.excessArguments',
+          'commander.missingArgument',
+          'commander.optionMissingArgument',
+        ].includes(error.code)
+      ) {
         commanderRemediations.set(error, `Run ${path.join(' ')} --help to see valid commands and options.`);
       }
       throw error;

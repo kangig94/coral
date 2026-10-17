@@ -17,6 +17,8 @@ import {
   type TurnInterruptResult,
   type TurnStartParams,
   type TurnStartResult,
+  type TurnSendParams,
+  type TurnSendResult,
 } from './protocol.js';
 import type {
   BrokerShutdownDisposition,
@@ -225,6 +227,18 @@ export class BrokerSessionPool implements ClaudeBrokerSession {
     });
   }
 
+  async turnSend(params: TurnSendParams): Promise<TurnSendResult> {
+    const entry = this.controllers.get(params.brokerSessionKey);
+    if (!entry) {
+      return { state: 'refused', code: 'turn_ended', reason: 'The Claude broker session is no longer active.' };
+    }
+    return entry.controller.turnSend({
+      brokerTurnId: params.brokerTurnId,
+      text: params.text,
+      clientMessageId: params.clientMessageId,
+    });
+  }
+
   async shutdown(): Promise<BrokerShutdownDisposition> {
     this.shuttingDown = true;
 
@@ -276,6 +290,7 @@ export class BrokerSessionPool implements ClaudeBrokerSession {
       ids: this.ids,
       monotonicNow: this.monotonicNow,
       onTurnStarted: this.onTurnStarted,
+      onShutdownHeld: (hold) => this.acceptControllerShutdown(brokerSessionKey, hold),
       stderrLimit: this.stderrLimit,
       onUnexpectedExit: () => {
         if (this.shuttingDown) {
@@ -316,15 +331,26 @@ export class BrokerSessionPool implements ClaudeBrokerSession {
   }
 
   private evictIdleControllerAfterTerminalTurn(brokerSessionKey: string, entry: ControllerEntry): void {
-    if (!entry.controller.canEvictReachableIdleController()) {
+    if (
+      !entry.controller.canEvictReachableIdleController() &&
+      !entry.controller.hasActiveTurn() &&
+      !this.heldControllerShutdowns.has(brokerSessionKey)
+    )
       return;
-    }
-
-    // Defer one tick so terminal notification subscribers can issue an immediate
-    // follow-up against the still-reachable controller before idle eviction runs.
     setImmediate(() => {
       const currentEntry = this.controllers.get(brokerSessionKey);
-      if (currentEntry !== entry || !currentEntry.controller.canEvictReachableIdleController()) {
+      if (
+        currentEntry !== entry ||
+        currentEntry.controller.hasActiveTurn() ||
+        (!currentEntry.controller.canEvictReachableIdleController() &&
+          !this.heldControllerShutdowns.has(brokerSessionKey))
+      ) {
+        return;
+      }
+      if (this.heldControllerShutdowns.has(brokerSessionKey)) {
+        entry.dispose();
+        this.controllers.delete(brokerSessionKey);
+        this.emitHostStats();
         return;
       }
       void this.removeController(brokerSessionKey).catch(() => {});

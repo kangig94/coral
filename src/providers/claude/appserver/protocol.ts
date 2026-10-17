@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import { truncate } from '../../../infra/text.js';
 import { MAX_BUFFER } from '../../../infra/process-constants.js';
 import {
@@ -9,7 +10,7 @@ import {
   type JsonRpcSuccess,
 } from '../../../infra/json-rpc.js';
 import { isRecord } from '../../../infra/json.js';
-import type { EffortLevel } from '../../contract.js';
+import { providerSendInputSchema, providerSendOutcomeSchema, type EffortLevel } from '../../contract.js';
 import {
   turnFailureDiagnosticPhaseSchema as providerTurnFailureDiagnosticPhaseSchema,
   turnFailureDiagnosticReasonSchema as providerTurnFailureDiagnosticReasonSchema,
@@ -117,6 +118,30 @@ export interface TurnInterruptResult {
   interrupted: boolean;
 }
 
+export const turnSendParamsSchema = providerSendInputSchema
+  .extend({
+    brokerSessionKey: z.string().min(1),
+    brokerTurnId: z.string().min(1),
+  })
+  .strict();
+
+export type TurnSendParams = z.infer<typeof turnSendParamsSchema>;
+
+export const turnSendResultSchema = z.union([
+  providerSendOutcomeSchema.options[0],
+  providerSendOutcomeSchema.options[1],
+]);
+
+export type TurnSendResult = z.infer<typeof turnSendResultSchema>;
+
+/** A possibly written input must not receive an answered pre-effect refusal. */
+export class ClaudeBrokerSendUnansweredError extends Error {
+  constructor(cause: unknown) {
+    super('Claude send write could not be confirmed.', { cause });
+    this.name = 'ClaudeBrokerSendUnansweredError';
+  }
+}
+
 export interface SessionUpdatedParams {
   brokerSessionKey: string;
   bootstrapSignature: ClaudeBootstrapSignature;
@@ -146,6 +171,7 @@ export interface TurnCompletedParams {
   isError: boolean;
   subtype: string | null;
   errors?: string[];
+  cancelled?: boolean;
 }
 
 export const turnFailureDiagnosticReasonSchema = providerTurnFailureDiagnosticReasonSchema;
@@ -157,6 +183,11 @@ export type TurnFailureDiagnosticPhase = ProviderTurnFailureDiagnosticPhase;
 export type TurnFailureDiagnostic = ProviderTurnFailureDiagnostic;
 
 export interface TurnFailedParams {
+  result?: string;
+  model?: string | null;
+  durationMs?: number | null;
+  usage?: unknown;
+  costUsd?: number | null;
   brokerSessionKey: string;
   brokerTurnId: string | null;
   message: string;
@@ -355,6 +386,14 @@ export function requireTurnInterruptParams(params: unknown): TurnInterruptParams
     brokerSessionKey: params.brokerSessionKey,
     brokerTurnId: params.brokerTurnId,
   };
+}
+
+export function requireTurnSendParams(params: unknown): TurnSendParams {
+  const parsed = turnSendParamsSchema.safeParse(params);
+  if (!parsed.success) {
+    throw new ClaudeBrokerRpcError(-32602, 'Invalid params for turn/send.');
+  }
+  return parsed.data;
 }
 
 function isNonEmptyString(value: unknown): value is string {

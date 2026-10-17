@@ -5,6 +5,7 @@ import { providerIdentPattern } from '../../infra/identifiers.js';
 import { jobPhaseSchema } from '../../jobs/phase.js';
 import { type WaitCursor } from '../../jobs/wait/contract.js';
 import { MAX_WAIT_JOB_IDS } from '../../jobs/wait/stream-event.js';
+import { proxyOperationSendResultSchema } from '../../provider-proxy/protocol.js';
 
 const projectRootSchema = z.string().min(1, 'Project root is required');
 const jobIdSchema = z.string().min(1, 'Job ID is required');
@@ -91,6 +92,28 @@ export const jobAbortSchema = z
   .object({
     jobs: z.array(z.string().min(1)).min(1, 'At least one job required'),
     projectRoot: projectRootSchema,
+  })
+  .strict();
+
+export const JOB_SEND_MAX_INPUT_LENGTH = 65_536;
+
+/** The provider turn id the proxy reports stays inside the coordinator; the caller learns only the outcome. */
+export const jobSendResponseSchema = z.discriminatedUnion('state', [
+  proxyOperationSendResultSchema.options[0].omit({ providerTurnId: true }),
+  proxyOperationSendResultSchema.options[1],
+  proxyOperationSendResultSchema.options[2],
+]);
+
+export const jobSendSchema = z
+  .object({
+    projectRoot: projectRootSchema,
+    jobId: jobIdSchema,
+    input: z
+      .string()
+      .min(1, 'Input is required')
+      .max(JOB_SEND_MAX_INPUT_LENGTH, `Input must be at most ${JOB_SEND_MAX_INPUT_LENGTH} UTF-16 code units`)
+      .refine((input) => input.trim().length > 0, 'Input must contain non-whitespace text'),
+    clientMessageId: z.string().uuid('Client message ID must be a UUID'),
   })
   .strict();
 

@@ -17,11 +17,18 @@ import type { AbortResult } from '../../jobs/contracts/abort-registry.js';
 import type { ProviderRegistry } from '../../providers/registry.js';
 import { getProviderNames, makeClient } from '../dispatch.js';
 import { emitError, getTerminalContext } from '../emit.js';
-import { parseJobIds } from '../flags.js';
-import { flushPendingReadStoreNote } from '../read-store.js';
+import { parseJobIds, resolveInput } from '../flags.js';
+import { flushPendingReadStoreNote, getSharedReadCoralStore } from '../read-store.js';
 import { UsageError, WaitOutputError, WaitSnapshotResponseError, normalizeUsageError } from '../errors.js';
 import { WaitBuildMismatchError } from '../../coordinator/handoff-routing/wait-invocation.js';
-import { formatAbortResult, formatJobDetail, formatJobsList, renderJobsList } from '../format/jobs.js';
+import {
+  formatAbortResult,
+  formatJobDetail,
+  formatJobSendResult,
+  formatJobsList,
+  renderJobsList,
+  type JobSendOutputContext,
+} from '../format/jobs.js';
 import { openCliCauseRefRenderer } from '../cause-renderer.js';
 import { followJobs } from '../follow.js';
 
@@ -64,6 +71,7 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
   registerJobsListCommand(jobsCommand, registeredProviders);
   registerJobsWaitCommand(jobsCommand, program);
   registerJobsAbortCommand(jobsCommand, registeredProviders);
+  registerJobsSendCommand(jobsCommand);
   registerJobsDetailCommand(jobsCommand);
   registerJobsReleaseCommand(jobsCommand);
 }
@@ -262,6 +270,48 @@ function registerJobsAbortCommand(jobsCommand: Command, registeredProviders: str
         emitError(normalizeUsageError(error));
       }
     });
+}
+
+function registerJobsSendCommand(jobsCommand: Command): void {
+  const sendCommand = jobsCommand.command('send');
+  const inputUsage = 'Input is required. Use -i <text>, -i <file>, or -i - (stdin).';
+  sendCommand
+    .description('Deliver a user message to a running provider turn. An ended turn is not resumed.')
+    .argument('<jobId>', 'Job ID')
+    .option(
+      '-i, --input <text-or-file...>',
+      'Message input (required; multiple tokens are joined with spaces; a single existing path is read as a file; - for stdin)',
+    )
+    .action(async (jobId: string, opts: { input?: string[] }) => {
+      try {
+        if (opts.input === undefined) throw new UsageError(inputUsage);
+        const input = resolveInput(opts.input);
+        if (input.trim().length === 0) throw new UsageError(inputUsage);
+        const result = await makeClient(process.cwd(), sendCommand).sendJob(jobId, input);
+        const launch =
+          result.state === 'refused' && result.code === 'turn_ended' && !opts.input.includes('-')
+            ? readJobSendLaunch(jobId)
+            : null;
+        const output = formatJobSendResult(jobId, result, { inputTokens: opts.input, launch });
+        (output.exitCode === 0 ? process.stdout : process.stderr).write(output.text + '\n');
+        process.exitCode = output.exitCode;
+      } catch (error) {
+        emitError(normalizeUsageError(error));
+      }
+    });
+}
+
+function readJobSendLaunch(jobId: string): JobSendOutputContext['launch'] {
+  try {
+    const store = getSharedReadCoralStore(process.cwd(), { announceMissing: false });
+    const status = store.jobs.detail(jobId)?.status;
+    if (status === undefined || status.jobKind !== 'provider' || status.sessionId === null) return null;
+    const session = store.sessions.readEntry(status.sessionId);
+    return { provider: session.binding.provider, agent: session.agentName ?? null };
+  } catch {
+    // A failed metadata read cannot replace a decisive refusal with a generic retry error.
+    return null;
+  }
 }
 
 function reportAbortResult(result: AbortResult): void {

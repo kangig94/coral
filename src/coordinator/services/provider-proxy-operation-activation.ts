@@ -1,9 +1,10 @@
 import type { ProcessIncarnation } from '../../infra/node-process.js';
 import type { z } from 'zod';
 
-import type { ControlClientError, ControlExchange } from '../../provider-proxy/control-client.js';
+import { ControlClientError, type ControlExchange } from '../../provider-proxy/control-client.js';
 import { operationPrepareAttemptKey } from '../../provider-proxy/ledger.js';
 import {
+  PROXY_SEND_RPC_TIMEOUT_MS,
   guardianOperationActivateParamsSchema,
   guardianOperationActivateResultSchema,
   proxyOperationActivateParamsSchema,
@@ -20,13 +21,16 @@ import {
   proxyOperationSettleResultSchema,
   proxyOperationStopParamsSchema,
   proxyOperationStopResultSchema,
+  proxyOperationSendParamsSchema,
+  proxyOperationSendResultSchema,
+  type ProxyOperationSendResult,
   type OperationIdentity,
   type ProxyOperationActivationOutcome,
   type ProxyControlProtocolErrorCode,
   type ProxyPreparedAppServerOperation,
 } from '../../provider-proxy/protocol.js';
 import type { ProviderOperationRecord } from '../../store/provider-operation-record.js';
-import type { ProviderStopCause } from '../../providers/contract.js';
+import type { ProviderSendInput, ProviderStopCause } from '../../providers/contract.js';
 import type { OperationStopControl } from './operation-registry.js';
 import {
   providerProxyControlChannelIncident,
@@ -124,6 +128,7 @@ function routeControlCallFailure(
     return;
   }
   if (policy.effect === 'observation') return;
+  if (policy.indeterminate === 'caller-reported') return;
   if (protocolCode !== null && policy.preEffectProtocolCodes.has(protocolCode)) return;
   if (policy.indeterminate === 'retry-safe') {
     reportIncident({ kind: 'operation-control-failed', policy, error });
@@ -246,6 +251,50 @@ export async function inspectProviderOperation(
     deps.faultAuthority,
     deps.reportIncident,
   );
+}
+
+export async function sendProviderOperation(
+  deps: ProviderProxyOperationActivationDeps,
+  operation: OperationIdentity,
+  input: ProviderSendInput,
+): Promise<ProxyOperationSendResult> {
+  const params = proxyOperationSendParamsSchema.parse({
+    operation,
+    input: input.text,
+    clientMessageId: input.clientMessageId,
+  });
+  try {
+    return await callStrict(
+      deps.proxyClient,
+      'proxy',
+      policy({
+        method: 'operation.send.v1',
+        phase: 'executing',
+        effect: 'mutation',
+        indeterminate: 'caller-reported',
+        preEffectProtocolCodes: NO_PRE_EFFECT_PROTOCOL_CODES,
+      }),
+      params,
+      PROXY_SEND_RPC_TIMEOUT_MS,
+      proxyOperationSendResultSchema,
+      deps.faultAuthority,
+      deps.reportIncident,
+    );
+  } catch (error: unknown) {
+    const failure = error instanceof ControlClientError ? error.remoteFailure : null;
+    if (
+      providerOperationErrorCode(error) === 'method_not_found' ||
+      (failure?.kind === 'json-rpc-error' && failure.jsonRpcCode === -32_601)
+    ) {
+      return {
+        state: 'refused',
+        code: 'unsupported_by_running_build',
+        reason:
+          'The running Coral build predates jobs send. Restart the session so the current Coral plugin loads; the coordinator follows the installed build.',
+      };
+    }
+    return { state: 'unknown', reason: providerOperationErrorReason(error) };
+  }
 }
 
 export async function authorizeProviderOperation(

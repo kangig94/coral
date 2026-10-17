@@ -1,3 +1,4 @@
+import { providerSendInputSchema, providerSendOutcomeSchema } from '../contract.js';
 import type {
   ProviderAppServerCapability,
   ProviderArtifactCapability,
@@ -32,6 +33,7 @@ function snapshotAppServer<Plan extends ProviderExecutionPlan, Access extends Js
     throw new TypeError('Provider app-server capability.compileStableHost must be a function.');
   }
   const interrupt = receiver.interrupt;
+  const send = receiver.send;
   const probe = receiver.probe;
   const onNotification = receiver.onNotification;
   return Object.freeze({
@@ -88,6 +90,22 @@ function snapshotAppServer<Plan extends ProviderExecutionPlan, Access extends Js
               receiver,
               wrapAppServerTransport(args[0], 'Provider interrupt session'),
               snapshotBoundaryData(args[1], 'Provider interrupt continuity'),
+            ),
+        }),
+    ...(send === undefined
+      ? {}
+      : {
+          send: async (...args: Parameters<NonNullable<ProviderAppServerCapability<Plan, Access>['send']>>) =>
+            providerSendOutcomeSchema.parse(
+              snapshotBoundaryData(
+                await send.call(
+                  receiver,
+                  wrapAppServerTransport(args[0], 'Provider send session'),
+                  snapshotBoundaryData(args[1], 'Provider send continuity'),
+                  providerSendInputSchema.parse(snapshotBoundaryData(args[2], 'Provider send input')),
+                ),
+                'Provider send outcome',
+              ),
             ),
         }),
     ...(probe === undefined

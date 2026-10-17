@@ -29,6 +29,8 @@ import { normalizeCoralIntent, type CoralIntent } from './services/execution-pol
 import { JobLaunchService } from './services/job-launch.js';
 import { WorkflowExecutionService } from './services/workflow-execution.js';
 import { JobAbortService } from './services/job-abort.js';
+import { JobSendService, type JobSendRequest } from './services/job-send.js';
+import type { ProxyOperationSendResult } from '../provider-proxy/protocol.js';
 import { JobWaitService } from './services/job-wait.js';
 import { RecoveryService } from './services/recovery/service.js';
 import { recordProviderTerminal } from './services/terminal-materializer.js';
@@ -59,6 +61,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
   private readonly launchService: JobLaunchService;
   private readonly workflowService: WorkflowExecutionService;
   private readonly abortService: JobAbortService;
+  private readonly sendService: JobSendService;
   private readonly waitService: JobWaitService;
   private readonly recoveryService: RecoveryService;
   private invocationCorrelationSeq = 0;
@@ -200,6 +203,10 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     this.abortService = new JobAbortService({
       abortRegistry: this.abortRegistry,
     });
+    this.sendService = new JobSendService({
+      progressStore: this.progressStore,
+      authorityFor: (identity) => deps.providerProxyAuthorityFor?.(identity) ?? null,
+    });
   }
 
   holdsLocalAppServerExecution(jobId: string): boolean {
@@ -271,6 +278,10 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
 
   abort(jobIds: string[]): AbortResult {
     return this.abortService.abort(jobIds);
+  }
+
+  send(request: JobSendRequest): Promise<ProxyOperationSendResult> {
+    return this.sendService.send(request);
   }
 
   async waitForJobTerminal(jobId: string, timeoutMs?: number): Promise<void> {

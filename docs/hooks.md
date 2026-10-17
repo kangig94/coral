@@ -60,7 +60,7 @@ The `clients/inject/` directory separates behavioral guidelines, tools, and audi
 | -------------------- | -------------------------------------------------------------------- |
 | `core.md`            | Shared behavioral guidelines                                         |
 | `tools.md`           | Path aliases and the live equipped-tools placeholder                 |
-| `cli.md`             | The CLI, sandbox guidance, and session job wait rule                     |
+| `cli.md`             | The CLI, sandbox guidance, session job wait rule, and running-turn send guidance |
 | `orchestrator.md`    | How the top-level session launches project and Coral agents          |
 | `kb/common.md`       | KB search and verification guidance                                  |
 | `kb/orchestrator.md` | Top-level wiki maintenance and source management |

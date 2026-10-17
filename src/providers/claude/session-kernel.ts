@@ -8,6 +8,7 @@ import type {
   AppServerSession,
   ProviderTerminalEventBody,
   UsageSummary,
+  ProviderSteeringPort,
 } from '../contract.js';
 import { providerRequestFailed, type ProviderFailureCause } from '../fault.js';
 import { sessionProviderFailureDiagnosticSchema, type SessionProviderFailureDiagnostic } from '../../sessions/fault.js';
@@ -57,7 +58,13 @@ type ClaudeCompletedTurn = {
 
 type ClaudeTurnOutcome =
   | { kind: 'completed'; turn: ClaudeCompletedTurn }
-  | { kind: 'failed'; message: string; diagnostic?: SessionProviderFailureDiagnostic }
+  | {
+      kind: 'failed';
+      message: string;
+      content?: string;
+      durationMs?: number;
+      diagnostic?: SessionProviderFailureDiagnostic;
+    }
   | { kind: 'aborted'; reason: 'signal_abort' };
 
 type ClaudeTurnState = {
@@ -70,8 +77,10 @@ type ClaudeTurnState = {
   artifactHandleEmissionAttempted: boolean;
   brokerTurnId?: string;
   turnRequested: boolean;
+  startAcknowledged: boolean;
   completed: boolean;
   lastKnownUsage?: UsageSummary;
+  cancelledTurn?: ClaudeCompletedTurn;
   pendingCheckpoint?: Promise<void>;
   terminal: Promise<ClaudeTurnOutcome>;
   resolveTerminal: (outcome: ClaudeTurnOutcome) => void;
@@ -89,6 +98,7 @@ export const claudeSessionKernel: ProviderAppServer<ClaudeExecutionPlan> = (requ
     const lease = runtime.appServerSession;
     const persistedContinuity = readClaudePersistedContinuity(runtime.persistedContinuity);
     const state = createInitialState(request, persistedContinuity, runtime);
+    runtime.onProviderSteering?.(createSteeringPort(state, runtime.signal));
     const executionPlan = runtime.executionPlan;
     const clearNotificationBinding = lease.subscribe((message) => {
       applyNotification(state, message, runtime, emit);
@@ -126,7 +136,15 @@ export const claudeSessionKernel: ProviderAppServer<ClaudeExecutionPlan> = (requ
 
       if (runtime.signal.aborted) {
         await closeBrokerSessionBeforeTurn(lease, state);
-        emit(buildAbortedTerminal(state.prepared.model, state.startedAt, runtime.time.now(), state.lastKnownUsage));
+        emit(
+          buildAbortedTerminal(
+            state.prepared.model,
+            state.startedAt,
+            runtime.time.now(),
+            state.lastKnownUsage,
+            state.cancelledTurn,
+          ),
+        );
         return;
       }
 
@@ -140,7 +158,15 @@ export const claudeSessionKernel: ProviderAppServer<ClaudeExecutionPlan> = (requ
       if (startOutcome.kind === 'aborted') {
         await waitForAcceptedInterruptEvidence(state, lease, startParams.brokerTurnId);
         await clearActiveBrokerTurn(runtime, state);
-        emit(buildAbortedTerminal(state.prepared.model, state.startedAt, runtime.time.now(), state.lastKnownUsage));
+        emit(
+          buildAbortedTerminal(
+            state.prepared.model,
+            state.startedAt,
+            runtime.time.now(),
+            state.lastKnownUsage,
+            state.cancelledTurn,
+          ),
+        );
         return;
       }
       const startResult = startOutcome.result;
@@ -150,6 +176,7 @@ export const claudeSessionKernel: ProviderAppServer<ClaudeExecutionPlan> = (requ
       if (readString(startResult.brokerTurnId) !== startParams.brokerTurnId) {
         throw new Error('Claude turn/start did not return the exact requested broker turn id.');
       }
+      state.startAcknowledged = !state.completed;
       state.conversationRef = readTurnConversationRef(startResult) ?? state.conversationRef;
       await checkpointBrokerContinuity(runtime, state);
       emitClaudeArtifactHandleOnce(state, runtime, emit);
@@ -168,7 +195,15 @@ export const claudeSessionKernel: ProviderAppServer<ClaudeExecutionPlan> = (requ
       }
       await clearActiveBrokerTurn(runtime, state);
       if (runtime.signal.aborted) {
-        emit(buildAbortedTerminal(state.prepared.model, state.startedAt, runtime.time.now(), state.lastKnownUsage));
+        emit(
+          buildAbortedTerminal(
+            state.prepared.model,
+            state.startedAt,
+            runtime.time.now(),
+            state.lastKnownUsage,
+            state.cancelledTurn,
+          ),
+        );
         return;
       }
 
@@ -183,10 +218,37 @@ export const claudeSessionKernel: ProviderAppServer<ClaudeExecutionPlan> = (requ
         ),
       );
     } finally {
+      state.startAcknowledged = false;
       if (!state.turnRequested) runtime.onProviderTurnNotSubmitted?.();
       clearNotificationBinding();
     }
   });
+
+function createSteeringPort(state: ClaudeTurnState, signal: AbortSignal): ProviderSteeringPort {
+  return Object.freeze<ProviderSteeringPort>({
+    admit(continuity) {
+      if (state.completed || signal.aborted) {
+        return { state: 'refused', code: 'turn_ended', reason: 'The Claude turn has ended.' };
+      }
+      if (!state.startAcknowledged) {
+        return { state: 'refused', code: 'turn_not_started', reason: 'The current Claude segment is not active.' };
+      }
+      const parsed = readClaudePersistedContinuity(continuity);
+      if (
+        !state.turnRequested ||
+        state.brokerTurnId === undefined ||
+        parsed.brokerSessionKey !== state.brokerSessionKey ||
+        parsed.brokerTurnId !== state.brokerTurnId
+      ) {
+        return { state: 'refused', code: 'turn_not_started', reason: 'The current Claude turn has not started.' };
+      }
+      return { state: 'admitted' };
+    },
+    reportOutcome() {
+      // A transport outcome cannot establish consumption; only the broker's correlated replay can.
+    },
+  });
+}
 
 function createInitialState(
   request: Parameters<ProviderAppServer>[0],
@@ -208,6 +270,7 @@ function createInitialState(
     artifactHandleEmissionAttempted: false,
     brokerTurnId: undefined,
     turnRequested: false,
+    startAcknowledged: false,
     completed: false,
     terminal,
     resolveTerminal,
@@ -286,6 +349,7 @@ function resolveTerminalOnce(state: ClaudeTurnState, outcome: ClaudeTurnOutcome)
   }
 
   state.completed = true;
+  state.startAcknowledged = false;
   state.resolveTerminal(outcome);
 }
 
@@ -355,17 +419,20 @@ function applyNotification(
     const content = typeof params.result === 'string' ? params.result : '';
     const model = typeof params.model === 'string' ? params.model : state.prepared.model;
     const isError = params.isError === true;
-    resolveTerminalOnce(state, {
-      kind: 'completed',
-      turn: {
-        content,
-        model,
-        durationMs: typeof params.durationMs === 'number' ? params.durationMs : runtime.time.now() - state.startedAt,
-        errors: readErrors(params.errors),
-        isError,
-        usage,
-      },
-    });
+    const turn: ClaudeCompletedTurn = {
+      content,
+      model,
+      durationMs: typeof params.durationMs === 'number' ? params.durationMs : runtime.time.now() - state.startedAt,
+      errors: readErrors(params.errors),
+      isError,
+      usage,
+    };
+    if (params.cancelled === true) {
+      state.cancelledTurn = turn;
+      resolveTerminalOnce(state, { kind: 'aborted', reason: 'signal_abort' });
+    } else {
+      resolveTerminalOnce(state, { kind: 'completed', turn });
+    }
     return;
   }
 
@@ -382,6 +449,8 @@ function applyNotification(
     resolveTerminalOnce(state, {
       kind: 'failed',
       message: buildProviderFailureMessage('Claude', readString(params.message), readString(params.status)),
+      content: typeof params.result === 'string' ? params.result : undefined,
+      durationMs: typeof params.durationMs === 'number' ? params.durationMs : undefined,
       ...(diagnostic === undefined ? {} : { diagnostic }),
     });
   }
@@ -430,13 +499,19 @@ function finalizeOutcome(state: ClaudeTurnState, outcome: ClaudeTurnOutcome, now
   }
 
   if (outcome.kind === 'aborted') {
-    return buildAbortedTerminal(state.prepared.model, state.startedAt, nowMs, state.lastKnownUsage);
+    return buildAbortedTerminal(
+      state.prepared.model,
+      state.startedAt,
+      nowMs,
+      state.lastKnownUsage,
+      state.cancelledTurn,
+    );
   }
 
   return buildFailedTerminal(
-    '',
+    outcome.content ?? '',
     state.prepared.model,
-    nowMs - state.startedAt,
+    outcome.durationMs ?? nowMs - state.startedAt,
     outcome.message,
     outcome.diagnostic,
     state.lastKnownUsage,
@@ -448,14 +523,15 @@ function buildAbortedTerminal(
   startedAt: number,
   nowMs: number,
   usage?: UsageSummary,
+  cancelledTurn?: ClaudeCompletedTurn,
 ): ProviderTerminalEventBody {
   return {
     kind: 'terminal' as const,
     terminal: buildJobTerminal({
-      content: '',
-      model,
-      durationMs: nowMs - startedAt,
-      usage,
+      content: cancelledTurn?.content ?? '',
+      model: cancelledTurn?.model ?? model,
+      durationMs: cancelledTurn?.durationMs ?? nowMs - startedAt,
+      usage: cancelledTurn?.usage ?? usage,
       outcome: { kind: 'aborted', reason: 'signal_abort' },
     }),
     diagnostics: buildJobDiagnostics({}),

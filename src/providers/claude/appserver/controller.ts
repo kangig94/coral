@@ -37,6 +37,8 @@ import {
   type TurnInterruptResult,
   type TurnStartParams,
   type TurnStartResult,
+  type TurnSendParams,
+  type TurnSendResult,
 } from './protocol.js';
 import type {
   ChildExit,
@@ -380,6 +382,10 @@ export class SingleSessionController {
       this.lastTerminalTurnId = turn.brokerTurnId;
       throw this.asRpcError(error, 'Failed to start Claude turn.');
     }
+  }
+
+  async turnSend(_params: Omit<TurnSendParams, 'brokerSessionKey'>): Promise<TurnSendResult> {
+    return { state: 'refused', code: 'transport_unsupported', reason: 'Claude TUI sessions do not support send.' };
   }
 
   async turnInterrupt(params: ControllerTurnInterruptParams): Promise<TurnInterruptResult> {

@@ -1,17 +1,24 @@
 import { join } from 'node:path';
 
+import { ProviderRpcError } from '../app-server-transport.js';
+import { ProviderHostUnserviceableResponseError } from '../host-admission.js';
+import { errorMessage } from '../../infra/error-format.js';
+
 import type {
   ProviderPreflightRuntime,
   ProviderPreflightOutcome,
   ProviderAppServerCapability,
   AppServerTransport,
   ProviderInterruptRequestOutcome,
+  ProviderSendOutcome,
   ProviderRecoveryContract,
 } from '../contract.js';
 import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
 import type { SessionContinuityMutation } from '../../sessions/continuity-mutation.js';
 import {
   turnInterruptResponseSchema,
+  turnSteerParamsSchema,
+  turnSteerResponseSchema,
   type AppServerMethod,
   type AppServerRequestParams,
   type AppServerResponse,
@@ -304,6 +311,41 @@ export const codexAppServerLifecycle: ProviderAppServerCapability<CodexExecution
     const result = await rpc(lease, 'turn/interrupt', { threadId: parsed.threadId, turnId: parsed.turnId });
     turnInterruptResponseSchema.parse(result);
     return { kind: 'accepted' };
+  },
+  async send(lease, continuity, input): Promise<ProviderSendOutcome> {
+    // Malformed continuity must reject as an internal contract violation, never as a provider refusal.
+    const parsed = readCodexPersistedContinuity(continuity);
+    if (parsed.threadId === undefined || parsed.turnId === undefined) {
+      return {
+        state: 'refused',
+        code: 'turn_not_started',
+        reason: 'Codex continuity is missing the active thread or turn id.',
+      };
+    }
+    const params = turnSteerParamsSchema.parse({
+      threadId: parsed.threadId,
+      input: [{ type: 'text', text: input.text, text_elements: [] }],
+      expectedTurnId: parsed.turnId,
+      clientUserMessageId: input.clientMessageId,
+    });
+    try {
+      const response = turnSteerResponseSchema.parse(await rpc(lease, 'turn/steer', params));
+      if (response.turnId !== parsed.turnId) {
+        return { state: 'unknown', reason: 'Codex did not acknowledge the expected turn.' };
+      }
+      return { state: 'delivered' };
+    } catch (error) {
+      const providerError = error instanceof ProviderHostUnserviceableResponseError ? error.providerCause : error;
+      if (providerError instanceof ProviderRpcError) {
+        const message = providerError.providerMessage ?? providerError.message;
+        const turnEnded =
+          providerError.rpcCode === -32600 &&
+          (message === 'no active turn to steer' ||
+            /^expected active turn id `[^`]+` but found `[^`]+`$/u.test(message));
+        return { state: 'refused', code: turnEnded ? 'turn_ended' : 'provider_rejected', reason: message };
+      }
+      return { state: 'unknown', reason: errorMessage(providerError) };
+    }
   },
   async probe(lease, continuity, context): Promise<CodexProbeResult> {
     return probeCodexSession(lease, continuity, context.request.cwd);

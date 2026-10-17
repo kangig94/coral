@@ -1,3 +1,4 @@
+import { providerSendInputSchema, providerSendOutcomeSchema } from '../contract.js';
 import type {
   AppServerSession,
   AppServerTransport,
@@ -55,9 +56,23 @@ export function wrapAppServerTransport(session: AppServerTransport, label: strin
 export function wrapAppServerSession(session: AppServerSession, label: string): AppServerSession {
   const transport = wrapAppServerTransport(session, label);
   const interrupt = dataMember(session, 'interrupt', label);
+  const send = dataMember(session, 'send', label);
+  if (send !== undefined && typeof send !== 'function') {
+    throw new TypeError(`${label}.send must be a data method.`);
+  }
   if (typeof interrupt !== 'function') throw new TypeError(`${label} must expose an interrupt data method.`);
-  return Object.freeze({
+  return Object.freeze<AppServerSession>({
     ...transport,
+    send: async (continuity, input) => {
+      const canonicalContinuity = snapshotBoundaryData(continuity, `${label} send continuity`);
+      const canonicalInput = providerSendInputSchema.parse(snapshotBoundaryData(input, `${label} send input`));
+      if (send === undefined) {
+        return { state: 'refused', code: 'transport_unsupported', reason: 'The provider does not support send.' };
+      }
+      return providerSendOutcomeSchema.parse(
+        snapshotBoundaryData(await send.call(session, canonicalContinuity, canonicalInput), `${label} send outcome`),
+      );
+    },
     interrupt: (continuity: NonNullable<ProviderRuntime['persistedContinuity']>) =>
       Promise.resolve(
         interrupt.call(session, snapshotBoundaryData(continuity, `${label} interrupt continuity`)) as unknown,

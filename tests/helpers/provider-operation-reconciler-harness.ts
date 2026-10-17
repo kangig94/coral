@@ -284,6 +284,9 @@ export function createProviderOperationReconcilerHarness(overrides: ProviderOper
         state: 'released-after-terminal',
         settledThroughProviderSeq: finalProviderSeq,
       })),
+    sendOperation: async () => {
+      throw new Error('Reconciliation must never send a message.');
+    },
     buildOperationControl: () => ({ stop: overrides.stopOperation ?? (async () => undefined) }),
   };
   const registry = { activate: vi.fn(), attach: vi.fn(), settled: vi.fn(), stop: vi.fn() };

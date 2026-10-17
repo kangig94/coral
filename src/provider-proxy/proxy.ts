@@ -1,4 +1,5 @@
 import type { MonotonicClock } from '../infra/monotonic-clock.js';
+import { errorMessage } from '../infra/error-format.js';
 import type { ProviderEventBody } from '../providers/contract.js';
 import { createBootstrapNonceCredential, type ProxyBootstrapCapsule } from './bootstrap-capsule.js';
 import { ControlLeaseEvidence } from './control-lease.js';
@@ -68,6 +69,8 @@ import {
   proxyOperationSettleParamsSchema as settleParamsSchema,
   proxyOperationRenewResultSchema,
   proxyOperationStopParamsSchema as stopParamsSchema,
+  proxyOperationSendParamsSchema,
+  proxyOperationSendResultSchema,
   providerHostEvictParamsSchema,
   providerHostEvictResultSchema,
   providerHostEvictResultV2Schema,
@@ -244,6 +247,27 @@ function proxyOperationMutationMethods<Scope extends symbol>(
           const request = stopParamsSchema.parse(params);
           assertNamedOperation(request.operation);
           return supervisor.stop(request.operation, request.cause);
+        },
+      },
+    ],
+    [
+      'operation.send.v1',
+      {
+        authority: 'active',
+        budgetMs: 'caller-deadline',
+        handle: async (params) => {
+          const request = proxyOperationSendParamsSchema.parse(params);
+          assertNamedOperation(request.operation);
+          try {
+            return proxyOperationSendResultSchema.parse(
+              await supervisor.send(request.operation, {
+                text: request.input,
+                clientMessageId: request.clientMessageId,
+              }),
+            );
+          } catch (error: unknown) {
+            return { state: 'unknown', reason: errorMessage(error) };
+          }
         },
       },
     ],

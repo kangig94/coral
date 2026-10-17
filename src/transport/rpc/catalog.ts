@@ -19,6 +19,8 @@ import {
 } from './discuss.js';
 import {
   jobAbortSchema,
+  jobSendResponseSchema,
+  jobSendSchema,
   jobsReleaseRequestSchema,
   jobDetailRequestSchema,
   jobsListRequestSchema,
@@ -631,6 +633,17 @@ export const jobsAbortRpcSpec = {
   http: { method: 'POST', path: '/jobs/abort' },
 } as const satisfies RpcMethodSpec<unknown, unknown>;
 
+export const jobsSendRpcSpec = {
+  name: 'jobs.send',
+  kind: 'unary',
+  requires: 'jobs:control',
+  requestSchema: jobSendSchema,
+  responseSchema: jobSendResponseSchema,
+  responseKind: 'json',
+  portKey: 'jobs',
+  http: { method: 'POST', path: '/jobs/send' },
+} as const satisfies RpcMethodSpec<unknown, unknown>;
+
 export const transportOperationalCarveouts = [
   '/health',
   '/admin/shutdown',
@@ -711,6 +724,7 @@ export const rpcCatalog = [
     http: { method: 'GET', path: '/coordinator/bindings/:binding' },
   },
   jobsAbortRpcSpec,
+  jobsSendRpcSpec,
   {
     name: 'jobs.release',
     kind: 'unary',

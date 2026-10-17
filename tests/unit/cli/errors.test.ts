@@ -363,6 +363,8 @@ describe('cli errors', () => {
 
 it.each([
   [['abort', 'jobs', 'X'], 'commander.unknownCommand', 'coral-cli'],
+  [['jobs', 'send'], 'commander.missingArgument', 'coral-cli jobs send'],
+  [['jobs', 'send', 'job-1', '-i'], 'commander.optionMissingArgument', 'coral-cli jobs send'],
   [['jobs', '--all'], 'commander.unknownOption', 'coral-cli jobs'],
   [['jobs', 'missing'], 'commander.unknownCommand', 'coral-cli jobs'],
   [['jobs', 'detail', 'a', 'extra'], 'commander.excessArguments', 'coral-cli jobs detail'],

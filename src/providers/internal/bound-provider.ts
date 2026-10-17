@@ -1,3 +1,5 @@
+import { providerSendInputSchema } from '../contract.js';
+import { raceWithSignal } from '../../infra/promise-signal.js';
 import {
   bindingFailure,
   bindingSuccess,
@@ -150,10 +152,20 @@ function providerAppServerSession<Plan extends ProviderExecutionPlan>(
   transport: AppServerTransport,
   capability: ProviderAppServerImplementation<Plan>['appServer'],
 ): AppServerSession {
-  return Object.freeze({
+  return Object.freeze<AppServerSession>({
     rpc: transport.rpc.bind(transport),
     subscribe: transport.subscribe.bind(transport),
     closed: transport.closed,
+    send: async (continuity, input) => {
+      if (capability.send === undefined) {
+        return { state: 'refused', code: 'transport_unsupported', reason: 'The provider does not support send.' };
+      }
+      return capability.send(
+        transport,
+        snapshotBoundaryData(continuity, 'Provider send continuity'),
+        providerSendInputSchema.parse(snapshotBoundaryData(input, 'Provider send input')),
+      );
+    },
     interrupt: async (continuity: NonNullable<ProviderRuntime['persistedContinuity']>) => {
       if (capability.interrupt === undefined) {
         return { kind: 'not-accepted' as const, reason: 'The provider does not support interruption.' };
@@ -357,6 +369,48 @@ async function interruptBoundAppServer<Plan extends ProviderExecutionPlan>(
   }
   try {
     return await attached.session.interrupt(continuity);
+  } finally {
+    attached.managed.close();
+  }
+}
+
+type BoundAppServerSendContext = Readonly<{
+  hostRef: HostRef;
+  continuity: NonNullable<ProviderRuntime['persistedContinuity']>;
+  input: Parameters<BoundProviderAppServerCapability['send']>[2];
+  hostPreparation: Parameters<BoundProviderAppServerCapability['send']>[3];
+  attemptSignal?: AbortSignal;
+}>;
+
+async function sendBoundAppServer<Plan extends ProviderExecutionPlan>(
+  tools: BoundAppServerTools<Plan>,
+  { hostRef, continuity, input, hostPreparation, attemptSignal }: BoundAppServerSendContext,
+): ReturnType<BoundProviderAppServerCapability['send']> {
+  const canonicalInput = providerSendInputSchema.parse(snapshotBoundaryData(input, 'Provider send input'));
+  const canonicalContinuity = snapshotBoundaryData(continuity, 'Provider send continuity');
+  if (tools.capability.send === undefined) {
+    return { state: 'refused', code: 'transport_unsupported', reason: 'The provider does not support send.' };
+  }
+  const attached = await attachExpectedBoundSession(tools, hostRef, hostPreparation, 'Provider send host reference');
+  if (attached === null) {
+    return { state: 'refused', code: 'control_unavailable', reason: 'The active provider host could not be attached.' };
+  }
+  try {
+    if (attemptSignal?.aborted) {
+      return {
+        state: 'refused',
+        code: 'control_unavailable',
+        reason: 'The send attempt expired before host attachment.',
+      };
+    }
+    const session = wrapAppServerSession(attached.session, 'Provider send session');
+    if (session.send === undefined) {
+      return { state: 'refused', code: 'transport_unsupported', reason: 'The provider does not support send.' };
+    }
+    return await raceWithSignal(session.send(canonicalContinuity, canonicalInput), attemptSignal, () => ({
+      state: 'unknown' as const,
+      reason: 'Provider send attempt exceeded its deadline.',
+    }));
   } finally {
     attached.managed.close();
   }
@@ -584,10 +638,6 @@ function createBoundAppServerLifecycle<Plan extends ProviderExecutionPlan, Acces
       const hostPlan = tools.planExecution(input);
       return Object.freeze({
         hostPlan,
-        // Computed eagerly, before any host is opened: `tools.compileHost` is a pure derivation of `hostPlan`
-        // (already `snapshotBoundaryData`-sanitized there), so calling it here as well as inside
-        // `executeBoundAppServer` costs one extra cheap synchronous call and gives a caller the executable
-        // identity before it ever decides whether to open a session at all.
         hostSpec: tools.compileHost(hostPlan),
         execute: (runtime, operation) => executeBoundAppServer(tools, hostPlan, runtime, operation),
       });
@@ -606,6 +656,8 @@ function createBoundAppServerLifecycle<Plan extends ProviderExecutionPlan, Acces
       completeBoundAppServerCuration(tools, hostPlan, signal, operation),
     openReplacement: (input, runtime) => openBoundReplacement(tools, input, runtime),
     interrupt: (hostRef, continuity, input) => interruptBoundAppServer(tools, hostRef, continuity, input),
+    send: (hostRef, continuity, input, hostPreparation, attemptSignal) =>
+      sendBoundAppServer(tools, { hostRef, continuity, input, hostPreparation, attemptSignal }),
     probe: (hostRef, continuity, input) => probeBoundAppServer(tools, decodeContinuity, hostRef, continuity, input),
   };
   return Object.freeze(lifecycle);

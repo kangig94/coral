@@ -61,8 +61,11 @@ vi.mock('#src/cli/read-store.js', () => ({
   getSharedReadCoralStore: vi.fn(() => mockState.readStore),
 }));
 
-import { ensure } from '#src/transport/ipc/ensure.js';
+import { ensure, issueWithSuccessorAfterLifecycleRefusal } from '#src/transport/ipc/ensure.js';
 import { makeClient } from '#src/cli/dispatch.js';
+import { formatJobSendResult } from '#src/cli/format/jobs.js';
+import { IpcLifecycleRefusal, IpcRpcError } from '#src/transport/ipc/client.js';
+import { jobSendSchema } from '#src/transport/rpc/jobs.js';
 import { markProviderCommand } from '#src/cli/classify.js';
 import { FORWARDED_NETWORK_ENV_KEYS } from '#src/infra/network-env.js';
 import { BackendUnreachableError } from '#src/infra/http-errors.js';
@@ -90,6 +93,7 @@ function buildProgram(): Command {
   program.command('wait').command('jobs');
   jobs.command('detail');
   jobs.command('release');
+  jobs.command('send');
   const kb = program.command('kb');
   kb.command('reindex');
   kb.command('memo').command('list');
@@ -188,6 +192,121 @@ describe('command client routing', () => {
     });
     const client = makeClient(projectRoot, findCommand(buildProgram(), 'jobs', 'release'));
     expect(await client.releaseJobs(['job-1'])).toEqual({ released: ['job-1'], unknown: [], terminal: [] });
+  });
+
+  it('sends the canonical caller root and a fresh UUID for each send invocation', async () => {
+    const alias = join(makeTempDir(), 'project-link');
+    symlinkSync(projectRoot, alias, 'dir');
+    mockState.request.mockResolvedValue({ state: 'delivered' });
+    const client = makeClient(alias, findCommand(buildProgram(), 'jobs', 'send'));
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      expect(await client.sendJob('job-1', 'message')).toEqual({ state: 'delivered' });
+    }
+    const params = mockState.request.mock.calls.map(([method, value, options]) => {
+      expect(method).toBe('jobs.send');
+      expect(options).toMatchObject({ timeoutMs: 20_000 });
+      return jobSendSchema.parse(value);
+    });
+    expect(params).toHaveLength(2);
+    for (const value of params)
+      expect(value).toMatchObject({ projectRoot: realpathSync(projectRoot), jobId: 'job-1', input: 'message' });
+    expect(params[0].clientMessageId).not.toBe(params[1].clientMessageId);
+  });
+
+  it.each([
+    { state: 'delivered' },
+    { state: 'refused', code: 'control_unavailable', reason: 'Control is recovering.' },
+    { state: 'unknown', reason: 'Provider response timed out.' },
+  ])('preserves a validated send outcome %j without replay', async (result) => {
+    mockState.request.mockResolvedValueOnce(result);
+    const client = makeClient(projectRoot, findCommand(buildProgram(), 'jobs', 'send'));
+    expect(await client.sendJob('job-1', 'message')).toEqual(result);
+    expect(mockState.request).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ['null result', null],
+    ['absent result', undefined],
+    ['unrecognized state', { state: 'accepted' }],
+    ['missing refusal reason', { state: 'refused', code: 'turn_ended' }],
+    ['unknown refusal code', { state: 'refused', code: 'other', reason: 'No.' }],
+    ['invalid unknown reason', { state: 'unknown', reason: 123 }],
+    ['extra delivery fields', { state: 'delivered', unexpected: true }],
+  ])('reports %s as unknown/75 without a retry remedy', async (_name, result) => {
+    mockState.request.mockResolvedValueOnce(result);
+    const client = makeClient(projectRoot, findCommand(buildProgram(), 'jobs', 'send'));
+    const outcome = await client.sendJob('job-1', 'message');
+    expect(outcome).toMatchObject({ state: 'unknown' });
+    const output = formatJobSendResult('job-1', outcome);
+    expect(output.exitCode).toBe(75);
+    expect(output.text).toContain('may have been delivered');
+    expect(output.text).toContain('command=coral-cli jobs wait job-1');
+    expect(output.text).not.toMatch(/retry|resend|jobs send|backend status/i);
+    expect(mockState.request).toHaveBeenCalledOnce();
+    expect(issueWithSuccessorAfterLifecycleRefusal).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ['disconnect', new Error('IPC connection closed; retry')],
+    ['timeout', new Error('IPC request timed out')],
+    [
+      'succession pause',
+      new IpcRpcError({ code: -32000, message: 'Paused', data: { code: 'succession_admission_paused' } }),
+    ],
+  ])('reports post-issue %s as unknown/75 without reconnecting or replaying', async (_name, error) => {
+    mockState.request.mockRejectedValueOnce(error);
+    const client = makeClient(projectRoot, findCommand(buildProgram(), 'jobs', 'send'));
+    const outcome = await client.sendJob('job-1', 'message');
+    expect(outcome).toMatchObject({ state: 'unknown' });
+    const output = formatJobSendResult('job-1', outcome);
+    expect(output.exitCode).toBe(75);
+    expect(output.text).not.toMatch(/retry|resend|jobs send|backend status/i);
+    expect(mockState.request).toHaveBeenCalledOnce();
+    expect(ensure).toHaveBeenCalledOnce();
+  });
+
+  it('reports an older coordinator as refused/1 with restart guidance and no retry remedy', async () => {
+    mockState.request.mockRejectedValueOnce(new IpcRpcError({ code: -32601, message: 'Method not found' }));
+    const client = makeClient(projectRoot, findCommand(buildProgram(), 'jobs', 'send'));
+    const outcome = await client.sendJob('job-1', 'message');
+    expect(outcome).toEqual({
+      state: 'refused',
+      code: 'unsupported_by_running_build',
+      reason:
+        'The running Coral build predates jobs send. Restart the session so the current Coral plugin loads; the coordinator follows the installed build.',
+    });
+    const output = formatJobSendResult('job-1', outcome);
+    expect(output.exitCode).toBe(1);
+    expect(output.text).toContain('unsupported_by_running_build');
+    expect(output.text).toContain('The running Coral build predates jobs send.');
+    expect(output.text).toContain('Restart the session so the current Coral plugin loads');
+    expect(output.text).not.toMatch(/retry|resend|command=|may have been delivered/i);
+    expect(mockState.request).toHaveBeenCalledOnce();
+    expect(ensure).toHaveBeenCalledOnce();
+    expect(issueWithSuccessorAfterLifecycleRefusal).toHaveBeenCalledOnce();
+  });
+
+  it('validates send input before contacting the coordinator', async () => {
+    const client = makeClient(projectRoot, findCommand(buildProgram(), 'jobs', 'send'));
+    await expect(client.sendJob('job-1', ' ')).rejects.toThrow();
+    expect(ensure).not.toHaveBeenCalled();
+    expect(mockState.request).not.toHaveBeenCalled();
+  });
+
+  it('keeps a pre-issue ensure failure distinct from an unknown send', async () => {
+    const error = new BackendUnreachableError('Coordinator unavailable before issue');
+    vi.mocked(ensure).mockRejectedValueOnce(error);
+    const client = makeClient(projectRoot, findCommand(buildProgram(), 'jobs', 'send'));
+    await expect(client.sendJob('job-1', 'message')).rejects.toBe(error);
+    expect(mockState.request).not.toHaveBeenCalled();
+  });
+
+  it('keeps a final lifecycle refusal distinct from response loss', async () => {
+    const error = new IpcLifecycleRefusal('/socket', 'jobs.send');
+    mockState.request.mockRejectedValueOnce(error);
+    const client = makeClient(projectRoot, findCommand(buildProgram(), 'jobs', 'send'));
+    await expect(client.sendJob('job-1', 'message')).rejects.toBe(error);
+    expect(mockState.request).toHaveBeenCalledOnce();
   });
 
   it('session job guard: authenticates live owner-scoped queries without starting a coordinator', async () => {

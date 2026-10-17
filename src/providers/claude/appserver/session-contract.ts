@@ -17,6 +17,8 @@ import type {
   TurnProgressParams,
   TurnStartParams,
   TurnStartResult,
+  TurnSendParams,
+  TurnSendResult,
 } from './protocol.js';
 
 export type ChildExit = {
@@ -109,6 +111,7 @@ export interface BrokerSessionController {
   ): Promise<Omit<SessionProbeResult, 'brokerSessionKey'>>;
   turnStart(params: Omit<TurnStartParams, 'brokerSessionKey'>): Promise<Omit<TurnStartResult, 'brokerSessionKey'>>;
   turnInterrupt(params: Omit<TurnInterruptParams, 'brokerSessionKey'>): Promise<TurnInterruptResult>;
+  turnSend(params: Omit<TurnSendParams, 'brokerSessionKey'>): Promise<TurnSendResult>;
   shutdown(): Promise<ControllerShutdownDisposition>;
   subscribeNotifications(handler: (notification: ControllerNotification) => void): () => void;
   hasActiveTurn(): boolean;
@@ -159,6 +162,7 @@ export interface BrokerSessionControllerOptions<TSpawnChild> {
   monotonicNow: () => bigint;
   onTurnStarted?: (turn: { brokerTurnId: string }) => Promise<void> | void;
   stderrLimit?: number;
+  onShutdownHeld?: (hold: ControllerShutdownHold) => ControllerShutdownSuccessorAcceptance;
 }
 
 export type TuiSpawnChild = (options: SpawnClaudeChildOptions) => Promise<ClaudeBrokerChild> | ClaudeBrokerChild;
@@ -179,6 +183,7 @@ export interface ClaudeBrokerSession {
   sessionClose(params: SessionCloseParams): Promise<SessionCloseResult>;
   turnStart(params: TurnStartParams): Promise<TurnStartResult>;
   turnInterrupt(params: TurnInterruptParams): Promise<TurnInterruptResult>;
+  turnSend(params: TurnSendParams): Promise<TurnSendResult>;
   shutdown(): Promise<BrokerShutdownDisposition>;
   subscribeNotifications(handler: (notification: ClaudeBrokerNotification) => void): () => void;
 }

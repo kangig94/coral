@@ -102,6 +102,31 @@ async function recordEvent(
 }
 
 describe('provider-proxy operation ledger', () => {
+  it('preflights the exact shared replay charge without consuming sequence or capacity', () => {
+    const ledger = createOperationLedger();
+    executing(ledger);
+    const event = { providerSeq: 1, frame: 'x'.repeat(16) };
+    ledger.preflightEvent(KEY, event, { kind: 'ordinary' });
+    ledger.preflightEvent(KEY, event, { kind: 'ordinary' });
+    expect(ledger.nextProviderSeq(KEY)).toBe(1);
+    expect(ledger.get(KEY)?.bufferedBytes).toBe(0);
+    ledger.recordEvent(KEY, event, { kind: 'ordinary' });
+
+    const next = { jobId: 'job-2', operationId: 'op-2' };
+    ledger.acknowledge(KEY, 1);
+    executing(ledger, next);
+    ledger.recordEvent(KEY, { providerSeq: 2, frame: 'x'.repeat(15) }, { kind: 'ordinary' });
+    expect(() => ledger.preflightEvent(next, { providerSeq: 1, frame: 'xx' }, { kind: 'ordinary' })).toThrow(
+      /proxy shared replay byte budget is exhausted/u,
+    );
+    expect(ledger.nextProviderSeq(next)).toBe(1);
+    expect(ledger.get(next)?.bufferedEvents).toEqual([]);
+    ledger.acknowledge(KEY, 2);
+    ledger.preflightEvent(next, event, { kind: 'ordinary' });
+    ledger.recordEvent(next, event, { kind: 'ordinary' });
+    expect(ledger.get(next)?.bufferedBytes).toBe(16);
+  });
+
   it('requires provider sequences to increase', async () => {
     const ledger = createOperationLedger();
     executing(ledger);

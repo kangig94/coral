@@ -630,3 +630,74 @@ it('discards an ACK that arrives after beginRelease', async () => {
     bufferedEvents: [{ providerSeq: 1 }],
   });
 });
+
+it('serves operation.send.v1 past the endpoint default budget and still accepts a stop', async () => {
+  const answer = createDeferred<{ state: 'delivered'; providerTurnId: string }>();
+  const started = createDeferred();
+  const host = fakeHost();
+  host.admitSend = () => ({
+    state: 'admitted',
+    refuse: vi.fn(),
+    write: () => {
+      started.resolve();
+      return answer.promise;
+    },
+  });
+  const controlled = controlledTimer();
+  const { control, operation } = await startProxy(host, controlled.timer, {
+    readMilliseconds: controlled.readMilliseconds,
+    onProviderEvent: async ({ providerSeq }) => ({ kind: 'ack', committedThroughProviderSeq: providerSeq }),
+  });
+  const prepared = proxyOperationPrepareResultSchema.parse(
+    await strictTestExchange(
+      control,
+      'operation.prepare.v1',
+      {
+        operation,
+        hostFingerprint: FINGERPRINT,
+        prepareAttemptNumber: 1,
+        prepared: PREPARED,
+      },
+      5_000,
+    ),
+  );
+  if (prepared.state !== 'pending-activation') throw new Error('Expected pending activation');
+  await strictTestExchange(
+    control,
+    'operation.activate.v1',
+    {
+      operation,
+      reservation: prepared.reservation,
+      jointContainmentReceipt: prepared.jointContainmentReceipt,
+      jointActivationReceipt: asJointActivationReceipt('activation-send'),
+    },
+    5_000,
+  );
+  await strictTestExchange(control, 'operation.attach.v1', { operation, committedThroughProviderSeq: 0 }, 5_000);
+  let answered = false;
+  const pending = strictTestExchange(
+    control,
+    'operation.send.v1',
+    {
+      operation,
+      input: 'Change direction',
+      clientMessageId: '33333333-3333-4333-8333-333333333333',
+    },
+    15_000,
+  ).then((result) => {
+    answered = true;
+    return result;
+  });
+  void pending.catch(() => {
+    answered = true;
+  });
+  await started.promise;
+  controlled.advance(6_000);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  expect(answered).toBe(false);
+  await strictTestExchange(control, 'operation.stop.v1', { operation, cause: 'user_abort' }, 5_000);
+  expect(host.stops).toBe(1);
+  answer.resolve({ state: 'delivered', providerTurnId: 'turn-1' });
+  await expect(pending).resolves.toEqual({ state: 'delivered', providerTurnId: 'turn-1' });
+});

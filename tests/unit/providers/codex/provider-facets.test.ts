@@ -1,7 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { TEST_CODEX_ACCESS } from '../../../helpers/provider-credentials.js';
-import { codexPreflight, codexRecoveryLifecycle } from '#src/providers/codex/provider-facets.js';
+import {
+  codexAppServerLifecycle,
+  codexPreflight,
+  codexRecoveryLifecycle,
+} from '#src/providers/codex/provider-facets.js';
 import { buildCodexContinuity } from '#src/providers/codex/request-mapping.js';
+import { ProviderRpcError } from '#src/providers/app-server-transport.js';
+import { ProviderHostUnserviceableResponseError } from '#src/providers/host-admission.js';
+import { createDeferred } from '#tools/testing/deferred.js';
+import { flushMicrotasks } from '#tools/simulation/core/virtual-time.js';
+import type { AppServerTransport } from '#src/providers/contract.js';
 import { jsonValueSchema } from '#src/infra/json-value.js';
 import type { ProviderPreflightRuntime } from '#src/providers/contract.js';
 import type { CodexProviderAccess } from '#src/providers/codex/execution-plan.js';
@@ -149,4 +158,128 @@ describe('codexPreflight', () => {
     if (outcome.kind !== 'undetermined') throw new Error('expected undetermined');
     expect(outcome.message).not.toMatch(LOGIN);
   });
+});
+
+describe('codexAppServerLifecycle.send', () => {
+  const input = { text: 'Change direction', clientMessageId: '33333333-3333-4333-8333-333333333333' };
+  const continuity = buildCodexContinuity({ cwd: '/workspace', threadId: 'thread-1', turnId: 'turn-1' });
+
+  function transport(rpc: ReturnType<typeof vi.fn>): AppServerTransport {
+    return { rpc: rpc as AppServerTransport['rpc'], subscribe: () => () => {}, closed: new Promise(() => {}) };
+  }
+
+  function providerError(code: number, message: string): ProviderRpcError {
+    return new ProviderRpcError({
+      requestId: 5,
+      method: 'turn/steer',
+      rpcCode: code,
+      providerMessage: message,
+      providerData: undefined,
+      hostLog: { startSeq: 1, endSeq: 2 },
+    });
+  }
+
+  it('delivers once to the retained expectedTurnId with the send correlation id', async () => {
+    const rpc = vi.fn(async () => ({ turnId: 'turn-1' }));
+    await expect(codexAppServerLifecycle.send!(transport(rpc), continuity, input)).resolves.toEqual({
+      state: 'delivered',
+    });
+    expect(rpc).toHaveBeenCalledExactlyOnceWith('turn/steer', {
+      threadId: 'thread-1',
+      expectedTurnId: 'turn-1',
+      clientUserMessageId: input.clientMessageId,
+      input: [{ type: 'text', text: input.text, text_elements: [] }],
+    });
+  });
+
+  it.each([
+    [
+      -32600,
+      'expected active turn id `00000000-0000-4000-8000-000000000000` but found `01a14a38-dda3-75a2-962e-a2ad3411a930`',
+      'turn_ended',
+    ],
+    [-32600, 'no active turn to steer', 'turn_ended'],
+    [-32600, 'invalid request: input is empty', 'provider_rejected'],
+    [-32600, 'active review turn is not steerable', 'provider_rejected'],
+    [-32600, 'expected active turn id is invalid', 'provider_rejected'],
+    [-32000, 'no active turn to steer', 'provider_rejected'],
+    [-32603, 'provider internal failure', 'provider_rejected'],
+    [-32601, 'Method not found', 'provider_rejected'],
+  ])('maps answered error %s / %s to %s without requiring data', async (code, message, expectedCode) => {
+    const rpc = vi.fn(async () => {
+      throw providerError(code, message);
+    });
+    await expect(codexAppServerLifecycle.send!(transport(rpc), continuity, input)).resolves.toEqual({
+      state: 'refused',
+      code: expectedCode,
+      reason: message,
+    });
+    expect(rpc).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves an answered rejection when the live host wrapper correlates it with host serviceability', async () => {
+    const rejection = providerError(-32600, 'no active turn to steer');
+    const rpc = vi.fn(async () => {
+      throw new ProviderHostUnserviceableResponseError(
+        {
+          provider: 'codex',
+          fingerprint: 'host',
+          instanceId: 'instance',
+          leaseMode: 'shared',
+        },
+        rejection,
+      );
+    });
+    await expect(codexAppServerLifecycle.send!(transport(rpc), continuity, input)).resolves.toEqual({
+      state: 'refused',
+      code: 'turn_ended',
+      reason: 'no active turn to steer',
+    });
+  });
+
+  it('waits for a missing answer without inventing a refusal', async () => {
+    const answer = createDeferred<unknown>();
+    const rpc = vi.fn(() => answer.promise);
+    let settled = false;
+    const pending = codexAppServerLifecycle.send!(transport(rpc), continuity, input).then((outcome) => {
+      settled = true;
+      return outcome;
+    });
+    await flushMicrotasks();
+    expect(settled).toBe(false);
+    answer.reject(new Error('channel closed'));
+    await expect(pending).resolves.toEqual({ state: 'unknown', reason: 'channel closed' });
+    expect(rpc).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([{ cwd: '/workspace' }, { threadId: 'thread-1' }, { turnId: 'turn-1' }])(
+    'refuses incomplete continuity before RPC: %j',
+    async (partial) => {
+      const rpc = vi.fn();
+      await expect(codexAppServerLifecycle.send!(transport(rpc), partial, input)).resolves.toMatchObject({
+        state: 'refused',
+        code: 'turn_not_started',
+      });
+      expect(rpc).not.toHaveBeenCalled();
+    },
+  );
+
+  it('rejects malformed continuity as an internal contract violation before RPC', async () => {
+    const rpc = vi.fn();
+    await expect(codexAppServerLifecycle.send!(transport(rpc), {}, input)).rejects.toThrow(
+      new TypeError('Invalid persisted Codex continuity.'),
+    );
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it.each([{}, { turnId: '' }, { turnId: 'other-turn' }, null])(
+    'reports an invalid acknowledgement as unknown: %j',
+    async (response) => {
+      const rpc = vi.fn(async () => response);
+      await expect(codexAppServerLifecycle.send!(transport(rpc), continuity, input)).resolves.toMatchObject({
+        state: 'unknown',
+      });
+      expect(rpc).toHaveBeenCalledTimes(1);
+    },
+  );
 });

@@ -216,6 +216,67 @@ afterEach(() => {
 });
 
 describe('ipc ensure', () => {
+  it.each(['delivered', 'refused-again'] as const)(
+    'reissues jobs.send once to the successor after a pre-effect lifecycle refusal (%s)',
+    async (outcome) => {
+      makeHome();
+      const root = createPluginRoot();
+      writeDiscovery(root, { instanceId: 'successor-coordinator' });
+      mockState.health.mockResolvedValue({
+        status: 'ok',
+        version: '0.5.2',
+        bundleHash: 'test-hash',
+        flavor: 'prod',
+        instanceId: 'successor-coordinator',
+        namespace: pluginRootNamespace(root),
+      });
+      const { IpcLifecycleRefusal } = await import('#src/transport/ipc/client.js');
+      const refusal = new IpcLifecycleRefusal('/incumbent.sock', 'jobs.send');
+      const incumbent = { request: vi.fn().mockRejectedValue(refusal) };
+      const successorRefusal = new IpcLifecycleRefusal(socketPath(root), 'jobs.send');
+      if (outcome === 'delivered') mockState.request.mockResolvedValue({ state: 'delivered' });
+      else mockState.request.mockRejectedValue(successorRefusal);
+      const params = {
+        projectRoot: '/project',
+        jobId: 'job-1',
+        input: 'message',
+        clientMessageId: '11111111-1111-4111-8111-111111111111',
+      };
+      const { issueWithSuccessorAfterLifecycleRefusal } = await importEnsure();
+      const result = issueWithSuccessorAfterLifecycleRefusal(
+        'jobs.send',
+        root,
+        (client) => client.request('jobs.send', params, { timeoutMs: 20_000 }),
+        undefined,
+        incumbent,
+      );
+      if (outcome === 'delivered') await expect(result).resolves.toEqual({ state: 'delivered' });
+      else await expect(result).rejects.toBe(successorRefusal);
+      expect(incumbent.request).toHaveBeenCalledExactlyOnceWith('jobs.send', params, { timeoutMs: 20_000 });
+      expect(mockState.request).toHaveBeenCalledExactlyOnceWith(socketPath(root), 'jobs.send', params, {
+        timeoutMs: 20_000,
+      });
+    },
+  );
+
+  it('never seeks a successor for jobs.send response loss', async () => {
+    const lostResponse = new Error('IPC connection closed');
+    const incumbent = { request: vi.fn().mockRejectedValue(lostResponse) };
+    const { issueWithSuccessorAfterLifecycleRefusal } = await importEnsure();
+    await expect(
+      issueWithSuccessorAfterLifecycleRefusal(
+        'jobs.send',
+        undefined,
+        (client) => client.request('jobs.send'),
+        undefined,
+        incumbent,
+      ),
+    ).rejects.toBe(lostResponse);
+    expect(incumbent.request).toHaveBeenCalledOnce();
+    expect(mockState.createdClients).toEqual([]);
+    expect(mockState.spawn).not.toHaveBeenCalled();
+  });
+
   it('should reuse a present healthy ready coordinator', async () => {
     makeHome();
     const root = createPluginRoot();

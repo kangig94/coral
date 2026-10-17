@@ -2,6 +2,8 @@ import type {
   HostRef,
   ProviderContinuityEventBody,
   ProviderEventBody,
+  ProviderSendInput,
+  ProviderSendOutcome,
   ProviderStopCause,
 } from '../providers/contract.js';
 import { isInterruptionStopCause } from '../providers/contract.js';
@@ -41,6 +43,7 @@ import {
   proxyOperationActivateResultSchema,
   proxyOperationAttachResultSchema,
   proxyOperationCancelResultSchema,
+  type ProxyOperationSendResult,
   proxyOperationInspectResultSchema,
   proxyOperationPrepareCapacityResultSchema,
   proxyOperationPreparePendingResultSchema,
@@ -120,12 +123,21 @@ export interface SemanticOperationStartHandle {
 }
 
 export interface SemanticOperationHost {
+  admitSend?(input: Readonly<{ key: ProviderOperationKey; input: ProviderSendInput }>): SemanticOperationSendAdmission;
   cancellationHold?(key: ProviderOperationKey): ProxyOperationCancellationHold | null;
   start(
     input: Readonly<{ key: ProviderOperationKey; prepared: ProxyPreparedAppServerOperation }>,
   ): SemanticOperationStartHandle;
   stop(input: Readonly<{ key: ProviderOperationKey; cause: ProviderStopCause }>): Promise<void> | void;
 }
+
+export type SemanticOperationSendAdmission =
+  | Extract<ProviderSendOutcome, { state: 'refused' }>
+  | Readonly<{
+      state: 'admitted';
+      refuse(outcome: Extract<ProviderSendOutcome, { state: 'refused' }>): void;
+      write(): Promise<ProxyOperationSendResult>;
+    }>;
 
 export type OperationStageResult =
   | Readonly<{
@@ -210,6 +222,7 @@ type SupervisedOperation = {
   releaseRetryTimer: { unref?: () => void } | null;
   ownershipOrdinal: number;
   continuityCommits: Map<number, PendingContinuityCommit>;
+  sendResults: Map<string, Promise<ProxyOperationSendResult>>;
   providerEventAmbiguity: ProviderEventAmbiguityDeadline | null;
   pumpDemand: boolean;
   pumpTurn: { unref?: () => void } | null;
@@ -566,6 +579,106 @@ export class OperationSupervisor {
     return receipt;
   }
 
+  send(operation: OperationIdentity, input: ProviderSendInput): Promise<ProxyOperationSendResult> {
+    const record = this.#operations.get(operationToken(operation));
+    if (record === undefined) {
+      return Promise.resolve({ state: 'refused', code: 'turn_ended', reason: 'The operation is no longer live.' });
+    }
+    if (!sameOperation(record.operation, operation)) {
+      return Promise.resolve({
+        state: 'refused',
+        code: 'control_unavailable',
+        reason: 'The operation identity does not match.',
+      });
+    }
+    const original = record.sendResults.get(input.clientMessageId);
+    if (original !== undefined) return original;
+
+    const result = this.#sendOnce(record, input);
+    record.sendResults.set(input.clientMessageId, result);
+    return result;
+  }
+
+  #sendOnce(record: SupervisedOperation, input: ProviderSendInput): Promise<ProxyOperationSendResult> {
+    const admission = this.#admitSend(record, input);
+    if (admission.state === 'refused') return Promise.resolve(admission);
+    const refusal = this.#recordSend(record, input);
+    if (refusal !== null) {
+      admission.refuse(refusal);
+      return Promise.resolve(refusal);
+    }
+    return admission.write();
+  }
+
+  #admitSend(record: SupervisedOperation, input: ProviderSendInput): SemanticOperationSendAdmission {
+    const entry = this.#ledger.get(record.key);
+    if (entry === null) {
+      return { state: 'refused', code: 'turn_ended', reason: 'The operation is no longer live.' };
+    }
+    if (
+      record.closed ||
+      record.stopCause !== null ||
+      record.releaseIntent !== null ||
+      (entry.state !== 'executing' &&
+        entry.state !== 'preparing' &&
+        entry.state !== 'prepared' &&
+        entry.state !== 'starting' &&
+        entry.state !== 'started-awaiting-publication')
+    ) {
+      return { state: 'refused', code: 'turn_ended', reason: 'The current turn has ended.' };
+    }
+    if (entry.state !== 'executing') {
+      return {
+        state: 'refused',
+        code: 'turn_not_started',
+        reason: 'The current turn is not steerable yet.',
+      };
+    }
+    const admission = this.#options.host.admitSend?.({ key: record.key, input });
+    if (admission === undefined) {
+      return {
+        state: 'refused',
+        code: 'transport_unsupported',
+        reason: 'The provider does not support send.',
+      };
+    }
+    return admission;
+  }
+
+  #recordSend(
+    record: SupervisedOperation,
+    input: ProviderSendInput,
+  ): Extract<ProviderSendOutcome, { state: 'refused' }> | null {
+    const preview = input.text.slice(0, 240).replace(/\s+/gu, ' ') + (input.text.length > 240 ? '…' : '');
+    const event: ProviderEventBody = {
+      kind: 'progress',
+      message: `Sending message ${input.clientMessageId} (jobs send): ${preview}. This line does not prove delivery.`,
+    };
+    const message = this.#providerEventMessage(record.key, event);
+    try {
+      // Admission and emission must stay synchronous so no other event can consume the preflighted budget.
+      this.#ledger.preflightEvent(
+        record.key,
+        { providerSeq: message.params.providerSeq, frame: encodeProxyControlFrame(message) },
+        { kind: 'ordinary' },
+      );
+    } catch (error: unknown) {
+      if (!(error instanceof ReplayAdmissionError)) throw error;
+      const refused = { state: 'refused', code: 'control_unavailable', reason: error.message } as const;
+      return refused;
+    }
+    const emission = this.emitProviderEvent(record.key, event);
+    if (emission.kind !== 'recorded') {
+      const refused = {
+        state: 'refused',
+        code: 'control_unavailable',
+        reason: 'The send record was not admitted.',
+      } as const;
+      return refused;
+    }
+    return null;
+  }
+
   stop(operation: OperationIdentity, cause: ProviderStopCause): Promise<unknown> {
     const record = this.#requireRecord(operation);
     if (cause === 'coordinator_rekey_refused' || record.stopCause === null) record.stopCause = cause;
@@ -878,15 +991,7 @@ export class OperationSupervisor {
     }
   }
 
-  emitProviderEvent(key: ProviderOperationKey, event: ProviderEventBody): ProviderEventEmissionResult {
-    const record = this.#requireRecord(key);
-    const recordedEvent =
-      record.stopCause === 'coordinator_rekey_refused' && (event.kind === 'terminal' || event.kind === 'suspended')
-        ? providerProxyRekeyRefusalEvent(
-            this.#requireLedger(key).prepared.provider,
-            event.kind === 'suspended' ? event.reason : undefined,
-          )
-        : event;
+  #providerEventMessage(key: ProviderOperationKey, event: ProviderEventBody) {
     const providerSeq = this.#ledger.nextProviderSeq(key);
     const request = providerEventRequestSchema.parse({
       operation: {
@@ -896,14 +1001,27 @@ export class OperationSupervisor {
         buildSetId: this.#options.buildSetId,
       },
       providerSeq,
-      event: recordedEvent,
+      event,
     });
-    const message = {
+    return {
       jsonrpc: '2.0',
       id: this.#nextProviderEventFrameId,
       method: PROVIDER_EVENT_METHOD,
       params: request,
     } as const;
+  }
+
+  emitProviderEvent(key: ProviderOperationKey, event: ProviderEventBody): ProviderEventEmissionResult {
+    const record = this.#requireRecord(key);
+    const recordedEvent =
+      record.stopCause === 'coordinator_rekey_refused' && (event.kind === 'terminal' || event.kind === 'suspended')
+        ? providerProxyRekeyRefusalEvent(
+            this.#requireLedger(key).prepared.provider,
+            event.kind === 'suspended' ? event.reason : undefined,
+          )
+        : event;
+    const message = this.#providerEventMessage(key, recordedEvent);
+    const providerSeq = message.params.providerSeq;
     if (encodedProxyControlFrameByteLength(message) > MAX_PROVIDER_REPLAY_BYTES) {
       const emission = this.#recordProxyEmergencyCompletion(
         record,
@@ -1082,6 +1200,7 @@ export class OperationSupervisor {
       releaseRetryTimer: null,
       ownershipOrdinal: 1,
       continuityCommits: new Map(),
+      sendResults: new Map(),
       providerEventAmbiguity: null,
       pumpDemand: false,
       pumpTurn: null,

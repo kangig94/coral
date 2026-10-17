@@ -26,9 +26,13 @@ export type RetrySafeControlCallPolicy = ControlCallPolicyContext &
 export type ContainmentRequiredControlCallPolicy = ControlCallPolicyContext &
   Readonly<{ effect: 'mutation'; indeterminate: 'requires-containment' }>;
 
+export type CallerReportedControlCallPolicy = ControlCallPolicyContext &
+  Readonly<{ effect: 'mutation'; indeterminate: 'caller-reported' }>;
+
 export type ControlCallPolicy =
   | ObservationControlCallPolicy
   | RetrySafeControlCallPolicy
+  | CallerReportedControlCallPolicy
   | ContainmentRequiredControlCallPolicy;
 
 export type ProviderProxyRole = 'proxy' | 'guardian' | 'reaper';

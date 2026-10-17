@@ -37,6 +37,22 @@ let fixtureIndex = 0;
 const TEST_SESSION_ID = '00000000-0000-4000-8000-000000000001';
 const TEST_MODEL = 'claude-sonnet-test';
 
+describe('SingleSessionController.turnSend', () => {
+  it('refuses TUI send without spawning or writing a prompt', async () => {
+    const spawnChild = vi.fn();
+    const controller = new SingleSessionController({
+      spawnChild,
+      ids: { uuid: () => TEST_SESSION_ID },
+      monotonicNow: () => 0n,
+    });
+    await expect(
+      controller.turnSend({ brokerTurnId: 'turn-1', text: 'change direction', clientMessageId: TEST_SESSION_ID }),
+    ).resolves.toMatchObject({ state: 'refused', code: 'transport_unsupported' });
+    expect(spawnChild).not.toHaveBeenCalled();
+    expect(controller.hasActiveTurn()).toBe(false);
+  });
+});
+
 const FAST_TIMING = { readySettleMs: 5, promptAckTimeoutMs: 10 } as const;
 
 type TranscriptFixture = {

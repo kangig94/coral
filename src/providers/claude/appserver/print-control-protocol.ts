@@ -1,4 +1,21 @@
+import { z } from 'zod';
 import { isRecord } from '../../../infra/json.js';
+
+const replayUserMessageSchema = z
+  .object({
+    type: z.literal('user'),
+    uuid: z.string().uuid(),
+    isReplay: z.literal(true),
+    message: z
+      .object({
+        role: z.literal('user'),
+        content: z.union([z.string(), z.array(z.object({ type: z.literal('text'), text: z.string() }).passthrough())]),
+      })
+      .passthrough(),
+  })
+  .passthrough();
+
+export type SDKReplayUserMessage = z.infer<typeof replayUserMessageSchema>;
 
 export const claudeControlRequestSubtypes = {
   initialize: 'initialize',
@@ -96,6 +113,7 @@ type SDKKeepAliveMessage = {
 };
 
 export type ClaudePrintStdoutMessage =
+  | SDKReplayUserMessage
   | SDKAssistantMessage
   | SDKSystemMessage
   | SDKResultMessage
@@ -132,6 +150,10 @@ export function parseClaudePrintStdoutLine(line: string): ClaudePrintStdoutMessa
   }
 
   switch (parsed.type) {
+    case 'user': {
+      const replay = replayUserMessageSchema.safeParse(parsed);
+      return replay.success ? replay.data : null;
+    }
     case 'assistant':
       return parseAssistantMessage(parsed);
     case 'system':
