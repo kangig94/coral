@@ -171,6 +171,7 @@ export interface TurnCompletedParams {
   isError: boolean;
   subtype: string | null;
   errors?: string[];
+  cancelled?: boolean;
 }
 
 export const turnFailureDiagnosticReasonSchema = providerTurnFailureDiagnosticReasonSchema;
@@ -182,6 +183,11 @@ export type TurnFailureDiagnosticPhase = ProviderTurnFailureDiagnosticPhase;
 export type TurnFailureDiagnostic = ProviderTurnFailureDiagnostic;
 
 export interface TurnFailedParams {
+  result?: string;
+  model?: string | null;
+  durationMs?: number | null;
+  usage?: unknown;
+  costUsd?: number | null;
   brokerSessionKey: string;
   brokerTurnId: string | null;
   message: string;

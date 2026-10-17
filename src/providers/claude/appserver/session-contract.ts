@@ -162,6 +162,7 @@ export interface BrokerSessionControllerOptions<TSpawnChild> {
   monotonicNow: () => bigint;
   onTurnStarted?: (turn: { brokerTurnId: string }) => Promise<void> | void;
   stderrLimit?: number;
+  onShutdownHeld?: (hold: ControllerShutdownHold) => ControllerShutdownSuccessorAcceptance;
 }
 
 export type TuiSpawnChild = (options: SpawnClaudeChildOptions) => Promise<ClaudeBrokerChild> | ClaudeBrokerChild;

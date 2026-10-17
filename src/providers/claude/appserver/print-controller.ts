@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import { raceTimeout } from '../../../infra/async.js';
 import { errorMessage } from '../../../infra/error-format.js';
 import { hashSortedEnv, sameBootstrapSignature, type ClaudeBootstrapSignature } from '../request-prep.js';
@@ -64,6 +65,34 @@ const DEFAULT_STDERR_RING_LIMIT = 16_384;
 const CHILD_SHUTDOWN_GRACE_MS = 1_000;
 const CHILD_SHUTDOWN_TIMEOUT_MS = 2_500;
 const DEFAULT_CONTROL_REQUEST_TIMEOUT_MS = 60_000;
+const FOLLOW_ON_START_TIMEOUT_MS = 30_000;
+const FOLLOW_ON_SEPARATOR = '\n\n--- Message sent while the agent was finishing (jobs send) ---\n';
+const aggregateUsageSchema = z.object({
+  input_tokens: z.number().int().nonnegative().optional(),
+  output_tokens: z.number().int().nonnegative().optional(),
+  cache_read_input_tokens: z.number().int().nonnegative().optional(),
+  cache_creation_input_tokens: z.number().int().nonnegative().optional(),
+});
+const assistantActivitySchema = z.object({
+  message: z.object({
+    content: z
+      .array(
+        z.union([
+          z.object({ type: z.literal('text'), text: z.string().min(1) }),
+          z.object({ type: z.literal('thinking'), thinking: z.string().min(1) }),
+          z.object({ type: z.literal('tool_use'), name: z.string().min(1), input: z.record(z.string(), z.unknown()) }),
+        ]),
+      )
+      .min(1),
+  }),
+});
+const followOnInitSchema = z.object({
+  type: z.literal('system'),
+  subtype: z.literal('init'),
+  session_id: z.string().min(1),
+  model: z.string().min(1),
+});
+type ResultSegment = ControllerNotificationMap['turn/completed'];
 
 type ControlRequestPayload =
   | SDKControlInitializeRequest
@@ -87,7 +116,11 @@ type ActiveTurnState = {
   interruptSent: boolean;
   model: string | null;
   initialPromptId: string;
-  pendingSends: Map<string, { text: string; state: 'pending' | 'consumed' }>;
+  pendingSends: Map<string, { text: string; state: 'pending' | 'cancellation-pending' | 'consumed' }>;
+  phase: 'active' | 'awaiting-follow-on' | 'stopping';
+  segments: ResultSegment[];
+  followOnTimer: unknown | null;
+  cleanupReason: 'cancelled' | 'follow-on-expired' | null;
 };
 
 type ControllerSessionEnsureResult = Omit<SessionEnsureResult, 'brokerSessionKey'>;
@@ -104,6 +137,7 @@ type ChildBinding = {
   closedObserved: boolean;
   shutdownAttempt: Promise<ControllerShutdownDisposition> | null;
   expectedExit: boolean;
+  stopOutput: () => void;
   dispose: () => void;
 };
 
@@ -116,6 +150,7 @@ export class PrintSessionController implements BrokerSessionController {
   private readonly controlRequestTimer: PrintSessionControllerOptions['controlRequestTimer'];
   private readonly controlRequestTimeoutMs: number;
   private readonly onUnexpectedExit: (() => void) | undefined;
+  private readonly onShutdownHeld: PrintSessionControllerOptions['onShutdownHeld'];
   private readonly notificationHandlers = new Set<(notification: ControllerNotification) => void>();
   private readonly pendingControlRequests = new Map<string, PendingControlRequest>();
 
@@ -145,6 +180,7 @@ export class PrintSessionController implements BrokerSessionController {
     this.controlRequestTimer = options.controlRequestTimer;
     this.controlRequestTimeoutMs = options.controlRequestTimeoutMs ?? DEFAULT_CONTROL_REQUEST_TIMEOUT_MS;
     this.onUnexpectedExit = options.onUnexpectedExit;
+    this.onShutdownHeld = options.onShutdownHeld;
   }
 
   subscribeNotifications(handler: (notification: ControllerNotification) => void): () => void {
@@ -233,6 +269,10 @@ export class PrintSessionController implements BrokerSessionController {
       model: this.defaultModel,
       initialPromptId: this.ids.uuid(),
       pendingSends: new Map(),
+      phase: 'active',
+      segments: [],
+      followOnTimer: null,
+      cleanupReason: null,
     };
     this.activeTurn = turn;
 
@@ -271,7 +311,13 @@ export class PrintSessionController implements BrokerSessionController {
 
   async turnSend(params: Omit<TurnSendParams, 'brokerSessionKey'>): Promise<TurnSendResult> {
     const turn = this.activeTurn;
-    if (turn === null || turn.brokerTurnId !== params.brokerTurnId || turn.interruptRequested || this.shuttingDown) {
+    if (
+      turn === null ||
+      turn.brokerTurnId !== params.brokerTurnId ||
+      turn.interruptRequested ||
+      turn.phase !== 'active' ||
+      this.shuttingDown
+    ) {
       return { state: 'refused', code: 'turn_ended', reason: 'The Claude print turn is not active.' };
     }
     if (!turn.userMessageSent || this.childBinding === null) {
@@ -310,7 +356,11 @@ export class PrintSessionController implements BrokerSessionController {
     }
 
     turn.interruptRequested = true;
-    if (turn.userMessageSent) {
+    turn.phase = 'stopping';
+    this.clearFollowOnDeadline(turn);
+    if (this.unreadSendIds(turn).length > 0 || turn.cleanupReason !== null) {
+      this.stopAggregate(turn, 'cancelled');
+    } else if (turn.userMessageSent) {
       await this.issueInterrupt(turn);
     }
 
@@ -334,6 +384,7 @@ export class PrintSessionController implements BrokerSessionController {
 
   async shutdown(): Promise<ControllerShutdownDisposition> {
     this.shuttingDown = true;
+    if (this.activeTurn !== null) this.clearFollowOnDeadline(this.activeTurn);
     const childBindings = [...this.unsettledChildBindings];
     if (childBindings.length === 0) {
       return observedChildShutdown([]);
@@ -443,6 +494,10 @@ export class PrintSessionController implements BrokerSessionController {
       closedObserved: false,
       shutdownAttempt: null,
       expectedExit: false,
+      stopOutput: () => {
+        offStdout();
+        offStderr?.();
+      },
       dispose: () => {
         offStdout();
         offExit();
@@ -464,6 +519,10 @@ export class PrintSessionController implements BrokerSessionController {
       return;
     }
 
+    if (message.type === 'result' && this.activeTurn !== null) {
+      this.clearFollowOnDeadline(this.activeTurn);
+      if (this.activeTurn.phase !== 'stopping') this.activeTurn.phase = 'awaiting-follow-on';
+    }
     this.maybeUpdateSessionId(readSessionId(message));
 
     switch (message.type) {
@@ -588,6 +647,7 @@ export class PrintSessionController implements BrokerSessionController {
     }
 
     const progressMessage = extractClaudeProgressMessage(message, this.bootstrapSignature.cwd);
+    if (assistantActivitySchema.safeParse(message).success) this.observeFollowOnActivity(this.activeTurn);
     if (!progressMessage) {
       return;
     }
@@ -596,6 +656,9 @@ export class PrintSessionController implements BrokerSessionController {
   }
 
   private handleSystemMessage(message: SDKSystemMessage): void {
+    if (this.activeTurn !== null && followOnInitSchema.safeParse(message).success) {
+      this.observeFollowOnActivity(this.activeTurn);
+    }
     if (message.subtype === 'init' && typeof message.model === 'string') {
       this.defaultModel = message.model;
       if (this.activeTurn) {
@@ -619,8 +682,9 @@ export class PrintSessionController implements BrokerSessionController {
     const turn = this.activeTurn;
     if (turn === null || message.uuid === turn.initialPromptId) return;
     const sent = turn.pendingSends.get(message.uuid);
-    if (sent === undefined || sent.state !== 'pending') return;
+    if (sent === undefined || sent.state === 'consumed') return;
     sent.state = 'consumed';
+    this.observeFollowOnActivity(turn);
     this.emitTurnProgress(turn.brokerTurnId, `Sent message ${message.uuid} read by the agent`);
   }
 
@@ -630,7 +694,7 @@ export class PrintSessionController implements BrokerSessionController {
       return;
     }
 
-    const completed: ControllerNotificationMap['turn/completed'] = {
+    const completed: ResultSegment = {
       brokerTurnId: turn.brokerTurnId,
       sessionId: this.latestSessionId,
       conversationRef: this.currentConversationRef(),
@@ -647,27 +711,147 @@ export class PrintSessionController implements BrokerSessionController {
         : undefined,
     };
 
-    if ([...turn.pendingSends.values()].some((send) => send.state === 'pending')) {
-      this.finishResultWithUnconsumedSends(turn, completed);
+    turn.segments.push(completed);
+    if (turn.phase === 'stopping' && turn.cleanupReason !== null) return;
+    if (this.unreadSendIds(turn).length > 0) {
+      this.finishResultWithUnconsumedSends(turn);
       return;
     }
-    this.completeTurnResult(turn, completed);
+    this.completeTurnResult(turn, this.aggregateResult(turn));
   }
 
-  private finishResultWithUnconsumedSends(
-    turn: ActiveTurnState,
-    completed: ControllerNotificationMap['turn/completed'],
-  ): void {
-    this.completeTurnResult(turn, completed);
+  private finishResultWithUnconsumedSends(turn: ActiveTurnState): void {
+    turn.phase = 'awaiting-follow-on';
+    this.emitTurnProgress(
+      turn.brokerTurnId,
+      'Message arrived while the agent was finishing; awaiting a follow-up turn',
+    );
+    turn.followOnTimer = this.controlRequestTimer.schedule(() => {
+      turn.followOnTimer = null;
+      if (this.activeTurn !== turn || turn.phase !== 'awaiting-follow-on') return;
+      this.stopAggregate(turn, 'follow-on-expired');
+    }, FOLLOW_ON_START_TIMEOUT_MS);
   }
 
-  private completeTurnResult(turn: ActiveTurnState, completed: ControllerNotificationMap['turn/completed']): void {
-    this.activeTurn = null;
+  private observeFollowOnActivity(turn: ActiveTurnState): void {
+    if (turn.phase !== 'awaiting-follow-on') return;
+    this.clearFollowOnDeadline(turn);
+    turn.phase = 'active';
+  }
+
+  private clearFollowOnDeadline(turn: ActiveTurnState): void {
+    if (turn.followOnTimer === null) return;
+    this.controlRequestTimer.cancel(turn.followOnTimer);
+    turn.followOnTimer = null;
+  }
+
+  private unreadSendIds(turn: ActiveTurnState): string[] {
+    return [...turn.pendingSends].filter(([, send]) => send.state !== 'consumed').map(([id]) => id);
+  }
+
+  private aggregateResult(turn: ActiveTurnState): ResultSegment {
+    const last = turn.segments.at(-1);
+    if (last === undefined) {
+      return {
+        brokerTurnId: turn.brokerTurnId,
+        sessionId: this.latestSessionId,
+        conversationRef: this.currentConversationRef(),
+        result: '',
+        model: turn.model,
+        durationMs: null,
+        numTurns: null,
+        costUsd: null,
+        usage: undefined,
+        isError: false,
+        subtype: null,
+      };
+    }
+    if (turn.pendingSends.size === 0) return last;
+    const usage: Record<string, number> = {};
+    const segmentUsage = turn.segments.map((segment) => aggregateUsageSchema.safeParse(segment.usage));
+    for (const field of [
+      'input_tokens',
+      'output_tokens',
+      'cache_read_input_tokens',
+      'cache_creation_input_tokens',
+    ] as const) {
+      const total = sumAvailable(segmentUsage.map((parsed) => (parsed.success ? parsed.data[field] : undefined)));
+      if (total !== null) usage[field] = total;
+    }
+    // Claude Code 2.1.302: tokens/turns/wall duration are per result; cost is cumulative.
+    // Evidence: tests/unit/providers/claude/appserver/fixtures/haiku-follow-on-2.1.302.jsonl.
+    return {
+      ...last,
+      result: turn.segments.map((segment) => segment.result).join(FOLLOW_ON_SEPARATOR),
+      usage,
+      costUsd: turn.segments.every((segment) => availableCounter(segment.costUsd)) ? last.costUsd : null,
+      numTurns: sumAvailable(turn.segments.map((segment) => segment.numTurns)),
+      durationMs: sumAvailable(turn.segments.map((segment) => segment.durationMs)),
+    };
+  }
+
+  private emitAggregateAccounting(turn: ActiveTurnState, completed: ResultSegment): void {
+    if (turn.pendingSends.size === 0) return;
+    this.emitTurnProgress(
+      turn.brokerTurnId,
+      `Claude aggregate: ${turn.segments.length} result segments; turns=${completed.numTurns ?? 'unavailable'}`,
+    );
+  }
+
+  private stopAggregate(turn: ActiveTurnState, reason: 'cancelled' | 'follow-on-expired'): void {
+    turn.phase = 'stopping';
+    this.clearFollowOnDeadline(turn);
+    if (turn.cleanupReason !== null) return;
+    turn.cleanupReason = reason;
+    for (const send of turn.pendingSends.values()) {
+      if (send.state === 'pending') send.state = 'cancellation-pending';
+    }
+    const binding = this.childBinding;
+    void this.settleAggregateShutdown(turn, binding);
+  }
+
+  private async settleAggregateShutdown(turn: ActiveTurnState, binding: ChildBinding | null): Promise<void> {
+    if (binding !== null) {
+      const disposition = await this.terminateChildBinding(binding);
+      if (disposition.kind !== 'observed-absent') {
+        let accepted = false;
+        try {
+          const acceptance = this.onShutdownHeld?.(disposition);
+          accepted = acceptance?.kind === 'accepted' && acceptance.owner === 'broker-session-pool';
+        } catch (error) {
+          this.emitTurnProgress(
+            turn.brokerTurnId,
+            `Claude child cleanup remains owned until absence: ${errorMessage(error)}`,
+          );
+        }
+        if (!accepted) await disposition.settled;
+        binding.stopOutput();
+      }
+    }
+    if (this.activeTurn !== turn) return;
+    for (const id of this.unreadSendIds(turn)) {
+      this.emitTurnProgress(
+        turn.brokerTurnId,
+        turn.cleanupReason === 'cancelled' || turn.interruptRequested
+          ? `Sent message ${id} was not read before cancellation`
+          : `Sent message ${id} was not read: the follow-up turn did not start`,
+      );
+    }
+    const completed = this.aggregateResult(turn);
+    this.completeTurnResult(
+      turn,
+      turn.cleanupReason === 'cancelled' || turn.interruptRequested ? { ...completed, cancelled: true } : completed,
+    );
+  }
+
+  private completeTurnResult(turn: ActiveTurnState, completed: ResultSegment): void {
+    if (this.activeTurn !== turn) return;
+    this.clearFollowOnDeadline(turn);
+    this.emitAggregateAccounting(turn, completed);
     this.lastTerminalTurnId = turn.brokerTurnId;
-    this.emitNotification({
-      method: 'turn/completed',
-      params: completed,
-    });
+    if (turn.pendingSends.size === 0) this.activeTurn = null;
+    this.emitNotification({ method: 'turn/completed', params: completed });
+    if (this.activeTurn === turn) this.activeTurn = null;
   }
 
   private handleChildExit(binding: ChildBinding, event: ChildExit): void {
@@ -689,9 +873,14 @@ export class PrintSessionController implements BrokerSessionController {
 
     const turn = this.activeTurn;
     if (turn) {
-      this.activeTurn = null;
+      this.clearFollowOnDeadline(turn);
+      for (const id of this.unreadSendIds(turn)) {
+        this.emitTurnProgress(turn.brokerTurnId, `Sent message ${id} was not read before the child exited`);
+      }
+      this.emitAggregateAccounting(turn, this.aggregateResult(turn));
       this.lastTerminalTurnId = turn.brokerTurnId;
       this.emitTurnFailure(turn, exitError.message, 'child-exit');
+      this.activeTurn = null;
     }
 
     this.onUnexpectedExit?.();
@@ -874,14 +1063,24 @@ export class PrintSessionController implements BrokerSessionController {
   }
 
   private emitTurnFailure(turn: ActiveTurnState, message: string, reason: TurnFailureDiagnosticReason): void {
+    const completed = turn.pendingSends.size === 0 ? null : this.aggregateResult(turn);
     this.emitNotification({
       method: 'turn/failed',
       params: {
         brokerTurnId: turn.brokerTurnId,
-        message,
         sessionId: this.latestSessionId,
         conversationRef: this.currentConversationRef(),
         diagnostic: this.buildTurnFailureDiagnostic(turn, reason),
+        ...(completed === null
+          ? {}
+          : {
+              result: completed.result,
+              model: completed.model,
+              durationMs: completed.durationMs,
+              usage: completed.usage,
+              costUsd: completed.costUsd,
+            }),
+        message,
       },
     });
   }
@@ -890,6 +1089,7 @@ export class PrintSessionController implements BrokerSessionController {
     if (this.activeTurn !== turn) {
       return;
     }
+    this.clearFollowOnDeadline(turn);
     this.activeTurn = null;
     this.lastTerminalTurnId = turn.brokerTurnId;
     this.emitTurnFailure(turn, message, reason);
@@ -1031,4 +1231,13 @@ function appendRingBuffer(current: string, chunk: string, limit: number): string
 
 function nonEmptyOrNull(value: string | null): string | null {
   return value && value.length > 0 ? value : null;
+}
+
+function availableCounter(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+}
+
+function sumAvailable(values: readonly (number | null | undefined)[]): number | null {
+  if (!values.every(availableCounter)) return null;
+  return values.reduce((sum, value) => sum + value, 0);
 }
