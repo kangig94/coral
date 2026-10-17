@@ -136,6 +136,7 @@ describe('claudeAppServerLifecycle.send', () => {
 
   it.each([
     { state: 'delivered' },
+    { state: 'refused', code: 'turn_not_started', reason: 'The print turn has not started.' },
     { state: 'refused', code: 'transport_unsupported', reason: 'TUI send is unsupported.' },
     { state: 'refused', code: 'turn_ended', reason: 'The print turn ended.' },
   ])('returns the answered broker outcome %j and uses retained broker continuity', async (outcome) => {

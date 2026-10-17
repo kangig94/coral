@@ -220,6 +220,7 @@ async function startKernelThroughPool(child: FakeClaudePrintChild) {
   });
   const abort = new AbortController();
   let continuity: Record<string, unknown> = {};
+  let steering!: ProviderSteeringPort;
   const lease: AppServerSession = {
     rpc: (async (method, params) => {
       if (method === 'session/ensure')
@@ -262,6 +263,9 @@ async function startKernelThroughPool(child: FakeClaudePrintChild) {
       transportClosed: vi.fn(),
     },
     onProviderTurnTerminal,
+    onProviderSteering: (port) => {
+      steering = port;
+    },
     kbRoot: '/mock/kb',
     executionPlan: TEST_CLAUDE_PLAN,
   };
@@ -293,6 +297,7 @@ async function startKernelThroughPool(child: FakeClaudePrintChild) {
     events,
     spawnChild,
     onProviderTurnTerminal,
+    steering,
     get continuity() {
       return continuity;
     },
@@ -329,6 +334,35 @@ describe('PrintSessionController', () => {
     total_cost_usd: 0.01,
     usage: { input_tokens: 10, output_tokens: 2 },
   };
+
+  it('distinguishes an unstarted turn from the last terminal turn without writing input', async () => {
+    const child = new FakeClaudePrintChild();
+    const controller = createController(child);
+    const send = { brokerTurnId: 'turn-1', text: 'hello', clientMessageId: firstSendId };
+    try {
+      await expect(controller.turnSend(send)).resolves.toMatchObject({
+        state: 'refused',
+        code: 'turn_not_started',
+      });
+      expect(child.writes).toHaveLength(0);
+      await ensureController(controller, child);
+      await expect(controller.turnSend(send)).resolves.toMatchObject({
+        state: 'refused',
+        code: 'turn_not_started',
+      });
+      expect(child.writes).toHaveLength(1);
+      await controller.turnStart({ brokerTurnId: 'turn-1', prompt: 'hello' });
+      child.emitStdout(result);
+      await expect(controller.turnSend(send)).resolves.toMatchObject({ state: 'refused', code: 'turn_ended' });
+      await expect(controller.turnSend({ ...send, brokerTurnId: 'turn-2' })).resolves.toMatchObject({
+        state: 'refused',
+        code: 'turn_not_started',
+      });
+      expect(child.writes).toHaveLength(2);
+    } finally {
+      await controller.shutdown();
+    }
+  });
 
   it('correlates absorbed sends by UUID, ignores initial and tool-result echoes, and completes once', async () => {
     const child = new FakeClaudePrintChild();
@@ -518,6 +552,14 @@ describe('PrintSessionController', () => {
           { type: 'system', subtype: 'init', model: 42 },
           { type: 'assistant', message: {} },
           { ...replay(secondSendId), isReplay: false },
+          replay(parseWrite(child, 1).uuid),
+          {
+            ...replay(firstSendId),
+            message: {
+              role: 'user',
+              content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'done' }],
+            },
+          },
           { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', content: 'done' }] } },
         ])
           child.emitStdout(frame);
@@ -525,6 +567,9 @@ describe('PrintSessionController', () => {
           controller.turnSend({ brokerTurnId: 'turn-1', text: 'gap', clientMessageId: secondSendId }),
         ).resolves.toMatchObject({ state: 'refused', code: 'turn_ended' });
         expect(child.writes).toHaveLength(3);
+        expect(
+          notifications.filter((n) => n.method === 'turn/progress' && n.params.message.includes('read by the agent')),
+        ).toEqual([]);
         child.emitStdout(
           activity === 'init'
             ? { type: 'system', subtype: 'init', session_id: TEST_SESSION_ID, model: 'haiku' }
@@ -1070,7 +1115,7 @@ describe('PrintSessionController', () => {
     }
   });
 
-  it('carries an absorbed send through the facet, broker pool, stdout parser and kernel before one terminal', async () => {
+  it('refuses the checkpoint-to-start window, then carries an absorbed send through the facet, pool and kernel', async () => {
     const child = new FakeClaudePrintChild();
     let nextId = 0;
     const spawnChild = vi.fn(() => child);
@@ -1085,8 +1130,23 @@ describe('PrintSessionController', () => {
       rpc: (async (method, params) => {
         if (method === 'session/ensure')
           return broker.sessionEnsure(params as unknown as Parameters<typeof broker.sessionEnsure>[0]);
-        if (method === 'turn/start')
+        if (method === 'turn/start') {
+          expect(continuity).toMatchObject({ brokerTurnId: 'turn-1' });
+          expect(steering.admit(continuity, firstSendId)).toMatchObject({
+            state: 'refused',
+            code: 'turn_not_started',
+          });
+          await expect(
+            broker.turnSend({
+              brokerSessionKey: String(continuity.brokerSessionKey),
+              brokerTurnId: 'turn-1',
+              text: 'too early',
+              clientMessageId: secondSendId,
+            }),
+          ).resolves.toMatchObject({ state: 'refused', code: 'turn_not_started' });
+          expect(child.writes).toHaveLength(1);
           return broker.turnStart(params as unknown as Parameters<typeof broker.turnStart>[0]);
+        }
         if (method === 'turn/send') return broker.turnSend(params as unknown as Parameters<typeof broker.turnSend>[0]);
         throw new Error(`Unexpected RPC: ${method}`);
       }) as AppServerSession['rpc'],
@@ -1198,6 +1258,45 @@ describe('PrintSessionController', () => {
       expect(child.killedSignals).not.toContain('SIGKILL');
     } finally {
       await broker.shutdown();
+    }
+  });
+
+  it('refuses a pool-level gap send and accepts the observed follow-on under the same kernel turn id', async () => {
+    const child = new FakeClaudePrintChild();
+    const h = await startKernelThroughPool(child);
+    const activeContinuity = { ...h.continuity };
+    try {
+      expect(h.steering.admit(activeContinuity, firstSendId)).toEqual({ state: 'admitted' });
+      await expect(h.send(firstSendId)).resolves.toEqual({ state: 'delivered' });
+      child.emitStdout(firstResult);
+      await expect(h.send(secondSendId)).resolves.toMatchObject({ state: 'refused', code: 'turn_ended' });
+      expect(child.writes).toHaveLength(3);
+      expect(h.onProviderTurnTerminal).not.toHaveBeenCalled();
+      expect(h.continuity).toEqual(activeContinuity);
+
+      child.emitStdout({ type: 'system', subtype: 'init', session_id: TEST_SESSION_ID, model: 'haiku' });
+      expect(h.steering.admit(activeContinuity, secondSendId)).toEqual({ state: 'admitted' });
+      await expect(h.send(secondSendId)).resolves.toEqual({ state: 'delivered' });
+      child.emitStdout(replay(firstSendId));
+      child.emitStdout(replay(secondSendId));
+      child.emitStdout(finalResult);
+
+      const events = await h.events;
+      expect(h.onProviderTurnTerminal).toHaveBeenCalledExactlyOnceWith({
+        kind: 'provider-turn-terminal',
+        providerTurnId: 'turn-1',
+        status: 'completed',
+      });
+      expect(events.filter((event) => event.kind === 'terminal')).toHaveLength(1);
+      expect(h.steering.admit(activeContinuity, secondSendId)).toMatchObject({
+        state: 'refused',
+        code: 'turn_ended',
+      });
+      await expect(h.send(secondSendId)).resolves.toMatchObject({ state: 'refused', code: 'turn_ended' });
+      expect(child.writes).toHaveLength(4);
+      expect(h.spawnChild).toHaveBeenCalledOnce();
+    } finally {
+      await h.broker.shutdown();
     }
   });
 

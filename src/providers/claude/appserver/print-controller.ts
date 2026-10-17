@@ -311,6 +311,9 @@ export class PrintSessionController implements BrokerSessionController {
 
   async turnSend(params: Omit<TurnSendParams, 'brokerSessionKey'>): Promise<TurnSendResult> {
     const turn = this.activeTurn;
+    if (turn === null && params.brokerTurnId !== this.lastTerminalTurnId && !this.shuttingDown) {
+      return { state: 'refused', code: 'turn_not_started', reason: 'The Claude print turn has not started.' };
+    }
     if (
       turn === null ||
       turn.brokerTurnId !== params.brokerTurnId ||

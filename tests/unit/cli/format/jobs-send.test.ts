@@ -83,6 +83,38 @@ it('offers only a result read and a new conversation for an ended turn', () => {
   expect(output.text).not.toMatch(/resume/i);
 });
 
+it.each([
+  {
+    code: 'turn_not_started',
+    reason: 'The Claude print turn has not started.',
+    commands: ['command=coral-cli jobs send claude-job -i original message'],
+  },
+  {
+    code: 'turn_ended',
+    reason: 'The Claude print turn is not active.',
+    commands: [
+      'command=coral-cli jobs wait claude-job',
+      'command=coral-cli claude coral:architect -i original message',
+    ],
+  },
+  {
+    code: 'transport_unsupported',
+    reason: 'Claude TUI send is unsupported.',
+    commands: ['command=coral-cli jobs wait claude-job'],
+  },
+] as const)('renders a Claude $code refusal through the shared command vocabulary', ({ code, reason, commands }) => {
+  const output = formatJobSendResult(
+    'claude-job',
+    { state: 'refused', code, reason },
+    { ...context, launch: { provider: 'claude', agent: 'coral:architect' } },
+  );
+  expect(output.exitCode).toBe(1);
+  expect(output.text).toContain(`Message refused (${code}): ${reason}`);
+  expect(output.text.split('\n').filter((line) => line.startsWith('command='))).toEqual(commands);
+  expect(output.text).not.toMatch(/resume|coral-cli codex/i);
+  if (code === 'turn_ended') expect(output.text).toContain('new conversation');
+});
+
 it.each(['turn_not_started', 'control_unavailable', 'turn_ended'] as const)(
   'never prints a stdin-dependent remedy for %s',
   (code) => {

@@ -978,6 +978,150 @@ describe('semantic-operation send admission', () => {
     },
   );
 
+  it.each([
+    { state: 'delivered' },
+    { state: 'refused', code: 'turn_ended', reason: 'The Claude segment ended before the write.' },
+    { state: 'unknown', reason: 'The Claude broker reply was lost.' },
+  ] satisfies ProviderSendOutcome[])(
+    'records a Claude send before the facet and preserves its $state outcome across repeats and terminal',
+    async (outcome) => {
+      const operation = supervisedOperation(1);
+      const key = { jobId: operation.jobId, operationId: operation.operationId };
+      const prepared = preparedFixture();
+      const claudeContinuity = { brokerSessionKey: 'broker-current', brokerTurnId: 'claude-turn-current' };
+      const finish = deferred();
+      const answer = deferred<ProviderSendOutcome>();
+      const steering = { admit: vi.fn(() => ({ state: 'admitted' as const })), reportOutcome: vi.fn() };
+      const send = vi.fn<BoundProviderAppServerCapability['send']>();
+      const openReplacement = vi.fn(async () => ({ hostRef: fakeHostRef(), close: vi.fn() }));
+      providerRegistryDouble.rehydrateBinding.mockReturnValue({
+        ok: true,
+        value: fakeBoundProvider({
+          supportsInterrupt: true,
+          openReplacement,
+          send,
+          execute: async function* (executionRuntime) {
+            executionRuntime.onProviderSteering?.(steering);
+            executionRuntime.onProviderTurnStart?.();
+            yield {
+              kind: 'continuity',
+              conversationRef: 'claude-session',
+              resumable: true,
+              providerContinuity: claudeContinuity,
+            };
+            await finish.promise;
+            yield terminalCompleted;
+          },
+        }),
+      });
+      const proxy = {} as Proxy;
+      const hostAuthority = fakeHostAuthority();
+      const forceClose = vi.spyOn(hostAuthority, 'forceClose');
+      const semantic = createSemanticOperationRuntime({
+        hostRoot: '/test/plugin',
+        hostFingerprint: hostFingerprintFromSpec(fakeHostSpec()),
+        runtime,
+        hostAuthority,
+        getProxy: () => proxy,
+      });
+      const supervisor = new OperationSupervisor({
+        host: semantic.host,
+        timer: supervisorTimer,
+        mintReservation: () => asReservation('40000000-0000-4000-8000-000000000001'),
+        wallClockNow: () => 0,
+        nowMs: () => 0,
+        proxyInstanceId: operation.proxyInstanceId,
+        buildSetId: operation.buildSetId,
+        stageProviderRoot: (stagedKey, reserved) => {
+          const stage = semantic.stage(stagedKey, reserved.prepared);
+          return {
+            result: stage.result.then((staged) =>
+              staged.state !== 'staged' ? staged : { ...staged, receipt: asJointContainmentReceipt('contained') },
+            ),
+            confirmActivation: async () => {},
+            abortAndRelease: () => stage.abortAndRelease(),
+          };
+        },
+        pushProviderEvent: unreachable('unadvanced supervisor pump'),
+        faultProviderEventControl: unreachable('provider event control fault'),
+      });
+      Object.assign(proxy, {
+        ledger: () => supervisor.ledger(),
+        emitProviderEvent: (eventKey: ProviderOperationKey, event: ProviderEventBody) =>
+          supervisor.emitProviderEvent(eventKey, event),
+      });
+      send.mockImplementation(async (hostRef, currentContinuity, sentInput) => {
+        expect(hostRef).toEqual(fakeHostRef());
+        expect(currentContinuity).toEqual(claudeContinuity);
+        expect(sentInput).toEqual(input);
+        const buffered = supervisor.ledger().get(key)?.bufferedEvents ?? [];
+        expect(buffered).toHaveLength(1);
+        const record = providerEventRequestSchema.parse((JSON.parse(buffered[0].frame) as { params: unknown }).params);
+        expect(record).toMatchObject({
+          providerSeq: 2,
+          event: { kind: 'progress', message: expect.stringContaining(`Sending message ${input.clientMessageId}`) },
+        });
+        expect(buffered[0].frame).toContain('This line does not prove delivery.');
+        return answer.promise;
+      });
+      try {
+        const reservation = proxyOperationPreparePendingResultSchema.parse(
+          await supervisor.prepare(operation, {
+            prepareAttemptNumber: 1,
+            prepareAttemptKey: operationPrepareAttemptKey({
+              operation,
+              hostFingerprint: hostFingerprintFromSpec(fakeHostSpec()),
+              prepareAttemptNumber: 1,
+              prepared,
+            }),
+            prepared,
+          }),
+        );
+        await supervisor.activate(operation, {
+          reservation: reservation.reservation,
+          jointContainmentReceipt: reservation.jointContainmentReceipt,
+          jointActivationReceipt: asJointActivationReceipt('activated'),
+          activationFingerprint: 'f'.repeat(64),
+        });
+        await supervisor.attach(operation, 0);
+        await vi.waitFor(() => expect(supervisor.ledger().nextProviderSeq(key)).toBe(2));
+        expect(semantic.host.admitSend!({ key, input })).toMatchObject({ state: 'refused', code: 'turn_not_started' });
+        await supervisor.attach(operation, 1);
+        await vi.waitFor(() => expect(semantic.host.admitSend!({ key, input }).state).toBe('admitted'));
+
+        const pending = supervisor.send(operation, input);
+        expect(supervisor.send(operation, input)).toBe(pending);
+        expect(send).toHaveBeenCalledOnce();
+        finish.resolve();
+        await vi.waitFor(() => expect(supervisor.ledger().get(key)?.completionRecorded).toBe(true));
+        expect(supervisor.send(operation, input)).toBe(pending);
+        answer.resolve(outcome);
+        await expect(pending).resolves.toEqual(
+          outcome.state === 'delivered' ? { ...outcome, providerTurnId: claudeContinuity.brokerTurnId } : outcome,
+        );
+        expect(supervisor.send(operation, input)).toBe(pending);
+        expect(
+          supervisor
+            .ledger()
+            .get(key)
+            ?.bufferedEvents.map(({ providerSeq }) => providerSeq),
+        ).toEqual([2, 3]);
+        expect(send).toHaveBeenCalledOnce();
+        expect(openReplacement).toHaveBeenCalledOnce();
+        expect(forceClose).not.toHaveBeenCalled();
+        await supervisor.attach(operation, 3);
+        await expect(supervisor.settle(operation, 3)).resolves.toMatchObject({
+          state: 'released-after-terminal',
+          settledThroughProviderSeq: 3,
+        });
+      } finally {
+        answer.resolve(outcome);
+        finish.resolve();
+        supervisor.close();
+      }
+    },
+  );
+
   it('passes a kernel final-answer refusal through without invoking the facet', async () => {
     const reportOutcome = vi.fn();
     const refusal = { state: 'refused' as const, code: 'turn_ended' as const, reason: 'Final answer already seen.' };
