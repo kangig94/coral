@@ -3,13 +3,25 @@ import { describe, expect, it } from 'vitest';
 
 import { BackendToolHttpError } from '#src/transport/http/errors.js';
 import { BackendUnreachableError, TransientHttpError } from '#src/infra/http-errors.js';
-import { StoreResetCliError, UsageError, buildErrorEnvelope, errorCodeToExit } from '#src/cli/errors.js';
+import {
+  StoreResetCliError,
+  UsageError,
+  WaitResumeError,
+  buildErrorEnvelope,
+  errorCodeToExit,
+} from '#src/cli/errors.js';
 import { documentedCoralSetupError } from '#src/runtime/errors.js';
 import { buildTransportErrorResponse } from '#src/transport/error-response.js';
 import { ChildPrincipalBindingError } from '#src/transport/ipc/child-principal-auth.js';
 import { IpcDrainRequestUnanswered, IpcLifecycleRefusal, IpcRpcError } from '#src/transport/ipc/client.js';
 
 describe('cli errors', () => {
+  it('sends a --unbounded resume to a background shell, where a foreground timeout cannot kill it silently', () => {
+    expect(new WaitResumeError('stream interrupted', ['a'], '7', 'unbounded').remediation).toBe(
+      'Rerun `coral-cli wait jobs a --unbounded --cursor 7` in a background shell to continue waiting.',
+    );
+  });
+
   describe('buildErrorEnvelope', () => {
     it('lifts BackendToolHttpError bodies into the flat cli envelope', () => {
       const detail = {

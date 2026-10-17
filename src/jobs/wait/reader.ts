@@ -8,6 +8,7 @@ import {
   WAIT_PROGRESS_LINES,
   type ProgressVisit,
   type WaitCursor,
+  type WaitEndedBy,
   type WaitStreamEvent,
   type WaitStreamRequest,
 } from './contract.js';
@@ -35,19 +36,25 @@ type DeliveryState = {
 
 type FinalPayload =
   | Omit<Extract<WaitStreamEvent, { type: 'terminal' }>, 'cursor' | 'exitCode'>
-  | { type: 'waiting'; waitingJobIds: string[]; carrierUnknownJobIds?: string[] };
+  | { type: 'waiting'; waitingJobIds: string[]; carrierUnknownJobIds?: string[]; endedBy: WaitEndedBy };
 
 function finalWaitEvent(session: WaitSession, payload: FinalPayload): WaitStreamEvent {
   return { ...payload, cursor: session.cursor(), exitCode: session.exitCode() };
 }
 
-function waitingEvent(session: WaitSession): WaitStreamEvent {
+function waitingEvent(session: WaitSession, endedBy: WaitEndedBy): WaitStreamEvent {
   const unknown = session.unknownCarriers();
   return finalWaitEvent(session, {
     type: 'waiting',
     waitingJobIds: session.remaining(),
     ...(unknown.length ? { carrierUnknownJobIds: unknown } : {}),
+    endedBy,
   });
+}
+
+/** An unknown job holds the cursor still, so resuming past its cut serves the same read again with no delay. */
+function resumableCut(session: WaitSession, cut: 'deadline' | 'progress-budget'): WaitEndedBy {
+  return session.remaining().some((jobId) => session.unknown(jobId)) ? 'unanswered' : cut;
 }
 
 /** Unknown coverage cannot authorize finalization, even when the observer outlives the read. */
@@ -102,12 +109,12 @@ export async function* readWaitSession(input: WaitReadInput): AsyncGenerator<Wai
       }
       if (yield* pollEvents(session, state, progress, bounded)) return;
       if (session.remaining().length === 0) {
-        yield waitingEvent(session);
+        yield waitingEvent(session, 'settled');
         return;
       }
       if (session.hasProgress()) {
         if (bounded && progress.full) {
-          yield waitingEvent(session);
+          yield waitingEvent(session, resumableCut(session, 'progress-budget'));
           return;
         }
         // A backlog is read page by page after a macrotask; a client read still stops at its deadline.
@@ -123,6 +130,7 @@ export async function* readWaitSession(input: WaitReadInput): AsyncGenerator<Wai
         (!internal && observedUnknown && unknownReadAttempts === retryDelays.length) ||
         Number(time.monotonicNow()) >= deadline
       ) {
+        const timedOut = Number(time.monotonicNow()) >= deadline;
         if (internal && !crossedTimer) await time.sleep(0, { signal });
         if (observing && observation && Number(time.monotonicNow()) < deadline) {
           const observationDeadline = new AbortController();
@@ -138,7 +146,7 @@ export async function* readWaitSession(input: WaitReadInput): AsyncGenerator<Wai
             void timeout;
           }
         }
-        yield waitingEvent(session);
+        yield waitingEvent(session, timedOut ? resumableCut(session, 'deadline') : 'unanswered');
         return;
       }
       await time

@@ -61,9 +61,35 @@ function terminalOutcomeHeader(jobId: string, result: JobTerminal, describeCause
   }
 }
 
-export function formatWaitContinuation(jobIds: readonly string[], cursor: string | null, now = false): string {
+/** A continuation keeps its wait's mode flag, so running it resumes the same kind of wait. */
+export type WaitContinuationMode = 'bounded' | 'snapshot' | 'unbounded';
+
+const CONTINUATION_MODE_FLAG = {
+  bounded: '',
+  snapshot: ' --snapshot',
+  unbounded: ' --unbounded',
+} as const satisfies Record<WaitContinuationMode, string>;
+
+export function waitContinuationCommand(
+  jobIds: readonly string[],
+  cursor: string | null,
+  mode: WaitContinuationMode,
+): string {
+  return `coral-cli wait jobs ${jobIds.join(' ')}${CONTINUATION_MODE_FLAG[mode]}${cursor === null ? '' : ` --cursor ${cursor}`}`;
+}
+
+/** Nothing ends an unbounded wait before a foreground shell's own timeout kills it without a continuation. */
+export function waitContinuationShell(mode: WaitContinuationMode): string {
+  return mode === 'unbounded' ? ' in a background shell' : '';
+}
+
+export function formatWaitContinuation(
+  jobIds: readonly string[],
+  cursor: string | null,
+  mode: WaitContinuationMode = 'bounded',
+): string {
   if (jobIds.length === 0) return 'No remaining jobs.';
-  return `Run coral-cli wait jobs ${jobIds.join(' ')}${now ? ' --now' : ''}${cursor === null ? '' : ` --cursor ${cursor}`} to continue waiting.`;
+  return `Run ${waitContinuationCommand(jobIds, cursor, mode)}${waitContinuationShell(mode)} to continue waiting.`;
 }
 
 export function formatWaitProgress(event: WaitProgressEvent, label?: string): string {
@@ -86,7 +112,12 @@ export function formatWaitTerminal(
   event: WaitTerminalEvent,
   cursor: string | null,
   inline: boolean,
-  options: { describeCauseRef?: CauseRefDescriber; verbose?: boolean; label?: string } = {},
+  options: {
+    describeCauseRef?: CauseRefDescriber;
+    verbose?: boolean;
+    label?: string;
+    continuationMode?: WaitContinuationMode;
+  } = {},
 ): string {
   const header = [
     terminalOutcomeHeader(options.label ?? event.jobId, event.result, options.describeCauseRef),
@@ -96,7 +127,9 @@ export function formatWaitTerminal(
     .join(' · ')
     .replace(/\r\n|[\r\n\u2028\u2029]/g, '\n> ');
   // A terminal that ends nothing leaves the continuation to the event that ends the read.
-  const continuation = isFinalWaitEvent(event) ? formatWaitContinuation(event.remainingJobIds, cursor) : undefined;
+  const continuation = isFinalWaitEvent(event)
+    ? formatWaitContinuation(event.remainingJobIds, cursor, options.continuationMode)
+    : undefined;
   const fullDetail =
     event.availability.kind !== 'available' || (inline && event.result.content.length > 10_000)
       ? `Full retained outcome: ${renderJobsOperatorCommand({ kind: 'jobs-detail-full', jobId: event.jobId })}`
@@ -125,6 +158,7 @@ export function formatWaitWaiting(
   event: Pick<WaitWaitingEvent, 'type' | 'waitingJobIds' | 'carrierUnknownJobIds'>,
   cursor: string | null,
   resumeJobIds: readonly string[] = event.waitingJobIds,
+  continuationMode: WaitContinuationMode = 'bounded',
 ): string {
   if (resumeJobIds.length === 0) return 'Wait complete; no jobs remain.';
   const waitingCount = event.waitingJobIds.length;
@@ -132,10 +166,7 @@ export function formatWaitWaiting(
     resumeJobIds.length > 0 && waitingCount > 0
       ? `Still waiting on ${waitingCount} ${waitingCount === 1 ? 'job' : 'jobs'}.`
       : 'Wait complete; no jobs remain.';
-  const continuation =
-    resumeJobIds.length > 0
-      ? ` Run coral-cli wait jobs ${resumeJobIds.join(' ')}${cursor === null ? '' : ` --cursor ${cursor}`} to continue waiting.`
-      : '';
+  const continuation = ` ${formatWaitContinuation(resumeJobIds, cursor, continuationMode)}`;
   const unknown = !event.carrierUnknownJobIds?.length
     ? undefined
     : `Carrier unconfirmed for: ${event.carrierUnknownJobIds.join(', ')}.`;
@@ -180,7 +211,7 @@ export function formatWaitSnapshot(snapshot: WaitSnapshot): string {
     ...snapshot.notices,
     ...blocks,
     snapshot.remainingJobIds.length
-      ? formatWaitContinuation(snapshot.remainingJobIds, snapshot.cursor, true)
+      ? formatWaitContinuation(snapshot.remainingJobIds, snapshot.cursor, 'snapshot')
       : undefined,
   ]);
 }

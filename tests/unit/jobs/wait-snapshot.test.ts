@@ -96,7 +96,7 @@ describe('wait snapshot', () => {
       const live = collect([a]);
       expect(formatWaitSnapshot(live)).not.toContain('terminal');
       expect(formatWaitSnapshot(live)).toContain(`Job a: ${phase}`);
-      expect(formatWaitSnapshot(live)).toContain(' --now --cursor ');
+      expect(formatWaitSnapshot(live)).toContain(' --snapshot --cursor ');
     }
     const a = admitted('a', [[1, 'line']], true, 'epoch-E', true);
     const session = testSession(['a'], savedCursor(1000));

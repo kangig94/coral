@@ -48,8 +48,9 @@ export function waitInvocationMode(program: Command, argv: readonly string[]): W
   }
   let mode: WaitInvocationMode | undefined;
   jobsParser.action(() => {
-    validateWaitJobsOptions(jobsParser.opts());
-    mode = jobsParser.opts().now === true ? 'snapshot' : 'bounded';
+    const opts = jobsParser.opts();
+    validateWaitJobsOptions(opts);
+    if (opts.unbounded !== true) mode = opts.snapshot === true ? 'snapshot' : 'bounded';
   });
   try {
     parser.parse([...argv]);
@@ -293,23 +294,28 @@ export function installWaitInvocation(invocation: WaitInvocation | undefined): v
 }
 
 export function validateWaitJobsOptions(opts: {
-  now?: boolean;
+  snapshot?: boolean;
+  unbounded?: boolean;
   lines?: string;
   cursor?: string;
   embed?: boolean;
   verbose?: boolean;
 }): number | undefined {
-  if (opts.now && (opts.embed || opts.verbose))
+  if (opts.snapshot && (opts.embed || opts.verbose))
     throw new UsageError(
-      `--now cannot be used with --embed or --verbose. Remove ${[opts.embed ? '--embed' : '', opts.verbose ? '--verbose' : ''].filter(Boolean).join(' and ')} for an immediate snapshot, or remove --now for a streaming wait. Use coral-cli jobs detail <jobId> --full for full content.`,
+      `--snapshot cannot be used with --embed or --verbose. Remove ${[opts.embed ? '--embed' : '', opts.verbose ? '--verbose' : ''].filter(Boolean).join(' and ')} for an immediate snapshot, or remove --snapshot for a streaming wait. Use coral-cli jobs detail <jobId> --full for full content.`,
+    );
+  if (opts.snapshot && opts.unbounded)
+    throw new UsageError(
+      '--snapshot cannot be used with --unbounded. Remove --unbounded for an immediate snapshot, or remove --snapshot to monitor until the first terminal with no ~590 s bound, from a background shell.',
     );
   if (opts.lines !== undefined && opts.cursor !== undefined)
     throw new UsageError(
       '--lines cannot be used with --cursor. Remove --lines to resume from that cursor, or remove --cursor to show the most recent lines.',
     );
-  if (opts.lines !== undefined && opts.now !== true)
+  if (opts.lines !== undefined && opts.snapshot !== true)
     throw new UsageError(
-      '--lines requires --now. Add --now for an immediate snapshot of recent lines, or remove --lines for a streaming wait.',
+      '--lines requires --snapshot. Add --snapshot for an immediate snapshot of recent lines, or remove --lines for a streaming wait.',
     );
   const lines = opts.lines === undefined ? undefined : Number(opts.lines);
   if (lines !== undefined && (!Number.isInteger(lines) || lines < 1 || lines > 500))

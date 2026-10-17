@@ -43,7 +43,8 @@ type AbortQuerySelector = {
 };
 
 type WaitJobsOptions = {
-  now?: boolean;
+  snapshot?: boolean;
+  unbounded?: boolean;
   lines?: string;
   cursor?: string;
   embed?: boolean;
@@ -245,32 +246,36 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
       throw new UsageError(`At most ${MAX_WAIT_JOB_IDS} jobs may be waited on at once. Split the IDs across commands.`);
     const projectRoot = process.cwd();
     const client = makeClient(projectRoot, command);
-    if (opts.now) await runWaitSnapshot(client, jobIds, projectRoot, opts, lines);
-    else await runBoundedWaitJobs(client, jobIds, projectRoot, opts);
+    if (opts.snapshot) await runWaitSnapshot(client, jobIds, projectRoot, opts, lines);
+    else await runStreamingWaitJobs(client, jobIds, projectRoot, opts);
   }
 
   const waitCommand = program.command('wait');
   waitCommand.description(
-    'Monitor jobs until the first terminal or ~590 s, then return a continuation; --now returns immediately',
+    'Monitor jobs until the first terminal or ~590 s, then return a continuation; --snapshot returns immediately; --unbounded drops the ~590 s bound',
   );
 
   const waitJobsCommand = waitCommand.command('jobs');
   waitJobsCommand
     .description(
-      'Monitor jobs until the first terminal or ~590 s, then return a continuation; --now returns immediately',
+      'Monitor jobs until the first terminal or ~590 s, then return a continuation; --snapshot returns immediately; --unbounded drops the ~590 s bound',
     )
     .argument('<jobIds...>', 'Job IDs')
     .option('--cursor <cursor>', 'Opaque resume cursor (from previous wait output)')
     .option(
-      '--now',
-      'Read an immediate snapshot; continuations keep --now; drop it explicitly to switch to a blocking wait',
+      '--snapshot',
+      'Read an immediate snapshot; continuations keep --snapshot; drop it explicitly to switch to a blocking wait',
     )
-    .option('--lines <N>', 'Most recent progress lines per job with --now (1..500, default 20; no cursor)')
+    .option('--lines <N>', 'Most recent progress lines per job with --snapshot (1..500, default 20; no cursor)')
+    .option(
+      '--unbounded',
+      'Run only in a background shell: monitor until the first terminal with no ~590 s bound, which a foreground shell kills at its own timeout without a continuation. Continuations keep --unbounded (cannot use with --snapshot)',
+    )
     .option(
       '--embed',
-      'Embed terminal result content when size permits; artifact availability is reported separately (cannot use with --now)',
+      'Embed terminal result content when size permits; artifact availability is reported separately (cannot use with --snapshot)',
     )
-    .option('--verbose', 'Show detailed usage breakdown on terminal events (cannot use with --now)')
+    .option('--verbose', 'Show detailed usage breakdown on terminal events (cannot use with --snapshot)')
     .addHelpText(
       'after',
       '\nThe first failed terminal in request order keeps its mapped exit code, even with pending siblings.\n' +
@@ -386,11 +391,11 @@ async function runWaitSnapshot(
   } catch {
     throw new WaitSnapshotResponseError(
       invocation?.originalCommand ??
-        `coral-cli wait jobs ${jobIds.join(' ')} --now${opts.cursor === undefined ? '' : ` --cursor ${opts.cursor}`}${opts.lines === undefined ? '' : ` --lines ${opts.lines}`}`,
+        `coral-cli wait jobs ${jobIds.join(' ')} --snapshot${opts.cursor === undefined ? '' : ` --cursor ${opts.cursor}`}${opts.lines === undefined ? '' : ` --lines ${opts.lines}`}`,
     );
   }
   const output = formatWaitSnapshot(snapshot) + '\n';
-  const continuation = formatWaitContinuation(snapshot.remainingJobIds, snapshot.cursor, true) + '\n';
+  const continuation = formatWaitContinuation(snapshot.remainingJobIds, snapshot.cursor, 'snapshot') + '\n';
   const write = () =>
     new Promise<void>((resolve, reject) =>
       process.stdout.write(output, (error) => (error ? reject(error) : resolve())),
@@ -402,14 +407,14 @@ async function runWaitSnapshot(
     throw new WaitOutputError(
       error,
       invocation?.originalCommand ??
-        `coral-cli wait jobs ${jobIds.join(' ')} --now${opts.cursor === undefined ? '' : ` --cursor ${opts.cursor}`}${opts.lines === undefined ? '' : ` --lines ${opts.lines}`}`,
+        `coral-cli wait jobs ${jobIds.join(' ')} --snapshot${opts.cursor === undefined ? '' : ` --cursor ${opts.cursor}`}${opts.lines === undefined ? '' : ` --lines ${opts.lines}`}`,
     );
   }
 
   process.exitCode = snapshot.exitCode;
 }
 
-async function runBoundedWaitJobs(
+async function runStreamingWaitJobs(
   client: ReturnType<typeof makeClient>,
   jobIds: string[],
   projectRoot: string,
@@ -417,7 +422,7 @@ async function runBoundedWaitJobs(
 ): Promise<void> {
   process.exitCode = await followJobs({
     start: { kind: 'jobs', jobIds, ...(opts.cursor === undefined ? {} : { serializedCursor: opts.cursor }) },
-    reconnectPolicy: 'bounded',
+    reconnectPolicy: opts.unbounded === true ? 'unbounded' : 'bounded',
     invocation: getWaitInvocation(),
     projectRoot,
     emitError,

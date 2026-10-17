@@ -152,11 +152,11 @@ it('M2 help and exit documentation preserve failure precedence even with sibling
   expect(session.exitCode()).toBe(42);
   session.reconcile([admitted('a'), pending]);
   expect(session.exitCode()).toBe(75);
-  expect(output).toContain('--now');
-  expect(output.replace(/\s+/g, ' ')).toContain('continuations keep --now');
+  expect(output).toContain('--snapshot');
+  expect(output.replace(/\s+/g, ' ')).toContain('continuations keep --snapshot');
   expect(output.replace(/\s+/g, ' ')).toContain('drop it explicitly to switch to a blocking wait');
   expect(output.replace(/\s+/g, ' ')).toContain('first terminal or ~590 s');
-  expect(output.replace(/\s+/g, ' ')).toContain('--now returns immediately');
+  expect(output.replace(/\s+/g, ' ')).toContain('--snapshot returns immediately');
   expect(output.replace(/\s+/g, ' ')).toContain('artifact availability is reported separately');
 });
 
@@ -181,12 +181,12 @@ it('M3 scope remediation changes cwd and lists terminal jobs', async () => {
   expect(output).toContain('including terminal jobs');
 });
 
-it('a snapshot continuation keeps --now and the snapshot cursor', () => {
+it('a snapshot continuation keeps --snapshot and the snapshot cursor', () => {
   const session = testSession(['a'], savedCursor(0));
   session.reconcile([admitted('a', [], false)]);
   const snapshot = selectWaitSnapshot(session, 20);
   expect(snapshot.cursor).not.toBeNull();
-  expect(formatWaitSnapshot(snapshot)).toContain(formatWaitContinuation(['a'], snapshot.cursor, true));
+  expect(formatWaitSnapshot(snapshot)).toContain(formatWaitContinuation(['a'], snapshot.cursor, 'snapshot'));
 });
 
 it.each(['docs/architecture.md', 'docs/core-modules.md'])('F11 and owner contracts are accurate in %s', (path) => {

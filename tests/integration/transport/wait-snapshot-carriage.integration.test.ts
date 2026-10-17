@@ -172,7 +172,7 @@ describe('actual wait carriage', () => {
     }) as never);
     const program = new Command();
     registerSessionCommands(program, createBuiltInProviderRegistry());
-    await program.parseAsync(['node', 'coral-cli', 'wait', 'jobs', ...ids, '--now']);
+    await program.parseAsync(['node', 'coral-cli', 'wait', 'jobs', ...ids, '--snapshot']);
     expect(output).toContain('Content preview:');
     expect(output).toContain(command);
     output = '';

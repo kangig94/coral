@@ -114,6 +114,8 @@ const waitWaitingEventSchema = z
     waitingJobIds: z.array(z.string().min(1)).max(MAX_WAIT_JOB_IDS),
     // Empty unknown coverage must omit the wire field.
     carrierUnknownJobIds: z.array(z.string().min(1)).max(MAX_WAIT_JOB_IDS).nonempty().optional(),
+    // A value this build does not know reads as absent, so it can only stop a resume, never refuse the event.
+    endedBy: z.enum(['settled', 'deadline', 'progress-budget', 'unanswered']).optional().catch(undefined),
     ...finalFields,
   })
   .strip();
