@@ -11,12 +11,13 @@ const COMMAND_LEAD = String.raw`(?:(?:[A-Za-z_]\w*=\S*|time|!|\{|if|then|elif|el
 const COMMAND_POSITION = String.raw`(?:^|[\n;&|(\x60])\s*${COMMAND_LEAD}coral-cli`;
 
 const INVOCATION_RE = new RegExp(`${COMMAND_POSITION}(?=\\s|$|[;&|)\\x60])`);
-const WAIT_INVOCATION_RE = new RegExp(`${COMMAND_POSITION}\\s+wait\\b`);
+const WAIT_INVOCATION_RE = new RegExp(`${COMMAND_POSITION}\\s+jobs\\s+wait(?=\\s|$|[;&|)\\x60])`);
+const LEGACY_WAIT_INVOCATION_RE = new RegExp(`${COMMAND_POSITION}\\s+wait(?=\\s|$|[;&|)\\x60])`);
 
 export function textInvokesCoralCli(text) {
   return INVOCATION_RE.test(text);
 }
 
 export function textInvokesCoralWait(text) {
-  return WAIT_INVOCATION_RE.test(text);
+  return WAIT_INVOCATION_RE.test(text) || LEGACY_WAIT_INVOCATION_RE.test(text);
 }

@@ -21,7 +21,7 @@ it('preserves a failed snapshot exit when the watchdog fires during the final wr
     if (callback) finish = callback;
     return true;
   }) as typeof process.stdout.write);
-  const invocation = new WaitInvocation('snapshot', ['node', 'coral-cli', 'wait', 'jobs', 'a', '--snapshot'], {
+  const invocation = new WaitInvocation('snapshot', ['node', 'coral-cli', 'jobs', 'wait', 'a', '--snapshot'], {
     now: () => Date.now(),
   });
   try {
@@ -50,8 +50,8 @@ it('prints its own continuation once the parent it was delegated by disconnects'
     callback?.();
     return true;
   }) as typeof process.stdout.write);
-  const invocation = new WaitInvocation('bounded', ['node', 'coral-cli', 'wait', 'jobs', 'a']);
-  const continuation = 'Still waiting on 1 job. Run coral-cli wait jobs a to continue waiting.\n';
+  const invocation = new WaitInvocation('bounded', ['node', 'coral-cli', 'jobs', 'wait', 'a']);
+  const continuation = 'Still waiting on 1 job. Run coral-cli jobs wait a to continue waiting.\n';
   try {
     invocation.saveContinuation(continuation);
     invocation.stop();
@@ -71,15 +71,22 @@ const waitProgram = () => {
   registerSessionCommands(program, new ProviderRegistry());
   return program;
 };
-const waitArgv = (...flags: string[]) => ['node', 'coral-cli', 'wait', 'jobs', 'a', ...flags];
+const waitArgv = (...flags: string[]) => ['node', 'coral-cli', 'jobs', 'wait', 'a', ...flags];
+
+it.each([
+  ['jobs', 'wait'],
+  ['wait', 'jobs'],
+])('detects every wait mode for %s %s', (group, verb) => {
+  const argv = ['node', 'coral-cli', group, verb, 'a'];
+  expect(waitInvocationMode(waitProgram(), argv)).toBe('bounded');
+  expect(waitInvocationMode(waitProgram(), [...argv, '--snapshot'])).toBe('snapshot');
+  expect(waitInvocationMode(waitProgram(), [...argv, '--unbounded'])).toBeUndefined();
+  expect(() => waitInvocationMode(waitProgram(), [...argv, '--snapshot', '--unbounded'])).toThrow(
+    '--snapshot cannot be used with --unbounded',
+  );
+});
 
 it('gives a --unbounded wait no invocation budget', () => {
   expect(waitInvocationMode(waitProgram(), waitArgv())).toBe('bounded');
   expect(waitInvocationMode(waitProgram(), waitArgv('--unbounded', '--cursor', '7'))).toBeUndefined();
-});
-
-it('refuses --unbounded alongside --snapshot', () => {
-  expect(() => waitInvocationMode(waitProgram(), waitArgv('--snapshot', '--unbounded'))).toThrow(
-    '--snapshot cannot be used with --unbounded',
-  );
 });

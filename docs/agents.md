@@ -60,7 +60,7 @@ CORAL_INPUT
 coral-cli codex critic --work-dir "<path>" -d -i - <<'CORAL_INPUT'
 <prompt>
 CORAL_INPUT
-cd "<path>" && coral-cli wait jobs <job-id...> --embed
+cd "<path>" && coral-cli jobs wait <job-id...> --embed
 ```
 
 Behavior:
@@ -70,7 +70,7 @@ Behavior:
 3. The provider adapter consumes `instruction` + `systemPrompt` + `prompt`:
    - Claude: system append channel + user prompt
    - Codex: single turn text ordered `systemPrompt` → `instruction` → `prompt` (order is presentation only)
-4. Detached provider launches print `Provider job <jobId> <launchState> (provider session <sessionId>)`. Detached workflows identify both `workflowId` and `jobId`. `wait --embed` prints the terminal line, any available usage diagnostics, and `Result path: <path>` for durable artifact recovery.
+4. Detached provider launches print `Provider job <jobId> <launchState> (provider session <sessionId>)`. Detached workflows identify both `workflowId` and `jobId`. `jobs wait --embed` prints the terminal line, any available usage diagnostics, and `Result path: <path>` for durable artifact recovery.
 5. The job is persisted like any other provider execution. Workflow atoms and discuss workers use the same job shell path.
 
 Unknown agent names fail through the normal provider/domain error path.
@@ -105,7 +105,7 @@ Create `clients/agents/<name>.md` and invoke it through the Codex provider surfa
 coral-cli codex <name> --work-dir "<path>" -d -i - <<'CORAL_INPUT'
 <prompt>
 CORAL_INPUT
-cd "<path>" && coral-cli wait jobs <job> --embed
+cd "<path>" && coral-cli jobs wait <job> --embed
 ```
 
 ### Prompt design guidance

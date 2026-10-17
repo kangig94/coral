@@ -192,23 +192,9 @@ import {
 } from './provider-proxy-role-termination.js';
 
 /**
- * What each `backend shutdown` refusal means to a script, as an exit code.
- *
- * `docs/configuration.md` tells operators to run `backend shutdown` before `store-reset discard` and
- * `kb-commit quarantine`, so the question this code answers is "may I proceed to destroy state?" — and there
- * are three answers, not two. Exit `0` is "it is stopping". Exit `1` is a settled refusal: the coordinator
- * answered and declined, or this nested child is not permitted to ask. Exit `75` is the third — this run has
- * no shutdown verdict, so a caller must neither proceed nor read the outcome as failure.
- *
- * `75` rather than `2`: `2` is `invalid_usage` (`docs/cli-errors.md`), so a
- * script could not tell "you called this wrong" from "I could not observe the daemon". `75` is already this
- * CLI's "not concluded" code across `wait jobs` and transient errors. The reason-specific remediation decides
- * whether retrying can change the evidence.
- *
- * A `Record` rather than a set of the undetermined ones. A set answers only for its members and defaults the
- * rest, so a new `ShutdownReason` silently inherits "settled" — the exact shape of the collapse this table
- * exists to prevent. Here it fails to compile until someone decides, which is the same mechanism
- * `formatShutdown`'s `assertNever` provides for the message.
+ * An unobserved shutdown must exit 75, distinct from settled refusal (1) and invalid usage (2).
+ * A caller must neither proceed to destroy state nor read an unobserved outcome as failure.
+ * Every ShutdownReason must have an explicit disposition; new reasons may not inherit "settled".
  */
 export const SHUTDOWN_REFUSAL_EXIT_CODES: Readonly<Record<ShutdownReason, 1 | 75>> = {
   // Observed: the coordinator answered and declined. It is running, and this run knows it.

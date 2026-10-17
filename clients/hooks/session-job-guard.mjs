@@ -25,7 +25,7 @@ try {
   if (jobGuardAlreadyBlocked(projectDir, input.session_id)) process.exit(0);
 
   const bridgeDir = join(dirname(dirname(fileURLToPath(import.meta.url))), 'bridge');
-  const jobs = JSON.parse(execFileSync(join(bridgeDir, 'coral-cli'), ['jobs', '--mine', '--unwaited', '--json'], {
+  const jobs = JSON.parse(execFileSync(join(bridgeDir, 'coral-cli'), ['jobs', 'list', '--mine', '--unwaited', '--json'], {
     encoding: 'utf8',
     timeout: 2_000,
     stdio: ['ignore', 'pipe', 'ignore'],
@@ -47,9 +47,9 @@ try {
       otherDirectories.set(job.status.workDir, ids);
     }
   }
-  const commands = inScopeIds.length > 0 ? [`coral-cli wait jobs ${inScopeIds.join(' ')}`] : [];
+  const commands = inScopeIds.length > 0 ? [`coral-cli jobs wait ${inScopeIds.join(' ')}`] : [];
   for (const [workDir, ids] of otherDirectories) {
-    commands.push(`cd '${workDir.replaceAll("'", "'\\''")}' && coral-cli wait jobs ${ids.join(' ')}`);
+    commands.push(`cd '${workDir.replaceAll("'", "'\\''")}' && coral-cli jobs wait ${ids.join(' ')}`);
   }
   const waitInstruction = commands.length > 1
     ? `Run each command below separately to wait for them:\n${commands.join('\n')}`

@@ -167,7 +167,7 @@ Cost availability depends on the provider and transport. Claude print reports `t
 
 Workflow jobs do not store an aggregate usage payload on `workflow.completed`. Wait and `coral-cli jobs detail <jobId>` sum child job terminal diagnostics at read time by `parent_workflow_job_id`. If some children have cost and others do not, the rendered workflow cost uses `$X+` with `(+N jobs without cost data)`.
 
-The visible surfaces are `coral-cli wait` terminal completion lines, `coral-cli wait jobs --verbose`, and `coral-cli jobs detail <jobId>`. When cache reads are at least half of the token total, the CLI adds `(NN% cached)` so large cache-read totals are not presented as fresh context size.
+The visible surfaces are `coral-cli jobs wait` terminal completion lines, `coral-cli jobs wait --verbose`, and `coral-cli jobs detail <jobId>`. When cache reads are at least half of the token total, the CLI adds `(NN% cached)` so large cache-read totals are not presented as fresh context size.
 
 ### KB Daemon Environment Forwarding
 

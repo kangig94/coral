@@ -141,7 +141,7 @@ async function runCli(fixture: PluginFixture, world: TransferWorld, args: string
 }
 
 function launchedJobId(output: string): string {
-  const jobId = output.match(/command=coral-cli wait jobs ([0-9a-f-]{36})\b/u)?.[1];
+  const jobId = output.match(/command=coral-cli jobs wait ([0-9a-f-]{36})\b/u)?.[1];
   if (jobId === undefined) throw new Error(`Launch reported no job id: ${output}`);
   return jobId;
 }
@@ -221,7 +221,7 @@ async function startProxiedJob(world: TransferWorld): Promise<
   const codexPid = Number(readFileSync(join(world.state, 'job-running'), 'utf8'));
   const codexIncarnation = await observedIncarnation(codexPid);
   if (codexIncarnation !== null) hostProcesses.push({ pid: codexPid, incarnation: codexIncarnation });
-  const waiter = startCli(oldFixture, world, ['wait', 'jobs', jobId, '--verbose']);
+  const waiter = startCli(oldFixture, world, ['jobs', 'wait', jobId, '--verbose']);
   await waitForCondition(() => waiter.stdout().includes('before-transfer'), 60_000);
   return { oldFixture, old, incumbentPid: incumbent.pid, jobId, hosts, waiter };
 }

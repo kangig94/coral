@@ -5,7 +5,7 @@ cross-command layout policy gap rather than one bad cell.
 
 ## The problem
 
-Realistic identity rows exceed common terminal widths. A `jobs` row using the short label `critic` is already
+Realistic identity rows exceed common terminal widths. A `jobs list` row using the short label `critic` is already
 about 86 characters; a maximum-length label is about 103. A workflow-detail replacement row reaches roughly
 117 characters.
 
@@ -37,12 +37,12 @@ information.
 ## Why it is split
 
 This is a cross-cutting presentation policy affecting every table and the streaming follow renderer. A local
-truncation in `jobs` would leave detail and wait wrapping differently and could erase the identity distinction
+truncation in `jobs list` would leave detail and wait wrapping differently and could erase the identity distinction
 the current PR is adding.
 
 ## Explicitly out of scope
 
-This item does not choose whether `coral-cli jobs` is an automation contract, add structured output, rename
+This item does not choose whether `coral-cli jobs list` is an automation contract, add structured output, rename
 identity fields, or change backend response schemas. It also does not prescribe ANSI-aware measurement or a
 specific truncation glyph until the rendering policy is chosen.
 

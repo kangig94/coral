@@ -1,3 +1,4 @@
+import { waitCommandPaths } from '../coordinator/handoff-routing/wait-command.js';
 import { performance } from 'node:perf_hooks';
 import { WaitInvocation, WaitInvocationEnded } from './wait-invocation.js';
 import { decodeWaitCursor, WAIT_CURSOR_REPLAY_NOTICE } from '../jobs/wait/cursor.js';
@@ -622,8 +623,7 @@ function prepareFollowOptions(options: FollowJobsOptions) {
       ? new WaitInvocation('bounded', [
           'node',
           'coral-cli',
-          'wait',
-          'jobs',
+          ...waitCommandPaths.current.split(' '),
           ...allJobIds,
           ...(rawCursor === undefined ? [] : ['--cursor', rawCursor]),
           ...(options.render.embed ? ['--embed'] : []),

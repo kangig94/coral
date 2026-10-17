@@ -85,7 +85,7 @@ function jobScopeMismatchResult(jobs: readonly string[]): ToolDomainResult {
     code: 'scope_mismatch',
     message: "Jobs are outside the caller's work directory scope",
     remediation:
-      "Change cwd to the job's work directory, or a directory that contains it, then rerun. Use `coral-cli jobs --all` to find its work directory, including terminal jobs.",
+      "Change cwd to the job's work directory, or a directory that contains it, then rerun. Use `coral-cli jobs list --all` to find its work directory, including terminal jobs.",
     detail: { jobs: [...jobs] },
   };
 }

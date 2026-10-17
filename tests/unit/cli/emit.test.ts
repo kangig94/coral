@@ -45,13 +45,13 @@ it('a delivered child refusal suppresses the parent continuation', () => {
     output += String(text);
     return true;
   }) as typeof process.stderr.write);
-  const invocation = new WaitInvocation('bounded', ['node', 'coral-cli', 'wait', 'jobs', 'a']);
+  const invocation = new WaitInvocation('bounded', ['node', 'coral-cli', 'jobs', 'wait', 'a']);
   installWaitInvocation(invocation);
   try {
-    invocation.saveContinuation('Run coral-cli wait jobs a --cursor stale\n');
+    invocation.saveContinuation('Run coral-cli jobs wait a --cursor stale\n');
     emitError(new WaitResumeError('stream interrupted', ['a'], 'fresh', 'bounded'));
     invocation.flushSavedContinuation();
-    expect(output.match(/coral-cli wait jobs/g)).toHaveLength(1);
+    expect(output.match(/coral-cli jobs wait/g)).toHaveLength(1);
     expect(output).not.toContain('stale');
   } finally {
     installWaitInvocation(undefined);

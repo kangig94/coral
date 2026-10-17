@@ -1,17 +1,17 @@
 # TODO — give the CLI a machine channel so contracts stop riding presentation
 
-**Status**: open. The `wait` half of the decision is **settled** (below); the `jobs` half is not.
+**Status**: open. The `jobs wait` half of the decision is **settled** (below); the `jobs list` half is not.
 Consolidated 2026-08-15 from `jobs-list-structured-output.md` plus the exit-code residue of #307
 items 2 and 3.
 
 ## The concept that is missing
 
 One structured output surface. Without it, two things that were built for people to read have become
-protocols: `wait`'s exit integer, and the `jobs` table's column layout.
+protocols: `jobs wait`'s exit integer, and the `jobs list` table's column layout.
 
 ### Evidence that these are one problem, not two that resemble each other
 
-`toExitCode` (`src/cli/follow.ts`) maps a job's terminal outcome onto `wait`'s own exit code and
+`toExitCode` (`src/cli/follow.ts`) maps a job's terminal outcome onto `jobs wait`'s own exit code and
 passes a provider's status through `normalizeExitCode` across the full 0–255 range. Coral separately
 reserves **75** for "still running" (`src/cli/errors.ts`).
 
@@ -30,11 +30,11 @@ reporting that the channel is full.
 Exit 1 is overloaded the same way: it means both "your job failed" (`toExitCode`) and "I could not
 attach to your job" (`scope_mismatch` reaching `errorCodeToExit`'s default).
 
-The `jobs` table has the identical shape one level up: its column arity changes with the data
+The `jobs list` table has the identical shape one level up: its column arity changes with the data
 (`src/cli/format/jobs.ts`), and because each project section decides independently, one invocation can
 print both a four-column and a five-column table.
 
-## Settled: `wait` becomes a pure monitor
+## Settled: `jobs wait` becomes a pure monitor
 
 **The exit code describes the monitor, not the job.**
 
@@ -61,7 +61,7 @@ What survives is the rule that replaced it
 that a stale reader's existing expectation silently becomes wrong. Reshaping output so an old reader fails
 to find its field is permitted; redefining what a value it already reads means is not.
 
-**That rules out the settled design as written.** Making `wait` always exit zero redefines a value six
+**That rules out the settled design as written.** Making `jobs wait` always exit zero redefines a value six
 shipped skill documents still branch on, and turns failure into success for every session holding their
 old text. The monitor/job split below is still the right separation — it has to be reached without
 changing what today's exit integer means to a reader that has not been reloaded. An exit code retired by
@@ -72,7 +72,7 @@ exit code quietly redefined does not.
 without waiting for a bound. If the structured surface is a read rather than only a stream, that falls
 out of the same work.
 
-## Not settled: is the `jobs` table a contract?
+## Not settled: is the `jobs list` table a contract?
 
 Two branches, and the choice is a product decision:
 
@@ -87,8 +87,8 @@ name, encoding, versioning and error behaviour are all part of the decision.
 
 ## Ship as two PRs, never one
 
-`wait` is a `subscribe` route: its structured form is a per-event record on a live stream. `jobs` is a
-`servedRead`: its structured form is one envelope. Merging them means a single PR touches the
+`jobs wait` is a `subscribe` route: its structured form is a per-event record on a live stream. `jobs list` is a
+`directRead`: its structured form is one envelope. Merging them means a single PR touches the
 subscription protocol, the list formatter, and every skill that reads an exit code. Decide once, ship
 twice.
 
@@ -98,7 +98,7 @@ a contract regression are indistinguishable in one diff.
 
 ## Start condition
 
-The `wait` half needs a new surface whose result an old skill cannot silently misread, with mixed-build
+The `jobs wait` half needs a new surface whose result an old skill cannot silently misread, with mixed-build
 coverage for a live session holding old skill text. The output direction has already been settled as a
-non-goal by principle 10; waiting for it cannot make an always-zero `wait` exit safe. Inventory the skill
-branches before retiring `toExitCode`. The `jobs` half needs the CLI owner to pick a branch.
+non-goal by principle 10; waiting for it cannot make an always-zero `jobs wait` exit safe. Inventory the skill
+branches before retiring `toExitCode`. The `jobs list` half needs the CLI owner to pick a branch.

@@ -1,4 +1,7 @@
-import { WAIT_INVOCATION_CONTRACT_ARGUMENT } from '../coordinator/handoff-routing/wait-invocation.js';
+import {
+  WAIT_INVOCATION_CONTRACT_ARGUMENT,
+  WAIT_INVOCATION_CONTRACT,
+} from '../coordinator/handoff-routing/wait-invocation.js';
 import { handleExpansionCommanderFailure, isCommanderDisplayOnlyError } from './commands/expansion.js';
 import { emitError } from './emit.js';
 import { buildProgram, parseProgramWithHandoff } from './program.js';
@@ -13,7 +16,7 @@ import { resolveStrictBundleIdentity } from '../infra/bundle-manifest.js';
  */
 export function runCli(): Promise<unknown> {
   if (process.argv.length === 3 && process.argv[2] === WAIT_INVOCATION_CONTRACT_ARGUMENT) {
-    process.stdout.write(`${JSON.stringify({ version: 1, monitorOnly: true })}\n`);
+    process.stdout.write(`${JSON.stringify(WAIT_INVOCATION_CONTRACT)}\n`);
     return Promise.resolve();
   }
   if (process.argv.length === 3 && process.argv[2] === '--print-store-reset-build-identity') {
@@ -32,7 +35,6 @@ export function runCli(): Promise<unknown> {
   const parseKeepAlive = setInterval(() => undefined, 2 ** 31 - 1);
   return parseProgramWithHandoff(program)
     .then((handoff) => {
-      // A delegated invocation ran in the newer build; this process only mirrors how that child ended.
       if (handoff === null || handoff.kind === 'handoff-success') return;
       if (handoff.kind === 'handoff-exit') {
         process.exitCode = handoff.exitCode;
@@ -42,7 +44,7 @@ export function runCli(): Promise<unknown> {
     })
     .catch((error) => {
       if (isCommanderDisplayOnlyError(error)) {
-        process.exitCode = 0;
+        process.exitCode = error.exitCode;
         return;
       }
 

@@ -7,6 +7,7 @@ import {
 export const CLI_HANDOFF_GUARD_ENV = 'CORAL_CLI_HANDOFF_DELEGATED';
 export const WAIT_INVOCATION_CONTEXT_ENV = 'CORAL_WAIT_INVOCATION_CONTEXT';
 export const WAIT_INVOCATION_CONTRACT_ARGUMENT = '--print-wait-invocation-contract';
+export const WAIT_INVOCATION_CONTRACT = { version: 1, monitorOnly: true } as const;
 
 export class WaitInvocationReadinessError extends Error {
   readonly code = 'transient';

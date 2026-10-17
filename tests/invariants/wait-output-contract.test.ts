@@ -117,8 +117,8 @@ it.each([false, true])(
       cursor,
     );
     for (const output of [terminal, waiting]) {
-      expect(output.match(/Run coral-cli wait jobs/g)).toHaveLength(1);
-      expect(output).toContain(`Run coral-cli wait jobs b u --cursor ${cursor} to continue waiting.`);
+      expect(output.match(/Run coral-cli jobs wait/g)).toHaveLength(1);
+      expect(output).toContain(`Run coral-cli jobs wait b u --cursor ${cursor} to continue waiting.`);
     }
     expect(waiting).toContain('Carrier unconfirmed for: u.');
     expect(formatWaitContinuation([], cursor)).not.toContain('Run');
@@ -128,7 +128,9 @@ it.each([false, true])(
 it('M2 help and exit documentation preserve failure precedence even with siblings', () => {
   const program = new Command();
   registerSessionCommands(program, new ProviderRegistry());
-  const help = program.commands.find((command) => command.name() === 'wait')?.commands[0];
+  const help = program.commands
+    .find((command) => command.name() === 'jobs')
+    ?.commands.find((command) => command.name() === 'wait');
   let output = '';
   help?.configureOutput({
     writeOut: (text) => {
@@ -177,7 +179,7 @@ it('M3 scope remediation changes cwd and lists terminal jobs', async () => {
   expect(result).toMatchObject({ kind: 'unary', statusCode: 403, body: { code: 'scope_mismatch' } });
   const output = JSON.stringify(result);
   expect(output).toContain('Change cwd');
-  expect(output).toContain('coral-cli jobs --all');
+  expect(output).toContain('coral-cli jobs list --all');
   expect(output).toContain('including terminal jobs');
 });
 

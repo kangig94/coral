@@ -94,12 +94,47 @@ describe('bash-rewrite.mjs', () => {
     expect(splitPrefix(rewrittenCommand(command)).rest).toBe(command);
   });
 
-  it('gives a chained, redirected wait the whole Bash timeout without forcing foreground', () => {
-    const result = runBashHook('cd "/tmp/x" && coral-cli wait jobs jb-1 --embed > /tmp/out.txt 2>&1');
+  it.each(['jobs wait', 'wait jobs'])(
+    'gives a chained, redirected %s the whole Bash timeout without forcing foreground',
+    (grammar) => {
+      const result = runBashHook(`cd "/tmp/x" && coral-cli ${grammar} jb-1 --embed > /tmp/out.txt 2>&1`);
 
-    const updatedInput = expectBashRewriteOutput(result).hookSpecificOutput.updatedInput as Record<string, unknown>;
+      const updatedInput = expectBashRewriteOutput(result).hookSpecificOutput.updatedInput as Record<string, unknown>;
+      expect(updatedInput.timeout).toBe(600_000);
+      expect(updatedInput.run_in_background).toBeUndefined();
+    },
+  );
+
+  it('does not give jobs list the wait timeout', () => {
+    const updatedInput = expectBashRewriteOutput(runBashHook('coral-cli jobs list --all')).hookSpecificOutput
+      .updatedInput as Record<string, unknown>;
+    expect(updatedInput.timeout).toBeUndefined();
+  });
+
+  it.each(['coral-cli jobs wait-typo', 'coral-cli wait-not-jobs'])(
+    'does not give a hyphenated verb the wait timeout: %s',
+    (command) => {
+      const updatedInput = expectBashRewriteOutput(runBashHook(command)).hookSpecificOutput.updatedInput as Record<
+        string,
+        unknown
+      >;
+      expect(updatedInput.timeout).toBeUndefined();
+    },
+  );
+
+  it.each([
+    'coral-cli jobs wait x',
+    'coral-cli wait jobs x',
+    'coral-cli jobs wait',
+    'coral-cli jobs wait; echo done',
+    'coral-cli jobs wait&& echo done',
+    '(coral-cli jobs wait)',
+  ])('gives an exact wait verb the wait timeout: %s', (command) => {
+    const updatedInput = expectBashRewriteOutput(runBashHook(command)).hookSpecificOutput.updatedInput as Record<
+      string,
+      unknown
+    >;
     expect(updatedInput.timeout).toBe(600_000);
-    expect(updatedInput.run_in_background).toBeUndefined();
   });
 
   it('leaves the timeout of a non-wait coral-cli command alone', () => {

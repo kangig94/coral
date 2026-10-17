@@ -1,3 +1,4 @@
+import { waitCommandPaths, waitCommandPrefix } from './wait-command.js';
 import {
   WaitBuildMismatchError,
   WaitInvocationReadinessError,
@@ -848,8 +849,7 @@ function delegatedArguments(operation: HandoffOperation): readonly string[] {
       return operation.argv.slice(2);
     case 'wait-jobs':
       return [
-        'wait',
-        'jobs',
+        ...waitCommandPaths.current.split(' '),
         operation.jobId,
         ...(operation.serializedCursor === undefined ? [] : ['--cursor', operation.serializedCursor]),
       ];
@@ -1246,7 +1246,13 @@ function supportsWaitInvocation(
         if (error) return finish(typeof error.code === 'number' ? false : null);
         try {
           const contract: unknown = JSON.parse(stdout);
-          finish(isRecord(contract) && contract.version === 1 && contract.monitorOnly === true);
+          finish(
+            isRecord(contract) &&
+              typeof contract.version === 'number' &&
+              Number.isInteger(contract.version) &&
+              contract.version >= 1 &&
+              contract.monitorOnly === true,
+          );
         } catch {
           finish(false);
         }
@@ -1506,7 +1512,7 @@ export async function runHandoff(
     if (supported === null)
       throw new WaitInvocationReadinessError(
         options.waitInvocation?.originalCommand ??
-          `coral-cli wait jobs ${operation.kind === 'wait-jobs' ? operation.jobId : ''}`,
+          `${waitCommandPrefix()} ${operation.kind === 'wait-jobs' ? operation.jobId : ''}`,
       );
     // A wait never runs on a build other than the coordinator's, so a target without the contract is refused here.
     if (!supported) throw new WaitBuildMismatchError();

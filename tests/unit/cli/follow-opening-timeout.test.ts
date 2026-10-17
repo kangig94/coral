@@ -25,7 +25,7 @@ it.each([undefined, savedCursor(42)])(
     expect(connect).toHaveBeenCalledTimes(3);
     const error = buildErrorEnvelope(emitError.mock.calls[0][0]);
     expect(error.envelope.code).toBe('transient');
-    expect(error.envelope.remediation).toContain('coral-cli wait jobs remaining-job');
+    expect(error.envelope.remediation).toContain('coral-cli jobs wait remaining-job');
     if (cursor !== undefined) expect(error.envelope.remediation).toContain(`--cursor ${cursor}`);
   },
 );

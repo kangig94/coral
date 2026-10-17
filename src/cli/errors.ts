@@ -2,7 +2,7 @@ import {
   WaitBuildMismatchError,
   WaitInvocationReadinessError,
 } from '../coordinator/handoff-routing/wait-invocation.js';
-import { CommanderError } from 'commander';
+import { CommanderError, type Command } from 'commander';
 import { ZodError } from 'zod';
 
 import { BackendToolHttpError } from '../transport/http/errors.js';
@@ -18,6 +18,21 @@ import {
 import { ChildPrincipalBindingError } from '../transport/ipc/child-principal-auth.js';
 import { IpcDrainRequestUnanswered, IpcLifecycleRefusal, IpcRpcError } from '../transport/ipc/client.js';
 import { waitContinuationCommand, waitContinuationShell, type WaitContinuationMode } from './format/wait.js';
+
+const commanderRemediations = new WeakMap<CommanderError, string>();
+
+export function configureCommanderHelp(program: Command): void {
+  const configure = (command: Command, path: string[]) => {
+    command.exitOverride((error) => {
+      if (['commander.unknownCommand', 'commander.unknownOption', 'commander.excessArguments'].includes(error.code)) {
+        commanderRemediations.set(error, `Run ${path.join(' ')} --help to see valid commands and options.`);
+      }
+      throw error;
+    });
+    for (const child of command.commands) configure(child, [...path, child.name()]);
+  };
+  configure(program, [program.name()]);
+}
 
 export type StoreResetCliErrorCode =
   | 'invalid_store_reset_incident_id'
@@ -299,7 +314,17 @@ function directErrorEnvelope(error: unknown): CliErrorResult | null {
   }
 
   if (error instanceof UsageError || error instanceof CommanderError || error instanceof HandoffGuardError) {
-    return withExitCode({ error: true, code: 'invalid_usage', message: error.message }, 2);
+    return withExitCode(
+      {
+        error: true,
+        code: 'invalid_usage',
+        message: error.message,
+        ...(error instanceof CommanderError && commanderRemediations.has(error)
+          ? { remediation: commanderRemediations.get(error) }
+          : {}),
+      },
+      2,
+    );
   }
 
   if (error instanceof ProviderSelectionError) {

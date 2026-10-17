@@ -52,7 +52,7 @@ it('SIGINT after a delivered informational notice still ends the bounded wait', 
 
   vi.useFakeTimers();
   const stdout = capture();
-  const budget = new WaitInvocation('bounded', ['node', 'coral-cli', 'wait', 'jobs', 'a']);
+  const budget = new WaitInvocation('bounded', ['node', 'coral-cli', 'jobs', 'wait', 'a']);
   invocations.push(budget);
   let release!: () => void;
   const result = followJobs({
@@ -91,6 +91,6 @@ it('SIGINT after a delivered informational notice still ends the bounded wait', 
   expect(budget.signal.aborted).toBe(true);
   expect(await result).toBe(75);
   expect(settled).toBe(75);
-  expect(stdout()).toContain('coral-cli wait jobs a');
+  expect(stdout()).toContain('coral-cli jobs wait a');
   expect(stdout()).toMatch(/--cursor [A-Za-z0-9_-]+/);
 });

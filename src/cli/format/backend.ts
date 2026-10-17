@@ -71,7 +71,7 @@ function renderBackendOperatorCommand(command: BackendOperatorCommand): string {
   let commandArguments: string;
   switch (command.kind) {
     case 'abort-job':
-      commandArguments = `abort jobs ${command.jobId}`;
+      commandArguments = `jobs abort ${command.jobId}`;
       break;
     case 'backend-start':
       commandArguments = 'backend start';

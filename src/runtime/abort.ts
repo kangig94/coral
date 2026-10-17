@@ -4,10 +4,8 @@
 // tests/invariants/architecture-boundary.test.ts so the vocabulary stays one
 // canonical home — see design-philosophy.md "No Ambiguity".
 //
-// `AbortError.reason` preserves `signal.reason` so callers can distinguish
-// user aborts (e.g. `coral-cli abort`) from non-user reasons (e.g. mutation-
-// lock deadline) downstream — both arrive as `AbortError` but with different
-// `reason` values.
+// AbortError must preserve signal.reason: callers must be able to distinguish
+// user aborts from non-user reasons such as mutation-lock deadlines.
 
 export class AbortError extends Error {
   readonly code = 'aborted';

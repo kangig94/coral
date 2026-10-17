@@ -66,6 +66,7 @@ import { makeClient } from '#src/cli/dispatch.js';
 import { markProviderCommand } from '#src/cli/classify.js';
 import { FORWARDED_NETWORK_ENV_KEYS } from '#src/infra/network-env.js';
 import { BackendUnreachableError } from '#src/infra/http-errors.js';
+import { installWaitInvocation, WaitInvocation } from '#src/cli/wait-invocation.js';
 
 function findCommand(root: Command, ...path: string[]): Command {
   let current = root;
@@ -84,6 +85,9 @@ function findCommand(root: Command, ...path: string[]): Command {
 function buildProgram(): Command {
   const program = new Command();
   const jobs = program.command('jobs');
+  jobs.command('list');
+  jobs.command('wait');
+  program.command('wait').command('jobs');
   jobs.command('detail');
   jobs.command('release');
   const kb = program.command('kb');
@@ -104,6 +108,31 @@ function stubNonChildInvocationEnv(): void {
 }
 
 describe('command client routing', () => {
+  it.each([
+    ['jobs', 'wait'],
+    ['wait', 'jobs'],
+  ])('attaches the invocation to the %s %s subscription', async (group, verb) => {
+    const invocation = new WaitInvocation('bounded', ['node', 'coral-cli', group, verb, 'a'], { now: () => 0 });
+    installWaitInvocation(invocation);
+    const subscription = { events: [], close: vi.fn() };
+    mockState.subscribe.mockResolvedValue(subscription);
+    try {
+      const client = makeClient(projectRoot, findCommand(buildProgram(), group, verb));
+      expect(await client.subscribeJobsWait({ jobIds: ['a'], projectRoot })).toBe(subscription);
+      expect(mockState.subscribe).toHaveBeenCalledWith(
+        'jobs.wait',
+        expect.anything(),
+        expect.objectContaining({
+          signal: invocation.signal,
+        }),
+      );
+      invocation.stop();
+      await expect(client.subscribeJobsWait({ jobIds: ['a'], projectRoot })).rejects.toThrow('Wait invocation ended');
+    } finally {
+      installWaitInvocation(undefined);
+      invocation.dispose(true);
+    }
+  });
   beforeEach(() => {
     stubNonChildInvocationEnv();
     mockState.discovery.mockReturnValue({ kind: 'missing' });
@@ -173,7 +202,7 @@ describe('command client routing', () => {
       expect(jobsListRequestSchema.parse(params)).toEqual({ owner: 'session-env', unwaited: true });
       return { jobs: [{ jobId: 'job-live', released: true }] };
     });
-    const client = makeClient(projectRoot, findCommand(buildProgram(), 'jobs'));
+    const client = makeClient(projectRoot, findCommand(buildProgram(), 'jobs', 'list'));
     expect(await client.listJobs({ mine: true, unwaited: true, allProjects: true })).toEqual({
       jobs: [{ jobId: 'job-live', released: true }],
     });
@@ -186,14 +215,14 @@ describe('command client routing', () => {
 
   it('session job guard: returns no owned unwaited jobs without starting a coordinator', async () => {
     vi.stubEnv('CORAL_OWNER', 'session-env');
-    const client = makeClient(projectRoot, findCommand(buildProgram(), 'jobs'));
+    const client = makeClient(projectRoot, findCommand(buildProgram(), 'jobs', 'list'));
     await expect(client.listJobs({ mine: true, unwaited: true, allProjects: true })).resolves.toEqual({ jobs: [] });
     expect(ensure).not.toHaveBeenCalled();
     expect(mockState.request).not.toHaveBeenCalled();
     vi.stubEnv('CORAL_OWNER', undefined);
-    await expect(makeClient(projectRoot, findCommand(buildProgram(), 'jobs')).listJobs({ mine: true })).rejects.toThrow(
-      'Set CORAL_OWNER',
-    );
+    await expect(
+      makeClient(projectRoot, findCommand(buildProgram(), 'jobs', 'list')).listJobs({ mine: true }),
+    ).rejects.toThrow('Set CORAL_OWNER');
   });
 
   it('sends the canonical target when the invocation project root is a symlink', async () => {

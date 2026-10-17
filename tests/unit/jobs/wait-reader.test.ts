@@ -273,7 +273,7 @@ it('names a runnable smaller snapshot retry with the unchanged input cursor', ()
     { jobId: 'a', disposition: 'missing', message: 'x'.repeat(2 * 1024 * 1024) },
     { jobId: 'b', disposition: 'missing' },
   ]);
-  expect(() => selectWaitSnapshot(session, 20)).toThrow(`coral-cli wait jobs 'a' --snapshot --cursor ${input}`);
+  expect(() => selectWaitSnapshot(session, 20)).toThrow(`coral-cli jobs wait 'a' --snapshot --cursor ${input}`);
 });
 
 it('internal outcomes drain every progress line before completion without a page waiting event', async () => {

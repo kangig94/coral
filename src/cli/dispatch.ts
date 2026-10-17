@@ -223,12 +223,6 @@ export type ProviderRunOptions = {
   detach?: boolean;
 };
 
-export type AbortOptions = {
-  all?: boolean;
-  phase?: string;
-  provider?: string;
-};
-
 export type WorkflowOptions = {
   expression?: string;
   startPrompt?: string[];
@@ -522,7 +516,7 @@ function createSessionDiscussionClient(
     listJobs: async (options = {}) => {
       const owner = defaultContext.coralEnv.CORAL_OWNER;
       if (options.mine === true && (owner === undefined || owner.length === 0)) {
-        throw new UsageError('Set CORAL_OWNER to the session ID to use jobs --mine.');
+        throw new UsageError('Set CORAL_OWNER to the session ID to use jobs list --mine.');
       }
       const filters = {
         ...(options.allProjects === true
@@ -928,7 +922,7 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
     }
 
     const authOptions = ipcAuthOptions();
-    const invocation = path === 'wait jobs' ? getWaitInvocation() : undefined;
+    const invocation = getWaitInvocation();
     const run = <T>(work: () => Promise<T>) => (invocation ? invocation.run(work) : work());
     await run(reconcileKbBoot);
     const client = await run(() => ensure(method, resolvePluginRoot()));

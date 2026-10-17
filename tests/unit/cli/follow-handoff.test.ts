@@ -296,8 +296,8 @@ describe('cli follow handoff', () => {
     expect(options.emitError).not.toHaveBeenCalled();
     const text = output.join('');
     expect(text.match(/checkpoint-one/g)).toHaveLength(1);
-    expect(text).toContain(`Run coral-cli wait jobs job-1 --cursor ${savedCursor(4)} to continue waiting.`);
-    expect(text.match(/Run coral-cli wait jobs/g)).toHaveLength(1);
+    expect(text).toContain(`Run coral-cli jobs wait job-1 --cursor ${savedCursor(4)} to continue waiting.`);
+    expect(text.match(/Run coral-cli jobs wait/g)).toHaveLength(1);
   });
 
   it('mirrors a delegated wait ending 75 after a Ctrl+C without retrying, since a terminal may carry 75', async () => {
@@ -330,7 +330,7 @@ describe('cli follow handoff', () => {
     expect(mockState.runHandoff).toHaveBeenCalledTimes(1);
     expect(options.emitError).not.toHaveBeenCalled();
     // The child printed its own continuation; the parent must not add a second one.
-    expect(output.join('')).not.toContain('Run coral-cli wait jobs');
+    expect(output.join('')).not.toContain('Run coral-cli jobs wait');
   });
   it('forwards a SIGINT sent only to this process to the delegated child, which prints the one continuation', async () => {
     const output: string[] = [];
@@ -364,7 +364,7 @@ describe('cli follow handoff', () => {
     expect(exit).not.toHaveBeenCalled();
     handoff.resolve(recorded({ kind: 'delegated', version: '2.0.0', outcome: { kind: 'handoff-exit', exitCode: 75 } }));
     await expect(follow).resolves.toBe(75);
-    expect(output.join('')).not.toContain('Run coral-cli wait jobs');
+    expect(output.join('')).not.toContain('Run coral-cli jobs wait');
   });
 
   it('answers a Ctrl+C before admission at once, without waiting for the coordinator to be ensured', async () => {
@@ -389,7 +389,7 @@ describe('cli follow handoff', () => {
     await ensuring.promise;
     sigintHandler?.();
     await expect(follow).resolves.toBe(75);
-    expect(output.join('')).toContain('Run coral-cli wait jobs job-1 to continue waiting.');
+    expect(output.join('')).toContain('Run coral-cli jobs wait job-1 to continue waiting.');
     expect(options.emitError).not.toHaveBeenCalled();
   });
 });

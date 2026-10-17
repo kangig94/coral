@@ -2,13 +2,64 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { POST_COMPACT_HOOK, cleanupFixtures, createFixture, runHook } from '#tests/unit/hooks/_helpers.js';
+import {
+  POST_COMPACT_HOOK,
+  cleanupFixtures,
+  createFixture,
+  runHook,
+  type HookOutput,
+} from '#tests/unit/hooks/_helpers.js';
 // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
 import { projectPathKey } from '../../../clients/hooks/lib/plugin-paths.mjs';
+// @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
+import { buildFlavor } from '../../../clients/hooks/lib/hook-utils.mjs';
 
 afterEach(cleanupFixtures);
 
 describe('post-compact.mjs', () => {
+  it('recovers live jobs and readable terminal results with jobs wait commands', () => {
+    const fixture = createFixture();
+    const hooksDir = join(fixture.snapshotDir, 'hooks');
+    const resultDir = join(
+      fixture.root,
+      '.coral',
+      buildFlavor() === 'dev' ? 'exports-dev' : 'exports',
+      'jobs',
+      'job-done',
+    );
+    mkdirSync(hooksDir, { recursive: true });
+    mkdirSync(resultDir, { recursive: true });
+    writeFileSync(join(resultDir, 'result.md'), 'Recovered result', 'utf8');
+    writeFileSync(
+      join(hooksDir, `active-jobs-${Date.now()}-fixture.json`),
+      JSON.stringify({
+        version: 1,
+        projectDir: fixture.projectRoot,
+        capturedAtMs: Date.now(),
+        jobs: [
+          { jobId: 'job-live', phase: 'running', hasResult: false },
+          { jobId: 'job-queued', phase: 'queued', hasResult: false },
+          { jobId: 'job-done', phase: 'completed', hasResult: true },
+        ],
+      }),
+      'utf8',
+    );
+
+    const result = runHook(
+      POST_COMPACT_HOOK,
+      { cwd: fixture.projectRoot },
+      { HOME: fixture.root, CLAUDE_PROJECT_DIR: fixture.projectRoot, TMPDIR: fixture.tmpRoot },
+    );
+
+    expect(result.status).toBe(0);
+    const output = JSON.parse(result.stdout) as HookOutput;
+    expect(output.hookSpecificOutput.hookEventName).toBe('SessionStart');
+    const lines = output.hookSpecificOutput.additionalContext.split('\n');
+    expect(lines).toContain('Run: coral-cli jobs wait job-live job-queued');
+    expect(lines).toContain(`- job-done: ${join(resultDir, 'result.md')}`);
+    expect(lines).toContain('- coral-cli jobs wait <job-id> --embed');
+  });
+
   it('uses collision- and traversal-resistant keys for Coral-owned project paths', () => {
     expect(projectPathKey('/a-b/c')).not.toBe(projectPathKey('/a/b-c'));
     expect(projectPathKey('..\\..\\escape')).toMatch(/^[a-f0-9]{64}$/);

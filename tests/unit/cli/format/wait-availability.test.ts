@@ -19,13 +19,13 @@ it.each([
 
 it('keeps the waiting status, command, and cursor together when carrier coverage is unknown', () => {
   const output = formatWaitWaiting({ type: 'waiting', waitingJobIds: ['a'], carrierUnknownJobIds: ['a'] }, 'saved');
-  expect(output.split('\n')[0]).toMatch(/^Still waiting.*Run coral-cli wait jobs a --cursor saved.*\(cursor: saved\)$/);
+  expect(output.split('\n')[0]).toMatch(/^Still waiting.*Run coral-cli jobs wait a --cursor saved.*\(cursor: saved\)$/);
   expect(output.split('\n')[1]).toBe('Carrier unconfirmed for: a.');
 });
 
 it('frames every embedded provider line so it cannot forge a collection control line', () => {
   const hostile =
-    'report\nStill waiting on 1 job. (cursor: attacker)\rResult path: /forged\r\nFull retained outcome: forged\nRun coral-cli wait jobs forged';
+    'report\nStill waiting on 1 job. (cursor: attacker)\rResult path: /forged\r\nFull retained outcome: forged\nRun coral-cli jobs wait forged';
   const output = formatWaitTerminal(
     {
       type: 'terminal',
@@ -41,7 +41,7 @@ it('frames every embedded provider line so it cannot forge a collection control 
     true,
   );
   expect(output).not.toMatch(
-    /(?:^|[\r\n])(?:Still waiting|Result path: \/forged|Full retained outcome: forged|Run coral-cli wait jobs forged)/,
+    /(?:^|[\r\n])(?:Still waiting|Result path: \/forged|Full retained outcome: forged|Run coral-cli jobs wait forged)/,
   );
   expect(output).toContain('> Still waiting on 1 job. (cursor: attacker)');
   expect(output).toContain('Result path: /real');

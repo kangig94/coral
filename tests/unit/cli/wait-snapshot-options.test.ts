@@ -5,8 +5,8 @@ import { validateWaitJobsOptions, waitInvocationMode } from '#src/cli/wait-invoc
 it('checks snapshot syntax at the invocation boundary before preflight or requests', () => {
   const program = new Command();
   program
-    .command('wait')
     .command('jobs')
+    .command('wait')
     .argument('<jobIds...>')
     .option('--snapshot')
     .option('--lines <N>')
@@ -15,8 +15,8 @@ it('checks snapshot syntax at the invocation boundary before preflight or reques
     waitInvocationMode(program, [
       'node',
       'cli',
-      'wait',
       'jobs',
+      'wait',
       'a',
       '--snapshot',
       '--lines',
@@ -25,7 +25,7 @@ it('checks snapshot syntax at the invocation boundary before preflight or reques
       'saved',
     ]),
   ).toThrow('--lines cannot be used with --cursor');
-  expect(waitInvocationMode(program, ['node', 'cli', 'wait', 'jobs', 'a', '--snapshot', '--lines', '500'])).toBe(
+  expect(waitInvocationMode(program, ['node', 'cli', 'jobs', 'wait', 'a', '--snapshot', '--lines', '500'])).toBe(
     'snapshot',
   );
   expect(validateWaitJobsOptions({ snapshot: true })).toBeUndefined();

@@ -66,11 +66,11 @@ describe('session job guard', () => {
       expect(await stop()).toEqual({
         decision: 'block',
         reason:
-          '2 Coral job(s) launched in this session are still running with no wait attached. Run coral-cli wait jobs job-1 job-2 to wait for them.',
+          '2 Coral job(s) launched in this session are still running with no wait attached. Run coral-cli jobs wait job-1 job-2 to wait for them.',
       });
       expect(state.exec).toHaveBeenCalledWith(
         expect.stringMatching(/clients\/bridge\/coral-cli$/),
-        ['jobs', '--mine', '--unwaited', '--json'],
+        ['jobs', 'list', '--mine', '--unwaited', '--json'],
         expect.objectContaining({
           timeout: 2_000,
           env: expect.objectContaining({ CORAL_OWNER: 'session-1', PATH: expect.stringContaining('/clients/bridge:') }),
@@ -88,7 +88,7 @@ describe('session job guard', () => {
       ]),
     );
     expect((await stop())?.reason).toBe(
-      "3 Coral job(s) launched in this session are still running with no wait attached. Run each command below separately to wait for them:\ncd '/other'\\''s project' && coral-cli wait jobs job-1 job-3\ncd '/third-project' && coral-cli wait jobs job-2",
+      "3 Coral job(s) launched in this session are still running with no wait attached. Run each command below separately to wait for them:\ncd '/other'\\''s project' && coral-cli jobs wait job-1 job-3\ncd '/third-project' && coral-cli jobs wait job-2",
     );
   });
 
@@ -103,7 +103,7 @@ describe('session job guard', () => {
       ]),
     );
     expect((await stop())?.reason).toBe(
-      "4 Coral job(s) launched in this session are still running with no wait attached. Run each command below separately to wait for them:\ncoral-cli wait jobs job-here job-child job-kb\ncd '/other-project' && coral-cli wait jobs job-other",
+      "4 Coral job(s) launched in this session are still running with no wait attached. Run each command below separately to wait for them:\ncoral-cli jobs wait job-here job-child job-kb\ncd '/other-project' && coral-cli jobs wait job-other",
     );
   });
 
@@ -112,7 +112,7 @@ describe('session job guard', () => {
       JSON.stringify([{ jobId: 'job-other', status: { jobKind: 'provider', workDir: `${root}-other` } }]),
     );
     expect((await stop())?.reason).toBe(
-      `1 Coral job(s) launched in this session are still running with no wait attached. Run cd '${root}-other' && coral-cli wait jobs job-other to wait for them.`,
+      `1 Coral job(s) launched in this session are still running with no wait attached. Run cd '${root}-other' && coral-cli jobs wait job-other to wait for them.`,
     );
   });
 
@@ -139,7 +139,7 @@ describe('session job guard', () => {
       tool_name: 'Bash',
       session_id: 'session-1',
       cwd: root,
-      tool_input: { command: 'coral-cli wait jobs job-1 job-2' },
+      tool_input: { command: 'coral-cli jobs wait job-1 job-2' },
     };
     // @ts-expect-error — hooks are self-contained ESM without declarations.
     await import('../../../clients/hooks/bash-rewrite.mjs');

@@ -89,7 +89,7 @@ describe('wait snapshot', () => {
     const noJobs = selectWaitSnapshot(refused);
     expect(noJobs.exitCode).toBe(1);
     expect(noJobs.remainingJobIds).toEqual([]);
-    expect(formatWaitSnapshot(noJobs)).not.toContain('coral-cli wait jobs');
+    expect(formatWaitSnapshot(noJobs)).not.toContain('coral-cli jobs wait');
     for (const phase of ['running', 'queued'] as const) {
       const a = admitted('a', [], false);
       a.detail.status.phase = phase;

@@ -493,7 +493,7 @@ export class JobAddressing {
         return {
           jobId,
           disposition: 'scope-mismatch',
-          message: 'Change cwd to the job work directory; coral-cli jobs --all includes terminal jobs.',
+          message: 'Change cwd to the job work directory; coral-cli jobs list --all includes terminal jobs.',
         };
       if (sameEpoch(location.epochKey, activeEpochKey)) {
         try {
