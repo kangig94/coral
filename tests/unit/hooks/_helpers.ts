@@ -36,6 +36,8 @@ export interface HookOutput {
 export interface BashRewriteOutput {
   hookSpecificOutput: {
     hookEventName: string;
+    permissionDecision?: 'allow';
+    permissionDecisionReason?: string;
     updatedInput: {
       command: string;
     };
@@ -108,14 +110,14 @@ export function runHook(
   hookPath: string,
   stdinJson: object,
   envOverrides: Record<string, string | undefined> = {},
+  args: string[] = [],
 ): HookRunResult {
   const env: NodeJS.ProcessEnv = { ...process.env };
   delete env.CORAL_CHILD;
   delete env.CORAL_KB_PATH;
   delete env.CLAUDE_CONFIG_DIR;
   delete env.CORAL_WORK_ROOT_OVERRIDE;
-  // Host detection reads these; an ambient value from the shell that launched
-  // vitest would otherwise decide which output shape every hook emits.
+  // Ambient host variables must not decide fixture output shapes.
   delete env.COPILOT_PLUGIN_ROOT;
   delete env.AI_AGENT;
 
@@ -129,13 +131,11 @@ export function runHook(
   if (env.HOME !== undefined && !Object.hasOwn(envOverrides, 'USERPROFILE')) {
     env.USERPROFILE = env.HOME;
   }
-  // Coral's /tmp state root (sandboxTmpDir) follows the fixture's TMPDIR in tests
-  // unless a test sets CORAL_WORK_ROOT_OVERRIDE explicitly.
   if (env.TMPDIR !== undefined && !Object.hasOwn(envOverrides, 'CORAL_WORK_ROOT_OVERRIDE')) {
     env.CORAL_WORK_ROOT_OVERRIDE = env.TMPDIR;
   }
 
-  const result = spawnSync('node', [hookPath], {
+  const result = spawnSync('node', [hookPath, ...args], {
     input: JSON.stringify(stdinJson),
     encoding: 'utf-8',
     env,

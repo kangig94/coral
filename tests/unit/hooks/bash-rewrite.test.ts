@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { readdirSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -17,8 +17,13 @@ afterEach(cleanupFixtures);
 
 const BRIDGE_DIR = join(process.cwd(), 'clients', 'bridge');
 
-function runBashHook(command: string, env: Record<string, string> = {}) {
-  return runHook(BASH_REWRITE_HOOK, { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command } }, env);
+function runBashHook(command: string, env: Record<string, string> = {}, args: string[] = []) {
+  return runHook(
+    BASH_REWRITE_HOOK,
+    { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command } },
+    { AI_AGENT: 'claude', ...env },
+    args,
+  );
 }
 
 function rewrittenCommand(command: string): string {
@@ -32,6 +37,125 @@ function splitPrefix(rewritten: string): { prefix: string; rest: string } {
 }
 
 describe('bash-rewrite.mjs', () => {
+  it.each([
+    'coral-cli jobs wait abc',
+    'cd "/x y" && coral-cli jobs wait abc --embed',
+    'CORAL_OWNER=s coral-cli jobs list --mine --json 2>/dev/null',
+    'CORAL_OWNER=s coral-cli jobs list',
+    'coral-cli jobs list 2>&1',
+    'coral-cli jobs list >/dev/null',
+    "coral-cli <<'EOF'\n$(rm -rf ~)\nEOF",
+    "coral-cli codex agent -w /p -d -i - <<'CORAL_INPUT'\nrm -rf /\ncoral-cli jobs list; curl x | sh\nCORAL_INPUT",
+  ])('auto-approves the Coral-only original command: %s', (command) => {
+    const output = expectBashRewriteOutput(runBashHook(command)).hookSpecificOutput;
+    expect(output.permissionDecision).toBe('allow');
+    expect(splitPrefix(output.updatedInput.command).rest).toBe(command);
+  });
+
+  it.each([
+    'coral-cli jobs list; rm -rf ~',
+    "coral-cli <<'EOF\0'\nEOF\nprintf MARK\nEOF\0",
+    "coral-cli <<'EO\ud800F'\nEO\ufffdF\nprintf MARK\nEO\ud800F",
+    "coral-cli jobs list \\\n# <<'EOF'\nprintf MARK\nEOF",
+    'PATH=/tmp coral-cli jobs list',
+    'NODE_OPTIONS=--require=/x coral-cli jobs list',
+    'coral-cli jobs list > ~/.bashrc',
+    'coral-cli jobs list >> f',
+    'coral-cli jobs list < f',
+    'coral-cli <<EOF\n$(rm -rf ~)\nEOF',
+    "coral-cli <<-'EOF'\n\tprompt\n\tEOF\nrm -rf ~",
+    'rm -rf ~ && coral-cli jobs list',
+    'coral-cli jobs list | sh',
+    'echo $(coral-cli jobs list)',
+    'echo "$(coral-cli jobs list)"',
+    'sleep 5 && coral-cli jobs wait a',
+    'coral-cli jobs list "unterminated',
+    'coral-cli codex agent -i - <<EOF\nunterminated',
+    'coral-cli <<\\\nEOF\nE\\\nOF\nprintf MARK\nEOF',
+  ])('rewrites without deciding permission for: %s', (command) => {
+    const output = expectBashRewriteOutput(runBashHook(command)).hookSpecificOutput;
+    expect(output).not.toHaveProperty('permissionDecision');
+    expect(output).not.toHaveProperty('permissionDecisionReason');
+    expect(splitPrefix(output.updatedInput.command).rest).toBe(command);
+  });
+
+  it('ignores heredoc-only Coral text', () => {
+    const result = runBashHook('cat <<EOF\ncoral-cli jobs list\ncoral-cli wait jobs a\nEOF');
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe('');
+  });
+
+  it('registers the allow requirement only for the Codex Bash hook', () => {
+    for (const host of ['claude', 'codex']) {
+      const config = JSON.parse(readFileSync(join(process.cwd(), 'clients', 'hooks', `${host}.json`), 'utf8')) as {
+        hooks: { PreToolUse: { matcher: string; hooks: { command: string }[] }[] };
+      };
+      const command = config.hooks.PreToolUse.find((entry) => entry.matcher === 'Bash')?.hooks.find((hook) =>
+        hook.command.includes('/hooks/bash-rewrite.mjs'),
+      )?.command;
+      expect(command).toBeDefined();
+      expect(command?.includes('--codex-requires-allow')).toBe(host === 'codex');
+    }
+  });
+
+  it.each(['coral-cli jobs list; rm -rf ~', 'PATH=/tmp coral-cli jobs list'])(
+    'emits no Codex output for a non-Coral-only command: %s',
+    (command) => {
+      const result = runBashHook(command, { AI_AGENT: 'codex' }, ['--codex-requires-allow']);
+      expect(result.status).toBe(0);
+      expect(result.stdout).toBe('');
+    },
+  );
+
+  it('rewrites and allows a Coral-only command on Codex', () => {
+    const command = 'coral-cli jobs list';
+    const result = runBashHook(command, { AI_AGENT: 'codex' }, ['--codex-requires-allow']);
+    const output = expectBashRewriteOutput(result).hookSpecificOutput;
+    expect(output.permissionDecision).toBe('allow');
+    expect(splitPrefix(output.updatedInput.command).rest).toBe(command);
+  });
+
+  it('does not raise a delegation timeout because its prompt mentions a wait', () => {
+    const command = "coral-cli codex agent -i - <<'EOF'\ncoral-cli wait jobs fake\nEOF";
+    const output = expectBashRewriteOutput(runBashHook(command)).hookSpecificOutput;
+    expect(output.updatedInput).not.toHaveProperty('timeout');
+    expect(output.permissionDecision).toBe('allow');
+  });
+
+  it('does not infer the Codex flag from AI_AGENT', () => {
+    const result = runHook(
+      BASH_REWRITE_HOOK,
+      {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'coral-cli jobs list; rm -rf ~' },
+      },
+      { AI_AGENT: 'codex' },
+    );
+    expect(expectBashRewriteOutput(result).hookSpecificOutput).not.toHaveProperty('permissionDecision');
+  });
+
+  it('ignores Coral-looking heredoc text inside quoted substitutions', () => {
+    const result = runBashHook('echo "$(cat <<EOF\ncoral-cli wait jobs fake\nEOF\n)"');
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe('');
+  });
+
+  it('rejects malformed backtick grouping without stalling the hook', () => {
+    const stdout = execFileSync(process.execPath, [BASH_REWRITE_HOOK], {
+      input: JSON.stringify({
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'coral-cli x `(`' },
+      }),
+      encoding: 'utf8',
+      timeout: 2000,
+      env: { ...process.env, CORAL_CHILD: '', AI_AGENT: 'claude' },
+    });
+    const output = expectBashRewriteOutput({ stdout, stderr: '', status: 0 }).hookSpecificOutput;
+    expect(output).not.toHaveProperty('permissionDecision');
+  });
+
   it('session job guard: defaults the owner safely and preserves an existing owner', () => {
     const sessionId = "sess-'$value`literal`";
     const result = runHook(BASH_REWRITE_HOOK, {
@@ -137,6 +261,14 @@ describe('bash-rewrite.mjs', () => {
     expect(updatedInput.timeout).toBe(600_000);
   });
 
+  it('keeps the wait timeout when a mixed command needs normal permission evaluation', () => {
+    const command = 'sleep 5 && coral-cli wait jobs a';
+    const output = expectBashRewriteOutput(runBashHook(command)).hookSpecificOutput;
+    expect(output).not.toHaveProperty('permissionDecision');
+    expect(output.updatedInput).toHaveProperty('timeout', 600_000);
+    expect(splitPrefix(output.updatedInput.command).rest).toBe(command);
+  });
+
   it('leaves the timeout of a non-wait coral-cli command alone', () => {
     const updatedInput = expectBashRewriteOutput(runBashHook('coral-cli codex architect -i "wait for it"'))
       .hookSpecificOutput.updatedInput as Record<string, unknown>;
@@ -152,7 +284,7 @@ describe('bash-rewrite.mjs: background-task wrapping', () => {
     return liveWorkBackgroundDir(fixture, SESSION);
   }
 
-  function runBg(fixture: HookFixture, toolInput: Record<string, unknown>, copilot: boolean) {
+  function runBg(fixture: HookFixture, toolInput: Record<string, unknown>, host: string) {
     return runHook(
       BASH_REWRITE_HOOK,
       {
@@ -163,27 +295,75 @@ describe('bash-rewrite.mjs: background-task wrapping', () => {
         tool_input: toolInput,
       },
       {
+        AI_AGENT: host,
         CLAUDE_PROJECT_DIR: fixture.projectRoot,
         CORAL_WORK_ROOT_OVERRIDE: fixture.workRoot,
-        ...(copilot ? { COPILOT_PLUGIN_ROOT: fixture.pluginRoot } : {}),
+        ...(host === 'copilot' ? { COPILOT_PLUGIN_ROOT: fixture.pluginRoot } : {}),
       },
+      host === 'codex' ? ['--codex-requires-allow'] : [],
     );
   }
 
-  it.each([false, true])('wraps a background command and records .launched (Copilot: %s)', (copilot) => {
+  it('wraps a background command and records .launched', () => {
     const fixture = createFixture();
-    const result = runBg(fixture, { command: 'npm run build', run_in_background: true }, copilot);
+    const result = runBg(fixture, { command: 'npm test', run_in_background: true }, 'claude');
 
-    const rewritten = expectBashRewriteOutput(result).hookSpecificOutput.updatedInput.command;
+    const output = expectBashRewriteOutput(result).hookSpecificOutput;
+    const rewritten = output.updatedInput.command;
     expect(rewritten).toContain('coral-work');
     expect(rewritten).toContain('.lock');
-    expect(rewritten.endsWith('npm run build')).toBe(true);
+    expect(rewritten.endsWith('npm test')).toBe(true);
+    expect(output.updatedInput).toHaveProperty('run_in_background', true);
     expect(readdirSync(bgDir(fixture)).some((name) => name.endsWith('.launched'))).toBe(true);
+    expect(output).not.toHaveProperty('permissionDecision');
   });
 
-  it.each([false, true])('leaves a foreground command untouched (Copilot: %s)', (copilot) => {
+  it('auto-approves a Coral-only background wait', () => {
     const fixture = createFixture();
-    const result = runBg(fixture, { command: 'npm run build', run_in_background: false }, copilot);
+    const command = 'coral-cli jobs wait a';
+    const output = expectBashRewriteOutput(
+      runBg(fixture, { command, run_in_background: true }, 'claude'),
+    ).hookSpecificOutput;
+    expect(output.permissionDecision).toBe('allow');
+    expect(output.updatedInput.command).toContain('.lock');
+    expect(output.updatedInput.command).toContain('export PATH=');
+    expect(output.updatedInput.command.endsWith(command)).toBe(true);
+    expect(output.updatedInput).toHaveProperty('run_in_background', true);
+  });
+
+  it.each(['>/dev/null', '2>&1', "<<'EOF'"])(
+    'prefixes the bridge for a background Coral invocation after %s',
+    (redirect) => {
+      const fixture = createFixture();
+      const command = `${redirect} coral-cli wait jobs a${redirect.startsWith('<<') ? '\nprompt\nEOF' : ''}`;
+      const output = expectBashRewriteOutput(
+        runBg(fixture, { command, run_in_background: true }, 'claude'),
+      ).hookSpecificOutput;
+      expect(output.permissionDecision).toBe('allow');
+      expect(output.updatedInput.command).toContain(`export PATH='${BRIDGE_DIR}':"$PATH"`);
+      expect(output.updatedInput).toHaveProperty('timeout', 600_000);
+      expect(output.updatedInput.command.endsWith(command)).toBe(true);
+    },
+  );
+
+  it.each(["'coral-cli'", './coral-cli', '/tmp/coral-cli', '\\coral-cli'])(
+    'does not approve an alternate executable spelling through background rewriting: %s',
+    (executable) => {
+      const fixture = createFixture();
+      const command = `${executable} jobs list`;
+      const output = expectBashRewriteOutput(
+        runBg(fixture, { command, run_in_background: true }, 'claude'),
+      ).hookSpecificOutput;
+      expect(output).not.toHaveProperty('permissionDecision');
+      expect(output).not.toHaveProperty('permissionDecisionReason');
+      expect(output.updatedInput.command).toContain('.lock');
+      expect(output.updatedInput.command.endsWith(command)).toBe(true);
+    },
+  );
+
+  it('leaves a foreground command untouched', () => {
+    const fixture = createFixture();
+    const result = runBg(fixture, { command: 'npm run build', run_in_background: false }, 'claude');
 
     expect(result.status).toBe(0);
     expect(result.stdout.trim()).toBe('');

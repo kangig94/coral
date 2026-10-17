@@ -119,7 +119,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "test -d \"${PLUGIN_ROOT}\" || exit 0; node \"${PLUGIN_ROOT}/hooks/bash-rewrite.mjs\"",
+            "command": "test -d \"${PLUGIN_ROOT}\" || exit 0; node \"${PLUGIN_ROOT}/hooks/bash-rewrite.mjs\" --codex-requires-allow",
             "timeout": 3
           }
         ]

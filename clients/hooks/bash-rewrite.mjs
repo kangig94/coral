@@ -1,14 +1,10 @@
 #!/usr/bin/env node
-//
-// The command text is prefixed, never parsed or edited: every shell reads it
-// exactly as written.
-
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { exitIfChildProcess, exitIfWrongFlavor, readStdin, writeHookOutput } from './lib/hook-utils.mjs';
 import { projectDirFromInput } from './lib/plugin-paths.mjs';
 import { beginBgTask, recordCoralWait } from './lib/live-work-registry.mjs';
-import { textInvokesCoralCli, textInvokesCoralWait } from './lib/coral-invocation.mjs';
+import { isCoralOnlyCommand, textInvokesCoralCli, textInvokesCoralWait } from './lib/coral-invocation.mjs';
 exitIfChildProcess();
 exitIfWrongFlavor();
 
@@ -40,6 +36,9 @@ try {
 
   const command = input.tool_input?.command;
   if (typeof command !== 'string') process.exit(0);
+  const autoApprove = isCoralOnlyCommand(command);
+  // Codex rejects updatedInput without allow; mixed commands must retain normal permission checks.
+  if (process.argv.includes('--codex-requires-allow') && !autoApprove) process.exit(0);
 
   const updatedInput = { ...input.tool_input };
   const invokesCoralCli = textInvokesCoralCli(command);
@@ -75,8 +74,10 @@ try {
   writeHookOutput({
     hookSpecificOutput: {
       hookEventName: 'PreToolUse',
-      permissionDecision: 'allow',
-      permissionDecisionReason: 'bash auto-rewrite',
+      ...(autoApprove ? {
+        permissionDecision: 'allow',
+        permissionDecisionReason: 'bash auto-rewrite',
+      } : {}),
       updatedInput,
     },
   });
