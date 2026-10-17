@@ -140,6 +140,8 @@ export interface BoundProviderAppServerCapability {
     continuity: NonNullable<ProviderRuntime['persistedContinuity']>,
     input: ProviderSendInput,
     hostPreparation: BoundProviderHostPreparationInput & Readonly<{ jobId: string }>,
+    /** Expiry must release only the temporary lease, never cancel the provider turn. */
+    attemptSignal?: AbortSignal,
   ): Promise<ProviderSendOutcome>;
   probe(
     hostRef: HostRef,

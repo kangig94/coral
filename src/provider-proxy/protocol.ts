@@ -11,6 +11,8 @@ import {
   providerArtifactHandleEventBodySchema,
   providerContinuityEventBodySchema,
   providerRequestSchema,
+  providerSendInputSchema,
+  providerSendOutcomeSchema,
   providerStopCauseSchema,
   providerSuspendedEventBodySchema,
   providerTerminalEventBodySchema,
@@ -53,6 +55,7 @@ export const MAX_HEARTBEAT_CHALLENGE_CHARACTERS = 1_024;
 export const PROXY_CONTROL_RPC_TIMEOUT_MS = 5_000;
 export const PROXY_EVENT_COMMIT_TIMEOUT_MS = 30_000;
 export const PROXY_STATUS_RPC_TIMEOUT_MS = 500;
+export const PROXY_SEND_RPC_TIMEOUT_MS = 15_000;
 /** Endpoint-refusal proof must be minted only before method invocation. */
 export const PROXY_CONTROL_PRE_DISPATCH_REFUSAL_JSON_RPC_CODE = -32_099;
 
@@ -860,6 +863,21 @@ export const proxyOperationActivateParamsSchema = proxyOperationReservationParam
 export const proxyOperationStopParamsSchema = z
   .object({ operation: operationIdentitySchema, cause: providerStopCauseSchema })
   .strict();
+
+export const proxyOperationSendParamsSchema = z
+  .object({
+    operation: operationIdentitySchema,
+    input: providerSendInputSchema.shape.text,
+    clientMessageId: providerSendInputSchema.shape.clientMessageId,
+  })
+  .strict();
+
+export const proxyOperationSendResultSchema = z.discriminatedUnion('state', [
+  providerSendOutcomeSchema.options[0].extend({ providerTurnId: nonEmptyStringSchema }).strict(),
+  providerSendOutcomeSchema.options[1],
+  providerSendOutcomeSchema.options[2],
+]);
+export type ProxyOperationSendResult = z.output<typeof proxyOperationSendResultSchema>;
 
 const proxyOperationAttachmentParamsSchema = z
   .object({ operation: operationIdentitySchema, committedThroughProviderSeq: nonNegativeSafeIntegerSchema })

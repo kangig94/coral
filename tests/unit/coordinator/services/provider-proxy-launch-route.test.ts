@@ -107,6 +107,7 @@ function authority(): DurableProviderProxyOperationAuthority {
     attachOperation: vi.fn(),
     cancelOperation: vi.fn(),
     settleOperation: vi.fn(),
+    sendOperation: vi.fn(),
     buildOperationControl: vi.fn(),
   };
 }

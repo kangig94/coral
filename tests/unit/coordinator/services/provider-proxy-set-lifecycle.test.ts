@@ -6,6 +6,7 @@ import { ControlClientError } from '#src/provider-proxy/control-client.js';
 import {
   createProviderProxyOperationAuthority,
   providerProxyOperationControlIsHeld,
+  ProviderProxyOperationControlHeldError,
   type DurableProviderProxyOperationAuthority,
 } from '#src/coordinator/live/provider-proxy/operation-route.js';
 import type { PublicationReceipt } from '#src/coordinator/live/provider-proxy/set-publication.js';
@@ -275,6 +276,7 @@ function fakeAuthority(options: {
     attachOperation: unused,
     cancelOperation: unused,
     settleOperation: unused,
+    sendOperation: unused,
     buildOperationControl: () => ({ stop: unused }),
   };
 }
@@ -423,6 +425,12 @@ describe('ProviderProxySetLifecycle', () => {
     await expect(underlyingAuthority.cancelOperation(record.operation, 1, 'b'.repeat(64))).rejects.toMatchObject({
       code: 'operation-control-outcome-unknown',
     });
+    const heldSend = underlyingAuthority.sendOperation(record.operation, {
+      text: 'Change direction',
+      clientMessageId: '33333333-3333-4333-8333-333333333333',
+    });
+    await expect(heldSend).rejects.toBeInstanceOf(ProviderProxyOperationControlHeldError);
+    await expect(heldSend).rejects.toMatchObject({ code: 'operation-control-outcome-unknown' });
     await expect(retainedControl.stop('user_abort')).rejects.toMatchObject({
       code: 'operation-control-outcome-unknown',
     });

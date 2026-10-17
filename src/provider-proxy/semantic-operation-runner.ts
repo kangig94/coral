@@ -11,9 +11,12 @@ import { providerRequestFailed } from '../providers/fault.js';
 import { providerProxyRekeyRefusalEvent } from '../providers/proxy-failure.js';
 import {
   isAbortStopCause,
+  providerSendOutcomeSchema,
   type HostRef,
   type ProviderEventBody,
   type ProviderStopCause,
+  type ProviderSteeringPort,
+  type ProviderSendOutcome,
   type ProviderTurnTerminalEvidence,
   type ProviderTurnSettlement,
 } from '../providers/contract.js';
@@ -30,6 +33,7 @@ import {
   ContinuityCommitDeliveryError,
   type ContinuityCommitSettlement,
   type SemanticOperationHost,
+  type SemanticOperationSendAdmission,
   type SemanticOperationStartHandle,
   type SemanticOperationStartResult,
 } from './operation-supervisor.js';
@@ -48,6 +52,7 @@ import {
   type ProxyOperationPrepareCapacityResult,
   type ProxyOperationCancellationHold,
   type ProxyPreparedAppServerOperation,
+  type ProxyOperationSendResult,
 } from './protocol.js';
 
 function isSameHostRef(left: HostRef, right: HostRef): boolean {
@@ -82,6 +87,7 @@ function isSameHostRef(left: HostRef, right: HostRef): boolean {
  */
 
 export const SEMANTIC_OPERATION_CANCELLATION_TIMEOUT_MS = SIGTERM_GRACE_MS + SIGKILL_GRACE_MS;
+export const SEMANTIC_OPERATION_SEND_TIMEOUT_MS = 10_000;
 const TURN_SETTLEMENT_OBSERVATION_ATTEMPTS = 3;
 
 export class SemanticOperationCancellationTimeoutError extends Error {
@@ -278,6 +284,7 @@ function buildExecutionRuntime(
   onProviderTurnSettlement: NonNullable<BoundProviderAppServerExecutionRuntime['onProviderTurnSettlement']>,
   onProviderTurnStart: NonNullable<BoundProviderAppServerExecutionRuntime['onProviderTurnStart']>,
   onProviderTurnNotSubmitted: NonNullable<BoundProviderAppServerExecutionRuntime['onProviderTurnNotSubmitted']>,
+  onProviderSteering: NonNullable<BoundProviderAppServerExecutionRuntime['onProviderSteering']>,
 ): BoundProviderAppServerExecutionRuntime {
   return {
     transport: 'app-server',
@@ -308,6 +315,7 @@ function buildExecutionRuntime(
     onProviderTurnSettlement,
     onProviderTurnStart,
     onProviderTurnNotSubmitted,
+    onProviderSteering,
   };
 }
 
@@ -322,6 +330,12 @@ type StagedOperation = {
   readonly abortController: AbortController;
   readonly hostScope: ProxyOperationHostScope;
   bound: BoundProvider | null;
+  hostPreparation: (BoundProviderHostPreparationInput & Readonly<{ jobId: string }>) | null;
+  steering: ProviderSteeringPort | null;
+  committedContinuity: DerivedPersistedContinuity | null;
+  continuityCommitted: boolean;
+  turnClaimed: boolean;
+  turnEnded: boolean;
   cancellationMode: ProxyHostCancellationMode | null;
   cancellationEvidence: OperationCancellationEvidence | null;
   cancellationPromise: Promise<void> | null;
@@ -537,16 +551,23 @@ function createSemanticOperationEventPump(
             await raceWithSignal(settlement.committed, entry.cancellationDeadlineController.signal, () =>
               entry.cancellationDeadlineController.signal.throwIfAborted(),
             );
+            if (step.value.kind === 'continuity') {
+              entry.committedContinuity = step.value.providerContinuity;
+              entry.continuityCommitted = true;
+              if (typeof step.value.providerContinuity?.turnId === 'string') entry.turnClaimed = true;
+            }
           } finally {
             if (entry.activeContinuitySettlement === settlement) entry.activeContinuitySettlement = null;
           }
         }
 
         if (step.value.kind === 'terminal') {
+          entry.committedContinuity = null;
           await closeSemanticEventIterator(iterator, key, 'terminal', entry.cancellationExpired);
           break;
         }
         if (step.value.kind === 'suspended') {
+          entry.committedContinuity = null;
           await closeSemanticEventIterator(iterator, key, 'suspended', entry.cancellationExpired);
           break;
         }
@@ -809,6 +830,8 @@ function createSemanticOperationHost(
               settle({ kind: 'started', hostRef });
             },
             (terminal) => {
+              entry.turnEnded = true;
+              entry.committedContinuity = null;
               if (entry.cancellationDeadlineController.signal.aborted) return;
               entry.cancellationEvidence = { kind: 'provider-turn-terminal', terminal };
             },
@@ -819,6 +842,7 @@ function createSemanticOperationHost(
               entry.settlementRefusals = 0;
             },
             () => {
+              entry.turnEnded = false;
               entry.providerTurnSubmission = 'submitted';
               if (entry.cancellationDeadlineController.signal.aborted) return;
               entry.cancellationEvidence = null;
@@ -826,6 +850,9 @@ function createSemanticOperationHost(
             },
             () => {
               if (entry.providerTurnSubmission === 'unknown') entry.providerTurnSubmission = 'not-submitted';
+            },
+            (port) => {
+              entry.steering = port;
             },
           );
           const iterable = preparedExecution.execute(executionRuntime);
@@ -879,6 +906,12 @@ function createStagedOperationEntry(
     abortController,
     hostScope,
     bound: null,
+    hostPreparation: null,
+    steering: null,
+    committedContinuity: null,
+    continuityCommitted: false,
+    turnClaimed: false,
+    turnEnded: false,
     cancellationMode: null,
     cancellationEvidence: null,
     cancellationPromise: null,
@@ -954,6 +987,7 @@ function createSemanticOperationStager(
       let input: BoundProviderHostPreparationInput;
       try {
         input = stagingInput(runtime, options.hostRoot, prepared);
+        entry.hostPreparation = { ...input, jobId: key.jobId };
       } catch (error: unknown) {
         return prepareRefusal(
           'provider_reconstruction_refused',
@@ -1240,6 +1274,83 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
     closeStaged,
     cancelAndAwait,
   );
+
+  host.admitSend = ({ key, input }): SemanticOperationSendAdmission => {
+    const entry = state.staged.get(operationKeyString(key));
+    if (
+      state.closing ||
+      entry === undefined ||
+      entry.closed ||
+      entry.releaseRequested ||
+      entry.pendingStopCause !== null ||
+      entry.abortController.signal.aborted ||
+      entry.completionEmitted ||
+      entry.turnEnded
+    ) {
+      return { state: 'refused', code: 'turn_ended', reason: 'The current turn has ended.' };
+    }
+    if (
+      !entry.startCommitted ||
+      entry.providerTurnSubmission !== 'submitted' ||
+      !entry.continuityCommitted ||
+      entry.activeContinuitySettlement !== null
+    ) {
+      return { state: 'refused', code: 'turn_not_started', reason: 'The current turn is not steerable yet.' };
+    }
+    const appServer = entry.bound?.appServer;
+    const hostRef = entry.hostRef;
+    const hostPreparation = entry.hostPreparation;
+    const steering = entry.steering;
+    if (appServer === undefined || steering === null) {
+      return { state: 'refused', code: 'transport_unsupported', reason: 'The provider does not support send.' };
+    }
+    const continuity = entry.committedContinuity;
+    if (continuity === null || typeof continuity.turnId !== 'string' || continuity.turnId.length === 0) {
+      return {
+        state: 'refused',
+        code: entry.turnClaimed ? 'turn_ended' : 'turn_not_started',
+        reason: 'The provider has no active turn.',
+      };
+    }
+    if (hostRef === null || hostPreparation === null) {
+      return { state: 'refused', code: 'control_unavailable', reason: 'The active provider host is unavailable.' };
+    }
+    const admission = steering.admit(continuity, input.clientMessageId);
+    if (admission.state === 'refused') return admission;
+    const providerTurnId = continuity.turnId;
+    return {
+      state: 'admitted',
+      write: async (): Promise<ProxyOperationSendResult> => {
+        const deadline = new AbortController();
+        const timer = runtime.time.setTimeout(() => {
+          deadline.abort(new Error('Provider send attempt exceeded its deadline.'));
+        }, SEMANTIC_OPERATION_SEND_TIMEOUT_MS);
+        timer.unref?.();
+        let outcome: ProviderSendOutcome;
+        try {
+          outcome = providerSendOutcomeSchema.parse(
+            await raceWithSignal(
+              appServer.send(hostRef, continuity, input, hostPreparation, deadline.signal),
+              deadline.signal,
+              () => {
+                throw deadline.signal.reason;
+              },
+            ),
+          );
+        } catch (error: unknown) {
+          outcome = { state: 'unknown', reason: errorMessage(error) };
+        } finally {
+          runtime.time.clearTimeout(timer);
+        }
+        try {
+          steering.reportOutcome(input.clientMessageId, outcome);
+          return outcome.state === 'delivered' ? { ...outcome, providerTurnId } : outcome;
+        } catch (error: unknown) {
+          return { state: 'unknown', reason: errorMessage(error) };
+        }
+      },
+    };
+  };
 
   return {
     stage,

@@ -3,6 +3,7 @@ import type { z } from 'zod';
 import type { ContainmentCommitOutcome } from '#src/coordinator/live/provider-proxy/authority.js';
 import type {
   ContainmentRequiredControlCallPolicy,
+  CallerReportedControlCallPolicy,
   ControlCallPolicy,
   ProviderProxyAuthorityFault,
   ProviderProxyAuthorityFaultLatch,
@@ -34,6 +35,7 @@ import type { guardianContainmentCommitResultSchema } from '#src/provider-proxy/
 declare const setIdentity: ProviderProxySetIdentity;
 declare const retrySafePolicy: RetrySafeControlCallPolicy;
 declare const containmentPolicy: ContainmentRequiredControlCallPolicy;
+declare const callerReportedPolicy: CallerReportedControlCallPolicy;
 declare const latch: ProviderProxyAuthorityFaultLatch;
 declare const channelIncident: Extract<ProviderProxyAuthorityIncident, { kind: 'control-channel-fault' }>;
 
@@ -94,9 +96,16 @@ declare const mutationWithoutDisposition: Readonly<{
   preEffectProtocolCodes: ReadonlySet<never>;
 }>;
 
-// @ts-expect-error every mutation must state whether an indeterminate outcome is retry-safe or requires containment.
+// @ts-expect-error every mutation must declare its indeterminate disposition.
 const invalidMutationPolicy: ControlCallPolicy = mutationWithoutDisposition;
 void invalidMutationPolicy;
+
+const sendPolicy: ControlCallPolicy = callerReportedPolicy;
+void sendPolicy;
+// @ts-expect-error caller-reported uncertainty cannot enter the operation incident channel.
+latch.reportIncident({ kind: 'operation-control-failed', policy: callerReportedPolicy, error: new Error() });
+// @ts-expect-error caller-reported uncertainty cannot consume the terminal fault latch.
+latch.latch({ kind: 'operation-control-failed', policy: callerReportedPolicy, error: new Error() });
 
 declare const observationWithDisposition: Readonly<{
   method: string;

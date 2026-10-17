@@ -35,7 +35,13 @@ import type {
   BoundProviderAppServerCapability,
   BoundProviderAppServerExecutionRuntime,
 } from '#src/providers/bound-provider-contract.js';
-import type { HostRef, ProviderEventBody, ProviderServerSpec } from '#src/providers/contract.js';
+import type {
+  HostRef,
+  ProviderEventBody,
+  ProviderServerSpec,
+  ProviderSteeringPort,
+  ProviderSendOutcome,
+} from '#src/providers/contract.js';
 import {
   createOperationLedger,
   operationPrepareAttemptKey,
@@ -55,7 +61,10 @@ import {
 } from '#src/provider-proxy/protocol.js';
 import { OperationSupervisor } from '#src/provider-proxy/operation-supervisor.js';
 import { type ProxyAppServerHostAuthority } from '#src/provider-proxy/provider-root-authority.js';
-import { createSemanticOperationRuntime } from '#src/provider-proxy/semantic-operation-runner.js';
+import {
+  createSemanticOperationRuntime,
+  SEMANTIC_OPERATION_SEND_TIMEOUT_MS,
+} from '#src/provider-proxy/semantic-operation-runner.js';
 import {
   asJointActivationReceipt,
   asJointContainmentReceipt,
@@ -131,6 +140,7 @@ function fakeBoundProvider(options: {
   supportsInterrupt?: boolean;
   executionHostRef?: HostRef;
   openReplacement?: BoundProviderAppServerCapability['openReplacement'];
+  send?: BoundProviderAppServerCapability['send'];
   execute: (runtime: BoundProviderAppServerExecutionRuntime) => AsyncIterable<ProviderEventBody>;
 }): BoundProvider {
   const name = options.name ?? 'claude';
@@ -154,7 +164,7 @@ function fakeBoundProvider(options: {
       supportsInterrupt: options.supportsInterrupt ?? false,
       supportsProbe: false,
       openReplacement: options.openReplacement ?? (async () => ({ hostRef: fakeHostRef(name), close: vi.fn() })),
-      send: unreachable('appServer.send') as unknown as BoundProviderAppServerCapability['send'],
+      send: options.send ?? unreachable('appServer.send'),
       interrupt: unreachable('appServer.interrupt') as unknown as BoundProviderAppServerCapability['interrupt'],
       probe: unreachable('appServer.probe') as unknown as BoundProviderAppServerCapability['probe'],
     },
@@ -768,4 +778,319 @@ it('refuses a compiled fingerprint mismatch with local fallback before opening a
   expect(execute).not.toHaveBeenCalled();
   expect(open).not.toHaveBeenCalled();
   expect(close).not.toHaveBeenCalled();
+});
+
+describe('semantic-operation send admission', () => {
+  const input = { text: 'Change direction', clientMessageId: '33333333-3333-4333-8333-333333333333' };
+  const continuity = { cwd: '/workspace', threadId: 'thread-current', turnId: 'turn-current' };
+
+  async function fixture(
+    options: {
+      supportsInterrupt?: boolean;
+      steering?: ProviderSteeringPort | null;
+      continuity?: Record<string, unknown> | null;
+      clearTurn?: boolean;
+      send?: BoundProviderAppServerCapability['send'];
+    } = {},
+  ) {
+    const { proxy, ledger, emittedEvents } = createTestProxy();
+    const key = testKey();
+    const prepared = preparedFixture({ provider: 'codex', persistedContinuity: { threadId: 'old', turnId: 'old' } });
+    prepareAndActivate(ledger, key, prepared);
+    const submit = deferred();
+    const submitted = deferred();
+    const checkpoint = deferred();
+    const checkpointSeen = deferred();
+    const ack = deferred();
+    const checkpointCommitted = deferred();
+    const clearTurn = deferred();
+    const turnCleared = deferred();
+    const finish = deferred();
+    const closed = deferred();
+    const closeStaged = vi.fn(() => closed.resolve());
+    const send = vi.fn<BoundProviderAppServerCapability['send']>(
+      options.send ?? (async (): Promise<ProviderSendOutcome> => ({ state: 'delivered' })),
+    );
+    const steering =
+      options.steering === undefined
+        ? {
+            admit: vi.fn(() => ({ state: 'admitted' as const })),
+            reportOutcome: vi.fn(),
+          }
+        : options.steering;
+    const emit = proxy.emitProviderEvent;
+    proxy.emitProviderEvent = (eventKey, event) => {
+      const result = emit(eventKey, event);
+      if (event.kind !== 'continuity' || result.kind !== 'recorded') return result;
+      checkpointSeen.resolve();
+      return {
+        kind: 'continuity-recorded',
+        providerSeq: result.providerSeq,
+        settlement: { providerSeq: result.providerSeq, committed: ack.promise, reject: unreachable('commit reject') },
+      };
+    };
+    let executionRuntime!: BoundProviderAppServerExecutionRuntime;
+    providerRegistryDouble.rehydrateBinding.mockReturnValue({
+      ok: true,
+      value: fakeBoundProvider({
+        name: 'codex',
+        supportsInterrupt: options.supportsInterrupt,
+        send,
+        openReplacement: async () => ({ hostRef: fakeHostRef('codex'), close: closeStaged }),
+        execute: async function* (activeRuntime) {
+          executionRuntime = activeRuntime;
+          if (steering !== null) activeRuntime.onProviderSteering?.(steering);
+          await submit.promise;
+          activeRuntime.onProviderTurnStart?.();
+          submitted.resolve();
+          await checkpoint.promise;
+          yield {
+            kind: 'continuity',
+            conversationRef: 'thread-current',
+            resumable: true,
+            providerContinuity: options.continuity === undefined ? continuity : options.continuity,
+          };
+          checkpointCommitted.resolve();
+          if (options.clearTurn) {
+            await clearTurn.promise;
+            yield {
+              kind: 'continuity',
+              conversationRef: 'thread-current',
+              resumable: true,
+              providerContinuity: { threadId: 'thread-current' },
+            };
+            turnCleared.resolve();
+          }
+          await finish.promise;
+          yield terminalCompleted;
+        },
+      }),
+    });
+    const hostAuthority = fakeHostAuthority();
+    const forceClose = vi.spyOn(hostAuthority, 'forceClose');
+    const semantic = createSemanticOperationRuntime({
+      runtime,
+      hostAuthority,
+      hostRoot: '/plugin',
+      hostFingerprint: hostFingerprintFromSpec(fakeHostSpec('codex')),
+      getProxy: () => proxy,
+    });
+    await semantic.ensureProviderRoot(key, prepared);
+    const beforeStart = semantic.host.admitSend!({ key, input });
+    const start = semantic.host.start({ key, prepared });
+    await start.result;
+    return {
+      semantic,
+      send,
+      steering,
+      beforeStart,
+      executionRuntime,
+      closeStaged,
+      forceClose,
+      emittedEvents,
+      admit: () => semantic.host.admitSend!({ key, input }),
+      sendMessage: () => {
+        const admission = semantic.host.admitSend!({ key, input });
+        return admission.state === 'admitted' ? admission.write() : Promise.resolve(admission);
+      },
+      submit: async () => {
+        submit.resolve();
+        await submitted.promise;
+      },
+      checkpoint: async () => {
+        checkpoint.resolve();
+        await checkpointSeen.promise;
+      },
+      ack: async () => {
+        ack.resolve();
+        await checkpointCommitted.promise;
+      },
+      clearTurn: async () => {
+        clearTurn.resolve();
+        await turnCleared.promise;
+      },
+      release: () => start.abortAndRelease(),
+      close: async () => {
+        submit.resolve();
+        checkpoint.resolve();
+        ack.resolve();
+        clearTurn.resolve();
+        finish.resolve();
+        await closed.promise;
+      },
+    };
+  }
+
+  it('refuses before start, submission and checkpoint ACK instead of using prepared continuity', async () => {
+    const h = await fixture();
+    expect(h.beforeStart).toMatchObject({ state: 'refused', code: 'turn_not_started' });
+    expect(h.admit()).toMatchObject({ state: 'refused', code: 'turn_not_started' });
+    await h.submit();
+    expect(h.admit()).toMatchObject({ state: 'refused', code: 'turn_not_started' });
+    await h.checkpoint();
+    expect(h.admit()).toMatchObject({ state: 'refused', code: 'turn_not_started' });
+    expect(h.send).not.toHaveBeenCalled();
+    await h.ack();
+    await expect(h.sendMessage()).resolves.toEqual({ state: 'delivered', providerTurnId: 'turn-current' });
+    expect(h.steering?.admit).toHaveBeenCalledWith(continuity, input.clientMessageId);
+    await h.close();
+  });
+
+  it.each([true, false])(
+    'sends with the exact retained host and original preparation in interrupt mode %s',
+    async (supportsInterrupt) => {
+      const h = await fixture({ supportsInterrupt });
+      await h.submit();
+      await h.checkpoint();
+      await h.ack();
+      await h.sendMessage();
+      expect(h.send).toHaveBeenCalledExactlyOnceWith(
+        fakeHostRef('codex'),
+        continuity,
+        input,
+        expect.objectContaining({ jobId: 'job-1', persistedContinuity: { threadId: 'old', turnId: 'old' } }),
+        expect.any(AbortSignal),
+      );
+      expect(h.steering?.reportOutcome).toHaveBeenCalledWith(input.clientMessageId, { state: 'delivered' });
+      expect(h.executionRuntime.signal.aborted).toBe(false);
+      expect(h.forceClose).not.toHaveBeenCalled();
+      expect(h.closeStaged).not.toHaveBeenCalled();
+      expect(h.emittedEvents.filter(({ event }) => event.kind === 'progress')).toEqual([]);
+      await h.close();
+    },
+  );
+
+  it('passes a kernel final-answer refusal through without invoking the facet', async () => {
+    const reportOutcome = vi.fn();
+    const refusal = { state: 'refused' as const, code: 'turn_ended' as const, reason: 'Final answer already seen.' };
+    const h = await fixture({ steering: { admit: () => refusal, reportOutcome } });
+    await h.submit();
+    await h.checkpoint();
+    await h.ack();
+    expect(h.admit()).toEqual(refusal);
+    expect(h.send).not.toHaveBeenCalled();
+    expect(reportOutcome).not.toHaveBeenCalled();
+    await h.close();
+  });
+
+  it('refuses a thread checkpoint without a current turn as not started', async () => {
+    const h = await fixture({ continuity: { threadId: 'thread-current' } });
+    await h.submit();
+    await h.checkpoint();
+    await h.ack();
+    expect(h.admit()).toMatchObject({ state: 'refused', code: 'turn_not_started' });
+    expect(h.send).not.toHaveBeenCalled();
+    await h.close();
+  });
+
+  it('refuses an unsupported provider without steering or writing', async () => {
+    const h = await fixture({ steering: null });
+    await h.submit();
+    await h.checkpoint();
+    await h.ack();
+    expect(h.admit()).toMatchObject({ state: 'refused', code: 'transport_unsupported' });
+    expect(h.send).not.toHaveBeenCalled();
+    await h.close();
+  });
+
+  it('refuses a cleared active turn instead of reusing its prior committed identity', async () => {
+    const h = await fixture({ clearTurn: true });
+    await h.submit();
+    await h.checkpoint();
+    await h.ack();
+    await h.clearTurn();
+    expect(h.admit()).toMatchObject({ state: 'refused', code: 'turn_ended' });
+    expect(h.send).not.toHaveBeenCalled();
+    await h.close();
+  });
+
+  it.each(['stop', 'release'] as const)('refuses while %s is draining without invoking send', async (action) => {
+    const h = await fixture();
+    await h.submit();
+    await h.checkpoint();
+    await h.ack();
+    const draining = action === 'stop' ? h.semantic.host.stop({ key: testKey(), cause: 'user_abort' }) : h.release();
+    expect(h.admit()).toMatchObject({ state: 'refused', code: 'turn_ended' });
+    expect(h.send).not.toHaveBeenCalled();
+    await h.close();
+    await draining;
+  });
+
+  it('refuses immediately on a provider terminal and after release', async () => {
+    const h = await fixture();
+    await h.submit();
+    await h.checkpoint();
+    await h.ack();
+    h.executionRuntime.onProviderTurnTerminal({
+      kind: 'provider-turn-terminal',
+      providerTurnId: 'turn-current',
+      status: 'completed',
+    });
+    expect(h.admit()).toMatchObject({ state: 'refused', code: 'turn_ended' });
+    expect(h.send).not.toHaveBeenCalled();
+    await h.close();
+    expect(h.admit()).toMatchObject({ state: 'refused', code: 'turn_ended' });
+  });
+
+  it.each(['delivered', 'refused', 'unknown'] as const)('reports the %s facet outcome to the kernel', async (state) => {
+    const outcome: ProviderSendOutcome =
+      state === 'refused'
+        ? { state, code: 'provider_rejected', reason: 'Provider rejection' }
+        : state === 'unknown'
+          ? { state, reason: 'No answer' }
+          : { state };
+    const h = await fixture({ send: async () => outcome });
+    await h.submit();
+    await h.checkpoint();
+    await h.ack();
+    await expect(h.sendMessage()).resolves.toMatchObject(outcome);
+    expect(h.steering?.reportOutcome).toHaveBeenCalledExactlyOnceWith(input.clientMessageId, outcome);
+    await h.close();
+  });
+
+  it.each(['throw', 'malformed'] as const)(
+    'returns unknown as a value for a %s facet failure after admission',
+    async (failure) => {
+      const h = await fixture({
+        send: async () => {
+          if (failure === 'throw') throw new Error('Write may have started');
+          return { state: 'invalid' } as unknown as ProviderSendOutcome;
+        },
+      });
+      await h.submit();
+      await h.checkpoint();
+      await h.ack();
+      await expect(h.sendMessage()).resolves.toMatchObject({ state: 'unknown' });
+      expect(h.steering?.reportOutcome).toHaveBeenCalledWith(
+        input.clientMessageId,
+        expect.objectContaining({ state: 'unknown' }),
+      );
+      expect(h.executionRuntime.signal.aborted).toBe(false);
+      expect(h.forceClose).not.toHaveBeenCalled();
+      await h.close();
+    },
+  );
+
+  it('bounds a hung attempt, reports unknown once and ignores a late rejection without aborting the operation', async () => {
+    vi.useFakeTimers();
+    let reject!: (error: Error) => void;
+    const answer = new Promise<ProviderSendOutcome>((_resolve, fail) => {
+      reject = fail;
+    });
+    const h = await fixture({ send: () => answer });
+    await h.submit();
+    await h.checkpoint();
+    await h.ack();
+    const pending = h.sendMessage();
+    await vi.advanceTimersByTimeAsync(SEMANTIC_OPERATION_SEND_TIMEOUT_MS);
+    await expect(pending).resolves.toMatchObject({ state: 'unknown' });
+    expect(h.send.mock.calls[0]?.[4]?.aborted).toBe(true);
+    expect(h.executionRuntime.signal.aborted).toBe(false);
+    expect(h.forceClose).not.toHaveBeenCalled();
+    expect(h.closeStaged).not.toHaveBeenCalled();
+    reject(new Error('late provider failure'));
+    await Promise.resolve();
+    expect(h.steering?.reportOutcome).toHaveBeenCalledTimes(1);
+    await h.close();
+  });
 });

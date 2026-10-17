@@ -1,6 +1,7 @@
 import type { ProcessIncarnation } from '../../../infra/node-process.js';
 import type { ControlClient } from '../../../provider-proxy/control-client.js';
-import type { OperationIdentity } from '../../../provider-proxy/protocol.js';
+import type { OperationIdentity, ProxyOperationSendResult } from '../../../provider-proxy/protocol.js';
+import type { ProviderSendInput } from '../../../providers/contract.js';
 import {
   activateProviderOperation,
   attachProviderOperation,
@@ -10,6 +11,7 @@ import {
   inspectProviderOperation,
   prepareProviderOperation,
   settleProviderOperation,
+  sendProviderOperation,
   type AuthorizeProviderOperationResult,
   type ActivateProviderOperationResult,
   type AttachProviderOperationResult,
@@ -84,6 +86,7 @@ export interface DurableProviderProxyOperationAuthority extends ProviderProxyOpe
     prepareAttemptKey: string,
   ): Promise<CancelProviderOperationResult>;
   settleOperation(operation: OperationIdentity, finalProviderSeq: number): Promise<SettleProviderOperationResult>;
+  sendOperation(operation: OperationIdentity, input: ProviderSendInput): Promise<ProxyOperationSendResult>;
   buildOperationControl(operation: OperationIdentity): OperationStopControl;
 }
 
@@ -111,7 +114,7 @@ function operationControlState(
   );
 }
 
-class ProviderProxyOperationControlHeldError extends Error {
+export class ProviderProxyOperationControlHeldError extends Error {
   readonly code: ProviderProxyOperationControlHoldReason;
 
   constructor(reason: ProviderProxyOperationControlHoldReason) {
@@ -178,6 +181,7 @@ export function isProviderProxyOperationAuthority(
     typeof candidate.attachOperation === 'function' &&
     typeof candidate.cancelOperation === 'function' &&
     typeof candidate.settleOperation === 'function' &&
+    typeof candidate.sendOperation === 'function' &&
     typeof candidate.buildOperationControl === 'function'
   );
 }
@@ -252,6 +256,8 @@ export function createProviderProxyOperationAuthority(deps: {
       ),
     settleOperation: (operation, finalProviderSeq) =>
       dispatchMutation(() => settleProviderOperation(activationDeps, operation, finalProviderSeq)),
+    sendOperation: (operation, input) =>
+      dispatchMutation(() => sendProviderOperation(activationDeps, operation, input)),
     buildOperationControl: (operation) => {
       const control = buildProviderOperationControl(activationDeps, operation);
       return { stop: (cause) => dispatchMutation(() => control.stop(cause)) };

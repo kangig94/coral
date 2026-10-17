@@ -1,4 +1,5 @@
 import { providerSendInputSchema } from '../contract.js';
+import { raceWithSignal } from '../../infra/promise-signal.js';
 import {
   bindingFailure,
   bindingSuccess,
@@ -379,6 +380,7 @@ async function sendBoundAppServer<Plan extends ProviderExecutionPlan>(
   continuity: NonNullable<ProviderRuntime['persistedContinuity']>,
   input: Parameters<BoundProviderAppServerCapability['send']>[2],
   hostPreparation: Parameters<BoundProviderAppServerCapability['send']>[3],
+  attemptSignal?: AbortSignal,
 ): ReturnType<BoundProviderAppServerCapability['send']> {
   const canonicalInput = providerSendInputSchema.parse(snapshotBoundaryData(input, 'Provider send input'));
   const canonicalContinuity = snapshotBoundaryData(continuity, 'Provider send continuity');
@@ -390,8 +392,18 @@ async function sendBoundAppServer<Plan extends ProviderExecutionPlan>(
     return { state: 'refused', code: 'control_unavailable', reason: 'The active provider host could not be attached.' };
   }
   try {
+    if (attemptSignal?.aborted) {
+      return {
+        state: 'refused',
+        code: 'control_unavailable',
+        reason: 'The send attempt expired before host attachment.',
+      };
+    }
     const session = wrapAppServerSession(attached.session, 'Provider send session');
-    return await session.send!(canonicalContinuity, canonicalInput);
+    return await raceWithSignal(session.send!(canonicalContinuity, canonicalInput), attemptSignal, () => ({
+      state: 'unknown' as const,
+      reason: 'Provider send attempt exceeded its deadline.',
+    }));
   } finally {
     attached.managed.close();
   }
@@ -641,8 +653,8 @@ function createBoundAppServerLifecycle<Plan extends ProviderExecutionPlan, Acces
       completeBoundAppServerCuration(tools, hostPlan, signal, operation),
     openReplacement: (input, runtime) => openBoundReplacement(tools, input, runtime),
     interrupt: (hostRef, continuity, input) => interruptBoundAppServer(tools, hostRef, continuity, input),
-    send: (hostRef, continuity, input, hostPreparation) =>
-      sendBoundAppServer(tools, hostRef, continuity, input, hostPreparation),
+    send: (hostRef, continuity, input, hostPreparation, attemptSignal) =>
+      sendBoundAppServer(tools, hostRef, continuity, input, hostPreparation, attemptSignal),
     probe: (hostRef, continuity, input) => probeBoundAppServer(tools, decodeContinuity, hostRef, continuity, input),
   };
   return Object.freeze(lifecycle);

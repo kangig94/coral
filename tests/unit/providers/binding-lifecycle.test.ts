@@ -300,7 +300,7 @@ describe('bound provider send', () => {
     storage: { existsSync: () => false },
   };
 
-  function fixture(options: { missing?: boolean; answer?: Promise<unknown> } = {}) {
+  function fixture(options: { missing?: boolean; answer?: Promise<unknown>; attachGate?: Promise<void> } = {}) {
     const hostRef: HostRef = {
       provider: 'codex',
       fingerprint: 'host-fingerprint',
@@ -317,7 +317,10 @@ describe('bound provider send', () => {
     const openSession = vi.fn(async () => {
       throw new Error('send must never open a host');
     });
-    const attachSession = vi.fn(async () => (options.missing ? null : { session: transport, hostRef, close }));
+    const attachSession = vi.fn(async () => {
+      await options.attachGate;
+      return options.missing ? null : { session: transport, hostRef, close };
+    });
     const registry = createUnconnectedBuiltInProviderRegistry();
     registry.connectAppServerHost({ openSession, attachSession });
     const bound = registry.rehydrateBinding(TEST_CODEX_BINDING);
@@ -386,5 +389,46 @@ describe('bound provider send', () => {
     ).rejects.toThrow();
     expect(h.attachSession).not.toHaveBeenCalled();
     expect(h.rpc).not.toHaveBeenCalled();
+  });
+
+  it.each(['success', 'error'] as const)(
+    'releases a hung send lease at its deadline and ignores a late %s',
+    async (late) => {
+      vi.useFakeTimers();
+      try {
+        const answer = createDeferred<unknown>();
+        const h = fixture({ answer: answer.promise });
+        const attempt = new AbortController();
+        const deadline = setTimeout(() => attempt.abort(), 10_000);
+        const pending = h.appServer.send(h.hostRef, continuity, input, hostPreparation, attempt.signal);
+        await vi.advanceTimersByTimeAsync(10_000);
+        await expect(pending).resolves.toMatchObject({ state: 'unknown' });
+        expect(h.rpc).toHaveBeenCalledTimes(1);
+        expect(h.close).toHaveBeenCalledTimes(1);
+        expect(h.openSession).not.toHaveBeenCalled();
+        if (late === 'success') answer.resolve({ turnId: 'turn-1' });
+        else answer.reject(new Error('late transport failure'));
+        await vi.advanceTimersByTimeAsync(0);
+        expect(h.close).toHaveBeenCalledTimes(1);
+        expect(h.rpc).toHaveBeenCalledTimes(1);
+        await expect(pending).resolves.toMatchObject({ state: 'unknown' });
+        clearTimeout(deadline);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it('releases a lease acquired after attempt expiry without making a late write', async () => {
+    const attached = createDeferred();
+    const h = fixture({ attachGate: attached.promise });
+    const attempt = new AbortController();
+    const pending = h.appServer.send(h.hostRef, continuity, input, hostPreparation, attempt.signal);
+    attempt.abort();
+    attached.resolve();
+    await expect(pending).resolves.toMatchObject({ state: 'refused', code: 'control_unavailable' });
+    expect(h.close).toHaveBeenCalledTimes(1);
+    expect(h.rpc).not.toHaveBeenCalled();
+    expect(h.openSession).not.toHaveBeenCalled();
   });
 });

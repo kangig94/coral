@@ -2,6 +2,8 @@ import type {
   HostRef,
   ProviderContinuityEventBody,
   ProviderEventBody,
+  ProviderSendInput,
+  ProviderSendOutcome,
   ProviderStopCause,
 } from '../providers/contract.js';
 import { isInterruptionStopCause } from '../providers/contract.js';
@@ -41,6 +43,7 @@ import {
   proxyOperationActivateResultSchema,
   proxyOperationAttachResultSchema,
   proxyOperationCancelResultSchema,
+  type ProxyOperationSendResult,
   proxyOperationInspectResultSchema,
   proxyOperationPrepareCapacityResultSchema,
   proxyOperationPreparePendingResultSchema,
@@ -120,12 +123,17 @@ export interface SemanticOperationStartHandle {
 }
 
 export interface SemanticOperationHost {
+  admitSend?(input: Readonly<{ key: ProviderOperationKey; input: ProviderSendInput }>): SemanticOperationSendAdmission;
   cancellationHold?(key: ProviderOperationKey): ProxyOperationCancellationHold | null;
   start(
     input: Readonly<{ key: ProviderOperationKey; prepared: ProxyPreparedAppServerOperation }>,
   ): SemanticOperationStartHandle;
   stop(input: Readonly<{ key: ProviderOperationKey; cause: ProviderStopCause }>): Promise<void> | void;
 }
+
+export type SemanticOperationSendAdmission =
+  | Extract<ProviderSendOutcome, { state: 'refused' }>
+  | Readonly<{ state: 'admitted'; write(): Promise<ProxyOperationSendResult> }>;
 
 export type OperationStageResult =
   | Readonly<{
@@ -564,6 +572,51 @@ export class OperationSupervisor {
       throw new ProxyControlProtocolError('invalid_state', 'Activation has begun for this operation.');
     }
     return receipt;
+  }
+
+  send(operation: OperationIdentity, input: ProviderSendInput): Promise<ProxyOperationSendResult> {
+    const record = this.#operations.get(operationToken(operation));
+    const entry = record === undefined ? null : this.#ledger.get(record.key);
+    if (record === undefined || entry === null) {
+      return Promise.resolve({ state: 'refused', code: 'turn_ended', reason: 'The operation is no longer live.' });
+    }
+    if (!sameOperation(record.operation, operation)) {
+      return Promise.resolve({
+        state: 'refused',
+        code: 'control_unavailable',
+        reason: 'The operation identity does not match.',
+      });
+    }
+    if (
+      record.closed ||
+      record.stopCause !== null ||
+      record.releaseIntent !== null ||
+      (entry.state !== 'executing' &&
+        entry.state !== 'preparing' &&
+        entry.state !== 'prepared' &&
+        entry.state !== 'starting' &&
+        entry.state !== 'started-awaiting-publication')
+    ) {
+      return Promise.resolve({ state: 'refused', code: 'turn_ended', reason: 'The current turn has ended.' });
+    }
+    if (entry.state !== 'executing') {
+      return Promise.resolve({
+        state: 'refused',
+        code: 'turn_not_started',
+        reason: 'The current turn is not steerable yet.',
+      });
+    }
+    const admission = this.#options.host.admitSend?.({ key: record.key, input });
+    if (admission === undefined) {
+      return Promise.resolve({
+        state: 'refused',
+        code: 'transport_unsupported',
+        reason: 'The provider does not support send.',
+      });
+    }
+    if (admission.state === 'refused') return Promise.resolve(admission);
+    // SEND_RECORD_BEFORE_WRITE: record admission must succeed here, synchronously, before write starts.
+    return admission.write();
   }
 
   stop(operation: OperationIdentity, cause: ProviderStopCause): Promise<unknown> {

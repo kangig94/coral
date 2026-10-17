@@ -116,6 +116,7 @@ function hostRef(): HostRef {
 async function executingSupervisor(
   pushProviderEvent: ConstructorParameters<typeof OperationSupervisor>[0]['pushProviderEvent'],
   publish = true,
+  admitSend?: SemanticOperationHost['admitSend'],
 ): Promise<{
   supervisor: OperationSupervisor;
   operation: OperationIdentity;
@@ -136,6 +137,7 @@ async function executingSupervisor(
   const stop = vi.fn(async () => {});
   const release = vi.fn(async () => {});
   const host: SemanticOperationHost = {
+    admitSend,
     start: () => ({
       result: Promise.resolve({ kind: 'started', hostRef: hostRef() }),
       abortAndRelease: release,
@@ -424,5 +426,109 @@ it.each(['stop', 'cancel'] as const)('ends an unpublished start through %s and r
     });
   } finally {
     fixture.supervisor.close();
+  }
+});
+
+it('refuses a send before publication without calling runner admission', async () => {
+  const admitSend = vi.fn(() => ({
+    state: 'refused' as const,
+    code: 'turn_ended' as const,
+    reason: 'Unexpected admission',
+  }));
+  const h = await executingSupervisor(
+    () => {
+      throw new Error('Unexpected event');
+    },
+    false,
+    admitSend,
+  );
+  try {
+    await expect(
+      h.supervisor.send(h.operation, {
+        text: 'Change direction',
+        clientMessageId: '33333333-3333-4333-8333-333333333333',
+      }),
+    ).resolves.toMatchObject({ state: 'refused', code: 'turn_not_started' });
+    expect(admitSend).not.toHaveBeenCalled();
+  } finally {
+    h.supervisor.close();
+  }
+});
+
+it('starts an admitted send synchronously and lets stop finish while its write is pending', async () => {
+  const answer = deferred<{ state: 'unknown'; reason: string }>();
+  const write = vi.fn(() => answer.promise);
+  const admitSend = vi.fn(() => ({ state: 'admitted' as const, write }));
+  const h = await executingSupervisor(
+    () => {
+      throw new Error('Unexpected event');
+    },
+    true,
+    admitSend,
+  );
+  const input = { text: 'Change direction', clientMessageId: '33333333-3333-4333-8333-333333333333' };
+  try {
+    const pending = h.supervisor.send(h.operation, input);
+    expect(admitSend).toHaveBeenCalledExactlyOnceWith({
+      key: {
+        jobId: h.operation.jobId,
+        operationId: h.operation.operationId,
+      },
+      input,
+    });
+    expect(write).toHaveBeenCalledTimes(1);
+    const stopping = h.supervisor.stop(h.operation, 'user_abort');
+    await expect(h.supervisor.send(h.operation, input)).resolves.toMatchObject({
+      state: 'refused',
+      code: 'turn_ended',
+    });
+    await stopping;
+    expect(h.stop).toHaveBeenCalledTimes(1);
+    expect(admitSend).toHaveBeenCalledTimes(1);
+    answer.resolve({ state: 'unknown', reason: 'Host closed during send' });
+    await expect(pending).resolves.toMatchObject({ state: 'unknown' });
+  } finally {
+    h.supervisor.close();
+  }
+});
+
+it('refuses a send after terminal and permits settlement while an earlier send is pending', async () => {
+  const answer = deferred<{ state: 'unknown'; reason: string }>();
+  const write = vi.fn(() => answer.promise);
+  const admitSend = vi.fn(() => ({ state: 'admitted' as const, write }));
+  const h = await executingSupervisor(
+    () => {
+      throw new Error('Unexpected event');
+    },
+    true,
+    admitSend,
+  );
+  const input = { text: 'Change direction', clientMessageId: '33333333-3333-4333-8333-333333333333' };
+  try {
+    const pending = h.supervisor.send(h.operation, input);
+    const emitted = h.supervisor.emitProviderEvent(h.operation, {
+      kind: 'terminal',
+      terminal: { content: 'done', durationMs: 1, outcome: { kind: 'completed' } },
+      diagnostics: {},
+    });
+    if (emitted.kind !== 'recorded') throw new Error('Expected terminal record');
+    await expect(h.supervisor.send(h.operation, input)).resolves.toMatchObject({
+      state: 'refused',
+      code: 'turn_ended',
+    });
+    await h.supervisor.attach(h.operation, emitted.providerSeq);
+    await expect(h.supervisor.settle(h.operation, emitted.providerSeq)).resolves.toMatchObject({
+      state: 'released-after-terminal',
+    });
+    expect(h.release).toHaveBeenCalledTimes(1);
+    await expect(h.supervisor.send(h.operation, input)).resolves.toMatchObject({
+      state: 'refused',
+      code: 'turn_ended',
+    });
+    expect(admitSend).toHaveBeenCalledTimes(1);
+    answer.resolve({ state: 'unknown', reason: 'Released host' });
+    await expect(pending).resolves.toMatchObject({ state: 'unknown' });
+  } finally {
+    h.supervisor.close();
   }
 });
