@@ -299,7 +299,7 @@ describe('createProviderEventHandler', () => {
       await handler({
         operation: identity,
         providerSeq: 1,
-        event: { kind: 'progress', message: messages[0]! },
+        event: { kind: 'progress', message: messages[0] },
       }),
     ).toEqual({ kind: 'ack', committedThroughProviderSeq: 4 });
 

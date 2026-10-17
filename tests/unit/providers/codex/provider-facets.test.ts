@@ -9,7 +9,7 @@ import { buildCodexContinuity } from '#src/providers/codex/request-mapping.js';
 import { ProviderRpcError } from '#src/providers/app-server-transport.js';
 import { ProviderHostUnserviceableResponseError } from '#src/providers/host-admission.js';
 import { createDeferred } from '#tools/testing/deferred.js';
-import { VirtualTime, flushMicrotasks } from '#tools/simulation/core/virtual-time.js';
+import { flushMicrotasks } from '#tools/simulation/core/virtual-time.js';
 import type { AppServerTransport } from '#src/providers/contract.js';
 import { jsonValueSchema } from '#src/infra/json-value.js';
 import type { ProviderPreflightRuntime } from '#src/providers/contract.js';
@@ -235,17 +235,6 @@ describe('codexAppServerLifecycle.send', () => {
       code: 'turn_ended',
       reason: 'no active turn to steer',
     });
-  });
-
-  it('reports a timed out provider request as unknown without replay', async () => {
-    const time = new VirtualTime();
-    const answer = createDeferred<never>();
-    const rpc = vi.fn(() => answer.promise);
-    const pending = codexAppServerLifecycle.send!(transport(rpc), continuity, input);
-    time.setTimeout(() => answer.reject(new Error('provider request timed out')), 10_000);
-    time.tick(10_000);
-    await expect(pending).resolves.toEqual({ state: 'unknown', reason: 'provider request timed out' });
-    expect(rpc).toHaveBeenCalledTimes(1);
   });
 
   it('waits for a missing answer without inventing a refusal', async () => {

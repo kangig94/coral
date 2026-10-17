@@ -301,22 +301,25 @@ describe('codexTurnKernel steering', () => {
   });
 
   it.each(['unknown', 'delivered'] as const)(
-    'bounds the unread hold for a %s steer and emits its diagnostic before inferred completion',
+    'suspends inference indefinitely for a %s unread steer until explicit completion',
     async (state) => {
       const h = await harness();
       await h.claim();
       expect(h.port.admit(continuity, firstId)).toEqual({ state: 'admitted' });
       h.port.reportOutcome(firstId, state === 'delivered' ? { state } : { state, reason: 'reply lost' });
       h.finalAnswer();
-      h.time.tick(9_999);
+      h.time.tick(86_400_000);
       await flushMicrotasks(20);
       expect(h.settled()).toBe(false);
+      expect(h.events.some((event) => event.kind === 'terminal')).toBe(false);
       expect(h.messages().some((message) => message.includes('was not read'))).toBe(false);
-      h.finalAnswer('Final answer repeated before the deadline');
-      h.time.tick(1);
+      h.finalAnswer('Final answer repeated while the steer is unread');
+      h.time.tick(86_400_000);
       await flushMicrotasks(20);
-      expect(h.settled()).toBe(true);
+      expect(h.settled()).toBe(false);
+      h.emit('turn/completed');
       await h.done;
+      expect(h.settled()).toBe(true);
       const unreadIndex = h.events.findIndex(
         (event) =>
           event.kind === 'progress' && event.message === `Sent message ${firstId} was not read before the turn ended`,

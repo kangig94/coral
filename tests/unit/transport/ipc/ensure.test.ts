@@ -253,12 +253,9 @@ describe('ipc ensure', () => {
       if (outcome === 'delivered') await expect(result).resolves.toEqual({ state: 'delivered' });
       else await expect(result).rejects.toBe(successorRefusal);
       expect(incumbent.request).toHaveBeenCalledExactlyOnceWith('jobs.send', params, { timeoutMs: 20_000 });
-      expect(mockState.request).toHaveBeenCalledExactlyOnceWith(
-        socketPath(root),
-        'jobs.send',
-        params,
-        { timeoutMs: 20_000 },
-      );
+      expect(mockState.request).toHaveBeenCalledExactlyOnceWith(socketPath(root), 'jobs.send', params, {
+        timeoutMs: 20_000,
+      });
     },
   );
 

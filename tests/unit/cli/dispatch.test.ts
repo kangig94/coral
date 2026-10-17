@@ -210,7 +210,7 @@ describe('command client routing', () => {
     expect(params).toHaveLength(2);
     for (const value of params)
       expect(value).toMatchObject({ projectRoot: realpathSync(projectRoot), jobId: 'job-1', input: 'message' });
-    expect(params[0]!.clientMessageId).not.toBe(params[1]!.clientMessageId);
+    expect(params[0].clientMessageId).not.toBe(params[1].clientMessageId);
   });
 
   it.each([

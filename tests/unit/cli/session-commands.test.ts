@@ -106,6 +106,19 @@ it('prints jobs help without querying or mutating jobs', async () => {
   expect(jobs.options).toEqual([]);
 });
 
+it('explains required send input resolution and ended-turn behavior in help', () => {
+  const jobs = program().commands.find((command) => command.name() === 'jobs')!;
+  const help = jobs.commands
+    .find((command) => command.name() === 'send')!
+    .helpInformation()
+    .replace(/\s+/gu, ' ');
+  expect(help).toContain('required');
+  expect(help).toContain('multiple tokens are joined with spaces');
+  expect(help).toContain('a single existing path is read as a file');
+  expect(help).toContain('- for stdin');
+  expect(help).toContain('An ended turn is not resumed');
+});
+
 it.each([
   [['abort', 'jobs', 'a'], "unknown command 'abort'"],
   [['jobs', '--all'], "unknown option '--all'"],
@@ -311,7 +324,7 @@ it.each(['turn_not_started', 'control_unavailable'] as const)(
       expect(process.exitCode).toBe(1);
       const commands = printedCommands(output.mock.calls.map(([text]) => String(text)).join(''));
       expect(commands).toEqual([['jobs', 'send', 'job-1', '-i', ...tokens]]);
-      await program().parseAsync(commands[0]!, { from: 'user' });
+      await program().parseAsync(commands[0], { from: 'user' });
       expect(client.sendJob).toHaveBeenCalledTimes(2);
       expect(client.sendJob.mock.calls[1]).toEqual(client.sendJob.mock.calls[0]);
       expect(process.exitCode).toBe(0);
@@ -348,11 +361,11 @@ it.each([
     const launch = root.commands.find((command) => command.name() === provider)!;
     const launchAction = vi.fn();
     launch.action(launchAction);
-    await root.parseAsync(commands[1]!, { from: 'user' });
+    await root.parseAsync(commands[1], { from: 'user' });
     expect(launchAction).toHaveBeenCalledOnce();
     expect(launchAction.mock.calls[0]?.[0]).toBe(agent);
     expect(launch.opts()).toEqual({ input: inputTokens });
-    await root.parseAsync(commands[0]!, { from: 'user' });
+    await root.parseAsync(commands[0], { from: 'user' });
     expect(followJobs).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({
         start: { kind: 'jobs', jobIds: ['job-1'] },
@@ -375,7 +388,7 @@ it('keeps option-looking input tokens as message text in the runnable retry comm
     { inputTokens: ['-w', 'literal', '--model=example'], launch: null },
   );
   const commands = printedCommands(output.text);
-  await program().parseAsync(commands[0]!, { from: 'user' });
+  await program().parseAsync(commands[0], { from: 'user' });
   expect(client.sendJob).toHaveBeenCalledExactlyOnceWith('job-1', '-w literal --model=example');
   expect(process.exitCode).toBe(0);
 });
@@ -385,7 +398,7 @@ it('executes the exact not-found list remedy under the current program', async (
   const output = formatJobSendResult('missing', { state: 'refused', code: 'not_found', reason: 'Missing.' });
   const commands = printedCommands(output.text);
   expect(commands).toEqual([['jobs', 'list']]);
-  await program().parseAsync(commands[0]!, { from: 'user' });
+  await program().parseAsync(commands[0], { from: 'user' });
   expect(client.listJobs).toHaveBeenCalledOnce();
 });
 

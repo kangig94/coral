@@ -374,13 +374,17 @@ async function interruptBoundAppServer<Plan extends ProviderExecutionPlan>(
   }
 }
 
+type BoundAppServerSendContext = Readonly<{
+  hostRef: HostRef;
+  continuity: NonNullable<ProviderRuntime['persistedContinuity']>;
+  input: Parameters<BoundProviderAppServerCapability['send']>[2];
+  hostPreparation: Parameters<BoundProviderAppServerCapability['send']>[3];
+  attemptSignal?: AbortSignal;
+}>;
+
 async function sendBoundAppServer<Plan extends ProviderExecutionPlan>(
   tools: BoundAppServerTools<Plan>,
-  hostRef: HostRef,
-  continuity: NonNullable<ProviderRuntime['persistedContinuity']>,
-  input: Parameters<BoundProviderAppServerCapability['send']>[2],
-  hostPreparation: Parameters<BoundProviderAppServerCapability['send']>[3],
-  attemptSignal?: AbortSignal,
+  { hostRef, continuity, input, hostPreparation, attemptSignal }: BoundAppServerSendContext,
 ): ReturnType<BoundProviderAppServerCapability['send']> {
   const canonicalInput = providerSendInputSchema.parse(snapshotBoundaryData(input, 'Provider send input'));
   const canonicalContinuity = snapshotBoundaryData(continuity, 'Provider send continuity');
@@ -400,7 +404,10 @@ async function sendBoundAppServer<Plan extends ProviderExecutionPlan>(
       };
     }
     const session = wrapAppServerSession(attached.session, 'Provider send session');
-    return await raceWithSignal(session.send!(canonicalContinuity, canonicalInput), attemptSignal, () => ({
+    if (session.send === undefined) {
+      return { state: 'refused', code: 'transport_unsupported', reason: 'The provider does not support send.' };
+    }
+    return await raceWithSignal(session.send(canonicalContinuity, canonicalInput), attemptSignal, () => ({
       state: 'unknown' as const,
       reason: 'Provider send attempt exceeded its deadline.',
     }));
@@ -631,10 +638,6 @@ function createBoundAppServerLifecycle<Plan extends ProviderExecutionPlan, Acces
       const hostPlan = tools.planExecution(input);
       return Object.freeze({
         hostPlan,
-        // Computed eagerly, before any host is opened: `tools.compileHost` is a pure derivation of `hostPlan`
-        // (already `snapshotBoundaryData`-sanitized there), so calling it here as well as inside
-        // `executeBoundAppServer` costs one extra cheap synchronous call and gives a caller the executable
-        // identity before it ever decides whether to open a session at all.
         hostSpec: tools.compileHost(hostPlan),
         execute: (runtime, operation) => executeBoundAppServer(tools, hostPlan, runtime, operation),
       });
@@ -654,7 +657,7 @@ function createBoundAppServerLifecycle<Plan extends ProviderExecutionPlan, Acces
     openReplacement: (input, runtime) => openBoundReplacement(tools, input, runtime),
     interrupt: (hostRef, continuity, input) => interruptBoundAppServer(tools, hostRef, continuity, input),
     send: (hostRef, continuity, input, hostPreparation, attemptSignal) =>
-      sendBoundAppServer(tools, hostRef, continuity, input, hostPreparation, attemptSignal),
+      sendBoundAppServer(tools, { hostRef, continuity, input, hostPreparation, attemptSignal }),
     probe: (hostRef, continuity, input) => probeBoundAppServer(tools, decodeContinuity, hostRef, continuity, input),
   };
   return Object.freeze(lifecycle);

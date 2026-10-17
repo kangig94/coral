@@ -222,7 +222,7 @@ type SupervisedOperation = {
   releaseRetryTimer: { unref?: () => void } | null;
   ownershipOrdinal: number;
   continuityCommits: Map<number, PendingContinuityCommit>;
-  recordedSendIds: Set<string>;
+  sendResults: Map<string, Promise<ProxyOperationSendResult>>;
   providerEventAmbiguity: ProviderEventAmbiguityDeadline | null;
   pumpDemand: boolean;
   pumpTurn: { unref?: () => void } | null;
@@ -581,8 +581,7 @@ export class OperationSupervisor {
 
   send(operation: OperationIdentity, input: ProviderSendInput): Promise<ProxyOperationSendResult> {
     const record = this.#operations.get(operationToken(operation));
-    const entry = record === undefined ? null : this.#ledger.get(record.key);
-    if (record === undefined || entry === null) {
+    if (record === undefined) {
       return Promise.resolve({ state: 'refused', code: 'turn_ended', reason: 'The operation is no longer live.' });
     }
     if (!sameOperation(record.operation, operation)) {
@@ -591,6 +590,30 @@ export class OperationSupervisor {
         code: 'control_unavailable',
         reason: 'The operation identity does not match.',
       });
+    }
+    const original = record.sendResults.get(input.clientMessageId);
+    if (original !== undefined) return original;
+
+    const result = this.#sendOnce(record, input);
+    record.sendResults.set(input.clientMessageId, result);
+    return result;
+  }
+
+  #sendOnce(record: SupervisedOperation, input: ProviderSendInput): Promise<ProxyOperationSendResult> {
+    const admission = this.#admitSend(record, input);
+    if (admission.state === 'refused') return Promise.resolve(admission);
+    const refusal = this.#recordSend(record, input);
+    if (refusal !== null) {
+      admission.refuse(refusal);
+      return Promise.resolve(refusal);
+    }
+    return admission.write();
+  }
+
+  #admitSend(record: SupervisedOperation, input: ProviderSendInput): SemanticOperationSendAdmission {
+    const entry = this.#ledger.get(record.key);
+    if (entry === null) {
+      return { state: 'refused', code: 'turn_ended', reason: 'The operation is no longer live.' };
     }
     if (
       record.closed ||
@@ -602,31 +625,30 @@ export class OperationSupervisor {
         entry.state !== 'starting' &&
         entry.state !== 'started-awaiting-publication')
     ) {
-      return Promise.resolve({ state: 'refused', code: 'turn_ended', reason: 'The current turn has ended.' });
+      return { state: 'refused', code: 'turn_ended', reason: 'The current turn has ended.' };
     }
     if (entry.state !== 'executing') {
-      return Promise.resolve({
+      return {
         state: 'refused',
         code: 'turn_not_started',
         reason: 'The current turn is not steerable yet.',
-      });
-    }
-    if (record.recordedSendIds.has(input.clientMessageId)) {
-      return Promise.resolve({
-        state: 'refused',
-        code: 'control_unavailable',
-        reason: `Message id ${input.clientMessageId} already has a send record. This repeat was not written; inspect progress for the original send.`,
-      });
+      };
     }
     const admission = this.#options.host.admitSend?.({ key: record.key, input });
     if (admission === undefined) {
-      return Promise.resolve({
+      return {
         state: 'refused',
         code: 'transport_unsupported',
         reason: 'The provider does not support send.',
-      });
+      };
     }
-    if (admission.state === 'refused') return Promise.resolve(admission);
+    return admission;
+  }
+
+  #recordSend(
+    record: SupervisedOperation,
+    input: ProviderSendInput,
+  ): Extract<ProviderSendOutcome, { state: 'refused' }> | null {
     const preview = input.text.slice(0, 240).replace(/\s+/gu, ' ') + (input.text.length > 240 ? '…' : '');
     const event: ProviderEventBody = {
       kind: 'progress',
@@ -643,8 +665,7 @@ export class OperationSupervisor {
     } catch (error: unknown) {
       if (!(error instanceof ReplayAdmissionError)) throw error;
       const refused = { state: 'refused', code: 'control_unavailable', reason: error.message } as const;
-      admission.refuse(refused);
-      return Promise.resolve(refused);
+      return refused;
     }
     const emission = this.emitProviderEvent(record.key, event);
     if (emission.kind !== 'recorded') {
@@ -653,11 +674,9 @@ export class OperationSupervisor {
         code: 'control_unavailable',
         reason: 'The send record was not admitted.',
       } as const;
-      admission.refuse(refused);
-      return Promise.resolve(refused);
+      return refused;
     }
-    record.recordedSendIds.add(input.clientMessageId);
-    return admission.write();
+    return null;
   }
 
   stop(operation: OperationIdentity, cause: ProviderStopCause): Promise<unknown> {
@@ -1181,7 +1200,7 @@ export class OperationSupervisor {
       releaseRetryTimer: null,
       ownershipOrdinal: 1,
       continuityCommits: new Map(),
-      recordedSendIds: new Set(),
+      sendResults: new Map(),
       providerEventAmbiguity: null,
       pumpDemand: false,
       pumpTurn: null,

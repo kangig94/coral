@@ -19,6 +19,7 @@ import {
 } from './discuss.js';
 import {
   jobAbortSchema,
+  jobSendResponseSchema,
   jobSendSchema,
   jobsReleaseRequestSchema,
   jobDetailRequestSchema,
@@ -82,7 +83,6 @@ import {
   providerProxySetUnobservableEnforcerObservationsSchema,
 } from '../../provider-proxy/containment-proof-contract.js';
 import { PROVIDER_PROXY_SET_LIFECYCLE_STATES } from '../../provider-proxy/set-lifecycle-state-vocabulary.js';
-import { providerSendOutcomeSchema } from '../../providers/contract.js';
 
 export interface RpcMethodSpec<Req, _Res> {
   readonly name: string;
@@ -638,7 +638,7 @@ export const jobsSendRpcSpec = {
   kind: 'unary',
   requires: 'jobs:control',
   requestSchema: jobSendSchema,
-  responseSchema: providerSendOutcomeSchema,
+  responseSchema: jobSendResponseSchema,
   responseKind: 'json',
   portKey: 'jobs',
   http: { method: 'POST', path: '/jobs/send' },

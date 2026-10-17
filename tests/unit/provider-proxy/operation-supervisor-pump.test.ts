@@ -452,12 +452,13 @@ it('refuses a send before publication without calling runner admission', async (
     admitSend,
   );
   try {
-    await expect(
-      h.supervisor.send(h.operation, {
-        text: 'Change direction',
-        clientMessageId: '33333333-3333-4333-8333-333333333333',
-      }),
-    ).resolves.toMatchObject({ state: 'refused', code: 'turn_not_started' });
+    const input = {
+      text: 'Change direction',
+      clientMessageId: '33333333-3333-4333-8333-333333333333',
+    };
+    const original = h.supervisor.send(h.operation, input);
+    await expect(original).resolves.toMatchObject({ state: 'refused', code: 'turn_not_started' });
+    expect(h.supervisor.send(h.operation, input)).toBe(original);
     expect(admitSend).not.toHaveBeenCalled();
     expect(h.supervisor.ledger().get(h.operation)?.bufferedEvents).toEqual([]);
   } finally {
@@ -488,7 +489,8 @@ it('starts an admitted send synchronously and lets stop finish while its write i
     });
     expect(write).toHaveBeenCalledTimes(1);
     const stopping = h.supervisor.stop(h.operation, 'user_abort');
-    await expect(h.supervisor.send(h.operation, input)).resolves.toMatchObject({
+    expect(h.supervisor.send(h.operation, input)).toBe(pending);
+    await expect(h.supervisor.send(h.operation, { ...input, clientMessageId: randomUUID() })).resolves.toMatchObject({
       state: 'refused',
       code: 'turn_ended',
     });
@@ -523,7 +525,8 @@ it('refuses a send after terminal and permits settlement while an earlier send i
       diagnostics: {},
     });
     if (emitted.kind !== 'recorded') throw new Error('Expected terminal record');
-    await expect(h.supervisor.send(h.operation, input)).resolves.toMatchObject({
+    expect(h.supervisor.send(h.operation, input)).toBe(pending);
+    await expect(h.supervisor.send(h.operation, { ...input, clientMessageId: randomUUID() })).resolves.toMatchObject({
       state: 'refused',
       code: 'turn_ended',
     });
@@ -532,7 +535,8 @@ it('refuses a send after terminal and permits settlement while an earlier send i
       state: 'released-after-terminal',
     });
     expect(h.release).toHaveBeenCalledTimes(1);
-    await expect(h.supervisor.send(h.operation, input)).resolves.toMatchObject({
+    expect(h.supervisor.send(h.operation, input)).toBe(pending);
+    await expect(h.supervisor.send(h.operation, { ...input, clientMessageId: randomUUID() })).resolves.toMatchObject({
       state: 'refused',
       code: 'turn_ended',
     });
@@ -594,7 +598,7 @@ it('records the send synchronously before the write and an immediate completion,
   write.mockImplementation(async () => {
     const buffered = h.supervisor.ledger().get(h.operation)?.bufferedEvents ?? [];
     expect(buffered).toHaveLength(1);
-    const record = providerEventRequestSchema.parse((JSON.parse(buffered[0]!.frame) as { params: unknown }).params);
+    const record = providerEventRequestSchema.parse((JSON.parse(buffered[0].frame) as { params: unknown }).params);
     expect(record).toMatchObject({
       operation: h.operation,
       providerSeq: 1,
@@ -634,7 +638,7 @@ it('records the send synchronously before the write and an immediate completion,
 });
 
 it.each(['delivered', 'unknown', 'refused'] as const)(
-  'refuses a duplicate message id during the write and after its %s outcome without a second record',
+  'joins a duplicate message id during the write and retains its %s outcome without a second record',
   async (state) => {
     const input = { text: 'Change direction', clientMessageId: randomUUID() };
     const answer = deferred<ProxyOperationSendResult>();
@@ -647,17 +651,18 @@ it.each(['delivered', 'unknown', 'refused'] as const)(
       true,
       admitSend,
     );
-    const refusal = {
-      state: 'refused',
-      code: 'control_unavailable',
-      reason: `Message id ${input.clientMessageId} already has a send record. This repeat was not written; inspect progress for the original send.`,
-    };
     try {
       const pending = h.supervisor.send(h.operation, input);
       const repeated = h.supervisor.send(h.operation, input);
       expect(write).toHaveBeenCalledOnce();
       expect(h.supervisor.ledger().nextProviderSeq(h.operation)).toBe(2);
-      await expect(repeated).resolves.toEqual(refusal);
+      expect(repeated).toBe(pending);
+      let settled = false;
+      void repeated.then(() => {
+        settled = true;
+      });
+      await Promise.resolve();
+      expect(settled).toBe(false);
       const outcome =
         state === 'delivered'
           ? { state, providerTurnId: 'turn-current' }
@@ -666,8 +671,11 @@ it.each(['delivered', 'unknown', 'refused'] as const)(
             : { state, reason: 'Reply lost.' };
       answer.resolve(outcome);
       await expect(pending).resolves.toEqual(outcome);
+      await expect(repeated).resolves.toEqual(outcome);
       await h.supervisor.attach(h.operation, 1);
-      await expect(h.supervisor.send(h.operation, input)).resolves.toEqual(refusal);
+      const completedRepeat = h.supervisor.send(h.operation, input);
+      expect(completedRepeat).toBe(pending);
+      await expect(completedRepeat).resolves.toEqual(outcome);
       expect(admitSend).toHaveBeenCalledOnce();
       expect(write).toHaveBeenCalledOnce();
       expect(h.supervisor.ledger().nextProviderSeq(h.operation)).toBe(2);
@@ -695,12 +703,12 @@ it('keeps the send record after a write-time refusal without claiming delivery',
     const buffered = h.supervisor.ledger().get(h.operation)?.bufferedEvents ?? [];
     expect(buffered).toHaveLength(1);
     expect(
-      providerEventRequestSchema.parse((JSON.parse(buffered[0]!.frame) as { params: unknown }).params),
+      providerEventRequestSchema.parse((JSON.parse(buffered[0].frame) as { params: unknown }).params),
     ).toMatchObject({
       providerSeq: 1,
       event: { kind: 'progress', message: expect.stringContaining(`Sending message ${clientMessageId}`) },
     });
-    expect(buffered[0]!.frame).toContain('This line does not prove delivery.');
+    expect(buffered[0].frame).toContain('This line does not prove delivery.');
     expect(write).toHaveBeenCalledOnce();
   } finally {
     h.supervisor.close();
@@ -791,11 +799,11 @@ it('bounds and flattens the send preview before recording it', async () => {
     await h.supervisor.send(h.operation, { text: '\n' + '界'.repeat(300), clientMessageId: randomUUID() });
     const buffered = h.supervisor.ledger().get(h.operation)?.bufferedEvents ?? [];
     expect(buffered).toHaveLength(1);
-    const { event } = providerEventRequestSchema.parse((JSON.parse(buffered[0]!.frame) as { params: unknown }).params);
+    const { event } = providerEventRequestSchema.parse((JSON.parse(buffered[0].frame) as { params: unknown }).params);
     expect(event).toMatchObject({ kind: 'progress', message: expect.stringContaining('界'.repeat(239) + '…') });
     if (event.kind !== 'progress') throw new Error('Expected send progress');
     expect(event.message).not.toContain('\n');
-    expect(Buffer.byteLength(buffered[0]!.frame, 'utf8')).toBeLessThan(2_000);
+    expect(Buffer.byteLength(buffered[0].frame, 'utf8')).toBeLessThan(2_000);
   } finally {
     h.supervisor.close();
   }

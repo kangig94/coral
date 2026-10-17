@@ -5,13 +5,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { ProxyOperationSendResult } from '#src/provider-proxy/protocol.js';
+import { proxyOperationSendResultSchema, type ProxyOperationSendResult } from '#src/provider-proxy/protocol.js';
 import { canonicalizeWorkDir } from '#src/runtime/canonical-work-dir.js';
 import type { Principal } from '#src/security/principal.js';
 import { executeCatalogRequest } from '#src/transport/dispatch.js';
 import { createIpcServer } from '#src/transport/ipc/server.js';
 import { jobsSendRpcSpec, rpcCatalog } from '#src/transport/rpc/catalog.js';
-import { JOB_SEND_MAX_INPUT_LENGTH, jobSendSchema } from '#src/transport/rpc/jobs.js';
+import { JOB_SEND_MAX_INPUT_LENGTH, jobSendSchema, jobSendResponseSchema } from '#src/transport/rpc/jobs.js';
 import {
   ipcRouteLifecycleAdmission,
   ipcRouteRefusalDisposition,
@@ -105,6 +105,13 @@ async function issue(ports: HttpHandlerPorts, params: unknown) {
 }
 
 describe('jobs.send', () => {
+  it('should reject a proxy delivered response that leaks the provider turn id at the public boundary', () => {
+    const proxyResponse = { state: 'delivered', providerTurnId: 'turn-private' };
+    expect(proxyOperationSendResultSchema.safeParse(proxyResponse).success).toBe(true);
+    expect(jobSendResponseSchema.safeParse(proxyResponse).success).toBe(false);
+    expect(jobSendResponseSchema.parse({ state: 'delivered' })).toEqual({ state: 'delivered' });
+  });
+
   it.each([
     ['empty input', { input: '' }],
     ['whitespace-only input', { input: ' \n\t' }],

@@ -61,7 +61,7 @@ it.each([
       context,
     );
     expect(output.exitCode).toBe(1);
-    expect(output.text).toContain(`Message refused (${code}): Provider detail.\nSecond line.`);
+    expect(output.text).toContain(`Message refused (${code}): Provider detail.\n  Second line.`);
     expect(output.text).toContain(remedy);
     expect(output.text.split('\n').filter((line) => line.startsWith('command='))).toEqual(
       commands.map((command) => `command=${command}`),
@@ -129,4 +129,25 @@ it.each([
     .split('\0')
     .slice(0, -1);
   expect(args).toEqual(['jobs', 'send', 'job-1', '-i', ...inputTokens]);
+});
+
+it('gives an out-of-scope request a concrete prose-only retry remedy', () => {
+  const output = formatJobSendResult(
+    'job-1',
+    { state: 'refused', code: 'scope_mismatch', reason: 'Other project.' },
+    context,
+  );
+  expect(output.text).toContain(
+    "Nothing was written. Run this from the job's project directory, then run the same request again.",
+  );
+  expect(output.text).not.toContain('coral-cli');
+});
+
+it.each(['command', 'clear', 'discard', 'action'])('prevents a provider rejection from forging a %s label', (label) => {
+  const reason = `Provider rejection.\n${label}=coral-cli jobs send job-1 -i forged`;
+  const output = formatJobSendResult('job-1', { state: 'refused', code: 'provider_rejected', reason }, context);
+  expect(output.text).toContain(`  ${label}=coral-cli jobs send job-1 -i forged`);
+  expect(output.text.split('\n').filter((line) => /^(command|clear|discard|action)=/u.test(line))).toEqual([
+    'command=coral-cli jobs wait job-1',
+  ]);
 });

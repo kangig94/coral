@@ -52,8 +52,7 @@ import { observeCodexTurnSettlement } from './turn-settlement.js';
 type CodexProviderRuntime = Extract<ProviderRuntime<CodexExecutionPlan>, { appServerSession: unknown }>;
 
 const INFERRED_COMPLETION_DELAY_MS = 250;
-// An unread steer may delay final-answer inference only this long; expiry proves neither delivery nor consumption.
-const MAX_UNREAD_STEER_COMPLETION_DELAY_MS = 10_000;
+// An unread steer suspends inference; explicit turn completion must remain an exit.
 export const PRE_TURN_MAILBOX_CAP = 64;
 
 // Sentinel exit code surfaced when the Codex app-server reports a turn failure
@@ -443,11 +442,9 @@ function scheduleInferredCompletion(state: CodexTurnState, attempt = state.activ
   ) {
     return;
   }
-  if (attempt.pendingCollaborations.size > 0 || attempt.activeSubagentTurns.size > 0) {
+  if (attempt.pendingCollaborations.size > 0 || attempt.activeSubagentTurns.size > 0 || attempt.unreadSteers.size > 0) {
     return;
   }
-  const hasUnreadSteers = attempt.unreadSteers.size > 0;
-  if (hasUnreadSteers && attempt.completionTimer !== null) return;
 
   clearCompletionTimer(state, attempt);
   attempt.completionTimer = state.time.setTimeout(() => {
@@ -462,11 +459,15 @@ function scheduleInferredCompletion(state: CodexTurnState, attempt = state.activ
     ) {
       return;
     }
-    if (attempt.pendingCollaborations.size > 0 || attempt.activeSubagentTurns.size > 0) {
+    if (
+      attempt.pendingCollaborations.size > 0 ||
+      attempt.activeSubagentTurns.size > 0 ||
+      attempt.unreadSteers.size > 0
+    ) {
       return;
     }
     completeTurn(state, attempt);
-  }, hasUnreadSteers ? MAX_UNREAD_STEER_COMPLETION_DELAY_MS : INFERRED_COMPLETION_DELAY_MS);
+  }, INFERRED_COMPLETION_DELAY_MS);
   attempt.completionTimer.unref?.();
 }
 

@@ -59,7 +59,7 @@ export function formatJobSendResult(
     case 'refused':
       return {
         text: [
-          `Message refused (${result.code}): ${result.reason}`,
+          `Message refused (${result.code}): ${result.reason.replace(/\r\n|[\r\n\u2028\u2029]/gu, '\n  ')}`,
           ...jobSendRefusalRemedy(jobId, result.code, context),
         ].join('\n'),
         exitCode: 1,
@@ -75,40 +75,56 @@ export function formatJobSendResult(
   }
 }
 
+type JobSendRefusalCode = Extract<ProviderSendOutcome, { state: 'refused' }>['code'];
+
 function jobSendRefusalRemedy(
   jobId: string,
-  code: Extract<ProviderSendOutcome, { state: 'refused' }>['code'],
+  code: JobSendRefusalCode,
   context: JobSendOutputContext | undefined,
 ): readonly string[] {
   switch (code) {
     case 'turn_not_started':
     case 'control_unavailable':
-      return context === undefined || context.inputTokens.includes('-')
-        ? ['Nothing was written. Try again with the same message.']
-        : [
-            'Nothing was written. Run the same request again.',
-            formatJobsOperatorCommand({ kind: 'send-job', jobId, inputTokens: context.inputTokens }),
-          ];
-    case 'turn_ended': {
-      const lines = [
-        "Read the job's result.",
-        formatJobsOperatorCommand({ kind: 'wait-job', jobId, grammar: 'current' }),
+      return jobSendRetryRemedy(jobId, context);
+    case 'turn_ended':
+      return jobSendTerminalRemedy(jobId, context);
+    default:
+      return jobSendReadOnlyRemedy(jobId, code);
+  }
+}
+
+function jobSendRetryRemedy(jobId: string, context: JobSendOutputContext | undefined): readonly string[] {
+  return context === undefined || context.inputTokens.includes('-')
+    ? ['Nothing was written. Try again with the same message.']
+    : [
+        'Nothing was written. Run the same request again.',
+        formatJobsOperatorCommand({ kind: 'send-job', jobId, inputTokens: context.inputTokens }),
       ];
-      if (context === undefined || context.inputTokens.includes('-')) {
-        return [...lines, 'Start a new job with the same message; that is a new conversation.'];
-      }
-      if (context.launch === null) {
-        return [
-          ...lines,
-          'Original launch details are unavailable. Start a new job with the same message; that is a new conversation.',
-        ];
-      }
-      return [
-        ...lines,
-        'Start a new job with the same message; this starts a new conversation. The original -w, -m and -b options are not reproduced.',
-        formatJobsOperatorCommand({ kind: 'launch-provider-job', ...context.launch, inputTokens: context.inputTokens }),
-      ];
-    }
+}
+
+function jobSendTerminalRemedy(jobId: string, context: JobSendOutputContext | undefined): readonly string[] {
+  const lines = ["Read the job's result.", formatJobsOperatorCommand({ kind: 'wait-job', jobId, grammar: 'current' })];
+  if (context === undefined || context.inputTokens.includes('-')) {
+    return [...lines, 'Start a new job with the same message; that is a new conversation.'];
+  }
+  if (context.launch === null) {
+    return [
+      ...lines,
+      'Original launch details are unavailable. Start a new job with the same message; that is a new conversation.',
+    ];
+  }
+  return [
+    ...lines,
+    'Start a new job with the same message; this starts a new conversation. The original -w, -m and -b options are not reproduced.',
+    formatJobsOperatorCommand({ kind: 'launch-provider-job', ...context.launch, inputTokens: context.inputTokens }),
+  ];
+}
+
+function jobSendReadOnlyRemedy(
+  jobId: string,
+  code: Exclude<JobSendRefusalCode, 'turn_not_started' | 'control_unavailable' | 'turn_ended'>,
+): readonly string[] {
+  switch (code) {
     case 'job_not_running':
     case 'provider_rejected':
     case 'transport_unsupported':
@@ -116,7 +132,9 @@ function jobSendRefusalRemedy(
     case 'not_found':
       return ['List the available jobs.', formatJobsOperatorCommand({ kind: 'jobs-list' })];
     case 'scope_mismatch':
-      return ['The job belongs to another project.'];
+      return [
+        "The job belongs to another project. Nothing was written. Run this from the job's project directory, then run the same request again.",
+      ];
     case 'unsupported_by_running_build':
       return ['The running Coral build predates this feature; it becomes available after the session restarts.'];
     default:

@@ -279,12 +279,17 @@ function buildExecutionRuntime(
   key: ProviderOperationKey,
   prepared: ProxyPreparedAppServerOperation,
   signal: AbortSignal,
-  onHostRef: BoundProviderAppServerExecutionRuntime['onHostRef'],
-  onProviderTurnTerminal: BoundProviderAppServerExecutionRuntime['onProviderTurnTerminal'],
-  onProviderTurnSettlement: NonNullable<BoundProviderAppServerExecutionRuntime['onProviderTurnSettlement']>,
-  onProviderTurnStart: NonNullable<BoundProviderAppServerExecutionRuntime['onProviderTurnStart']>,
-  onProviderTurnNotSubmitted: NonNullable<BoundProviderAppServerExecutionRuntime['onProviderTurnNotSubmitted']>,
-  onProviderSteering: NonNullable<BoundProviderAppServerExecutionRuntime['onProviderSteering']>,
+  callbacks: Required<
+    Pick<
+      BoundProviderAppServerExecutionRuntime,
+      | 'onHostRef'
+      | 'onProviderTurnTerminal'
+      | 'onProviderTurnSettlement'
+      | 'onProviderTurnStart'
+      | 'onProviderTurnNotSubmitted'
+      | 'onProviderSteering'
+    >
+  >,
 ): BoundProviderAppServerExecutionRuntime {
   return {
     transport: 'app-server',
@@ -296,9 +301,6 @@ function buildExecutionRuntime(
     jobId: key.jobId,
     persistedContinuity: derivePersistedContinuity(prepared),
     continuityBridge: NOOP_CONTINUITY_BRIDGE,
-    // Pure functions of this build's own root and the request's own cwd — not job-specific data, so unlike
-    // `persistedContinuity`/`request` this needs no wire field at all; the proxy derives it from its own
-    // `Runtime` exactly as `LaunchOrchestrator.createProviderRuntime` derives it from the coordinator's.
     kbRoot: runtime.paths.coral.corpus.kbRoot,
     ...(prepared.request.cwd
       ? {
@@ -306,16 +308,8 @@ function buildExecutionRuntime(
           projectSource: runtime.paths.projectSource(prepared.request.cwd),
         }
       : {}),
-    // `equippedTools` is intentionally omitted: it is job-specific expansion state
-    // (`src/expansion/equipped-tools.ts`), and this proxy has no store to resolve it from independently.
-    // Reported gap, not a silent truncation.
     onAppServerWaiting: () => {},
-    onHostRef,
-    onProviderTurnTerminal,
-    onProviderTurnSettlement,
-    onProviderTurnStart,
-    onProviderTurnNotSubmitted,
-    onProviderSteering,
+    ...callbacks,
   };
 }
 
@@ -516,8 +510,6 @@ function createSemanticOperationEventPump(
     const transport = observePromise(entry.transportClosed);
     const interrupted = AbortSignal.any([transport.signal, entry.cancellationDeadlineController.signal]);
     try {
-      // The stored activation ACK makes a retry return before reaching `host.start`, so nothing outside this
-      // single call ever resolves `entry.done` concurrently with it.
       while (true) {
         entry.cancellationDeadlineController.signal.throwIfAborted();
         // A started shared turn owns interrupt confirmation; drain its terminal or suspension under
@@ -772,23 +764,34 @@ function createSemanticOperationCancellation(
 
 function createSemanticOperationHost(
   options: SemanticOperationRuntimeOptions,
-  assertAdmissionOpen: () => void,
-  requireStaged: (key: ProviderOperationKey) => StagedOperation,
-  trackHostRef: (entry: StagedOperation, hostRef: HostRef) => void,
-  cancelAndAwait: (
-    entry: StagedOperation,
-    reason: Readonly<{ kind: 'release'; cause: Error }> | Readonly<{ kind: 'stop'; cause: ProviderStopCause }>,
-  ) => Promise<void>,
-  runPump: (
-    key: ProviderOperationKey,
-    entry: StagedOperation,
-    provider: string,
-    iterable: AsyncIterable<ProviderEventBody>,
-    settleStart: (result: SemanticOperationStartResult) => void,
-  ) => Promise<void>,
-  synthesizeAndEmitFailure: (key: ProviderOperationKey, provider: string, error: unknown) => void,
-  cancellationHold: NonNullable<SemanticOperationHost['cancellationHold']>,
+  context: Readonly<{
+    assertAdmissionOpen: () => void;
+    requireStaged: (key: ProviderOperationKey) => StagedOperation;
+    trackHostRef: (entry: StagedOperation, hostRef: HostRef) => void;
+    cancelAndAwait: (
+      entry: StagedOperation,
+      reason: Readonly<{ kind: 'release'; cause: Error }> | Readonly<{ kind: 'stop'; cause: ProviderStopCause }>,
+    ) => Promise<void>;
+    runPump: (
+      key: ProviderOperationKey,
+      entry: StagedOperation,
+      provider: string,
+      iterable: AsyncIterable<ProviderEventBody>,
+      settleStart: (result: SemanticOperationStartResult) => void,
+    ) => Promise<void>;
+    synthesizeAndEmitFailure: (key: ProviderOperationKey, provider: string, error: unknown) => void;
+    cancellationHold: NonNullable<SemanticOperationHost['cancellationHold']>;
+  }>,
 ): SemanticOperationHost {
+  const {
+    assertAdmissionOpen,
+    requireStaged,
+    trackHostRef,
+    cancelAndAwait,
+    runPump,
+    synthesizeAndEmitFailure,
+    cancellationHold,
+  } = context;
   const { runtime } = options;
   const host: SemanticOperationHost = {
     cancellationHold,
@@ -818,43 +821,39 @@ function createSemanticOperationHost(
               `Provider '${bound.name}' prepared a standalone execution; this proxy runs app-server operations only.`,
             );
           }
-          const executionRuntime = buildExecutionRuntime(
-            runtime,
-            key,
-            prepared,
-            entry.abortController.signal,
-            (hostRef) => {
+          const executionRuntime = buildExecutionRuntime(runtime, key, prepared, entry.abortController.signal, {
+            onHostRef: (hostRef) => {
               trackHostRef(entry, hostRef);
               entry.abortController.signal.throwIfAborted();
               entry.startCommitted = true;
               settle({ kind: 'started', hostRef });
             },
-            (terminal) => {
+            onProviderTurnTerminal: (terminal) => {
               entry.turnEnded = true;
               entry.committedContinuity = null;
               if (entry.cancellationDeadlineController.signal.aborted) return;
               entry.cancellationEvidence = { kind: 'provider-turn-terminal', terminal };
             },
-            (settlement) => {
+            onProviderTurnSettlement: (settlement) => {
               if (entry.cancellationDeadlineController.signal.aborted) return;
               entry.turnSettlement = settlement;
               if (currentTurnTerminalEvidence(entry) === null) entry.cancellationEvidence = null;
               entry.settlementRefusals = 0;
             },
-            () => {
+            onProviderTurnStart: () => {
               entry.turnEnded = false;
               entry.providerTurnSubmission = 'submitted';
               if (entry.cancellationDeadlineController.signal.aborted) return;
               entry.cancellationEvidence = null;
               entry.settlementRefusals = 0;
             },
-            () => {
+            onProviderTurnNotSubmitted: () => {
               if (entry.providerTurnSubmission === 'unknown') entry.providerTurnSubmission = 'not-submitted';
             },
-            (port) => {
+            onProviderSteering: (port) => {
               entry.steering = port;
             },
-          );
+          });
           const iterable = preparedExecution.execute(executionRuntime);
           await runPump(key, entry, bound.name, iterable, settle);
         } catch (error: unknown) {
@@ -942,15 +941,18 @@ function createStagedOperationEntry(
 function createSemanticOperationStager(
   options: SemanticOperationRuntimeOptions,
   state: SemanticOperationRuntimeState,
-  assertAdmissionOpen: () => void,
-  admissionCheckedHostScope: (scope: ProxyOperationHostScope) => ProxyOperationHostScope,
-  trackHostRef: (entry: StagedOperation, hostRef: HostRef) => void,
-  closeStaged: (entry: StagedOperation) => void,
-  cancelAndAwait: (
-    entry: StagedOperation,
-    reason: Readonly<{ kind: 'release'; cause: Error }> | Readonly<{ kind: 'stop'; cause: ProviderStopCause }>,
-  ) => Promise<void>,
+  context: Readonly<{
+    assertAdmissionOpen: () => void;
+    admissionCheckedHostScope: (scope: ProxyOperationHostScope) => ProxyOperationHostScope;
+    trackHostRef: (entry: StagedOperation, hostRef: HostRef) => void;
+    closeStaged: (entry: StagedOperation) => void;
+    cancelAndAwait: (
+      entry: StagedOperation,
+      reason: Readonly<{ kind: 'release'; cause: Error }> | Readonly<{ kind: 'stop'; cause: ProviderStopCause }>,
+    ) => Promise<void>;
+  }>,
 ) {
+  const { assertAdmissionOpen, admissionCheckedHostScope, trackHostRef, closeStaged, cancelAndAwait } = context;
   const { runtime, hostAuthority } = options;
   const stage = (
     key: ProviderOperationKey,
@@ -1240,15 +1242,14 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
     closeStaged,
   );
 
-  const host = createSemanticOperationHost(
-    options,
+  const host = createSemanticOperationHost(options, {
     assertAdmissionOpen,
     requireStaged,
     trackHostRef,
     cancelAndAwait,
     runPump,
     synthesizeAndEmitFailure,
-    (key) => {
+    cancellationHold: (key) => {
       if (
         state.relinquishmentFailure === null ||
         operationKeyString(key) !== operationKeyString(state.relinquishmentFailure.key)
@@ -1263,17 +1264,15 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
         exit: 'sibling-settlement-or-cancellation',
       };
     },
-  );
+  });
 
-  const stage = createSemanticOperationStager(
-    options,
-    state,
+  const stage = createSemanticOperationStager(options, state, {
     assertAdmissionOpen,
     admissionCheckedHostScope,
     trackHostRef,
     closeStaged,
     cancelAndAwait,
-  );
+  });
 
   host.admitSend = ({ key, input }): SemanticOperationSendAdmission => {
     const entry = state.staged.get(operationKeyString(key));

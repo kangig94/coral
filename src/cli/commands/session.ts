@@ -276,9 +276,12 @@ function registerJobsSendCommand(jobsCommand: Command): void {
   const sendCommand = jobsCommand.command('send');
   const inputUsage = 'Input is required. Use -i <text>, -i <file>, or -i - (stdin).';
   sendCommand
-    .description('Deliver a user message to a running provider turn')
+    .description('Deliver a user message to a running provider turn. An ended turn is not resumed.')
     .argument('<jobId>', 'Job ID')
-    .option('-i, --input <text-or-file...>', 'Message text, file path, or - for stdin')
+    .option(
+      '-i, --input <text-or-file...>',
+      'Message input (required; multiple tokens are joined with spaces; a single existing path is read as a file; - for stdin)',
+    )
     .action(async (jobId: string, opts: { input?: string[] }) => {
       try {
         if (opts.input === undefined) throw new UsageError(inputUsage);

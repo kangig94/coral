@@ -5,6 +5,7 @@ import { providerIdentPattern } from '../../infra/identifiers.js';
 import { jobPhaseSchema } from '../../jobs/phase.js';
 import { type WaitCursor } from '../../jobs/wait/contract.js';
 import { MAX_WAIT_JOB_IDS } from '../../jobs/wait/stream-event.js';
+import { proxyOperationSendResultSchema } from '../../provider-proxy/protocol.js';
 
 const projectRootSchema = z.string().min(1, 'Project root is required');
 const jobIdSchema = z.string().min(1, 'Job ID is required');
@@ -95,6 +96,13 @@ export const jobAbortSchema = z
   .strict();
 
 export const JOB_SEND_MAX_INPUT_LENGTH = 65_536;
+
+/** The provider turn id the proxy reports stays inside the coordinator; the caller learns only the outcome. */
+export const jobSendResponseSchema = z.discriminatedUnion('state', [
+  proxyOperationSendResultSchema.options[0].omit({ providerTurnId: true }),
+  proxyOperationSendResultSchema.options[1],
+  proxyOperationSendResultSchema.options[2],
+]);
 
 export const jobSendSchema = z
   .object({
