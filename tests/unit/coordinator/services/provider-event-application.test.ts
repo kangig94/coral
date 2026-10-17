@@ -348,13 +348,12 @@ describe('createProviderEventHandler', () => {
       );
       expect(detail?.events.at(-1)?.type).toBe('terminal');
       expect(detail?.events.at(-1)).toMatchObject({
-        result: { content, durationMs: 1200, usage, outcome: { kind: fails ? 'failed' : 'completed' } },
+        result: { content, durationMs: 1200, outcome: { kind: fails ? 'failed' : 'completed' } },
       });
       const waitDetail = loadJobWaitDetail(progressStore.getDb(), identity.jobId, progressStore);
       expect(waitDetail.exit).toMatchObject({
         content,
         durationMs: 1200,
-        usage,
         outcome: { kind: fails ? 'failed' : 'completed' },
       });
       const legacyUsageSchema = z
@@ -366,8 +365,8 @@ describe('createProviderEventHandler', () => {
           costUsd: z.number().optional(),
         })
         .strict();
-      expect(legacyUsageSchema.parse(waitDetail.exit?.usage)).toEqual(usage);
-      expect(waitDetail.exit?.usage).not.toHaveProperty('numTurns');
+      expect(legacyUsageSchema.parse(waitDetail.exit?.diagnostics.usage)).toEqual(usage);
+      expect(waitDetail.exit?.diagnostics.usage).not.toHaveProperty('numTurns');
       expect(
         progressStore.visitProgress((source) => source.after(identity.jobId, 0, 10).map((row) => row.message)),
       ).toEqual({

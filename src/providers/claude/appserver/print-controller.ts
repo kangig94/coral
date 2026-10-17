@@ -164,7 +164,6 @@ export class PrintSessionController implements BrokerSessionController {
   private bootstrapEstablished = false;
   private latestSessionId: string | null = null;
   private activeTurn: ActiveTurnState | null = null;
-  private lastTerminalTurnId: string | null = null;
   private stderrRing = '';
   private shuttingDown = false;
   private defaultModel: string | null = null;
@@ -304,16 +303,12 @@ export class PrintSessionController implements BrokerSessionController {
       if (this.activeTurn === turn) {
         this.activeTurn = null;
       }
-      this.lastTerminalTurnId = turn.brokerTurnId;
       throw this.asRpcError(error, 'Failed to start Claude turn.');
     }
   }
 
   async turnSend(params: Omit<TurnSendParams, 'brokerSessionKey'>): Promise<TurnSendResult> {
     const turn = this.activeTurn;
-    if (turn === null && params.brokerTurnId !== this.lastTerminalTurnId && !this.shuttingDown) {
-      return { state: 'refused', code: 'turn_not_started', reason: 'The Claude print turn has not started.' };
-    }
     if (
       turn === null ||
       turn.brokerTurnId !== params.brokerTurnId ||
@@ -851,7 +846,6 @@ export class PrintSessionController implements BrokerSessionController {
     if (this.activeTurn !== turn) return;
     this.clearFollowOnDeadline(turn);
     this.emitAggregateAccounting(turn, completed);
-    this.lastTerminalTurnId = turn.brokerTurnId;
     if (turn.pendingSends.size === 0) this.activeTurn = null;
     this.emitNotification({ method: 'turn/completed', params: completed });
     if (this.activeTurn === turn) this.activeTurn = null;
@@ -881,7 +875,6 @@ export class PrintSessionController implements BrokerSessionController {
         this.emitTurnProgress(turn.brokerTurnId, `Sent message ${id} was not read before the child exited`);
       }
       this.emitAggregateAccounting(turn, this.aggregateResult(turn));
-      this.lastTerminalTurnId = turn.brokerTurnId;
       this.emitTurnFailure(turn, exitError.message, 'child-exit');
       this.activeTurn = null;
     }
@@ -1094,7 +1087,6 @@ export class PrintSessionController implements BrokerSessionController {
     }
     this.clearFollowOnDeadline(turn);
     this.activeTurn = null;
-    this.lastTerminalTurnId = turn.brokerTurnId;
     this.emitTurnFailure(turn, message, reason);
   }
 

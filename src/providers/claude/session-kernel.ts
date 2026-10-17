@@ -77,7 +77,7 @@ type ClaudeTurnState = {
   artifactHandleEmissionAttempted: boolean;
   brokerTurnId?: string;
   turnRequested: boolean;
-  segmentActive: boolean;
+  startAcknowledged: boolean;
   completed: boolean;
   lastKnownUsage?: UsageSummary;
   cancelledTurn?: ClaudeCompletedTurn;
@@ -176,7 +176,7 @@ export const claudeSessionKernel: ProviderAppServer<ClaudeExecutionPlan> = (requ
       if (readString(startResult.brokerTurnId) !== startParams.brokerTurnId) {
         throw new Error('Claude turn/start did not return the exact requested broker turn id.');
       }
-      state.segmentActive = !state.completed;
+      state.startAcknowledged = !state.completed;
       state.conversationRef = readTurnConversationRef(startResult) ?? state.conversationRef;
       await checkpointBrokerContinuity(runtime, state);
       emitClaudeArtifactHandleOnce(state, runtime, emit);
@@ -218,7 +218,7 @@ export const claudeSessionKernel: ProviderAppServer<ClaudeExecutionPlan> = (requ
         ),
       );
     } finally {
-      state.segmentActive = false;
+      state.startAcknowledged = false;
       if (!state.turnRequested) runtime.onProviderTurnNotSubmitted?.();
       clearNotificationBinding();
     }
@@ -230,7 +230,7 @@ function createSteeringPort(state: ClaudeTurnState, signal: AbortSignal): Provid
       if (state.completed || signal.aborted) {
         return { state: 'refused', code: 'turn_ended', reason: 'The Claude turn has ended.' };
       }
-      if (!state.segmentActive) {
+      if (!state.startAcknowledged) {
         return { state: 'refused', code: 'turn_not_started', reason: 'The current Claude segment is not active.' };
       }
       const parsed = readClaudePersistedContinuity(continuity);
@@ -270,7 +270,7 @@ function createInitialState(
     artifactHandleEmissionAttempted: false,
     brokerTurnId: undefined,
     turnRequested: false,
-    segmentActive: false,
+    startAcknowledged: false,
     completed: false,
     terminal,
     resolveTerminal,
@@ -349,7 +349,7 @@ function resolveTerminalOnce(state: ClaudeTurnState, outcome: ClaudeTurnOutcome)
   }
 
   state.completed = true;
-  state.segmentActive = false;
+  state.startAcknowledged = false;
   state.resolveTerminal(outcome);
 }
 

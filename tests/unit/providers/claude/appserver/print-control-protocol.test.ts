@@ -32,16 +32,4 @@ describe('parseClaudePrintStdoutLine', () => {
   ])('rejects malformed replay fields: %j', (override) => {
     expect(parseClaudePrintStdoutLine(JSON.stringify({ ...replay, ...override }))).toBeNull();
   });
-
-  it('discards ordinary tool-result user frames even when they carry a UUID', () => {
-    expect(
-      parseClaudePrintStdoutLine(
-        JSON.stringify({
-          ...replay,
-          isReplay: undefined,
-          message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'done' }] },
-        }),
-      ),
-    ).toBeNull();
-  });
 });

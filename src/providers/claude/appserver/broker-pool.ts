@@ -337,8 +337,6 @@ export class BrokerSessionPool implements ClaudeBrokerSession {
       !this.heldControllerShutdowns.has(brokerSessionKey)
     )
       return;
-    // Defer one tick so terminal notification subscribers can issue an immediate
-    // follow-up against the still-reachable controller before idle eviction runs.
     setImmediate(() => {
       const currentEntry = this.controllers.get(brokerSessionKey);
       if (

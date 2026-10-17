@@ -335,30 +335,46 @@ describe('PrintSessionController', () => {
     usage: { input_tokens: 10, output_tokens: 2 },
   };
 
-  it('distinguishes an unstarted turn from the last terminal turn without writing input', async () => {
+  it('refuses sends to either of two completed turns and unknown IDs as turn_ended without writing', async () => {
     const child = new FakeClaudePrintChild();
     const controller = createController(child);
     const send = { brokerTurnId: 'turn-1', text: 'hello', clientMessageId: firstSendId };
     try {
-      await expect(controller.turnSend(send)).resolves.toMatchObject({
-        state: 'refused',
-        code: 'turn_not_started',
-      });
-      expect(child.writes).toHaveLength(0);
       await ensureController(controller, child);
-      await expect(controller.turnSend(send)).resolves.toMatchObject({
-        state: 'refused',
-        code: 'turn_not_started',
-      });
-      expect(child.writes).toHaveLength(1);
       await controller.turnStart({ brokerTurnId: 'turn-1', prompt: 'hello' });
+      child.emitStdout(result);
+      await controller.turnStart({ brokerTurnId: 'turn-2', prompt: 'hello again' });
       child.emitStdout(result);
       await expect(controller.turnSend(send)).resolves.toMatchObject({ state: 'refused', code: 'turn_ended' });
       await expect(controller.turnSend({ ...send, brokerTurnId: 'turn-2' })).resolves.toMatchObject({
         state: 'refused',
-        code: 'turn_not_started',
+        code: 'turn_ended',
       });
+      await expect(controller.turnSend({ ...send, brokerTurnId: 'unknown-turn' })).resolves.toMatchObject({
+        state: 'refused',
+        code: 'turn_ended',
+      });
+      expect(child.writes).toHaveLength(3);
+    } finally {
+      await controller.shutdown();
+    }
+  });
+
+  it('refuses a known turn before its initial prompt write completes as turn_not_started', async () => {
+    const child = new FakeClaudePrintChild();
+    const controller = createController(child);
+    try {
+      await ensureController(controller, child);
+      let send: ReturnType<PrintSessionController['turnSend']> | undefined;
+      const writeLine = child.writeLine.bind(child);
+      vi.spyOn(child, 'writeLine').mockImplementationOnce((line) => {
+        send = controller.turnSend({ brokerTurnId: 'turn-1', text: 'too early', clientMessageId: firstSendId });
+        writeLine(line);
+      });
+      await controller.turnStart({ brokerTurnId: 'turn-1', prompt: 'hello' });
+      await expect(send).resolves.toMatchObject({ state: 'refused', code: 'turn_not_started' });
       expect(child.writes).toHaveLength(2);
+      child.emitStdout(result);
     } finally {
       await controller.shutdown();
     }
@@ -813,6 +829,7 @@ describe('PrintSessionController', () => {
       const child = new FakeClaudePrintChild();
       child.exitOnKill = false;
       const h = await startKernelThroughPool(child);
+      const brokerSessionKey = String(h.continuity.brokerSessionKey);
       let finished = false;
       void h.events.then(() => {
         finished = true;
@@ -855,7 +872,7 @@ describe('PrintSessionController', () => {
           ),
         ).toBe(true);
         const ensure = h.broker.sessionEnsure({
-          brokerSessionKey: String(h.continuity.brokerSessionKey),
+          brokerSessionKey,
           conversationRef: TEST_SESSION_ID,
           cwd: '/workspace',
           projectsRoot: '/tmp/projects',
@@ -941,6 +958,7 @@ describe('PrintSessionController', () => {
     const child = new FakeClaudePrintChild();
     const h = await startKernelThroughPool(child);
     try {
+      await new Promise<void>((resolve) => setImmediate(resolve));
       await h.send(firstSendId);
       child.emitStdout(firstResult);
       child.emitExit({ code: 1, signal: null });
@@ -1143,7 +1161,7 @@ describe('PrintSessionController', () => {
               text: 'too early',
               clientMessageId: secondSendId,
             }),
-          ).resolves.toMatchObject({ state: 'refused', code: 'turn_not_started' });
+          ).resolves.toMatchObject({ state: 'refused', code: 'turn_ended' });
           expect(child.writes).toHaveLength(1);
           return broker.turnStart(params as unknown as Parameters<typeof broker.turnStart>[0]);
         }

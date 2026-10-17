@@ -1010,6 +1010,11 @@ describe('semantic-operation send admission', () => {
               providerContinuity: claudeContinuity,
             };
             await finish.promise;
+            executionRuntime.onProviderTurnTerminal({
+              kind: 'provider-turn-terminal',
+              providerTurnId: claudeContinuity.brokerTurnId,
+              status: 'completed',
+            });
             yield terminalCompleted;
           },
         }),
