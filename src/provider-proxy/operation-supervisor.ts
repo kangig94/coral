@@ -222,6 +222,7 @@ type SupervisedOperation = {
   releaseRetryTimer: { unref?: () => void } | null;
   ownershipOrdinal: number;
   continuityCommits: Map<number, PendingContinuityCommit>;
+  recordedSendIds: Set<string>;
   providerEventAmbiguity: ProviderEventAmbiguityDeadline | null;
   pumpDemand: boolean;
   pumpTurn: { unref?: () => void } | null;
@@ -610,6 +611,13 @@ export class OperationSupervisor {
         reason: 'The current turn is not steerable yet.',
       });
     }
+    if (record.recordedSendIds.has(input.clientMessageId)) {
+      return Promise.resolve({
+        state: 'refused',
+        code: 'control_unavailable',
+        reason: `Message id ${input.clientMessageId} already has a send record. This repeat was not written; inspect progress for the original send.`,
+      });
+    }
     const admission = this.#options.host.admitSend?.({ key: record.key, input });
     if (admission === undefined) {
       return Promise.resolve({
@@ -648,6 +656,7 @@ export class OperationSupervisor {
       admission.refuse(refused);
       return Promise.resolve(refused);
     }
+    record.recordedSendIds.add(input.clientMessageId);
     return admission.write();
   }
 
@@ -1172,6 +1181,7 @@ export class OperationSupervisor {
       releaseRetryTimer: null,
       ownershipOrdinal: 1,
       continuityCommits: new Map(),
+      recordedSendIds: new Set(),
       providerEventAmbiguity: null,
       pumpDemand: false,
       pumpTurn: null,

@@ -263,7 +263,7 @@ describe('codexAppServerLifecycle.send', () => {
     expect(rpc).toHaveBeenCalledTimes(1);
   });
 
-  it.each([{}, { threadId: 'thread-1' }, { turnId: 'turn-1' }])(
+  it.each([{ cwd: '/workspace' }, { threadId: 'thread-1' }, { turnId: 'turn-1' }])(
     'refuses incomplete continuity before RPC: %j',
     async (partial) => {
       const rpc = vi.fn();
@@ -274,6 +274,14 @@ describe('codexAppServerLifecycle.send', () => {
       expect(rpc).not.toHaveBeenCalled();
     },
   );
+
+  it('rejects malformed continuity as an internal contract violation before RPC', async () => {
+    const rpc = vi.fn();
+    await expect(codexAppServerLifecycle.send!(transport(rpc), {}, input)).rejects.toThrow(
+      new TypeError('Invalid persisted Codex continuity.'),
+    );
+    expect(rpc).not.toHaveBeenCalled();
+  });
 
   it.each([{}, { turnId: '' }, { turnId: 'other-turn' }, null])(
     'reports an invalid acknowledgement as unknown: %j',

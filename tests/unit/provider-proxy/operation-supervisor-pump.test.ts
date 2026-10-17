@@ -24,6 +24,7 @@ import {
   PROXY_EVENT_COMMIT_TIMEOUT_MS,
   providerEventRequestSchema,
   type OperationIdentity,
+  type ProxyOperationSendResult,
 } from '#src/provider-proxy/protocol.js';
 import type { ProxyPreparedAppServerOperation } from '#src/provider-proxy/protocol.js';
 import {
@@ -631,6 +632,50 @@ it('records the send synchronously before the write and an immediate completion,
     h.supervisor.close();
   }
 });
+
+it.each(['delivered', 'unknown', 'refused'] as const)(
+  'refuses a duplicate message id during the write and after its %s outcome without a second record',
+  async (state) => {
+    const input = { text: 'Change direction', clientMessageId: randomUUID() };
+    const answer = deferred<ProxyOperationSendResult>();
+    const write = vi.fn(() => answer.promise);
+    const admitSend = vi.fn(() => ({ state: 'admitted' as const, refuse: vi.fn(), write }));
+    const h = await executingSupervisor(
+      () => {
+        throw new Error('Unexpected push');
+      },
+      true,
+      admitSend,
+    );
+    const refusal = {
+      state: 'refused',
+      code: 'control_unavailable',
+      reason: `Message id ${input.clientMessageId} already has a send record. This repeat was not written; inspect progress for the original send.`,
+    };
+    try {
+      const pending = h.supervisor.send(h.operation, input);
+      const repeated = h.supervisor.send(h.operation, input);
+      expect(write).toHaveBeenCalledOnce();
+      expect(h.supervisor.ledger().nextProviderSeq(h.operation)).toBe(2);
+      await expect(repeated).resolves.toEqual(refusal);
+      const outcome =
+        state === 'delivered'
+          ? { state, providerTurnId: 'turn-current' }
+          : state === 'refused'
+            ? { state, code: 'turn_ended' as const, reason: 'Turn ended before the write.' }
+            : { state, reason: 'Reply lost.' };
+      answer.resolve(outcome);
+      await expect(pending).resolves.toEqual(outcome);
+      await h.supervisor.attach(h.operation, 1);
+      await expect(h.supervisor.send(h.operation, input)).resolves.toEqual(refusal);
+      expect(admitSend).toHaveBeenCalledOnce();
+      expect(write).toHaveBeenCalledOnce();
+      expect(h.supervisor.ledger().nextProviderSeq(h.operation)).toBe(2);
+    } finally {
+      h.supervisor.close();
+    }
+  },
+);
 
 it('keeps the send record after a write-time refusal without claiming delivery', async () => {
   const outcome = { state: 'refused', code: 'turn_ended', reason: 'Provider turn ended before the write.' } as const;

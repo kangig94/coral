@@ -313,6 +313,7 @@ export const codexAppServerLifecycle: ProviderAppServerCapability<CodexExecution
     return { kind: 'accepted' };
   },
   async send(lease, continuity, input): Promise<ProviderSendOutcome> {
+    // Malformed continuity must reject as an internal contract violation, never as a provider refusal.
     const parsed = readCodexPersistedContinuity(continuity);
     if (parsed.threadId === undefined || parsed.turnId === undefined) {
       return {

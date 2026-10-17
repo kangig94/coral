@@ -278,13 +278,56 @@ describe('codexTurnKernel steering', () => {
     const h = await harness();
     expect(h.port.admit(continuity, firstId)).toMatchObject({ state: 'refused', code: 'turn_not_started' });
     await h.claim();
-    for (const stale of [{ ...continuity, turnId: 'old-turn' }, { ...continuity, threadId: 'other-thread' }, {}]) {
+    for (const stale of [
+      { ...continuity, turnId: 'old-turn' },
+      { ...continuity, threadId: 'other-thread' },
+      { cwd: '/workspace' },
+    ]) {
       expect(h.port.admit(stale, firstId)).toMatchObject({ state: 'refused', code: 'turn_not_started' });
     }
     expect(h.port.admit(continuity, firstId)).toEqual({ state: 'admitted' });
     h.emit('turn/completed');
     await h.done;
   });
+
+  it('throws for malformed continuity before latching a steer', async () => {
+    const h = await harness();
+    await h.claim();
+    expect(() => h.port.admit({}, firstId)).toThrow(new TypeError('Invalid persisted Codex continuity.'));
+    h.finalAnswer();
+    h.time.tick(250);
+    await h.done;
+    expect(h.messages().some((message) => message.includes(firstId))).toBe(false);
+  });
+
+  it.each(['unknown', 'delivered'] as const)(
+    'bounds the unread hold for a %s steer and emits its diagnostic before inferred completion',
+    async (state) => {
+      const h = await harness();
+      await h.claim();
+      expect(h.port.admit(continuity, firstId)).toEqual({ state: 'admitted' });
+      h.port.reportOutcome(firstId, state === 'delivered' ? { state } : { state, reason: 'reply lost' });
+      h.finalAnswer();
+      h.time.tick(9_999);
+      await flushMicrotasks(20);
+      expect(h.settled()).toBe(false);
+      expect(h.messages().some((message) => message.includes('was not read'))).toBe(false);
+      h.finalAnswer('Final answer repeated before the deadline');
+      h.time.tick(1);
+      await flushMicrotasks(20);
+      expect(h.settled()).toBe(true);
+      await h.done;
+      const unreadIndex = h.events.findIndex(
+        (event) =>
+          event.kind === 'progress' && event.message === `Sent message ${firstId} was not read before the turn ended`,
+      );
+      const terminalIndex = h.events.findIndex((event) => event.kind === 'terminal');
+      expect(unreadIndex).toBeGreaterThan(-1);
+      expect(unreadIndex).toBeLessThan(terminalIndex);
+      expect(h.messages().some((message) => message.includes('read by the agent'))).toBe(false);
+      expect(h.events[terminalIndex]).toMatchObject({ terminal: { outcome: { kind: 'completed' } } });
+    },
+  );
 
   it('refuses after final answer and after explicit completion, even before terminal materialization', async () => {
     const h = await harness();
@@ -330,7 +373,7 @@ describe('codexTurnKernel steering', () => {
 
       h.emit('item/started', { type: 'userMessage', clientId: firstId });
       h.emit('item/started', { type: 'userMessage', clientId: firstId });
-      h.time.tick(1000);
+      h.time.tick(10_000);
       await flushMicrotasks(20);
       expect(h.messages().filter((message) => message === `Sent message ${firstId} read by the agent`)).toHaveLength(1);
       expect(h.settled()).toBe(false);
@@ -383,6 +426,7 @@ describe('codexTurnKernel steering', () => {
     h.port.admit(continuity, firstId);
     h.port.admit(continuity, secondId);
     h.finalAnswer();
+    h.time.tick(5_000);
     h.emit('turn/completed');
     await h.done;
     const terminalIndex = h.events.findIndex((event) => event.kind === 'terminal');

@@ -282,25 +282,25 @@ describe('provider binding lifecycle', () => {
 
 describe('bound provider send', () => {
   const input = { text: 'Change direction', clientMessageId: '33333333-3333-4333-8333-333333333333' };
-  const continuity = { cwd: '/workspace', threadId: 'thread-1', turnId: 'turn-1' };
-  const hostPreparation = {
-    hostRoot: '/test/plugin/bridge',
-    jobId: 'job-send',
-    request: {
-      action: 'exec' as const,
-      sessionId: 'session-send',
-      prompt: 'Initial prompt',
-      cwd: fixtureCanonicalWorkDir('/workspace'),
-      bypassPermissions: false,
-      coralEnv: {},
-    },
-    persistedContinuity: continuity,
-    baseEnv: {},
-    platform: 'linux',
-    storage: { existsSync: () => false },
-  };
-
   function fixture(options: { missing?: boolean; answer?: Promise<unknown>; attachGate?: Promise<void> } = {}) {
+    const root = fixtureRoot();
+    const continuity = { cwd: root, threadId: 'thread-1', turnId: 'turn-1' };
+    const hostPreparation = {
+      hostRoot: '/test/plugin/bridge',
+      jobId: 'job-send',
+      request: {
+        action: 'exec' as const,
+        sessionId: 'session-send',
+        prompt: 'Initial prompt',
+        cwd: fixtureCanonicalWorkDir(root),
+        bypassPermissions: false,
+        coralEnv: {},
+      },
+      persistedContinuity: continuity,
+      baseEnv: {},
+      platform: 'linux',
+      storage: { existsSync: () => false },
+    };
     const hostRef: HostRef = {
       provider: 'codex',
       fingerprint: 'host-fingerprint',
@@ -325,17 +325,26 @@ describe('bound provider send', () => {
     registry.connectAppServerHost({ openSession, attachSession });
     const bound = registry.rehydrateBinding(TEST_CODEX_BINDING);
     if (!bound.ok || bound.value.appServer === undefined) throw new Error('Expected bound Codex app-server');
-    return { appServer: bound.value.appServer, hostRef, rpc, close, openSession, attachSession };
+    return {
+      appServer: bound.value.appServer,
+      hostRef,
+      rpc,
+      close,
+      openSession,
+      attachSession,
+      continuity,
+      hostPreparation,
+    };
   }
 
   it('attaches the exact retained host with the compiled execution spec and job id, then releases only its temporary lease', async () => {
     const h = fixture();
-    await expect(h.appServer.send(h.hostRef, continuity, input, hostPreparation)).resolves.toEqual({
+    await expect(h.appServer.send(h.hostRef, h.continuity, input, h.hostPreparation)).resolves.toEqual({
       state: 'delivered',
     });
     expect(h.attachSession).toHaveBeenCalledExactlyOnceWith(h.hostRef, {
       spec: expect.objectContaining({ provider: 'codex', command: 'codex', leaseMode: 'shared' }),
-      jobId: hostPreparation.jobId,
+      jobId: h.hostPreparation.jobId,
     });
     expect(h.rpc).toHaveBeenCalledExactlyOnceWith(
       'turn/steer',
@@ -350,7 +359,7 @@ describe('bound provider send', () => {
 
   it('refuses when the exact host is gone instead of opening a replacement', async () => {
     const h = fixture({ missing: true });
-    await expect(h.appServer.send(h.hostRef, continuity, input, hostPreparation)).resolves.toMatchObject({
+    await expect(h.appServer.send(h.hostRef, h.continuity, input, h.hostPreparation)).resolves.toMatchObject({
       state: 'refused',
       code: 'control_unavailable',
     });
@@ -362,7 +371,7 @@ describe('bound provider send', () => {
   it('refuses a host for a different provider before attaching or writing', async () => {
     const h = fixture();
     await expect(
-      h.appServer.send({ ...h.hostRef, provider: 'claude' }, continuity, input, hostPreparation),
+      h.appServer.send({ ...h.hostRef, provider: 'claude' }, h.continuity, input, h.hostPreparation),
     ).resolves.toMatchObject({
       state: 'refused',
       code: 'control_unavailable',
@@ -375,7 +384,7 @@ describe('bound provider send', () => {
   it('releases the temporary lease after an unanswerable send without touching the live host', async () => {
     const answer = createDeferred<unknown>();
     const h = fixture({ answer: answer.promise });
-    const pending = h.appServer.send(h.hostRef, continuity, input, hostPreparation);
+    const pending = h.appServer.send(h.hostRef, h.continuity, input, h.hostPreparation);
     answer.reject(new Error('transport closed'));
     await expect(pending).resolves.toEqual({ state: 'unknown', reason: 'transport closed' });
     expect(h.close).toHaveBeenCalledTimes(1);
@@ -385,7 +394,7 @@ describe('bound provider send', () => {
   it('validates send input before attaching the provider host', async () => {
     const h = fixture();
     await expect(
-      h.appServer.send(h.hostRef, continuity, { ...input, clientMessageId: 'not-a-uuid' }, hostPreparation),
+      h.appServer.send(h.hostRef, h.continuity, { ...input, clientMessageId: 'not-a-uuid' }, h.hostPreparation),
     ).rejects.toThrow();
     expect(h.attachSession).not.toHaveBeenCalled();
     expect(h.rpc).not.toHaveBeenCalled();
@@ -400,7 +409,7 @@ describe('bound provider send', () => {
         const h = fixture({ answer: answer.promise });
         const attempt = new AbortController();
         const deadline = setTimeout(() => attempt.abort(), 10_000);
-        const pending = h.appServer.send(h.hostRef, continuity, input, hostPreparation, attempt.signal);
+        const pending = h.appServer.send(h.hostRef, h.continuity, input, h.hostPreparation, attempt.signal);
         await vi.advanceTimersByTimeAsync(10_000);
         await expect(pending).resolves.toMatchObject({ state: 'unknown' });
         expect(h.rpc).toHaveBeenCalledTimes(1);
@@ -423,7 +432,7 @@ describe('bound provider send', () => {
     const attached = createDeferred();
     const h = fixture({ attachGate: attached.promise });
     const attempt = new AbortController();
-    const pending = h.appServer.send(h.hostRef, continuity, input, hostPreparation, attempt.signal);
+    const pending = h.appServer.send(h.hostRef, h.continuity, input, h.hostPreparation, attempt.signal);
     attempt.abort();
     attached.resolve();
     await expect(pending).resolves.toMatchObject({ state: 'refused', code: 'control_unavailable' });
