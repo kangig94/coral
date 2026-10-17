@@ -21,6 +21,7 @@ const expectedRpcRequires = {
   'coordinator.listExpansion': 'expansion:manage',
   'coordinator.readBinding': 'expansion:manage',
   'jobs.abort': 'jobs:control',
+  'jobs.send': 'jobs:control',
   'jobs.release': 'jobs:control',
   'jobs.list': 'jobs:read',
   'jobs.detail': 'jobs:read',
@@ -80,6 +81,7 @@ type ExpectedOperationalRouteId =
   | 'ipc.transport.kb.restart'
   | `ipc.${(typeof SUCCESSION_METHODS)[keyof typeof SUCCESSION_METHODS]}`
   | 'ipc.jobs.abort.drain-recovery'
+  | 'ipc.jobs.send'
   | 'ipc.jobs.wait.snapshot'
   | 'ipc.provider-host.list.drain-observation'
   | 'ipc.provider-host.list-v2.drain-observation'
@@ -250,6 +252,15 @@ const expectedOperationalSpecs = {
     transport: 'ipc',
     method: 'jobs.wait.snapshot',
     requires: 'jobs:read',
+    requiresRunningLifecycle: true,
+    dispatchKind: 'catalog',
+    onRefusal: 'spawn-successor',
+    authentication: 'principal',
+  },
+  'ipc.jobs.send': {
+    transport: 'ipc',
+    method: 'jobs.send',
+    requires: 'jobs:control',
     requiresRunningLifecycle: true,
     dispatchKind: 'catalog',
     onRefusal: 'spawn-successor',

@@ -94,6 +94,21 @@ export const jobAbortSchema = z
   })
   .strict();
 
+export const JOB_SEND_MAX_INPUT_LENGTH = 65_536;
+
+export const jobSendSchema = z
+  .object({
+    projectRoot: projectRootSchema,
+    jobId: jobIdSchema,
+    input: z
+      .string()
+      .min(1, 'Input is required')
+      .max(JOB_SEND_MAX_INPUT_LENGTH, `Input must be at most ${JOB_SEND_MAX_INPUT_LENGTH} UTF-16 code units`)
+      .refine((input) => input.trim().length > 0, 'Input must contain non-whitespace text'),
+    clientMessageId: z.string().uuid('Client message ID must be a UUID'),
+  })
+  .strict();
+
 export const jobsReleaseRequestSchema = jobAbortSchema.strict();
 
 export const jobsListRequestSchema = z

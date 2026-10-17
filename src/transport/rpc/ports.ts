@@ -30,6 +30,7 @@ import type {
 import type { JobScopeRelation, ScopeCheckResult } from '../../jobs/scope.js';
 import type { JobsListFilters } from '../../jobs/read-queries.js';
 import type { JobDetailLookup } from '../../jobs/contracts/addressing.js';
+import type { ProxyOperationSendResult } from '../../provider-proxy/protocol.js';
 
 type SessionStartInput = Pick<
   JobLaunchRequest,
@@ -63,6 +64,10 @@ interface JobsRequestPort {
   snapshot(req: WaitSnapshotRequest): WaitSnapshot;
   scopeCheck(jobIds: string[], callerRoot: CanonicalWorkDir, relation: JobScopeRelation): ScopeCheckResult;
   abort(jobIds: string[]): AbortDecision;
+  send(
+    request: Readonly<{ projectRoot: CanonicalWorkDir; jobId: string; input: string; clientMessageId: string }>,
+    ctx: InvocationContext,
+  ): Promise<ProxyOperationSendResult>;
   release(jobIds: string[]): JobsReleaseResult;
   waitStream(req: CanonicalWaitStreamRequest): AsyncGenerator<WaitStreamEvent>;
 

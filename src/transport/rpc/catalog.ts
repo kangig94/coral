@@ -19,6 +19,7 @@ import {
 } from './discuss.js';
 import {
   jobAbortSchema,
+  jobSendSchema,
   jobsReleaseRequestSchema,
   jobDetailRequestSchema,
   jobsListRequestSchema,
@@ -81,6 +82,7 @@ import {
   providerProxySetUnobservableEnforcerObservationsSchema,
 } from '../../provider-proxy/containment-proof-contract.js';
 import { PROVIDER_PROXY_SET_LIFECYCLE_STATES } from '../../provider-proxy/set-lifecycle-state-vocabulary.js';
+import { providerSendOutcomeSchema } from '../../providers/contract.js';
 
 export interface RpcMethodSpec<Req, _Res> {
   readonly name: string;
@@ -631,6 +633,17 @@ export const jobsAbortRpcSpec = {
   http: { method: 'POST', path: '/jobs/abort' },
 } as const satisfies RpcMethodSpec<unknown, unknown>;
 
+export const jobsSendRpcSpec = {
+  name: 'jobs.send',
+  kind: 'unary',
+  requires: 'jobs:control',
+  requestSchema: jobSendSchema,
+  responseSchema: providerSendOutcomeSchema,
+  responseKind: 'json',
+  portKey: 'jobs',
+  http: { method: 'POST', path: '/jobs/send' },
+} as const satisfies RpcMethodSpec<unknown, unknown>;
+
 export const transportOperationalCarveouts = [
   '/health',
   '/admin/shutdown',
@@ -711,6 +724,7 @@ export const rpcCatalog = [
     http: { method: 'GET', path: '/coordinator/bindings/:binding' },
   },
   jobsAbortRpcSpec,
+  jobsSendRpcSpec,
   {
     name: 'jobs.release',
     kind: 'unary',

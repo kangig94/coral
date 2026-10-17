@@ -89,6 +89,7 @@ function createPorts(): HttpHandlerPorts {
       release: vi.fn(() => ({ released: [], unknown: [], terminal: [] })),
       scopeCheck: vi.fn(() => ({ valid: [], missing: [], mismatch: [] })),
       abort: vi.fn(),
+      send: vi.fn(),
       admitWait: vi.fn((req: { jobIds: string[] }) =>
         req.jobIds.map((jobId) => ({ jobId, disposition: 'admitted' as const })),
       ),

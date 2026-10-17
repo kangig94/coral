@@ -6,7 +6,7 @@ import type { JobLaunchRequest } from '../jobs/launch.js';
 import type { JobsListResponse } from '../jobs/records.js';
 import type { WaitHandoverNotice, WaitStreamEvent } from '../jobs/wait/contract.js';
 import { decodeWaitCursor, type WaitCursorRejection } from '../jobs/wait/cursor.js';
-import { WAIT_BUILD_MISMATCH, waitRequestFromAnotherBuild } from './rpc/jobs.js';
+import { WAIT_BUILD_MISMATCH, waitRequestFromAnotherBuild, type jobSendSchema } from './rpc/jobs.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import {
   canonicalizeWorkDir,
@@ -54,6 +54,8 @@ import {
   type ProviderHostAdministrationErrorCode,
 } from '../providers/host-administration-vocabulary.js';
 import { encodeHostRef } from '../providers/host-ref-codec.js';
+import { proxyOperationSendResultSchema } from '../provider-proxy/protocol.js';
+import type { z } from 'zod';
 
 type RetentionPolicy = NonNullable<JobLaunchRequest['retention']>;
 
@@ -1047,6 +1049,28 @@ function unknownJobsAnswer(
   );
 }
 
+async function executeJobsSendCatalogRequest({
+  request,
+  canonicalRequest,
+  rpcPorts,
+  principal,
+}: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
+  const parsed = request as z.infer<typeof jobSendSchema>;
+  const callerRoot = canonicalRequest.projectRoot;
+  if (callerRoot === undefined) return unaryHttp(domainResultToHttp(invalidRequestResult()));
+  const ctx = buildQueryContext(callerRoot, rpcPorts, principal);
+  try {
+    const result = proxyOperationSendResultSchema.parse(
+      await rpcPorts.jobs.send({ ...parsed, projectRoot: callerRoot }, ctx),
+    );
+    return unary(result.state === 'delivered' ? { state: 'delivered' } : result);
+  } catch (error: unknown) {
+    // Once issued, a send failure cannot prove that the input was not delivered or authorize a retry.
+    const reason = error instanceof Error ? error.message : String(error);
+    return unary({ state: 'unknown', reason: `The send may have been delivered: ${reason}` });
+  }
+}
+
 async function executeJobsAbortCatalogRequest({
   request,
   canonicalRequest,
@@ -1218,6 +1242,8 @@ async function executeJobsCatalogRequest(context: AuthorizedCatalogRequest): Pro
     }
     case 'jobs.abort':
       return executeJobsAbortCatalogRequest(context);
+    case 'jobs.send':
+      return executeJobsSendCatalogRequest(context);
     case 'jobs.list':
       return executeJobsListCatalogRequest(context);
     case 'jobs.detail':
