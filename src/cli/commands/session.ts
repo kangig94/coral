@@ -17,11 +17,17 @@ import type { AbortResult } from '../../jobs/contracts/abort-registry.js';
 import type { ProviderRegistry } from '../../providers/registry.js';
 import { getProviderNames, makeClient } from '../dispatch.js';
 import { emitError, getTerminalContext } from '../emit.js';
-import { parseJobIds } from '../flags.js';
+import { parseJobIds, resolveInput } from '../flags.js';
 import { flushPendingReadStoreNote } from '../read-store.js';
 import { UsageError, WaitOutputError, WaitSnapshotResponseError, normalizeUsageError } from '../errors.js';
 import { WaitBuildMismatchError } from '../../coordinator/handoff-routing/wait-invocation.js';
-import { formatAbortResult, formatJobDetail, formatJobsList, renderJobsList } from '../format/jobs.js';
+import {
+  formatAbortResult,
+  formatJobDetail,
+  formatJobSendResult,
+  formatJobsList,
+  renderJobsList,
+} from '../format/jobs.js';
 import { openCliCauseRefRenderer } from '../cause-renderer.js';
 import { followJobs } from '../follow.js';
 
@@ -64,6 +70,7 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
   registerJobsListCommand(jobsCommand, registeredProviders);
   registerJobsWaitCommand(jobsCommand, program);
   registerJobsAbortCommand(jobsCommand, registeredProviders);
+  registerJobsSendCommand(jobsCommand);
   registerJobsDetailCommand(jobsCommand);
   registerJobsReleaseCommand(jobsCommand);
 }
@@ -258,6 +265,28 @@ function registerJobsAbortCommand(jobsCommand: Command, registeredProviders: str
           return;
         }
         reportAbortResult(await client.abortJobs(jobIds));
+      } catch (error) {
+        emitError(normalizeUsageError(error));
+      }
+    });
+}
+
+function registerJobsSendCommand(jobsCommand: Command): void {
+  const sendCommand = jobsCommand.command('send');
+  const inputUsage = 'Input is required. Use -i <text>, -i <file>, or -i - (stdin).';
+  sendCommand
+    .description('Deliver a user message to a running provider turn')
+    .argument('<jobId>', 'Job ID')
+    .option('-i, --input <text-or-file...>', 'Message text, file path, or - for stdin')
+    .action(async (jobId: string, opts: { input?: string[] }) => {
+      try {
+        if (opts.input === undefined) throw new UsageError(inputUsage);
+        const input = resolveInput(opts.input);
+        if (input.trim().length === 0) throw new UsageError(inputUsage);
+        const result = await makeClient(process.cwd(), sendCommand).sendJob(jobId, input);
+        const output = formatJobSendResult(jobId, result);
+        (output.exitCode === 0 ? process.stdout : process.stderr).write(output.text + '\n');
+        process.exitCode = output.exitCode;
       } catch (error) {
         emitError(normalizeUsageError(error));
       }

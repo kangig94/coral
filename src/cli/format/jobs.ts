@@ -8,6 +8,7 @@ import type { AbortNextStep } from '../../jobs/contracts/abort-registry.js';
 import type { JobOperatorRemedy } from '../../jobs/contracts/operator-remedy.js';
 import type { JobDetailResponse, JobStatus, JobTerminal, JobsListResponse } from '../../jobs/records.js';
 import type { AcceptedLaunchResponse } from '../../jobs/launch.js';
+import type { ProviderSendOutcome } from '../../providers/contract.js';
 import { formatTable, joinLines } from './text.js';
 import { formatUsageSegment } from './usage.js';
 
@@ -37,6 +38,20 @@ export type CauseRefDescriber = (ref: CauseRef) => string;
 type WorkflowChildJob = JobsListResponse['jobs'][number];
 
 const MAX_INLINE = 10_000;
+
+export function formatJobSendResult(jobId: string, result: ProviderSendOutcome): { text: string; exitCode: number } {
+  switch (result.state) {
+    case 'delivered':
+      return { text: 'Message delivered.', exitCode: 0 };
+    case 'refused':
+      return { text: `Message refused (${result.code}): ${result.reason.replace(/[\r\n]+/g, ' ')}`, exitCode: 1 };
+    case 'unknown':
+      return {
+        text: `Unknown: message may have been delivered. ${result.reason.replace(/[\r\n]+/g, ' ')} ${formatJobsOperatorCommand({ kind: 'wait-job', jobId })}`,
+        exitCode: 75,
+      };
+  }
+}
 
 export function truncatePreview(text: string): string {
   if (text.length <= MAX_INLINE) {

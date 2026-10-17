@@ -5,6 +5,7 @@ import { WaitBuildMismatchError } from '../coordinator/handoff-routing/wait-invo
 import { getWaitInvocation } from './wait-invocation.js';
 import type { Command } from 'commander';
 import { readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 
 import { resolvePluginRoot } from './plugin-root.js';
 
@@ -65,6 +66,7 @@ import type {
   KbWikiUnlinkInput,
 } from '../kb/entry-types.js';
 import type { ProviderRegistry } from '../providers/registry.js';
+import { providerSendOutcomeSchema, type ProviderSendOutcome } from '../providers/contract.js';
 import { createBuiltInProviderRegistry } from '../providers/bootstrap.js';
 import { providerBindingFailureCode } from '../providers/contracts/binding.js';
 import { discussProviderNames } from '../discuss/execution-policy.js';
@@ -82,10 +84,10 @@ import {
   type RawCoordinatorHealth,
 } from '../transport/ipc/ensure.js';
 import { readDiscoveryRecordDisposition } from '../infra/backend-discovery.js';
-import { createIpcClient } from '../transport/ipc/client.js';
+import { createIpcClient, IpcLifecycleRefusal, IpcRpcError } from '../transport/ipc/client.js';
 import { createRealRuntime } from '../runtime/real.js';
 import { readBuildFlavor } from '../infra/bundle-manifest.js';
-import { jobsWaitRequest, type JobsWaitFields } from '../transport/rpc/jobs.js';
+import { jobSendSchema, jobsWaitRequest, type JobsWaitFields } from '../transport/rpc/jobs.js';
 import { childPrincipalAuthFromEnv, childPrincipalAuthOptions } from '../transport/ipc/child-principal-auth.js';
 import { CORAL_KB_ENABLE_ENV, KB_DISABLED_REASON, resolveKbEnabled } from '../infra/kb-toggle.js';
 import { filterForwardableCoralEnv } from '../infra/env-sanitize.js';
@@ -141,6 +143,7 @@ type DiscussSeedArgs = {
 type CliCommandClient = {
   releaseJobs(jobIds: string[]): Promise<JobsReleaseResult>;
   abortJobs(jobIds: string[]): Promise<AbortResult>;
+  sendJob(jobId: string, input: string): Promise<ProviderSendOutcome>;
   createSession(
     provider: string,
     prompt: string,
@@ -887,6 +890,43 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
 
   const reconcileKbBoot = createKbBootReconciler(path, ipcAuth);
 
+  const sendJob = async (jobId: string, input: string): Promise<ProviderSendOutcome> => {
+    const params = jobSendSchema.parse({
+      projectRoot: canonicalProjectRoot,
+      jobId,
+      input,
+      clientMessageId: randomUUID(),
+    });
+    const authOptions = ipcAuthOptions();
+    await reconcileKbBoot();
+    let issued = false;
+    try {
+      const result = await issueWithSuccessorAfterLifecycleRefusal<unknown>(
+        'jobs.send',
+        resolvePluginRoot(),
+        async (client) => {
+          issued = true;
+          try {
+            return await client.request<unknown>('jobs.send', params, { timeoutMs: 20_000, ...authOptions });
+          } catch (error) {
+            if (error instanceof IpcLifecycleRefusal) issued = false;
+            throw error;
+          }
+        },
+      );
+      const parsed = providerSendOutcomeSchema.safeParse(result);
+      return parsed.success
+        ? parsed.data
+        : { state: 'unknown', reason: 'The coordinator returned no valid send outcome.' };
+    } catch (error) {
+      if (!issued || error instanceof IpcLifecycleRefusal) throw error;
+      if (error instanceof IpcRpcError && error.rpcCode === -32601) {
+        return { state: 'refused', code: 'unsupported_by_running_build', reason: error.message };
+      }
+      return { state: 'unknown', reason: 'The coordinator did not return a decisive send response.' };
+    }
+  };
+
   const request = async <TResult>(method: string, params?: unknown): Promise<TResult> => {
     const authOptions = ipcAuthOptions();
     await reconcileKbBoot();
@@ -963,6 +1003,7 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
   };
   return {
     ...createSessionDiscussionClient(bindings),
+    sendJob,
     ...createKbEntryClient(bindings),
     ...createKbWikiClient(bindings),
     ...createKbSourceCommunityClient(bindings),

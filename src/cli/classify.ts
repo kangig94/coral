@@ -11,6 +11,7 @@ export type StaticCommandPath =
   | 'jobs release'
   | (typeof waitCommandPaths)[keyof typeof waitCommandPaths]
   | 'jobs abort'
+  | 'jobs send'
   | 'workflow'
   | 'backend recovery-quarantine list'
   | 'backend recovery-quarantine clear'
@@ -70,6 +71,7 @@ export const commandClassMap = {
   [waitCommandPaths.current]: 'subscribe',
   [waitCommandPaths.legacyWaitJobs]: 'subscribe',
   'jobs abort': 'mutate',
+  'jobs send': 'mutate',
   workflow: 'mutate',
   'backend recovery-quarantine list': 'directRead',
   'backend recovery-quarantine clear': 'mutate',
