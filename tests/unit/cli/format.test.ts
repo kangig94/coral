@@ -53,7 +53,7 @@ it('includes every remaining job in the wait continuation', () => {
     null,
     false,
   );
-  expect(output).toContain('coral-cli wait jobs job-a job-b job-c');
+  expect(output).toContain('coral-cli jobs wait job-a job-b job-c');
 });
 
 it('distinguishes a recorded stop from an aborted job', () => {

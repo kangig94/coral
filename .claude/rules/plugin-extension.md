@@ -63,7 +63,7 @@ Caller invokes Coral CLI:
   -> CLI validates args and dispatches the provider launch
   -> backend resolves clients/agents/<agent>.md
   -> detached launch prints `Job <job> <launchState> (session <session>)`
-  -> cd "<path>" && coral-cli wait jobs "<job>" --embed
+  -> cd "<path>" && coral-cli jobs wait "<job>" --embed
   -> read the printed `Result path: <path>` for the full artifact
 ```
 

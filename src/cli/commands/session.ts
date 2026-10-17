@@ -1,7 +1,7 @@
 import { decodeWaitCursor, WAIT_CURSOR_REPLAY_NOTICE } from '../../jobs/wait/cursor.js';
 import type { WaitCursor } from '../../jobs/wait/contract.js';
 import { parseWaitSnapshot } from '../../jobs/wait/snapshot.js';
-import { formatWaitSnapshot, formatWaitContinuation } from '../format/wait.js';
+import { formatWaitSnapshot, formatWaitContinuation, waitCommandPrefix } from '../format/wait.js';
 import { mapWaitSubscriptionError, SOFT_CURSOR_REFUSALS } from '../wait-stream-error.js';
 import { MAX_WAIT_JOB_IDS } from '../../jobs/wait/stream-event.js';
 import { BackendToolHttpError } from '../../transport/http/errors.js';
@@ -12,9 +12,10 @@ import { z } from 'zod';
 
 import { isLivePhase, jobPhaseSchema } from '../../jobs/phase.js';
 import type { JobStatus } from '../../jobs/records.js';
+import { waitCommandPaths } from '../../coordinator/handoff-routing/wait-command.js';
 import type { AbortResult } from '../../jobs/contracts/abort-registry.js';
 import type { ProviderRegistry } from '../../providers/registry.js';
-import { getProviderNames, makeClient, type AbortOptions } from '../dispatch.js';
+import { getProviderNames, makeClient } from '../dispatch.js';
 import { emitError, getTerminalContext } from '../emit.js';
 import { parseJobIds } from '../flags.js';
 import { flushPendingReadStoreNote } from '../read-store.js';
@@ -42,6 +43,12 @@ type AbortQuerySelector = {
   provider?: string;
 };
 
+type AbortOptions = {
+  all?: boolean;
+  phase?: string;
+  provider?: string;
+};
+
 type WaitJobsOptions = {
   snapshot?: boolean;
   unbounded?: boolean;
@@ -53,8 +60,16 @@ type WaitJobsOptions = {
 
 export function registerSessionCommands(program: Command, providerRegistry: ProviderRegistry): void {
   const registeredProviders = getProviderNames(providerRegistry);
+  const jobsCommand = program.command('jobs').description('List, monitor, and manage jobs');
+  registerJobsListCommand(jobsCommand, registeredProviders);
+  registerJobsWaitCommand(jobsCommand, program);
+  registerJobsAbortCommand(jobsCommand, registeredProviders);
+  registerJobsDetailCommand(jobsCommand);
+  registerJobsReleaseCommand(jobsCommand);
+}
+
+function registerJobsListCommand(jobsCommand: Command, registeredProviders: string[]): void {
   const providerSet = new Set(registeredProviders);
-  const livePhaseList = ['queued', 'launching', 'running'] as const;
   const jobsOptionsSchema = z
     .object({
       phase: jobPhaseSchema.optional(),
@@ -81,66 +96,9 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
         });
       }
     });
-  const abortSelectorSchema = z
-    .object({
-      all: z.boolean().optional(),
-      phase: z.string().optional(),
-      provider: z.string().optional(),
-    })
-    .superRefine((value, ctx) => {
-      const hasAll = value.all === true;
-      const hasPhase = value.phase !== undefined;
-      const hasProvider = value.provider !== undefined;
 
-      if (!hasAll && !hasPhase && !hasProvider) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: 'abort requires jobs <ids...>, --all, --phase, or --provider',
-        });
-      }
-
-      if (hasAll && (hasPhase || hasProvider)) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: '--all cannot be used with --phase or --provider',
-          path: ['all'],
-        });
-      }
-
-      if (value.phase !== undefined) {
-        const phaseResult = jobPhaseSchema.safeParse(value.phase);
-        if (!phaseResult.success) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            message: `--phase must be one of: ${livePhaseList.join(', ')}`,
-            path: ['phase'],
-          });
-        } else if (!isLivePhase(phaseResult.data)) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            message: `--phase must be one of: ${livePhaseList.join(', ')}`,
-            path: ['phase'],
-          });
-        }
-      }
-
-      if (value.provider !== undefined && !providerSet.has(value.provider)) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: `--provider must be one of: ${registeredProviders.join(', ')}`,
-          path: ['provider'],
-        });
-      }
-    });
-  const reportAbortResult = (result: AbortResult): void => {
-    process.stdout.write(formatAbortResult(result) + '\n');
-    if ((result.refused?.length ?? 0) + (result.held?.length ?? 0) + (result.abandoned?.length ?? 0) > 0) {
-      process.exitCode = ABORT_REFUSED_EXIT_CODE;
-    }
-  };
-
-  const jobsCommand = program.command('jobs');
-  jobsCommand
+  const jobsListCommand = jobsCommand.command('list');
+  jobsListCommand
     .description('List live jobs across all projects (current project first, then KB jobs, then other directories)')
     .option('--phase <phase>', 'Limit jobs to a single phase')
     .option('--provider <name>', 'Limit jobs to a registered provider')
@@ -152,7 +110,7 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
       try {
         const parsed = jobsOptionsSchema.parse(opts);
         const projectRoot = process.cwd();
-        const client = makeClient(projectRoot, jobsCommand);
+        const client = makeClient(projectRoot, jobsListCommand);
         const result = await client.listJobs({
           allProjects: true,
           ...(parsed.mine === true ? { mine: true } : {}),
@@ -182,24 +140,138 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
         emitError(normalizeUsageError(error));
       }
     });
+}
 
-  const jobsReleaseCommand = jobsCommand.command('release');
-  jobsReleaseCommand
-    .description('Exempt jobs from the session wait requirement without stopping them')
-    .argument('<jobIds...>', 'Job IDs')
-    .action(async (jobIds: string[]) => {
+function registerJobsWaitCommand(jobsCommand: Command, program: Command): void {
+  configureWaitJobsCommand(jobsCommand.command(waitCommandPaths.current.split(' ')[1])).action(runWaitJobs);
+  registerLegacyWaitJobs(program, runWaitJobs);
+}
+
+async function runWaitJobs(jobIdArgs: string[], opts: WaitJobsOptions, command: Command): Promise<void> {
+  try {
+    const lines = validateWaitJobsOptions(opts);
+    const jobIds = parseJobIds(jobIdArgs.join(' '));
+    if (new Set(jobIds).size !== jobIds.length)
+      throw new UsageError('Each job ID must appear only once. Remove the duplicate job IDs and rerun.');
+    if (jobIds.length > MAX_WAIT_JOB_IDS)
+      throw new UsageError(`At most ${MAX_WAIT_JOB_IDS} jobs may be waited on at once. Split the IDs across commands.`);
+    const projectRoot = process.cwd();
+    const client = makeClient(projectRoot, command);
+    if (opts.snapshot) await runWaitSnapshot(client, jobIds, projectRoot, opts, lines);
+    else await runStreamingWaitJobs(client, jobIds, projectRoot, opts);
+  } catch (error) {
+    if (error instanceof WaitInvocationEnded) throw error;
+    emitError(normalizeUsageError(error));
+  }
+}
+
+function registerJobsAbortCommand(jobsCommand: Command, registeredProviders: string[]): void {
+  const providerSet = new Set(registeredProviders);
+  const livePhaseList = ['queued', 'launching', 'running'] as const;
+  const abortUsage =
+    'Use one of these forms:\n' +
+    '  coral-cli jobs abort <jobIds...>\n' +
+    '  coral-cli jobs abort --all\n' +
+    '  coral-cli jobs abort [--phase <phase>] [--provider <name>]\n' +
+    '--phase and --provider may be combined; specify at least one.';
+  const abortSelectorSchema = z
+    .object({
+      all: z.boolean().optional(),
+      phase: z.string().optional(),
+      provider: z.string().optional(),
+    })
+    .superRefine((value, ctx) => {
+      const hasAll = value.all === true;
+      const hasPhase = value.phase !== undefined;
+      const hasProvider = value.provider !== undefined;
+
+      if (!hasAll && !hasPhase && !hasProvider) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: abortUsage,
+        });
+      }
+
+      if (hasAll && (hasPhase || hasProvider)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `--all cannot be used with --phase or --provider. ${abortUsage}`,
+          path: ['all'],
+        });
+      }
+
+      if (value.phase !== undefined) {
+        const phaseResult = jobPhaseSchema.safeParse(value.phase);
+        if (!phaseResult.success) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `--phase must be one of: ${livePhaseList.join(', ')}`,
+            path: ['phase'],
+          });
+        } else if (!isLivePhase(phaseResult.data)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `--phase must be one of: ${livePhaseList.join(', ')}`,
+            path: ['phase'],
+          });
+        }
+      }
+
+      if (value.provider !== undefined && !providerSet.has(value.provider)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `--provider must be one of: ${registeredProviders.join(', ')}`,
+          path: ['provider'],
+        });
+      }
+    });
+
+  const abortJobsCommand = jobsCommand.command('abort');
+  abortJobsCommand
+    .description('Abort jobs by ID or live jobs in the current work directory (including shared KB jobs)')
+    .argument('[jobIds...]', 'Job IDs')
+    .addHelpText('after', `\n${abortUsage}\n`)
+    .option('--all', 'Abort all live jobs in the current work directory')
+    .option('--phase <phase>', 'Abort live jobs in a single phase in the current work directory')
+    .option('--provider <name>', 'Abort live jobs for a registered provider in the current work directory')
+    .action(async (jobIdArgs: string[], opts: AbortOptions) => {
       try {
-        const result = await makeClient(process.cwd(), jobsReleaseCommand).releaseJobs(jobIds.flatMap(parseJobIds));
-        for (const jobId of result.released) process.stdout.write(`Job ${jobId} released; it continues running.\n`);
-        for (const jobId of result.unknown)
-          process.stdout.write(`Job ${jobId} is unknown; nothing released. Run coral-cli jobs to check the job ID.\n`);
-        for (const jobId of result.terminal)
-          process.stdout.write(`Job ${jobId} is already terminal; nothing released.\n`);
+        const hasIds = jobIdArgs.length > 0;
+        const hasSelector = opts.all === true || opts.phase !== undefined || opts.provider !== undefined;
+        if (hasIds === hasSelector) throw new UsageError(abortUsage);
+        const parsed = hasIds ? undefined : abortSelectorSchema.parse(opts);
+        const projectRoot = process.cwd();
+        const client = makeClient(projectRoot, abortJobsCommand);
+        let jobIds = hasIds ? parseJobIds(jobIdArgs.join(' ')) : [];
+        if (parsed !== undefined) {
+          const selector: AbortQuerySelector = {
+            projectRoot,
+            all: false,
+            ...(parsed.phase !== undefined ? { phase: parsed.phase as JobStatus['phase'] } : {}),
+            ...(parsed.provider !== undefined ? { provider: parsed.provider } : {}),
+          };
+          const jobs = await client.listJobs(selector);
+          jobIds = jobs.jobs.map(({ jobId }) => jobId);
+        }
+        if (jobIds.length === 0) {
+          reportAbortResult({ aborted: [], notFound: [] });
+          return;
+        }
+        reportAbortResult(await client.abortJobs(jobIds));
       } catch (error) {
         emitError(normalizeUsageError(error));
       }
     });
+}
 
+function reportAbortResult(result: AbortResult): void {
+  process.stdout.write(formatAbortResult(result) + '\n');
+  if ((result.refused?.length ?? 0) + (result.held?.length ?? 0) + (result.abandoned?.length ?? 0) > 0) {
+    process.exitCode = ABORT_REFUSED_EXIT_CODE;
+  }
+}
+
+function registerJobsDetailCommand(jobsCommand: Command): void {
   const jobsDetailCommand = jobsCommand.command('detail');
   jobsDetailCommand
     .description('Show detailed status for one job')
@@ -237,26 +309,31 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
         emitError(normalizeUsageError(error));
       }
     });
+}
 
-  async function runWaitJobs(jobIds: string[], opts: WaitJobsOptions, command: Command): Promise<void> {
-    const lines = validateWaitJobsOptions(opts);
-    if (new Set(jobIds).size !== jobIds.length)
-      throw new UsageError('Each job ID must appear only once. Remove the duplicate job IDs and rerun.');
-    if (jobIds.length > MAX_WAIT_JOB_IDS)
-      throw new UsageError(`At most ${MAX_WAIT_JOB_IDS} jobs may be waited on at once. Split the IDs across commands.`);
-    const projectRoot = process.cwd();
-    const client = makeClient(projectRoot, command);
-    if (opts.snapshot) await runWaitSnapshot(client, jobIds, projectRoot, opts, lines);
-    else await runStreamingWaitJobs(client, jobIds, projectRoot, opts);
-  }
+function registerJobsReleaseCommand(jobsCommand: Command): void {
+  const jobsReleaseCommand = jobsCommand.command('release');
+  jobsReleaseCommand
+    .description('Exempt jobs from the session wait requirement without stopping them')
+    .argument('<jobIds...>', 'Job IDs')
+    .action(async (jobIds: string[]) => {
+      try {
+        const result = await makeClient(process.cwd(), jobsReleaseCommand).releaseJobs(jobIds.flatMap(parseJobIds));
+        for (const jobId of result.released) process.stdout.write(`Job ${jobId} released; it continues running.\n`);
+        for (const jobId of result.unknown)
+          process.stdout.write(
+            `Job ${jobId} is unknown; nothing released. Run coral-cli jobs list to check the job ID.\n`,
+          );
+        for (const jobId of result.terminal)
+          process.stdout.write(`Job ${jobId} is already terminal; nothing released.\n`);
+      } catch (error) {
+        emitError(normalizeUsageError(error));
+      }
+    });
+}
 
-  const waitCommand = program.command('wait');
-  waitCommand.description(
-    'Monitor jobs until the first terminal or ~590 s, then return a continuation; --snapshot returns immediately; --unbounded drops the ~590 s bound',
-  );
-
-  const waitJobsCommand = waitCommand.command('jobs');
-  waitJobsCommand
+function configureWaitJobsCommand(command: Command): Command {
+  return command
     .description(
       'Monitor jobs until the first terminal or ~590 s, then return a continuation; --snapshot returns immediately; --unbounded drops the ~590 s bound',
     )
@@ -282,67 +359,16 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
         'Otherwise permanent refusals exit 1; remaining collection work exits 75; exhausted successful sets exit 0.\n' +
         'Ctrl+C stops monitoring with exit 75 and a continuation; it never aborts jobs.\n' +
         'Run the continuation or remediation command printed in the output.\n',
-    )
-    .action(async (jobIdArgs: string[], opts: WaitJobsOptions) => {
-      try {
-        await runWaitJobs(parseJobIds(jobIdArgs.join(' ')), opts, waitJobsCommand);
-      } catch (error) {
-        if (error instanceof WaitInvocationEnded) throw error;
-        emitError(normalizeUsageError(error));
-      }
-    });
+    );
+}
 
-  const abortCommand = program.command('abort');
-  abortCommand
-    .description('Abort running jobs')
-    .option('--all', 'Abort all live jobs in the current work directory (plus shared KB jobs)')
-    .option('--phase <phase>', 'Abort live jobs in a single phase (current work directory + KB jobs)')
-    .option('--provider <name>', 'Abort live jobs for a registered provider in the current work directory')
-    .action(async (opts: AbortOptions) => {
-      try {
-        const parsed = abortSelectorSchema.parse(opts);
-        const projectRoot = process.cwd();
-        const client = makeClient(projectRoot, abortCommand);
-
-        const selector: AbortQuerySelector = {
-          projectRoot,
-          all: false,
-          ...(parsed.phase !== undefined ? { phase: parsed.phase as JobStatus['phase'] } : {}),
-          ...(parsed.provider !== undefined ? { provider: parsed.provider } : {}),
-        };
-        const jobs = await client.listJobs(selector);
-        const jobIds = jobs.jobs.map(({ jobId }) => jobId);
-
-        if (jobIds.length === 0) {
-          reportAbortResult({ aborted: [], notFound: [] });
-          return;
-        }
-
-        const result = await client.abortJobs(jobIds);
-        reportAbortResult(result);
-      } catch (error) {
-        emitError(normalizeUsageError(error));
-      }
-    });
-
-  const abortJobsCommand = abortCommand.command('jobs');
-  abortJobsCommand
-    .description('Abort one or more jobs by ID')
-    .argument('<jobIds...>', 'Job IDs')
-    .action(async (jobIdArgs: string[]) => {
-      try {
-        const parentOpts = abortCommand.opts<AbortOptions>();
-        if (parentOpts.all === true || parentOpts.phase !== undefined || parentOpts.provider !== undefined) {
-          throw new UsageError('abort jobs cannot be used with --all, --phase, or --provider');
-        }
-        const projectRoot = process.cwd();
-        const client = makeClient(projectRoot, abortJobsCommand);
-        const result = await client.abortJobs(parseJobIds(jobIdArgs.join(' ')));
-        reportAbortResult(result);
-      } catch (error) {
-        emitError(normalizeUsageError(error));
-      }
-    });
+function registerLegacyWaitJobs(
+  program: Command,
+  action: (jobIds: string[], opts: WaitJobsOptions, command: Command) => Promise<void>,
+): void {
+  const [group, verb] = waitCommandPaths.legacyWaitJobs.split(' ');
+  const wait = program.command(group, { hidden: true });
+  configureWaitJobsCommand(wait.command(verb, { hidden: true })).action(action);
 }
 
 async function runWaitSnapshot(
@@ -391,7 +417,7 @@ async function runWaitSnapshot(
   } catch {
     throw new WaitSnapshotResponseError(
       invocation?.originalCommand ??
-        `coral-cli wait jobs ${jobIds.join(' ')} --snapshot${opts.cursor === undefined ? '' : ` --cursor ${opts.cursor}`}${opts.lines === undefined ? '' : ` --lines ${opts.lines}`}`,
+        `${waitCommandPrefix()} ${jobIds.join(' ')} --snapshot${opts.cursor === undefined ? '' : ` --cursor ${opts.cursor}`}${opts.lines === undefined ? '' : ` --lines ${opts.lines}`}`,
     );
   }
   const output = formatWaitSnapshot(snapshot) + '\n';
@@ -407,7 +433,7 @@ async function runWaitSnapshot(
     throw new WaitOutputError(
       error,
       invocation?.originalCommand ??
-        `coral-cli wait jobs ${jobIds.join(' ')} --snapshot${opts.cursor === undefined ? '' : ` --cursor ${opts.cursor}`}${opts.lines === undefined ? '' : ` --lines ${opts.lines}`}`,
+        `${waitCommandPrefix()} ${jobIds.join(' ')} --snapshot${opts.cursor === undefined ? '' : ` --cursor ${opts.cursor}`}${opts.lines === undefined ? '' : ` --lines ${opts.lines}`}`,
     );
   }
 

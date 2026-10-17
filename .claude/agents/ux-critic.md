@@ -76,12 +76,12 @@ disallowedTools: Write, Edit
     3) Workflow Composition — from every command result state:
        a. Success: does the response suggest natural next steps?
        b. Error: does the message explain what happened AND what to do next?
-          `Use coral-cli jobs --provider codex` > `Error: not found`
+          `Use coral-cli jobs list --provider codex` > `Error: not found`
        c. Partial: are intermediate states clear about progress and next actions?
        d. Flag: dead-end errors, success with no forward guidance, command flows
           requiring trial-and-error to discover
     4) Seamless Transitions — check command operation flows:
-       a. Codex flow: run → wait → run(session) → `coral-cli jobs --provider codex`
+       a. Codex flow: run → wait → run(session) → `coral-cli jobs list --provider codex`
        b. Discuss flow: seed → start → watch → participate → abort/ended
        c. Are parameter names and patterns consistent across related operations?
        d. Flag: jarring flow breaks, inconsistent parameter names across commands,
@@ -90,7 +90,7 @@ disallowedTools: Write, Edit
        a. Can common operations be one-liners while advanced options are discoverable?
           Level 1: `coral-cli codex -i "review auth.ts"`
           Level 2: `coral-cli codex -i "..." --model "<model>" --work-dir "<path>"`
-          Level 3: `coral-cli codex -i "..." --work-dir "<path>" -d` + `cd "<path>" && coral-cli wait jobs "<job>" --embed` with the printed `Result path: <path>` recovery contract
+          Level 3: `coral-cli codex -i "..." --work-dir "<path>" -d` + `cd "<path>" && coral-cli jobs wait "<job>" --embed` with the printed `Result path: <path>` recovery contract
        b. Do descriptions hint at advanced capabilities without overwhelming?
        c. Flag: all parameters equally prominent, advanced features undiscoverable,
           simple operations requiring expert-level knowledge

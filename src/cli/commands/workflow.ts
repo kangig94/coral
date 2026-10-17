@@ -25,7 +25,7 @@ export function registerWorkflowCommands(program: Command): void {
     .addHelpText(
       'after',
       '\nWhile following a launch, Ctrl+C stops following with exit 75 and a continuation; it never aborts the job.\n' +
-        'To abort the job, run coral-cli abort jobs <id>.\n',
+        'To abort the job, run coral-cli jobs abort <id>.\n',
     )
     .action(async (opts: WorkflowOptions) => {
       try {

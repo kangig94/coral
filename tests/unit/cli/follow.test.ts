@@ -34,7 +34,7 @@ import { BackendUnreachableError } from '#src/infra/http-errors.js';
   }
   const cursor = savedCursor(7);
   it('preserves the input cursor for an admitted silent job', async () => {
-    const budget = new WaitInvocation('bounded', ['node', 'coral-cli', 'wait', 'jobs', 'live-job']);
+    const budget = new WaitInvocation('bounded', ['node', 'coral-cli', 'jobs', 'wait', 'live-job']);
     invocations.push(budget);
     const out = capture();
     let opened!: () => void;
@@ -61,7 +61,7 @@ import { BackendUnreachableError } from '#src/infra/http-errors.js';
     budget.stop();
     await result;
     expect(out()).not.toContain('admission did not complete');
-    expect(out()).toContain(`Still waiting on 1 job. Run coral-cli wait jobs live-job --cursor ${cursor}`);
+    expect(out()).toContain(`Still waiting on 1 job. Run coral-cli jobs wait live-job --cursor ${cursor}`);
     expect(out()).toContain(`(cursor: ${cursor})`);
   });
   it('places the server deadline strictly inside the CLI budget', async () => {
@@ -116,7 +116,7 @@ import { BackendUnreachableError } from '#src/infra/http-errors.js';
         cb?.();
         return true;
       }) as typeof process.stdout.write);
-      const budget = new WaitInvocation('bounded', ['node', 'coral-cli', 'wait', 'jobs', 'ghost']);
+      const budget = new WaitInvocation('bounded', ['node', 'coral-cli', 'jobs', 'wait', 'ghost']);
       invocations.push(budget);
       const code = await followJobs({
         start: { kind: 'jobs', jobIds: ['ghost'] },
@@ -337,7 +337,7 @@ import { BackendUnreachableError } from '#src/infra/http-errors.js';
     expect(out).not.toContain('ERR');
     expect(out).toContain('Job a completed');
     expect(out).toContain(
-      `Run coral-cli wait jobs b --unbounded --cursor ${savedCursor(9)} in a background shell to continue waiting.`,
+      `Run coral-cli jobs wait b --unbounded --cursor ${savedCursor(9)} in a background shell to continue waiting.`,
     );
   });
 
@@ -416,7 +416,7 @@ import { BackendUnreachableError } from '#src/infra/http-errors.js';
     expect(code).toBe(expected);
     const cursorFlag = 'cursor' in cut ? '' : ` --cursor ${savedCursor(7)}`;
     expect(out).toContain(
-      `Run coral-cli wait jobs b --unbounded${cursorFlag} in a background shell to continue waiting.`,
+      `Run coral-cli jobs wait b --unbounded${cursorFlag} in a background shell to continue waiting.`,
     );
   });
 
@@ -458,7 +458,7 @@ import { BackendUnreachableError } from '#src/infra/http-errors.js';
     sigint?.();
     expect(await code).toBe(75);
     expect(out).toContain(
-      'Still waiting on 1 job. Run coral-cli wait jobs a --unbounded in a background shell to continue waiting.',
+      'Still waiting on 1 job. Run coral-cli jobs wait a --unbounded in a background shell to continue waiting.',
     );
   });
 }
@@ -505,7 +505,7 @@ it('leaves a stop that is still in progress on a second SIGINT with exit 75, its
     stop.reject(new Error('the stop ignored its signal'));
     expect(await code).toBe(75);
     expect(emitError).not.toHaveBeenCalled();
-    const continuation = 'Still waiting on 1 job. Run coral-cli wait jobs job-1 to continue waiting.';
+    const continuation = 'Still waiting on 1 job. Run coral-cli jobs wait job-1 to continue waiting.';
     expect(out.split(continuation)).toHaveLength(2);
     expect(out.indexOf(continuation)).toBeLessThan(out.indexOf('<exit>'));
   } finally {
@@ -529,7 +529,7 @@ it('preserves the saved cursor in backend-unreachable remediation', async () => 
       emitError,
       connect: async () => ({ kind: 'fatal-error', error: new BackendUnreachableError('unreachable') }),
     });
-    expect(emitError.mock.calls[0][0].message).toContain(`coral-cli wait jobs a --cursor ${cursor}`);
+    expect(emitError.mock.calls[0][0].message).toContain(`coral-cli jobs wait a --cursor ${cursor}`);
   } finally {
     vi.restoreAllMocks();
   }

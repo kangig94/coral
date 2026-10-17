@@ -143,13 +143,13 @@ carries `## Pioneer Ledger` after the items, pointing at the sealed Pioneer Repo
     <pioneer prompt>
     CORAL_INPUT`)
     job = parse `Provider job <job> <launchState> (provider session <session>)` from launch
-    terminal = Bash(`cd "<work_dir>" && coral-cli wait jobs ${job} --embed`)   // foreground; returns at terminal or the bound
+    terminal = Bash(`cd "<work_dir>" && coral-cli jobs wait ${job} --embed`)   // foreground; returns at terminal or the bound
     while true:
       if terminal begins `Still waiting` with `(cursor: <cursor>)`:
-        terminal = Bash(`cd "<work_dir>" && coral-cli wait jobs ${job} --cursor <cursor> --embed`)
+        terminal = Bash(the printed continuation command exactly as printed, from the same cwd)
         continue
       if terminal prints `remediation: <command>`:
-        terminal = Bash(`cd "<work_dir>" && <the printed coral-cli wait jobs command>`)
+        terminal = Bash(the printed remediation command exactly as printed, from the same cwd)
         continue
       if terminal contains `Result path: <path>`:
         output = Read(<path>)

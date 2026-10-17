@@ -1,5 +1,7 @@
 import { CommanderError } from 'commander';
 import { describe, expect, it } from 'vitest';
+import { buildProgram } from '#src/cli/program.js';
+import { collectCommandCoverage } from '#src/cli/classify.js';
 
 import { BackendToolHttpError } from '#src/transport/http/errors.js';
 import { BackendUnreachableError, TransientHttpError } from '#src/infra/http-errors.js';
@@ -18,7 +20,7 @@ import { IpcDrainRequestUnanswered, IpcLifecycleRefusal, IpcRpcError } from '#sr
 describe('cli errors', () => {
   it('sends a --unbounded resume to a background shell, where a foreground timeout cannot kill it silently', () => {
     expect(new WaitResumeError('stream interrupted', ['a'], '7', 'unbounded').remediation).toBe(
-      'Rerun `coral-cli wait jobs a --unbounded --cursor 7` in a background shell to continue waiting.',
+      'Rerun `coral-cli jobs wait a --unbounded --cursor 7` in a background shell to continue waiting.',
     );
   });
 
@@ -356,5 +358,30 @@ describe('cli errors', () => {
     ])('maps %s / %s to %i', (code, httpStatus, exitCode) => {
       expect(errorCodeToExit(code, httpStatus)).toBe(exitCode);
     });
+  });
+});
+
+it.each([
+  [['abort', 'jobs', 'X'], 'commander.unknownCommand', 'coral-cli'],
+  [['jobs', '--all'], 'commander.unknownOption', 'coral-cli jobs'],
+  [['jobs', 'missing'], 'commander.unknownCommand', 'coral-cli jobs'],
+  [['jobs', 'detail', 'a', 'extra'], 'commander.excessArguments', 'coral-cli jobs detail'],
+])('points %j at the deepest resolved command help', async (argv, code, command) => {
+  const program = buildProgram();
+  for (const command of [program, ...collectCommandCoverage(program).map(({ command }) => command)])
+    command.configureOutput({ writeOut: () => {}, writeErr: () => {} });
+  let caught: unknown;
+  try {
+    await program.parseAsync(argv, { from: 'user' });
+  } catch (error) {
+    caught = error;
+  }
+  expect(caught).toMatchObject({ code });
+  expect(buildErrorEnvelope(caught)).toMatchObject({
+    exitCode: 2,
+    envelope: {
+      code: 'invalid_usage',
+      remediation: `Run ${command} --help to see valid commands and options.`,
+    },
   });
 });

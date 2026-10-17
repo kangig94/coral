@@ -1,3 +1,5 @@
+import { waitCommandPrefix } from '../../coordinator/handoff-routing/wait-command.js';
+export { waitCommandPrefix } from '../../coordinator/handoff-routing/wait-command.js';
 import { formatResultAvailability } from './result-availability.js';
 import type { WaitSnapshot } from '../../jobs/wait/session.js';
 import { assertNever } from '../../infra/error-format.js';
@@ -75,7 +77,7 @@ export function waitContinuationCommand(
   cursor: string | null,
   mode: WaitContinuationMode,
 ): string {
-  return `coral-cli wait jobs ${jobIds.join(' ')}${CONTINUATION_MODE_FLAG[mode]}${cursor === null ? '' : ` --cursor ${cursor}`}`;
+  return `${waitCommandPrefix()} ${jobIds.join(' ')}${CONTINUATION_MODE_FLAG[mode]}${cursor === null ? '' : ` --cursor ${cursor}`}`;
 }
 
 /** Nothing ends an unbounded wait before a foreground shell's own timeout kills it without a continuation. */

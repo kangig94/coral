@@ -36,13 +36,13 @@ it('commits only a complete validated snapshot, preserves --snapshot, and cannot
     callback?.();
     return true;
   }) as never);
-  invocation = new WaitInvocation('snapshot', ['node', 'coral-cli', 'wait', 'jobs', 'a', '--snapshot']);
+  invocation = new WaitInvocation('snapshot', ['node', 'coral-cli', 'jobs', 'wait', 'a', '--snapshot']);
   installWaitInvocation(invocation);
   await program().parseAsync([
     'node',
     'coral-cli',
-    'wait',
     'jobs',
+    'wait',
     'a',
     '--snapshot',
     '--cursor',
@@ -57,19 +57,21 @@ it('commits only a complete validated snapshot, preserves --snapshot, and cannot
     errorOutput += text;
     return true;
   }) as never);
-  await program().parseAsync(['node', 'coral-cli', 'wait', 'jobs', 'a', '--snapshot']);
+  await program().parseAsync(['node', 'coral-cli', 'jobs', 'wait', 'a', '--snapshot']);
   expect(process.exitCode).toBe(75);
   expect(errorOutput).toContain('transient');
   expect(errorOutput).toContain('invalid snapshot');
   expect(errorOutput).toContain('No collection cursor advanced');
-  expect(errorOutput).toContain('Run coral-cli wait jobs a --snapshot');
+  expect(errorOutput).toContain('Run coral-cli jobs wait a --snapshot');
 });
 
 it('answers an older coordinator without the snapshot method with the restart refusal', async () => {
   const request = vi.fn().mockRejectedValue(new Error('Method not found'));
   vi.spyOn(ensure, 'ensure').mockResolvedValue({ request } as never);
   const p = program();
-  const wait = p.commands.find((command) => command.name() === 'wait')!.commands[0];
+  const wait = p.commands
+    .find((command) => command.name() === 'jobs')!
+    .commands.find((command) => command.name() === 'wait')!;
   await expect(
     dispatch.makeClient(process.cwd(), wait).snapshotJobsWait({ jobIds: ['a'], projectRoot: process.cwd() }),
   ).rejects.toMatchObject({

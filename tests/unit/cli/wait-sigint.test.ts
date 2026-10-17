@@ -19,8 +19,8 @@ function invocation(): WaitInvocation {
   const budget = new WaitInvocation('bounded', [
     'node',
     'coral-cli',
-    'wait',
     'jobs',
+    'wait',
     'a',
     'ghost',
     '--cursor',
@@ -90,7 +90,7 @@ it.each([
     vi.useFakeTimers();
     capture();
     const exit = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
-    const budget = new WaitInvocation(mode, ['node', 'coral-cli', 'wait', 'jobs', 'a']);
+    const budget = new WaitInvocation(mode, ['node', 'coral-cli', 'jobs', 'wait', 'a']);
     invocations.push(budget);
     const before = budget.remainingMs();
     vi.setSystemTime(Date.now() + 3_600_000);
@@ -149,7 +149,7 @@ it.each(['opening', 'silent', 'close'])('one watchdog bounds %s without advancin
   await vi.advanceTimersByTimeAsync(590_000);
   expect(await code).toBe(75);
   const frozen = stdout();
-  expect(frozen.match(/Run coral-cli wait jobs/g)).toHaveLength(1);
+  expect(frozen.match(/Run coral-cli jobs wait/g)).toHaveLength(1);
   if (stall === 'close') {
     expect(frozen).toContain(`--cursor ${frontier}`);
     expect(frozen).not.toContain('ghost');
@@ -160,7 +160,7 @@ it.each(['opening', 'silent', 'close'])('one watchdog bounds %s without advancin
     expect(frozen).toContain('Carrier unconfirmed for: a, ghost.');
   } else {
     expect(frozen).toContain('admission did not complete');
-    expect(frozen).toContain('Run coral-cli wait jobs a ghost --cursor opaque');
+    expect(frozen).toContain('Run coral-cli jobs wait a ghost --cursor opaque');
   }
   finishLate?.({ done: false, value: { type: 'waiting', waitingJobIds: ['late'] } });
   await Promise.resolve();
@@ -198,15 +198,15 @@ it('a saved cursor from an older build is refused softly and the collection rest
 });
 
 it.each([
-  [['wait', 'jobs', '--cursor=saved', '--embed', 'a', 'b'], 'bounded'],
-  [['wait', 'jobs', '--snapshot', 'a'], 'snapshot'],
-  [['wait', 'jobs', 'a', '--help'], undefined],
+  [['jobs', 'wait', '--cursor=saved', '--embed', 'a', 'b'], 'bounded'],
+  [['jobs', 'wait', '--snapshot', 'a'], 'snapshot'],
+  [['jobs', 'wait', 'a', '--help'], undefined],
   [['jobs', 'detail', 'a'], undefined],
 ] as const)('recognizes accepted invocation syntax before preflight: %j', (args, mode) => {
   const program = new Command();
   program
-    .command('wait')
     .command('jobs')
+    .command('wait')
     .argument('<ids...>')
     .option('--cursor <cursor>')
     .option('--embed')

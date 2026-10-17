@@ -8,6 +8,7 @@ import {
 declare const __VERSION__: string;
 
 import { Command } from 'commander';
+import { configureCommanderHelp } from './errors.js';
 
 import {
   HandoffRunError,
@@ -122,7 +123,11 @@ export async function parseProgramWithHandoff(
   installWaitInvocation(invocation);
   const dispatch = async () => {
     const sessionJobQuery =
-      argv[2] === 'jobs' && argv.includes('--mine') && argv.includes('--unwaited') && argv.includes('--json');
+      argv[2] === 'jobs' &&
+      argv[3] === 'list' &&
+      argv.includes('--mine') &&
+      argv.includes('--unwaited') &&
+      argv.includes('--json');
     const handoff = sessionJobQuery ? null : await runCliHandoffPreflight(argv);
     invocation?.check();
     if (handoff !== null) return handoff;
@@ -178,6 +183,7 @@ export function buildProgram(providerRegistry: ProviderRegistry = createBuiltInP
   registerKbCommands(program);
   registerExpansionCommands(program);
   assertCommandClassCoverage(program);
+  configureCommanderHelp(program);
 
   return program;
 }

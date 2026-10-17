@@ -12,20 +12,9 @@ export const DEFAULT_MUTATION_LOCK_TIMEOUT_MS = 30_000;
 const MUTATION_DEADLINE_GRACE_MS = 100;
 
 /**
- * Options for a single `withMutationLock` call.
- *
- * `timeoutMs` overrides the runtime default — use a longer window for heavy
- * paths (e.g. `kb reindex`, `kb source import`) that legitimately exceed 30s.
- * The deadline aborts the composed signal but does NOT release the lock; the
- * lock transfers to the next caller only when `fn` actually settles
- * (success/failure/abort propagation). Stuck non-cooperative mutations
- * surface on `/health.diagnostics.mutationBlocked` instead.
- *
- * `signal` lets callers compose external aborts (e.g. user `coral-cli abort`)
- * with the internal deadline. Both abort the same composed signal that `fn`
- * receives; reasons remain distinguishable — caller's `signal.reason`
- * propagates verbatim while the deadline aborts with
- * `{ kind: 'mutation_deadline', timeoutMs }`.
+ * A deadline may abort the composed signal but must not release the lock before fn settles.
+ * The caller's signal.reason must propagate verbatim, distinct from the deadline's
+ * { kind: 'mutation_deadline', timeoutMs } reason.
  */
 export interface KbMutationLockOptions<
   TIndex = unknown,

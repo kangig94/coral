@@ -1,3 +1,4 @@
+import { waitCommandPrefix } from '../../coordinator/handoff-routing/wait-command.js';
 import { formatResultAvailability } from './result-availability.js';
 import type { CauseRef } from '../../causality/cause-ref.js';
 import { describeTerminalOutcome } from '../../jobs/outcome.js';
@@ -363,13 +364,13 @@ export type JobsOperatorCommand =
 export function renderJobsOperatorCommand(command: JobsOperatorCommand): string {
   switch (command.kind) {
     case 'abort-job':
-      return `coral-cli abort jobs ${command.jobId}`;
+      return `coral-cli jobs abort ${command.jobId}`;
     case 'jobs-detail-full':
       return `coral-cli jobs detail ${command.jobId} --full`;
     case 'jobs-detail':
       return `coral-cli jobs detail ${command.jobId}`;
     case 'wait-job':
-      return `coral-cli wait jobs ${command.jobId}`;
+      return `${waitCommandPrefix()} ${command.jobId}`;
   }
 }
 

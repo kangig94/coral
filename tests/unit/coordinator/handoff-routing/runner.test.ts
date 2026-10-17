@@ -285,12 +285,12 @@ describe('handoff-routing/runner', () => {
           started.resolve();
           return child;
         });
-        const result = runHandoff(cliOperation('wait', 'jobs', 'a'), {
+        const result = runHandoff(cliOperation('jobs', 'wait', 'a'), {
           pluginRoot: '/plugin/root',
           waitInvocation: {
             mode: 'bounded',
             signal: controller.signal,
-            originalCommand: 'coral-cli wait jobs a',
+            originalCommand: 'coral-cli jobs wait a',
             remainingMs: () => 10000,
             cleanupRemainingMs: () => 1000,
             saveContinuation: vi.fn(),
@@ -519,12 +519,12 @@ it('refuses a wait whose newer target fails the wait contract probe, writing no 
     queueMicrotask(() => callback(Object.assign(new Error('unsupported contract'), { code: 2 }), ''));
     return childThatExits(2, null);
   });
-  const result = runHandoffResult(cliOperation('wait', 'jobs', 'a'), {
+  const result = runHandoffResult(cliOperation('jobs', 'wait', 'a'), {
     pluginRoot: '/plugin/root',
     waitInvocation: {
       mode: 'bounded',
       signal: new AbortController().signal,
-      originalCommand: 'coral-cli wait jobs a',
+      originalCommand: 'coral-cli jobs wait a',
       remainingMs: () => 10000,
       cleanupRemainingMs: () => 11000,
       saveContinuation: vi.fn(),
@@ -540,10 +540,10 @@ it('refuses a wait whose newer target fails the wait contract probe, writing no 
   expect(mockState.publishGenerationCoordinatedHandoffRoutingTransitions).not.toHaveBeenCalled();
 });
 
-it('keeps the monitor IPC listener through close when delivery follows exit', async () => {
+it.each([1, 2])('accepts contract version %s and keeps the monitor IPC listener through close', async (version) => {
   const save = vi.fn();
   mockState.execFile.mockImplementation((_file, _args, _options, callback) => {
-    queueMicrotask(() => callback(null, JSON.stringify({ version: 1, monitorOnly: true })));
+    queueMicrotask(() => callback(null, JSON.stringify({ version, monitorOnly: true })));
     return childThatExits(0, null);
   });
   mockState.spawn.mockImplementation(() => {
@@ -565,12 +565,12 @@ it('keeps the monitor IPC listener through close when delivery follows exit', as
     );
     return child;
   });
-  await runHandoff(cliOperation('wait', 'jobs', 'a'), {
+  await runHandoff(cliOperation('jobs', 'wait', 'a'), {
     pluginRoot: '/plugin/root',
     waitInvocation: {
       mode: 'bounded',
       signal: new AbortController().signal,
-      originalCommand: 'coral-cli wait jobs a',
+      originalCommand: 'coral-cli jobs wait a',
       remainingMs: () => 5000,
       cleanupRemainingMs: () => 5000,
       saveContinuation: save,
@@ -585,12 +585,12 @@ it('refuses a wait routed to a released CLI without the contract flag before any
     queueMicrotask(() => callback(null, '{}'));
     return childThatExits(0, null);
   });
-  const result = runHandoff(cliOperation('wait', 'jobs', 'a'), {
+  const result = runHandoff(cliOperation('jobs', 'wait', 'a'), {
     pluginRoot: '/plugin/root',
     waitInvocation: {
       mode: 'bounded',
       signal: new AbortController().signal,
-      originalCommand: 'coral-cli wait jobs a',
+      originalCommand: 'coral-cli jobs wait a',
       remainingMs: () => 5000,
       cleanupRemainingMs: () => 5000,
       saveContinuation: vi.fn(),
@@ -638,7 +638,7 @@ it('uses the remaining launch-follow invocation budget for its contract probe', 
   await expect(result).resolves.toMatchObject({ kind: 'delegated', outcome: { kind: 'handoff-success' } });
 });
 
-it('delegates a launch follow as a wait jobs invocation carrying its cursor, and hands the caller its child', async () => {
+it('delegates a launch follow as a jobs wait invocation carrying its cursor, and hands the caller its child', async () => {
   mockState.execFile.mockImplementation((_file, _args, _options, callback) => {
     queueMicrotask(() => callback(null, JSON.stringify({ version: 1, monitorOnly: true })));
     return childThatExits(0, null);
@@ -656,12 +656,12 @@ it('delegates a launch follow as a wait jobs invocation carrying its cursor, and
   );
   await expect(result).resolves.toMatchObject({ kind: 'delegated', outcome: { kind: 'handoff-exit', exitCode: 75 } });
   expect(mockState.spawn).toHaveBeenCalledOnce();
-  expect(mockState.spawn.mock.calls[0][1].slice(1)).toEqual(['wait', 'jobs', 'a', '--cursor', 'saved-cursor']);
+  expect(mockState.spawn.mock.calls[0][1].slice(1)).toEqual(['jobs', 'wait', 'a', '--cursor', 'saved-cursor']);
   expect(mockState.spawn.mock.calls[0][2].stdio).toBe('inherit');
   expect(onDelegatedChild).toHaveBeenCalledExactlyOnceWith(children[0]);
   await runHandoff(
     { kind: 'wait-jobs', jobId: 'a' },
     { pluginRoot: '/plugin/root', waitProbeRemainingMs: () => 10_000 },
   );
-  expect(mockState.spawn.mock.calls[1][1].slice(1)).toEqual(['wait', 'jobs', 'a']);
+  expect(mockState.spawn.mock.calls[1][1].slice(1)).toEqual(['jobs', 'wait', 'a']);
 });

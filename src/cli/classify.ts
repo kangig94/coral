@@ -1,16 +1,16 @@
 import type { Command } from 'commander';
+import { waitCommandPaths } from '../coordinator/handoff-routing/wait-command.js';
 
 import { classifyHandoffRoutingStatusOperatorInvocation } from '../coordinator/handoff-routing/repair-operation.js';
 
 export type CommandClass = 'directRead' | 'servedRead' | 'mutate' | 'subscribe';
 
 export type StaticCommandPath =
-  | 'jobs'
+  | 'jobs list'
   | 'jobs detail'
   | 'jobs release'
-  | 'wait jobs'
-  | 'abort'
-  | 'abort jobs'
+  | (typeof waitCommandPaths)[keyof typeof waitCommandPaths]
+  | 'jobs abort'
   | 'workflow'
   | 'backend recovery-quarantine list'
   | 'backend recovery-quarantine clear'
@@ -64,12 +64,12 @@ export type StaticCommandPath =
   | 'discuss abort';
 
 export const commandClassMap = {
-  jobs: 'directRead',
+  'jobs list': 'directRead',
   'jobs detail': 'servedRead',
   'jobs release': 'mutate',
-  'wait jobs': 'subscribe',
-  abort: 'mutate',
-  'abort jobs': 'mutate',
+  [waitCommandPaths.current]: 'subscribe',
+  [waitCommandPaths.legacyWaitJobs]: 'subscribe',
+  'jobs abort': 'mutate',
   workflow: 'mutate',
   'backend recovery-quarantine list': 'directRead',
   'backend recovery-quarantine clear': 'mutate',
@@ -135,7 +135,8 @@ export const commandContainerPaths = new Set<string>([
   'discuss',
   'expansion',
   'kb',
-  'wait',
+  waitCommandPaths.legacyWaitJobs.split(' ')[0],
+  'jobs',
   'kb source',
   'kb community',
   'kb wiki',

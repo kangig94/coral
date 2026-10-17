@@ -4,7 +4,7 @@
 
 ## Observed
 
-The host ran byte-identical Coral 0.10.10 under two Claude config directories, with sessions from both open at once. `coral-cli jobs` printed its job list correctly, preceded on stderr by:
+The host ran byte-identical Coral 0.10.10 under two Claude config directories, with sessions from both open at once. `coral-cli jobs list` printed its job list correctly, preceded on stderr by:
 
 ```
 Handoff routing-status selection publication for invocation <id> was refused by artifact classification undeterminable.

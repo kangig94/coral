@@ -11,7 +11,7 @@ Failed: job.progress.emitted
 ```
 
 Two different failed jobs, in two different projects, exported that same line. `job.progress.emitted`
-is an event type, not a failure. The same job's `coral-cli wait jobs` output rendered the real
+is an event type, not a failure. The same job's `coral-cli jobs wait` output rendered the real
 sentence — `The provider became unavailable, so this job stopped before completion. Retry the job.`
 with the proxy and build-set identities attached — so the diagnosis exists and one path drops it. The
 path that drops it is the one that writes the artifact a person opens after the fact.
@@ -62,6 +62,6 @@ Startable now; it touches no part of the routing-status audit branch.
 
 ## Why deferring is not free
 
-The exported result is what survives the session. `wait`'s output scrolls away, and a job whose
+The exported result is what survives the session. `jobs wait`'s output scrolls away, and a job whose
 provider disappeared is exactly the case a person comes back to read later — so the artifact that
 outlives the incident is the one carrying an event name instead of the reason.

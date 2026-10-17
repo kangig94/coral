@@ -11,7 +11,7 @@ function toText(chunk: string | Uint8Array): string {
 // Static import of `runCli`, invoked per case. Re-importing a self-executing entry through
 // `vi.resetModules()` used to charge this file's cold transform of the real command graph to whichever case
 // ran first, which flaked against the 5s default; collection absorbs it now.
-describe('expansion bootstrap output', () => {
+describe('CLI help exit boundary', () => {
   const originalArgv = [...process.argv];
   const originalChildEnv = new Map(CHILD_ENV_KEYS.map((key) => [key, process.env[key]]));
   let stdout = '';
@@ -58,6 +58,40 @@ describe('expansion bootstrap output', () => {
     expect(stdout).toContain('Usage: coral-cli expansion');
     expect(stdout).toContain('Manage expansion packages');
     expect(process.exit).not.toHaveBeenCalled();
+    expect(process.exitCode).toBe(0);
+  });
+
+  it.each(['jobs', 'kb', 'backend'])('prints bare %s help on stderr with exit 1', async (group) => {
+    await run([group]);
+
+    expect(stdout).toBe('');
+    expect(stderr).toContain(`Usage: coral-cli ${group}`);
+    expect(process.exit).not.toHaveBeenCalled();
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('prints jobs --help on stdout with exit 0', async () => {
+    await run(['jobs', '--help']);
+
+    expect(stdout).toContain('Usage: coral-cli jobs');
+    expect(stderr).toBe('');
+    expect(process.exit).not.toHaveBeenCalled();
+    expect(process.exitCode).toBe(0);
+  });
+
+  it('preserves bare expansion help as exit 1 without a JSON error', async () => {
+    await run(['expansion']);
+
+    expect(stdout).toBe('');
+    expect(process.exit).not.toHaveBeenCalled();
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('prints --version on stdout with exit 0', async () => {
+    await run(['--version']);
+
+    expect(stdout.trim()).not.toBe('');
+    expect(stderr).toBe('');
     expect(process.exitCode).toBe(0);
   });
 });

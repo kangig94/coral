@@ -313,7 +313,7 @@ it('launch-and-follow returns a failed terminal code and offers a continuation f
     });
     // Following a launch exits with the outcome; a pending artifact is offered as a continuation, not awaited.
     expect(code).toBe(42);
-    expect(stdout).toContain('Run coral-cli wait jobs a --cursor ');
+    expect(stdout).toContain('Run coral-cli jobs wait a --cursor ');
   } finally {
     write.mockRestore();
   }

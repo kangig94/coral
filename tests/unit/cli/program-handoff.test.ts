@@ -119,6 +119,22 @@ afterEach(() => {
 });
 
 describe('program', () => {
+  it.each([
+    ['jobs', '--mine', '--unwaited', '--json'],
+    ['jobs', 'detail', 'a', '--mine', '--unwaited', '--json'],
+    ['jobs', 'list', '--mine', '--json'],
+    ['jobs', 'list', '--unwaited', '--json'],
+    ['jobs', 'list', '--mine', '--unwaited'],
+  ])('does not bypass handoff for %j', async (...args) => {
+    mockState.runHandoff.mockResolvedValue(
+      recorded({ kind: 'delegated', version: '2.3.4', outcome: handoffSuccess() }),
+    );
+    const { buildProgram, parseProgramWithHandoff } = await loadProgramFresh();
+    const argv = ['node', 'coral-cli', ...args];
+    expect(await parseProgramWithHandoff(buildProgram(), argv)).toEqual(handoffSuccess());
+    expect(mockState.runHandoff).toHaveBeenCalledWith({ kind: 'cli-invocation', argv }, expect.anything());
+  });
+
   it('session job guard: names active filters when no jobs match', async () => {
     vi.stubEnv('CORAL_OWNER', 'session-guard');
     let output = '';
@@ -138,7 +154,7 @@ describe('program', () => {
         ],
       ] as const) {
         output = '';
-        await buildProgram().parseAsync(['node', 'coral-cli', 'jobs', ...flags]);
+        await buildProgram().parseAsync(['node', 'coral-cli', 'jobs', 'list', ...flags]);
         expect(output.split('\n')[0]).toBe(`No jobs match ${label}`);
         expect(process.exitCode ?? 0).toBe(0);
       }
@@ -160,6 +176,7 @@ describe('program', () => {
         'node',
         'coral-cli',
         'jobs',
+        'list',
         '--mine',
         '--unwaited',
         '--json',
@@ -275,13 +292,13 @@ it('two SIGINTs during preflight preserve pre-admission argv and skip command di
   const program = new Command();
   const action = vi.fn();
   program
-    .command('wait')
     .command('jobs')
+    .command('wait')
     .argument('<ids...>')
     .option('--cursor <cursor>')
     .option('--embed')
     .action(action);
-  const argv = ['node', 'coral-cli', 'wait', 'jobs', 'a', 'ghost', '--embed', '--cursor', 'original'];
+  const argv = ['node', 'coral-cli', 'jobs', 'wait', 'a', 'ghost', '--embed', '--cursor', 'original'];
   try {
     const result = parseProgramWithHandoff(program, argv);
     process.emit('SIGINT');
@@ -308,7 +325,7 @@ it('prints the relayed continuation when a delegated bounded monitor exits 75', 
     return true;
   }) as never);
   mockState.runHandoff.mockImplementation(async (_operation, options) => {
-    options.waitInvocation.saveContinuation('Still waiting. Run coral-cli wait jobs a --cursor C1\n', false);
+    options.waitInvocation.saveContinuation('Still waiting. Run coral-cli jobs wait a --cursor C1\n', false);
     return recorded({
       kind: 'delegated',
       version: '2.3.4',
@@ -316,11 +333,11 @@ it('prints the relayed continuation when a delegated bounded monitor exits 75', 
     });
   });
   const { buildProgram, parseProgramWithHandoff } = await loadProgramFresh();
-  expect(await parseProgramWithHandoff(buildProgram(), ['node', 'coral-cli', 'wait', 'jobs', 'a'])).toMatchObject({
+  expect(await parseProgramWithHandoff(buildProgram(), ['node', 'coral-cli', 'jobs', 'wait', 'a'])).toMatchObject({
     kind: 'handoff-exit',
     exitCode: 75,
   });
-  expect(output).toContain('Run coral-cli wait jobs a --cursor C1');
+  expect(output).toContain('Run coral-cli jobs wait a --cursor C1');
   expect(output.match(/Still waiting/g)).toHaveLength(1);
 });
 
@@ -336,7 +353,7 @@ it('does not append a parent remediation after the delegated child error', async
     return recorded({ kind: 'delegated', version: '2.3.4', outcome: { kind: 'handoff-exit', exitCode: 75 } });
   });
   const { buildProgram, parseProgramWithHandoff } = await loadProgramFresh();
-  await parseProgramWithHandoff(buildProgram(), ['node', 'coral-cli', 'wait', 'jobs', 'a']);
+  await parseProgramWithHandoff(buildProgram(), ['node', 'coral-cli', 'jobs', 'wait', 'a']);
   expect(output).toBe('Child readiness error. Run the child command.\n');
 });
 
@@ -350,13 +367,13 @@ it('injected clock bounds a stalled preflight without a process spawn', async ()
     return true;
   }) as never);
   mockState.runHandoff.mockImplementation(() => new Promise(() => {}));
-  const result = parseProgramWithHandoff(buildProgram(), ['node', 'coral-cli', 'wait', 'jobs', 'a'], {
+  const result = parseProgramWithHandoff(buildProgram(), ['node', 'coral-cli', 'jobs', 'wait', 'a'], {
     now: () => Date.now(),
   });
   try {
     await vi.advanceTimersByTimeAsync(590_000);
     expect(await result).toMatchObject({ kind: 'handoff-exit', exitCode: 75 });
-    expect(output.match(/Run coral-cli wait jobs/g)).toHaveLength(1);
+    expect(output.match(/Run coral-cli jobs wait/g)).toHaveLength(1);
   } finally {
     vi.useRealTimers();
   }
