@@ -36,7 +36,7 @@ This only affects malformed or truncated backend responses. In normal operation 
 
 ### `jobs send` outcomes
 
-`coral-cli jobs send <jobId> -i <text|file|->` adds a message to a running provider turn. Input follows provider-launch semantics: each token supplies stdin for `-`, file contents for an existing path, or literal text otherwise; resolved tokens are joined with spaces. Missing or blank input is a usage error, exit `2`, before dispatch.
+`coral-cli jobs send <jobId> -i <text|file|->` adds a message to a running provider turn. Input follows provider-launch semantics: tokens are joined with single spaces first. If the whole input is exactly `-`, it reads stdin; if it names an existing regular file (including a symlink to a file), it reads that file; otherwise it stays literal text. Directory paths and `-` or file paths among other text stay literal. Only one input per command may read stdin. Missing or blank input is a usage error, exit `2`, before dispatch.
 
 | Outcome | CLI exit | Meaning and next action |
 | --- | --- | --- |

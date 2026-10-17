@@ -280,7 +280,7 @@ function registerJobsSendCommand(jobsCommand: Command): void {
     .argument('<jobId>', 'Job ID')
     .option(
       '-i, --input <text-or-file...>',
-      'Message input (required; multiple tokens are joined with spaces; a single existing path is read as a file; - for stdin)',
+      'Message input (required; tokens are joined with single spaces; the whole input is read if it names an existing regular file, or stdin if exactly -; otherwise literal text)',
     )
     .action(async (jobId: string, opts: { input?: string[] }) => {
       try {
@@ -289,7 +289,7 @@ function registerJobsSendCommand(jobsCommand: Command): void {
         if (input.trim().length === 0) throw new UsageError(inputUsage);
         const result = await makeClient(process.cwd(), sendCommand).sendJob(jobId, input);
         const launch =
-          result.state === 'refused' && result.code === 'turn_ended' && !opts.input.includes('-')
+          result.state === 'refused' && result.code === 'turn_ended' && opts.input.join(' ') !== '-'
             ? readJobSendLaunch(jobId)
             : null;
         const output = formatJobSendResult(jobId, result, { inputTokens: opts.input, launch });

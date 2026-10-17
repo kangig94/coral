@@ -19,7 +19,7 @@ export function registerProviderCommands(program: Command, providerRegistry: Pro
       .argument('[agent]', 'Agent name (optional; omit for a raw prompt run)')
       .option(
         '-i, --input <text-or-file...>',
-        'Prompt text or file path (multiple tokens are joined with spaces; a single existing path is read as a file)',
+        'Prompt input (tokens are joined with single spaces; the whole input is read if it names an existing regular file, or stdin if exactly -; otherwise literal text)',
       )
       .option('-w, --work-dir <path>', 'Working directory')
       .option('-m, --model <model>', 'Model override')
