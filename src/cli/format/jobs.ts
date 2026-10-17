@@ -39,17 +39,88 @@ type WorkflowChildJob = JobsListResponse['jobs'][number];
 
 const MAX_INLINE = 10_000;
 
-export function formatJobSendResult(jobId: string, result: ProviderSendOutcome): { text: string; exitCode: number } {
+/** Remediation must preserve the caller's input tokens rather than substitute resolved file or stdin content. */
+export type JobSendOutputContext = Readonly<{
+  inputTokens: readonly string[];
+  launch: Readonly<{ provider: string; agent: string | null }> | null;
+}>;
+
+export function formatJobSendResult(
+  jobId: string,
+  result: ProviderSendOutcome,
+  context?: JobSendOutputContext,
+): { text: string; exitCode: number } {
   switch (result.state) {
     case 'delivered':
-      return { text: 'Message delivered.', exitCode: 0 };
+      return {
+        text: "Message delivered to the running turn. Whether the agent acts on it is the agent's decision.",
+        exitCode: 0,
+      };
     case 'refused':
-      return { text: `Message refused (${result.code}): ${result.reason.replace(/[\r\n]+/g, ' ')}`, exitCode: 1 };
+      return {
+        text: [
+          `Message refused (${result.code}): ${result.reason}`,
+          ...jobSendRefusalRemedy(jobId, result.code, context),
+        ].join('\n'),
+        exitCode: 1,
+      };
     case 'unknown':
       return {
-        text: `Unknown: message may have been delivered. ${result.reason.replace(/[\r\n]+/g, ' ')} ${formatJobsOperatorCommand({ kind: 'wait-job', jobId })}`,
+        text: [
+          "Unknown: message may have been delivered. Check the job's progress for evidence.",
+          formatJobsOperatorCommand({ kind: 'wait-job', jobId, grammar: 'current' }),
+        ].join('\n'),
         exitCode: 75,
       };
+  }
+}
+
+function jobSendRefusalRemedy(
+  jobId: string,
+  code: Extract<ProviderSendOutcome, { state: 'refused' }>['code'],
+  context: JobSendOutputContext | undefined,
+): readonly string[] {
+  switch (code) {
+    case 'turn_not_started':
+    case 'control_unavailable':
+      return context === undefined || context.inputTokens.includes('-')
+        ? ['Nothing was written. Try again with the same message.']
+        : [
+            'Nothing was written. Run the same request again.',
+            formatJobsOperatorCommand({ kind: 'send-job', jobId, inputTokens: context.inputTokens }),
+          ];
+    case 'turn_ended': {
+      const lines = [
+        "Read the job's result.",
+        formatJobsOperatorCommand({ kind: 'wait-job', jobId, grammar: 'current' }),
+      ];
+      if (context === undefined || context.inputTokens.includes('-')) {
+        return [...lines, 'Start a new job with the same message; that is a new conversation.'];
+      }
+      if (context.launch === null) {
+        return [
+          ...lines,
+          'Original launch details are unavailable. Start a new job with the same message; that is a new conversation.',
+        ];
+      }
+      return [
+        ...lines,
+        'Start a new job with the same message; this starts a new conversation. The original -w, -m and -b options are not reproduced.',
+        formatJobsOperatorCommand({ kind: 'launch-provider-job', ...context.launch, inputTokens: context.inputTokens }),
+      ];
+    }
+    case 'job_not_running':
+    case 'provider_rejected':
+    case 'transport_unsupported':
+      return ["Read the job's result.", formatJobsOperatorCommand({ kind: 'wait-job', jobId, grammar: 'current' })];
+    case 'not_found':
+      return ['List the available jobs.', formatJobsOperatorCommand({ kind: 'jobs-list' })];
+    case 'scope_mismatch':
+      return ['The job belongs to another project.'];
+    case 'unsupported_by_running_build':
+      return ['The running Coral build predates this feature; it becomes available after the session restarts.'];
+    default:
+      return assertNever(code);
   }
 }
 
@@ -374,7 +445,10 @@ export function renderJobsList(rows: JobsListItem[], filters: JobsListDisplayFil
 export type JobsOperatorCommand =
   | Readonly<{ kind: 'jobs-detail-full'; jobId: string }>
   | JobOperatorRemedy
-  | Readonly<{ kind: 'wait-job'; jobId: string }>;
+  | Readonly<{ kind: 'wait-job'; jobId: string; grammar?: 'current' }>
+  | Readonly<{ kind: 'send-job'; jobId: string; inputTokens: readonly string[] }>
+  | Readonly<{ kind: 'launch-provider-job'; provider: string; agent: string | null; inputTokens: readonly string[] }>
+  | Readonly<{ kind: 'jobs-list' }>;
 
 export function renderJobsOperatorCommand(command: JobsOperatorCommand): string {
   switch (command.kind) {
@@ -385,8 +459,33 @@ export function renderJobsOperatorCommand(command: JobsOperatorCommand): string 
     case 'jobs-detail':
       return `coral-cli jobs detail ${command.jobId}`;
     case 'wait-job':
-      return `${waitCommandPrefix()} ${command.jobId}`;
+      return `${command.grammar === 'current' ? 'coral-cli jobs wait' : waitCommandPrefix()} ${quoteJobsCommandArgument(command.jobId)}`;
+    case 'send-job':
+      return `coral-cli jobs send ${quoteJobsCommandArgument(command.jobId)} ${renderJobsInputTokens(command.inputTokens)}`;
+    case 'launch-provider-job':
+      return [
+        'coral-cli',
+        quoteJobsCommandArgument(command.provider),
+        ...(command.agent === null ? [] : [quoteJobsCommandArgument(command.agent)]),
+        renderJobsInputTokens(command.inputTokens),
+      ].join(' ');
+    case 'jobs-list':
+      return 'coral-cli jobs list';
   }
+}
+
+function renderJobsInputTokens(inputTokens: readonly string[]): string {
+  return inputTokens.some((token) => token.startsWith('-'))
+    ? inputTokens.map((token) => `--input=${quoteJobsCommandArgument(token)}`).join(' ')
+    : `-i ${inputTokens.map(quoteJobsCommandArgument).join(' ')}`;
+}
+
+function quoteJobsCommandArgument(value: string): string {
+  if (/^[a-zA-Z0-9_./:@%+=,-]+$/.test(value)) return value;
+  if (/[\r\n]/.test(value)) {
+    return `$'${value.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\r/g, '\\r').replace(/\n/g, '\\n')}'`;
+  }
+  return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
 function formatJobsOperatorCommand(command: JobsOperatorCommand): string {

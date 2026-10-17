@@ -215,12 +215,14 @@ describe('provider send uncertainty policy', () => {
   });
 
   it.each(['method_not_found', null] as const)(
-    'preserves an older proxy method-not-found with protocol code %s',
+    'replaces older-proxy method-not-found with restart guidance without a fault or replay: %s',
     async (protocolCode) => {
       const h = setup(failure(-32601, protocolCode));
       await expect(sendProviderOperation(h.deps, OPERATION, input)).resolves.toMatchObject({
         state: 'refused',
         code: 'unsupported_by_running_build',
+        reason:
+          'The running Coral build predates jobs send. Restart the session so the current Coral plugin loads; the coordinator follows the installed build.',
       });
       expect(h.exchange).toHaveBeenCalledTimes(1);
       expect(h.reportIncident).not.toHaveBeenCalled();

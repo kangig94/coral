@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { formatJobSendResult } from '#src/cli/format/jobs.js';
 import {
   createProviderProxyOperationAuthority,
   holdProviderProxyOperationControl,
@@ -287,7 +288,7 @@ describe('JobSendService', () => {
   });
 
   it.each(['method_not_found', null] as const)(
-    'keeps older-proxy method-not-found distinct with protocol code %s',
+    'reports an older proxy as refused/1 without a retry remedy or durable mutation: %s',
     async (protocolCode) => {
       const h = harness();
       const failure: ControlClientRemoteFailure = {
@@ -310,14 +311,23 @@ describe('JobSendService', () => {
       h.authorityFor.mockReturnValue(liveAuthority(EXECUTING, exchange));
       const before = totalChanges(h.db);
 
-      await expect(h.service.send(REQUEST)).resolves.toMatchObject({
+      const outcome = await h.service.send(REQUEST);
+      expect(outcome).toEqual({
         state: 'refused',
         code: 'unsupported_by_running_build',
-        reason: 'Unknown method',
+        reason:
+          'The running Coral build predates jobs send. Restart the session so the current Coral plugin loads; the coordinator follows the installed build.',
       });
 
+      const output = formatJobSendResult(REQUEST.jobId, outcome);
+      expect(output.exitCode).toBe(1);
+      expect(output.text).toContain('unsupported_by_running_build');
+      expect(output.text).toContain('The running Coral build predates jobs send.');
+      expect(output.text).toContain('Restart the session so the current Coral plugin loads');
+      expect(output.text).not.toMatch(/retry|resend|command=|may have been delivered/i);
       expect(exchange).toHaveBeenCalledTimes(1);
       expect(totalChanges(h.db)).toBe(before);
+      expect(readProviderOperationForJob(h.db, REQUEST.jobId)).toEqual(EXECUTING);
     },
   );
 

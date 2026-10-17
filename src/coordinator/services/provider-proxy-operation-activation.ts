@@ -286,7 +286,12 @@ export async function sendProviderOperation(
       providerOperationErrorCode(error) === 'method_not_found' ||
       (failure?.kind === 'json-rpc-error' && failure.jsonRpcCode === -32_601)
     ) {
-      return { state: 'refused', code: 'unsupported_by_running_build', reason: providerOperationErrorReason(error) };
+      return {
+        state: 'refused',
+        code: 'unsupported_by_running_build',
+        reason:
+          'The running Coral build predates jobs send. Restart the session so the current Coral plugin loads; the coordinator follows the installed build.',
+      };
     }
     return { state: 'unknown', reason: providerOperationErrorReason(error) };
   }

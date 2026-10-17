@@ -265,15 +265,25 @@ describe('command client routing', () => {
     expect(ensure).toHaveBeenCalledOnce();
   });
 
-  it('refuses an answered unknown send method without retrying', async () => {
+  it('reports an older coordinator as refused/1 with restart guidance and no retry remedy', async () => {
     mockState.request.mockRejectedValueOnce(new IpcRpcError({ code: -32601, message: 'Method not found' }));
     const client = makeClient(projectRoot, findCommand(buildProgram(), 'jobs', 'send'));
-    expect(await client.sendJob('job-1', 'message')).toEqual({
+    const outcome = await client.sendJob('job-1', 'message');
+    expect(outcome).toEqual({
       state: 'refused',
       code: 'unsupported_by_running_build',
-      reason: 'Method not found',
+      reason:
+        'The running Coral build predates jobs send. Restart the session so the current Coral plugin loads; the coordinator follows the installed build.',
     });
+    const output = formatJobSendResult('job-1', outcome);
+    expect(output.exitCode).toBe(1);
+    expect(output.text).toContain('unsupported_by_running_build');
+    expect(output.text).toContain('The running Coral build predates jobs send.');
+    expect(output.text).toContain('Restart the session so the current Coral plugin loads');
+    expect(output.text).not.toMatch(/retry|resend|command=|may have been delivered/i);
     expect(mockState.request).toHaveBeenCalledOnce();
+    expect(ensure).toHaveBeenCalledOnce();
+    expect(issueWithSuccessorAfterLifecycleRefusal).toHaveBeenCalledOnce();
   });
 
   it('validates send input before contacting the coordinator', async () => {

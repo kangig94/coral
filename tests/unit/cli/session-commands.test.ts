@@ -1,10 +1,13 @@
 import { Command } from 'commander';
+import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type * as NodeFs from 'node:fs';
 import { afterEach, expect, it, vi } from 'vitest';
 import type * as DispatchMod from '#src/cli/dispatch.js';
+import type * as ReadStoreMod from '#src/cli/read-store.js';
+import type * as FollowMod from '#src/cli/follow.js';
 import { registerSessionCommands } from '#src/cli/commands/session.js';
 import { assertCommandClassCoverage, classifyCommand } from '#src/cli/classify.js';
 import { createBuiltInProviderRegistry } from '#src/providers/bootstrap.js';
@@ -13,6 +16,8 @@ import { selectWaitSnapshot } from '#tests/helpers/wait-progress.js';
 import { admitted, testSession } from '#tests/helpers/wait-session.js';
 import type { ProviderSendOutcome } from '#src/providers/contract.js';
 import { registerProviderCommands } from '#src/cli/commands/provider.js';
+import { formatJobSendResult } from '#src/cli/format/jobs.js';
+import { followJobs } from '#src/cli/follow.js';
 
 const client = vi.hoisted(() => ({
   listJobs: vi.fn<() => Promise<JobsListResponse>>(async () => ({ jobs: [] })),
@@ -27,6 +32,19 @@ const client = vi.hoisted(() => ({
   })),
 }));
 const stdin = vi.hoisted(() => ({ text: '' }));
+const readStore = vi.hoisted(() => ({
+  jobs: { detail: vi.fn(() => ({ status: { jobKind: 'provider', sessionId: 'session-1' } })) },
+  sessions: {
+    readEntry: vi.fn<() => { binding: { provider: string }; agentName?: string }>(() => ({
+      binding: { provider: 'codex' },
+      agentName: 'coral:architect',
+    })),
+  },
+}));
+vi.mock('#src/cli/read-store.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof ReadStoreMod>()),
+  getSharedReadCoralStore: () => readStore,
+}));
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof NodeFs>();
   return {
@@ -39,6 +57,10 @@ vi.mock('node:fs', async (importOriginal) => {
 vi.mock('#src/cli/dispatch.js', async (importOriginal) => ({
   ...(await importOriginal<typeof DispatchMod>()),
   makeClient: () => client,
+}));
+vi.mock('#src/cli/follow.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof FollowMod>()),
+  followJobs: vi.fn(async () => 0),
 }));
 
 afterEach(() => {
@@ -234,29 +256,170 @@ it('rejects empty stdin with a usage error naming valid forms', async () => {
 });
 
 it.each([
-  [{ state: 'delivered' }, 0, 'Message delivered.'],
+  [
+    { state: 'delivered' },
+    0,
+    "Message delivered to the running turn. Whether the agent acts on it is the agent's decision.",
+  ],
   [
     { state: 'refused', code: 'turn_ended', reason: 'The turn ended.' },
     1,
-    'Message refused (turn_ended): The turn ended.',
+    'Message refused (turn_ended): The turn ended.\n' +
+      "Read the job's result.\ncommand=coral-cli jobs wait job-1\n" +
+      'Start a new job with the same message; this starts a new conversation. The original -w, -m and -b options are not reproduced.\n' +
+      'command=coral-cli codex coral:architect -i message',
   ],
   [
     { state: 'unknown', reason: 'No answer.' },
     75,
-    'Unknown: message may have been delivered. No answer. command=coral-cli jobs wait job-1',
+    "Unknown: message may have been delivered. Check the job's progress for evidence.\ncommand=coral-cli jobs wait job-1",
   ],
-] satisfies [ProviderSendOutcome, number, string][])(
-  'renders %j with exit %i',
-  async (result, exitCode, expected) => {
-    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
-    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-    client.sendJob.mockResolvedValueOnce(result);
-    await program().parseAsync(['jobs', 'send', 'job-1', '-i', 'message'], { from: 'user' });
-    expect(process.exitCode).toBe(exitCode);
-    expect(exitCode === 0 ? stdout : stderr).toHaveBeenCalledExactlyOnceWith(expected + '\n');
-    expect(exitCode === 0 ? stderr : stdout).not.toHaveBeenCalled();
+] satisfies [ProviderSendOutcome, number, string][])('renders %j with exit %i', async (result, exitCode, expected) => {
+  const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+  const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+  client.sendJob.mockResolvedValueOnce(result);
+  await program().parseAsync(['jobs', 'send', 'job-1', '-i', 'message'], { from: 'user' });
+  expect(process.exitCode).toBe(exitCode);
+  expect(exitCode === 0 ? stdout : stderr).toHaveBeenCalledExactlyOnceWith(expected + '\n');
+  expect(exitCode === 0 ? stderr : stdout).not.toHaveBeenCalled();
+});
+
+function printedCommands(output: string): string[][] {
+  return output
+    .split('\n')
+    .filter((line) => line.startsWith('command='))
+    .map((line) =>
+      execFileSync('bash', ['-c', `function coral-cli() { printf '%s\\0' "$@"; }\n${line.slice('command='.length)}`])
+        .toString()
+        .split('\0')
+        .slice(0, -1),
+    );
+}
+
+it.each(['turn_not_started', 'control_unavailable'] as const)(
+  'executes the exact printed %s remedy with the original file and text tokens',
+  async (code) => {
+    const output = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const dir = mkdtempSync(join(tmpdir(), 'coral-send-remedy-'));
+    const path = join(dir, "agent's message.txt");
+    writeFileSync(path, 'file body');
+    const tokens = ['prefix', path, '$HOME `literal` $(printf literal)'];
+    try {
+      client.sendJob.mockResolvedValueOnce({ state: 'refused', code, reason: 'Not ready.' });
+      await program().parseAsync(['jobs', 'send', 'job-1', '-i', ...tokens], { from: 'user' });
+      expect(process.exitCode).toBe(1);
+      const commands = printedCommands(output.mock.calls.map(([text]) => String(text)).join(''));
+      expect(commands).toEqual([['jobs', 'send', 'job-1', '-i', ...tokens]]);
+      await program().parseAsync(commands[0]!, { from: 'user' });
+      expect(client.sendJob).toHaveBeenCalledTimes(2);
+      expect(client.sendJob.mock.calls[1]).toEqual(client.sendJob.mock.calls[0]);
+      expect(process.exitCode).toBe(0);
+      expect(readStore.jobs.detail).not.toHaveBeenCalled();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   },
 );
+
+it.each([
+  ['codex', 'coral:architect'],
+  ['claude', undefined],
+] as const)(
+  'executes an ended-turn result remedy and parses a new %s conversation unchanged',
+  async (provider, agent) => {
+    const output = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    readStore.sessions.readEntry.mockReturnValueOnce({
+      binding: { provider },
+      ...(agent === undefined ? {} : { agentName: agent }),
+    });
+    client.sendJob.mockResolvedValueOnce({ state: 'refused', code: 'turn_ended', reason: 'Ended.' });
+    const inputTokens = ['a message', '$HOME', "don't expand"];
+    await program().parseAsync(['jobs', 'send', 'job-1', '-i', ...inputTokens], { from: 'user' });
+    expect(process.exitCode).toBe(1);
+    const commands = printedCommands(output.mock.calls.map(([text]) => String(text)).join(''));
+    expect(commands).toEqual([
+      ['jobs', 'wait', 'job-1'],
+      [provider, ...(agent === undefined ? [] : [agent]), '-i', ...inputTokens],
+    ]);
+    const root = program();
+    registerProviderCommands(root, createBuiltInProviderRegistry());
+    const launch = root.commands.find((command) => command.name() === provider)!;
+    const launchAction = vi.fn();
+    launch.action(launchAction);
+    await root.parseAsync(commands[1]!, { from: 'user' });
+    expect(launchAction).toHaveBeenCalledOnce();
+    expect(launchAction.mock.calls[0]?.[0]).toBe(agent);
+    expect(launch.opts()).toEqual({ input: inputTokens });
+    await root.parseAsync(commands[0]!, { from: 'user' });
+    expect(followJobs).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        start: { kind: 'jobs', jobIds: ['job-1'] },
+        projectRoot: process.cwd(),
+      }),
+    );
+    expect(process.exitCode).toBe(0);
+  },
+);
+
+it('keeps option-looking input tokens as message text in the runnable retry command', async () => {
+  vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+  const output = formatJobSendResult(
+    'job-1',
+    {
+      state: 'refused',
+      code: 'turn_not_started',
+      reason: 'Not ready.',
+    },
+    { inputTokens: ['-w', 'literal', '--model=example'], launch: null },
+  );
+  const commands = printedCommands(output.text);
+  await program().parseAsync(commands[0]!, { from: 'user' });
+  expect(client.sendJob).toHaveBeenCalledExactlyOnceWith('job-1', '-w literal --model=example');
+  expect(process.exitCode).toBe(0);
+});
+
+it('executes the exact not-found list remedy under the current program', async () => {
+  vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+  const output = formatJobSendResult('missing', { state: 'refused', code: 'not_found', reason: 'Missing.' });
+  const commands = printedCommands(output.text);
+  expect(commands).toEqual([['jobs', 'list']]);
+  await program().parseAsync(commands[0]!, { from: 'user' });
+  expect(client.listJobs).toHaveBeenCalledOnce();
+});
+
+it.each(['turn_not_started', 'control_unavailable', 'turn_ended'] as const)(
+  'does not print stdin-dependent commands for %s',
+  async (code) => {
+    vi.resetModules();
+    stdin.text = 'stdin body';
+    const output = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    client.sendJob.mockResolvedValueOnce({ state: 'refused', code, reason: 'Not delivered.' });
+    const root = new Command();
+    const { registerSessionCommands: register } = await import('#src/cli/commands/session.js');
+    register(root, createBuiltInProviderRegistry());
+    await root.parseAsync(['jobs', 'send', 'job-1', '-i', '-'], { from: 'user' });
+    expect(process.exitCode).toBe(1);
+    const text = output.mock.calls.map(([chunk]) => String(chunk)).join('');
+    expect(printedCommands(text)).toEqual(code === 'turn_ended' ? [['jobs', 'wait', 'job-1']] : []);
+    expect(text).not.toMatch(/resume|jobs send|coral-cli codex/i);
+    expect(readStore.jobs.detail).not.toHaveBeenCalled();
+  },
+);
+
+it('preserves the refusal and result remedy when launch metadata cannot be read', async () => {
+  const output = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+  client.sendJob.mockResolvedValueOnce({ state: 'refused', code: 'turn_ended', reason: 'Ended.' });
+  readStore.sessions.readEntry.mockImplementationOnce(() => {
+    throw new Error('Session not found.');
+  });
+  await program().parseAsync(['jobs', 'send', 'job-1', '-i', 'message'], { from: 'user' });
+  expect(process.exitCode).toBe(1);
+  const text = output.mock.calls.map(([chunk]) => String(chunk)).join('');
+  expect(text).toContain('launch details are unavailable');
+  expect(printedCommands(text)).toEqual([['jobs', 'wait', 'job-1']]);
+});
 
 it.each([
   [['--all'], {}],

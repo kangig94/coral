@@ -921,7 +921,12 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
     } catch (error) {
       if (!issued || error instanceof IpcLifecycleRefusal) throw error;
       if (error instanceof IpcRpcError && error.rpcCode === -32601) {
-        return { state: 'refused', code: 'unsupported_by_running_build', reason: error.message };
+        return {
+          state: 'refused',
+          code: 'unsupported_by_running_build',
+          reason:
+            'The running Coral build predates jobs send. Restart the session so the current Coral plugin loads; the coordinator follows the installed build.',
+        };
       }
       return { state: 'unknown', reason: 'The coordinator did not return a decisive send response.' };
     }

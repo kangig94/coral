@@ -18,7 +18,7 @@ import type { ProviderRegistry } from '../../providers/registry.js';
 import { getProviderNames, makeClient } from '../dispatch.js';
 import { emitError, getTerminalContext } from '../emit.js';
 import { parseJobIds, resolveInput } from '../flags.js';
-import { flushPendingReadStoreNote } from '../read-store.js';
+import { flushPendingReadStoreNote, getSharedReadCoralStore } from '../read-store.js';
 import { UsageError, WaitOutputError, WaitSnapshotResponseError, normalizeUsageError } from '../errors.js';
 import { WaitBuildMismatchError } from '../../coordinator/handoff-routing/wait-invocation.js';
 import {
@@ -27,6 +27,7 @@ import {
   formatJobSendResult,
   formatJobsList,
   renderJobsList,
+  type JobSendOutputContext,
 } from '../format/jobs.js';
 import { openCliCauseRefRenderer } from '../cause-renderer.js';
 import { followJobs } from '../follow.js';
@@ -284,13 +285,30 @@ function registerJobsSendCommand(jobsCommand: Command): void {
         const input = resolveInput(opts.input);
         if (input.trim().length === 0) throw new UsageError(inputUsage);
         const result = await makeClient(process.cwd(), sendCommand).sendJob(jobId, input);
-        const output = formatJobSendResult(jobId, result);
+        const launch =
+          result.state === 'refused' && result.code === 'turn_ended' && !opts.input.includes('-')
+            ? readJobSendLaunch(jobId)
+            : null;
+        const output = formatJobSendResult(jobId, result, { inputTokens: opts.input, launch });
         (output.exitCode === 0 ? process.stdout : process.stderr).write(output.text + '\n');
         process.exitCode = output.exitCode;
       } catch (error) {
         emitError(normalizeUsageError(error));
       }
     });
+}
+
+function readJobSendLaunch(jobId: string): JobSendOutputContext['launch'] {
+  try {
+    const store = getSharedReadCoralStore(process.cwd(), { announceMissing: false });
+    const status = store.jobs.detail(jobId)?.status;
+    if (status === undefined || status.jobKind !== 'provider' || status.sessionId === null) return null;
+    const session = store.sessions.readEntry(status.sessionId);
+    return { provider: session.binding.provider, agent: session.agentName ?? null };
+  } catch {
+    // A failed metadata read cannot replace a decisive refusal with a generic retry error.
+    return null;
+  }
 }
 
 function reportAbortResult(result: AbortResult): void {
