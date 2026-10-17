@@ -122,6 +122,7 @@ function createExecutionServiceRegistry(input: {
   getProgressStore: () => ReturnType<CoordinatorWorld['storeServicesRef']['get']>['progressStore'];
   providerOperationReconciler: ProviderOperationReconciler;
   providerOperationCleanup: ProviderOperationCleanupRouter;
+  providerProxyAuthorityFor: NonNullable<ExecutionServiceDeps['providerProxyAuthorityFor']>;
 }) {
   const { services, getProgressStore, providerOperationReconciler, providerOperationCleanup } = input;
   const { world, runtime, bundleHash, backendNamespace, settlementRefusalRecorder, createExecutionService } =
@@ -170,6 +171,7 @@ function createExecutionServiceRegistry(input: {
       }),
       operations: { stop: (jobId, cause) => providerOperationReconciler.requestStop(jobId, cause) },
       providerOperationCleanup,
+      providerProxyAuthorityFor: input.providerProxyAuthorityFor,
       observeCarriers: createObserveCarriers(
         {
           getDb: () => getProgressStore().getDb(),
@@ -906,6 +908,7 @@ export function createExecutionServices(deps: CreateExecutionServicesDeps): Exec
     getProgressStore,
     providerOperationReconciler,
     providerOperationCleanup,
+    providerProxyAuthorityFor: (identity) => providerProxyLifecycle.authorityFor(identity),
   });
 
   return createExecutionServicePorts({

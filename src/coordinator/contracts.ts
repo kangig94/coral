@@ -1,4 +1,6 @@
 import type { JobAttention } from './services/job-attention.js';
+import type { JobSendRequest, JobSendServiceDeps } from './services/job-send.js';
+import type { ProxyOperationSendResult } from '../provider-proxy/protocol.js';
 import type { ProgressVisit } from '../jobs/wait/contract.js';
 import type { WaitAdmission } from '../jobs/wait/session.js';
 import type { ResultAvailability } from '../jobs/terminal/export.js';
@@ -55,6 +57,7 @@ interface CoordinatorJobOps {
   readWaitAdmission?(jobId: string, epochKey: string, session?: object): WaitAdmission | null;
   holdsLocalAppServerExecution?(jobId: string): boolean;
   abort(jobIds: string[]): AbortResult;
+  send(request: JobSendRequest): Promise<ProxyOperationSendResult>;
   waitStream(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent>;
   waitStreamOnce(jobId: string, timeoutMs?: number): Promise<WaitStreamOnceResult>;
   awaitLaunch(jobId: string, timeoutMs: number): Promise<LaunchReadiness>;
@@ -128,6 +131,7 @@ export type ExecutionServiceDeps = {
    *  `jobs/shell/launch.ts` for the full contract. Optional for the same reason `appServerProxyRoute` is. */
   operations?: { stop(jobId: string, cause: ProviderStopCause): void };
   providerOperationCleanup?: ProviderOperationCleanupRegistrar;
+  providerProxyAuthorityFor?: JobSendServiceDeps['authorityFor'];
   /**
    * Reports what is carrying each still-pending job, local-registry classification only. Optional because a
    * wait works without it — see `WaitCoordinatorDeps.observeCarriers` in `jobs/shell/wait.ts`.
