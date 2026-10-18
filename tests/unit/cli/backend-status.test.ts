@@ -77,6 +77,35 @@ it('keeps a successful backend start at zero even when its status report needs a
   expect(process.exitCode).toBe(0);
 });
 
+it('reports an unauthorized coordinator and its exit condition without a rejected remedy', async () => {
+  const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+  const program = new Command().exitOverride();
+  registerBackendCommands(program, {
+    backendStatus: {
+      inspectReadiness: () => ({ kind: 'no-legacy' }),
+      getStatus: async () => ({ status: 'unauthorized' }),
+      getLiveHandoffResult: () => null,
+      getRoutingStatus: async () => ({ kind: 'absent' }),
+      readProviderProxySetHolderStatusDirect: async () => [],
+    },
+  });
+
+  await program.parseAsync(['node', 'coral-cli', 'backend', 'status']);
+
+  const output = stdout.mock.calls.map(([text]) => String(text)).join('');
+  expect(output).toContain(
+    "The coordinator answering at the recorded address does not accept this discovery record's token.",
+  );
+  expect(output).toContain('Coral cannot stop or replace it with that token.');
+  expect(output).toContain(
+    'Startup remains blocked until that coordinator exits: it shuts itself down after its idle timeout (six hours by default) passes with no authenticated request, since rejected requests do not count as activity, or when the machine restarts.',
+  );
+  expect(output).not.toContain('command=');
+  expect(output).not.toContain('backend shutdown');
+  expect(output).not.toContain('mutating');
+  expect(process.exitCode).toBe(0);
+});
+
 it('keeps a stronger publication failure at 70 when authenticated health is starting', async () => {
   vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
   const program = new Command().exitOverride();
