@@ -63,6 +63,7 @@ type Harness = {
   readonly reactorLifetime: AbortController;
   readonly discardCalls: Array<readonly string[]>;
   readonly appendedBatches: AppendedEvent[][];
+  readonly logs: string[];
 };
 
 async function* noopProvider() {}
@@ -134,7 +135,9 @@ function createHarness(
     }
     return appended;
   };
+  const logs: string[] = [];
   const reactor = createLifecycleReactor({
+    bootId: () => 'reactor-test-boot',
     db: () => db,
     readCtx: { schemas: reducers.schemas, streamKinds: reducers.streamKinds, bodyCodec },
     providers: providerRegistry,
@@ -142,7 +145,7 @@ function createHarness(
     time: runtime.time,
     commitEvents: coordinatorCommit,
     signal: reactorLifetime.signal,
-    log: () => {},
+    log: (message) => logs.push(message),
   });
   const progressStore = new JobStore(namespace, runtime, bodyCodec, {
     db,
@@ -166,6 +169,7 @@ function createHarness(
     reactorLifetime,
     discardCalls,
     appendedBatches,
+    logs,
   };
 }
 
@@ -675,6 +679,55 @@ describe('LifecycleReactor retention enforcement', () => {
     expect(harness.discardCalls).toEqual([['/tmp/rollout-out-of-order.jsonl']]);
   });
 
+  it('finishes an event-triggered background observation when recovery rejects', async () => {
+    const harness = createHarness();
+    const jobId = 'job-observed-lease';
+    const sessionId = await openClaimedSession(harness, jobId);
+    const failure = new Error('recovery source failed');
+    vi.mocked(runSessionStartupRecovery).mockImplementationOnce(async () => {
+      harness.runtime.time.tick(25);
+      throw failure;
+    });
+
+    recordContinuationLease(harness, sessionId, jobId);
+    await expect(harness.reactor.waitForIdle()).rejects.toBe(failure);
+
+    const phases = harness.logs.filter((line) => line.startsWith('recovery-phase '));
+    expect(phases).toHaveLength(2);
+    expect(phases[0]).toContain('boot=reactor-test-boot kind=background phase=reactor-recovery event=start');
+    expect(phases[1]).toContain('event=finish outcome=failed duration_ms=25.000 subjects=0 reads=0 sources={}');
+    await harness.reactor.dispose();
+  });
+
+  it('reports one background recovery pair for a queue drain with per-source counters', async () => {
+    const harness = createHarness({ autoObserveCoordinator: false });
+    const jobId = 'job-observed-drain';
+    const sessionId = await openClaimedSession(harness, jobId);
+    initRunningJob(harness, jobId, sessionId);
+    const terminal = completeJobViaCoordinatorCommit(harness, jobId, sessionId);
+    const beforeRelease = harness.appendedBatches.length;
+    harness.sessionManager.releaseJob(sessionId, jobId);
+    const released = harness.appendedBatches.slice(beforeRelease).flat();
+
+    harness.reactor.observe([...terminal, ...released]);
+    await harness.reactor.waitForIdle();
+
+    const phases = harness.logs.filter((line) => line.startsWith('recovery-phase '));
+    expect(phases).toHaveLength(2);
+    expect(phases[0]).toBe(
+      'recovery-phase boot=reactor-test-boot kind=background phase=reactor-recovery event=start subjects=0 reads=0 sources={}\n',
+    );
+    expect(phases[1]).toMatch(/event=finish outcome=complete duration_ms=\d+\.\d{3} subjects=\d+ reads=\d+/);
+    expect(JSON.parse(/ sources=(.*)\n$/.exec(phases[1])![1])).toEqual({
+      'session-projection': { subjects: 1, reads: 1 },
+      'session-continuation-lease': { subjects: 0, reads: 0 },
+      'terminal-retention-outcome': { subjects: 0, reads: 0 },
+      'retention-release-pair': { subjects: 2, reads: 2 },
+      'session-retention-work': { subjects: 1, reads: 0 },
+    });
+    await harness.reactor.dispose();
+  });
+
   it('startup scan backfills existing terminal and release pairs', async () => {
     const harness = createHarness({ autoObserveCoordinator: false });
     const jobId = 'job-startup-scan';
@@ -744,7 +797,7 @@ describe('LifecycleReactor retention enforcement', () => {
     const sessionId = await openClaimedSession(harness, jobId);
     await recordArtifact(harness, sessionId, jobId, '/tmp/rollout-lease-timer.jsonl');
     initRunningJob(harness, jobId, sessionId);
-    completeJob(harness, jobId, sessionId);
+    completeJobViaCoordinatorCommit(harness, jobId, sessionId);
     harness.sessionManager.releaseJob(sessionId, jobId);
     recordContinuationLease(harness, sessionId, jobId, harness.runtime.time.now() + 100);
 
@@ -752,6 +805,7 @@ describe('LifecycleReactor retention enforcement', () => {
     await harness.reactor.waitForIdle();
     expect(readRetentionEvents(harness, sessionId)).toEqual([]);
     expect(harness.discardCalls).toEqual([]);
+    expect(harness.logs.filter((line) => line.startsWith('recovery-phase '))).toEqual([]);
 
     harness.runtime.time.tick(100);
 
@@ -765,6 +819,17 @@ describe('LifecycleReactor retention enforcement', () => {
       },
     ]);
     expect(harness.discardCalls).toEqual([['/tmp/rollout-lease-timer.jsonl']]);
+    const phases = harness.logs.filter((line) => line.startsWith('recovery-phase '));
+    expect(phases).toHaveLength(2);
+    expect(phases[0]).toContain('boot=reactor-test-boot kind=background phase=reactor-recovery event=start');
+    expect(phases[1]).toMatch(/event=finish outcome=complete duration_ms=\d+\.\d{3}/);
+    expect(JSON.parse(/ sources=(.*)\n$/.exec(phases[1])![1])).toEqual({
+      'session-projection': { subjects: 1, reads: 1 },
+      'session-continuation-lease': { subjects: 1, reads: 1 },
+      'terminal-retention-outcome': { subjects: 0, reads: 0 },
+      'retention-release-pair': { subjects: 2, reads: 2 },
+      'session-retention-work': { subjects: 1, reads: 0 },
+    });
     await harness.reactor.dispose();
   });
 });

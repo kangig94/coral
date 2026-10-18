@@ -29,9 +29,12 @@ it('recovers terminals without loading progress and writes nothing on an unchang
     outcome: { kind: 'completed' },
     durationMs: 1,
   });
+  const locations = vi.spyOn(index, 'locationsFor');
   const read = vi.spyOn(f.store, 'readJobEvents');
   const record = vi.fn();
   recoverJobLocations(index, 'epoch', f.store, { record });
+  expect(locations).toHaveBeenCalledWith('epoch', { record });
+  expect(record).toHaveBeenCalledWith('job-locations', { reads: 1 });
   expect(record).toHaveBeenCalledWith('job-launches', { subjects: 2, reads: 2 });
   expect(read).toHaveBeenCalledWith('terminal', true, 0, { record });
   expect(read).toHaveBeenCalledWith('live', false, 0, { record });

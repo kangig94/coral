@@ -12,6 +12,7 @@ import { workflowRecover } from '#src/workflow/recover.js';
 import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-supervisor.js';
 import { sessionContinuationLeaseRecordedEvent } from '#src/sessions/continuation-lease-events.js';
 import { providerSessionSchema } from '#src/sessions/entry.js';
+import { appendRetentionDiscardRequested, appendRetentionDiscardCompleted } from '#src/sessions/retention-outbox.js';
 import { TEST_CODEX_BINDING } from '#tests/helpers/provider-credentials.js';
 
 import { LifecycleReactor } from '#src/sessions/lifecycle-reactor.js';
@@ -482,6 +483,22 @@ describe('coordinator pending workflow replacement recovery', () => {
       const entry = providerSessionSchema.parse(JSON.parse(row?.entry ?? 'null'));
       expect(entry.continuationLease).toMatchObject({ status: 'cleared', outcome: 'explicit_clear' });
       expect(startupOptions.progressStore.readStatus(workflowId)?.phase).toBe('error');
+      appendRetentionDiscardRequested(startupOptions.coordinatorCommit, { sessionId, attempt: 1, handles: [] });
+      appendRetentionDiscardCompleted(startupOptions.coordinatorCommit, {
+        sessionId,
+        attempt: 1,
+        handles: [],
+        outcome: 'skipped_protected',
+      });
+      const db = startupOptions.progressStore.getDb();
+      const current = db
+        .prepare<[string], { entry: string }>('SELECT entry FROM projection_sessions WHERE session_id = ?')
+        .get(sessionId);
+      const retained = providerSessionSchema.parse(JSON.parse(current?.entry ?? 'null'));
+      db.prepare<[string, string]>('UPDATE projection_sessions SET entry = ? WHERE session_id = ?').run(
+        JSON.stringify({ ...retained, retention: 'discard_provider_artifacts_on_terminal' }),
+        sessionId,
+      );
       order.push('lifecycle-scan');
       await scanStartup.call(this, signal, observation);
     });
@@ -542,9 +559,43 @@ describe('coordinator pending workflow replacement recovery', () => {
         expect(Number(counts?.[1]), `${phase} subjects`).toBeGreaterThan(0);
         expect(Number(counts?.[2]), `${phase} reads`).toBeGreaterThan(0);
       }
-      expect(phaseLines.find((line) => line.includes(' phase=jobs-startup '))).toContain('"coordinator-job-recovery":');
-      expect(phaseLines.find((line) => line.includes(' phase=discussion '))).toContain('"discussion-candidate":');
-      expect(phaseLines.find((line) => line.includes(' phase=reactor-scan '))).toContain('"session-projection":');
+      const expectedSources = {
+        'job-locations': [
+          'uncommitted-launches',
+          'job-locations',
+          'job-launches',
+          'job-high-water',
+          'job-projections',
+          'job-details',
+          'job-events',
+        ],
+        'jobs-startup': ['coordinator-job-recovery'],
+        discussion: ['discussion-source', 'discussion-candidate'],
+        workflow: ['workflow-recovery'],
+        'reactor-scan': [
+          'session-projection',
+          'session-continuation-lease',
+          'terminal-retention-outcome',
+          'retention-release-pair',
+        ],
+      };
+      for (const [phase, expected] of Object.entries(expectedSources)) {
+        const line = phaseLines.find((line) => line.includes(` phase=${phase} `));
+        const sources = JSON.parse(/ sources=(.*)\n$/.exec(line ?? '')?.[1] ?? '{}') as Record<
+          string,
+          { subjects: number; reads: number }
+        >;
+        for (const source of expected) {
+          expect(sources[source], `${phase}/${source}`).toBeDefined();
+          expect(sources[source]?.reads, `${phase}/${source} reads`).toBeGreaterThan(0);
+          if (phase !== 'job-locations')
+            expect(sources[source]?.subjects, `${phase}/${source} subjects`).toBeGreaterThan(0);
+        }
+        if (phase === 'reactor-scan') {
+          expect(sources['session-retention-work']?.subjects).toBeGreaterThan(0);
+          expect(sources['session-retention-work']?.reads).toBe(0);
+        }
+      }
       expect(dispatch).not.toHaveBeenCalled();
       expect(resume).not.toHaveBeenCalled();
     } finally {

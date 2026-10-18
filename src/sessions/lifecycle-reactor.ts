@@ -1,4 +1,4 @@
-import type { RecoveryObservation } from '../recovery/phase-observation.js';
+import { startRecoveryPhase, type RecoveryObservation } from '../recovery/phase-observation.js';
 import { backendLog } from '../infra/backend-log.js';
 import { errorMessage } from '../infra/error-format.js';
 import type { TimePort, TimerHandle } from '../infra/port-types.js';
@@ -112,6 +112,7 @@ export type LifecycleReactorOptions = {
   readonly commitEvents: CommitEventsFn;
   readonly signal: AbortSignal;
   readonly log?: (message: string) => void;
+  readonly bootId?: () => string;
 };
 
 const SESSION_COMPONENT_OBLIGATION = 'session.retention.session-component' as RecoveryObligationId;
@@ -396,14 +397,17 @@ export class LifecycleReactor {
   };
 
   private startupObservation: RecoveryObservation | undefined;
+  private scanningStartup = false;
 
   async scanStartup(signal: AbortSignal, observation?: RecoveryObservation): Promise<void> {
+    this.scanningStartup = true;
     this.startupObservation = observation;
     try {
       await this.runContainedRecovery(AbortSignal.any([this.lifetimeSignal, signal]));
       await this.waitForIdle();
     } finally {
       this.startupObservation = undefined;
+      this.scanningStartup = false;
     }
   }
 
@@ -538,7 +542,16 @@ export class LifecycleReactor {
 
   private async performContainedRecovery(signal: AbortSignal): Promise<void> {
     const db = this.options.db();
-    const observation = this.startupObservation;
+    const background = this.scanningStartup
+      ? undefined
+      : startRecoveryPhase({
+          time: this.options.runtime.time,
+          log: (message) => this.log(message),
+          bootId: this.options.bootId?.() ?? 'unknown',
+          kind: 'background',
+          phase: 'reactor-recovery',
+        });
+    const observation = this.startupObservation ?? background;
     const quarantine = new RecoveryQuarantineStore(db, this.options.time);
     const timerCandidates: SessionContinuationLeaseComponent[] = [];
     const policies = this.createRecoveryPolicies(quarantine, timerCandidates);
@@ -578,6 +591,10 @@ export class LifecycleReactor {
         },
       });
       this.scheduleContinuationLeaseTimer(timerCandidates);
+      background?.finish();
+    } catch (error: unknown) {
+      background?.finish('failed');
+      throw error;
     } finally {
       this.containedRecoveryDepth -= 1;
     }

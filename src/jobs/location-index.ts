@@ -424,20 +424,20 @@ export class JobLocationIndex {
     }
   }
 
-  private readStored(jobId: string): StoredJobLocation | null {
+  private readStored(jobId: string, observation?: RecoveryObservation): StoredJobLocation | null {
     if (this.pollReads?.has(jobId)) return this.pollReads.get(jobId) ?? null;
     if (this.pollReads && !this.livePollJobs.has(jobId)) {
       if (this.pollReadCount >= 32)
         throw new LocationObservationDeferred('Location observation deferred to the next bounded poll');
       this.pollReadCount++;
     }
-    const stored = optionalJson(this.runtime, this.jobPath(jobId), locationSchema);
+    const stored = optionalJson(this.runtime, this.jobPath(jobId), locationSchema, observation);
     this.pollReads?.set(jobId, stored);
     return stored;
   }
 
-  read(jobId: string): JobLocation | null {
-    const stored = this.readStored(jobId);
+  read(jobId: string, observation?: RecoveryObservation): JobLocation | null {
+    const stored = this.readStored(jobId, observation);
     return stored === null ? null : viewLocation(stored);
   }
 
@@ -751,14 +751,19 @@ export class JobLocationIndex {
    * Records this build cannot decode must be reported by file and epoch, or with null when even the epoch is
    * unreadable.
    */
-  private scan(): { readable: JobLocation[]; unreadable: Array<{ file: string; epochKey: string | null }> } {
+  private scan(observation?: RecoveryObservation): {
+    readable: JobLocation[];
+    unreadable: Array<{ file: string; epochKey: string | null }>;
+  } {
     const dir = join(this.root, 'jobs');
     const result: ReturnType<JobLocationIndex['scan']> = { readable: [], unreadable: [] };
     if (!this.runtime.storage.existsSync(dir)) return result;
     for (const name of this.runtime.storage.readdirSync(dir).filter((entry) => entry.endsWith('.json'))) {
       let raw: unknown;
       try {
-        raw = JSON.parse(this.runtime.storage.readFileSync(join(dir, name), 'utf-8')) as unknown;
+        const content = this.runtime.storage.readFileSync(join(dir, name), 'utf-8');
+        observation?.record('job-locations', { reads: 1 });
+        raw = JSON.parse(content) as unknown;
       } catch (error: unknown) {
         if (error instanceof Error && 'code' in error && error.code === 'ENOENT') continue;
         result.unreadable.push({ file: name, epochKey: null });
@@ -794,7 +799,7 @@ export class JobLocationIndex {
     return optionalJson(this.runtime, this.epochPath(epochKey, 'revision.v1.json'), revisionSchema)?.revision ?? 0;
   }
 
-  locationsFor(epochKey: string): JobLocation[] {
+  locationsFor(epochKey: string, observation?: RecoveryObservation): JobLocation[] {
     const revision = this.revision(epochKey);
     if (this.epochRevisions.get(epochKey) !== revision) this.locationsStamp = undefined;
     this.epochRevisions.set(epochKey, revision);
@@ -803,7 +808,7 @@ export class JobLocationIndex {
     const stamp = stat ? `${stat.dev}:${stat.ino}:${stat.mtimeNs}:${stat.ctimeNs}:${stat.birthtimeNs}` : 'absent';
     if (this.locationsStamp !== stamp) {
       this.locationsByEpoch.clear();
-      const scan = this.scan();
+      const scan = this.scan(observation);
       this.locationsUnreadable = scan.unreadable;
       for (const location of scan.readable) {
         const locations = this.locationsByEpoch.get(epochIdentity(location.epochKey)) ?? [];
@@ -813,13 +818,17 @@ export class JobLocationIndex {
       this.locationsStamp = stamp;
     }
     return (this.locationsByEpoch.get(epochIdentity(epochKey)) ?? []).map(
-      (location) => this.read(location.jobId) ?? location,
+      (location) => this.read(location.jobId, observation) ?? location,
     );
   }
 
-  certify(epochKey: string, terminalHighWaterSeq: number): JobLocationCertificate | null {
+  certify(
+    epochKey: string,
+    terminalHighWaterSeq: number,
+    observation?: RecoveryObservation,
+  ): JobLocationCertificate | null {
     return this.withRevisionLock(epochKey, () => {
-      const locations = this.locationsFor(epochKey);
+      const locations = this.locationsFor(epochKey, observation);
       if (this.unknownLocationHold(epochKey) !== null) return null;
       if (this.locationsUnreadable.some((entry) => entry.epochKey === null || sameEpoch(entry.epochKey, epochKey)))
         return null;

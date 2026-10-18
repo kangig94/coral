@@ -1,4 +1,4 @@
-import { startRecoveryPhase } from '../../recovery/phase-observation.js';
+import { startRecoveryPhase, type RecoveryObservation } from '../../recovery/phase-observation.js';
 import { observeDatabaseReads } from '../../recovery/read-observation.js';
 import { readRetentionCursor } from '../../store/retention-meta.js';
 import { errorMessage } from '../../infra/error-format.js';
@@ -106,7 +106,7 @@ export function createStorageRetentionScheduler(input: {
       if (replace >= 0) outcomes[replace] = outcome;
     }
   };
-  const run = async (): Promise<void> => {
+  const startRetentionObservations = () => {
     const observation = startRecoveryPhase({
       time: runtime.time,
       log: input.log,
@@ -114,9 +114,48 @@ export function createStorageRetentionScheduler(input: {
       kind: 'background',
       phase: 'storage-retention',
     });
+    const settlements: Promise<void>[] = [];
+    let failed = false;
+    return {
+      observation,
+      startOwner(subject: string) {
+        const owner = startRecoveryPhase({
+          time: runtime.time,
+          log: input.log,
+          bootId: input.bootId,
+          kind: 'background',
+          phase: `storage-retention.${subject}`,
+        });
+        const finish = (incomplete: boolean): void => {
+          failed ||= incomplete;
+          owner.finish(incomplete ? 'failed' : 'complete');
+        };
+        return {
+          observation: owner,
+          record: ((source, counts) => {
+            observation.record(source, counts);
+            owner.record(source, counts);
+          }) satisfies RecoveryObservation['record'],
+          settle(work: Promise<void>, incomplete: () => boolean): void {
+            settlements.push(
+              work.then(
+                () => finish(incomplete()),
+                () => finish(true),
+              ),
+            );
+          },
+          finish,
+        };
+      },
+      finish(incomplete: () => boolean): void {
+        void Promise.all(settlements).then(() => observation.finish(incomplete() || failed ? 'failed' : 'complete'));
+      },
+    };
+  };
+  const run = async (): Promise<void> => {
+    const observations = startRetentionObservations();
+    const observation = observations.observation;
     const status = statusAtStart();
-    const ownerSettlements: Promise<void>[] = [];
-    let observationFailed = false;
     const startedAt = runtime.time.monotonicNow();
     const dueOwners = new Set<string>();
     for (const [subject, owner] of owners) {
@@ -196,13 +235,7 @@ export function createStorageRetentionScheduler(input: {
             const cancelled = new Promise<void>((resolve) =>
               ownerAbort.signal.addEventListener('abort', () => resolve(), { once: true }),
             );
-            const ownerObservation = startRecoveryPhase({
-              time: runtime.time,
-              log: input.log,
-              bootId: input.bootId,
-              kind: 'background',
-              phase: `storage-retention.${subject}`,
-            });
+            const ownerObservation = observations.startOwner(subject);
             let operations = 0;
             let finished = false;
             let executed = false;
@@ -213,12 +246,7 @@ export function createStorageRetentionScheduler(input: {
             let repairPending = false;
             let work: Promise<void> | undefined;
             const budget = {
-              observation: {
-                record: (source, counts) => {
-                  observation.record(source, counts);
-                  ownerObservation.record(source, counts);
-                },
-              },
+              observation: ownerObservation,
               record: (outcome) => {
                 if (!finished && !ownerAbort.signal.aborted) {
                   scanPending ||= outcome.kind === 'kept' && outcome.reason === 'scan-pending';
@@ -264,24 +292,14 @@ export function createStorageRetentionScheduler(input: {
                     budget,
                     ownerAbort.signal,
                     mutate,
-                    observeDatabaseReads(db, ownerObservation, subject),
+                    observeDatabaseReads(db, ownerObservation.observation, subject),
                   );
                 });
                 outstandingOwners.set(subject, work);
                 void work.finally(() => outstandingOwners.delete(subject)).catch(() => undefined);
-                ownerSettlements.push(
-                  work.then(
-                    () => {
-                      const incomplete =
-                        failed || exhausted || ownerAbort.signal.aborted || runtime.time.monotonicNow() >= deadline;
-                      observationFailed ||= incomplete;
-                      ownerObservation.finish(incomplete ? 'failed' : 'complete');
-                    },
-                    () => {
-                      observationFailed = true;
-                      ownerObservation.finish('failed');
-                    },
-                  ),
+                ownerObservation.settle(
+                  work,
+                  () => failed || exhausted || ownerAbort.signal.aborted || runtime.time.monotonicNow() >= deadline,
                 );
                 await Promise.race([work, cancelled]);
               }
@@ -300,8 +318,7 @@ export function createStorageRetentionScheduler(input: {
               if (!executed && !abort.signal.aborted) deferOwner(owner);
               else if (fastRetry) deferOwner(owner);
               if (work === undefined) {
-                observationFailed ||= failed || exhausted || ownerAbort.signal.aborted;
-                ownerObservation.finish(failed || exhausted || ownerAbort.signal.aborted ? 'failed' : 'complete');
+                ownerObservation.finish(failed || exhausted || ownerAbort.signal.aborted);
               }
               finished = true;
               if (exhausted) record({ kind: 'kept', subject, reason: 'scan-pending' }, subject);
@@ -424,9 +441,7 @@ export function createStorageRetentionScheduler(input: {
           subject: 'storage-retention',
           reason: abort.signal.aborted ? 'shutdown' : 'pending-work-or-writer-park',
         });
-      void Promise.all(ownerSettlements).then(() =>
-        observation.finish(status.failed > 0 || observationFailed ? 'failed' : 'complete'),
-      );
+      observations.finish(() => status.failed > 0);
       status.finishedAt = runtime.time.now();
       status.phase =
         partial || (status.failed > 0 && status.deleted > 0) ? 'partial' : status.failed > 0 ? 'failed' : 'completed';

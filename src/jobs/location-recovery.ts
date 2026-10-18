@@ -34,7 +34,7 @@ function retireUncommittedLaunches(
           }),
       );
 
-      const locations = index.locationsFor(epochKey);
+      const locations = index.locationsFor(epochKey, observation);
       observation?.record('uncommitted-launches', { subjects: locations.length });
       for (const location of locations) {
         if (!launched.has(location.jobId)) index.retireNeverAccepted(location.jobId, epochKey);
@@ -141,10 +141,10 @@ export function recoverJobLocations(
     }
     if (recoveryError !== undefined) throw recoveryError;
     index.clearUnknownLocations(epochKey);
-    void index.certify(epochKey, highWaterSeq);
+    void index.certify(epochKey, highWaterSeq, observation);
   } catch (error: unknown) {
     index.holdUnknownLocations(epochKey, error instanceof Error ? error.message : String(error), true);
-    const locations = index.locationsFor(epochKey);
+    const locations = index.locationsFor(epochKey, observation);
     for (const location of locations) index.markUnresolved(location.jobId);
     throw error;
   }

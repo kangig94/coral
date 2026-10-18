@@ -912,6 +912,8 @@ export function createCoordinatorServer(options: CoordinatorServerOptions): Coor
   });
   const lifecycleReactorLifetime = new AbortController();
   const lifecycleReactor = createLifecycleReactor({
+    bootId: () => core?.identity.instanceId ?? 'unknown',
+    log: (message) => (core?.identity.log ?? backendLog.warn)(message),
     db: getQueryDb,
     readCtx,
     providers: providerRegistry,
