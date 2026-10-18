@@ -28,6 +28,7 @@ describe('retention startup composition', () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     const f = createRetentionFixture();
     let serving = false;
+    const logs: string[] = [];
     let storeMode: () => unknown = () => undefined;
     const cleanup = vi.fn(() => {
       if (!serving) throw new Error('cleanup delayed running');
@@ -47,12 +48,13 @@ describe('retention startup composition', () => {
           instanceId: 'retention-startup',
           token: 'test-token',
           now: f.runtime.time.now,
-          log: () => {},
+          log: (message) => logs.push(message),
         },
         kbDaemonSupervisor: createMockKbDaemonSupervisor(),
         createStoreServicesFromDbFn: (db) => {
           db.exec('PRAGMA auto_vacuum=NONE');
           db.exec('VACUUM');
+          db.prepare('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)').run('storage-retention.exports.v1', '');
           storeMode = () => db.prepare('PRAGMA auto_vacuum').get();
           return {
             storeDb: db,
@@ -87,8 +89,20 @@ describe('retention startup composition', () => {
       serving = true;
       await vi.advanceTimersByTimeAsync(0);
       expect(cleanup).toHaveBeenCalledOnce();
+      expect(logs.filter((line) => line.includes('kind=background phase=storage-retention event=start'))).toHaveLength(
+        1,
+      );
+      expect(
+        logs.filter((line) => line.includes('kind=background phase=storage-retention.scratch-jobs event=start')),
+      ).toHaveLength(1);
       expect((await core.lifecycleController.shutdown('test-teardown')).disposition).toBe('finalized');
       await core.lifecycleController.waitForShutdown();
+      const finishes = logs.filter((line) => line.includes('kind=background phase=storage-retention event=finish'));
+      expect(finishes).toHaveLength(1);
+      expect(finishes[0]).toMatch(/subjects=[1-9]\d* reads=[1-9]\d*/);
+      expect(
+        logs.filter((line) => line.includes('kind=background phase=storage-retention.scratch-jobs event=finish')),
+      ).toHaveLength(1);
       await vi.advanceTimersByTimeAsync(86_400_000);
       expect(cleanup).toHaveBeenCalledOnce();
     } finally {

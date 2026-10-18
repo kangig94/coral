@@ -1,3 +1,4 @@
+import type { RecoveryObservation } from '../recovery/phase-observation.js';
 /** A kept subject remains pending unless its owner proves it has no eligible work. */
 export type RetentionOutcome =
   | Readonly<{ kind: 'deleted'; subject: string; count: number }>
@@ -18,6 +19,7 @@ export interface RetentionRunStatus {
 }
 
 export interface RetentionRunBudget {
+  observation?: RecoveryObservation;
   canContinue(): boolean;
   canMutate?(): boolean;
   canRetry?(): boolean;

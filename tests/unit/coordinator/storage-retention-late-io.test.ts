@@ -40,6 +40,7 @@ it.each(['deadline', 'stop', 'on-time'] as const)(
 
     const statuses: string[] = [];
     const scheduler = createStorageRetentionScheduler({
+      bootId: 'test-boot',
       runtime: fixture.runtime,
       getProgressStore: () => fixture.store,
       openEpoch: () => ({

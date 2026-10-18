@@ -50,6 +50,7 @@ export function createSuccessionJobView(core: CoreContext, providerHostOwners: P
   };
 
   const { arm: armCustodyReconciliation } = createCustodyReconciliationScheduler({
+    bootId: core.identity.instanceId,
     runtime,
     world,
     selectedStoreEpochPath: () => state.selectedStoreEpochPath,

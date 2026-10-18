@@ -198,6 +198,7 @@ export function createCoordinatorLifecycleAssembly(input: LifecycleAssemblyInput
   const { runtime, world, state, jobLocationIndex } = core;
   const { ipcServer } = transport;
   const storeEpochSweep = createStoreEpochSweepScheduler({
+    bootId: core.identity.instanceId,
     runtime,
     world,
     jobLocationIndex,
@@ -211,6 +212,7 @@ export function createCoordinatorLifecycleAssembly(input: LifecycleAssemblyInput
   });
 
   const storageRetention = createStorageRetentionScheduler({
+    bootId: core.identity.instanceId,
     runtime,
     getProgressStore: () => core.storeServicesRef.tryGet()?.progressStore ?? null,
     openEpoch: () => state.openedStoreEpoch,

@@ -132,6 +132,7 @@ function createCoordinatorStartupRecoveryRunner({
   return async (
     {
       identity,
+      startupPhases,
       progressStore,
       providerRegistry,
       getExecutionService,
@@ -147,12 +148,13 @@ function createCoordinatorStartupRecoveryRunner({
     },
     runCoordinatorStartupRecovery,
   ) => {
-    const phaseOptions = (phase: string) => ({
-      time: runtime.time,
-      log: identity.log,
-      bootId: identity.instanceId,
-      phase,
-    });
+    const phaseOptions = (phase: string) =>
+      startupPhases?.options(phase) ?? {
+        time: runtime.time,
+        log: identity.log,
+        bootId: identity.instanceId,
+        phase,
+      };
     const runJobsStartup = createJobsStartupRunner(runCoordinatorStartupRecovery);
     const db = getStoreDb();
     const driver = getConsumerDriver();

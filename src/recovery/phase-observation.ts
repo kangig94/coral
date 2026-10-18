@@ -1,11 +1,10 @@
 import type { TimePort } from '../infra/port-types.js';
 
-/** Reads count returned recovery input records, including repeated reads, never SQLite pages examined. */
+/** Reads count storage rows returned, including repeated reads, never SQLite pages examined. */
 export interface RecoveryObservation {
   record(source: string, counts: { subjects?: number; reads?: number }): void;
 }
 
-/** Completion is idempotent so an error path cannot duplicate a phase report. */
 export interface RecoveryPhaseObservation extends RecoveryObservation {
   finish(outcome?: 'complete' | 'failed'): void;
 }
@@ -17,6 +16,7 @@ export function startRecoveryPhase(options: {
   bootId: string;
   phase: string;
   kind?: 'startup' | 'background';
+  completed?: (result: PhaseResult) => void;
 }): RecoveryPhaseObservation {
   const started = options.time.monotonicNow();
   const sources: Record<string, { subjects: number; reads: number }> = {};
@@ -41,7 +41,11 @@ export function startRecoveryPhase(options: {
     finish(outcome = 'complete'): void {
       if (finished) return;
       finished = true;
-      const durationMs = Number(options.time.monotonicNow() - started) / 1_000_000;
+      const durationMs = Number(options.time.monotonicNow() - started);
+      if (options.completed !== undefined) {
+        options.completed({ durationMs, sources, outcome });
+        return;
+      }
       const totals = Object.values(sources).reduce(
         (total, source) => ({ subjects: total.subjects + source.subjects, reads: total.reads + source.reads }),
         { subjects: 0, reads: 0 },
@@ -69,3 +73,60 @@ export async function observeRecoveryPhase<T>(
     throw error;
   }
 }
+
+type PhaseResult = {
+  durationMs: number;
+  sources: Record<string, { subjects: number; reads: number }>;
+  outcome: 'complete' | 'failed';
+};
+
+export function createStartupPhaseObserver(options: {
+  time: Pick<TimePort, 'monotonicNow'>;
+  log(message: string): void;
+  bootId: string;
+}) {
+  const phases = new Map<string, PhaseResult>();
+  let finished = false;
+  return {
+    options(phase: string): Parameters<typeof startRecoveryPhase>[0] {
+      return {
+        ...options,
+        phase,
+        completed(result) {
+          if (finished) return;
+          const total = phases.get(phase) ?? { durationMs: 0, sources: {}, outcome: result.outcome };
+          total.durationMs += result.durationMs;
+          total.outcome = result.outcome;
+          for (const [source, counts] of Object.entries(result.sources)) {
+            const current = total.sources[source] ?? { subjects: 0, reads: 0 };
+            current.subjects += counts.subjects;
+            current.reads += counts.reads;
+            total.sources[source] = current;
+          }
+          phases.set(phase, total);
+        },
+      };
+    },
+    finish(): void {
+      if (finished) return;
+      finished = true;
+      for (const [phase, result] of phases) {
+        const totals = Object.values(result.sources).reduce(
+          (total, source) => ({ subjects: total.subjects + source.subjects, reads: total.reads + source.reads }),
+          { subjects: 0, reads: 0 },
+        );
+        try {
+          options.log(
+            `recovery-phase boot=${options.bootId} kind=startup phase=${phase} event=finish outcome=${result.outcome}` +
+              ` duration_ms=${result.durationMs.toFixed(3)} subjects=${totals.subjects} reads=${totals.reads}` +
+              ` sources=${JSON.stringify(result.sources)}\n`,
+          );
+        } catch {
+          // Observability cannot select a recovery disposition.
+        }
+      }
+    },
+  };
+}
+
+export type StartupPhaseObserver = ReturnType<typeof createStartupPhaseObserver>;

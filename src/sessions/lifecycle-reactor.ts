@@ -565,10 +565,14 @@ export class LifecycleReactor {
         },
         retentionWork: {
           settle: async (receipts) => {
-            await RecoveryContainment.each(retentionWorkItemRecoverySource(receipts, undefined, observation), {
+            await RecoveryContainment.each(retentionWorkItemRecoverySource(receipts), {
               signal,
               quarantine,
               ...policies.retentionWork,
+              hydrate: (raw) => {
+                observation?.record('session-retention-work', { subjects: 1 });
+                return policies.retentionWork.hydrate(raw);
+              },
             });
           },
         },

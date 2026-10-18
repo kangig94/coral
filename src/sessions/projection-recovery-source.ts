@@ -1,3 +1,4 @@
+import { observeDatabaseReads } from '../recovery/read-observation.js';
 import type { RecoveryObservation } from '../recovery/phase-observation.js';
 import type { z } from 'zod';
 
@@ -72,7 +73,7 @@ function scanSessionProjectionRows(
           ORDER BY subject_key ASC`,
       )
       .all(RETENTION_WORK_BOUNDARY);
-    observation?.record('session-projection', { subjects: rows.length, reads: rows.length + continuations.length });
+    observation?.record('session-projection', { subjects: rows.length });
     const bySession = new Map<string, RawRetentionContinuationRow[]>();
     for (const continuation of continuations) {
       const sessionId = continuationSessionId(continuation.subject_key);
@@ -102,10 +103,11 @@ export function sessionProjectionRecoverySource(
   subjectKey?: string,
   observation?: RecoveryObservation,
 ): RecoverySource<RawSessionProjectionEnvelope> {
+  const observedDb = observation === undefined ? db : observeDatabaseReads(db, observation, 'session-projection');
   return defineRecoverySource({
     boundary: 'session-projection',
     scanSubject: subject ?? { key: 'session-projection-discovery', revision: { kind: 'until-cleared' } },
-    scan: () => scanSessionProjectionRows(db, subject?.key ?? subjectKey, observation),
+    scan: () => scanSessionProjectionRows(observedDb, subject?.key ?? subjectKey, observation),
     subject: sessionProjectionSubject,
   });
 }

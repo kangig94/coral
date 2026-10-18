@@ -1,3 +1,5 @@
+import { startRecoveryPhase } from '../../recovery/phase-observation.js';
+import { observeDatabaseReads } from '../../recovery/read-observation.js';
 import { readRetentionCursor } from '../../store/retention-meta.js';
 import { errorMessage } from '../../infra/error-format.js';
 import type { TimerHandle } from '../../infra/port-types.js';
@@ -26,6 +28,7 @@ const CLOCK_JUMP_TOLERANCE_MS = 1000;
 
 export function createStorageRetentionScheduler(input: {
   runtime: Runtime;
+  bootId: string;
   getProgressStore(): JobStore | null;
   openEpoch(): ResolvedStoreEpoch | null;
   activeEpochKey(): string | null;
@@ -104,6 +107,13 @@ export function createStorageRetentionScheduler(input: {
     }
   };
   const run = async (): Promise<void> => {
+    const observation = startRecoveryPhase({
+      time: runtime.time,
+      log: input.log,
+      bootId: input.bootId,
+      kind: 'background',
+      phase: 'storage-retention',
+    });
     const status = statusAtStart();
     const startedAt = runtime.time.monotonicNow();
     const dueOwners = new Set<string>();
@@ -153,7 +163,7 @@ export function createStorageRetentionScheduler(input: {
           partial = true;
           record({ kind: 'kept', subject: 'storage-retention', reason: 'wall-clock-age-unknown' });
         } else {
-          const db = progressStore.getDb();
+          const db = observeDatabaseReads(progressStore.getDb(), observation, 'storage-retention');
           const writer = joinSuccessionWriterGeneration(runtime, {
             storeRoot: epoch.canonicalStoreRoot ?? epoch.storeRoot,
             epoch: epoch.epoch,
@@ -165,6 +175,7 @@ export function createStorageRetentionScheduler(input: {
               budget: RetentionRunBudget,
               signal: AbortSignal,
               mutate: <T>(operation: () => T) => T,
+              observedDb: typeof db,
             ) => void | Promise<void>,
           ): Promise<void> => {
             const owner = owners.get(subject);
@@ -183,6 +194,13 @@ export function createStorageRetentionScheduler(input: {
             const cancelled = new Promise<void>((resolve) =>
               ownerAbort.signal.addEventListener('abort', () => resolve(), { once: true }),
             );
+            const ownerObservation = startRecoveryPhase({
+              time: runtime.time,
+              log: input.log,
+              bootId: input.bootId,
+              kind: 'background',
+              phase: `storage-retention.${subject}`,
+            });
             let operations = 0;
             let finished = false;
             let executed = false;
@@ -192,6 +210,12 @@ export function createStorageRetentionScheduler(input: {
             let failed = false;
             let repairPending = false;
             const budget = {
+              observation: {
+                record: (source, counts) => {
+                  observation.record(source, counts);
+                  ownerObservation.record(source, counts);
+                },
+              },
               record: (outcome) => {
                 if (!finished && !ownerAbort.signal.aborted) {
                   scanPending ||= outcome.kind === 'kept' && outcome.reason === 'scan-pending';
@@ -233,7 +257,14 @@ export function createStorageRetentionScheduler(input: {
                   if (ownerAbort.signal.aborted || abort.signal.aborted || !budget.canMutate()) return;
                   executed = true;
                   executedOwners.add(subject);
-                  return operation(budget, ownerAbort.signal, mutate);
+                  observation.record(subject, { subjects: 1 });
+                  ownerObservation.record(subject, { subjects: 1 });
+                  return operation(
+                    budget,
+                    ownerAbort.signal,
+                    mutate,
+                    observeDatabaseReads(db, ownerObservation, subject),
+                  );
                 });
                 outstandingOwners.set(subject, work);
                 void work.finally(() => outstandingOwners.delete(subject)).catch(() => undefined);
@@ -253,6 +284,7 @@ export function createStorageRetentionScheduler(input: {
                 (exhausted || (scanPending && progressed) || repairPending || (failed && subject === 'result-repair'));
               if (!executed && !abort.signal.aborted) deferOwner(owner);
               else if (fastRetry) deferOwner(owner);
+              ownerObservation.finish(failed || exhausted || ownerAbort.signal.aborted ? 'failed' : 'complete');
               finished = true;
               if (exhausted) record({ kind: 'kept', subject, reason: 'scan-pending' }, subject);
               if (ownerAbort.signal.aborted && outstandingOwners.has(subject))
@@ -276,7 +308,7 @@ export function createStorageRetentionScheduler(input: {
               value,
             );
           };
-          await step('exports', async (budget, signal, mutate) => {
+          await step('exports', async (budget, signal, mutate, db) => {
             mutate(() => db.prepare('DELETE FROM meta WHERE key = ?').run('storage-retention.legacy.v1'));
             const next = await pruneJobExports({
               db,
@@ -298,11 +330,11 @@ export function createStorageRetentionScheduler(input: {
             lastRepairRun = runtime.time.monotonicNow();
             return progressStore.getResultExportOwner().repairPass(input.jobLocations.jobIds(), budget, hintedOnly);
           });
-          await step('journal-progress', async (budget) => {
+          await step('journal-progress', async (budget, _signal, _mutate, db) => {
             if ((await pruneJobProgress({ db, readCtx: progressStore, cutoff, afterSeq: 0, budget })) !== 0)
               budget.record({ kind: 'kept', subject: 'journal-progress', reason: 'scan-pending' });
           });
-          await step('journal-vacuum', async (budget) => {
+          await step('journal-vacuum', async (budget, _signal, _mutate, db) => {
             budget.record(await vacuumRetainedJournal(db, budget));
           });
           await step('epoch-holders', async (budget, signal, mutate) => {
@@ -374,6 +406,7 @@ export function createStorageRetentionScheduler(input: {
           subject: 'storage-retention',
           reason: abort.signal.aborted ? 'shutdown' : 'pending-work-or-writer-park',
         });
+      observation.finish(status.failed > 0 ? 'failed' : 'complete');
       status.finishedAt = runtime.time.now();
       status.phase =
         partial || (status.failed > 0 && status.deleted > 0) ? 'partial' : status.failed > 0 ? 'failed' : 'completed';

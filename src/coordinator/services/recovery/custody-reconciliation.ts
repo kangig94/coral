@@ -1,3 +1,4 @@
+import type { RecoveryObservation } from '../../../recovery/phase-observation.js';
 import { sameEpoch } from '../../../store/epoch/identity.js';
 import { dirname } from 'node:path';
 import { setImmediate } from 'node:timers/promises';
@@ -119,6 +120,7 @@ export function reconcileStartupCustody(
   db: Database,
   currentEpoch: string,
   evidence?: CustodyRecoveryEvidence,
+  observation?: RecoveryObservation,
 ): CustodyEntry[] {
   type OperationScan = ReturnType<typeof readProviderOperations>;
   let operations: OperationScan | null;
@@ -127,7 +129,7 @@ export function reconcileStartupCustody(
   } catch {
     operations = null;
   }
-  const entries = readCustodyLedger(runtime, runDir);
+  const entries = readCustodyLedger(runtime, runDir, observation);
   let candidates: ReturnType<typeof closureCandidates> = [];
   if (entries.some((entry) => entry.kind === 'holding' && entry.intent.effect === 'provider-operation-publication')) {
     try {
@@ -207,7 +209,7 @@ export function reconcileStartupCustody(
       evidence: `complete same-user process-token scan found no process; capsule=${capsule}`,
     };
   };
-  return reconcileCustodyLedger(runtime, runDir, nowMs, CUSTODY_ABSENCE_GRACE_MS, observe);
+  return reconcileCustodyLedger(runtime, runDir, nowMs, CUSTODY_ABSENCE_GRACE_MS, observe, observation);
 }
 
 function readFinishedCarrierEvidence(runtime: Runtime, epoch: ResolvedStoreEpoch, jobId: string) {
@@ -245,7 +247,7 @@ export async function reconcileFinishedCustody(input: {
     readMilliseconds: () => runtime.time.monotonicNow(),
     sleep: (milliseconds) => runtime.time.sleep(milliseconds),
   });
-  for (const entry of readCustodyLedger(runtime, runDir).sort((left, right) =>
+  for (const entry of readCustodyLedger(runtime, runDir, budget.observation).sort((left, right) =>
     (left.kind === 'unreadable' ? left.path : left.intent.id).localeCompare(
       right.kind === 'unreadable' ? right.path : right.intent.id,
     ),

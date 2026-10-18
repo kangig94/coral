@@ -1,3 +1,4 @@
+import type { RecoveryObservation } from '../recovery/phase-observation.js';
 import { createHash } from 'node:crypto';
 import { sameEpoch, epochHoldDirectory, epochIdentity } from '../store/epoch/identity.js';
 import { dirname, join } from 'node:path';
@@ -265,9 +266,16 @@ function atomicJson(runtime: Runtime, path: string, value: unknown): string {
   return raw;
 }
 
-function optionalJson<T>(runtime: Runtime, path: string, schema: z.ZodType<T>): T | null {
+function optionalJson<T>(
+  runtime: Runtime,
+  path: string,
+  schema: z.ZodType<T>,
+  observation?: RecoveryObservation,
+): T | null {
   try {
-    return schema.parse(JSON.parse(runtime.storage.readFileSync(path, 'utf-8')) as unknown);
+    const content = runtime.storage.readFileSync(path, 'utf-8');
+    observation?.record('job-locations', { reads: 1 });
+    return schema.parse(JSON.parse(content) as unknown);
   } catch (error: unknown) {
     if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return null;
     throw error;
@@ -984,12 +992,14 @@ export class JobLocationIndex {
     const dir = join(this.root, 'jobs');
     if (!this.runtime.storage.existsSync(dir)) return '';
     let cursor = afterId;
-    for (const name of this.runtime.storage.readdirSync(dir).sort()) {
+    const names = this.runtime.storage.readdirSync(dir).sort();
+    budget.observation?.record('job-locations', { subjects: names.length, reads: names.length });
+    for (const name of names) {
       if (!name.endsWith('.json') || name <= afterId) continue;
       if (!budget.canContinue()) return cursor;
       const refusalPath = join(this.root, 'compaction-refusals.v1', name);
       try {
-        const stored = optionalJson(this.runtime, join(dir, name), locationSchema);
+        const stored = optionalJson(this.runtime, join(dir, name), locationSchema, budget.observation);
         const location = stored === null ? null : viewLocation(stored);
         if (location?.detail.kind === 'unreadable') throw new Error('location-detail-unreadable');
         if (
@@ -1000,7 +1010,7 @@ export class JobLocationIndex {
         ) {
           mutate(() =>
             this.withRevisionLock(location.epochKey, () => {
-              const current = optionalJson(this.runtime, join(dir, name), locationSchema);
+              const current = optionalJson(this.runtime, join(dir, name), locationSchema, budget.observation);
               if (current === null) return;
               const location = viewLocation(current);
               if (!hasReadableTerminalDetail(location) || location.detail.kind !== 'recorded') return;

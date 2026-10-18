@@ -366,6 +366,7 @@ export async function pruneJobExports(input: {
   }
   if (budget.canMutate?.() === false) return input.afterId;
   const ids = (await runtime.storage.readdir(root)).sort();
+  budget.observation?.record('exports', { subjects: ids.length, reads: ids.length });
   if (budget.canMutate?.() === false) return input.afterId;
   mutate(() => input.db.prepare('DELETE FROM meta WHERE key = ?').run('storage-retention.exports.eligibility.v1'));
   const pending = createRetentionPendingSet(input.db, 'storage-retention.exports.pending.v1', mutate, budget.record);

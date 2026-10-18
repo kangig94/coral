@@ -1,3 +1,5 @@
+import type { RecoveryObservation } from '../../recovery/phase-observation.js';
+import { observeDatabaseReads } from '../../recovery/read-observation.js';
 import { dirname, join } from 'node:path';
 
 import type { Database } from '../../store/db.js';
@@ -202,17 +204,27 @@ export class TerminalResultExportOwner {
     for (const jobId of this.failures) this.hints.add(jobId);
   }
 
-  private withSource<T>(jobId: string, read: (db: Database, ctx: StoreReadContext) => T): T | null {
+  private withSource<T>(
+    jobId: string,
+    read: (db: Database, ctx: StoreReadContext) => T,
+    observation?: RecoveryObservation,
+  ): T | null {
     return this.sourceSession
       ? read(this.sourceSession.db, this.sourceSession.ctx)
-      : this.input.withSource(jobId, read);
+      : this.input.withSource(jobId, (db, ctx) =>
+          read(observation === undefined ? db : observeDatabaseReads(db, observation, 'result-repair'), ctx),
+        );
   }
 
-  private eligibility(jobId: string, location = this.input.location(jobId)): TerminalEligibility {
+  private eligibility(
+    jobId: string,
+    location = this.input.location(jobId),
+    observation?: RecoveryObservation,
+  ): TerminalEligibility {
     return terminalEligibility(
       this.input.runtime,
       location,
-      (read) => this.withSource(jobId, (db) => read(db)),
+      (read) => this.withSource(jobId, (db) => read(db), observation),
       this.publicationTerminal?.accepted,
     );
   }
@@ -260,7 +272,7 @@ export class TerminalResultExportOwner {
   }
 
   /** Availability is observed, never repaired: it checks the file and the job's own source, and writes nothing. */
-  observeResultAvailability(jobId: string): ResultAvailability {
+  observeResultAvailability(jobId: string, observation?: RecoveryObservation): ResultAvailability {
     const location = this.input.location(jobId);
     if (!location || !hasReadableTerminalDetail(location))
       return this.uncaptured.has(jobId) && this.input.hydrationRetry?.(jobId) !== true
@@ -273,7 +285,7 @@ export class TerminalResultExportOwner {
     const resultPath = location.resultPath ?? resultPathFor(this.input.jobsRoot, jobId);
     if (this.readableFile(resultPath)) return { kind: 'available', resultPath };
     const retentionDays = resolveJobRetentionMs(this.input.runtime.env.get('CORAL_JOBS_RETENTION_DAYS')) / 86_400_000;
-    const eligibility = this.eligibility(jobId, location);
+    const eligibility = this.eligibility(jobId, location, observation);
     switch (eligibility.source) {
       case 'transient':
         return { kind: 'pending' };
@@ -297,11 +309,11 @@ export class TerminalResultExportOwner {
     return this.publish(jobId, false);
   }
 
-  ensureResultMarkdownArtifact(jobId: string): string {
-    return this.publish(jobId, true);
+  ensureResultMarkdownArtifact(jobId: string, observation?: RecoveryObservation): string {
+    return this.publish(jobId, true, observation);
   }
 
-  private publish(jobId: string, repair: boolean): string {
+  private publish(jobId: string, repair: boolean, observation?: RecoveryObservation): string {
     const location = this.input.location(jobId);
     const targetPath = location?.resultPath ?? resultPathFor(this.input.jobsRoot, jobId);
     if (location && hasReadableTerminalDetail(location) && this.readableFile(targetPath)) {
@@ -313,9 +325,10 @@ export class TerminalResultExportOwner {
         this.input.withSource(
           jobId,
           (db, ctx) => {
-            this.sourceSession = { db, ctx };
+            const observedDb = observation === undefined ? db : observeDatabaseReads(db, observation, 'result-repair');
+            this.sourceSession = { db: observedDb, ctx };
             try {
-              return this.publishInSource(jobId, repair, db, location);
+              return this.publishInSource(jobId, repair, observedDb, location);
             } finally {
               this.sourceSession = undefined;
               this.publicationTerminal = undefined;
@@ -418,13 +431,14 @@ export class TerminalResultExportOwner {
   }
 
   private async repairCandidate(jobId: string, budget: RetentionRunBudget): Promise<void> {
+    budget.observation?.record('result-repair', { subjects: 1 });
     try {
-      if (this.observeResultAvailability(jobId).kind !== 'pending') return;
-      if (budget.canMutate?.() !== false) this.ensureResultMarkdownArtifact(jobId);
+      if (this.observeResultAvailability(jobId, budget.observation).kind !== 'pending') return;
+      if (budget.canMutate?.() !== false) this.ensureResultMarkdownArtifact(jobId, budget.observation);
       // A job with no recorded terminal has no artifact to keep on the repair backlog.
       if (
         this.input.location(jobId)?.disposition === 'terminal' &&
-        this.observeResultAvailability(jobId).kind === 'pending'
+        this.observeResultAvailability(jobId, budget.observation).kind === 'pending'
       )
         budget.record({ kind: 'kept', subject: jobId, reason: 'repair-pending' });
     } catch (error) {

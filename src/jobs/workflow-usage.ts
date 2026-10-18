@@ -1,3 +1,4 @@
+import type { RecoveryObservation } from '../recovery/phase-observation.js';
 import type { Database } from '../store/db.js';
 
 import { USAGE_TOKEN_FIELDS, type UsageSummary } from '../providers/contract.js';
@@ -22,7 +23,11 @@ function hasUsageValue(usage: UsageSummary): boolean {
   return TOKEN_FIELDS.some((field) => usage[field] !== undefined) || usage.costUsd !== undefined;
 }
 
-export function aggregateWorkflowUsage(db: Database, workflowJobId: string): UsageSummary | undefined {
+export function aggregateWorkflowUsage(
+  db: Database,
+  workflowJobId: string,
+  observation?: RecoveryObservation,
+): UsageSummary | undefined {
   // Workflow aggregates intentionally sum direct child jobs only; nested
   // workflow jobs contribute through their own terminal diagnostics.
   const rows = db
@@ -33,6 +38,7 @@ export function aggregateWorkflowUsage(db: Database, workflowJobId: string): Usa
         ORDER BY job_id ASC`,
     )
     .all(workflowJobId);
+  observation?.record('workflow-child-diagnostics', { reads: rows.length });
 
   const result: UsageSummary = {};
   let sawUsage = false;

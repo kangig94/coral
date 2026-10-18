@@ -1,3 +1,4 @@
+import type { RecoveryObservation } from '../../recovery/phase-observation.js';
 import type { Database } from '../../store/db.js';
 
 import type { AppendedEvent, CommitClosureResult, CommitContext } from '../../store/append.js';
@@ -28,9 +29,14 @@ export interface JobProgressStore {
   jobDir(jobId: string): string;
   getChangeSeq(): number;
   waitForChange(sinceSeq: number): Promise<void>;
-  loadJobProjectionDetail(jobId: string): JobProjectionDetail;
-  readJobEvents(jobId: string, terminalOnly?: boolean, afterSeq?: number): JobEvent[];
-  ensureResultArtifact(jobId: string): string;
+  loadJobProjectionDetail(jobId: string, observation?: RecoveryObservation): JobProjectionDetail;
+  readJobEvents(
+    jobId: string,
+    terminalOnly?: boolean,
+    afterSeq?: number,
+    observation?: RecoveryObservation,
+  ): JobEvent[];
+  ensureResultArtifact(jobId: string, observation?: RecoveryObservation): string;
   commit(cb: <Scope>(c: CommitContext<Scope>) => CommitClosureResult): AppendedEvent[];
   initJob(opts: InitJobOptions): void;
   rollbackJob(jobId: string): void;

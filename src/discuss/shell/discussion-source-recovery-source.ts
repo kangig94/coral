@@ -1,3 +1,4 @@
+import { observeDatabaseReads } from '../../recovery/read-observation.js';
 import type { RecoveryObservation } from '../../recovery/phase-observation.js';
 import type { Database } from '../../store/db.js';
 import {
@@ -43,6 +44,7 @@ export function discussionSourceRecoverySource(
   subject?: RecoverySubject,
   observation?: RecoveryObservation,
 ): RecoverySource<RawDiscussionSourceRow> {
+  const observedDb = observation === undefined ? db : observeDatabaseReads(db, observation, 'discussion-source');
   return defineRecoverySource({
     boundary: 'discussion-source',
     scanSubject: subject ?? {
@@ -50,8 +52,8 @@ export function discussionSourceRecoverySource(
       revision: { kind: 'until-cleared' },
     },
     scan: () => {
-      const rows = scanDiscussionSourceRows(db, subject?.key);
-      observation?.record('discussion-source', { subjects: rows.length, reads: rows.length });
+      const rows = scanDiscussionSourceRows(observedDb, subject?.key);
+      observation?.record('discussion-source', { subjects: rows.length });
       return rows;
     },
     subject: (row) => ({

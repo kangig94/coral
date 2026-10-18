@@ -70,6 +70,7 @@ function fixture(f = createRetentionFixture(), getProgressStore: () => typeof f.
   if (!fixtures.includes(f)) fixtures.push(f);
   const statuses: RetentionRunStatus[] = [];
   const scheduler = createStorageRetentionScheduler({
+    bootId: 'test-boot',
     runtime: f.runtime,
     getProgressStore,
     openEpoch: () => ({

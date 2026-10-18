@@ -1,3 +1,4 @@
+import type { RecoveryObservation } from '../../recovery/phase-observation.js';
 import { sameEpoch } from './identity.js';
 import { removeTreeNoFollowSync } from '../../infra/remove-tree.js';
 import { type StoragePort } from '../../infra/port-types.js';
@@ -274,6 +275,7 @@ type PostReadyStoreEpochSweepContext = Readonly<{
   dbDir: string;
   openEpoch: StoreEpoch;
   signal: AbortSignal | undefined;
+  observation?: RecoveryObservation;
 }>;
 
 type PostReadySweepMutationState = { pending: boolean };
@@ -424,6 +426,7 @@ async function preparePostReadyStoreEpochSweep(
   let entries: readonly string[];
   try {
     entries = await runtime.storage.readdir(dbDir);
+    context.observation?.record('sweep-entries', { subjects: entries.length, reads: entries.length });
   } catch (error: unknown) {
     auditSweepFailure(dbDir, error);
     return { kind: 'interrupted', result: 'unobservable-metadata' };
@@ -451,6 +454,7 @@ export async function sweepStoreEpochsPostReady(
   openStore: ResolvedStoreEpoch,
   options: {
     readonly signal?: AbortSignal;
+    readonly observation?: RecoveryObservation;
     readonly resultsReleased?: (epochKey: string, closedSource?: ResolvedStoreEpoch) => boolean;
   } = {},
 ): Promise<StoreEpochSweepResult> {
@@ -459,6 +463,7 @@ export async function sweepStoreEpochsPostReady(
     dbDir: openStore.storeRoot,
     openEpoch: openStore.epoch,
     signal: options.signal,
+    observation: options.observation,
   };
   const { dbDir, openEpoch, signal } = context;
   const mutations: PostReadySweepMutationState = { pending: false };
@@ -488,6 +493,7 @@ export async function sweepStoreEpochsPostReady(
     let observations: readonly StoreEpochObservation[];
     try {
       observations = observeStoreEpochs(runtime.storage, dbDir);
+      options.observation?.record('sweep-epochs', { reads: observations.length });
     } catch {
       return finishPostReadyStoreEpochSweep(runtime, dbDir, mutations, 'unobservable-metadata');
     }

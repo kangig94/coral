@@ -55,6 +55,7 @@ it('still runs retirement when one historical source throws', async () => {
   expect(f.index.unknownLocationHolds()).toMatchObject([{ retryScheduled: true }]);
   vi.mocked(refreshHistoricalEpochs).mockImplementation(actual.refreshHistoricalEpochs);
   const scheduler = createStoreEpochSweepScheduler({
+    bootId: 'test-boot',
     runtime: f.runtime,
     world: { log: vi.fn() },
     jobLocationIndex: f.index,
@@ -93,6 +94,7 @@ it('registration runs first and its failure does not skip closure or retention',
     return {} as never;
   });
   const scheduler = createStoreEpochSweepScheduler({
+    bootId: 'test-boot',
     runtime: f.runtime,
     world: { log: vi.fn() },
     jobLocationIndex: f.index,
@@ -130,6 +132,7 @@ it('a persistently failing closure settlement does not skip historical refresh o
   });
   const log = vi.fn();
   const scheduler = createStoreEpochSweepScheduler({
+    bootId: 'test-boot',
     runtime: f.runtime,
     world: { log },
     jobLocationIndex: f.index,

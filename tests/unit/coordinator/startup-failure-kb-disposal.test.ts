@@ -54,6 +54,7 @@ function buildStartupFailureHarness(dispose: () => Promise<KbDaemonDisposalSettl
       now: () => 0,
     },
     runtime: {
+      time: new VirtualTime(),
       env: { get: () => undefined },
       paths: { coral: { coordinator: { socketPath: '/state/coordinator.sock' } } },
     },

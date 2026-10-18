@@ -56,6 +56,7 @@ it.each([true, false])('reports owner failures after holds fill the report (fail
   fixtures.push(fixture);
   const statuses: RetentionRunStatus[] = [];
   const scheduler = createStorageRetentionScheduler({
+    bootId: 'test-boot',
     runtime: fixture.runtime,
     getProgressStore: () => fixture.store,
     openEpoch: () => ({ storeRoot: fixture.runtime.paths.coral.store.dbDir, epoch: '1', path: '/tmp/red/store.db' }),

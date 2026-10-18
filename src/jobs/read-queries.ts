@@ -1,3 +1,4 @@
+import type { RecoveryObservation } from '../recovery/phase-observation.js';
 import type { ProgressSource, ProgressVisitResult, WaitProgressRow } from './wait/contract.js';
 import type { Database } from '../store/db.js';
 import type { HostRef, UsageSummary } from '../providers/contract.js';
@@ -137,7 +138,7 @@ function emptyJobProjectionDetail(): JobProjectionDetail {
   };
 }
 
-function readProjectionRow(db: Database, jobId: string): ProjectionRow | null {
+function readProjectionRow(db: Database, jobId: string, observation?: RecoveryObservation): ProjectionRow | null {
   const row = prepareCached<[string], unknown>(
     db,
     `SELECT ${PROJECTION_JOB_COLUMNS}
@@ -145,6 +146,7 @@ function readProjectionRow(db: Database, jobId: string): ProjectionRow | null {
       WHERE job_id = ?`,
   ).get(jobId);
 
+  observation?.record('job-projections', { reads: row === undefined ? 0 : 1 });
   return row === undefined ? null : decodeProjectionJobStoredRow(row);
 }
 
@@ -580,13 +582,20 @@ function hydrateJobProjectionDetail(
   return { status: detail.status, launch, runtime: detail.runtime, exit: detail.exit };
 }
 
-export function loadJobProjectionDetail(db: Database, jobId: string, ctx: StoreReadContext): JobProjectionDetail {
-  const projection = readProjectionRow(db, jobId);
-  const requested = readLatestEvent(db, jobId, 'job.launch.requested');
-  const rejected = readLatestEvent(db, jobId, 'job.launch.rejected');
-  const runtime = readLatestEvent(db, jobId, 'job.runtime.started');
-  const terminal = readLatestEvent(db, jobId, 'job.terminal.recorded');
-  const workflowUsage = isWorkflowJobKind(projection?.job_kind) ? aggregateWorkflowUsage(db, jobId) : undefined;
+export function loadJobProjectionDetail(
+  db: Database,
+  jobId: string,
+  ctx: StoreReadContext,
+  observation?: RecoveryObservation,
+): JobProjectionDetail {
+  const projection = readProjectionRow(db, jobId, observation);
+  const requested = readLatestEvent(db, jobId, 'job.launch.requested', observation);
+  const rejected = readLatestEvent(db, jobId, 'job.launch.rejected', observation);
+  const runtime = readLatestEvent(db, jobId, 'job.runtime.started', observation);
+  const terminal = readLatestEvent(db, jobId, 'job.terminal.recorded', observation);
+  const workflowUsage = isWorkflowJobKind(projection?.job_kind)
+    ? aggregateWorkflowUsage(db, jobId, observation)
+    : undefined;
   return hydrateJobProjectionDetail(jobId, projection, requested, rejected, runtime, terminal, ctx, workflowUsage);
 }
 
@@ -726,6 +735,7 @@ export function readJobEvents(
   ctx: StoreReadContext,
   terminalOnly = false,
   afterSeq = 0,
+  observation?: RecoveryObservation,
 ): JobEvent[] {
   const rows = prepareCached<[string, number], EventsRow>(
     db,
@@ -734,7 +744,8 @@ export function readJobEvents(
       ORDER BY seq ASC`,
   ).all(jobId, afterSeq);
 
-  const projection = readProjectionRow(db, jobId);
+  observation?.record('job-events', { reads: rows.length });
+  const projection = readProjectionRow(db, jobId, observation);
   const sessionId = projection?.session_id ?? null;
 
   const events: JobEvent[] = [];
@@ -773,7 +784,7 @@ export function readJobEvents(
     }
 
     const usage = isWorkflowJobKind(projection?.job_kind)
-      ? aggregateWorkflowUsage(db, jobId)
+      ? aggregateWorkflowUsage(db, jobId, observation)
       : terminal.diagnostics.usage;
 
     events.push({

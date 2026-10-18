@@ -1,3 +1,4 @@
+import { observeDatabaseReads } from '../recovery/read-observation.js';
 import type { RecoveryObservation } from '../recovery/phase-observation.js';
 import type { Database } from '../store/db.js';
 import type { EventsRow } from '../store/schema.js';
@@ -81,19 +82,19 @@ function scanRetentionReleaseAndTerminalRows(
     .all();
 }
 
-/** Creates the independently keyed release/terminal component source. */
 export function retentionReleasePairComponentSource(
   db: Database,
   subject?: RecoverySubject,
   pair?: Readonly<{ sessionId: string; jobId: string }>,
   observation?: RecoveryObservation,
 ): RecoverySource<RawRetentionReleaseAndTerminalRow> {
+  const observedDb = observation === undefined ? db : observeDatabaseReads(db, observation, 'retention-release-pair');
   return defineRecoverySource({
     boundary: 'retention-release-pair',
     scanSubject: subject ?? { key: 'retention-release-pair-discovery', revision: { kind: 'until-cleared' } },
     scan: () => {
-      const rows = scanRetentionReleaseAndTerminalRows(db, subject?.key, pair);
-      observation?.record('retention-release-pair', { subjects: rows.length, reads: rows.length });
+      const rows = scanRetentionReleaseAndTerminalRows(observedDb, subject?.key, pair);
+      observation?.record('retention-release-pair', { subjects: rows.length });
       return rows;
     },
     subject: (row) => ({ key: String(row.seq), revision: canonicalRecoveryRevision(eventRevisionFields(row)) }),

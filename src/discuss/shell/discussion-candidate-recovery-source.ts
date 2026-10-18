@@ -1,3 +1,4 @@
+import { observeDatabaseReads } from '../../recovery/read-observation.js';
 import type { RecoveryObservation } from '../../recovery/phase-observation.js';
 import type { ProjectionJobStoredRow } from '../../jobs/projection-row.js';
 import { PROJECTION_JOB_COLUMNS } from '../../jobs/projection-row.js';
@@ -88,7 +89,6 @@ function readEvents(db: Database, streamKind: EventsRow['stream_kind'], streamId
 function readCandidateEnvelope(
   db: Database,
   discussion: RawDiscussionCandidateEnvelope['discussion'],
-  observation?: RecoveryObservation,
 ): RawDiscussionCandidateEnvelope {
   const discussionEvents = readEvents(db, 'discuss', [discussion.discuss_id]);
   const projections = db
@@ -125,9 +125,6 @@ function readCandidateEnvelope(
       )
       .get(CANDIDATE_BOUNDARY, discussion.discuss_id) ?? null;
 
-  observation?.record(CANDIDATE_BOUNDARY, {
-    reads: discussionEvents.length + projections.length + jobEvents.length + (continuation === null ? 0 : 1),
-  });
   const fields = inputRevisionFields(discussion, discussionEvents, ownedJobs);
   const inputRevision = canonicalRecoveryRevision(fields);
   if (inputRevision.kind !== 'fingerprint') {
@@ -172,8 +169,8 @@ function scanDiscussionCandidateEnvelopes(
                 WHERE discuss_id = ?`,
             )
             .all(subjectKey);
-    observation?.record(CANDIDATE_BOUNDARY, { subjects: discussions.length, reads: discussions.length });
-    return discussions.map((discussion) => readCandidateEnvelope(db, discussion, observation));
+    observation?.record(CANDIDATE_BOUNDARY, { subjects: discussions.length });
+    return discussions.map((discussion) => readCandidateEnvelope(db, discussion));
   });
 }
 
@@ -182,13 +179,14 @@ export function discussionCandidateRecoverySource(
   subject?: RecoverySubject,
   observation?: RecoveryObservation,
 ): RecoverySource<RawDiscussionCandidateEnvelope> {
+  const observedDb = observation === undefined ? db : observeDatabaseReads(db, observation, 'discussion-candidate');
   return defineRecoverySource({
     boundary: CANDIDATE_BOUNDARY,
     scanSubject: subject ?? {
       key: 'discussion-candidate-discovery',
       revision: { kind: 'until-cleared' },
     },
-    scan: () => scanDiscussionCandidateEnvelopes(db, subject?.key, observation),
+    scan: () => scanDiscussionCandidateEnvelopes(observedDb, subject?.key, observation),
     subject: (raw) => raw.subject,
   });
 }

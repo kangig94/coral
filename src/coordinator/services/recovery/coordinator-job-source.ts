@@ -1,3 +1,4 @@
+import { observeDatabaseReads } from '../../../recovery/read-observation.js';
 import type { RecoveryObservation } from '../../../recovery/phase-observation.js';
 import { PROJECTION_JOB_COLUMNS, type ProjectionJobStoredRow } from '../../../jobs/projection-row.js';
 import { sha256Hex } from '../../../infra/hash.js';
@@ -72,7 +73,6 @@ function scanCoordinatorJobRecoveryEnvelopes(
               ORDER BY job_id ASC`,
             )
             .all(subjectKey);
-    observation?.record(COORDINATOR_JOB_RECOVERY_BOUNDARY, { reads: projections.length });
     const readStatusEvents = db.prepare<[string], EventsRow>(
       `SELECT ${EVENT_COLUMNS}
          FROM events
@@ -91,10 +91,6 @@ function scanCoordinatorJobRecoveryEnvelopes(
          FROM projection_sessions
         WHERE session_id = ?`,
     );
-    // W2.5: a proxied app-server job's `acquired` `hostRef` names a live provider proxy set, not a local
-    // host — see `provider-proxy-launch-route.ts`'s `proxiedHostRef`. Reading this alongside everything else
-    // this envelope already reads keeps it inside the same `withConsistentRead` snapshot, so the revision
-    // folded below stays accurate for whether that fact changes between a scan and its settlement.
     const readProviderOperations = db.prepare<[string], RawProviderOperationSagaRow>(
       `SELECT key, value
          FROM meta
@@ -110,9 +106,6 @@ function scanCoordinatorJobRecoveryEnvelopes(
         claimedSession: projection.session_id === null ? null : (readClaimedSession.get(projection.session_id) ?? null),
         providerOperations: readProviderOperations.all(`${providerOperationRecordKeyPrefix(projection.job_id)}%`),
       };
-      observation?.record(COORDINATOR_JOB_RECOVERY_BOUNDARY, {
-        reads: facts.statusEvents.length + (facts.claimedSession === null ? 0 : 1) + facts.providerOperations.length,
-      });
       return facts;
     });
     const orphanedClaimRows = db
@@ -130,7 +123,6 @@ function scanCoordinatorJobRecoveryEnvelopes(
           ORDER BY active_job_id ASC`,
       )
       .all();
-    observation?.record(COORDINATOR_JOB_RECOVERY_BOUNDARY, { reads: orphanedClaimRows.length });
     const orphanedClaims = orphanedClaimRows
       .filter((row) => subjectKey === undefined || row.active_job_id === subjectKey)
       .map(({ active_job_id: jobId, ...claimedSession }) => ({
@@ -142,7 +134,6 @@ function scanCoordinatorJobRecoveryEnvelopes(
       }));
     observation?.record(COORDINATOR_JOB_RECOVERY_BOUNDARY, {
       subjects: jobEnvelopes.length + orphanedClaims.length,
-      reads: orphanedClaims.reduce((count, row) => count + row.providerOperations.length, 0),
     });
     return [...jobEnvelopes, ...orphanedClaims].map((facts) => ({
       ...facts,
@@ -183,6 +174,10 @@ export function coordinatorJobRecoverySource(
   db: Database,
   options: Readonly<{ subjectKey?: string; subject?: RecoverySubject; observation?: RecoveryObservation }> = {},
 ): RecoverySource<RawCoordinatorJobRecoveryEnvelope> {
+  const observedDb =
+    options.observation === undefined
+      ? db
+      : observeDatabaseReads(db, options.observation, COORDINATOR_JOB_RECOVERY_BOUNDARY);
   return defineRecoverySource({
     boundary: COORDINATOR_JOB_RECOVERY_BOUNDARY,
     scanSubject: options.subject ?? {
@@ -190,7 +185,7 @@ export function coordinatorJobRecoverySource(
       revision: { kind: 'until-cleared' },
     },
     scan: () =>
-      scanCoordinatorJobRecoveryEnvelopes(db, options.subject?.key ?? options.subjectKey, options.observation),
+      scanCoordinatorJobRecoveryEnvelopes(observedDb, options.subject?.key ?? options.subjectKey, options.observation),
     subject: (raw) => raw.subject,
   });
 }
