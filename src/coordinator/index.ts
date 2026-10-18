@@ -236,7 +236,6 @@ async function scanLifecycleReactorAtStartup(
   lifecycleReactorLifetime: AbortController,
   signal: AbortSignal,
 ): Promise<void> {
-  // Workflow recovery must clear replacement intents before retention scans, except claims held by live children.
   const abortReactorLifetime = () => lifecycleReactorLifetime.abort();
   signal.addEventListener('abort', abortReactorLifetime, { once: true });
   try {

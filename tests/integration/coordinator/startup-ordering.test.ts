@@ -221,7 +221,7 @@ describe('coordinator pending workflow replacement recovery', () => {
     );
     vi.stubEnv('HOME', home);
 
-    const runtime = createRealRuntime('prod');
+    const runtime = createRealRuntime('prod', { baseDir: join(home, '.coral') });
     const runStartup = vi.fn(async (options: JobsStartupContext) => {
       const opened = providerSessionSchema.parse({
         sessionId: 'pending-replacement-session',
@@ -318,7 +318,7 @@ describe('coordinator pending workflow replacement recovery', () => {
       'utf-8',
     );
     vi.stubEnv('HOME', home);
-    const runtime = createRealRuntime('prod');
+    const runtime = createRealRuntime('prod', { baseDir: join(home, '.coral') });
     const projectRoot = canonicalizeWorkDir(home, home);
     const workflowId = 'workflow-pending';
     const childId = '00000000-0000-4000-8000-000000000001';
