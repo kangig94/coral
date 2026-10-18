@@ -161,6 +161,17 @@ function planJobRecovery(facts: RecoveryJobFacts, isPidAlive: (pid: number) => b
   }
 
   if (facts.hasLaunchRequest && status.phase === 'queued' && !facts.hasRuntimeStart) {
+    if (facts.launchRecord?.parentWorkflowJobId !== undefined) {
+      return {
+        bucket: 'staleRunning',
+        action: {
+          type: 'markError',
+          jobId: facts.jobId,
+          fault: { kind: 'ghost_launch' },
+          status,
+        },
+      };
+    }
     return facts.launchRecord === null
       ? null
       : {

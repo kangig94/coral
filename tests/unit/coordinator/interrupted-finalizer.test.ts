@@ -21,6 +21,7 @@ import type { ProviderRecoveryAuthority } from '#src/jobs/reconcile/contracts.js
 import type { JobStatus } from '#src/jobs/records.js';
 import type { BoundProvider } from '#src/providers/bound-provider-contract.js';
 import { codexRecoveryLifecycle } from '#src/providers/codex/provider-facets.js';
+import { claudeRecoveryLifecycle } from '#src/providers/claude/provider-facets.js';
 import type { ProviderValidatedSessionContinuityMutation } from '#src/sessions/continuity-mutation.js';
 import { validatedTestContinuityBlob } from '#tests/helpers/session.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
@@ -186,6 +187,44 @@ function createRecoveryProvider() {
 }
 
 describe('interrupted app-server recovery performer', () => {
+  it('preserves Claude conversation and bootstrap continuity while clearing broker turn continuity', async () => {
+    const bootstrapSignature = {
+      cwd: '/project',
+      systemPromptHash: 'system-hash',
+      permissionMode: 'default',
+      bootstrapConfigHash: 'config-hash',
+    };
+    const recoveryPlan = planInterruptedAppServerRecovery(
+      {
+        launchRecord: plan.launchRecord,
+        session: {
+          ...plan.session,
+          providerContinuity: validatedTestContinuityBlob({
+            bootstrapSignature,
+            brokerSessionKey: 'broker-session',
+            brokerTurnId: 'interrupted-turn',
+          }),
+        },
+      } as unknown as ProviderRecoveryAuthority,
+      plan.runtimeRecord,
+      'restart',
+      { recovery: true },
+      null,
+    );
+    const boundProvider = { recovery: claudeRecoveryLifecycle } as unknown as BoundProvider;
+
+    await expect(
+      performInterruptedAppServerRecovery(recoveryPlan, boundProvider, { reapCarrier: vi.fn() }),
+    ).resolves.toEqual({
+      kind: 'resolved',
+      mutation: {
+        kind: 'set_resumable',
+        conversationRef: 'thread-recovered',
+        providerContinuity: { bootstrapSignature },
+      },
+    });
+  });
+
   it('keeps unsupported recovery free of provider and carrier effects', async () => {
     const provider = createRecoveryProvider();
     const recoveryPlan = planInterruptedAppServerRecovery(
@@ -237,7 +276,6 @@ describe('interrupted app-server recovery performer', () => {
       expect(provider.finalizeInterrupted).toHaveBeenCalledWith(
         {
           resumable: conversationRef !== undefined || continuity !== undefined,
-          ...(continuity === undefined ? {} : { updatedContinuity: continuity }),
         },
         continuity,
         { preservedConversationRef: conversationRef },
@@ -267,13 +305,19 @@ describe('interrupted app-server recovery performer', () => {
       const result = await performInterruptedAppServerRecovery(recoveryPlan, provider.boundProvider, {
         reapCarrier,
       });
+      expect(result).toEqual({
+        kind: 'resolved',
+        mutation: {
+          kind: 'set_resumable',
+          conversationRef: 'thread-recovered',
+          providerContinuity: { threadId: 'thread-recovered' },
+        },
+      });
       await finalizeInterruptedAppServerRecovery(recoveryPlan, result, status, harness.deps);
 
-      expect(provider.finalizeInterrupted).toHaveBeenCalledWith(
-        { resumable: true, updatedContinuity: plan.session.providerContinuity },
-        plan.session.providerContinuity,
-        { preservedConversationRef: 'thread-recovered' },
-      );
+      expect(provider.finalizeInterrupted).toHaveBeenCalledWith({ resumable: true }, plan.session.providerContinuity, {
+        preservedConversationRef: 'thread-recovered',
+      });
       expect(harness.finalizeJobContinuityAtomic).toHaveBeenCalledWith(
         'interrupted-session',
         expect.objectContaining({
@@ -325,7 +369,6 @@ describe('interrupted app-server recovery performer', () => {
     expect(provider.finalizeInterrupted).toHaveBeenCalledWith(
       {
         resumable: true,
-        ...(hasContinuity ? { updatedContinuity: session.providerContinuity } : {}),
       },
       hasContinuity ? session.providerContinuity : undefined,
       { preservedConversationRef: 'thread-recovered' },

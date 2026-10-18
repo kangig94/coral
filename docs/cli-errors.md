@@ -209,7 +209,7 @@ Provider-host `list` and `inspect` can report `reclamation-failed`. This status 
 
 ### Interrupted session diagnostics
 
-Cold-boot recovery records interrupted app-server jobs with `pre_checkpoint_preserved` when recorded continuity is preserved, or `pre_checkpoint_empty` when no resumable conversation was recorded. The result report says either `Session was interrupted before completion. The existing conversation reference was preserved.` or `Session was interrupted before completion. No resumable conversation was available.` Recovery neither verifies the provider thread nor resumes it. A later explicit `resume` tries the recorded thread; if no reference was recorded, start a new session with `exec`.
+Cold-boot recovery records interrupted app-server jobs with `pre_checkpoint_preserved` when recorded continuity is preserved, or `pre_checkpoint_empty` when no resumable conversation was recorded. The result report says either `Session was interrupted before completion. The existing conversation reference was preserved.` or `Session was interrupted before completion. No resumable conversation was available.` Recovery neither verifies the provider thread nor resumes it. Start a new session with `coral-cli codex -i "<prompt>"` or `coral-cli claude -i "<prompt>"`. These commands create a new session; they have no session-continuation flag.
 
 Historical events with `verified`, `missing`, or `unavailable` continuity remain readable and still render `continuity verified`, `continuity missing`, or `continuity unavailable`. These describe an older recorded outcome; they are not continuity judgements made by this build's cold-boot recovery. Durable CLI artifact interpretation remains unchanged.
 

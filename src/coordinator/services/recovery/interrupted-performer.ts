@@ -151,7 +151,6 @@ export async function performInterruptedAppServerRecovery(
     mutation: recovery.finalizeInterrupted(
       {
         resumable: plan.preservedConversationRef !== undefined || plan.continuity !== undefined,
-        ...(plan.continuity === undefined ? {} : { updatedContinuity: plan.continuity }),
       },
       plan.continuity,
       { preservedConversationRef: plan.preservedConversationRef },

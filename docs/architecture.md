@@ -431,7 +431,7 @@ The operational health snapshot uses the same conservative but network-free loca
 
 ### Interrupted jobs after restart
 
-Cold-boot recovery finalizes interrupted app-server jobs without provider I/O: it opens no replacement host, probes no thread, and parses no stdout or stderr artifacts. The session keeps its recorded resumable state and conversation reference; recovery makes no new resumability judgement. A later explicit `resume` lets the provider try the recorded thread, and that job fails if the thread is gone. If no conversation reference or continuity was recorded, recovery reports `pre_checkpoint_empty`; it does not recover a reference from stdout.
+Cold-boot recovery finalizes interrupted app-server jobs without provider I/O: it opens no replacement host, probes no thread, and parses no stdout or stderr artifacts. The session keeps its recorded resumable state and conversation reference; recovery makes no new resumability judgement. The CLI creates new sessions with `coral-cli codex -i "<prompt>"` or `coral-cli claude -i "<prompt>"`; it exposes no session-continuation command or flag. If no conversation reference or continuity was recorded, recovery reports `pre_checkpoint_empty`; it does not recover a reference from stdout.
 
 An interrupted job backed by a detached provider-operation carrier still awaits carrier reaping before its terminal is recorded. If reaping fails, the job remains non-terminal for recovery retry. Durable CLI recovery still collects wrapper exit evidence and interprets result artifacts, including terminal outcome, continuity, and provider artifact handles. Upgrade handoff still attaches transferred live jobs instead of finalizing them as interrupted.
 
