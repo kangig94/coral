@@ -125,7 +125,6 @@ export type BoundProviderStandaloneExecutionRuntime = BoundProviderExecutionRunt
 
 export interface BoundProviderAppServerCapability {
   readonly supportsInterrupt: boolean;
-  readonly supportsProbe: boolean;
   openReplacement(
     input: BoundProviderHostPreparationInput,
     runtime: { jobId: string; signal?: AbortSignal },
@@ -143,17 +142,6 @@ export interface BoundProviderAppServerCapability {
     /** Expiry must release only the temporary lease, never cancel the provider turn. */
     attemptSignal?: AbortSignal,
   ): Promise<ProviderSendOutcome>;
-  probe(
-    hostRef: HostRef,
-    continuity: NonNullable<ProviderRuntime['persistedContinuity']>,
-    input: BoundProviderHostPreparationInput & Readonly<{ jobId: string }>,
-  ): Promise<
-    | { kind: 'stale' }
-    | {
-        kind: 'probed';
-        result: { resumable: boolean; updatedContinuity?: NonNullable<ProviderRuntime['persistedContinuity']> };
-      }
-  >;
 }
 
 export type BoundProviderPreparedExecution =

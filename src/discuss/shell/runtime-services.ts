@@ -6,9 +6,7 @@ import { canonicalizeWorkDir } from '../../runtime/canonical-work-dir.js';
 import type { JobExit, JobLaunch, JobStatus } from '../../jobs/records.js';
 import type { DiscussContext, DiscussLaunchDecision, DiscussService, DiscussWaitResult } from './types.js';
 import { clearAllDiscuss, getOrCreate as getOrCreateDiscussContext, hasRunningSessions } from './live-registry.js';
-import * as discussLoop from './loop.js';
 import * as discussRecovery from './recovery.js';
-import type { RecoveredDiscussResume } from './recovery.js';
 import { knownDiscussSources, type DiscussReadHelpersDeps } from './session-read-service.js';
 import { DiscussSessionStore, type DiscussSessionJournal } from './session-store.js';
 import { discussRegistry, toJournalInput } from '../event-registry.js';
@@ -65,7 +63,6 @@ export function createDiscussRuntime({
   hooks: {
     onShutdown(mode: 'handoff' | 'hard', signal: AbortSignal): Promise<void>;
     onIdleCheck(): boolean;
-    onRecoveryComplete(resumes: RecoveredDiscussResume[]): Promise<void>;
   };
   discussStores: Map<string, DiscussSessionStore>;
 } {
@@ -190,7 +187,6 @@ export function createDiscussRuntime({
     getDatabase: () => getProgressStore().getDb(),
     time: runtime.time,
     resolveProjectSource: world.resolveProjectSource,
-    resumeLoop: discussLoop.resumeLoop,
   });
 
   const hooks = {
@@ -231,7 +227,6 @@ export function createDiscussRuntime({
       world.discussRegistry.contexts.clear();
     },
     onIdleCheck: () => hasRunningSessions(world.discussRegistry),
-    onRecoveryComplete: (_resumes: RecoveredDiscussResume[]) => Promise.resolve(),
   };
 
   return {

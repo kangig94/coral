@@ -75,7 +75,7 @@ describe('retention startup composition', () => {
         terminateRegisteredChildrenFn: async () => ({ kind: 'all-children-observed-absent' }),
         getConsumerStuck: () => [],
       },
-      async () => [],
+      async () => {},
     );
     const spawn = vi.spyOn(f.runtime.process, 'spawn');
     try {

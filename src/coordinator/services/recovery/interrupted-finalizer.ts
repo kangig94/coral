@@ -2,7 +2,6 @@ import { backendLog } from '../../../infra/backend-log.js';
 import { assertNever } from '../../../infra/error-format.js';
 import { elapsedDurationMs } from '../../../jobs/duration.js';
 import type { JobStatus, JobTerminalInput } from '../../../jobs/records.js';
-import type { InterruptedProbeOutcome } from '../../../jobs/reconcile/interrupted-reason.js';
 import type { JobAbortRegistryPort } from '../../../jobs/contracts/abort-registry.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import type { SessionRecoveryPort } from '../../../sessions/contracts.js';
@@ -128,20 +127,8 @@ function exportResultAndReleaseOwnership(receipt: RecoveryCommitReceipt, deps: I
   }
 }
 
-function continuityState(
-  probeOutcome: InterruptedProbeOutcome,
-  mutation: ProviderValidatedSessionContinuityMutation,
-): SessionInterruptedFault['continuity'] {
-  switch (probeOutcome) {
-    case 'verified':
-    case 'missing':
-    case 'unavailable':
-      return probeOutcome;
-    case 'waiting':
-      return mutation.kind === 'clear_non_resumable' ? 'pre_checkpoint_empty' : 'pre_checkpoint_preserved';
-    default:
-      return assertNever(probeOutcome);
-  }
+function continuityState(mutation: ProviderValidatedSessionContinuityMutation): SessionInterruptedFault['continuity'] {
+  return mutation.kind === 'clear_non_resumable' ? 'pre_checkpoint_empty' : 'pre_checkpoint_preserved';
 }
 
 /** Commits an app-server recovery outcome, then releases local ownership only after exact session CAS. */
@@ -151,12 +138,6 @@ export async function finalizeInterruptedAppServerRecovery(
   status: JobStatus,
   deps: InterruptedFinalizerDeps,
 ): Promise<void> {
-  const expectedVersion = await recordArtifactHandlesExact(
-    plan,
-    performed.kind === 'resolved' ? performed.artifactHandles : [],
-    deps,
-  );
-
   const terminalOptions = {
     jobId: plan.launchRecord.jobId,
     sessionId: plan.session.sessionId,
@@ -205,21 +186,15 @@ export async function finalizeInterruptedAppServerRecovery(
     mutation = performed.mutation;
     const fault: SessionInterruptedFault = {
       trigger: plan.reason,
-      continuity: continuityState(performed.probeOutcome, mutation),
+      continuity: continuityState(mutation),
     };
-    const reportConversationRef =
-      performed.probeOutcome === 'verified'
-        ? mutation.kind === 'set_resumable'
-          ? mutation.conversationRef
-          : performed.recoveryConversationRef
-        : undefined;
-    content = buildInterruptedAppServerReport(fault, reportConversationRef);
+    content = buildInterruptedAppServerReport(fault);
     appendTerminal = <Scope>(commit: CommitContext<Scope>): void => {
       appendSessionInterruptedTerminalInCommit(commit, fault, terminalOptions, { content, durationMs });
     };
   }
 
-  const receipt = await finalizeSessionExact(plan, expectedVersion, mutation, appendTerminal, deps);
+  const receipt = await finalizeSessionExact(plan, plan.expectedSessionVersion, mutation, appendTerminal, deps);
   exportResultAndReleaseOwnership(receipt, deps);
 }
 

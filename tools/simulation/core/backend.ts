@@ -45,10 +45,10 @@ import { LaunchCoordinator } from '../../../src/coordinator/live/admission.js';
 import { createProviderHostManager } from '../../../src/coordinator/live/provider-hosts/index.js';
 import { createHostAdmissionCollection } from '../../../src/providers/host-admission.js';
 import { JobStore } from '../../../src/jobs/store.js';
-import { loadJobProjectionDetails } from '../../../src/jobs/read-queries.js';
 import { providerLookupPortFromCatalog } from '../../../src/providers/catalog.js';
 import { jobsRegistry } from '../../../src/jobs/events.js';
 import { sessionsRegistry } from '../../../src/sessions/events.js';
+import { SessionManager } from '../../../src/sessions/shell.js';
 import { discussRegistry as discussStoreRegistry } from '../../../src/discuss/event-registry.js';
 import { workflowRegistry } from '../../../src/workflow/events.js';
 import type { StoragePort } from '../../../src/infra/port-types.js';
@@ -809,7 +809,6 @@ export function createSimulationBackend(
         if (scenario.recoverPersistedDiscuss === 'default') {
           return discussRecovery.runStartup(deps);
         }
-        return [];
       },
     },
     async (
@@ -849,7 +848,7 @@ export function createSimulationBackend(
       const recoveryProgressStore = startupDisposition.progressStore;
       signal.throwIfAborted();
 
-      const recoveredDiscussResumes = await recoverPersistedDiscussFn({
+      await recoverPersistedDiscussFn({
         knownDiscussSources,
         getDiscussStoreForSource,
         getDiscussContext,
@@ -858,12 +857,17 @@ export function createSimulationBackend(
       });
       signal.throwIfAborted();
 
-      await workflowRecover.resumeAll({
+      await workflowRecover.recoverAll({
         db: storeDb,
         progressStore: recoveryProgressStore,
-        loadJobDetails: loadJobProjectionDetails,
-        getExecutionService: (ctx) => getExecutionService(ctx) as never,
-        createInvocationContext,
+        clearContinuationLease: (projectRoot, input) =>
+          SessionManager.forProduction(
+            projectRoot,
+            runtime,
+            (cb) => progressStore.commit(cb),
+            (payload) => eventBus.emit('session:released', payload),
+            { db: storeDb },
+          ).clearContinuationLease(input),
         finalizeWorkflow: createWorkflowRecoveryFinalizer({
           runtime,
           progressStore,
@@ -885,8 +889,6 @@ export function createSimulationBackend(
         time: runtime.time,
       });
       signal.throwIfAborted();
-
-      return recoveredDiscussResumes;
     },
   );
   setStoreServicesForTest(core.storeServicesRef, storeServices);

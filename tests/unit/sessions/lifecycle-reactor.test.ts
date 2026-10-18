@@ -700,6 +700,44 @@ describe('LifecycleReactor retention enforcement', () => {
     ]);
   });
 
+  it.each([-100, 100, 300])(
+    'preserves a claimed session version until release with a lease expiring in %s ms',
+    async (expiresInMs) => {
+      const harness = createHarness();
+      const jobId = 'job-live-lease';
+      const sessionId = await openClaimedSession(harness, jobId);
+      await recordArtifact(harness, sessionId, jobId, '/tmp/rollout-live-lease.jsonl');
+      initRunningJob(harness, jobId, sessionId);
+      recordContinuationLease(harness, sessionId, jobId, harness.runtime.time.now() + expiresInMs);
+      const claimedSession = readProjectionProviderSession(harness.db, sessionId);
+
+      await harness.reactor.scanStartup(harness.reactorLifetime.signal);
+      harness.runtime.time.tick(200);
+      await harness.reactor.waitForIdle();
+
+      expect(readProjectionProviderSession(harness.db, sessionId)).toEqual(claimedSession);
+      expect(harness.discardCalls).toEqual([]);
+
+      completeJob(harness, jobId, sessionId);
+      await harness.reactor.waitForIdle();
+      expect(readProjectionProviderSession(harness.db, sessionId)).toEqual(claimedSession);
+
+      harness.sessionManager.releaseJob(sessionId, jobId);
+      await harness.reactor.waitForIdle();
+      if (expiresInMs > 200) {
+        expect(readProjectionProviderSession(harness.db, sessionId)?.continuationLease?.status).toBe('pending');
+        harness.runtime.time.tick(expiresInMs - 200);
+        await harness.reactor.waitForIdle();
+      }
+
+      expect(readProjectionProviderSession(harness.db, sessionId)?.continuationLease).toMatchObject({
+        status: 'expired',
+      });
+      expect(harness.discardCalls).toEqual([['/tmp/rollout-live-lease.jsonl']]);
+      await harness.reactor.dispose();
+    },
+  );
+
   it('expires a pending continuation lease by timer and discards without later terminal or release events', async () => {
     const harness = createHarness({ autoObserveCoordinator: false });
     const jobId = 'job-lease-timer';

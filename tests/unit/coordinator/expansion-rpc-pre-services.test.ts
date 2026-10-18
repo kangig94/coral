@@ -142,7 +142,7 @@ describe('expansion RPC before store services exist', () => {
         kbDaemonSupervisor: createMockKbDaemonSupervisor({ expansionRpc }),
         getConsumerStuck: () => [],
       },
-      async () => [],
+      async () => {},
     );
 
     const response = await request(core.server, '/coordinator/expansion', {
@@ -206,7 +206,7 @@ describe('expansion RPC before store services exist', () => {
         }),
         getConsumerStuck: () => [],
       },
-      async () => [],
+      async () => {},
     );
 
     const response = await request(core.server, '/health?detailed=1', {

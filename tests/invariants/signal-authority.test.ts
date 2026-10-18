@@ -46,7 +46,7 @@ describe('an unanswered socket holder grants no signal authority', () => {
       socketPath: '/tmp/coral-signal-settlement-invariant.sock',
       desired: { version: 'invariant', bundleHash: 'invariant', flavor: 'prod', namespace: 'invariant' },
       bindAttempt: async () => ({ kind: 'incumbent', reason: 'signal-settlement-invariant' }),
-      runStartupRecovery: async () => [],
+      runStartupRecovery: async () => {},
       runtime,
       readVerifiedIncumbentFromDiscovery: readIncumbent,
       totalBudgetMs: 1_000,

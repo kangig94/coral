@@ -416,45 +416,6 @@ async function sendBoundAppServer<Plan extends ProviderExecutionPlan>(
   }
 }
 
-async function probeBoundAppServer<Plan extends ProviderExecutionPlan>(
-  tools: BoundAppServerTools<Plan>,
-  decodeContinuity: BoundContinuityDecoder,
-  hostRef: HostRef,
-  continuity: NonNullable<ProviderRuntime['persistedContinuity']>,
-  input: BoundProviderHostPreparationInput & Readonly<{ jobId: string }>,
-): ReturnType<BoundProviderAppServerCapability['probe']> {
-  if (tools.capability.probe === undefined) {
-    throw new Error(`Provider '${tools.providerName}' has no interrupted recovery probe.`);
-  }
-  const attached = await attachExpectedBoundSession(tools, hostRef, input, 'Provider probe host reference');
-  if (attached === null) return Object.freeze({ kind: 'stale' as const });
-  try {
-    const result = await tools.capability.probe(
-      attached.managed.session,
-      snapshotBoundaryData(continuity, 'Provider probe continuity'),
-      { request: snapshotRequest(input.request) },
-    );
-    const outcome = snapshotProviderResult(result, 'Provider recovery probe outcome');
-    return Object.freeze({
-      kind: 'probed' as const,
-      result:
-        outcome.updatedContinuity === undefined
-          ? outcome
-          : Object.freeze({
-              ...outcome,
-              updatedContinuity: requireBoundContinuity(
-                tools.providerName,
-                decodeContinuity,
-                outcome.updatedContinuity,
-                'probe continuity',
-              ),
-            }),
-    });
-  } finally {
-    attached.managed.close();
-  }
-}
-
 function bindArtifacts<Access extends JsonValue>(
   artifacts: ProviderArtifactCapability<Access>,
   access: Access,
@@ -626,14 +587,12 @@ function createBoundAppServerLifecycle<Plan extends ProviderExecutionPlan, Acces
   implementation: ProviderImplementation<Plan, Access>,
   access: Access,
   appServerHost: AppServerHostAuthority | undefined,
-  decodeContinuity: BoundContinuityDecoder,
 ): BoundAppServerLifecycle<Plan> | undefined {
   if (implementation.transport === 'standalone') return undefined;
   const tools = createBoundAppServerTools(implementation, access, appServerHost);
 
   const lifecycle: BoundAppServerLifecycle<Plan> = {
     supportsInterrupt: tools.capability.interrupt !== undefined,
-    supportsProbe: tools.capability.probe !== undefined,
     prepareExecution: (input) => {
       const hostPlan = tools.planExecution(input);
       return Object.freeze({
@@ -658,7 +617,6 @@ function createBoundAppServerLifecycle<Plan extends ProviderExecutionPlan, Acces
     interrupt: (hostRef, continuity, input) => interruptBoundAppServer(tools, hostRef, continuity, input),
     send: (hostRef, continuity, input, hostPreparation, attemptSignal) =>
       sendBoundAppServer(tools, { hostRef, continuity, input, hostPreparation, attemptSignal }),
-    probe: (hostRef, continuity, input) => probeBoundAppServer(tools, decodeContinuity, hostRef, continuity, input),
   };
   return Object.freeze(lifecycle);
 }
@@ -793,7 +751,7 @@ export function rehydrateCodecBinding<Plan extends ProviderExecutionPlan, Access
   const decodeContinuity: BoundContinuityDecoder = (rawContinuity) =>
     decodeBoundContinuity(provider, codec, rawContinuity);
   const recovery = bindRecovery(implementation.recovery, access, provider, decodeContinuity);
-  const appServer = createBoundAppServerLifecycle(implementation, access, appServerHost, decodeContinuity);
+  const appServer = createBoundAppServerLifecycle(implementation, access, appServerHost);
   const curation = bindCuration(
     implementation.transport === 'app-server' ? implementation.curation : undefined,
     appServer,

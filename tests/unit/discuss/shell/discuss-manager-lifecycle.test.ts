@@ -12,7 +12,6 @@ import { appendRuntimeEvents, commitDecision, readSessionEvents } from '#src/dis
 import * as discussPersistence from '#src/discuss/shell/persistence.js';
 import { SESSION_SHUTTING_DOWN, DiscussManagerError } from '#src/discuss/shell/errors.js';
 import { runFollowUpTurns } from '#src/discuss/shell/flow/followup.js';
-import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { decideEnd } from '#src/discuss/state-machine.js';
 import { makeDecisionContext } from '#src/discuss/shell/flow/primitives.js';
 import {
@@ -24,20 +23,9 @@ import {
   persistSession,
   type DiscussHarness,
 } from '#tests/unit/discuss/shell/discuss-test-helpers.js';
-import { testProjectPrincipal } from '#tests/helpers/principal.js';
 
-async function recoverSessions(harness: DiscussHarness) {
-  return recoverPersistedSessionsFromStore(
-    harness.store,
-    () => harness.context,
-    (snapshot) => ({
-      projectRoot: fixtureCanonicalWorkDir(snapshot.projectRoot),
-      pluginRoot: harness.ctx.pluginRoot,
-      coralEnv: {},
-      principal: testProjectPrincipal(snapshot.projectRoot),
-      providerScope: snapshot.providerScope ?? harness.ctx.providerScope,
-    }),
-  );
+async function recoverSessions(harness: DiscussHarness): Promise<void> {
+  await recoverPersistedSessionsFromStore(harness.store, () => harness.context);
 }
 
 describe('DiscussContext lifecycle boundaries', () => {
@@ -503,9 +491,8 @@ describe('DiscussContext lifecycle boundaries', () => {
       payload: { endReasonContent: 'abort', force: true, reason: 'abort' },
     });
 
-    const recovered = await recoverSessions(harness);
+    await recoverSessions(harness);
 
-    expect(recovered.map((session) => session.sessionId)).not.toContain('user-abort-synthesize-session');
     expect(harness.context.sessions.has('user-abort-synthesize-session')).toBe(false);
   });
 });

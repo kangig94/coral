@@ -192,20 +192,15 @@ describe('discussion-owned job linkage invariants', () => {
     const harness = await createdHarness();
     seedOwnedJob(harness, { jobId: 'crash-job', sessionId: 'crash-session' });
 
-    const recover = () =>
-      recoverPersistedSessionsFromStore(
-        harness.store,
-        () => harness.context,
-        () => harness.ctx,
-      );
-    await expect(recover()).resolves.toHaveLength(1);
+    const recover = () => recoverPersistedSessionsFromStore(harness.store, () => harness.context);
+    await expect(recover()).resolves.toBeUndefined();
     expect(
       readSessionEvents(harness.context, 'discussion-link-test')
         .map((event) => event.kind)
         .slice(-2),
     ).toEqual(['agent.run.bound', 'agent.job.started']);
 
-    await expect(recover()).resolves.toHaveLength(1);
+    await expect(recover()).resolves.toBeUndefined();
     const events = readSessionEvents(harness.context, 'discussion-link-test');
     expect(events.filter((event) => event.kind === 'agent.run.bound')).toHaveLength(1);
     expect(events.filter((event) => event.kind === 'agent.job.started')).toHaveLength(1);

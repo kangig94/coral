@@ -259,7 +259,6 @@ export class RecoveryService {
       options.reason,
       {
         recovery: boundProvider.recovery !== undefined,
-        probe: boundProvider.appServer?.supportsProbe === true,
       },
       providerOperation,
     );
@@ -268,11 +267,6 @@ export class RecoveryService {
       options.reason === 'user_abort'
         ? ({ kind: 'user-aborted' } as const)
         : await performInterruptedAppServerRecovery(plan, boundProvider, {
-            time: this.deps.runtime.time,
-            env: this.deps.runtime.env,
-            storage: this.deps.runtime.storage,
-            jobDir: (jobId) => this.deps.progressStore.jobDir(jobId),
-            signal: options.signal,
             reapCarrier: (record) =>
               reapProviderOperationCarrier(record, {
                 process: this.deps.runtime.process,

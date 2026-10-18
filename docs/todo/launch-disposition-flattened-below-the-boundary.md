@@ -40,9 +40,10 @@ should take already exists in `forceEndAfterLoopFailure` (`src/discuss/shell/loo
 **Do not add a third `AttemptResult` arm.** A `held` variant beside an unread `consumedAttempt` would be two
 vocabularies for one disposition. And a per-participant *skip* is not available without a real hold:
 `decideBidRoundClose` returns `quorum_not_met`, `collectBids` runs again, and nothing re-drives an automatic
-participant — `resumeLoop` is called only from `startDiscussSession`, `submitManualBid`, `submitManualSpeech`
-and restart recovery. A hold there would be a discussion that never settles with an operator who cannot move
-it, which is the defect §11 names rather than the fix for it.
+participant — `resumeLoop` is called only from `startDiscussSession`, `submitManualBid`, `submitManualSpeech`.
+Restart recovery reconciles and attaches the session without calling `resumeLoop`. A hold there would be a
+discussion that never settles with an operator who cannot move it, which is the defect §11 names rather than
+the fix for it.
 
 Cost of the fix, and the reason it is not obviously right: one unconsumed failure would end the whole
 discussion, where today it continues without the expelled participant.

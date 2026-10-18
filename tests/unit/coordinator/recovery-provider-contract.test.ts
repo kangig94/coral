@@ -32,7 +32,7 @@ import { validatedTestContinuityBlob } from '#tests/helpers/session.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import {
-  finalizeInterruptedAppServerRecovery,
+  finalizeInterruptedDurableRecovery,
   RecoveryOwnershipReleaseError,
 } from '#src/coordinator/services/recovery/interrupted-finalizer.js';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
@@ -104,15 +104,7 @@ function recovery(): BoundProviderRecovery {
   } as unknown as BoundProviderRecovery;
 }
 
-function managed(hostRef: HostRef) {
-  return {
-    hostRef,
-    close: vi.fn(),
-  };
-}
-
 function serviceWithCapability(appServer: BoundProviderAppServerCapability, boundRecovery = recovery()) {
-  const runtime = new SimulationRuntime();
   const bound = {
     name: 'fixture',
     appServer,
@@ -137,25 +129,19 @@ function serviceWithCapability(appServer: BoundProviderAppServerCapability, boun
         'restart',
         {
           recovery: bound.recovery !== undefined,
-          probe: bound.appServer?.supportsProbe === true,
         },
         providerOperation,
       );
       return performInterruptedAppServerRecovery(plan, bound, {
-        time: runtime.time,
-        env: runtime.env,
-        storage: runtime.storage,
-        jobDir: () => '/jobs/job-recovery-contract',
         reapCarrier,
       });
     },
   };
 }
 
-function capability(overrides: Partial<BoundProviderAppServerCapability> = {}): BoundProviderAppServerCapability {
+function capability(): BoundProviderAppServerCapability {
   return {
     supportsInterrupt: false,
-    supportsProbe: true,
     send: vi.fn(async () => ({
       state: 'refused' as const,
       code: 'transport_unsupported' as const,
@@ -163,8 +149,6 @@ function capability(overrides: Partial<BoundProviderAppServerCapability> = {}): 
     })),
     openReplacement: vi.fn(),
     interrupt: vi.fn(async () => ({ kind: 'not-accepted' as const, reason: 'test refusal' })),
-    probe: vi.fn(async () => ({ kind: 'probed' as const, result: { resumable: true } })),
-    ...overrides,
   };
 }
 
@@ -175,25 +159,10 @@ describe('interrupted recovery planning', () => {
     boundProvider: { name: 'fixture' },
   } as unknown as ProviderRecoveryAuthority;
 
-  it('selects one deterministic effect route without consulting provider state', () => {
-    const first = planInterruptedAppServerRecovery(
-      authority,
-      acquiredRuntime,
-      'restart',
-      { recovery: true, probe: false },
-      null,
-    );
-    const second = planInterruptedAppServerRecovery(
-      authority,
-      acquiredRuntime,
-      'restart',
-      { recovery: true, probe: false },
-      null,
-    );
-
-    expect(first).toEqual(second);
-    expect(first).toMatchObject({
-      kind: 'artifacts',
+  it('plans an interruption with the captured session version and persisted continuity', () => {
+    const plan = planInterruptedAppServerRecovery(authority, acquiredRuntime, 'restart', { recovery: true }, null);
+    expect(plan).toMatchObject({
+      kind: 'interrupted',
       expectedSessionVersion: 1,
       continuity: { checkpoint: 'persisted' },
     });
@@ -201,16 +170,16 @@ describe('interrupted recovery planning', () => {
 
   it('makes missing recovery capability an explicit unsupported plan', () => {
     expect(
-      planInterruptedAppServerRecovery(authority, acquiredRuntime, 'handoff', { recovery: false, probe: true }, null),
+      planInterruptedAppServerRecovery(authority, acquiredRuntime, 'handoff', { recovery: false }, null),
     ).toMatchObject({ kind: 'unsupported', reason: 'handoff' });
   });
 
-  it('classifies a committed provider-operation carrier as detached ahead of probe', () => {
+  it('classifies a committed provider-operation carrier as detached', () => {
     const plan = planInterruptedAppServerRecovery(
       authority,
       acquiredRuntime,
       'restart',
-      { recovery: true, probe: true },
+      { recovery: true },
       providerOperationCarrier,
     );
 
@@ -221,16 +190,10 @@ describe('interrupted recovery planning', () => {
     });
   });
 
-  it('plans a probe when no provider-operation carrier is committed, unchanged from before', () => {
-    const plan = planInterruptedAppServerRecovery(
-      authority,
-      acquiredRuntime,
-      'restart',
-      { recovery: true, probe: true },
-      null,
-    );
+  it('plans an interruption when no provider-operation carrier is committed', () => {
+    const plan = planInterruptedAppServerRecovery(authority, acquiredRuntime, 'restart', { recovery: true }, null);
 
-    expect(plan).toMatchObject({ kind: 'probe', hostRef: persistedHostRef });
+    expect(plan).toMatchObject({ kind: 'interrupted' });
   });
 
   it.each([
@@ -340,139 +303,48 @@ describe('interrupted recovery planning', () => {
   });
 });
 
-describe('interrupted provider HostRef recovery', () => {
-  it('delegates waiting work without attaching or minting credentials', async () => {
+describe('interrupted provider recovery', () => {
+  it('finalizes waiting work without attaching or minting credentials', async () => {
     const appServer = capability();
+    const boundRecovery = recovery();
     await expect(
-      serviceWithCapability(appServer).decide(waitingRuntime, {
+      serviceWithCapability(appServer, boundRecovery).decide(waitingRuntime, {
         ...session,
         providerContinuity: null,
       } as ProviderSession),
-    ).resolves.toMatchObject({ probeOutcome: 'waiting' });
-    expect(appServer.probe).not.toHaveBeenCalled();
+    ).resolves.toMatchObject({ kind: 'resolved', mutation: { kind: 'clear_non_resumable' } });
     expect(appServer.openReplacement).not.toHaveBeenCalled();
+    expect(boundRecovery.finalizeFromArtifacts).not.toHaveBeenCalled();
   });
 
-  it('probes the persisted HostRef without compiling a replacement when attachment succeeds', async () => {
-    const probe = vi.fn(async () => ({ kind: 'probed' as const, result: { resumable: true } }));
-    const openReplacement = vi.fn();
-    const fixture = serviceWithCapability(capability({ probe, openReplacement }));
+  it('preserves acquired work without provider I/O', async () => {
+    const appServer = capability();
+    const boundRecovery = recovery();
+    const fixture = serviceWithCapability(appServer, boundRecovery);
+
     await expect(fixture.decide(acquiredRuntime)).resolves.toMatchObject({
-      probeOutcome: 'verified',
+      kind: 'resolved',
+      mutation: { kind: 'preserve' },
     });
-    expect(probe).toHaveBeenCalledWith(
-      persistedHostRef,
-      session.providerContinuity,
-      expect.objectContaining({
-        jobId: 'job-recovery-contract',
-        request: expect.objectContaining({
-          action: 'exec',
-          sessionId: 'session-recovery-contract',
-          cwd: TEST_PROJECT,
-        }),
-      }),
-    );
-    expect(openReplacement).not.toHaveBeenCalled();
+    expect(appServer.openReplacement).not.toHaveBeenCalled();
+    expect(boundRecovery.finalizeFromArtifacts).not.toHaveBeenCalled();
+    expect(fixture.reapCarrier).not.toHaveBeenCalled();
   });
 
-  it('opens exactly one replacement only after a stale attachment', async () => {
-    const replacementRef = { ...persistedHostRef, instanceId: 'instance-2' };
-    const replacement = managed(replacementRef);
-    const probe = vi
-      .fn()
-      .mockResolvedValueOnce({ kind: 'stale' })
-      .mockResolvedValueOnce({ kind: 'probed', result: { resumable: true } });
-    const openReplacement = vi.fn(async (_input: unknown) => replacement);
-    const fixture = serviceWithCapability(capability({ probe, openReplacement }));
-    await expect(fixture.decide(acquiredRuntime)).resolves.toMatchObject({
-      probeOutcome: 'verified',
-    });
-    expect(openReplacement).toHaveBeenCalledTimes(1);
-    expect(openReplacement.mock.calls[0]?.[0]).not.toHaveProperty('protectedEnv');
-    expect(probe).toHaveBeenCalledTimes(2);
-    expect(replacement.close).toHaveBeenCalledTimes(1);
-  });
-
-  it('closes the only replacement and reports missing when its probe is non-resumable', async () => {
-    const replacement = managed({ ...persistedHostRef, instanceId: 'instance-non-resumable' });
-    const probe = vi
-      .fn()
-      .mockResolvedValueOnce({ kind: 'stale' })
-      .mockResolvedValueOnce({ kind: 'probed', result: { resumable: false } });
-    const openReplacement = vi.fn(async () => replacement);
-
-    await expect(
-      serviceWithCapability(capability({ probe, openReplacement })).decide(acquiredRuntime),
-    ).resolves.toMatchObject({
-      probeOutcome: 'missing',
-      mutation: { kind: 'clear_non_resumable' },
-    });
-    expect(openReplacement).toHaveBeenCalledTimes(1);
-    expect(probe).toHaveBeenCalledTimes(2);
-    expect(replacement.close).toHaveBeenCalledTimes(1);
-  });
-
-  it('closes the only replacement and reports unavailable when its attachment is stale again', async () => {
-    const replacement = managed({ ...persistedHostRef, instanceId: 'instance-stale' });
-    const probe = vi.fn().mockResolvedValueOnce({ kind: 'stale' }).mockResolvedValueOnce({ kind: 'stale' });
-    const openReplacement = vi.fn(async () => replacement);
-
-    await expect(
-      serviceWithCapability(capability({ probe, openReplacement })).decide(acquiredRuntime),
-    ).resolves.toMatchObject({
-      probeOutcome: 'unavailable',
-      mutation: { kind: 'clear_non_resumable' },
-    });
-    expect(openReplacement).toHaveBeenCalledTimes(1);
-    expect(probe).toHaveBeenCalledTimes(2);
-    expect(replacement.close).toHaveBeenCalledTimes(1);
-  });
-
-  it('closes the only replacement and reports unavailable when its probe throws', async () => {
-    const replacement = managed({ ...persistedHostRef, instanceId: 'instance-throwing' });
-    const probe = vi
-      .fn()
-      .mockResolvedValueOnce({ kind: 'stale' })
-      .mockRejectedValueOnce(new Error('replacement probe failed'));
-    const openReplacement = vi.fn(async () => replacement);
-
-    await expect(
-      serviceWithCapability(capability({ probe, openReplacement })).decide(acquiredRuntime),
-    ).resolves.toMatchObject({
-      probeOutcome: 'unavailable',
-      mutation: { kind: 'clear_non_resumable' },
-    });
-    expect(openReplacement).toHaveBeenCalledTimes(1);
-    expect(probe).toHaveBeenCalledTimes(2);
-    expect(replacement.close).toHaveBeenCalledTimes(1);
-  });
-
-  it('classifies a provider probe failure as unavailable without opening a replacement', async () => {
-    const openReplacement = vi.fn();
-    const probe = vi.fn(async () => {
-      throw new Error('provider probe failed');
-    });
-    await expect(
-      serviceWithCapability(capability({ probe, openReplacement })).decide(acquiredRuntime),
-    ).resolves.toMatchObject({
-      probeOutcome: 'unavailable',
-    });
-    expect(openReplacement).not.toHaveBeenCalled();
-  });
-
-  it('confirms the carrier and finalizes without probing or opening a replacement when a saga carrier exists', async () => {
-    const probe = vi.fn(async () => ({ kind: 'probed' as const, result: { resumable: true } }));
-    const openReplacement = vi.fn();
-    const fixture = serviceWithCapability(capability({ probe, openReplacement }));
+  it('confirms the carrier and finalizes without provider I/O when a saga carrier exists', async () => {
+    const appServer = capability();
+    const boundRecovery = recovery();
+    const fixture = serviceWithCapability(appServer, boundRecovery);
 
     await expect(fixture.decide(acquiredRuntime, session, providerOperationCarrier)).resolves.toMatchObject({
-      probeOutcome: 'unavailable',
+      kind: 'resolved',
+      mutation: { kind: 'preserve' },
     });
 
     expect(fixture.reapCarrier).toHaveBeenCalledTimes(1);
     expect(fixture.reapCarrier).toHaveBeenCalledWith(providerOperationCarrier);
-    expect(probe).not.toHaveBeenCalled();
-    expect(openReplacement).not.toHaveBeenCalled();
+    expect(appServer.openReplacement).not.toHaveBeenCalled();
+    expect(boundRecovery.finalizeFromArtifacts).not.toHaveBeenCalled();
   });
 
   it('leaves the session unfinalized when the carrier reap cannot confirm absence', async () => {
@@ -511,8 +383,6 @@ describe('interrupted recovery settlement ownership', () => {
   function finalizerFixture(options: { releaseError?: Error; artifactNextVersion?: number } = {}) {
     const runtime = new SimulationRuntime();
     const finalizeJobContinuityAtomic = vi.fn(async () => true);
-    // Crash-discovered artifact handles are persisted before the session is finalized, so finalize
-    // must use the exact version returned by that write or idempotent replay.
     const recordArtifactHandleAtomic = vi.fn(async () => ({
       ok: true as const,
       nextVersion: options.artifactNextVersion ?? session.version + 1,
@@ -531,22 +401,27 @@ describe('interrupted recovery settlement ownership', () => {
     );
     const launchAdmission = launchCoordinator;
     const releaseLaunch = vi.spyOn(launchCoordinator, 'releaseLaunch');
-    const plan = planInterruptedAppServerRecovery(
+    const plan = planInterruptedDurableRecovery(
       {
         launchRecord,
         session,
         boundProvider: { name: 'fixture' } as BoundProvider,
       } as ProviderRecoveryAuthority,
-      waitingRuntime,
-      'restart',
-      { recovery: true, probe: false },
-      null,
+      durableRuntime,
+      {
+        exit: { exitCode: 0, signal: null, endTime: '2026-07-22T00:01:00.000Z' },
+        terminal: null,
+        cancelled: false,
+      },
+      { recovery: true },
     );
     const performed = {
-      kind: 'resolved',
+      kind: 'durable-resolved',
+      terminal: {
+        kind: 'direct',
+        value: { content: 'recovered', durationMs: 60_000, outcome: { kind: 'completed' } },
+      },
       mutation: { kind: 'preserve' },
-      probeOutcome: 'waiting',
-      recoveryConversationRef: undefined,
       artifactHandles: [{ handle: '/derived/report', identity: { kind: 'fixture' }, sourceJobId: launchRecord.jobId }],
     } as const;
     return {
@@ -572,7 +447,7 @@ describe('interrupted recovery settlement ownership', () => {
   it('persists artifact handles before final settlement with the exact returned CAS version', async () => {
     const fixture = finalizerFixture();
 
-    await finalizeInterruptedAppServerRecovery(fixture.plan, fixture.performed, status, fixture.deps as never);
+    await finalizeInterruptedDurableRecovery(fixture.plan, fixture.performed, status, fixture.deps as never);
 
     expect(fixture.recordArtifactHandleAtomic).toHaveBeenCalledOnce();
     expect(fixture.recordArtifactHandleAtomic).toHaveBeenCalledWith(
@@ -589,7 +464,6 @@ describe('interrupted recovery settlement ownership', () => {
       session.sessionId,
       expect.objectContaining({
         expectedActiveJobId: launchRecord.jobId,
-        // The artifact write advanced the session, so finalize must CAS on the post-write version.
         expectedVersion: session.version + 1,
         appendBeforeRelease: expect.any(Function),
       }),
@@ -605,7 +479,7 @@ describe('interrupted recovery settlement ownership', () => {
   it('uses an unchanged artifact replay version for the final settlement CAS', async () => {
     const fixture = finalizerFixture({ artifactNextVersion: session.version });
 
-    await finalizeInterruptedAppServerRecovery(fixture.plan, fixture.performed, status, fixture.deps as never);
+    await finalizeInterruptedDurableRecovery(fixture.plan, fixture.performed, status, fixture.deps as never);
 
     expect(fixture.recordArtifactHandleAtomic).toHaveBeenCalledWith(
       session.sessionId,
@@ -621,7 +495,7 @@ describe('interrupted recovery settlement ownership', () => {
     const fixture = finalizerFixture({ releaseError: new Error('abort registry unavailable') });
 
     await expect(
-      finalizeInterruptedAppServerRecovery(fixture.plan, fixture.performed, status, fixture.deps as never),
+      finalizeInterruptedDurableRecovery(fixture.plan, fixture.performed, status, fixture.deps as never),
     ).rejects.toBeInstanceOf(RecoveryOwnershipReleaseError);
     expect(fixture.finalizeJobContinuityAtomic).toHaveBeenCalledOnce();
   });

@@ -91,11 +91,11 @@ function buildStartupFailureHarness(dispose: () => Promise<KbDaemonDisposalSettl
     getDiscussContext: () => {
       throw new Error('unexpected discuss context lookup');
     },
-    recoverPersistedDiscussFn: async () => [],
+    recoverPersistedDiscussFn: async () => {},
     hooks: {},
   } as never;
 
-  const controller = createLifecycle(deps, async () => []);
+  const controller = createLifecycle(deps, async () => {});
   return { controller, closeServerFn, closeIpcServerFn, removeBackendInfoIfOwnerFn, kbDaemonSupervisor };
 }
 

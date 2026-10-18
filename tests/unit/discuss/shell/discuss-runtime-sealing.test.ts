@@ -9,6 +9,10 @@ import { JobStore } from '#src/jobs/store.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
+import { seedTestJobSession } from '#tests/helpers/session.js';
+import { RecoveryContainment } from '#src/recovery/containment.js';
+import { RecoveryQuarantineStore } from '#src/recovery/quarantine.js';
+import { discussionCandidateRecoverySource } from '#src/discuss/shell/discussion-candidate-recovery-source.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
 import { createDiscussContextRegistry, type DiscussContextRegistry } from '#src/discuss/shell/live-registry.js';
@@ -288,7 +292,169 @@ describe('runtime-sealed discuss behavior', () => {
     });
   });
 
-  it('contains a malformed raw discussion candidate while a valid sibling attaches and resumes', async () => {
+  it.each(['fresh', 'resume-pending', 'resume-completed'] as const)(
+    'reconciles and attaches a %s candidate without resuming and clears its continuation',
+    async (state) => {
+      const resumeLoop = vi.spyOn(discussLoop, 'resumeLoop').mockImplementation(() => {});
+      const attachSession = vi.spyOn(discussSessionRegistry, 'attachSession');
+      const harness = createPersistedRecoveryHarness();
+      const sessionId = `recovery-${state}`;
+      const jobId = `owned-job-${state}`;
+      seedPersistedRecoveryDiscussion(harness, sessionId);
+      seedTestJobSession(harness.progressStore, {
+        jobId,
+        sessionId: `provider-${state}`,
+        provider: 'codex',
+        projectRoot: harness.projectRoot,
+        backendNamespace: 'runtime-only',
+        initialPhase: 'running',
+      });
+      harness.progressStore.appendLaunchRequested(jobId, {
+        jobId,
+        owner: { kind: 'discussion', id: sessionId },
+        discussionRun: { agent: 'bot', purpose: 'bid', attempt: 1 },
+        sessionId: `provider-${state}`,
+        provider: 'codex',
+        projectRoot: harness.projectRoot,
+        backendNamespace: 'runtime-only',
+        jobKind: 'provider',
+        pool: 'discuss',
+        enqueueSequence: 0,
+        providerAction: 'exec',
+        request: {
+          prompt: 'Recover owned job linkage.',
+          cwd: harness.projectRoot,
+          bypassPermissions: false,
+          coralEnv: {},
+        },
+        createdAt: START_TS,
+      });
+      const db = harness.progressStore.getDb();
+      const quarantine = new RecoveryQuarantineStore(db, harness.runtime.time);
+      const subject = { key: sessionId, revision: { kind: 'until-cleared' as const } };
+      const persistContinuation = async (): Promise<void> => {
+        if (state === 'fresh') return;
+        await RecoveryContainment.each(discussionCandidateRecoverySource(db, subject), {
+          signal: new AbortController().signal,
+          quarantine,
+          processLocalCleanup: { kind: 'not-required' },
+          hydrate: (raw) => raw,
+          requiredObligations: () => [],
+          settle: (raw) => ({
+            kind: 'deferred',
+            continuation: {
+              kind: 'discussion-resume.v1',
+              key: JSON.stringify({
+                v: 1,
+                subjectRevision: raw.inputRevision.value,
+                sourceId: harness.runtime.paths.projectSource(harness.projectRoot),
+                sessionId,
+                reconciliationResultRefs: [],
+                invocationContextRefs: {
+                  projectRoot: harness.projectRoot,
+                  providerScope: TEST_PROVIDER_SCOPE,
+                },
+                completedObligationIds: state === 'resume-completed' ? ['discussion.resume'] : [],
+              }),
+            },
+            detail: 'stored discussion recovery awaiting settlement',
+          }),
+          onFault: ({ error }) => ({ kind: 'fatal', error }),
+        });
+        expect(quarantine.read('discussion-candidate', sessionId)?.state).toBe('continuation');
+      };
+      await persistContinuation();
+
+      await runPersistedDiscussionRecovery(harness);
+
+      expect(resumeLoop).not.toHaveBeenCalled();
+      expect(attachSession).toHaveBeenCalledTimes(1);
+      const context = harness.services.getDiscussContext(harness.createInvocationContext(harness.projectRoot));
+      expect(discussSessionRegistry.getSession(context, sessionId)?.snapshot.runtime.agentRuns.bot).toMatchObject({
+        executionSessionId: `provider-${state}`,
+        currentJobId: jobId,
+      });
+      expect(readSessionEvents(context, sessionId).filter((event) => event.kind === 'agent.job.started')).toHaveLength(
+        1,
+      );
+      expect(quarantine.read('discussion-candidate', sessionId)).toBeNull();
+
+      await persistContinuation();
+      const plan = discussRecovery.createDiscussionCandidateRetryPlan(
+        {
+          getDiscussContext: harness.services.getDiscussContext,
+          createInvocationContext: harness.createInvocationContext,
+          signal: new AbortController().signal,
+        },
+        subject,
+        quarantine,
+      );
+      const settle = vi.fn(plan.policy.settle);
+      await RecoveryContainment.each(plan.source, {
+        signal: new AbortController().signal,
+        quarantine,
+        ...plan.policy,
+        settle,
+      });
+
+      expect(settle).toHaveBeenCalledTimes(1);
+      await expect(settle.mock.results[0]?.value).resolves.toMatchObject({
+        kind: 'advanced',
+        outcome: 'settled',
+        facts: expect.arrayContaining([{ obligation: 'discussion.resume', outcome: 'not-applicable' }]),
+      });
+      expect(resumeLoop).not.toHaveBeenCalled();
+      expect(attachSession).toHaveBeenCalledTimes(1);
+      expect(discussSessionRegistry.getSession(context, sessionId)).toBeDefined();
+      expect(readSessionEvents(context, sessionId).filter((event) => event.kind === 'agent.job.started')).toHaveLength(
+        1,
+      );
+      expect(quarantine.read('discussion-candidate', sessionId)).toBeNull();
+    },
+  );
+
+  it('detaches and retries an attached candidate when its continuation cannot be cleared', async () => {
+    const resumeLoop = vi.spyOn(discussLoop, 'resumeLoop').mockImplementation(() => {});
+    const attachSession = vi.spyOn(discussSessionRegistry, 'attachSession');
+    const detachSession = vi.spyOn(discussSessionRegistry, 'detachSession');
+    const harness = createPersistedRecoveryHarness();
+    const sessionId = 'continuation-clear-failure';
+    seedPersistedRecoveryDiscussion(harness, sessionId);
+    const deleteContinuation = RecoveryQuarantineStore.prototype.delete;
+    let refuseClear = true;
+    vi.spyOn(RecoveryQuarantineStore.prototype, 'delete').mockImplementation(function (
+      this: RecoveryQuarantineStore,
+      request,
+    ) {
+      if (refuseClear && request.boundary === 'discussion-candidate' && request.subject.key === sessionId) {
+        refuseClear = false;
+        return false;
+      }
+      return deleteContinuation.call(this, request);
+    });
+
+    await runPersistedDiscussionRecovery(harness);
+
+    const context = harness.services.getDiscussContext(harness.createInvocationContext(harness.projectRoot));
+    const quarantine = new RecoveryQuarantineStore(harness.progressStore.getDb(), harness.runtime.time);
+    expect(attachSession).toHaveBeenCalledTimes(1);
+    expect(detachSession).toHaveBeenCalledWith(context, sessionId);
+    expect(discussSessionRegistry.getSession(context, sessionId)).toBeUndefined();
+    expect(quarantine.read('discussion-candidate', sessionId)).toMatchObject({
+      state: 'continuation',
+    });
+    expect(resumeLoop).not.toHaveBeenCalled();
+
+    await runPersistedDiscussionRecovery(harness);
+
+    expect(attachSession).toHaveBeenCalledTimes(2);
+    expect(detachSession).toHaveBeenCalledTimes(1);
+    expect(discussSessionRegistry.getSession(context, sessionId)).toBeDefined();
+    expect(quarantine.read('discussion-candidate', sessionId)).toBeNull();
+    expect(resumeLoop).not.toHaveBeenCalled();
+  });
+
+  it('contains a malformed raw discussion candidate while a valid sibling attaches without resuming', async () => {
     const resumeLoop = vi.spyOn(discussLoop, 'resumeLoop').mockImplementation(() => {});
     const harness = createPersistedRecoveryHarness();
     seedPersistedRecoveryDiscussion(harness, 'valid-candidate-sibling');
@@ -308,8 +474,7 @@ describe('runtime-sealed discuss behavior', () => {
 
     await runPersistedDiscussionRecovery(harness);
 
-    expect(resumeLoop).toHaveBeenCalledTimes(1);
-    expect(resumeLoop.mock.calls[0]?.[1]).toBe('valid-candidate-sibling');
+    expect(resumeLoop).not.toHaveBeenCalled();
     const context = harness.services.getDiscussContext(harness.createInvocationContext(harness.projectRoot));
     expect(discussSessionRegistry.getSession(context, 'valid-candidate-sibling')).toBeDefined();
     expect(discussSessionRegistry.getSession(context, 'malformed-candidate-sibling')).toBeUndefined();
@@ -360,7 +525,13 @@ describe('runtime-sealed discuss behavior', () => {
     await runPersistedDiscussionRecovery(harness);
 
     expect(attachSession).toHaveBeenCalledTimes(1);
-    expect(resumeLoop).toHaveBeenCalledTimes(1);
+    expect(resumeLoop).not.toHaveBeenCalled();
+    expect(
+      new RecoveryQuarantineStore(harness.progressStore.getDb(), harness.runtime.time).read(
+        'discussion-candidate',
+        'pre-attach-failure',
+      ),
+    ).toBeNull();
   });
 
   it('recovers an active discuss executor job from runtime storage only', async () => {
@@ -532,4 +703,3 @@ describe('runtime-sealed discuss behavior', () => {
     expect(seoul).toContain('### [23:05:06] Alpha (alpha)');
   });
 });
-import { seedTestJobSession } from '#tests/helpers/session.js';

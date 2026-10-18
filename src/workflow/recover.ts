@@ -1,18 +1,11 @@
 import type { Database } from '../store/db.js';
 
-import { assertNever, errorMessage } from '../infra/error-format.js';
+import { errorMessage } from '../infra/error-format.js';
 import { describeSessionJobClaimReleaseResult } from '../sessions/job-release.js';
 import type { SessionJobClaimReleaseResult } from '../sessions/contracts.js';
-import type { InvocationContext } from '../runtime/invocation-context.js';
-import {
-  canonicalizeWorkDir,
-  canonicalWorkDirWireSchema,
-  WorkDirectoryError,
-  type CanonicalWorkDir,
-} from '../runtime/canonical-work-dir.js';
+import { canonicalizeWorkDir, WorkDirectoryError, type CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
 import type { IdPort } from '../runtime/ports.js';
 import type { TimePort } from '../infra/port-types.js';
-import { nowIsoString } from '../infra/time.js';
 import type { JobTerminal } from '../jobs/records.js';
 import type { CauseRef } from '../causality/cause-ref.js';
 import { phaseForOutcome, type TerminalOutcome } from '../jobs/outcome.js';
@@ -21,24 +14,13 @@ import { decodeBody, type StoreReadContext } from '../store/body-codec.js';
 import type { JobProjectionDetail } from '../jobs/read-queries.js';
 import { hydrateWorkflowProjectionRow, type WorkflowProjectionRow } from './read-queries.js';
 import {
-  WorkflowExecutionError,
   buildStepDetailsForAtoms,
-  createWorkflowExecutionError,
   type LaunchedAtom,
   type PipelineResult,
   type StepDetail,
-  type WaitInternalState,
-  type WorkflowExecutionPort,
 } from './execution-contract.js';
 import { describeTerminalFailure, formatStepOutput } from './command.js';
 import { workflowCompletedBodySchema, workflowDrainEnteredBodySchema } from './events.js';
-import { executePlannedSteps } from './executor.js';
-import { BOOTSTRAP_TIMEOUT_MS, handleStepLaunchFailure, launchCompiledStepAtoms } from './launch.js';
-import {
-  DEFAULT_DRAIN_DEADLINE_MS,
-  DEFAULT_STALE_CHECK_INTERVAL_MS,
-  DEFAULT_STALE_TIMEOUT_MS,
-} from './execution-constants.js';
 import {
   compileWorkflowPlan,
   maxStepIndex,
@@ -46,16 +28,13 @@ import {
   type CompiledPlanSlot,
   type WorkflowPlan,
 } from './plan.js';
-import { DEFAULT_STALE_ABORT_TIMEOUT_MS, recoverStaleAtom, STALE_RESUME_PROMPT } from './stale-recovery.js';
-
-import { waitForAtoms } from './wait.js';
-import { encodeWaitCursor } from '../jobs/wait/cursor.js';
 import type { WorkflowFinalizationIntent } from './finalization.js';
 import {
   providerSessionProvider,
   providerSessionSchema,
   sessionControllerFromProfile,
   type ProviderSession,
+  type ClearContinuationLeaseInput,
 } from '../sessions/entry.js';
 import { projectionSessionStoredRowSchema } from '../sessions/projections.js';
 import type { ProjectionJobStoredRow } from '../jobs/projection-row.js';
@@ -78,7 +57,6 @@ type WorkflowSlotJobRow = ProjectionJobStoredRow & { workflow_slot: string };
 
 type RecoveredWorkflowFinalization = {
   intent: WorkflowFinalizationIntent;
-  error?: WorkflowExecutionError;
 };
 
 export type WorkflowRecoveryDescendant = {
@@ -127,33 +105,14 @@ export type AtomicFailedWorkflowDescendantReleaser = FailedWorkflowDescendantRel
   cleanup(descendants: readonly WorkflowRecoveryDescendant[]): void;
 };
 
-type ResumeWorkflowContext = {
-  progressStore: StoreReadContext;
-  executionSvc: WorkflowExecutionPort;
-  ctx: InvocationContext;
+type WorkflowRecoveryContext = {
   workflowId: string;
   plan: WorkflowPlan;
   childRows: readonly ProjectionJobStoredRow[];
   slotDetailsByJob: Map<string, JobProjectionDetail>;
   providerSessionsById: ReadonlyMap<string, ProviderSession>;
-  eventsBySeq: ReadonlyMap<number, EventsRow>;
   completion: ReturnType<typeof workflowCompletedBodySchema.parse> | null;
   drain: ReturnType<typeof workflowDrainEnteredBodySchema.parse> | null;
-  time: Pick<TimePort, 'now' | 'monotonicNow' | 'sleep'>;
-  onProgress: (workflowId: string, message: string) => void;
-  /**
-   * A mandatory checkpoint, not a notification: recovery may not proceed past a committed replacement
-   * until the durable continuation names it. The continuation was read before this pass created
-   * anything, and the close can only release what it names.
-   */
-  checkpointReplacement: (sessionId: string, jobId: string) => Promise<void>;
-  staleTimeoutMs: number;
-  staleCheckIntervalMs: number;
-  staleAbortTimeoutMs: number;
-  drainDeadlineMs: number;
-};
-
-type ResumeWorkflowDeps = ResumeWorkflowContext & {
   jobIds: ReadonlyMap<string, string>;
 };
 
@@ -172,11 +131,9 @@ type RecoveryTerminalFailure = {
   failedSlotId?: string;
   causeRef?: CauseRef;
   terminalOutcome?: TerminalOutcome;
-  drainDeadline?: number;
 };
 
 type RecoverySnapshot = {
-  readCtx: StoreReadContext;
   compiledSlots: CompiledPlanSlot[];
   slotDetailsByJob: Map<string, JobProjectionDetail>;
   summary: RecoverySummary;
@@ -210,50 +167,28 @@ type WorkflowRecoveryContinuation = {
 type HydratedWorkflowRecovery = {
   readonly envelope: RawWorkflowRecoveryEnvelope;
   readonly rootDetail: JobProjectionDetail;
-  readonly rootProjectRoot: CanonicalWorkDir;
   readonly projection: WorkflowProjectionRow | null;
   readonly childRows: readonly ProjectionJobStoredRow[];
   readonly slotDetailsByJob: Map<string, JobProjectionDetail>;
   readonly providerSessionsById: ReadonlyMap<string, ProviderSession>;
   readonly completion: ReturnType<typeof workflowCompletedBodySchema.parse> | null;
   readonly drain: ReturnType<typeof workflowDrainEnteredBodySchema.parse> | null;
-  readonly eventsBySeq: ReadonlyMap<number, EventsRow>;
   continuation: WorkflowRecoveryContinuation;
   readonly continuationRecovered: boolean;
   continuationDurable: boolean;
   closeCompleted: boolean;
   cleanupRequired: boolean;
   deferredReason: 'unknown-external' | 'close-failed' | null;
-  recoveredError: unknown;
   descendantReleases: readonly WorkflowRecoveryDescendantRelease[];
 };
 
 const WORKFLOW_RECOVERY_CONTINUATION_KIND = 'workflow-recovery.v1';
+const WORKFLOW_CHILD_SETTLEMENT_MESSAGE =
+  'Workflow recovery awaits recorded child terminals or a durable workflow completion; the next coordinator start rechecks them.';
+const WORKFLOW_RESTART_MESSAGE = 'The coordinator restarted; the remaining workflow steps were not resumed.';
 const RESUME_OBLIGATION = 'workflow-recovery.resume' as RecoveryObligationId;
 const FINALIZE_OBLIGATION = 'workflow-recovery.finalize' as RecoveryObligationId;
 const DESCENDANT_RELEASE_OBLIGATION = 'workflow-recovery.descendant-release' as RecoveryObligationId;
-
-class UnknownWorkflowRecoveryOutcome extends Error {
-  readonly cause: unknown;
-
-  constructor(action: string, cause: unknown) {
-    super(`Workflow recovery ${action} outcome is unknown: ${errorMessage(cause)}`);
-    this.name = 'UnknownWorkflowRecoveryOutcome';
-    this.cause = cause;
-  }
-}
-
-type WaitRecoveryPlan = {
-  activeAtoms: LaunchedAtom[];
-  completedOutputs: Map<string, string>;
-  initialState: Partial<WaitInternalState>;
-  blockingFailure: RecoveryTerminalFailure | null;
-};
-
-type ActiveStepLaunchState =
-  | { kind: 'all-launched'; neverLaunchedSlots: [] }
-  | { kind: 'all-never-launched'; neverLaunchedSlots: CompiledPlanSlot[] }
-  | { kind: 'mixed'; neverLaunchedSlots: CompiledPlanSlot[] };
 
 function validateAndReadCurrentSlotJobIds(
   rows: readonly ProjectionJobStoredRow[],
@@ -306,171 +241,20 @@ function validateAndReadCurrentSlotJobIds(
   return selected;
 }
 
-async function resumePendingReplacementIntents(
-  deps: ResumeWorkflowContext,
-  slotJobs: ReadonlyMap<string, string>,
-): Promise<ReadonlyMap<string, string>> {
-  const replacementJobIds = new Map<string, string>();
-  const details = deps.slotDetailsByJob;
-  for (const slot of deps.plan.slots) {
-    const jobId = slotJobs.get(slot.slotId);
-    if (jobId === undefined) continue;
-    const detail = details.get(jobId);
-    const launch = detail?.launch;
-    if (
-      launch === null ||
-      launch === undefined ||
-      launch.sessionId === null ||
-      launch.workflowSlotGeneration === undefined ||
-      detail?.exit === null ||
-      detail?.exit === undefined ||
-      !isRecoverableReplacementCrash(deps, detail.exit.outcome)
-    ) {
-      continue;
-    }
-    const session = deps.providerSessionsById.get(launch.sessionId);
-    if (session === undefined) {
-      throw new Error(`Session not found: ${launch.sessionId}`);
-    }
-    const intent = session.continuationLease;
-    const nextGeneration = launch.workflowSlotGeneration + 1;
-    const pendingForCurrent =
-      intent?.status === 'pending' &&
-      intent.staleJobId === jobId &&
-      intent.workflowId === deps.workflowId &&
-      intent.workflowSlotId === slot.slotId &&
-      intent.replacementGeneration === nextGeneration;
-    const priorReplacementForCurrent =
-      (intent?.status === 'claimed' || intent?.status === 'cleared') &&
-      intent.resumedJobId === jobId &&
-      intent.workflowId === deps.workflowId &&
-      intent.workflowSlotId === slot.slotId &&
-      intent.replacementGeneration === launch.workflowSlotGeneration;
-    if (!pendingForCurrent && !priorReplacementForCurrent) {
-      continue;
-    }
-
-    // A daemon can die either after recording the pending intent or immediately
-    // after the atomic claim+launch transaction. Re-recording an expired intent,
-    // or advancing a released claimed intent, gives the new atomic replacement
-    // transaction a live lease without guessing from ambient daemon state.
-    if (
-      priorReplacementForCurrent ||
-      (pendingForCurrent && intent.status === 'pending' && Date.parse(intent.expiresAt) <= deps.time.now())
-    ) {
-      await deps.executionSvc.recordContinuationLease({
-        sessionId: launch.sessionId,
-        jobId,
-        workflowId: deps.workflowId,
-        workflowSlotId: slot.slotId,
-        replacementGeneration: nextGeneration,
-        reason: 'stale_recovery',
-        expiresAt: replacementRecoveryLeaseExpiresAt(deps),
-      });
-    }
-    deps.onProgress(deps.workflowId, `completing replacement intent for slot ${slot.slotId}`);
-    const resumed = await deps.executionSvc.resume(
-      slot.provider,
-      {
-        sessionId: launch.sessionId,
-        prompt: STALE_RESUME_PROMPT,
-        cwd: canonicalizeWorkDir(launch.request.cwd, deps.ctx.projectRoot),
-        parentWorkflowJobId: deps.workflowId,
-        workflowSlotId: slot.slotId,
-        workflowSlotGeneration: nextGeneration,
-        replacesWorkflowJobId: jobId,
-        owner: { kind: 'workflow', id: deps.workflowId },
-      },
-      deps.ctx,
-    );
-    switch (resumed.status) {
-      case 'refused':
-        throw new Error(
-          `Workflow recovery could not complete replacement intent for slot '${slot.slotId}': ${resumed.message}.`,
-        );
-      case 'undetermined':
-        throw new UnknownWorkflowRecoveryOutcome(
-          `replacement launch check for slot '${slot.slotId}'`,
-          new Error(resumed.message),
-        );
-      case 'running':
-      case 'queued':
-        break;
-      default:
-        assertNever(resumed);
-    }
-    // Before any further fallible work — `awaitLaunch` below is the first thing that can throw, and the
-    // close that follows a throw can only release what the continuation names. Recording here is what
-    // keeps a replacement this pass created inside the envelope this pass cleans up.
-    await deps.checkpointReplacement(launch.sessionId, resumed.jobId);
-
-    const readiness = await deps.executionSvc.awaitLaunch(resumed.jobId, BOOTSTRAP_TIMEOUT_MS);
-    if (readiness === 'error') {
-      throw new Error(`Workflow recovery replacement '${resumed.jobId}' failed to launch for slot '${slot.slotId}'.`);
-    }
-    replacementJobIds.set(slot.slotId, resumed.jobId);
-    deps.slotDetailsByJob.set(resumed.jobId, {
-      status: {
-        ...(detail.status ?? {
-          owner: { kind: 'workflow', id: deps.workflowId },
-          sessionId: launch.sessionId,
-          provider: launch.provider,
-          projectRoot: launch.projectRoot,
-          workDir: canonicalWorkDirWireSchema.parse(launch.request.cwd),
-          backendNamespace: launch.backendNamespace,
-          jobKind: 'provider' as const,
-          updatedAt: launch.createdAt,
-          lastSeq: 0,
-        }),
-        jobId: resumed.jobId,
-        phase: 'running',
-      },
-      launch: {
-        ...launch,
-        jobId: resumed.jobId,
-        workflowSlotGeneration: nextGeneration,
-        replacesWorkflowJobId: jobId,
-      },
-      runtime: null,
-      exit: null,
+async function clearPendingReplacementIntents(
+  item: HydratedWorkflowRecovery,
+  options: RecoverAllOptions,
+): Promise<void> {
+  for (const session of item.providerSessionsById.values()) {
+    const lease = session.continuationLease;
+    if (lease?.status !== 'pending' || lease.workflowId !== item.envelope.subject.key) continue;
+    if (item.childRows.some((child) => child.job_id === session.activeJobId && child.terminal === null)) continue;
+    await options.clearContinuationLease(canonicalizeWorkDir(session.projectRoot, process.cwd()), {
+      sessionId: session.sessionId,
+      jobId: lease.staleJobId,
+      outcome: 'explicit_clear',
     });
   }
-  return replacementJobIds;
-}
-
-async function resolveWorkflowRecoveryJobIds(
-  deps: ResumeWorkflowContext,
-  currentSlotJobIds: ReadonlyMap<string, string>,
-  ids: Pick<IdPort, 'uuid'>,
-): Promise<ReadonlyMap<string, string>> {
-  const replacementJobIds = await resumePendingReplacementIntents(deps, currentSlotJobIds);
-  return resolveWorkflowJobIds(deps.plan, ids, new Map([...currentSlotJobIds, ...replacementJobIds]));
-}
-
-function replacementRecoveryLeaseExpiresAt(deps: ResumeWorkflowContext): string {
-  const minimumTtlMs = 60_000;
-  return nowIsoString(deps.time.now() + Math.max(minimumTtlMs, deps.staleAbortTimeoutMs + BOOTSTRAP_TIMEOUT_MS));
-}
-
-function isRecoverableReplacementCrash(deps: ResumeWorkflowContext, outcome: TerminalOutcome): boolean {
-  if (outcome.kind === 'aborted') return true;
-  if (outcome.kind === 'job_fault') {
-    return outcome.fault.kind === 'ghost_launch' || outcome.fault.kind === 'wrapper_lost';
-  }
-  if (outcome.kind !== 'failed') return false;
-
-  const cause = deps.eventsBySeq.get(outcome.causeRef.seq);
-  return (
-    cause?.stream_kind === outcome.causeRef.stream.kind &&
-    cause.stream_id === outcome.causeRef.stream.id &&
-    cause.type === 'session.interrupted'
-  );
-}
-
-function compileSlotsForRecovery(deps: ResumeWorkflowDeps): CompiledPlanSlot[] {
-  return compileWorkflowPlan(deps.plan, {
-    jobIds: deps.jobIds,
-  });
 }
 
 function detailForJob(detailsByJob: Map<string, JobProjectionDetail>, jobId: string): JobProjectionDetail {
@@ -516,7 +300,7 @@ function buildLaunchedAtomsForStep(
 }
 
 function validateDurableSlotRelations(
-  deps: ResumeWorkflowDeps,
+  deps: WorkflowRecoveryContext,
   slots: readonly CompiledPlanSlot[],
   detailsByJob: ReadonlyMap<string, JobProjectionDetail>,
 ): void {
@@ -641,7 +425,6 @@ function firstTerminalFailure(
     failedSlotId: targetSlot.slotId,
     causeRef: terminal.outcome.kind === 'failed' ? terminal.outcome.causeRef : undefined,
     terminalOutcome: terminal.outcome,
-    drainDeadline: drain?.drainDeadline,
   };
 }
 
@@ -705,10 +488,6 @@ function recoveryIntentFromFailure(
 }
 
 function recoveryIntentFromError(workflowId: string, error: unknown): WorkflowFinalizationIntent {
-  if (error instanceof WorkflowExecutionError) {
-    return recoveryIntentFromFailure(workflowId, error, error.stepDetails);
-  }
-
   const stack = stackFor(error);
   return {
     outcome: 'failed',
@@ -722,22 +501,21 @@ function recoveryIntentFromError(workflowId: string, error: unknown): WorkflowFi
   };
 }
 
-function detectExistingCompletion(deps: ResumeWorkflowContext): boolean {
+function detectExistingCompletion(deps: WorkflowRecoveryContext): boolean {
   return deps.completion !== null;
 }
 
-function loadRecoverySnapshot(deps: ResumeWorkflowDeps): RecoverySnapshot {
-  const readCtx: StoreReadContext = deps.progressStore;
-  const compiledSlots = compileSlotsForRecovery(deps);
+function loadRecoverySnapshot(deps: WorkflowRecoveryContext): RecoverySnapshot {
+  const compiledSlots = compileWorkflowPlan(deps.plan, { jobIds: deps.jobIds });
   const slotDetailsByJob = deps.slotDetailsByJob;
   validateDurableSlotRelations(deps, compiledSlots, slotDetailsByJob);
   const summary = summarizeCompletedSteps(compiledSlots, slotDetailsByJob);
   const stepSlots = compiledSlots.filter((slot) => slot.stepIndex === summary.activeStepIndex);
   const activeAtoms = buildLaunchedAtomsForStep(compiledSlots, summary.activeStepIndex, slotDetailsByJob);
-  return { readCtx, compiledSlots, slotDetailsByJob, summary, stepSlots, activeAtoms };
+  return { compiledSlots, slotDetailsByJob, summary, stepSlots, activeAtoms };
 }
 
-function completedFinalization(deps: ResumeWorkflowDeps, summary: RecoverySummary): RecoveredWorkflowFinalization {
+function completedFinalization(deps: WorkflowRecoveryContext, summary: RecoverySummary): RecoveredWorkflowFinalization {
   return {
     intent: completedRecoveryIntent(deps.workflowId, {
       finalOutput: summary.stepPrompt,
@@ -746,281 +524,41 @@ function completedFinalization(deps: ResumeWorkflowDeps, summary: RecoverySummar
   };
 }
 
-function isNeverLaunchedSlot(deps: ResumeWorkflowDeps, snapshot: RecoverySnapshot, slot: CompiledPlanSlot): boolean {
-  const projection = deps.childRows.find((row) => row.job_id === slot.jobId) ?? null;
-  const detail = detailForJob(snapshot.slotDetailsByJob, slot.jobId);
-  return projection === null && detail.status === null;
-}
-
-function classifyActiveStepLaunchState(deps: ResumeWorkflowDeps, snapshot: RecoverySnapshot): ActiveStepLaunchState {
-  const neverLaunchedSlots = snapshot.stepSlots.filter((slot) => isNeverLaunchedSlot(deps, snapshot, slot));
-  if (neverLaunchedSlots.length === 0) {
-    return { kind: 'all-launched', neverLaunchedSlots: [] };
-  }
-  if (neverLaunchedSlots.length === snapshot.stepSlots.length) {
-    return { kind: 'all-never-launched', neverLaunchedSlots };
-  }
-  return { kind: 'mixed', neverLaunchedSlots };
-}
-
-function atomIndexForSlot(snapshot: RecoverySnapshot, slot: CompiledPlanSlot): number {
-  const atomIndex = snapshot.stepSlots.findIndex((candidate) => candidate.slotId === slot.slotId);
-  if (atomIndex < 0) {
-    throw new Error(`Workflow recovery could not place slot '${slot.slotId}' in its active step.`);
-  }
-  return atomIndex;
-}
-
-function runRecoveryWaitForAtoms(
-  deps: ResumeWorkflowDeps,
-  atoms: LaunchedAtom[],
-  extra: { initialState?: Partial<WaitInternalState>; completedStepDetails: StepDetail[] },
-): Promise<Map<string, string>> {
-  return waitForAtoms(atoms, deps.executionSvc, deps.ctx, {
-    staleTimeoutMs: deps.staleTimeoutMs,
-    staleCheckIntervalMs: deps.staleCheckIntervalMs,
-    staleAbortTimeoutMs: deps.staleAbortTimeoutMs,
-    drainDeadlineMs: deps.drainDeadlineMs,
-    ...(extra.initialState === undefined ? {} : { initialState: extra.initialState }),
-    completedStepDetails: extra.completedStepDetails,
-    workflowJobId: deps.workflowId,
-    onProgress: (message) => deps.onProgress(deps.workflowId, message),
-    time: deps.time,
-    recoverStaleAtom,
-  });
-}
-
-async function drainLaunchedRecoveryAtoms(deps: ResumeWorkflowDeps, atoms: LaunchedAtom[]): Promise<StepDetail[]> {
-  if (atoms.length === 0) return [];
-
-  deps.executionSvc.abort(atoms.map((atom) => atom.jobId));
-  try {
-    const results = await runRecoveryWaitForAtoms(deps, atoms, { completedStepDetails: [] });
-    return buildStepDetailsForAtoms(atoms, results);
-  } catch (error) {
-    if (error instanceof WorkflowExecutionError) {
-      return error.stepDetails;
-    }
-    throw error;
-  }
-}
-
-function mergeActiveAtomsWithLaunched(
-  stepSlots: readonly CompiledPlanSlot[],
-  activeAtoms: LaunchedAtom[],
-  launchedAtoms: LaunchedAtom[],
-): LaunchedAtom[] {
-  const atomsBySlot = new Map([...activeAtoms, ...launchedAtoms].map((atom) => [atom.slotId, atom]));
-  return stepSlots.map((slot) => {
-    const atom = atomsBySlot.get(slot.slotId);
-    if (atom === undefined) {
-      throw new Error(`Workflow recovery has no launched atom for slot '${slot.slotId}'.`);
-    }
-    return atom;
-  });
-}
-
-async function recoverPartiallyLaunchedStep(
-  deps: ResumeWorkflowDeps,
-  snapshot: RecoverySnapshot,
-  neverLaunchedSlots: readonly CompiledPlanSlot[],
-): Promise<RecoveredWorkflowFinalization> {
-  const waitPlan = buildWaitRecoveryPlan(deps, snapshot);
-  const blocked = blockingFailureFinalization(deps.workflowId, snapshot.summary, waitPlan.blockingFailure);
-  if (blocked !== null) return blocked;
-
-  deps.onProgress(deps.workflowId, `resuming partially launched step ${snapshot.summary.activeStepIndex}`);
-
-  const neverLaunchedSlotIds = new Set(neverLaunchedSlots.map((slot) => slot.slotId));
-  const launchedPending = waitPlan.activeAtoms.filter((atom) => !neverLaunchedSlotIds.has(atom.slotId));
-  const { launchedAtoms, launchError } = await launchCompiledStepAtoms(
-    neverLaunchedSlots,
-    snapshot.summary.stepPrompt,
-    deps.executionSvc,
-    deps.ctx,
-    {
-      completedStepDetails: snapshot.summary.stepDetails,
-      workflowJobId: deps.workflowId,
-      atomIndexFor: (slot) => atomIndexForSlot(snapshot, slot),
-    },
-  );
-  if (launchError !== null) {
-    const drainAtoms = [...launchedPending, ...launchedAtoms];
-    await handleStepLaunchFailure(launchError, drainAtoms, {
-      completedStepDetails: snapshot.summary.stepDetails,
-      drainLaunchedAtoms: () => drainLaunchedRecoveryAtoms(deps, drainAtoms),
-    });
-  }
-
-  const hybridPlan: WaitRecoveryPlan = {
-    ...waitPlan,
-    activeAtoms: mergeActiveAtomsWithLaunched(snapshot.stepSlots, waitPlan.activeAtoms, launchedAtoms),
-  };
-  const stepResults = await runRecoveryWaitForAtoms(deps, hybridPlan.activeAtoms, {
-    initialState: hybridPlan.initialState,
-    completedStepDetails: snapshot.summary.stepDetails,
-  });
-  return continueAfterRecoveredStep(deps, snapshot.summary, hybridPlan, stepResults);
-}
-
-async function executeRemainingSteps(
-  deps: ResumeWorkflowDeps,
-  initialPrompt: string,
-  startStepIndex: number,
-  completedStepDetails: StepDetail[],
-): Promise<PipelineResult> {
-  return executePlannedSteps(deps.plan, initialPrompt, deps.executionSvc, deps.ctx, {
-    startStepIndex,
-    completedStepDetails,
-    jobIds: deps.jobIds,
-    onProgress: (message) => deps.onProgress(deps.workflowId, message),
-    staleTimeoutMs: deps.staleTimeoutMs,
-    staleCheckIntervalMs: deps.staleCheckIntervalMs,
-    staleAbortTimeoutMs: deps.staleAbortTimeoutMs,
-    drainDeadlineMs: deps.drainDeadlineMs,
-    workflowJobId: deps.workflowId,
-    time: deps.time,
-  });
-}
-
-async function assembleRelaunch(
-  deps: ResumeWorkflowDeps,
-  summary: RecoverySummary,
-): Promise<RecoveredWorkflowFinalization> {
-  deps.onProgress(deps.workflowId, `relaunching step ${summary.activeStepIndex}`);
-  const resumed = await executeRemainingSteps(deps, summary.stepPrompt, summary.activeStepIndex, summary.stepDetails);
-  return { intent: completedRecoveryIntent(deps.workflowId, resumed) };
-}
-
-function buildWaitRecoveryPlan(deps: ResumeWorkflowDeps, snapshot: RecoverySnapshot): WaitRecoveryPlan {
-  const completedOutputs = new Map<string, string>();
-  let watermark = Infinity;
-  const drain = deps.drain;
-  const projectionsByJob = new Map(deps.childRows.map((row) => [row.job_id, row]));
-
-  for (const slot of snapshot.stepSlots) {
-    const detail = detailForJob(snapshot.slotDetailsByJob, slot.jobId);
-    if (detail.exit && phaseForOutcome(detail.exit.outcome) === 'completed') {
-      completedOutputs.set(slot.atomKey, detail.exit.content);
-      continue;
-    }
-
-    watermark = Math.min(watermark, projectionsByJob.get(slot.jobId)?.last_seq ?? 0);
-  }
-
-  const failure = firstTerminalFailure(snapshot.compiledSlots, drain, snapshot.slotDetailsByJob);
-  const initialState: Partial<WaitInternalState> = {
-    completedOutputs,
-    // A child terminal at the watermark is still delivered: an internal read prints every requested terminal.
-    cursor: Number.isFinite(watermark) ? encodeWaitCursor(watermark) : undefined,
-    lastActivityAt: new Map<string, number>(),
-    staleRetries: new Map<string, number>(),
-    expectedStaleAborts: new Set<string>(),
-    ...(failure?.drainDeadline === undefined
-      ? {}
-      : {
-          failureDrain: {
-            firstFailure: failure,
-            abortRequested: true,
-            drainDeadline: failure.drainDeadline,
-          },
-        }),
-  };
-  const pendingPhases: string[] = [];
-  for (const slot of snapshot.stepSlots) {
-    const phase = detailForJob(snapshot.slotDetailsByJob, slot.jobId).status?.phase;
-    if (phase !== null && phase !== undefined) {
-      pendingPhases.push(phase);
-    }
-  }
-  const blockingFailure = pendingPhases.some(
-    (phase) => phase !== 'running' && phase !== 'queued' && phase !== 'completed',
-  )
-    ? failure
-    : null;
-
-  return { activeAtoms: snapshot.activeAtoms, completedOutputs, initialState, blockingFailure };
-}
-
-function blockingFailureFinalization(
-  workflowId: string,
-  summary: RecoverySummary,
-  failure: RecoveryTerminalFailure | null,
-): RecoveredWorkflowFinalization | null {
-  if (failure === null) return null;
-  const workflowError = createWorkflowExecutionError(failure.message, failure.aborted, summary.stepDetails, failure);
-  return {
-    intent: recoveryIntentFromFailure(workflowId, failure, summary.stepDetails),
-    error: workflowError,
-  };
-}
-
-async function continueAfterRecoveredStep(
-  deps: ResumeWorkflowDeps,
-  summary: RecoverySummary,
-  plan: WaitRecoveryPlan,
-  stepResults: Map<string, string>,
-): Promise<RecoveredWorkflowFinalization> {
-  const mergedResults = new Map(plan.completedOutputs);
-  for (const [key, value] of stepResults) {
-    mergedResults.set(key, value);
-  }
-
-  const stepDetails = [...summary.stepDetails, ...buildStepDetailsForAtoms(plan.activeAtoms, mergedResults)];
-  const stepPrompt = formatStepOutput(
-    plan.activeAtoms.map((atom) => ({
-      tagName: atom.tagName,
-      output: mergedResults.get(atom.atomKey) ?? '',
-    })),
-  );
-  const resumed = await executeRemainingSteps(deps, stepPrompt, summary.activeStepIndex + 1, stepDetails);
-  return { intent: completedRecoveryIntent(deps.workflowId, resumed) };
-}
-
-async function waitAndFinalize(
-  deps: ResumeWorkflowDeps,
-  snapshot: RecoverySnapshot,
-): Promise<RecoveredWorkflowFinalization> {
-  const plan = buildWaitRecoveryPlan(deps, snapshot);
-  const blocked = blockingFailureFinalization(deps.workflowId, snapshot.summary, plan.blockingFailure);
-  if (blocked !== null) return blocked;
-
-  deps.onProgress(deps.workflowId, `resuming step ${snapshot.summary.activeStepIndex}`);
-  const stepResults = await runRecoveryWaitForAtoms(deps, plan.activeAtoms, {
-    initialState: plan.initialState,
-    completedStepDetails: snapshot.summary.stepDetails,
-  });
-  return continueAfterRecoveredStep(deps, snapshot.summary, plan, stepResults);
-}
-
-async function resumeWorkflow(
-  context: ResumeWorkflowContext,
-  currentSlotJobIds: ReadonlyMap<string, string>,
-  ids: Pick<IdPort, 'uuid'>,
-): Promise<RecoveredWorkflowFinalization | null> {
-  if (detectExistingCompletion(context)) {
-    return null;
-  }
-  const deps: ResumeWorkflowDeps = {
-    ...context,
-    jobIds: await resolveWorkflowRecoveryJobIds(context, currentSlotJobIds, ids),
-  };
+function decideWorkflowFinalization(deps: WorkflowRecoveryContext): RecoveredWorkflowFinalization | null {
+  if (detectExistingCompletion(deps)) return null;
 
   const snapshot = loadRecoverySnapshot(deps);
   if (snapshot.summary.activeStepIndex > maxStepIndex(deps.plan)) {
     return completedFinalization(deps, snapshot.summary);
   }
 
-  const launchState = classifyActiveStepLaunchState(deps, snapshot);
-  if (launchState.kind === 'mixed') {
-    return recoverPartiallyLaunchedStep(deps, snapshot, launchState.neverLaunchedSlots);
+  const { activeAtoms, slotDetailsByJob, summary } = snapshot;
+  const terminalOutputs = new Map(
+    activeAtoms.flatMap((atom) => {
+      const exit = detailForJob(slotDetailsByJob, atom.jobId).exit;
+      return exit === null ? [] : [[atom.atomKey, exit.content] as const];
+    }),
+  );
+  const allLaunchedAtomsTerminal = activeAtoms.length > 0 && terminalOutputs.size === activeAtoms.length;
+  if (allLaunchedAtomsTerminal) {
+    const failure = firstTerminalFailure(snapshot.stepSlots, deps.drain, slotDetailsByJob);
+    if (failure !== null) {
+      const stepDetails = [...summary.stepDetails, ...buildStepDetailsForAtoms(activeAtoms, terminalOutputs)];
+      return { intent: recoveryIntentFromFailure(deps.workflowId, failure, stepDetails) };
+    }
   }
 
-  if (launchState.kind === 'all-never-launched') {
-    return assembleRelaunch(deps, snapshot.summary);
-  }
-
-  return waitAndFinalize(deps, snapshot);
+  return {
+    intent: {
+      outcome: 'failed',
+      workflowJobId: deps.workflowId,
+      lifecycleFault: {
+        kind: 'recovery_failed',
+        message: WORKFLOW_RESTART_MESSAGE,
+      },
+      stepDetails: [...summary.stepDetails, ...buildStepDetailsForAtoms(activeAtoms, terminalOutputs)],
+    },
+  };
 }
 
 function latestEvent(events: readonly EventsRow[], type: string): EventsRow | null {
@@ -1245,21 +783,18 @@ function hydrateWorkflowRecovery(raw: RawWorkflowRecoveryEnvelope, ctx: StoreRea
   return {
     envelope: raw,
     rootDetail,
-    rootProjectRoot,
     projection,
     childRows,
     slotDetailsByJob,
     providerSessionsById,
     completion,
     drain,
-    eventsBySeq,
     continuation,
     continuationRecovered: recoveredContinuation !== null,
     continuationDurable: recoveredContinuation !== null,
     closeCompleted: false,
     cleanupRequired: false,
     deferredReason: null,
-    recoveredError: undefined,
     descendantReleases: [],
   };
 }
@@ -1288,71 +823,6 @@ async function persistWorkflowContinuation(
     throw new Error(`Workflow recovery continuation lost authority for '${item.envelope.subject.key}'.`);
   }
   item.continuationDurable = true;
-}
-
-/**
- * Records the replacement as this session's child. It does not verify that the replacement still holds
- * the claim, and must not: `resume()` starts the provider before it resolves, so a job that terminalizes
- * quickly releases its own claim first, and requiring the claim here would turn that success into a
- * failed workflow. What the record has to survive is the close, and the close is idempotent per job —
- * an already-finished replacement releases as `already_absent` and aborts as a no-op.
- */
-async function checkpointReplacementInContinuation(
-  item: HydratedWorkflowRecovery,
-  quarantine: RecoveryQuarantinePort,
-  sessionId: string,
-  jobId: string,
-): Promise<void> {
-  item.continuation = {
-    ...item.continuation,
-    childIds: item.continuation.childIds.includes(jobId)
-      ? item.continuation.childIds
-      : [...item.continuation.childIds, jobId],
-    providerSessions: item.continuation.providerSessions.map((session) =>
-      session.sessionId === sessionId ? { ...session, activeJobId: jobId } : session,
-    ),
-  };
-  await persistWorkflowContinuation(item, quarantine);
-}
-
-function executionWithUnknownOutcome(
-  service: WorkflowExecutionPort,
-  recordUnknown: (error: UnknownWorkflowRecoveryOutcome) => void,
-): WorkflowExecutionPort {
-  return {
-    coralDispatch: async (...args) => {
-      try {
-        return await service.coralDispatch(...args);
-      } catch (error) {
-        const unknown = new UnknownWorkflowRecoveryOutcome('launch', error);
-        recordUnknown(unknown);
-        throw unknown;
-      }
-    },
-    resume: async (...args) => {
-      try {
-        return await service.resume(...args);
-      } catch (error) {
-        const unknown = new UnknownWorkflowRecoveryOutcome('resume', error);
-        recordUnknown(unknown);
-        throw unknown;
-      }
-    },
-    recordContinuationLease: (...args) => service.recordContinuationLease(...args),
-    clearContinuationLease: (...args) => service.clearContinuationLease(...args),
-    abort: (...args) => service.abort(...args),
-    awaitLaunch: async (...args) => {
-      try {
-        return await service.awaitLaunch(...args);
-      } catch (error) {
-        const unknown = new UnknownWorkflowRecoveryOutcome('launch readiness', error);
-        recordUnknown(unknown);
-        throw unknown;
-      }
-    },
-    waitStream: (...args) => service.waitStream(...args),
-    waitForJobTerminal: (...args) => service.waitForJobTerminal(...args),
-  };
 }
 
 function settledFacts(item: HydratedWorkflowRecovery): readonly RecoverySettlementFact[] {
@@ -1384,26 +854,19 @@ function atomicReleaser(
     : (candidate as AtomicFailedWorkflowDescendantReleaser);
 }
 
-type ResumeAllOptions = {
+type RecoverAllOptions = {
   db: Database;
   progressStore: StoreReadContext;
-  loadJobDetails: unknown;
-  getExecutionService: (ctx: InvocationContext) => WorkflowExecutionPort;
-  createInvocationContext: (projectRoot: CanonicalWorkDir) => InvocationContext;
+  clearContinuationLease: (projectRoot: CanonicalWorkDir, input: ClearContinuationLeaseInput) => Promise<boolean>;
   finalizeWorkflow: (intent: WorkflowFinalizationIntent) => void;
   releaseFailedWorkflowDescendants: (workflowId: string) => readonly WorkflowRecoveryDescendantRelease[];
   signal?: AbortSignal;
   log?: (message: string) => void;
-  onProgress?: (workflowId: string, message: string) => void;
-  staleTimeoutMs?: number;
-  staleCheckIntervalMs?: number;
-  staleAbortTimeoutMs?: number;
-  drainDeadlineMs?: number;
   ids: Pick<IdPort, 'uuid'>;
-  time: Pick<TimePort, 'now' | 'monotonicNow' | 'sleep'>;
+  time: Pick<TimePort, 'now'>;
 };
 
-const workflowRetryOptions = new WeakMap<Database, ResumeAllOptions>();
+const workflowRetryOptions = new WeakMap<Database, RecoverAllOptions>();
 
 function finalizationRecording(item: HydratedWorkflowRecovery): WorkflowRecoveryAtomicClose['recording'] {
   const status = item.rootDetail.status;
@@ -1431,7 +894,7 @@ function clearWorkflowContinuation(item: HydratedWorkflowRecovery, quarantine: R
 function closeRecoveredWorkflow(
   item: HydratedWorkflowRecovery,
   intent: WorkflowFinalizationIntent,
-  options: ResumeAllOptions,
+  options: RecoverAllOptions,
   quarantine: RecoveryQuarantineStore,
 ): void {
   item.deferredReason = 'close-failed';
@@ -1472,33 +935,12 @@ function settledWorkflowResult(
   };
 }
 
-async function settleWorkflowRecovery(
+function recoverWorkflowFinalization(
   item: HydratedWorkflowRecovery,
-  options: ResumeAllOptions,
-  quarantine: RecoveryQuarantineStore,
-  resumedWorkflowIds: string[],
-): Promise<RecoveryDisposition> {
-  await persistWorkflowContinuation(item, quarantine);
-  if (
-    item.continuationRecovered &&
-    (item.continuation.stage === 'prepared' || item.continuation.stage === 'external-outcome-unknown')
-  ) {
-    item.deferredReason = 'unknown-external';
-    return {
-      kind: 'deferred',
-      continuation: continuationToken(item),
-      detail: 'workflow external recovery outcome remains unknown',
-    };
-  }
-  if (item.continuation.stage === 'ready-to-close' && item.continuation.intendedFinalization.kind === 'intent') {
-    closeRecoveredWorkflow(item, item.continuation.intendedFinalization.intent, options, quarantine);
-    resumedWorkflowIds.push(item.envelope.subject.key);
-    return settledWorkflowResult(item, 'workflow recovery durable close settled');
-  }
-
+  options: RecoverAllOptions,
+): { recovered: RecoveredWorkflowFinalization | null; containedFailure: unknown } {
   let recovered: RecoveredWorkflowFinalization | null;
   let containedFailure: unknown = null;
-  let unknownExternalOutcome: UnknownWorkflowRecoveryOutcome | null = null;
   try {
     const projection = item.projection;
     if (projection === null) {
@@ -1508,62 +950,83 @@ async function settleWorkflowRecovery(
     if (status === null) {
       throw new Error('Workflow recovery could not hydrate its root job status.');
     }
-    const baseCtx = options.createInvocationContext(item.rootProjectRoot);
-    const ctx: InvocationContext = { ...baseCtx, providerScope: projection.providerScope };
     const currentSlotJobIds = validateAndReadCurrentSlotJobIds(item.childRows, status.jobId, projection.plan);
-    recovered = await resumeWorkflow(
-      {
-        progressStore: options.progressStore,
-        executionSvc: executionWithUnknownOutcome(options.getExecutionService(ctx), (error) => {
-          unknownExternalOutcome ??= error;
-        }),
-        ctx,
-        workflowId: status.jobId,
-        plan: projection.plan,
-        childRows: item.childRows,
-        slotDetailsByJob: item.slotDetailsByJob,
-        providerSessionsById: item.providerSessionsById,
-        eventsBySeq: item.eventsBySeq,
-        completion: item.completion,
-        drain: item.drain,
-        onProgress: options.onProgress ?? (() => {}),
-        checkpointReplacement: (sessionId, jobId) =>
-          checkpointReplacementInContinuation(item, quarantine, sessionId, jobId),
-        staleTimeoutMs: options.staleTimeoutMs ?? DEFAULT_STALE_TIMEOUT_MS,
-        staleCheckIntervalMs: options.staleCheckIntervalMs ?? DEFAULT_STALE_CHECK_INTERVAL_MS,
-        staleAbortTimeoutMs: options.staleAbortTimeoutMs ?? DEFAULT_STALE_ABORT_TIMEOUT_MS,
-        drainDeadlineMs: options.drainDeadlineMs ?? DEFAULT_DRAIN_DEADLINE_MS,
-        time: options.time,
-      },
-      currentSlotJobIds,
-      options.ids,
-    );
-    // eslint-disable-next-line @typescript-eslint/only-throw-error -- the callback captures an Error subclass that TypeScript does not track across the await; preserve that exact instance
-    if (unknownExternalOutcome !== null) throw unknownExternalOutcome;
+    recovered = decideWorkflowFinalization({
+      workflowId: status.jobId,
+      plan: projection.plan,
+      childRows: item.childRows,
+      slotDetailsByJob: item.slotDetailsByJob,
+      providerSessionsById: item.providerSessionsById,
+      completion: item.completion,
+      drain: item.drain,
+      jobIds: resolveWorkflowJobIds(projection.plan, options.ids, currentSlotJobIds),
+    });
   } catch (error: unknown) {
     options.signal?.throwIfAborted();
-    const unknownOutcome = unknownExternalOutcome ?? (error instanceof UnknownWorkflowRecoveryOutcome ? error : null);
-    if (unknownOutcome !== null) {
-      item.recoveredError = unknownOutcome;
-      item.deferredReason = 'unknown-external';
-      item.continuation = {
-        ...item.continuation,
-        stage: 'external-outcome-unknown',
-      };
-      await persistWorkflowContinuation(item, quarantine);
-      return {
-        kind: 'deferred',
-        continuation: continuationToken(item),
-        detail: unknownOutcome.message,
-      };
-    }
     containedFailure = error;
-    item.recoveredError = error;
-    recovered = { intent: recoveryIntentFromError(item.envelope.subject.key, error) };
+    recovered = {
+      intent: recoveryIntentFromError(
+        item.envelope.subject.key,
+        new Error(`${WORKFLOW_RESTART_MESSAGE} ${errorMessage(error)}`, { cause: error }),
+      ),
+    };
   }
 
+  return { recovered, containedFailure };
+}
+
+function logWorkflowRecoveryClose(
+  item: HydratedWorkflowRecovery,
+  intent: WorkflowFinalizationIntent,
+  containedFailure: unknown,
+  options: RecoverAllOptions,
+): void {
+  for (const released of item.descendantReleases) {
+    options.log?.(
+      `Workflow recovery child ${released.jobId} session claim ${released.sessionId} disposition: ${describeSessionJobClaimReleaseResult(released.sessionClaimRelease)}.\n`,
+    );
+  }
+  if (containedFailure !== null) {
+    const outcomeDescription =
+      intent.outcome === 'failed' ? 'after recovery failed' : `with ${intent.outcome} outcome after recovery error`;
+    options.log?.(
+      `Workflow recovery finalized ${item.envelope.subject.key} ${outcomeDescription}: ${errorMessage(containedFailure)}\n`,
+    );
+  }
+}
+
+async function settleWorkflowRecovery(
+  item: HydratedWorkflowRecovery,
+  options: RecoverAllOptions,
+  quarantine: RecoveryQuarantineStore,
+  closedWorkflowIds: string[],
+): Promise<RecoveryDisposition> {
+  await clearPendingReplacementIntents(item, options);
+  // Provider work requires a committed launch; a dead issuing writer cannot publish a missing child.
+  if (
+    item.continuationRecovered &&
+    (item.continuation.stage === 'prepared' || item.continuation.stage === 'external-outcome-unknown') &&
+    item.completion === null &&
+    item.childRows.some((child) => child.terminal === null)
+  ) {
+    item.deferredReason = 'unknown-external';
+    await persistWorkflowContinuation(item, quarantine);
+    return {
+      kind: 'deferred',
+      continuation: continuationToken(item),
+      detail: WORKFLOW_CHILD_SETTLEMENT_MESSAGE,
+    };
+  }
+
+  const { recovered, containedFailure } =
+    item.continuation.stage === 'ready-to-close' && item.continuation.intendedFinalization.kind === 'intent'
+      ? { recovered: { intent: item.continuation.intendedFinalization.intent }, containedFailure: null }
+      : recoverWorkflowFinalization(item, options);
   if (recovered === null) {
-    if (!clearWorkflowContinuation(item, quarantine)) {
+    if (
+      quarantine.read('workflow-recovery', item.envelope.subject.key) !== null &&
+      !clearWorkflowContinuation(item, quarantine)
+    ) {
       throw new Error(`Workflow recovery continuation changed for '${item.envelope.subject.key}'.`);
     }
     return settledWorkflowResult(item, 'workflow already had a durable completion');
@@ -1577,34 +1040,15 @@ async function settleWorkflowRecovery(
   };
   await persistWorkflowContinuation(item, quarantine);
   closeRecoveredWorkflow(item, recovered.intent, options, quarantine);
-  resumedWorkflowIds.push(item.envelope.subject.key);
-
-  for (const released of item.descendantReleases) {
-    options.log?.(
-      `Workflow recovery child ${released.jobId} session claim ${released.sessionId} disposition: ${describeSessionJobClaimReleaseResult(released.sessionClaimRelease)}.\n`,
-    );
-  }
-  if (containedFailure !== null) {
-    const outcomeDescription =
-      recovered.intent.outcome === 'failed'
-        ? 'after recovery failed'
-        : `with ${recovered.intent.outcome} outcome after recovery error`;
-    options.log?.(
-      `Workflow recovery finalized ${item.envelope.subject.key} ${outcomeDescription}: ${errorMessage(containedFailure)}\n`,
-    );
-  }
-  if (recovered.error !== undefined) {
-    options.log?.(
-      `Workflow recovery finalized ${item.envelope.subject.key} with ${recovered.intent.outcome} outcome: ${errorMessage(recovered.error)}\n`,
-    );
-  }
-  return settledWorkflowResult(item, 'workflow recovery finalized and descendant claims released');
+  closedWorkflowIds.push(item.envelope.subject.key);
+  logWorkflowRecoveryClose(item, recovered.intent, containedFailure, options);
+  return settledWorkflowResult(item, 'workflow recovery finalized and eligible descendant claims released');
 }
 
 function createWorkflowRecoveryPolicy(
-  options: ResumeAllOptions,
+  options: RecoverAllOptions,
   quarantine: RecoveryQuarantineStore,
-  resumedWorkflowIds: string[],
+  closedWorkflowIds: string[],
 ): RecoveryRetryPolicy<RawWorkflowRecoveryEnvelope, HydratedWorkflowRecovery> {
   return {
     processLocalCleanup: {
@@ -1629,7 +1073,7 @@ function createWorkflowRecoveryPolicy(
     },
     hydrate: (raw) => hydrateWorkflowRecovery(raw, options.progressStore),
     requiredObligations: () => [RESUME_OBLIGATION, FINALIZE_OBLIGATION, DESCENDANT_RELEASE_OBLIGATION],
-    settle: (item) => settleWorkflowRecovery(item, options, quarantine, resumedWorkflowIds),
+    settle: (item) => settleWorkflowRecovery(item, options, quarantine, closedWorkflowIds),
     onFault: (fault) => {
       if (fault.stage === 'scan') return { kind: 'fatal', error: fault.error };
       if (fault.stage === 'hydrate') {
@@ -1645,7 +1089,7 @@ function createWorkflowRecoveryPolicy(
           detail:
             fault.item.deferredReason === 'close-failed'
               ? 'workflow recovery durable close remains pending'
-              : 'workflow external recovery outcome remains unknown',
+              : WORKFLOW_CHILD_SETTLEMENT_MESSAGE,
         };
       }
       return { kind: 'quarantine', detail: 'workflow recovery settlement failed before durable close' };
@@ -1687,8 +1131,8 @@ export function createWorkflowRecoveryRetryPlan(
   };
 }
 
-export async function resumeAll(options: ResumeAllOptions): Promise<string[]> {
-  const resumedWorkflowIds: string[] = [];
+export async function recoverAll(options: RecoverAllOptions): Promise<string[]> {
+  const closedWorkflowIds: string[] = [];
   const signal = options.signal ?? new AbortController().signal;
   const quarantine = new RecoveryQuarantineStore(options.db, options.time);
   workflowRetryOptions.set(options.db, options);
@@ -1697,12 +1141,12 @@ export async function resumeAll(options: ResumeAllOptions): Promise<string[]> {
     policy: {
       signal,
       quarantine,
-      ...createWorkflowRecoveryPolicy(options, quarantine, resumedWorkflowIds),
+      ...createWorkflowRecoveryPolicy(options, quarantine, closedWorkflowIds),
     },
   });
-  return resumedWorkflowIds;
+  return closedWorkflowIds;
 }
 
 export const workflowRecover = {
-  resumeAll,
+  recoverAll,
 } as const;

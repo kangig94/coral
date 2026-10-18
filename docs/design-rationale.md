@@ -110,7 +110,7 @@ discharge a started sibling's settlement obligation. No operator action is neede
 
 ### 3.2 Why workflow slot identity is not job identity
 
-A workflow slot is stable semantic lineage; a child job is one runtime execution of that slot. Each newly launched child therefore receives a separately minted canonical UUID job id, while durable child rows carry the slot identity separately. Recovery reconstructs the current mapping by reusing the durable job id for a slot with a current child row, mints an id for a slot without a row, and mints a new id for the next replacement generation when a pending continuation lease requires one. Operator surfaces preserve the same distinction by carrying and displaying slot identity separately, and a proxy launch rejection identifies the operation-identity component it rejected.
+A workflow slot is stable semantic lineage; a child job is one runtime execution of that slot. Each newly launched child therefore receives a separately minted canonical UUID job id, while durable child rows carry the slot identity separately. Cold-boot recovery uses the durable child rows to interpret recorded results and close interrupted workflows without launching missing slots or replacement generations. Operator surfaces preserve the same distinction by carrying and displaying slot identity separately, and a proxy launch rejection identifies the operation-identity component it rejected.
 
 The rejected alternative was to widen the provider-proxy operation-identity schema to accept slot-shaped values as job ids. During a hot upgrade, a new coordinator and previous-build proxies coexist; the coordinator could then send the widened value to a proxy whose strict UUID schema rejects it before the provider starts. Keeping the proxy wire job identity canonical-UUID-shaped across generations avoids that mixed-version failure instead of making slot identity double as job identity.
 
@@ -369,7 +369,7 @@ A subtle gotcha drove a memo: `state.startupAbort?.abort('shutdown')` (string re
 
 ### 10.5 Discuss is not a RuntimeComponent (deliberately)
 
-Discuss has one-shot recovery on boot (`workflowRecover.resumeAll`), no retry, no self-heal. Forcing it into the runtime health phase machine would create dead states (`degraded` and `offline` that mean nothing). Discuss recovery stays in Era II as a one-shot; only daemon-visible health surfaces with meaningful phase transitions should register as runtime components.
+Discuss startup recovery reconciles owned jobs and attaches sessions without resuming the discussion loop. Failed settlement uses recovery quarantine and exact retry, rather than a discussion health phase machine. Forcing it into that machine would create dead states (`degraded` and `offline` that mean nothing). Discuss startup recovery stays in Era II; only daemon-visible health surfaces with meaningful phase transitions should register as runtime components.
 
 ## 11. Value Semantics and Local Abstraction
 

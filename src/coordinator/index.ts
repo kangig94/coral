@@ -37,18 +37,17 @@ import {
 } from '../store/append.js';
 import { prepareCached, type Database } from '../store/db.js';
 import { createEventBodyCodec } from '../store/event-body-codec.js';
-import { loadJobProjectionDetail, loadJobProjectionDetails } from '../jobs/read-queries.js';
+import { loadJobProjectionDetail } from '../jobs/read-queries.js';
 import { composeReducers } from '../store/reducers.js';
 import { sealCoralStoreFormat } from '../store-format.js';
 import { publishJobEvents, subscribeJobEvents } from '../jobs/shell/event-subscription.js';
 import { observeTerminalResultExports, resultPathFor } from '../jobs/terminal/export.js';
 import { jobsRegistry } from '../jobs/events.js';
 import { sessionsRegistry } from '../sessions/events.js';
+import { SessionManager } from '../sessions/shell.js';
 import { discussRegistry } from '../discuss/event-registry.js';
 import { workflowRegistry } from '../workflow/events.js';
 import { workflowRecover } from '../workflow/recover.js';
-import { resolveDrainDeadlineMs } from '../workflow/execution-constants.js';
-import { resolveStaleAbortTimeoutMs } from '../workflow/stale-recovery.js';
 import { ConsumerDrainTimeout, ConsumerDriver } from '../projection-consumers/index.js';
 import type { KbCorpusPublication, KbCorpusSnapshot } from '../kb/contract.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
@@ -178,7 +177,7 @@ function createCoordinatorStartupRecoveryRunner({
     const recoveryProgressStore = jobsStartup.progressStore;
     signal.throwIfAborted();
 
-    const recoveredDiscussResumes = await recoverPersistedDiscussFn({
+    await recoverPersistedDiscussFn({
       knownDiscussSources,
       getDiscussStoreForSource,
       getDiscussContext,
@@ -187,12 +186,17 @@ function createCoordinatorStartupRecoveryRunner({
     });
     signal.throwIfAborted();
 
-    await workflowRecover.resumeAll({
+    await workflowRecover.recoverAll({
       db,
       progressStore: recoveryProgressStore,
-      loadJobDetails: loadJobProjectionDetails,
-      getExecutionService: (ctx) => getExecutionService(ctx) as never,
-      createInvocationContext,
+      clearContinuationLease: (projectRoot, input) =>
+        SessionManager.forProduction(
+          projectRoot,
+          runtime,
+          coordinatorCommit,
+          (payload) => eventBus.emit('session:released', payload),
+          { db },
+        ).clearContinuationLease(input),
       finalizeWorkflow: createWorkflowRecoveryFinalizer({
         runtime,
         progressStore,
@@ -213,15 +217,11 @@ function createCoordinatorStartupRecoveryRunner({
       log: identity.log,
       ids: runtime.ids,
       time: runtime.time,
-      drainDeadlineMs: resolveDrainDeadlineMs(runtime.env),
-      staleAbortTimeoutMs: resolveStaleAbortTimeoutMs(runtime.env),
     });
     signal.throwIfAborted();
 
     await scanLifecycleReactorAtStartup(lifecycleReactor, lifecycleReactorLifetime, signal);
     signal.throwIfAborted();
-
-    return recoveredDiscussResumes;
   };
 }
 
@@ -236,7 +236,6 @@ async function scanLifecycleReactorAtStartup(
   lifecycleReactorLifetime: AbortController,
   signal: AbortSignal,
 ): Promise<void> {
-  // Workflow recovery must renew or consume replacement intents before retention scans them.
   const abortReactorLifetime = () => lifecycleReactorLifetime.abort();
   signal.addEventListener('abort', abortReactorLifetime, { once: true });
   try {

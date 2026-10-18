@@ -139,13 +139,10 @@ describe('coordinator lifecycle startup-failure cleanup — provider operation m
           throw new Error('startup-failure-mutation-admission-drain test unexpectedly created a KB health component');
         }) as never,
         registerBuiltInProvidersFn: vi.fn(),
-        recoverPersistedDiscussFn: vi.fn(async () => []),
+        recoverPersistedDiscussFn: vi.fn(async () => {}),
         hooks: {
           onShutdown: vi.fn(async () => {}),
           onIdleCheck: () => false,
-          onRecoveryComplete: vi.fn(async () => {
-            throw new Error('startup-failure-mutation-admission-drain test unexpectedly reached recovery completion');
-          }),
         },
         closeServerFn,
         listenFn: vi.fn(async () => ({ port: 0, host: '127.0.0.1' })),

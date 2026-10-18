@@ -34,7 +34,6 @@ function snapshotAppServer<Plan extends ProviderExecutionPlan, Access extends Js
   }
   const interrupt = receiver.interrupt;
   const send = receiver.send;
-  const probe = receiver.probe;
   const onNotification = receiver.onNotification;
   return Object.freeze({
     name: receiver.name,
@@ -108,19 +107,6 @@ function snapshotAppServer<Plan extends ProviderExecutionPlan, Access extends Js
               ),
             ),
         }),
-    ...(probe === undefined
-      ? {}
-      : {
-          probe: (...args: Parameters<NonNullable<ProviderAppServerCapability<Plan, Access>['probe']>>) =>
-            probe
-              .call(
-                receiver,
-                wrapAppServerTransport(args[0], 'Provider recovery session'),
-                snapshotBoundaryData(args[1], 'Provider recovery continuity'),
-                { request: snapshotBoundaryData(args[2].request, 'Provider recovery request') },
-              )
-              .then((result) => snapshotProviderResult(result, 'Provider recovery probe outcome')),
-        }),
     ...(onNotification === undefined
       ? {}
       : {
@@ -144,7 +130,7 @@ function snapshotRecovery<Access extends JsonValue>(
       snapshotProviderResult(
         finalizeInterrupted.call(
           receiver,
-          snapshotBoundaryData(args[0], 'Provider recovery probe result'),
+          snapshotBoundaryData(args[0], 'Provider interrupted session state'),
           snapshotBoundaryData(args[1], 'Provider recovery continuity'),
           snapshotBoundaryData(args[2], 'Provider recovery context'),
         ),

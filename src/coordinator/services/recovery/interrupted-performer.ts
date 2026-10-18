@@ -1,6 +1,4 @@
-import { localProviderHostRoot } from '../../../infra/bundle-manifest.js';
 import type { ProcessIncarnation } from '../../../infra/node-process.js';
-import { join } from 'node:path';
 
 import { backendLog } from '../../../infra/backend-log.js';
 import { errorMessage, formatError } from '../../../infra/error-format.js';
@@ -12,7 +10,6 @@ import {
   type RecordedProcessIdentity,
 } from '../../../infra/process-containment.js';
 import { elapsedDurationMs } from '../../../jobs/duration.js';
-import type { InterruptedProbeOutcome } from '../../../jobs/reconcile/interrupted-reason.js';
 import type { JobTerminalInput } from '../../../jobs/records.js';
 import { MAX_PROXY_RECORDED_PROVIDER_ROOTS } from '../../../provider-proxy/enforcement.js';
 import {
@@ -20,7 +17,7 @@ import {
   PROXY_TEARDOWN_RESERVE_MS,
 } from '../../../provider-proxy/orphan-deadline.js';
 import type { ProviderArtifactHandleInput, ProviderTerminalEventBody } from '../../../providers/contract.js';
-import type { BoundProvider, BoundProviderHostPreparationInput } from '../../../providers/bound-provider-contract.js';
+import type { BoundProvider } from '../../../providers/bound-provider-contract.js';
 import type { Database } from '../../../store/db.js';
 import { deleteProviderOperation } from '../../../store/provider-operation-journal.js';
 import type { Runtime } from '../../../runtime/ports.js';
@@ -39,9 +36,6 @@ export type PerformedInterruptedRecovery =
   | Readonly<{
       kind: 'resolved';
       mutation: ProviderValidatedSessionContinuityMutation;
-      probeOutcome: InterruptedProbeOutcome;
-      recoveryConversationRef: string | undefined;
-      artifactHandles: readonly ProviderArtifactHandleInput[];
     }>;
 
 export type PerformedDurableRecovery = Readonly<{
@@ -57,16 +51,8 @@ export type PerformedDurableRecovery = Readonly<{
 
 type PerformerRuntime = Readonly<{
   time: Pick<Runtime['time'], 'now'>;
-  env: Pick<Runtime['env'], 'fullSnapshot' | 'platform'>;
   storage: Pick<Runtime['storage'], 'readFileSync' | 'existsSync' | 'readdirSync' | 'statSync'>;
-  jobDir(jobId: string): string;
-  signal?: AbortSignal;
-  /**
-   * Confirms — reaping via SIGTERM/SIGKILL if the recorded proxy set is still alive — that a `carrier-
-   * detached` plan's carrier is gone, then best-effort retires the saga record that named it.
-   * Rejects when absence cannot be confirmed inside the reap budget; the caller must not finalize the job
-   * in that case.
-   */
+  /** Finalization requires confirmed carrier absence; an unconfirmed reap must reject. */
   reapCarrier(locator: ProviderOperationCarrierRecord): Promise<void>;
 }>;
 
@@ -146,24 +132,10 @@ export async function reapProviderOperationCarrier<Scope extends symbol>(
   }
 }
 
-function replacementInput(
-  plan: AppServerInterruptedRecoveryPlan,
-  runtime: PerformerRuntime,
-): BoundProviderHostPreparationInput {
-  return {
-    hostRoot: localProviderHostRoot(),
-    request: plan.request,
-    persistedContinuity: plan.continuity,
-    baseEnv: runtime.env.fullSnapshot(),
-    platform: runtime.env.platform(),
-    storage: runtime.storage,
-  };
-}
-
 export async function performInterruptedAppServerRecovery(
   plan: AppServerInterruptedRecoveryPlan,
   boundProvider: BoundProvider,
-  runtime: PerformerRuntime,
+  runtime: Pick<PerformerRuntime, 'reapCarrier'>,
 ): Promise<PerformedInterruptedRecovery> {
   if (plan.kind === 'unsupported') return Object.freeze({ kind: 'unsupported' });
   const recovery = boundProvider.recovery;
@@ -171,120 +143,18 @@ export async function performInterruptedAppServerRecovery(
     throw new Error(`Provider '${plan.launchRecord.provider}' lost its interrupted recovery capability.`);
   }
 
-  if (plan.kind === 'waiting') {
-    const probeResult = {
-      resumable: plan.preservedConversationRef !== undefined || plan.continuity !== undefined,
-      ...(plan.continuity === undefined ? {} : { updatedContinuity: plan.continuity }),
-    };
-    return Object.freeze({
-      kind: 'resolved',
-      mutation: recovery.finalizeInterrupted(probeResult, plan.continuity, {
-        preservedConversationRef: plan.preservedConversationRef,
-      }),
-      probeOutcome: 'waiting',
-      recoveryConversationRef: plan.preservedConversationRef,
-      artifactHandles: Object.freeze([]),
-    });
-  }
-
   if (plan.kind === 'carrier-detached') {
-    // Precondition before this may finalize like `waiting`: confirm the recorded carrier is gone. A rejection
-    // here (absence unconfirmed inside budget) propagates to the caller, which must leave the job nonterminal
-    // rather than treat an unconfirmed carrier as safely detached.
     await runtime.reapCarrier(plan.carrier);
-    const probeResult = {
-      resumable: plan.preservedConversationRef !== undefined || plan.continuity !== undefined,
-      updatedContinuity: plan.continuity,
-    };
-    return Object.freeze({
-      kind: 'resolved',
-      mutation: recovery.finalizeInterrupted(probeResult, plan.continuity, {
-        preservedConversationRef: plan.preservedConversationRef,
-      }),
-      probeOutcome: 'unavailable',
-      recoveryConversationRef: plan.preservedConversationRef,
-      artifactHandles: Object.freeze([]),
-    });
-  }
-
-  if (plan.kind === 'artifacts') {
-    const jobDir = runtime.jobDir(plan.launchRecord.jobId);
-    const artifactResult = await recovery.finalizeFromArtifacts({
-      stdoutPath: join(jobDir, 'stdout'),
-      stderrPath: join(jobDir, 'stderr'),
-      exitCode: null,
-      signal: null,
-      durationMs: elapsedDurationMs(plan.runtimeRecord.startTime, runtime.time.now(), `job ${plan.launchRecord.jobId}`),
-      fallbackConversationRef: plan.preservedConversationRef,
-      knownArtifactHandles: plan.session.artifactHandles
-        .filter((artifact) => artifact.sourceJobId === plan.launchRecord.jobId)
-        .map((artifact) => ({
-          handle: artifact.handle,
-          identity: artifact.identity,
-          sourceJobId: artifact.sourceJobId,
-        })),
-      storage: runtime.storage,
-    });
-    const recoveryConversationRef =
-      artifactResult.continuity === undefined
-        ? plan.preservedConversationRef
-        : readContinuityRef(artifactResult.continuity.conversationRef);
-    const resumable = artifactResult.continuity?.resumable ?? recoveryConversationRef !== undefined;
-    const providerContinuity = artifactResult.continuity?.providerContinuity ?? plan.continuity;
-    return Object.freeze({
-      kind: 'resolved',
-      mutation: recovery.finalizeInterrupted(
-        {
-          resumable,
-          ...(providerContinuity === undefined ? {} : { updatedContinuity: providerContinuity }),
-        },
-        plan.continuity,
-        { preservedConversationRef: recoveryConversationRef },
-      ),
-      probeOutcome: resumable ? 'verified' : 'missing',
-      recoveryConversationRef,
-      artifactHandles: Object.freeze([...(artifactResult.artifactHandles ?? [])]),
-    });
-  }
-
-  const appServer = boundProvider.appServer;
-  if (appServer?.supportsProbe !== true) {
-    throw new Error(`Provider '${plan.launchRecord.provider}' lost its app-server probe capability.`);
-  }
-  const hostInput = { ...replacementInput(plan, runtime), jobId: plan.launchRecord.jobId };
-  let observation: { resumable: boolean; updatedContinuity?: typeof plan.continuity };
-  let probeOutcome: InterruptedProbeOutcome;
-  try {
-    let probe = await appServer.probe(plan.hostRef, plan.continuity, hostInput);
-    if (probe.kind === 'stale') {
-      const replacement = await appServer.openReplacement(replacementInput(plan, runtime), {
-        jobId: plan.launchRecord.jobId,
-        signal: runtime.signal,
-      });
-      try {
-        probe = await appServer.probe(replacement.hostRef, plan.continuity, hostInput);
-        if (probe.kind === 'stale') {
-          throw new Error(`Replacement provider host '${plan.launchRecord.provider}' became stale before probing.`);
-        }
-      } finally {
-        replacement.close();
-      }
-    }
-    observation = probe.result;
-    probeOutcome = observation.resumable ? 'verified' : 'missing';
-  } catch (error: unknown) {
-    backendLog.error(`Probe failed for ${plan.launchRecord.jobId}: ${errorMessage(error)}`);
-    observation = { resumable: false, updatedContinuity: plan.continuity };
-    probeOutcome = 'unavailable';
   }
   return Object.freeze({
     kind: 'resolved',
-    mutation: recovery.finalizeInterrupted(observation, plan.continuity, {
-      preservedConversationRef: plan.preservedConversationRef,
-    }),
-    probeOutcome,
-    recoveryConversationRef: plan.preservedConversationRef,
-    artifactHandles: Object.freeze([]),
+    mutation: recovery.finalizeInterrupted(
+      {
+        resumable: plan.preservedConversationRef !== undefined || plan.continuity !== undefined,
+      },
+      plan.continuity,
+      { preservedConversationRef: plan.preservedConversationRef },
+    ),
   });
 }
 
