@@ -704,7 +704,10 @@ export async function pruneCustodyLedger(input: {
   let cursor = input.afterId;
   let scanned = 0;
   const names = runtime.storage.readdirSync(root).sort();
-  budget.observation?.record('custody', { subjects: names.length, reads: names.length });
+  budget.observation?.record('custody', {
+    subjects: names.filter((name) => name !== 'root.v1.json').length,
+    reads: names.length,
+  });
   for (const name of names) {
     if (name === 'root.v1.json') continue;
     const staged = retirementStagePattern.test(name);

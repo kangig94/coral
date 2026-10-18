@@ -1,6 +1,5 @@
 import type { TimePort } from '../infra/port-types.js';
 
-/** Reads count storage rows returned, including repeated reads, never SQLite pages examined. */
 export interface RecoveryObservation {
   record(source: string, counts: { subjects?: number; reads?: number }): void;
 }
@@ -80,11 +79,16 @@ type PhaseResult = {
   outcome: 'complete' | 'failed';
 };
 
+export type StartupPhaseObserver = {
+  options(phase: string): Parameters<typeof startRecoveryPhase>[0];
+  finish(): void;
+};
+
 export function createStartupPhaseObserver(options: {
   time: Pick<TimePort, 'monotonicNow'>;
   log(message: string): void;
   bootId: string;
-}) {
+}): StartupPhaseObserver {
   const phases = new Map<string, PhaseResult>();
   let finished = false;
   return {
@@ -128,5 +132,3 @@ export function createStartupPhaseObserver(options: {
     },
   };
 }
-
-export type StartupPhaseObserver = ReturnType<typeof createStartupPhaseObserver>;

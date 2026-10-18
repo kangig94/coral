@@ -1,11 +1,13 @@
+import { startRecoveryPhase, type RecoveryObservation } from '../../recovery/phase-observation.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { SuccessionDecision } from './reconciler/index.js';
 
 export function createSuccessionReconciliationScheduler(input: {
   time: Runtime['time'];
   retryIntervalMs: number;
+  observation?: { bootId: string; log(message: string): void };
   subscribe?: (notify: () => void) => () => void;
-  runPass: () => Promise<SuccessionDecision>;
+  runPass: (observation?: RecoveryObservation) => Promise<SuccessionDecision>;
   onError?: (error: unknown) => void;
 }): Readonly<{
   reconcile: () => Promise<SuccessionDecision>;
@@ -28,7 +30,21 @@ export function createSuccessionReconciliationScheduler(input: {
       changedDuringPass = true;
       return running;
     }
-    const pending = input.runPass().finally(() => {
+    const observation =
+      input.observation === undefined
+        ? undefined
+        : startRecoveryPhase({
+            ...input.observation,
+            time: input.time,
+            kind: 'background',
+            phase: 'succession-reconciliation',
+          });
+    const pass = input.runPass(observation);
+    void pass.then(
+      () => observation?.finish(),
+      () => observation?.finish('failed'),
+    );
+    const pending = pass.finally(() => {
       running = null;
       if (!changedDuringPass) return;
       changedDuringPass = false;

@@ -426,6 +426,7 @@ function createExecutionOperationReconciler(input: {
     initializeAtStartup,
   } = input;
   return new ProviderOperationReconciler({
+    observation: { bootId: world.identity.instanceId, log: world.log },
     getProgressStore,
     requestContainment: (identity, cause) => {
       const lifecycle = world.providerProxyLifecycleRef.get();

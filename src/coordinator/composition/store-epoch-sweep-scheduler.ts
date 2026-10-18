@@ -58,6 +58,7 @@ export function createStoreEpochSweepScheduler(input: {
               observation.record('store-epochs', { subjects: epochs.length, reads: epochs.length });
               registerPresentHistoricalEpochs(runtime, jobLocationIndex, epochs, input.selectedStoreEpochKey(), budget);
             } catch (error) {
+              failed = true;
               world.log(`Historical epoch registration could not complete: ${formatError(error)}\n`);
             }
             await retryUnknownHistoricalEpochs(jobLocationIndex, budget);
@@ -71,6 +72,7 @@ export function createStoreEpochSweepScheduler(input: {
                 input.closeProxySetForEpochClosure,
               );
             } catch (error) {
+              failed = true;
               world.log(`Superseded epoch closure could not complete: ${formatError(error)}\n`);
             }
             if (!controller.signal.aborted) {

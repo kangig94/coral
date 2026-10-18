@@ -30,9 +30,12 @@ describe('retention startup composition', () => {
     let serving = false;
     const logs: string[] = [];
     let storeMode: () => unknown = () => undefined;
+    let finishCleanup!: () => void;
     const cleanup = vi.fn(() => {
       if (!serving) throw new Error('cleanup delayed running');
-      return new Promise<void>(() => {});
+      return new Promise<void>((resolve) => {
+        finishCleanup = resolve;
+      });
     });
     const core = createCoordinatorCore(
       {
@@ -97,9 +100,14 @@ describe('retention startup composition', () => {
       ).toHaveLength(1);
       expect((await core.lifecycleController.shutdown('test-teardown')).disposition).toBe('finalized');
       await core.lifecycleController.waitForShutdown();
-      const finishes = logs.filter((line) => line.includes('kind=background phase=storage-retention event=finish'));
-      expect(finishes).toHaveLength(1);
-      expect(finishes[0]).toMatch(/subjects=[1-9]\d* reads=[1-9]\d*/);
+      const finishes = (phase: string) =>
+        logs.filter((line) => line.includes(`kind=background phase=${phase} event=finish`));
+      expect(finishes('storage-retention')).toHaveLength(0);
+      expect(finishes('storage-retention.scratch-jobs')).toHaveLength(0);
+      finishCleanup();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(finishes('storage-retention')).toHaveLength(1);
+      expect(finishes('storage-retention')[0]).toMatch(/outcome=failed.*subjects=0 reads=[1-9]\d*/);
       expect(
         logs.filter((line) => line.includes('kind=background phase=storage-retention.scratch-jobs event=finish')),
       ).toHaveLength(1);

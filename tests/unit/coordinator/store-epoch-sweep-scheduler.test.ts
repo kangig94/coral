@@ -93,10 +93,11 @@ it('registration runs first and its failure does not skip closure or retention',
     order.push('sweep');
     return {} as never;
   });
+  const log = vi.fn();
   const scheduler = createStoreEpochSweepScheduler({
     bootId: 'test-boot',
     runtime: f.runtime,
-    world: { log: vi.fn() },
+    world: { log },
     jobLocationIndex: f.index,
     selectedStoreEpochKey: () => f.epochKey,
     onOpen: vi.fn(),
@@ -106,6 +107,10 @@ it('registration runs first and its failure does not skip closure or retention',
     scheduler.schedule(f.epoch);
     await vi.advanceTimersByTimeAsync(0);
     expect(order).toEqual(['register', 'closure', 'sweep']);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('event=finish outcome=failed'));
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(order).toEqual(['register', 'closure', 'sweep', 'register', 'closure', 'sweep']);
+    expect(log.mock.calls.filter(([line]) => line.includes('event=finish outcome=failed'))).toHaveLength(2);
   } finally {
     await scheduler.stop();
     f.close();
@@ -146,6 +151,7 @@ it('a persistently failing closure settlement does not skip historical refresh o
     await vi.advanceTimersByTimeAsync(5000);
     expect(order).toEqual(['closure', 'refresh', 'sweep', 'closure', 'refresh', 'sweep']);
     expect(log).toHaveBeenCalledWith(expect.stringContaining('closure settlement failed'));
+    expect(log.mock.calls.filter(([line]) => line.includes('event=finish outcome=failed'))).toHaveLength(2);
   } finally {
     await scheduler.stop();
     f.close();

@@ -44,7 +44,9 @@ describe('epoch holder retention', () => {
       },
     };
     try {
-      await pruneStoreEpochHolders(runtime, f.budget, (operation) => operation());
+      const record = vi.fn();
+      await pruneStoreEpochHolders(runtime, { ...f.budget, observation: { record } }, (operation) => operation());
+      expect(record).toHaveBeenCalledWith('epoch-holders', { subjects: 4, reads: 5 });
       expect(existsSync(join(root, '.epoch-holder-absent.json'))).toBe(false);
       for (const name of ['alive', 'unknown', 'corrupt'])
         expect(existsSync(join(root, `.epoch-holder-${name}.json`))).toBe(true);

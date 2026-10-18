@@ -1,4 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
+import { join } from 'node:path';
 
 import { createStorageRetentionScheduler } from '#src/coordinator/composition/storage-retention-scheduler.js';
 import { JobLocationIndex } from '#src/jobs/location-index.js';
@@ -22,6 +23,7 @@ it.each(['deadline', 'stop', 'on-time'] as const)(
 
     const root = fixture.runtime.paths.coral.exports.jobsRoot;
     fixture.runtime.storage.mkdirSync(root, { recursive: true });
+    fixture.runtime.storage.mkdirSync(join(root, 'delayed-export'));
     let releaseRead!: () => void;
     const blockedRead = new Promise<void>((resolve) => {
       releaseRead = resolve;
@@ -39,6 +41,8 @@ it.each(['deadline', 'stop', 'on-time'] as const)(
     };
 
     const statuses: string[] = [];
+    const logs: string[] = [];
+    const finishes = (phase: string) => logs.filter((line) => line.includes(`phase=${phase} event=finish`));
     const scheduler = createStorageRetentionScheduler({
       bootId: 'test-boot',
       runtime: fixture.runtime,
@@ -50,7 +54,7 @@ it.each(['deadline', 'stop', 'on-time'] as const)(
       }),
       activeEpochKey: () => 'active',
       jobLocations: new JobLocationIndex(fixture.runtime, fixture.runtime.paths.coral.generation.dataRoot),
-      log: () => undefined,
+      log: (line) => logs.push(line),
       publish: (status) => statuses.push(status.phase),
       cleanupScratch: () => undefined,
     });
@@ -65,14 +69,27 @@ it.each(['deadline', 'stop', 'on-time'] as const)(
       await vi.waitFor(() => expect(statuses.at(-1)).toBe('partial'));
     }
     if (completion !== 'on-time') await scheduler.stop();
+    expect(finishes('storage-retention.exports')).toHaveLength(0);
+    expect(finishes('storage-retention')).toHaveLength(0);
 
     fixture.db
       .prepare('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)')
       .run('storage-retention.exports.eligibility.v1', 'written-after-owner-finished');
 
+    monotonic += 100n;
     releaseRead();
     await vi.waitFor(() => expect(readReleased).toBe(true));
     for (let iteration = 0; iteration < 20; iteration += 1) await Promise.resolve();
+    await vi.waitFor(() => {
+      expect(finishes('storage-retention.exports')).toHaveLength(1);
+      expect(finishes('storage-retention')).toHaveLength(1);
+    });
+    expect(finishes('storage-retention.exports')[0]).toContain(
+      `outcome=${completion === 'on-time' ? 'complete' : 'failed'}`,
+    );
+    expect(finishes('storage-retention.exports')[0]).toContain(`duration_ms=${Number(monotonic).toFixed(3)}`);
+    expect(finishes('storage-retention.exports')[0]).toMatch(/subjects=1 reads=[1-9]\d*/);
+    expect(finishes('storage-retention')[0]).toContain(`duration_ms=${Number(monotonic).toFixed(3)}`);
 
     expect(
       fixture.db.prepare('SELECT value FROM meta WHERE key = ?').get('storage-retention.exports.eligibility.v1'),
