@@ -1,3 +1,4 @@
+import type { RecoveryObservation } from '../../../recovery/phase-observation.js';
 import { backendLog } from '../../../infra/backend-log.js';
 import { errorMessage, formatError } from '../../../infra/error-format.js';
 import { isTerminalPhase } from '../../../jobs/phase.js';
@@ -35,6 +36,7 @@ import type {
 import type { CoordinatorRecoveryControls, createRecoveryWalk } from './walk.js';
 
 export type StartupRecoveryContext = {
+  observation?: RecoveryObservation;
   runtime: Runtime;
   progressStore: JobStore;
   getRecoveryService: (ctx: InvocationContext) => RecoveryCapableService;
@@ -270,6 +272,7 @@ async function planCoordinatorStartupRecovery(
     signal,
     coordinatorCommit: ctx.coordinatorCommit,
     summary: 'Coordinator recovery snapshot hydration',
+    observation: ctx.observation,
     settle: (item) => {
       walkedRecoveryItems.push(item);
       return {

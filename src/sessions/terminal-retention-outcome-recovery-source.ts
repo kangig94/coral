@@ -1,3 +1,4 @@
+import type { RecoveryObservation } from '../recovery/phase-observation.js';
 import type { Database } from '../store/db.js';
 import type { EventsRow } from '../store/schema.js';
 import {
@@ -57,11 +58,16 @@ export function terminalRetentionOutcomeRecoverySource(
   db: Database,
   subject?: RecoverySubject,
   sessionId?: string,
+  observation?: RecoveryObservation,
 ): RecoverySource<RawTerminalRetentionOutcomeRow> {
   return defineRecoverySource({
     boundary: 'terminal-retention-outcome',
     scanSubject: subject ?? { key: 'terminal-retention-outcome-discovery', revision: { kind: 'until-cleared' } },
-    scan: () => scanTerminalRetentionOutcomeRows(db, subject?.key, sessionId),
+    scan: () => {
+      const rows = scanTerminalRetentionOutcomeRows(db, subject?.key, sessionId);
+      observation?.record('terminal-retention-outcome', { subjects: rows.length, reads: rows.length });
+      return rows;
+    },
     subject: (row) => ({ key: String(row.seq), revision: canonicalRecoveryRevision(eventRevisionFields(row)) }),
   });
 }

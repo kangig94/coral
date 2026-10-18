@@ -1,3 +1,4 @@
+import type { RecoveryObservation } from '../recovery/phase-observation.js';
 import { backendLog } from '../infra/backend-log.js';
 import { errorMessage } from '../infra/error-format.js';
 import type { TimePort, TimerHandle } from '../infra/port-types.js';
@@ -394,9 +395,16 @@ export class LifecycleReactor {
     this.scheduleDrain();
   };
 
-  async scanStartup(signal: AbortSignal): Promise<void> {
-    await this.runContainedRecovery(AbortSignal.any([this.lifetimeSignal, signal]));
-    await this.waitForIdle();
+  private startupObservation: RecoveryObservation | undefined;
+
+  async scanStartup(signal: AbortSignal, observation?: RecoveryObservation): Promise<void> {
+    this.startupObservation = observation;
+    try {
+      await this.runContainedRecovery(AbortSignal.any([this.lifetimeSignal, signal]));
+      await this.waitForIdle();
+    } finally {
+      this.startupObservation = undefined;
+    }
   }
 
   private runContainedRecovery(signal: AbortSignal): Promise<void> {
@@ -530,6 +538,7 @@ export class LifecycleReactor {
 
   private async performContainedRecovery(signal: AbortSignal): Promise<void> {
     const db = this.options.db();
+    const observation = this.startupObservation;
     const quarantine = new RecoveryQuarantineStore(db, this.options.time);
     const timerCandidates: SessionContinuationLeaseComponent[] = [];
     const policies = this.createRecoveryPolicies(quarantine, timerCandidates);
@@ -538,22 +547,25 @@ export class LifecycleReactor {
     this.containedRecoveryDepth += 1;
     try {
       await runSessionStartupRecovery({
-        sessions: { source: sessionProjectionRecoverySource(db), policy: { signal, quarantine, ...policies.sessions } },
+        sessions: {
+          source: sessionProjectionRecoverySource(db, undefined, undefined, observation),
+          policy: { signal, quarantine, ...policies.sessions },
+        },
         continuationLeases: {
-          source: sessionContinuationLeaseRecoverySource(db),
+          source: sessionContinuationLeaseRecoverySource(db, undefined, undefined, observation),
           policy: { signal, quarantine, ...policies.continuationLeases },
         },
         terminalOutcomes: {
-          source: terminalRetentionOutcomeRecoverySource(db),
+          source: terminalRetentionOutcomeRecoverySource(db, undefined, undefined, observation),
           policy: { signal, quarantine, ...policies.terminalOutcomes },
         },
         releasePairs: {
-          source: retentionReleasePairComponentSource(db),
+          source: retentionReleasePairComponentSource(db, undefined, undefined, observation),
           policy: { signal, quarantine, ...policies.releasePairs },
         },
         retentionWork: {
           settle: async (receipts) => {
-            await RecoveryContainment.each(retentionWorkItemRecoverySource(receipts), {
+            await RecoveryContainment.each(retentionWorkItemRecoverySource(receipts, undefined, observation), {
               signal,
               quarantine,
               ...policies.retentionWork,

@@ -1,3 +1,4 @@
+import { observeRecoveryPhase, startRecoveryPhase, type RecoveryObservation } from '../recovery/phase-observation.js';
 import type { ProgressSource } from '../jobs/wait/contract.js';
 import { visitJobProgress } from '../jobs/read-queries.js';
 import { renderWorkflowReport } from '../workflow/result-report.js';
@@ -146,81 +147,107 @@ function createCoordinatorStartupRecoveryRunner({
     },
     runCoordinatorStartupRecovery,
   ) => {
+    const phaseOptions = (phase: string) => ({
+      time: runtime.time,
+      log: identity.log,
+      bootId: identity.instanceId,
+      phase,
+    });
     const runJobsStartup = createJobsStartupRunner(runCoordinatorStartupRecovery);
     const db = getStoreDb();
     const driver = getConsumerDriver();
     const activeEpoch = activeStoreEpoch();
     if (activeEpoch === null) throw new Error('Job recovery requires an active store epoch');
-    recoverJobLocations(jobLocations, encodeResolvedStoreEpoch(runtime, activeEpoch), progressStore);
+    const locations = startRecoveryPhase(phaseOptions('job-locations'));
+    try {
+      recoverJobLocations(jobLocations, encodeResolvedStoreEpoch(runtime, activeEpoch), progressStore, locations);
+      locations.finish();
+    } catch (error: unknown) {
+      locations.finish('failed');
+      throw error;
+    }
 
     registerBaseJournalCursors(driver);
     signal.throwIfAborted();
 
     const currentMaxSeq = getCurrentJournalSeq();
     driver.notify('journal', currentMaxSeq);
-    await awaitRecoveryCursorBarrier(driver, currentMaxSeq, bootFreshnessTimeoutMs);
+    await observeRecoveryPhase(phaseOptions('journal-barrier'), async () => {
+      await awaitRecoveryCursorBarrier(driver, currentMaxSeq, bootFreshnessTimeoutMs);
+    });
     signal.throwIfAborted();
 
-    const jobsStartup = await runJobsStartup({
-      namespace: identity.namespace,
-      bundleHash: identity.bundleHash,
-      runtime,
-      progressStore,
-      providerRegistry,
-      getRecoveryService,
-      createInvocationContext,
-      signal,
-      log: identity.log,
-      coordinatorCommit,
-      ...(transferredJobIds === undefined ? {} : { transferredJobIds }),
-    });
+    const jobsStartup = await observeRecoveryPhase(phaseOptions('jobs-startup'), async (observation) =>
+      runJobsStartup({
+        observation,
+        namespace: identity.namespace,
+        bundleHash: identity.bundleHash,
+        runtime,
+        progressStore,
+        providerRegistry,
+        getRecoveryService,
+        createInvocationContext,
+        signal,
+        log: identity.log,
+        coordinatorCommit,
+        ...(transferredJobIds === undefined ? {} : { transferredJobIds }),
+      }),
+    );
     const recoveryProgressStore = jobsStartup.progressStore;
     signal.throwIfAborted();
 
-    await recoverPersistedDiscussFn({
-      knownDiscussSources,
-      getDiscussStoreForSource,
-      getDiscussContext,
-      createInvocationContext,
-      signal,
-    });
+    await observeRecoveryPhase(phaseOptions('discussion'), async (observation) =>
+      recoverPersistedDiscussFn({
+        observation,
+        knownDiscussSources,
+        getDiscussStoreForSource,
+        getDiscussContext,
+        createInvocationContext,
+        signal,
+      }),
+    );
     signal.throwIfAborted();
 
-    await workflowRecover.recoverAll({
-      db,
-      progressStore: recoveryProgressStore,
-      clearContinuationLease: (projectRoot, input) =>
-        SessionManager.forProduction(
-          projectRoot,
+    await observeRecoveryPhase(phaseOptions('workflow'), async (observation) =>
+      workflowRecover.recoverAll({
+        observation,
+        db,
+        progressStore: recoveryProgressStore,
+        clearContinuationLease: (projectRoot, input) =>
+          SessionManager.forProduction(
+            projectRoot,
+            runtime,
+            coordinatorCommit,
+            (payload) => eventBus.emit('session:released', payload),
+            { db },
+          ).clearContinuationLease(input),
+        finalizeWorkflow: createWorkflowRecoveryFinalizer({
+          runtime,
+          progressStore,
+          coordinatorCommit,
+          log: identity.log,
+        }),
+        releaseFailedWorkflowDescendants: createFailedWorkflowDescendantReleaser({
+          progressStore: recoveryProgressStore,
           runtime,
           coordinatorCommit,
-          (payload) => eventBus.emit('session:released', payload),
-          { db },
-        ).clearContinuationLease(input),
-      finalizeWorkflow: createWorkflowRecoveryFinalizer({
-        runtime,
-        progressStore,
-        coordinatorCommit,
+          getExecutionService,
+          createInvocationContext,
+          releaseAdoptedJob: recoveryCoordinator.releaseAdoptedJob,
+          emitSessionReleased: (payload) => eventBus.emit('session:released', payload),
+          log: identity.log,
+        }),
+        signal,
         log: identity.log,
+        ids: runtime.ids,
+        time: runtime.time,
       }),
-      releaseFailedWorkflowDescendants: createFailedWorkflowDescendantReleaser({
-        progressStore: recoveryProgressStore,
-        runtime,
-        coordinatorCommit,
-        getExecutionService,
-        createInvocationContext,
-        releaseAdoptedJob: recoveryCoordinator.releaseAdoptedJob,
-        emitSessionReleased: (payload) => eventBus.emit('session:released', payload),
-        log: identity.log,
-      }),
-      signal,
-      log: identity.log,
-      ids: runtime.ids,
-      time: runtime.time,
-    });
+    );
     signal.throwIfAborted();
 
-    await scanLifecycleReactorAtStartup(lifecycleReactor, lifecycleReactorLifetime, signal);
+    await observeRecoveryPhase(phaseOptions('reactor-scan'), async (observation) => {
+      await scanLifecycleReactorAtStartup(lifecycleReactor, lifecycleReactorLifetime, signal, observation);
+    });
     signal.throwIfAborted();
   };
 }
@@ -235,11 +262,12 @@ async function scanLifecycleReactorAtStartup(
   lifecycleReactor: ReturnType<typeof createLifecycleReactor>,
   lifecycleReactorLifetime: AbortController,
   signal: AbortSignal,
+  observation?: RecoveryObservation,
 ): Promise<void> {
   const abortReactorLifetime = () => lifecycleReactorLifetime.abort();
   signal.addEventListener('abort', abortReactorLifetime, { once: true });
   try {
-    await lifecycleReactor.scanStartup(signal);
+    await lifecycleReactor.scanStartup(signal, observation);
   } finally {
     signal.removeEventListener('abort', abortReactorLifetime);
   }

@@ -1,3 +1,4 @@
+import type { RecoveryObservation } from '../recovery/phase-observation.js';
 import { hasUnterminalRetentionDiscardRequest, type ProviderSession } from './entry.js';
 import { deriveProviderArtifactSourceRevision } from './provider-artifact-archive.js';
 import {
@@ -301,11 +302,16 @@ function scanRetentionWorkRows(
 export function retentionWorkItemRecoverySource(
   receipts: readonly RecoveryReceipt<P4RetentionComponent>[],
   subject?: RecoverySubject,
+  observation?: RecoveryObservation,
 ): RecoverySource<RawRetentionWorkItem> {
   return defineCompositeRecoverySource(receipts, {
     boundary: RETENTION_WORK_BOUNDARY,
     scanSubject: subject ?? { key: 'session-retention-work-composition', revision: { kind: 'until-cleared' } },
-    scan: (values) => scanRetentionWorkRows(composeRetentionWorkItemReceipts(values), subject?.key),
+    scan: (values) => {
+      const rows = scanRetentionWorkRows(composeRetentionWorkItemReceipts(values), subject?.key);
+      observation?.record('session-retention-work', { subjects: rows.length, reads: 0 });
+      return rows;
+    },
     subject: (raw) => raw.subject,
   });
 }

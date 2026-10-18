@@ -1,3 +1,4 @@
+import type { RecoveryObservation } from '../../recovery/phase-observation.js';
 import type { Database } from '../../store/db.js';
 import {
   canonicalRecoveryRevision,
@@ -40,6 +41,7 @@ function scanDiscussionSourceRows(db: Database, subjectKey?: string): readonly R
 export function discussionSourceRecoverySource(
   db: Database,
   subject?: RecoverySubject,
+  observation?: RecoveryObservation,
 ): RecoverySource<RawDiscussionSourceRow> {
   return defineRecoverySource({
     boundary: 'discussion-source',
@@ -47,7 +49,11 @@ export function discussionSourceRecoverySource(
       key: 'discussion-source-discovery',
       revision: { kind: 'until-cleared' },
     },
-    scan: () => scanDiscussionSourceRows(db, subject?.key),
+    scan: () => {
+      const rows = scanDiscussionSourceRows(db, subject?.key);
+      observation?.record('discussion-source', { subjects: rows.length, reads: rows.length });
+      return rows;
+    },
     subject: (row) => ({
       key: row.discuss_id,
       revision: canonicalRecoveryRevision([

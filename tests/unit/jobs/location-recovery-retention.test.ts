@@ -30,7 +30,9 @@ it('recovers terminals without loading progress and writes nothing on an unchang
     durationMs: 1,
   });
   const read = vi.spyOn(f.store, 'readJobEvents');
-  recoverJobLocations(index, 'epoch', f.store);
+  const record = vi.fn();
+  recoverJobLocations(index, 'epoch', f.store, { record });
+  expect(record).toHaveBeenCalledWith('job-launches', { subjects: 2, reads: 2 });
   expect(read).toHaveBeenCalledWith('terminal', true);
   expect(read).toHaveBeenCalledWith('live');
   expect(index.read('terminal')?.detail).toMatchObject({ kind: 'recorded', value: { events: [{ type: 'terminal' }] } });

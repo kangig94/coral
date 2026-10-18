@@ -1,3 +1,4 @@
+import type { RecoveryObservation } from '../../../recovery/phase-observation.js';
 import { ZodError } from 'zod';
 
 import { errorMessage } from '../../../infra/error-format.js';
@@ -40,6 +41,7 @@ export type CoordinatorRecoveryControls = {
 };
 
 export type CoordinatorWalkOptions = {
+  observation?: RecoveryObservation;
   subjectKey?: string;
   signal: AbortSignal;
   coordinatorCommit: CommitEventsFn;
@@ -219,7 +221,9 @@ export function createRecoveryWalk(
     eventBus: JobEventBus;
     log(message: string): void;
     quarantine: RecoveryQuarantineStore;
-    source(options: Readonly<{ subjectKey?: string }>): RecoverySource<RawCoordinatorJobRecoveryEnvelope>;
+    source(
+      options: Readonly<{ subjectKey?: string; observation?: RecoveryObservation }>,
+    ): RecoverySource<RawCoordinatorJobRecoveryEnvelope>;
     settleCoordinatorRecoveryItem(
       item: CoordinatorRecoveryItem,
       options: CoordinatorSettlementOptions,
@@ -311,6 +315,7 @@ export function createRecoveryWalk(
     const messages: string[] = [];
     const report = await runCoordinatorJobRecovery({
       source: source({
+        observation: options.observation,
         ...(options.subjectKey === undefined ? {} : { subjectKey: options.subjectKey }),
       }),
       policy: {

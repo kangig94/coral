@@ -1,3 +1,4 @@
+import type { RecoveryObservation } from '../recovery/phase-observation.js';
 import type { Database } from '../store/db.js';
 import {
   canonicalRecoveryRevision,
@@ -55,11 +56,16 @@ export function sessionContinuationLeaseRecoverySource(
   db: Database,
   subject?: RecoverySubject,
   subjectKey?: string,
+  observation?: RecoveryObservation,
 ): RecoverySource<RawPendingContinuationLeaseRow> {
   return defineRecoverySource({
     boundary: 'session-continuation-lease',
     scanSubject: subject ?? { key: 'session-continuation-lease-discovery', revision: { kind: 'until-cleared' } },
-    scan: () => scanPendingContinuationLeaseRows(db, subject?.key ?? subjectKey),
+    scan: () => {
+      const rows = scanPendingContinuationLeaseRows(db, subject?.key ?? subjectKey);
+      observation?.record('session-continuation-lease', { subjects: rows.length, reads: rows.length });
+      return rows;
+    },
     subject: pendingLeaseSubject,
   });
 }

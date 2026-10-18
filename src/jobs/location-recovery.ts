@@ -1,3 +1,4 @@
+import type { RecoveryObservation } from '../recovery/phase-observation.js';
 import { withImmediate, type Database } from '../store/db.js';
 import type { JobProgressStore } from './contracts/job-store.js';
 import { isTerminalPhase } from './phase.js';
@@ -13,7 +14,12 @@ type LaunchIdentityRow = {
   body: Uint8Array;
 };
 
-function retireUncommittedLaunches(index: JobLocationIndex, epochKey: string, db: Database): void {
+function retireUncommittedLaunches(
+  index: JobLocationIndex,
+  epochKey: string,
+  db: Database,
+  observation?: RecoveryObservation,
+): void {
   try {
     withImmediate(db, () => {
       const launched = new Set(
@@ -24,7 +30,10 @@ function retireUncommittedLaunches(index: JobLocationIndex, epochKey: string, db
           .all()
           .map((row) => row.stream_id),
       );
-      for (const location of index.locationsFor(epochKey)) {
+      observation?.record('uncommitted-launches', { reads: launched.size });
+      const locations = index.locationsFor(epochKey);
+      observation?.record('uncommitted-launches', { subjects: locations.length, reads: locations.length });
+      for (const location of locations) {
         if (!launched.has(location.jobId)) index.retireNeverAccepted(location.jobId, epochKey);
       }
     });
@@ -33,12 +42,18 @@ function retireUncommittedLaunches(index: JobLocationIndex, epochKey: string, db
   }
 }
 
-export function recoverJobLocations(index: JobLocationIndex, epochKey: string, store: JobProgressStore): void {
+/** Retirement callers must retain synchronous recovery and certification. */
+export function recoverJobLocations(
+  index: JobLocationIndex,
+  epochKey: string,
+  store: JobProgressStore,
+  observation?: RecoveryObservation,
+): void {
   try {
     const db = store.getDb();
     if ('configureResultExports' in store && typeof store.configureResultExports === 'function')
       store.configureResultExports(index);
-    retireUncommittedLaunches(index, epochKey, db);
+    retireUncommittedLaunches(index, epochKey, db, observation);
     const launches = db
       .prepare<[], LaunchIdentityRow>(
         `SELECT stream_id, body
@@ -47,9 +62,11 @@ export function recoverJobLocations(index: JobLocationIndex, epochKey: string, s
         ORDER BY seq ASC`,
       )
       .all();
+    observation?.record('job-launches', { subjects: launches.length, reads: launches.length });
     const highWaterSeq =
       db.prepare<[], { seq: number }>("SELECT COALESCE(MAX(seq), 0) AS seq FROM events WHERE stream_kind = 'job'").get()
         ?.seq ?? 0;
+    observation?.record('job-high-water', { reads: 1 });
     let recoveryError: Error | undefined;
     for (const row of launches) {
       try {
@@ -61,15 +78,18 @@ export function recoverJobLocations(index: JobLocationIndex, epochKey: string, s
         });
 
         const detail = store.loadJobProjectionDetail(row.stream_id);
+        observation?.record('job-details', { reads: detail.status === null ? 0 : 1 });
         const status = detail.status;
         if (status === null) {
           index.markUnresolved(row.stream_id);
           continue;
         }
         if (!isTerminalPhase(status.phase)) {
+          const events = store.readJobEvents(row.stream_id);
+          observation?.record('job-events', { reads: events.length });
           index.recordObserved(row.stream_id, {
             status,
-            events: store.readJobEvents(row.stream_id),
+            events,
             readiness: deriveLaunchReadiness(detail),
             exit: detail.exit,
           });
@@ -77,6 +97,7 @@ export function recoverJobLocations(index: JobLocationIndex, epochKey: string, s
           continue;
         }
         const events = store.readJobEvents(row.stream_id, true);
+        observation?.record('job-events', { reads: events.length });
         const terminal = [...events].reverse().find((event) => event.type === 'terminal');
         if (terminal === undefined || detail.exit === null) {
           index.markUnresolved(row.stream_id);
@@ -113,7 +134,9 @@ export function recoverJobLocations(index: JobLocationIndex, epochKey: string, s
     void index.certify(epochKey, highWaterSeq);
   } catch (error: unknown) {
     index.holdUnknownLocations(epochKey, error instanceof Error ? error.message : String(error), true);
-    for (const location of index.locationsFor(epochKey)) index.markUnresolved(location.jobId);
+    const locations = index.locationsFor(epochKey);
+    observation?.record('failed-locations', { reads: locations.length });
+    for (const location of locations) index.markUnresolved(location.jobId);
     throw error;
   }
 }

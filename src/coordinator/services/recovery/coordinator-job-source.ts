@@ -1,3 +1,4 @@
+import type { RecoveryObservation } from '../../../recovery/phase-observation.js';
 import { PROJECTION_JOB_COLUMNS, type ProjectionJobStoredRow } from '../../../jobs/projection-row.js';
 import { sha256Hex } from '../../../infra/hash.js';
 import type { Database } from '../../../store/db.js';
@@ -51,6 +52,7 @@ export type RawCoordinatorJobRecoveryEnvelope = CoordinatorJobRecoveryFacts & {
 function scanCoordinatorJobRecoveryEnvelopes(
   db: Database,
   subjectKey?: string,
+  observation?: RecoveryObservation,
 ): readonly RawCoordinatorJobRecoveryEnvelope[] {
   return withConsistentRead(db, () => {
     const projections =
@@ -70,6 +72,7 @@ function scanCoordinatorJobRecoveryEnvelopes(
               ORDER BY job_id ASC`,
             )
             .all(subjectKey);
+    observation?.record(COORDINATOR_JOB_RECOVERY_BOUNDARY, { reads: projections.length });
     const readStatusEvents = db.prepare<[string], EventsRow>(
       `SELECT ${EVENT_COLUMNS}
          FROM events
@@ -99,14 +102,20 @@ function scanCoordinatorJobRecoveryEnvelopes(
         ORDER BY key ASC`,
     );
 
-    const jobEnvelopes = projections.map((projection) => ({
-      jobId: projection.job_id,
-      projection,
-      statusEvents: readStatusEvents.all(projection.job_id),
-      claimedSession: projection.session_id === null ? null : (readClaimedSession.get(projection.session_id) ?? null),
-      providerOperations: readProviderOperations.all(`${providerOperationRecordKeyPrefix(projection.job_id)}%`),
-    }));
-    const orphanedClaims = db
+    const jobEnvelopes = projections.map((projection) => {
+      const facts = {
+        jobId: projection.job_id,
+        projection,
+        statusEvents: readStatusEvents.all(projection.job_id),
+        claimedSession: projection.session_id === null ? null : (readClaimedSession.get(projection.session_id) ?? null),
+        providerOperations: readProviderOperations.all(`${providerOperationRecordKeyPrefix(projection.job_id)}%`),
+      };
+      observation?.record(COORDINATOR_JOB_RECOVERY_BOUNDARY, {
+        reads: facts.statusEvents.length + (facts.claimedSession === null ? 0 : 1) + facts.providerOperations.length,
+      });
+      return facts;
+    });
+    const orphanedClaimRows = db
       .prepare<[], RawCoordinatorSessionRow & { active_job_id: string }>(
         `SELECT ${PROJECTION_SESSION_COLUMNS}, json_extract(entry, '$.activeJobId') AS active_job_id
            FROM projection_sessions AS sessions
@@ -120,7 +129,9 @@ function scanCoordinatorJobRecoveryEnvelopes(
             )
           ORDER BY active_job_id ASC`,
       )
-      .all()
+      .all();
+    observation?.record(COORDINATOR_JOB_RECOVERY_BOUNDARY, { reads: orphanedClaimRows.length });
+    const orphanedClaims = orphanedClaimRows
       .filter((row) => subjectKey === undefined || row.active_job_id === subjectKey)
       .map(({ active_job_id: jobId, ...claimedSession }) => ({
         jobId,
@@ -129,6 +140,10 @@ function scanCoordinatorJobRecoveryEnvelopes(
         claimedSession,
         providerOperations: readProviderOperations.all(`${providerOperationRecordKeyPrefix(jobId)}%`),
       }));
+    observation?.record(COORDINATOR_JOB_RECOVERY_BOUNDARY, {
+      subjects: jobEnvelopes.length + orphanedClaims.length,
+      reads: orphanedClaims.reduce((count, row) => count + row.providerOperations.length, 0),
+    });
     return [...jobEnvelopes, ...orphanedClaims].map((facts) => ({
       ...facts,
       subject: coordinatorJobRecoverySubject(facts),
@@ -166,7 +181,7 @@ function coordinatorJobRecoverySubject(raw: CoordinatorJobRecoveryFacts): Recove
 
 export function coordinatorJobRecoverySource(
   db: Database,
-  options: Readonly<{ subjectKey?: string; subject?: RecoverySubject }> = {},
+  options: Readonly<{ subjectKey?: string; subject?: RecoverySubject; observation?: RecoveryObservation }> = {},
 ): RecoverySource<RawCoordinatorJobRecoveryEnvelope> {
   return defineRecoverySource({
     boundary: COORDINATOR_JOB_RECOVERY_BOUNDARY,
@@ -174,7 +189,8 @@ export function coordinatorJobRecoverySource(
       key: options.subjectKey ?? `${COORDINATOR_JOB_RECOVERY_BOUNDARY}-discovery`,
       revision: { kind: 'until-cleared' },
     },
-    scan: () => scanCoordinatorJobRecoveryEnvelopes(db, options.subject?.key ?? options.subjectKey),
+    scan: () =>
+      scanCoordinatorJobRecoveryEnvelopes(db, options.subject?.key ?? options.subjectKey, options.observation),
     subject: (raw) => raw.subject,
   });
 }

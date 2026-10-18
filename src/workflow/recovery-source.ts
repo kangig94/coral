@@ -1,3 +1,4 @@
+import type { RecoveryObservation } from '../recovery/phase-observation.js';
 import { PROJECTION_JOB_COLUMNS, type ProjectionJobStoredRow } from '../jobs/projection-row.js';
 import type { Database } from '../store/db.js';
 import { sqlPlaceholders } from '../store/db.js';
@@ -89,7 +90,11 @@ function envelopeRevisionFields(raw: Omit<RawWorkflowRecoveryEnvelope, 'sourceRe
   return fields;
 }
 
-function readWorkflowEnvelope(db: Database, projection: ProjectionJobStoredRow): RawWorkflowRecoveryEnvelope {
+function readWorkflowEnvelope(
+  db: Database,
+  projection: ProjectionJobStoredRow,
+  observation?: RecoveryObservation,
+): RawWorkflowRecoveryEnvelope {
   const workflowId = projection.job_id;
   const workflow =
     db
@@ -157,6 +162,16 @@ function readWorkflowEnvelope(db: Database, projection: ProjectionJobStoredRow):
     sessionEvents: readEvents(db, 'session', sessionIds),
     continuation,
   };
+  observation?.record(WORKFLOW_RECOVERY_BOUNDARY, {
+    reads:
+      (workflow === null ? 0 : 1) +
+      childProjections.length +
+      jobEvents.length +
+      providerSessions.length +
+      raw.workflowEvents.length +
+      raw.sessionEvents.length +
+      (continuation === null ? 0 : 1),
+  });
   const fields = envelopeRevisionFields(raw);
   const sourceRevision = canonicalRecoveryRevision(fields);
   if (sourceRevision.kind !== 'fingerprint') {
@@ -175,7 +190,11 @@ function readWorkflowEnvelope(db: Database, projection: ProjectionJobStoredRow):
   };
 }
 
-function scanWorkflowRecoveryEnvelopes(db: Database, subjectKey?: string): readonly RawWorkflowRecoveryEnvelope[] {
+function scanWorkflowRecoveryEnvelopes(
+  db: Database,
+  subjectKey?: string,
+  observation?: RecoveryObservation,
+): readonly RawWorkflowRecoveryEnvelope[] {
   return withConsistentRead(db, () => {
     const projections =
       subjectKey === undefined
@@ -197,18 +216,20 @@ function scanWorkflowRecoveryEnvelopes(db: Database, subjectKey?: string): reado
                   AND job_id = ?`,
             )
             .all(subjectKey);
-    return projections.map((projection) => readWorkflowEnvelope(db, projection));
+    observation?.record(WORKFLOW_RECOVERY_BOUNDARY, { subjects: projections.length, reads: projections.length });
+    return projections.map((projection) => readWorkflowEnvelope(db, projection, observation));
   });
 }
 
 export function workflowRecoverySource(
   db: Database,
   subject?: RecoverySubject,
+  observation?: RecoveryObservation,
 ): RecoverySource<RawWorkflowRecoveryEnvelope> {
   return defineRecoverySource({
     boundary: WORKFLOW_RECOVERY_BOUNDARY,
     scanSubject: subject ?? { key: 'workflow-recovery-discovery', revision: { kind: 'until-cleared' } },
-    scan: () => scanWorkflowRecoveryEnvelopes(db, subject?.key),
+    scan: () => scanWorkflowRecoveryEnvelopes(db, subject?.key, observation),
     subject: (raw) => raw.subject,
   });
 }

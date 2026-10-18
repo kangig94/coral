@@ -1,3 +1,4 @@
+import { observeRecoveryPhase, startRecoveryPhase, type RecoveryObservation } from '../recovery/phase-observation.js';
 import { sameEpoch } from '../store/epoch/identity.js';
 import { renderWorkflowReport } from '../workflow/result-report.js';
 import { removeTreeNoFollowSync, type TreeRemovalStorage } from '../infra/remove-tree.js';
@@ -939,6 +940,7 @@ export async function listen(
 export type RegisterBuiltInProvidersFn = (providerRegistry: ProviderRegistry) => void;
 
 export type RecoverPersistedDiscussDeps = {
+  readonly observation?: RecoveryObservation;
   readonly knownDiscussSources: () => Set<string>;
   readonly getDiscussStoreForSource: (source: string) => DiscussSessionStore;
   readonly getDiscussContext: (ctx: InvocationContext) => DiscussContext;
@@ -2381,15 +2383,19 @@ async function runStartupKernel(
       return ABANDONED_COMMITTED_RECOVERY;
     }
   };
-  const opened = await openSelectedStartupStore({
-    deps,
-    prepared,
-    selected,
-    interposition,
-    signal,
-    committedRecoveryStep,
-    committedRecovery: committedState.recovery,
-  });
+  const opened = await observeRecoveryPhase(
+    { time: runtime.time, log: deps.identity.log, bootId: instanceId, phase: 'store-open' },
+    async () =>
+      openSelectedStartupStore({
+        deps,
+        prepared,
+        selected,
+        interposition,
+        signal,
+        committedRecoveryStep,
+        committedRecovery: committedState.recovery,
+      }),
+  );
   const registered = await registerStartupStoreServices({
     deps,
     state,
@@ -2516,26 +2522,30 @@ async function runStartupRecoveryAndServe(
   startProviderOperationReconciler?.();
   if (deps.startStorageRetentionFn === undefined) await Promise.resolve(cleanupStaleJobsFn(bundleHash, signal));
   signal.throwIfAborted();
-  await publishStartupServing({
-    deps,
-    address,
-    legacyDiscovery,
-    signal,
-    interposition,
-    successionAttemptChild,
-    currentBuild,
-    storeDb,
-    openedStore,
-    successionGeneration,
-    recoveryGeneration,
-    recoveryIncarnation,
-    committedRecovery: committedState.recovery,
-    acceptedSuccessionPreparation,
-    shouldScheduleStoreEpochSweep,
-    publishDiscovery,
-    publishLegacyDiscovery,
-    legacySupervisedChild,
-  });
+  await observeRecoveryPhase(
+    { time: runtime.time, log: deps.identity.log, bootId: deps.identity.instanceId, phase: 'serving' },
+    async () =>
+      publishStartupServing({
+        deps,
+        address,
+        legacyDiscovery,
+        signal,
+        interposition,
+        successionAttemptChild,
+        currentBuild,
+        storeDb,
+        openedStore,
+        successionGeneration,
+        recoveryGeneration,
+        recoveryIncarnation,
+        committedRecovery: committedState.recovery,
+        acceptedSuccessionPreparation,
+        shouldScheduleStoreEpochSweep,
+        publishDiscovery,
+        publishLegacyDiscovery,
+        legacySupervisedChild,
+      }),
+  );
   deps.startStorageRetentionFn?.();
   if (runtimeState.getLaunchFenceActive()) {
     runtimeState.setLaunchFenceActive(false);
@@ -2560,6 +2570,7 @@ async function runLifecycleStartup({
   if (state.started || runtimeState.getLifecycle() !== 'starting') {
     throw new Error('Backend server already started');
   }
+  const boot = startRecoveryPhase({ time: runtime.time, log: identity.log, bootId: instanceId, phase: 'boot' });
   const interposition = deps.successionInterposition ?? NO_SUCCESSION_INTERPOSITION;
 
   const startupAbort = new AbortController();
@@ -2592,22 +2603,30 @@ async function runLifecycleStartup({
   });
 
   try {
-    const kernel = await runStartupKernel(
-      { deps, runStartupRecovery, state, createInvocationContext, ownershipChecker, shutdown },
-      signal,
-      address,
-      legacyDiscovery,
-      interposition,
-      replaceStoreServices,
+    const kernel = await observeRecoveryPhase(
+      { time: runtime.time, log: identity.log, bootId: instanceId, phase: 'kernel' },
+      async () =>
+        runStartupKernel(
+          { deps, runStartupRecovery, state, createInvocationContext, ownershipChecker, shutdown },
+          signal,
+          address,
+          legacyDiscovery,
+          interposition,
+          replaceStoreServices,
+        ),
     );
     publishLegacyDiscovery = kernel.publishLegacyDiscovery;
-    await runStartupRecoveryAndServe(
-      { deps, runStartupRecovery, state, createInvocationContext, ownershipChecker, shutdown },
-      kernel,
-      signal,
-      address,
-      legacyDiscovery,
-      interposition,
+    await observeRecoveryPhase(
+      { time: runtime.time, log: identity.log, bootId: instanceId, phase: 'recovery-and-serve' },
+      async () =>
+        runStartupRecoveryAndServe(
+          { deps, runStartupRecovery, state, createInvocationContext, ownershipChecker, shutdown },
+          kernel,
+          signal,
+          address,
+          legacyDiscovery,
+          interposition,
+        ),
     );
     const { registered, recoveryCoordinator, progressStore } = kernel;
     const { openedStore, storeServices } = registered;
@@ -2626,8 +2645,10 @@ async function runLifecycleStartup({
       publishLegacyDiscovery,
     });
 
+    boot.finish();
     return serverInfo();
   } catch (error: unknown) {
+    boot.finish('failed');
     return await settleFailedLifecycleStartup(
       { deps, runStartupRecovery, state, createInvocationContext, ownershipChecker, shutdown },
       error,

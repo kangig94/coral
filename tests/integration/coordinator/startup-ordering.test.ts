@@ -15,6 +15,7 @@ import { providerSessionSchema } from '#src/sessions/entry.js';
 import { TEST_CODEX_BINDING } from '#tests/helpers/provider-credentials.js';
 
 import { LifecycleReactor } from '#src/sessions/lifecycle-reactor.js';
+import * as sessionProjectionRecovery from '#src/sessions/projection-recovery-source.js';
 import { ExecutionService } from '#src/coordinator/execution-service.js';
 import { RecoveryService } from '#src/coordinator/services/recovery/service.js';
 import { LaunchOrchestrator } from '#src/jobs/shell/launch.js';
@@ -325,6 +326,7 @@ describe('coordinator pending workflow replacement recovery', () => {
     const sessionId = 'pending-replacement-session';
     let startupOptions: JobsStartupContext | undefined;
     const order: string[] = [];
+    const phaseLines: string[] = [];
     vi.spyOn(jobsStartup, 'createJobsStartupRunner').mockReturnValue(async (options) => {
       startupOptions = options;
       const plan = buildWorkflowPlan(workflowId, parseExpression('architect'), { defaultProvider: 'codex' });
@@ -412,10 +414,12 @@ describe('coordinator pending workflow replacement recovery', () => {
       order.push('jobs-recovered');
       return { kind: 'complete', progressStore: options.progressStore } as const;
     });
+    const sessionScans = vi.spyOn(sessionProjectionRecovery, 'sessionProjectionRecoverySource');
     const scanStartup = LifecycleReactor.prototype.scanStartup;
     const scan = vi.spyOn(LifecycleReactor.prototype, 'scanStartup').mockImplementation(async function (
       this: LifecycleReactor,
       signal,
+      observation,
     ) {
       if (startupOptions === undefined) throw new Error('Expected jobs startup before lifecycle scan.');
       const row = startupOptions.progressStore
@@ -426,7 +430,7 @@ describe('coordinator pending workflow replacement recovery', () => {
       expect(entry.continuationLease).toMatchObject({ status: 'cleared', outcome: 'explicit_clear' });
       expect(startupOptions.progressStore.readStatus(workflowId)?.phase).toBe('error');
       order.push('lifecycle-scan');
-      await scanStartup.call(this, signal);
+      await scanStartup.call(this, signal, observation);
     });
     const dispatch = vi.spyOn(ExecutionService.prototype, 'coralDispatch');
     const resume = vi.spyOn(ExecutionService.prototype, 'resume');
@@ -434,8 +438,17 @@ describe('coordinator pending workflow replacement recovery', () => {
       onFatalShutdownError: vi.fn(),
       runtime,
       pluginRoot,
+      bootSnapshot: {
+        log: (message) => {
+          if (!message.startsWith('recovery-phase ')) return;
+          phaseLines.push(message);
+          order.push(/ phase=(\S+) /.exec(message)?.[1] ?? 'invalid-phase');
+        },
+      },
       kbDaemonSupervisor: createMockKbDaemonSupervisor(),
-      recoverPersistedDiscussFn: async () => {},
+      recoverPersistedDiscussFn: async () => {
+        order.push('discussion-recovered');
+      },
       writeBackendInfoFn: () => true,
       removeBackendInfoIfOwnerFn: () => {},
       createServerFn: (handler) => createServer(handler),
@@ -443,9 +456,35 @@ describe('coordinator pending workflow replacement recovery', () => {
       closeServerFn: async () => {},
     });
     try {
-      await coordinator.start();
+      const info = await coordinator.start();
       expect(scan).toHaveBeenCalledOnce();
-      expect(order).toEqual(['jobs-recovered', 'lifecycle-scan']);
+      expect(order).toEqual([
+        'store-open',
+        'kernel',
+        'job-locations',
+        'journal-barrier',
+        'jobs-recovered',
+        'jobs-startup',
+        'discussion-recovered',
+        'discussion',
+        'workflow',
+        'lifecycle-scan',
+        'reactor-scan',
+        'serving',
+        'recovery-and-serve',
+        'boot',
+      ]);
+      expect(phaseLines).toHaveLength(11);
+      for (const line of phaseLines) {
+        expect(line).toMatch(
+          /^recovery-phase boot=\S+ kind=startup phase=\S+ event=finish outcome=complete duration_ms=\d+\.\d{3} subjects=\d+ reads=\d+ sources=\{.*\}\n$/,
+        );
+        expect(line).toContain(`boot=${info.instanceId} `);
+      }
+      expect(sessionScans.mock.calls.filter(([, , , observation]) => observation !== undefined)).toHaveLength(2);
+      expect(phaseLines.find((line) => line.includes(' phase=reactor-scan '))).toContain(
+        '"session-projection":{"subjects":2,"reads":2}',
+      );
       expect(dispatch).not.toHaveBeenCalled();
       expect(resume).not.toHaveBeenCalled();
     } finally {
