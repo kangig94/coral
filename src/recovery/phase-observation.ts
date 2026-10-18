@@ -15,6 +15,7 @@ export function startRecoveryPhase(options: {
   bootId: string;
   phase: string;
   kind?: 'startup' | 'background';
+  attempts?: number;
   completed?: (result: PhaseResult) => void;
 }): RecoveryPhaseObservation {
   const started = options.time.monotonicNow();
@@ -42,7 +43,7 @@ export function startRecoveryPhase(options: {
       finished = true;
       const durationMs = Number(options.time.monotonicNow() - started);
       if (options.completed !== undefined) {
-        options.completed({ durationMs, sources, outcome });
+        options.completed({ durationMs, sources, outcome, attempts: options.attempts ?? 0 });
         return;
       }
       const totals = Object.values(sources).reduce(
@@ -75,6 +76,7 @@ export async function observeRecoveryPhase<T>(
 
 type PhaseResult = {
   durationMs: number;
+  attempts: number;
   sources: Record<string, { subjects: number; reads: number }>;
   outcome: 'complete' | 'failed';
 };
@@ -96,10 +98,12 @@ export function createStartupPhaseObserver(options: {
       return {
         ...options,
         phase,
+        attempts: phase === 'store-open' ? 1 : 0,
         completed(result) {
           if (finished) return;
-          const total = phases.get(phase) ?? { durationMs: 0, sources: {}, outcome: result.outcome };
+          const total = phases.get(phase) ?? { durationMs: 0, attempts: 0, sources: {}, outcome: result.outcome };
           total.durationMs += result.durationMs;
+          total.attempts += result.attempts;
           total.outcome = result.outcome;
           for (const [source, counts] of Object.entries(result.sources)) {
             const current = total.sources[source] ?? { subjects: 0, reads: 0 };
@@ -122,8 +126,10 @@ export function createStartupPhaseObserver(options: {
         try {
           options.log(
             `recovery-phase boot=${options.bootId} kind=startup phase=${phase} event=finish outcome=${result.outcome}` +
-              ` duration_ms=${result.durationMs.toFixed(3)} subjects=${totals.subjects} reads=${totals.reads}` +
-              ` sources=${JSON.stringify(result.sources)}\n`,
+              ` duration_ms=${result.durationMs.toFixed(3)}` +
+              (phase === 'store-open'
+                ? ` attempts=${result.attempts}\n`
+                : ` subjects=${totals.subjects} reads=${totals.reads} sources=${JSON.stringify(result.sources)}\n`),
           );
         } catch {
           // Observability cannot select a recovery disposition.

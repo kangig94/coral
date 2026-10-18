@@ -1,6 +1,7 @@
 import type { RecoveryObservation } from '../recovery/phase-observation.js';
 import { withImmediate, type Database } from '../store/db.js';
 import type { JobProgressStore } from './contracts/job-store.js';
+import type { JobProjectionDetail } from './read-queries.js';
 import { isTerminalPhase } from './phase.js';
 import { deriveLaunchReadiness } from './launch-readiness.js';
 import { type JobLocationIndex } from './location-index.js';
@@ -37,7 +38,7 @@ function retireUncommittedLaunches(
       const locations = index.locationsFor(epochKey, observation);
       observation?.record('uncommitted-launches', { subjects: locations.length });
       for (const location of locations) {
-        if (!launched.has(location.jobId)) index.retireNeverAccepted(location.jobId, epochKey);
+        if (!launched.has(location.jobId)) index.retireNeverAccepted(location.jobId, epochKey, observation);
       }
     });
   } catch {
@@ -53,49 +54,70 @@ function recoverJobLocation(
   observation?: RecoveryObservation,
 ): void {
   const launch = jobLaunchRequestBodySchema.parse(JSON.parse(Buffer.from(row.body).toString('utf8')) as unknown);
-  index.register(row.stream_id, epochKey, {
-    projectRoot: launch.projectRoot,
-    workDir: launch.jobKind === 'kb' ? null : launch.request.cwd,
-    jobKind: launch.jobKind,
-  });
+  index.register(
+    row.stream_id,
+    epochKey,
+    {
+      projectRoot: launch.projectRoot,
+      workDir: launch.jobKind === 'kb' ? null : launch.request.cwd,
+      jobKind: launch.jobKind,
+    },
+    undefined,
+    observation,
+  );
 
   const detail = store.loadJobProjectionDetail(row.stream_id, observation);
   const status = detail.status;
   if (status === null) {
-    index.markUnresolved(row.stream_id);
+    index.markUnresolved(row.stream_id, observation);
     return;
   }
   if (!isTerminalPhase(status.phase)) {
     const events = store.readJobEvents(row.stream_id, false, 0, observation);
-    index.recordObserved(row.stream_id, {
-      status,
-      events,
-      readiness: deriveLaunchReadiness(detail),
-      exit: detail.exit,
-    });
-    index.markUnresolved(row.stream_id);
+    index.recordObserved(
+      row.stream_id,
+      {
+        status,
+        events,
+        readiness: deriveLaunchReadiness(detail),
+        exit: detail.exit,
+      },
+      observation,
+    );
+    index.markUnresolved(row.stream_id, observation);
     return;
   }
-  const events = store.readJobEvents(row.stream_id, true, 0, observation);
+  recoverTerminalLocation(index, store, row.stream_id, { ...detail, status }, observation);
+}
+
+function recoverTerminalLocation(
+  index: JobLocationIndex,
+  store: JobProgressStore,
+  jobId: string,
+  detail: JobProjectionDetail & { status: NonNullable<JobProjectionDetail['status']> },
+  observation?: RecoveryObservation,
+): void {
+  const events = store.readJobEvents(jobId, true, 0, observation);
   const terminal = [...events].reverse().find((event) => event.type === 'terminal');
   if (terminal === undefined || detail.exit === null) {
-    index.markUnresolved(row.stream_id);
+    index.markUnresolved(jobId, observation);
     return;
   }
-  const resultPath = index.resultPathFor(row.stream_id);
+  const resultPath = index.resultPathFor(jobId);
   index.recordTerminal(
-    row.stream_id,
+    jobId,
     {
-      status,
+      status: detail.status,
       events,
       readiness: deriveLaunchReadiness(detail),
       exit: detail.exit,
     },
     resultPath,
     terminal.seq,
+    observation,
   );
   try {
-    store.ensureResultArtifact(row.stream_id, observation);
+    store.ensureResultArtifact(jobId, observation);
   } catch {
     /* Terminal recording is independent of export success. */
   }
@@ -133,7 +155,7 @@ export function recoverJobLocations(
       } catch (error) {
         recoveryError ??= error instanceof Error ? error : new Error(String(error));
         try {
-          index.markUnresolved(row.stream_id);
+          index.markUnresolved(row.stream_id, observation);
         } catch {
           // A row whose own location cannot be marked is covered by the epoch hold; it must not stop later rows.
         }
@@ -145,7 +167,7 @@ export function recoverJobLocations(
   } catch (error: unknown) {
     index.holdUnknownLocations(epochKey, error instanceof Error ? error.message : String(error), true);
     const locations = index.locationsFor(epochKey, observation);
-    for (const location of locations) index.markUnresolved(location.jobId);
+    for (const location of locations) index.markUnresolved(location.jobId, observation);
     throw error;
   }
 }

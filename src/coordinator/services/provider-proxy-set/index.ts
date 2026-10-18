@@ -1,3 +1,4 @@
+import { startRecoveryPhase, type RecoveryObservation } from '../../../recovery/phase-observation.js';
 import { encodeProviderProxySetAddress, type ProviderProxySetAddress } from '../../../provider-proxy/set-address.js';
 import type { TimePort, TimerHandle } from '../../../infra/port-types.js';
 import type { ProcessIncarnation, RecordedProcessObserver } from '../../../infra/node-process.js';
@@ -732,9 +733,11 @@ export type ProviderProxySetLifecycleDeps = Readonly<{
   reapRecordedContainment: ProviderProxySetRecordedContainmentReaper;
   operatorDispositionStore: ProviderProxySetOperatorDispositionStore;
   writerIncarnation: string;
+  observation?: { bootId: string; log(message: string): void };
   collectOperatorDispositionContainmentProof(
     identity: ProviderProxySetIdentity,
     signal: AbortSignal,
+    observation?: RecoveryObservation,
   ): Promise<ProviderProxySetFencedContainmentProof>;
   reobserveAcquisitionContainment(
     subject: DurableProviderProxySetAcquisitionDispositionRecord['recoverySubject'],
@@ -1370,9 +1373,10 @@ export class ProviderProxySetLifecycle {
 
   async reconcileDurableOperatorDispositions(
     signal: AbortSignal = new AbortController().signal,
+    observation?: RecoveryObservation,
   ): Promise<DurableOperatorDispositionReconciliationSettlement> {
     const settlement = await settleDurableOperatorDispositionReconciliation(() =>
-      this.#performDurableOperatorDispositionReconciliation(signal),
+      this.#performDurableOperatorDispositionReconciliation(signal, observation),
     );
     if (settlement.kind === 'retry' && !signal.aborted) {
       this.#scheduleDurableOperatorDispositionReconciliation();
@@ -1399,7 +1403,10 @@ export class ProviderProxySetLifecycle {
     return settlement;
   }
 
-  async #performDurableOperatorDispositionReconciliation(signal: AbortSignal): Promise<void> {
+  async #performDurableOperatorDispositionReconciliation(
+    signal: AbortSignal,
+    recoveryObservation?: RecoveryObservation,
+  ): Promise<void> {
     this.#assertDurableOperatorDispositionAuthority();
     const collectProof = this.#deps.collectOperatorDispositionContainmentProof;
     const writerIncarnation = this.#deps.writerIncarnation;
@@ -1421,10 +1428,11 @@ export class ProviderProxySetLifecycle {
         const first = records[0];
         if (first === undefined) continue;
         const identity = first.setIdentity;
+        recoveryObservation?.record('provider-proxy-set-dispositions', { subjects: records.length });
         const observation = await reobserveDurableProviderProxySetDisposition({
           identity,
           signal,
-          collectProof,
+          collectProof: (identity, signal) => collectProof(identity, signal, recoveryObservation),
           reobserveContainment: (reobservedIdentity, proof, reobservationSignal) =>
             reobserveDurableProviderProxySetContainment({
               identity: reobservedIdentity,
@@ -1471,6 +1479,7 @@ export class ProviderProxySetLifecycle {
       for (const record of [...this.#durableAcquisitionDispositions.values()]) {
         if (record.status.kind !== 'stale' && record.status.kind !== 'successor-acquisition-observed') continue;
         signal.throwIfAborted();
+        recoveryObservation?.record('provider-proxy-acquisition-dispositions', { subjects: 1 });
         const observation = await reobserveDurableProviderProxyAcquisitionDisposition({
           subject: record.recoverySubject,
           signal,
@@ -1532,13 +1541,27 @@ export class ProviderProxySetLifecycle {
     ) {
       this.#durableReobservationTimer = this.#deps.time.setTimeout(() => {
         this.#durableReobservationTimer = null;
-        void this.reconcileDurableOperatorDispositions().then((settlement) => {
-          if (settlement.kind !== 'completed') {
-            this.#deps.onError?.(
-              `Durable provider proxy disposition scheduled reconciliation failed: ${settlement.reason}`,
-            );
-          }
+        const phase = startRecoveryPhase({
+          time: this.#deps.time,
+          log: this.#deps.observation?.log ?? ((message) => this.#deps.reportLifecycle('info', message)),
+          bootId: this.#deps.observation?.bootId ?? this.#deps.writerIncarnation,
+          kind: 'background',
+          phase: 'provider-proxy-set-disposition-reconciliation',
         });
+        void this.reconcileDurableOperatorDispositions(undefined, phase).then(
+          (settlement) => {
+            phase.finish(settlement.kind === 'completed' ? 'complete' : 'failed');
+            if (settlement.kind !== 'completed') {
+              this.#deps.onError?.(
+                `Durable provider proxy disposition scheduled reconciliation failed: ${settlement.reason}`,
+              );
+            }
+          },
+          (error: unknown) => {
+            phase.finish('failed');
+            throw error;
+          },
+        );
       }, REATTACHMENT_HOLD_RETRY_MS);
       this.#durableReobservationTimer.unref?.();
     }

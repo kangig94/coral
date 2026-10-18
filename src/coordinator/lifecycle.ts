@@ -1316,8 +1316,7 @@ async function openOrdinaryStore(
   const authorizeStartupMint = deps.authorizeStartupMint;
   let mintWithheld = false;
   const routeStore = () =>
-    observeRecoveryPhase(startupPhases.options('store-open'), async (observation) => {
-      observation.record('store-attempts', { subjects: 1 });
+    observeRecoveryPhase(startupPhases.options('store-open'), async () => {
       return routeOrOpenBackendStoreAtStartup({
         runtime,
         validateForeignTarget: validateForeignHandoffTarget,
@@ -1708,7 +1707,7 @@ async function openSelectedStartupStore({
     if (preinjectedStoreServices.storeDb.location() !== null) {
       throw new Error('Pre-injected lifecycle store must be non-filesystem-backed.');
     }
-    const reused = startRecoveryPhase(startupPhases.options('store-open'));
+    const reused = startRecoveryPhase({ ...startupPhases.options('store-open'), attempts: 0 });
     storeDb = preinjectedStoreServices.storeDb;
     reused.finish();
   } else {

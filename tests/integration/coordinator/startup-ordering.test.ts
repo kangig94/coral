@@ -548,7 +548,9 @@ describe('coordinator pending workflow replacement recovery', () => {
       expect(phaseLines).toHaveLength(11);
       for (const line of phaseLines) {
         expect(line).toMatch(
-          /^recovery-phase boot=\S+ kind=startup phase=\S+ event=finish outcome=complete duration_ms=\d+\.\d{3} subjects=\d+ reads=\d+ sources=\{.*\}\n$/,
+          line.includes(' phase=store-open ')
+            ? /^recovery-phase boot=\S+ kind=startup phase=store-open event=finish outcome=complete duration_ms=\d+\.\d{3} attempts=\d+\n$/
+            : /^recovery-phase boot=\S+ kind=startup phase=\S+ event=finish outcome=complete duration_ms=\d+\.\d{3} subjects=\d+ reads=\d+ sources=\{.*\}\n$/,
         );
         expect(line).toContain(`boot=${info.instanceId} `);
       }

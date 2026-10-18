@@ -156,7 +156,8 @@ describe('startup phase observations through lifecycle fallbacks', () => {
     });
     await f.coordinator.start();
     expect(phaseLines(f.logs, 'store-open')).toHaveLength(1);
-    expect(phaseLines(f.logs, 'store-open')[0]).toContain('duration_ms=18.000');
+    expect(phaseLines(f.logs, 'store-open')[0]).toContain('duration_ms=18.000 attempts=2\n');
+    expect(phaseLines(f.logs, 'store-open')[0]).not.toMatch(/subjects=|reads=|sources=/);
   });
 
   it('includes a preferred epoch opened during authority preparation', async () => {
@@ -178,7 +179,7 @@ describe('startup phase observations through lifecycle fallbacks', () => {
     });
     await f.coordinator.start();
     expect(phaseLines(f.logs, 'store-open')).toHaveLength(1);
-    expect(phaseLines(f.logs, 'store-open')[0]).toContain('duration_ms=17.000');
+    expect(phaseLines(f.logs, 'store-open')[0]).toContain('duration_ms=17.000 attempts=1\n');
   });
 
   it('reports a completed boot when legacy serving settlement retains its listeners', async () => {

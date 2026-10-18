@@ -1,3 +1,4 @@
+import type { RecoveryObservation } from '../../recovery/phase-observation.js';
 import { z } from 'zod';
 
 import type { StrictBundleIdentityFailure } from '../../infra/bundle-manifest.js';
@@ -2282,6 +2283,7 @@ export async function reconcileHandoffRoutingStatus(
   runtime: Runtime,
   path: string,
   signal: AbortSignal,
+  observation?: RecoveryObservation,
 ): Promise<readonly HandoffRoutingResolveResult[]> {
   const observationDeadline = runtime.time.monotonicNow() + BigInt(MAX_HANDOFF_ROUTING_OWNER_SWEEP_MS);
   const budget = new AbortController();
@@ -2290,6 +2292,8 @@ export async function reconcileHandoffRoutingStatus(
   try {
     const statusRead = await readHandoffRoutingStatusWithOwnerObservations(runtime, path);
     if (statusRead.kind !== 'current') return [];
+    // Routing status metadata is outside the journal/projection and location-read counters.
+    observation?.record('handoff-routing-statuses', { subjects: statusRead.statuses.length });
     const outcomes: HandoffRoutingResolveResult[] = [];
     for (const status of statusRead.statuses) {
       if (boundedSignal.aborted || runtime.time.monotonicNow() >= observationDeadline) break;

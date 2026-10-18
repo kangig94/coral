@@ -180,7 +180,7 @@ export class TerminalResultExportOwner {
   private readonly input: Readonly<{
     runtime: Pick<Runtime, 'storage' | 'paths' | 'time' | 'env'>;
     jobsRoot: string;
-    location(jobId: string): JobLocation | null;
+    location(jobId: string, observation?: RecoveryObservation): JobLocation | null;
     withSource<T>(
       jobId: string,
       read: (db: Database, ctx: StoreReadContext) => T,
@@ -273,7 +273,7 @@ export class TerminalResultExportOwner {
 
   /** Availability is observed, never repaired: it checks the file and the job's own source, and writes nothing. */
   observeResultAvailability(jobId: string, observation?: RecoveryObservation): ResultAvailability {
-    const location = this.input.location(jobId);
+    const location = this.input.location(jobId, observation);
     if (!location || !hasReadableTerminalDetail(location))
       return this.uncaptured.has(jobId) && this.input.hydrationRetry?.(jobId) !== true
         ? {
@@ -314,7 +314,7 @@ export class TerminalResultExportOwner {
   }
 
   private publish(jobId: string, repair: boolean, observation?: RecoveryObservation): string {
-    const location = this.input.location(jobId);
+    const location = this.input.location(jobId, observation);
     const targetPath = location?.resultPath ?? resultPathFor(this.input.jobsRoot, jobId);
     if (location && hasReadableTerminalDetail(location) && this.readableFile(targetPath)) {
       this.failures.delete(jobId);

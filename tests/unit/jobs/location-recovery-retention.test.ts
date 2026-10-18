@@ -29,10 +29,20 @@ it('recovers terminals without loading progress and writes nothing on an unchang
     outcome: { kind: 'completed' },
     durationMs: 1,
   });
+  const locationReads = vi.spyOn(f.runtime.storage, 'readFileSync');
   const locations = vi.spyOn(index, 'locationsFor');
   const read = vi.spyOn(f.store, 'readJobEvents');
   const record = vi.fn();
   recoverJobLocations(index, 'epoch', f.store, { record });
+  const actualLocationReads = locationReads.mock.calls.filter(
+    ([path], i) => String(path).includes('/job-locations.v1/jobs/') && locationReads.mock.results[i].type === 'return',
+  ).length;
+  const reportedLocationReads = record.mock.calls.reduce(
+    (total, [source, counts]) => total + (source === 'job-locations' ? (counts.reads ?? 0) : 0),
+    0,
+  );
+  expect(actualLocationReads).toBeGreaterThan(0);
+  expect(reportedLocationReads).toBe(actualLocationReads);
   expect(locations).toHaveBeenCalledWith('epoch', { record });
   expect(record).toHaveBeenCalledWith('job-locations', { reads: 1 });
   expect(record).toHaveBeenCalledWith('job-launches', { subjects: 2, reads: 2 });

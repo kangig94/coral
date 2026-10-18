@@ -45,7 +45,7 @@ describe('recovery phase observation', () => {
     const log = vi.fn();
     const boot = createStartupPhaseObserver({ time: { monotonicNow: () => now }, log, bootId: 'boot-1' });
     const failure = new Error('receipt adoption failed');
-    for (const phase of ['store-open', 'jobs-startup', 'discussion', 'workflow', 'reactor-scan']) {
+    for (const phase of ['jobs-startup', 'discussion', 'workflow', 'reactor-scan']) {
       await expect(
         observeRecoveryPhase(boot.options(phase), async (observation) => {
           observation.record('rows', { subjects: 2, reads: 3 });
@@ -61,10 +61,27 @@ describe('recovery phase observation', () => {
     expect(log).not.toHaveBeenCalled();
     boot.finish();
     boot.finish();
-    expect(log).toHaveBeenCalledTimes(5);
+    expect(log).toHaveBeenCalledTimes(4);
     for (const [line] of log.mock.calls) {
       expect(line).toContain('outcome=complete duration_ms=30.000 subjects=6 reads=8');
     }
+  });
+
+  it('reports only store-open attempts, including failures and excluding reused handles', async () => {
+    const log = vi.fn();
+    const boot = createStartupPhaseObserver({ time: { monotonicNow: () => 0n }, log, bootId: 'boot-1' });
+    await expect(
+      observeRecoveryPhase(boot.options('store-open'), async () => {
+        throw new Error('open failed');
+      }),
+    ).rejects.toThrow('open failed');
+    await observeRecoveryPhase(boot.options('store-open'), async () => {});
+    startRecoveryPhase({ ...boot.options('store-open'), attempts: 0 }).finish();
+    boot.finish();
+    expect(log).toHaveBeenCalledExactlyOnceWith(
+      'recovery-phase boot=boot-1 kind=startup phase=store-open event=finish outcome=complete' +
+        ' duration_ms=0.000 attempts=2\n',
+    );
   });
 
   it('keeps the first finish outcome and ignores subsequent records and finishes', () => {

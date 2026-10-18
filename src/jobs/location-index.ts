@@ -477,9 +477,10 @@ export class JobLocationIndex {
     epochKey: string,
     subject: JobLocationSubject,
     controller?: JobLocationController,
+    observation?: RecoveryObservation,
   ): JobLocation {
     return this.withRevisionLock(epochKey, () => {
-      const existing = this.readStored(jobId);
+      const existing = this.readStored(jobId, observation);
       if (existing !== null) {
         if (!sameEpoch(existing.epochKey, epochKey)) throw new Error(`Job ${jobId} already belongs to another epoch`);
         return viewLocation(existing);
@@ -528,13 +529,19 @@ export class JobLocationIndex {
   }
 
   /** A terminal is recorded only when the copies its detail carries agree; readers trust the record after that. */
-  recordTerminal(jobId: string, detail: JobDetailResponse, resultPath: string, terminalSeq: number): JobLocation {
-    const existing = this.readStored(jobId);
+  recordTerminal(
+    jobId: string,
+    detail: JobDetailResponse,
+    resultPath: string,
+    terminalSeq: number,
+    observation?: RecoveryObservation,
+  ): JobLocation {
+    const existing = this.readStored(jobId, observation);
     if (existing === null) throw new Error(`Terminal has no durable job location: ${jobId}`);
     const terminal = validatedTerminal(detail, jobId, existing.epochKey, terminalSeq);
     if (terminal === null) throw new Error(`Terminal detail disagrees: ${jobId}`);
     return this.withRevisionLock(existing.epochKey, () => {
-      const current = this.readStored(jobId);
+      const current = this.readStored(jobId, observation);
       if (current === null) throw new Error(`Terminal has no durable job location: ${jobId}`);
       const location: StoredJobLocation = {
         ...current,
@@ -557,11 +564,11 @@ export class JobLocationIndex {
     });
   }
 
-  recordObserved(jobId: string, detail: JobDetailResponse): void {
-    const existing = this.read(jobId);
+  recordObserved(jobId: string, detail: JobDetailResponse, observation?: RecoveryObservation): void {
+    const existing = this.read(jobId, observation);
     if (existing === null || existing.disposition === 'terminal') return;
     this.withRevisionLock(existing.epochKey, () => {
-      const current = this.readStored(jobId);
+      const current = this.readStored(jobId, observation);
       if (current === null || current.disposition === 'terminal') return;
       const retained = viewLocation(current);
       const location = {
@@ -583,12 +590,12 @@ export class JobLocationIndex {
     });
   }
 
-  markUnresolved(jobId: string): void {
-    const existing = this.readStored(jobId);
+  markUnresolved(jobId: string, observation?: RecoveryObservation): void {
+    const existing = this.readStored(jobId, observation);
     if (existing === null) throw new Error(`Unresolved job has no durable location: ${jobId}`);
     if (existing.disposition === 'terminal') return;
     this.withRevisionLock(existing.epochKey, () => {
-      const current = this.readStored(jobId);
+      const current = this.readStored(jobId, observation);
       if (current === null) throw new Error(`Unresolved job has no durable location: ${jobId}`);
       if (current.disposition === 'terminal' || current.disposition === 'unresolved') return;
       this.advanceRevision(current.epochKey);
@@ -612,9 +619,9 @@ export class JobLocationIndex {
    * The caller must hold the epoch store write lock while proving no launch event exists; without it, a launch may
    * still be in flight.
    */
-  retireNeverAccepted(jobId: string, epochKey: string): void {
+  retireNeverAccepted(jobId: string, epochKey: string, observation?: RecoveryObservation): void {
     this.withRevisionLock(epochKey, () => {
-      const current = this.readStored(jobId);
+      const current = this.readStored(jobId, observation);
       if (current === null || !sameEpoch(current.epochKey, epochKey) || current.disposition === 'terminal') return;
       this.runtime.storage.unlinkSync(this.jobPath(jobId));
       this.advanceRevision(epochKey);

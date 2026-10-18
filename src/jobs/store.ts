@@ -612,9 +612,9 @@ export class JobStore implements JobProgressStore {
         if (!index || !location || hasReadableTerminalDetail(location)) return;
         index.prepareTerminal(jobId, db, location.epochKey, this.runtime.paths.coral.exports.jobsRoot);
       },
-      location: (jobId): JobLocation | null => {
-        if (this.exportLocations) return this.exportLocations.read(jobId);
-        const detail = this.loadJobProjectionDetail(jobId);
+      location: (jobId, observation): JobLocation | null => {
+        if (this.exportLocations) return this.exportLocations.read(jobId, observation);
+        const detail = this.loadJobProjectionDetail(jobId, observation);
         if (!detail.status || !detail.exit) return null;
         const accepted = readAcceptedTerminal(this.db, jobId);
         if (!accepted) return null;

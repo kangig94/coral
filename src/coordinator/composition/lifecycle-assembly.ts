@@ -232,6 +232,7 @@ export function createCoordinatorLifecycleAssembly(input: LifecycleAssemblyInput
       handoffRoutingStatusGeneration(handoffRoutingStatusStoreSchema()),
     ),
     () => world.log('Routing reconciliation failed; retained selections will be retried.\n'),
+    { bootId: core.identity.instanceId, log: world.log },
   );
   const lifecycleDeps = createCoordinatorLifecycleDeps(input, storeEpochSweep, storageRetention, routingReconciler);
   state.lifecycleController = createLifecycle(lifecycleDeps, runStartupRecovery);
