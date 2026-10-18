@@ -50,10 +50,6 @@ type TestAppServerLifecycle = {
     | ProviderServerSpec
     | ((persistedContinuity: ProviderContinuityBlob | undefined, request: ProviderRequest) => ProviderServerSpec);
   interrupt(lease: AppServerTransport, continuity: ProviderContinuityBlob): Promise<void>;
-  probe?(
-    lease: AppServerTransport,
-    continuity: ProviderContinuityBlob,
-  ): Promise<{ resumable: boolean; updatedContinuity?: ProviderContinuityBlob }>;
   onNotification?(message: { method: string; params?: Record<string, unknown> }): void;
   finalizeInterrupted(
     probeResult: { resumable: boolean; updatedContinuity?: ProviderContinuityBlob },
@@ -192,7 +188,6 @@ export function defineFakeProvider(
           await appServerLifecycle.interrupt(transport, continuity);
           return { kind: 'accepted' as const };
         },
-        ...(appServerLifecycle.probe === undefined ? {} : { probe: appServerLifecycle.probe }),
         ...(appServerLifecycle.onNotification === undefined
           ? {}
           : { onNotification: appServerLifecycle.onNotification }),

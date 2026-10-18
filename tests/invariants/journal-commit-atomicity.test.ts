@@ -14,8 +14,7 @@ import { AbortRegistry } from '#src/jobs/shell/abort-registry.js';
 import { JobStore } from '#src/jobs/store.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { appendJobTerminalRecorded } from '#src/jobs/terminal/recording.js';
-import type { WaitStreamEvent, WaitStreamRequest } from '#src/jobs/wait/contract.js';
-import type { InvocationContext } from '#src/runtime/invocation-context.js';
+import type { JobTerminal } from '#src/jobs/records.js';
 import { decodeEventBody } from '#src/store/body-codec.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { composeReducers } from '#src/store/reducers.js';
@@ -24,13 +23,9 @@ import { workflowRegistry, workflowPlanDeclaredEvent } from '#src/workflow/event
 import type { WorkflowFinalizationIntent } from '#src/workflow/finalization.js';
 import { parseExpression } from '#src/workflow/parser.js';
 import { buildWorkflowPlan, type PlanSlot, type WorkflowPlan } from '#src/workflow/plan.js';
-import { loadJobProjectionDetails } from '#src/jobs/read-queries.js';
 import { resumeAll } from '#src/workflow/recover.js';
-import type { WorkflowExecutionPort } from '#src/workflow/execution-contract.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
-import { testProjectPrincipal } from '#tests/helpers/principal.js';
-import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { seedTestSessionProjection } from '#tests/helpers/session.js';
 
 const NOW = '2026-04-19T00:00:00.000Z';
@@ -92,84 +87,9 @@ type WorkflowRecoveryHarness = {
   progressStore: JobStore;
   workflowId: string;
   plan: WorkflowPlan;
-  executionSvc: WorkflowExecutionPort & {
-    dispatches: Array<{ providerName: string; coralName: string; jobId: string; workflowSlotId?: string }>;
-    waitRequests: WaitStreamRequest[];
-  };
 };
 
-type WaitTerminalEvent = Extract<WaitStreamEvent, { type: 'terminal' }>;
-type WaitTerminalOutcome = WaitTerminalEvent['result']['outcome'];
-
-async function* emitWaitEvents(events: WaitStreamEvent[]): AsyncGenerator<WaitStreamEvent> {
-  for (const event of events) {
-    yield event;
-  }
-}
-
-function createWorkflowExecutionPort(
-  options: {
-    terminalContentByJob?: ReadonlyMap<string, string>;
-    terminalOutcomeByJob?: ReadonlyMap<string, WaitTerminalOutcome>;
-  } = {},
-): WorkflowRecoveryHarness['executionSvc'] {
-  const dispatches: WorkflowRecoveryHarness['executionSvc']['dispatches'] = [];
-  const waitRequests: WaitStreamRequest[] = [];
-
-  return {
-    dispatches,
-    waitRequests,
-    coralDispatch: async (providerName, coralName, input) => {
-      const jobId = String(input.jobId ?? `${coralName}-job`);
-      dispatches.push({ providerName, coralName, jobId, workflowSlotId: input.workflowSlotId });
-      return {
-        kind: 'provider-session',
-        status: 'running',
-        jobId: jobId,
-        sessionId: `${jobId}-session`,
-      };
-    },
-    resume: async (_providerName, input) => ({
-      kind: 'provider-session',
-      status: 'running',
-      jobId: input.jobId ?? 'resumed-job',
-      sessionId: input.sessionId,
-    }),
-    recordContinuationLease: async () => {},
-    clearContinuationLease: async () => true,
-    abort: (jobIds) => ({ aborted: [...jobIds], notFound: [] }),
-    awaitLaunch: async () => 'ready',
-    waitStream: (req) => {
-      waitRequests.push({
-        ...req,
-        jobIds: [...req.jobIds],
-        ...(req.cursor === undefined ? {} : { cursor: req.cursor }),
-      });
-      const baseSeq = 100;
-      return emitWaitEvents(
-        req.jobIds.map((jobId, index): WaitStreamEvent => {
-          const outcome = options.terminalOutcomeByJob?.get(jobId) ?? { kind: 'completed' };
-          return {
-            type: 'terminal',
-            jobId,
-            seq: baseSeq + index + 1,
-            remainingJobIds: req.jobIds.slice(index + 1),
-            resultPath: `/tmp/coral-exports/jobs/${jobId}/result.md`,
-            availability: { kind: 'available', resultPath: `/tmp/coral-exports/jobs/${jobId}/result.md` },
-            result: {
-              content: options.terminalContentByJob?.get(jobId) ?? `result:${jobId}`,
-              outcome,
-              durationMs: 0,
-            },
-            cursor: null,
-            exitCode: 0,
-          };
-        }),
-      );
-    },
-    waitForJobTerminal: async () => {},
-  };
-}
+type WaitTerminalOutcome = JobTerminal['outcome'];
 
 function createWorkflowRecoveryHarness(db: Db, workflowId: string, expression = 'architect'): WorkflowRecoveryHarness {
   const runtime = new SimulationRuntime();
@@ -189,7 +109,6 @@ function createWorkflowRecoveryHarness(db: Db, workflowId: string, expression = 
     progressStore,
     workflowId,
     plan,
-    executionSvc: createWorkflowExecutionPort(),
   };
 }
 
@@ -255,15 +174,6 @@ function appendWorkflowSlotTerminal(
   });
 }
 
-function createRecoveryInvocationContext(projectRoot: string): InvocationContext {
-  return {
-    projectRoot: fixtureCanonicalWorkDir(projectRoot),
-    pluginRoot: resolve(PROJECT_ROOT, 'plugin'),
-    coralEnv: {},
-    principal: testProjectPrincipal(projectRoot),
-  };
-}
-
 function captureWorkflowIntents(delegate: (intent: WorkflowFinalizationIntent) => void = () => {}): {
   intents: WorkflowFinalizationIntent[];
   finalizeWorkflow(intent: WorkflowFinalizationIntent): void;
@@ -281,14 +191,11 @@ function captureWorkflowIntents(delegate: (intent: WorkflowFinalizationIntent) =
 async function resumeRecoveryHarness(
   harness: WorkflowRecoveryHarness,
   finalizeWorkflow: (intent: WorkflowFinalizationIntent) => void,
-  executionSvc: WorkflowExecutionPort = harness.executionSvc,
 ): Promise<string[]> {
   return resumeAll({
     db: harness.db,
     progressStore: harness.progressStore,
-    loadJobDetails: loadJobProjectionDetails,
-    getExecutionService: () => executionSvc,
-    createInvocationContext: createRecoveryInvocationContext,
+    clearContinuationLease: async () => true,
     finalizeWorkflow,
     releaseFailedWorkflowDescendants: () => [],
     ids: harness.runtime.ids,
@@ -383,7 +290,12 @@ describe('journal commit atomicity invariant', () => {
         outcome: { kind: 'provider_exit', code: 1 },
         durationMs: 0,
       });
-      initWorkflowSlotJob(harness, pendingSlot);
+      const pendingJobId = initWorkflowSlotJob(harness, pendingSlot);
+      appendWorkflowSlotTerminal(harness, pendingSlot, pendingJobId, {
+        content: 'critic output',
+        outcome: { kind: 'completed' },
+        durationMs: 0,
+      });
       const realFinalizer = createWorkflowRecoveryFinalizer({
         runtime: harness.runtime,
         progressStore: harness.progressStore,
@@ -403,7 +315,10 @@ describe('journal commit atomicity invariant', () => {
             kind: 'recovery_failed',
             message,
           },
-          stepDetails: [],
+          stepDetails: [
+            { stepIndex: 0, atomIndex: 0, label: 'architect', output: '' },
+            { stepIndex: 0, atomIndex: 1, label: 'critic', output: 'critic output' },
+          ],
           failureLocation: {
             slotId: failedSlot.slotId,
             stepIndex: 0,
@@ -455,7 +370,10 @@ describe('journal commit atomicity invariant', () => {
       expect(decodeEventBody(completed.body)).toEqual({
         outcome: 'failed',
         causeRef: { stream: { kind: 'workflow', id: harness.workflowId }, seq: lifecycleFault.seq },
-        stepDetails: [],
+        stepDetails: [
+          { stepIndex: 0, atomIndex: 0, label: 'architect', output: '' },
+          { stepIndex: 0, atomIndex: 1, label: 'critic', output: 'critic output' },
+        ],
         failureLocation: {
           slotId: failedSlot.slotId,
           stepIndex: 0,

@@ -679,22 +679,10 @@ export interface ProviderAppServerCapability<
     continuity: ProviderContinuityBlob,
     input: ProviderSendInput,
   ): Promise<ProviderSendOutcome>;
-  probe?(
-    session: AppServerTransport,
-    continuity: ProviderContinuityBlob,
-    context: Readonly<{ request: Pick<ProviderRequest, 'cwd'> }>,
-  ): Promise<{ resumable: boolean; updatedContinuity?: ProviderContinuityBlob }>;
   onNotification?(message: AppServerNotificationMessage): void;
 }
 
 export interface ProviderRecoveryContract<Access extends ProviderAccess = ProviderAccess> {
-  /**
-   * Provider-owned interpretation of an interrupted app-server turn.
-   *
-   * The coordinator supplies observations only. It must never invent provider
-   * continuity semantics when the provider cannot be probed or no continuity
-   * blob has been checkpointed yet.
-   */
   finalizeInterrupted(
     probeResult: { resumable: boolean; updatedContinuity?: ProviderContinuityBlob },
     continuity: ProviderContinuityBlob | undefined,

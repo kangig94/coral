@@ -26,14 +26,11 @@ import {
 import {
   clearCodexTurnContinuity,
   hasCodexContinuity,
-  isCodexSessionUnavailable,
   type CodexPersistedContinuity,
   readCodexPersistedContinuity,
 } from './request-mapping.js';
-import { verifyCodexEffectiveTransport } from './transport-policy.js';
 import {
   buildCodexHost,
-  codexChildShellEnvironmentPolicy,
   compileCodexHostEnvironment,
   type CodexProviderAccess,
   type CodexExecutionPlan,
@@ -80,10 +77,6 @@ type CodexProbeResult = {
   resumable: boolean;
   updatedContinuity?: ProviderContinuityBlob;
 };
-
-function codexProbeResult(resumable: boolean, updatedContinuity: ProviderContinuityBlob | undefined): CodexProbeResult {
-  return updatedContinuity === undefined ? { resumable } : { resumable, updatedContinuity };
-}
 
 function sanitizeCodexProviderContinuity(
   continuity: ProviderContinuityBlob | undefined,
@@ -347,43 +340,7 @@ export const codexAppServerLifecycle: ProviderAppServerCapability<CodexExecution
       return { state: 'unknown', reason: errorMessage(providerError) };
     }
   },
-  async probe(lease, continuity, context): Promise<CodexProbeResult> {
-    return probeCodexSession(lease, continuity, context.request.cwd);
-  },
 };
-
-async function probeCodexSession(
-  lease: AppServerTransport,
-  continuity: ProviderContinuityBlob,
-  cwdScope: string,
-): Promise<CodexProbeResult> {
-  const parsed = readCodexPersistedContinuity(continuity, { cwdScope });
-  const updatedContinuity = clearCodexTurnContinuity(continuity, { cwdScope });
-  if (parsed.threadId === undefined || parsed.cwd === undefined) {
-    return codexProbeResult(false, updatedContinuity);
-  }
-
-  try {
-    await verifyCodexEffectiveTransport(lease, parsed.cwd);
-    const response = await rpc(lease, 'thread/resume', {
-      threadId: parsed.threadId,
-      cwd: parsed.cwd,
-      model: null,
-      modelProvider: 'openai',
-      approvalPolicy: 'never',
-      config: { shell_environment_policy: codexChildShellEnvironmentPolicy() },
-    });
-    if (response.thread?.id !== parsed.threadId) {
-      throw new Error('Codex recovery probe did not resume the exact requested thread id.');
-    }
-    return codexProbeResult(true, updatedContinuity);
-  } catch (error) {
-    if (!isCodexSessionUnavailable(error)) {
-      throw error;
-    }
-    return codexProbeResult(false, updatedContinuity);
-  }
-}
 
 export const codexRecoveryLifecycle = {
   finalizeInterrupted(

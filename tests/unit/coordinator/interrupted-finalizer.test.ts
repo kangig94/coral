@@ -173,16 +173,14 @@ function createHarness(
 function createRecoveryProvider() {
   const finalizeInterrupted = vi.fn(codexRecoveryLifecycle.finalizeInterrupted);
   const finalizeFromArtifacts = vi.fn();
-  const probe = vi.fn();
   const openReplacement = vi.fn();
   return {
     finalizeInterrupted,
     finalizeFromArtifacts,
-    probe,
     openReplacement,
     boundProvider: {
       recovery: { finalizeInterrupted, finalizeFromArtifacts },
-      appServer: { supportsProbe: true, probe, openReplacement },
+      appServer: { openReplacement },
     } as unknown as BoundProvider,
   };
 }
@@ -205,7 +203,6 @@ describe('interrupted app-server recovery performer', () => {
     ).resolves.toEqual({ kind: 'unsupported' });
 
     expect(provider.finalizeInterrupted).not.toHaveBeenCalled();
-    expect(provider.probe).not.toHaveBeenCalled();
     expect(provider.openReplacement).not.toHaveBeenCalled();
     expect(provider.finalizeFromArtifacts).not.toHaveBeenCalled();
     expect(reapCarrier).not.toHaveBeenCalled();
@@ -279,7 +276,6 @@ describe('interrupted app-server recovery performer', () => {
           mutation: expect.objectContaining({ kind: 'set_resumable', conversationRef: 'thread-recovered' }),
         }),
       );
-      expect(provider.probe).not.toHaveBeenCalled();
       expect(provider.openReplacement).not.toHaveBeenCalled();
       expect(provider.finalizeFromArtifacts).not.toHaveBeenCalled();
       expect(reapCarrier).not.toHaveBeenCalled();
@@ -331,7 +327,6 @@ describe('interrupted app-server recovery performer', () => {
       { preservedConversationRef: 'thread-recovered' },
     );
     expect(harness.append).toHaveBeenCalled();
-    expect(provider.probe).not.toHaveBeenCalled();
     expect(provider.openReplacement).not.toHaveBeenCalled();
     expect(provider.finalizeFromArtifacts).not.toHaveBeenCalled();
   });

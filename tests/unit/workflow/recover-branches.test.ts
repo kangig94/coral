@@ -1,27 +1,22 @@
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
-import { TEST_PROVIDER_SCOPE, withTestProfileLocation } from '#tests/helpers/provider-credentials.js';
+import { TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
 import { describe, expect, it, vi } from 'vitest';
-import { randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { JobStore } from '#src/jobs/store.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
-import { createSimulationBackend } from '#tools/simulation/core/backend.js';
-import { flushMicrotasks } from '#tools/simulation/core/virtual-time.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import type { JobTerminal } from '#src/jobs/records.js';
-import type { WaitStreamEvent, WaitStreamRequest } from '#src/jobs/wait/contract.js';
-import { applyBundledStoreSchema } from '#src/store/db.js';
+import { applyBundledStoreSchema, type Database } from '#src/store/db.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { decodeEventBody, encodeEventBody } from '#src/store/body-codec.js';
 import { parseExpression } from '#src/workflow/parser.js';
-import { workflowPlanDeclaredEvent, workflowRegistry } from '#src/workflow/events.js';
+import { workflowCompletedEvent, workflowPlanDeclaredEvent, workflowRegistry } from '#src/workflow/events.js';
 import { buildWorkflowPlan, type WorkflowPlan } from '#src/workflow/plan.js';
 import { commitWorkflowEvents } from '#src/workflow/projections.js';
-import { loadJobProjectionDetails } from '#src/jobs/read-queries.js';
 import { resumeAll as resumeAllWorkflowRecovery } from '#src/workflow/recover.js';
 import { type WorkflowExecutionPort } from '#src/workflow/execution-contract.js';
 import type { WorkflowFinalizationIntent } from '#src/workflow/finalization.js';
@@ -32,92 +27,22 @@ import { jobsRegistry } from '#src/jobs/events.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
 import { composeReducers } from '#src/store/reducers.js';
 import type { ProviderSession } from '#src/sessions/entry.js';
-import type { ProviderSessionLaunchDecision } from '#src/jobs/launch.js';
 import { createProjectionSessionLookup } from '#src/sessions/lookup.js';
 import { createWorkflowRecoveryFinalizer } from '#src/coordinator/services/workflow-recovery-finalizer.js';
 import { createFailedWorkflowDescendantReleaser } from '#src/coordinator/services/workflow-recovery-descendants.js';
 import { releaseSessionJobClaim } from '#src/sessions/job-release.js';
+import { SessionManager } from '#src/sessions/shell.js';
+import { RecoveryQuarantineStore } from '#src/recovery/quarantine.js';
 import { seedTestSessionProjection } from '#tests/helpers/session.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
-import { canonicalizeWorkDir, type CanonicalWorkDir } from '#src/runtime/canonical-work-dir.js';
-
-let recoverClock = new Date('2026-04-27T00:00:00.000Z').getTime();
-let recoverMonotonicClock = 0n;
-const fixedTime = {
-  now: () => {
-    recoverClock += 100;
-    return recoverClock;
-  },
-  monotonicNow: () => {
-    recoverMonotonicClock += 100n;
-    return recoverMonotonicClock;
-  },
-  sleep: async (ms: number) => {
-    recoverMonotonicClock += BigInt(ms);
-  },
-};
+import { canonicalizeWorkDir } from '#src/runtime/canonical-work-dir.js';
 
 const PROJECT_ROOT = canonicalizeWorkDir(process.cwd(), process.cwd());
 const BACKEND_NAMESPACE = 'workflow-test-ns';
-const noFailedWorkflowDescendants = () => [];
-const recoveryIds = { uuid: () => randomUUID() };
-
 type ResumeAllOptions = Parameters<typeof resumeAllWorkflowRecovery>[0];
 
-function resumeAll(options: Omit<ResumeAllOptions, 'ids'> & Partial<Pick<ResumeAllOptions, 'ids'>>) {
-  return resumeAllWorkflowRecovery({ ids: recoveryIds, ...options });
-}
-
-async function settleWithVirtualTime<T>(operation: Promise<T>, advance: (ms: number) => Promise<void>): Promise<T> {
-  let settled = false;
-  void operation.then(
-    () => {
-      settled = true;
-    },
-    () => {
-      settled = true;
-    },
-  );
-  await flushMicrotasks(200);
-  for (let step = 0; !settled && step < 1_000; step += 1) {
-    await advance(25);
-  }
-  if (!settled) throw new Error('Workflow recovery did not settle within the simulation virtual-time budget.');
-  return operation;
-}
-
-function running(jobId: string, sessionId: string) {
-  return {
-    kind: 'provider-session' as const,
-    status: 'running' as const,
-    jobId,
-    sessionId,
-  };
-}
-
-function terminal(jobId: string, content: string, seq = 0): WaitStreamEvent {
-  const result: JobTerminal = { content, outcome: { kind: 'completed' }, durationMs: 0 };
-  return {
-    type: 'terminal',
-    jobId,
-    seq,
-    remainingJobIds: [],
-    resultPath: `/tmp/coral-exports/jobs/${jobId}/result.md`,
-    availability: { kind: 'available', resultPath: `/tmp/coral-exports/jobs/${jobId}/result.md` },
-    result,
-    cursor: null,
-    exitCode: 0,
-  };
-}
-
-async function* emit(events: WaitStreamEvent[]): AsyncGenerator<WaitStreamEvent> {
-  for (const event of events) {
-    yield event;
-  }
-}
-
-function createWorkflowPlan(expression = 'architect'): WorkflowPlan {
-  return buildWorkflowPlan('workflow-1', parseExpression(expression), {
+function createWorkflowPlan(expression = 'architect', workflowId = 'workflow-1'): WorkflowPlan {
+  return buildWorkflowPlan(workflowId, parseExpression(expression), {
     defaultProvider: 'codex',
   });
 }
@@ -135,12 +60,15 @@ type SlotRecoveryState = {
 function createHarness(options: {
   expression?: string;
   projectRoot?: string;
+  workflowId?: string;
+  db?: Database;
   atomPhase: 'running' | 'queued' | null;
   projectionPhase: 'running' | 'queued' | 'completed' | 'error' | 'aborted' | null;
   slotStates?: Partial<Record<number, SlotRecoveryState>>;
 }) {
-  const db = newRawDatabase(':memory:');
-  applyBundledStoreSchema(db, currentCoralStoreFormat());
+  const db = options.db ?? newRawDatabase(':memory:');
+  if (options.db === undefined) applyBundledStoreSchema(db, currentCoralStoreFormat());
+  const workflowId = options.workflowId ?? 'workflow-1';
 
   const runtime = new SimulationRuntime();
   const progressStore = new JobStore(BACKEND_NAMESPACE, runtime, createEventBodyCodec(), {
@@ -148,22 +76,22 @@ function createHarness(options: {
     providers: permissiveProviderLookupPort,
     reducers: composeReducers(jobsRegistry, sessionsRegistry, workflowRegistry),
   });
-  const plan = createWorkflowPlan(options.expression);
+  const plan = createWorkflowPlan(options.expression, workflowId);
   const jobIdsBySlot = new Map<string, string>();
   const projectRoot = options.projectRoot ?? PROJECT_ROOT;
   commitWorkflowEvents(
     db,
     (c) => {
-      c.append(workflowPlanDeclaredEvent('workflow-1', plan, TEST_PROVIDER_SCOPE));
+      c.append(workflowPlanDeclaredEvent(workflowId, plan, TEST_PROVIDER_SCOPE));
       return undefined;
     },
     runtime.time,
     permissiveProviderLookupPort,
   );
 
-  progressStore.appendLaunchRequested('workflow-1', {
-    jobId: 'workflow-1',
-    owner: { kind: 'workflow', id: 'workflow-1' },
+  progressStore.appendLaunchRequested(workflowId, {
+    jobId: workflowId,
+    owner: { kind: 'workflow', id: workflowId },
     sessionId: null,
     provider: null,
     projectRoot,
@@ -182,10 +110,10 @@ function createHarness(options: {
   progressStore.commit((c) => {
     c.append({
       type: 'job.runtime.started',
-      stream: { kind: 'job', id: 'workflow-1' },
+      stream: { kind: 'job', id: workflowId },
       namespace: BACKEND_NAMESPACE,
       project: projectRoot,
-      refs: { jobId: 'workflow-1', workflowId: 'workflow-1' },
+      refs: { jobId: workflowId, workflowId: workflowId },
       body: { transport: 'workflow', startedAt: new Date(runtime.time.now()).toISOString() },
     });
     return undefined;
@@ -211,7 +139,7 @@ function createHarness(options: {
       });
       progressStore.appendLaunchRequested(jobId, {
         jobId,
-        owner: { kind: 'workflow', id: 'workflow-1' },
+        owner: { kind: 'workflow', id: workflowId },
         sessionId,
         provider: slot.provider,
         projectRoot,
@@ -220,7 +148,7 @@ function createHarness(options: {
         pool: 'default',
         enqueueSequence: progressStore.nextEnqueueSequence(),
         providerAction: 'exec',
-        parentWorkflowJobId: 'workflow-1',
+        parentWorkflowJobId: workflowId,
         workflowSlotId: slot.slotId,
         workflowSlotGeneration: 0,
         request: {
@@ -260,38 +188,29 @@ function createHarness(options: {
 	           last_seq = excluded.last_seq`,
       ).run(
         jobId,
-        JSON.stringify({ kind: 'workflow', id: 'workflow-1' }),
+        JSON.stringify({ kind: 'workflow', id: workflowId }),
         projectionPhase,
         sessionId,
         slot.provider,
         projectRoot,
         projectRoot,
         BACKEND_NAMESPACE,
-        'workflow-1',
+        workflowId,
         slot.slotId,
         projectionLastSeq,
       );
     }
   }
 
-  const executionSvc: WorkflowExecutionPort & {
-    coralDispatch: ReturnType<typeof vi.fn<WorkflowExecutionPort['coralDispatch']>>;
-    waitStream: ReturnType<typeof vi.fn>;
-    awaitLaunch: ReturnType<typeof vi.fn>;
-    abort: ReturnType<typeof vi.fn>;
-  } = {
-    coralDispatch: vi.fn(async (_provider, _coralName, input) =>
-      running(String(input.jobId ?? 'relaunched-atom-1'), `session-${String(input.jobId ?? 'relaunched-atom-1')}`),
-    ),
-    resume: vi.fn(async () => running('job-resumed', 'session-resumed')),
-    recordContinuationLease: vi.fn(async () => {}),
-    clearContinuationLease: vi.fn(async () => true),
+  const executionSvc = {
+    coralDispatch: vi.fn<WorkflowExecutionPort['coralDispatch']>(),
+    resume: vi.fn<WorkflowExecutionPort['resume']>(),
+    recordContinuationLease: vi.fn<WorkflowExecutionPort['recordContinuationLease']>(),
+    clearContinuationLease: vi.fn<WorkflowExecutionPort['clearContinuationLease']>(),
     abort: vi.fn(() => ({ aborted: [], notFound: [] })),
-    awaitLaunch: vi.fn(async (): Promise<'ready'> => 'ready'),
-    waitStream: vi.fn((req: WaitStreamRequest) => {
-      return emit(req.jobIds.map((jobId, index) => terminal(jobId, `result:${jobId}`, index + 1)));
-    }),
-    waitForJobTerminal: vi.fn(async () => {}),
+    awaitLaunch: vi.fn<WorkflowExecutionPort['awaitLaunch']>(),
+    waitStream: vi.fn<WorkflowExecutionPort['waitStream']>(),
+    waitForJobTerminal: vi.fn<WorkflowExecutionPort['waitForJobTerminal']>(),
   };
 
   const createInvocationContext = (projectRoot: string): InvocationContext => ({
@@ -310,44 +229,535 @@ function createHarness(options: {
   return { db, plan, progressStore, executionSvc, createInvocationContext, runtime, jobIdForSlot };
 }
 
-describe('workflow recovery branch rules', () => {
-  it('constructs recovery context from the canonical target of a persisted symlink root', async () => {
+function recoveryOptions(harness: ReturnType<typeof createHarness>): ResumeAllOptions {
+  const coordinatorCommit = (cb: Parameters<JobStore['commit']>[0]) => harness.progressStore.commit(cb);
+  return {
+    db: harness.db,
+    progressStore: harness.progressStore,
+    clearContinuationLease: (projectRoot, input) =>
+      SessionManager.forProduction(projectRoot, harness.runtime, coordinatorCommit, () => {}, {
+        db: harness.db,
+      }).clearContinuationLease(input),
+    finalizeWorkflow: createWorkflowRecoveryFinalizer({
+      runtime: harness.runtime,
+      progressStore: harness.progressStore,
+      coordinatorCommit,
+    }),
+    releaseFailedWorkflowDescendants: createFailedWorkflowDescendantReleaser({
+      progressStore: harness.progressStore,
+      runtime: harness.runtime,
+      coordinatorCommit,
+      getExecutionService: () => harness.executionSvc,
+      createInvocationContext: harness.createInvocationContext,
+      releaseAdoptedJob: vi.fn(),
+      emitSessionReleased: vi.fn(),
+      log: vi.fn(),
+    }),
+    ids: harness.runtime.ids,
+    time: harness.runtime.time,
+  };
+}
+
+async function recover(harness: ReturnType<typeof createHarness>, overrides: Partial<ResumeAllOptions> = {}) {
+  const result = await resumeAllWorkflowRecovery({ ...recoveryOptions(harness), ...overrides });
+  expect(harness.executionSvc.coralDispatch).not.toHaveBeenCalled();
+  expect(harness.executionSvc.resume).not.toHaveBeenCalled();
+  expect(harness.executionSvc.awaitLaunch).not.toHaveBeenCalled();
+  expect(harness.executionSvc.waitStream).not.toHaveBeenCalled();
+  expect(harness.executionSvc.recordContinuationLease).not.toHaveBeenCalled();
+  return result;
+}
+
+function readContinuation(harness: ReturnType<typeof createHarness>) {
+  return harness.db
+    .prepare<[], { state: string; continuation_kind: string; continuation_key: string; error_message: string }>(
+      `SELECT state, continuation_kind, continuation_key, error_message
+         FROM recovery_quarantine
+        WHERE boundary_id = 'workflow-recovery' AND subject_key = 'workflow-1'`,
+    )
+    .get();
+}
+
+function storeContinuation(
+  harness: ReturnType<typeof createHarness>,
+  stage: 'prepared' | 'external-outcome-unknown' | 'ready-to-close',
+  intent?: WorkflowFinalizationIntent,
+) {
+  const sessions = harness.db.prepare<[], { entry: string }>('SELECT entry FROM projection_sessions').all();
+  const childIds = harness.db
+    .prepare<[], { job_id: string }>("SELECT job_id FROM projection_jobs WHERE parent_workflow_job_id = 'workflow-1'")
+    .all()
+    .map((row) => row.job_id);
+  const continuation = {
+    workflowId: 'workflow-1',
+    sourceRevision: 'earlier-build-revision',
+    childIds,
+    providerSessions: sessions.map(({ entry }) => {
+      const session = JSON.parse(entry) as ProviderSession;
+      return {
+        sessionId: session.sessionId,
+        projectRoot: PROJECT_ROOT,
+        version: session.version,
+        activeJobId: session.activeJobId ?? null,
+        continuationLease: session.continuationLease ?? null,
+      };
+    }),
+    stage,
+    intendedFinalization: intent === undefined ? { kind: 'pending' } : { kind: 'intent', intent },
+    completedObligations: intent === undefined ? [] : ['workflow-recovery.resume'],
+  };
+  expect(
+    new RecoveryQuarantineStore(harness.db, harness.runtime.time).upsert({
+      boundary: 'workflow-recovery',
+      subject: { key: 'workflow-1', revision: { kind: 'until-cleared' } },
+      state: 'continuation',
+      stage: 'settle',
+      errorMessage: '',
+      detail: 'workflow recovery settlement remains authoritative',
+      continuation: { kind: 'workflow-recovery.v1', key: JSON.stringify(continuation) },
+    }),
+  ).toBe(true);
+  return continuation;
+}
+
+function setPendingReplacement(harness: ReturnType<typeof createHarness>, expiresAt = '2099-01-01T00:00:00.000Z') {
+  const sessionId = 'session-atom-1';
+  const entry = createProjectionSessionLookup(harness.db).readProviderSession(sessionId);
+  if (entry === undefined) throw new Error('Expected workflow provider session.');
+  harness.db.prepare('UPDATE projection_sessions SET entry = ? WHERE session_id = ?').run(
+    JSON.stringify({
+      ...entry,
+      continuationLease: {
+        status: 'pending',
+        staleJobId: harness.jobIdForSlot(harness.plan.slots[0].slotId),
+        workflowId: 'workflow-1',
+        workflowSlotId: harness.plan.slots[0].slotId,
+        replacementGeneration: 1,
+        reason: 'stale_recovery',
+        expiresAt,
+        recordedAt: '2026-04-27T00:00:00.000Z',
+      },
+    }),
+    sessionId,
+  );
+}
+
+const completed: JobTerminal = { content: 'saved output', outcome: { kind: 'completed' }, durationMs: 0 };
+const failed: JobTerminal = { content: 'saved error', outcome: { kind: 'provider_exit', code: 1 }, durationMs: 0 };
+const restartFault = {
+  kind: 'recovery_failed',
+  message: 'The coordinator restarted; the remaining workflow steps were not resumed.',
+} as const;
+
+describe('workflow recovery without execution', () => {
+  it('clears the continuation when the workflow already has a durable completion', async () => {
+    const harness = createHarness({ atomPhase: null, projectionPhase: null });
+    harness.progressStore.commit((c) => {
+      c.append(workflowCompletedEvent('workflow-1', { outcome: 'completed', stepDetails: [] }));
+      return undefined;
+    });
+    const finalizeWorkflow = vi.fn();
+    const releaseFailedWorkflowDescendants = vi.fn(() => []);
+    try {
+      expect(await recover(harness, { finalizeWorkflow, releaseFailedWorkflowDescendants })).toEqual([]);
+      expect(finalizeWorkflow).not.toHaveBeenCalled();
+      expect(releaseFailedWorkflowDescendants).not.toHaveBeenCalled();
+      expect(readContinuation(harness)).toBeUndefined();
+    } finally {
+      harness.db.close();
+    }
+  });
+
+  it('completes a workflow whose steps all have durable successful terminals', async () => {
+    const harness = createHarness({
+      expression: 'architect -> reviewer',
+      atomPhase: null,
+      projectionPhase: null,
+      slotStates: { 0: { terminal: completed }, 1: { terminal: { ...completed, content: 'final output' } } },
+    });
+    const finalizeWorkflow = vi.fn();
+    try {
+      expect(await recover(harness, { finalizeWorkflow })).toEqual(['workflow-1']);
+      expect(finalizeWorkflow).toHaveBeenCalledWith({
+        outcome: 'completed',
+        workflowJobId: 'workflow-1',
+        finalOutput: 'final output',
+        stepDetails: [
+          { stepIndex: 0, atomIndex: 0, label: 'architect', output: 'saved output' },
+          { stepIndex: 1, atomIndex: 0, label: 'reviewer', output: 'final output' },
+        ],
+      });
+      expect(readContinuation(harness)).toBeUndefined();
+    } finally {
+      harness.db.close();
+    }
+  });
+
+  it.each([
+    { outcome: 'failed', terminal: failed },
+    {
+      outcome: 'aborted',
+      terminal: { ...failed, outcome: { kind: 'aborted', reason: 'signal_abort' } } as JobTerminal,
+    },
+  ])('closes $outcome from the active step when every launched atom is terminal', async ({ outcome, terminal }) => {
+    const harness = createHarness({
+      expression: '(architect, reviewer)',
+      atomPhase: null,
+      projectionPhase: null,
+      slotStates: { 0: { terminal: completed }, 1: { terminal } },
+    });
+    const finalizeWorkflow = vi.fn();
+    try {
+      expect(await recover(harness, { finalizeWorkflow })).toEqual(['workflow-1']);
+      expect(finalizeWorkflow).toHaveBeenCalledWith(
+        expect.objectContaining({
+          outcome,
+          workflowJobId: 'workflow-1',
+          stepDetails: [
+            { stepIndex: 0, atomIndex: 0, label: 'architect', output: 'saved output' },
+            { stepIndex: 0, atomIndex: 1, label: 'reviewer', output: 'saved error' },
+          ],
+          ...(outcome === 'failed'
+            ? {
+                lifecycleFault: {
+                  kind: 'recovery_failed',
+                  message: "Step 0, atom 'reviewer' failed: exited with code 1",
+                },
+                failureLocation: {
+                  slotId: harness.plan.slots[1].slotId,
+                  stepIndex: 0,
+                  atomLabel: 'reviewer',
+                  jobId: harness.jobIdForSlot(harness.plan.slots[1].slotId),
+                },
+              }
+            : { reason: 'signal_abort' }),
+        }),
+      );
+      expect(readContinuation(harness)).toBeUndefined();
+    } finally {
+      harness.db.close();
+    }
+  });
+
+  it.each([
+    { name: 'never launched', atomPhase: null, projectionPhase: null },
+    { name: 'running', atomPhase: 'running', projectionPhase: 'running' },
+    { name: 'queued', atomPhase: 'queued', projectionPhase: 'queued' },
+  ] as const)('fails a $name step after restart', async ({ atomPhase, projectionPhase }) => {
+    const harness = createHarness({ atomPhase, projectionPhase });
+    const finalizeWorkflow = vi.fn();
+    const releaseFailedWorkflowDescendants = vi.fn(() => []);
+    try {
+      expect(await recover(harness, { finalizeWorkflow, releaseFailedWorkflowDescendants })).toEqual(['workflow-1']);
+      expect(finalizeWorkflow).toHaveBeenCalledWith({
+        outcome: 'failed',
+        workflowJobId: 'workflow-1',
+        lifecycleFault: restartFault,
+        stepDetails: [],
+      });
+      expect(releaseFailedWorkflowDescendants).toHaveBeenCalledWith('workflow-1');
+      expect(readContinuation(harness)).toBeUndefined();
+    } finally {
+      harness.db.close();
+    }
+  });
+
+  it.each([
+    { name: 'partly launched', expression: '(architect, reviewer)', first: completed },
+    { name: 'completed first step', expression: 'architect -> reviewer', first: completed },
+    { name: 'failed child with a running sibling', expression: '(architect, reviewer)', first: failed, running: true },
+  ])('fails a $name workflow without launching the missing work', async ({ expression, first, running }) => {
+    const harness = createHarness({
+      expression,
+      atomPhase: null,
+      projectionPhase: null,
+      slotStates: {
+        0: { terminal: first },
+        ...(running ? { 1: { atomPhase: 'running' as const, projectionPhase: 'running' as const } } : {}),
+      },
+    });
+    const finalizeWorkflow = vi.fn();
+    try {
+      expect(await recover(harness, { finalizeWorkflow })).toEqual(['workflow-1']);
+      expect(finalizeWorkflow).toHaveBeenCalledWith(
+        expect.objectContaining({
+          outcome: 'failed',
+          lifecycleFault: restartFault,
+          stepDetails: [{ stepIndex: 0, atomIndex: 0, label: 'architect', output: first.content }],
+        }),
+      );
+      expect(readContinuation(harness)).toBeUndefined();
+    } finally {
+      harness.db.close();
+    }
+  });
+
+  it('closes from a terminal failure even when a sibling was never launched', async () => {
+    const harness = createHarness({
+      expression: '(architect, reviewer)',
+      atomPhase: null,
+      projectionPhase: null,
+      slotStates: { 0: { terminal: failed } },
+    });
+    const finalizeWorkflow = vi.fn();
+    try {
+      expect(await recover(harness, { finalizeWorkflow })).toEqual(['workflow-1']);
+      expect(finalizeWorkflow).toHaveBeenCalledWith(
+        expect.objectContaining({
+          outcome: 'failed',
+          failureLocation: expect.objectContaining({ atomLabel: 'architect' }),
+        }),
+      );
+    } finally {
+      harness.db.close();
+    }
+  });
+
+  it.each(['prepared', 'external-outcome-unknown'] as const)(
+    'keeps a stored %s continuation deferred',
+    async (stage) => {
+      const harness = createHarness({ atomPhase: 'running', projectionPhase: 'running' });
+      setPendingReplacement(harness);
+      const stored = storeContinuation(harness, stage);
+      const finalizeWorkflow = vi.fn();
+      const releaseFailedWorkflowDescendants = vi.fn(() => []);
+      try {
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          expect(await recover(harness, { finalizeWorkflow, releaseFailedWorkflowDescendants })).toEqual([]);
+          expect(JSON.parse(readContinuation(harness)?.continuation_key ?? 'null')).toEqual(stored);
+        }
+        expect(harness.progressStore.readStatus('workflow-1')?.phase).toBe('running');
+        expect(createProjectionSessionLookup(harness.db).readProviderSession('session-atom-1')?.activeJobId).toBe(
+          harness.jobIdForSlot(harness.plan.slots[0].slotId),
+        );
+        expect(
+          createProjectionSessionLookup(harness.db).readProviderSession('session-atom-1')?.continuationLease,
+        ).toMatchObject({ status: 'cleared', outcome: 'explicit_clear' });
+        expect(finalizeWorkflow).not.toHaveBeenCalled();
+        expect(releaseFailedWorkflowDescendants).not.toHaveBeenCalled();
+        expect(harness.executionSvc.abort).not.toHaveBeenCalled();
+      } finally {
+        harness.db.close();
+      }
+    },
+  );
+
+  it.each([
+    { outcome: 'completed', workflowJobId: 'workflow-1', finalOutput: 'recorded result', stepDetails: [] },
+    { outcome: 'failed', workflowJobId: 'workflow-1', lifecycleFault: restartFault, stepDetails: [] },
+    { outcome: 'aborted', workflowJobId: 'workflow-1', reason: 'signal_abort', stepDetails: [] },
+  ] satisfies WorkflowFinalizationIntent[])(
+    'closes a stored ready-to-close $outcome intent exactly as recorded',
+    async (intent) => {
+      const harness = createHarness({ atomPhase: 'running', projectionPhase: 'running' });
+      setPendingReplacement(harness);
+      storeContinuation(harness, 'ready-to-close', intent);
+      const finalizeWorkflow = vi.fn();
+      try {
+        expect(await recover(harness, { finalizeWorkflow })).toEqual(['workflow-1']);
+        expect(finalizeWorkflow).toHaveBeenCalledExactlyOnceWith(intent);
+        expect(
+          createProjectionSessionLookup(harness.db).readProviderSession('session-atom-1')?.continuationLease,
+        ).toMatchObject({ status: 'cleared', outcome: 'explicit_clear' });
+        expect(readContinuation(harness)).toBeUndefined();
+      } finally {
+        harness.db.close();
+      }
+    },
+  );
+
+  it.each(['2099-01-01T00:00:00.000Z', '2000-01-01T00:00:00.000Z'])(
+    'clears a pending replacement expiring at %s without renewal or launch',
+    async (expiresAt) => {
+      const harness = createHarness({
+        atomPhase: null,
+        projectionPhase: null,
+        slotStates: { 0: { terminal: failed } },
+      });
+      setPendingReplacement(harness, expiresAt);
+      try {
+        expect(await recover(harness)).toEqual(['workflow-1']);
+        expect(
+          createProjectionSessionLookup(harness.db).readProviderSession('session-atom-1')?.continuationLease,
+        ).toMatchObject({
+          status: 'cleared',
+          outcome: 'explicit_clear',
+          expiresAt,
+        });
+        expect(
+          harness.db.prepare("SELECT 1 FROM events WHERE type = 'session.continuation_lease.recorded'").get(),
+        ).toBeUndefined();
+        expect(readContinuation(harness)).toBeUndefined();
+      } finally {
+        harness.db.close();
+      }
+    },
+  );
+
+  it('releases the descendant claim and process-local adoption when closing an unfinished workflow', async () => {
+    const harness = createHarness({ atomPhase: 'running', projectionPhase: 'running' });
+    const options = recoveryOptions(harness);
+    const releaseAdoptedJob = vi.fn();
+    const emitSessionReleased = vi.fn();
+    options.releaseFailedWorkflowDescendants = createFailedWorkflowDescendantReleaser({
+      progressStore: harness.progressStore,
+      runtime: harness.runtime,
+      coordinatorCommit: (cb) => harness.progressStore.commit(cb),
+      getExecutionService: () => harness.executionSvc,
+      createInvocationContext: harness.createInvocationContext,
+      releaseAdoptedJob,
+      emitSessionReleased,
+      log: vi.fn(),
+    });
+    try {
+      expect(await recover(harness, options)).toEqual(['workflow-1']);
+      expect(harness.progressStore.readStatus('workflow-1')?.phase).toBe('error');
+      expect(
+        createProjectionSessionLookup(harness.db).readProviderSession('session-atom-1')?.activeJobId,
+      ).toBeUndefined();
+      const childJobId = harness.jobIdForSlot(harness.plan.slots[0].slotId);
+      expect(harness.executionSvc.abort).toHaveBeenCalledWith([childJobId]);
+      expect(releaseAdoptedJob).toHaveBeenCalledWith(childJobId);
+      expect(emitSessionReleased).toHaveBeenCalledWith({ sessionId: 'session-atom-1', jobId: childJobId });
+      expect(readContinuation(harness)).toBeUndefined();
+    } finally {
+      harness.db.close();
+    }
+  });
+
+  it('retries a failed durable close with its recorded intent', async () => {
+    const harness = createHarness({ atomPhase: 'running', projectionPhase: 'running' });
+    const finalizeWorkflow = vi.fn<(intent: WorkflowFinalizationIntent) => void>(() => {
+      throw new Error('workflow finalizer unavailable');
+    });
+    const releaseFailedWorkflowDescendants = vi.fn(() => []);
+    try {
+      expect(await recover(harness, { finalizeWorkflow, releaseFailedWorkflowDescendants })).toEqual([]);
+      const stored = JSON.parse(readContinuation(harness)?.continuation_key ?? 'null') as {
+        stage: string;
+        intendedFinalization: { intent: WorkflowFinalizationIntent };
+      };
+      expect(stored.stage).toBe('ready-to-close');
+      expect(stored.intendedFinalization.intent).toMatchObject({ outcome: 'failed', lifecycleFault: restartFault });
+      expect(releaseFailedWorkflowDescendants).not.toHaveBeenCalled();
+      finalizeWorkflow.mockImplementation(() => {});
+      expect(await recover(harness, { finalizeWorkflow, releaseFailedWorkflowDescendants })).toEqual(['workflow-1']);
+      expect(finalizeWorkflow.mock.calls[1]).toEqual([stored.intendedFinalization.intent]);
+      expect(releaseFailedWorkflowDescendants).toHaveBeenCalledOnce();
+      expect(readContinuation(harness)).toBeUndefined();
+    } finally {
+      harness.db.close();
+    }
+  });
+
+  it('fails closed when a durable slot is owned by another workflow', async () => {
+    const harness = createHarness({ atomPhase: 'running', projectionPhase: 'running' });
+    const row = harness.db
+      .prepare<
+        [string],
+        { seq: number; body: Buffer }
+      >("SELECT seq, body FROM events WHERE stream_id = ? AND type = 'job.launch.requested'")
+      .get(harness.jobIdForSlot(harness.plan.slots[0].slotId));
+    if (row === undefined) throw new Error('Expected child launch.');
+    const body = decodeEventBody(row.body) as Record<string, unknown>;
+    body.owner = { kind: 'provider-session', id: 'session-atom-1' };
+    harness.db.prepare('UPDATE events SET body = ? WHERE seq = ?').run(encodeEventBody(body), row.seq);
+    const finalizeWorkflow = vi.fn();
+    try {
+      expect(await recover(harness, { finalizeWorkflow })).toEqual(['workflow-1']);
+      expect(finalizeWorkflow).toHaveBeenCalledWith(
+        expect.objectContaining({
+          outcome: 'failed',
+          lifecycleFault: expect.objectContaining({ message: expect.stringContaining('invalid durable relation') }),
+        }),
+      );
+    } finally {
+      harness.db.close();
+    }
+  });
+
+  it('quarantines a malformed workflow and still closes a valid sibling', async () => {
+    const harness = createHarness({ atomPhase: null, projectionPhase: null });
+    createHarness({ db: harness.db, workflowId: 'workflow-2', atomPhase: null, projectionPhase: null });
+    harness.db.prepare("UPDATE projection_workflows SET plan = ? WHERE workflow_id = 'workflow-1'").run('{invalid');
+    try {
+      expect(await recover(harness)).toEqual(['workflow-2']);
+      expect(harness.progressStore.readStatus('workflow-2')?.phase).toBe('error');
+      expect(readContinuation(harness)).toMatchObject({ state: 'active' });
+      expect(harness.progressStore.readStatus('workflow-1')?.phase).toBe('running');
+    } finally {
+      harness.db.close();
+    }
+  });
+
+  it.each(['already absent', 'owned by another job'] as const)(
+    'closes when a stored descendant claim is %s',
+    async (disposition) => {
+      const harness = createHarness({ atomPhase: 'running', projectionPhase: 'running' });
+      const childJobId = harness.jobIdForSlot(harness.plan.slots[0].slotId);
+      storeContinuation(harness, 'ready-to-close', {
+        outcome: 'failed',
+        workflowJobId: 'workflow-1',
+        lifecycleFault: restartFault,
+        stepDetails: [],
+      });
+      releaseSessionJobClaim({
+        projectRoot: PROJECT_ROOT,
+        runtime: harness.runtime,
+        db: harness.db,
+        commitEvents: (cb) => harness.progressStore.commit(cb),
+        emitSessionReleased: () => {},
+        sessionId: 'session-atom-1',
+        jobId: childJobId,
+      });
+      if (disposition === 'owned by another job') {
+        seedTestSessionProjection(harness.db, {
+          sessionId: 'session-atom-1',
+          provider: 'codex',
+          projectRoot: PROJECT_ROOT,
+          backendNamespace: BACKEND_NAMESPACE,
+          activeJobId: 'unrelated-successor',
+        });
+      }
+      const log = vi.fn();
+      try {
+        expect(await recover(harness, { log })).toEqual(['workflow-1']);
+        expect(harness.progressStore.readStatus('workflow-1')?.phase).toBe('error');
+        expect(createProjectionSessionLookup(harness.db).readProviderSession('session-atom-1')?.activeJobId).toBe(
+          disposition === 'already absent' ? undefined : 'unrelated-successor',
+        );
+        expect(harness.executionSvc.abort).toHaveBeenCalledWith([childJobId]);
+        expect(readContinuation(harness)).toBeUndefined();
+      } finally {
+        harness.db.close();
+      }
+    },
+  );
+
+  it('uses the canonical target of a persisted symlink root for lease clearance', async () => {
     const root = mkdtempSync(join(tmpdir(), 'coral-workflow-recovery-canonical-'));
     const physicalProject = join(root, 'physical-project');
     const selectedProject = join(root, 'selected-project');
     mkdirSync(physicalProject);
     symlinkSync(physicalProject, selectedProject, 'dir');
-    const harness = createHarness({
-      projectRoot: selectedProject,
-      atomPhase: 'running',
-      projectionPhase: 'running',
-    });
-    const contextRoots: CanonicalWorkDir[] = [];
-
+    const harness = createHarness({ projectRoot: selectedProject, atomPhase: 'running', projectionPhase: 'running' });
+    setPendingReplacement(harness);
+    const options = recoveryOptions(harness);
+    const clearContinuationLease = vi.fn(options.clearContinuationLease);
     try {
-      const resumed = await resumeAll({
-        db: harness.db,
-        progressStore: harness.progressStore,
-        loadJobDetails: loadJobProjectionDetails,
-        getExecutionService: () => harness.executionSvc,
-        createInvocationContext: (projectRoot) => {
-          contextRoots.push(projectRoot);
-          return harness.createInvocationContext(projectRoot);
-        },
-        finalizeWorkflow: vi.fn(),
-        releaseFailedWorkflowDescendants: noFailedWorkflowDescendants,
-        time: fixedTime,
+      expect(await recover(harness, { clearContinuationLease })).toEqual(['workflow-1']);
+      expect(clearContinuationLease).toHaveBeenCalledWith(realpathSync(physicalProject), {
+        sessionId: 'session-atom-1',
+        jobId: harness.jobIdForSlot(harness.plan.slots[0].slotId),
+        outcome: 'explicit_clear',
       });
-
-      expect(resumed).toEqual(['workflow-1']);
-      expect(contextRoots).toEqual([realpathSync(physicalProject)]);
     } finally {
       harness.db.close();
       rmSync(root, { recursive: true, force: true });
     }
   });
 
-  it('quarantines an unresolvable persisted workflow root with the explicit work-directory failure', async () => {
+  it('quarantines an unresolvable persisted workflow root', async () => {
     const root = mkdtempSync(join(tmpdir(), 'coral-workflow-recovery-refusal-'));
     const missingProjectRoot = join(root, 'deleted-project');
     const harness = createHarness({
@@ -355,986 +765,16 @@ describe('workflow recovery branch rules', () => {
       atomPhase: 'running',
       projectionPhase: 'running',
     });
-
     try {
-      const resumed = await resumeAll({
-        db: harness.db,
-        progressStore: harness.progressStore,
-        loadJobDetails: loadJobProjectionDetails,
-        getExecutionService: () => harness.executionSvc,
-        createInvocationContext: harness.createInvocationContext,
-        finalizeWorkflow: vi.fn(),
-        releaseFailedWorkflowDescendants: noFailedWorkflowDescendants,
-        time: fixedTime,
-      });
-
-      expect(
-        resumed,
-        'AC11 silent divergence at the persisted-recovery workflow boundary: an unresolvable work directory was accepted',
-      ).toEqual([]);
-      const quarantine = harness.db
-        .prepare<[], { stage: string; error_message: string; disposition_detail: string }>(
-          `SELECT stage, error_message, disposition_detail
-             FROM recovery_quarantine
-            WHERE boundary_id = 'workflow-recovery'
-              AND subject_key = 'workflow-1'`,
-        )
-        .get();
-      expect(
-        quarantine,
-        'AC11 silent divergence at the persisted-recovery workflow boundary: the dedicated work-directory failure was not retained',
-      ).toMatchObject({
-        stage: 'hydrate',
+      expect(await recover(harness)).toEqual([]);
+      expect(readContinuation(harness)).toMatchObject({
+        state: 'active',
         error_message: expect.stringContaining(missingProjectRoot),
-        disposition_detail: 'workflow recovery hydration failed',
       });
-      expect(quarantine?.error_message).toMatch(/ENOENT|no such file or directory/);
+      expect(readContinuation(harness)?.error_message).toMatch(/ENOENT|no such file or directory/);
     } finally {
       harness.db.close();
       rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it('relaunches an absent step with persisted source A instead of replacement-daemon source B', async () => {
-    const harness = createHarness({ atomPhase: null, projectionPhase: null });
-    const atomJobId = randomUUID();
-    const ids = { uuid: vi.fn(() => atomJobId) };
-    const replacementCredentials = withTestProfileLocation(TEST_PROVIDER_SCOPE, 'codex', '/replacement/.codex-b');
-    const createReplacementContext = (projectRoot: CanonicalWorkDir): InvocationContext => ({
-      ...harness.createInvocationContext(projectRoot),
-      providerScope: replacementCredentials,
-    });
-    const getExecutionService = vi.fn(() => harness.executionSvc);
-    try {
-      const resumed = await resumeAll({
-        db: harness.db,
-        progressStore: harness.progressStore,
-        loadJobDetails: loadJobProjectionDetails,
-        getExecutionService,
-        createInvocationContext: createReplacementContext,
-        finalizeWorkflow: vi.fn(),
-        releaseFailedWorkflowDescendants: noFailedWorkflowDescendants,
-        ids,
-        time: fixedTime,
-      });
-
-      expect(resumed).toEqual(['workflow-1']);
-      expect(harness.executionSvc.coralDispatch).toHaveBeenCalledTimes(1);
-      expect(vi.mocked(harness.executionSvc.coralDispatch).mock.calls[0]?.[3]?.providerScope).toEqual(
-        TEST_PROVIDER_SCOPE,
-      );
-      expect(getExecutionService).toHaveBeenCalledWith(expect.objectContaining({ providerScope: TEST_PROVIDER_SCOPE }));
-    } finally {
-      harness.db.close();
-    }
-  });
-
-  it('fails closed when a durable workflow slot job is not owned by its workflow', async () => {
-    const harness = createHarness({ atomPhase: 'running', projectionPhase: 'running' });
-    const slot = harness.plan.slots[0];
-    const finalizeWorkflow = vi.fn<(intent: WorkflowFinalizationIntent) => void>();
-    const row = harness.db
-      .prepare(
-        "SELECT seq, body FROM events WHERE stream_kind = 'job' AND stream_id = ? AND type = 'job.launch.requested'",
-      )
-      .get(harness.jobIdForSlot(slot.slotId)) as { seq: number; body: Buffer };
-    const body = decodeEventBody(row.body) as Record<string, unknown>;
-    body.owner = { kind: 'provider-session', id: 'session-atom-1' };
-    harness.db.prepare('UPDATE events SET body = ? WHERE seq = ?').run(encodeEventBody(body), row.seq);
-
-    try {
-      await expect(
-        resumeAll({
-          db: harness.db,
-          progressStore: harness.progressStore,
-          loadJobDetails: loadJobProjectionDetails,
-          getExecutionService: () => harness.executionSvc,
-          createInvocationContext: harness.createInvocationContext,
-          finalizeWorkflow,
-          releaseFailedWorkflowDescendants: noFailedWorkflowDescendants,
-          time: fixedTime,
-        }),
-      ).resolves.toEqual(['workflow-1']);
-      expect(finalizeWorkflow).toHaveBeenCalledWith(
-        expect.objectContaining({
-          outcome: 'failed',
-          workflowJobId: 'workflow-1',
-          lifecycleFault: expect.objectContaining({
-            kind: 'recovery_failed',
-            message: `Workflow recovery rejected invalid durable relation for slot '${slot.slotId}' and job '${harness.jobIdForSlot(slot.slotId)}'.`,
-          }),
-        }),
-      );
-      expect(harness.executionSvc.waitStream).not.toHaveBeenCalled();
-    } finally {
-      harness.db.close();
-    }
-  });
-
-  it('defers an unknown external launch outcome and keeps descendant claims held', async () => {
-    const harness = createHarness({
-      expression: '(architect, reviewer)',
-      atomPhase: 'running',
-      projectionPhase: 'running',
-      slotStates: {
-        1: { atomPhase: null, projectionPhase: null },
-      },
-    });
-    const externalError = new Error('launch response lost');
-    harness.executionSvc.coralDispatch.mockRejectedValue(externalError);
-    const coordinatorCommit = (cb: Parameters<JobStore['commit']>[0]) => harness.progressStore.commit(cb);
-    const abort = vi.fn(() => ({ aborted: [], notFound: [] }));
-    const releaseAdoptedJob = vi.fn();
-    const releaseFailedWorkflowDescendants = createFailedWorkflowDescendantReleaser({
-      progressStore: harness.progressStore,
-      runtime: harness.runtime,
-      coordinatorCommit,
-      getExecutionService: () => ({ abort }),
-      createInvocationContext: harness.createInvocationContext,
-      releaseAdoptedJob,
-      emitSessionReleased: vi.fn(),
-      log: vi.fn(),
-    });
-
-    try {
-      await expect(
-        resumeAll({
-          db: harness.db,
-          progressStore: harness.progressStore,
-          loadJobDetails: loadJobProjectionDetails,
-          getExecutionService: () => harness.executionSvc,
-          createInvocationContext: harness.createInvocationContext,
-          finalizeWorkflow: createWorkflowRecoveryFinalizer({
-            runtime: harness.runtime,
-            progressStore: harness.progressStore,
-            coordinatorCommit,
-          }),
-          releaseFailedWorkflowDescendants,
-          time: fixedTime,
-        }),
-      ).resolves.toEqual([]);
-
-      expect(harness.progressStore.readStatus('workflow-1')?.phase).toBe('running');
-      expect(createProjectionSessionLookup(harness.db).readProviderSession('session-atom-1')?.activeJobId).toBe(
-        harness.jobIdForSlot(harness.plan.slots[0].slotId),
-      );
-      expect(abort).not.toHaveBeenCalled();
-      expect(releaseAdoptedJob).not.toHaveBeenCalled();
-      const continuation = harness.db
-        .prepare<[], { continuation_kind: string; continuation_key: string }>(
-          `SELECT continuation_kind, continuation_key
-             FROM recovery_quarantine
-            WHERE boundary_id = 'workflow-recovery'
-              AND subject_key = 'workflow-1'`,
-        )
-        .get();
-      expect(continuation?.continuation_kind).toBe('workflow-recovery.v1');
-      expect(JSON.parse(continuation?.continuation_key ?? '{}')).toMatchObject({
-        stage: 'external-outcome-unknown',
-        intendedFinalization: { kind: 'pending' },
-      });
-
-      await expect(
-        resumeAll({
-          db: harness.db,
-          progressStore: harness.progressStore,
-          loadJobDetails: loadJobProjectionDetails,
-          getExecutionService: () => harness.executionSvc,
-          createInvocationContext: harness.createInvocationContext,
-          finalizeWorkflow: createWorkflowRecoveryFinalizer({
-            runtime: harness.runtime,
-            progressStore: harness.progressStore,
-            coordinatorCommit,
-          }),
-          releaseFailedWorkflowDescendants,
-          time: fixedTime,
-        }),
-      ).resolves.toEqual([]);
-      expect(harness.executionSvc.coralDispatch).toHaveBeenCalledTimes(1);
-      expect(abort).not.toHaveBeenCalled();
-      expect(releaseAdoptedJob).not.toHaveBeenCalled();
-    } finally {
-      harness.db.close();
-    }
-  });
-
-  it('defers a failed durable close and keeps its intended finalization authoritative', async () => {
-    const harness = createHarness({ atomPhase: 'running', projectionPhase: 'running' });
-    const finalizerError = new Error('workflow finalizer unavailable');
-    const finalizeWorkflow = vi.fn<(intent: WorkflowFinalizationIntent) => void>(() => {
-      throw finalizerError;
-    });
-    const releaseFailedWorkflowDescendants = vi.fn(() => []);
-
-    try {
-      await expect(
-        resumeAll({
-          db: harness.db,
-          progressStore: harness.progressStore,
-          loadJobDetails: loadJobProjectionDetails,
-          getExecutionService: () => {
-            throw new Error('workflow execution recovery failed');
-          },
-          createInvocationContext: harness.createInvocationContext,
-          finalizeWorkflow,
-          releaseFailedWorkflowDescendants,
-          signal: new AbortController().signal,
-          time: fixedTime,
-        }),
-      ).resolves.toEqual([]);
-      expect(finalizeWorkflow).toHaveBeenCalledOnce();
-      expect(releaseFailedWorkflowDescendants).not.toHaveBeenCalled();
-      const continuation = harness.db
-        .prepare<[], { state: string; continuation_kind: string; continuation_key: string }>(
-          `SELECT state, continuation_kind, continuation_key
-             FROM recovery_quarantine
-            WHERE boundary_id = 'workflow-recovery'
-              AND subject_key = 'workflow-1'`,
-        )
-        .get();
-      expect(continuation).toMatchObject({
-        state: 'continuation',
-        continuation_kind: 'workflow-recovery.v1',
-      });
-      expect(JSON.parse(continuation?.continuation_key ?? '{}')).toMatchObject({
-        stage: 'ready-to-close',
-        intendedFinalization: {
-          kind: 'intent',
-          intent: { outcome: 'failed', workflowJobId: 'workflow-1' },
-        },
-      });
-
-      finalizeWorkflow.mockImplementation(() => {});
-      await expect(
-        resumeAll({
-          db: harness.db,
-          progressStore: harness.progressStore,
-          loadJobDetails: loadJobProjectionDetails,
-          getExecutionService: () => {
-            throw new Error('workflow execution must not repeat after a durable intended close');
-          },
-          createInvocationContext: harness.createInvocationContext,
-          finalizeWorkflow,
-          releaseFailedWorkflowDescendants,
-          signal: new AbortController().signal,
-          time: fixedTime,
-        }),
-      ).resolves.toEqual(['workflow-1']);
-      expect(finalizeWorkflow).toHaveBeenCalledTimes(2);
-      expect(releaseFailedWorkflowDescendants).toHaveBeenCalledOnce();
-      expect(
-        harness.db
-          .prepare(
-            `SELECT 1
-               FROM recovery_quarantine
-              WHERE boundary_id = 'workflow-recovery'
-                AND subject_key = 'workflow-1'`,
-          )
-          .get(),
-      ).toBeUndefined();
-    } finally {
-      harness.db.close();
-    }
-  });
-
-  // Issue #310. Recovery commits a replacement through `executionSvc.resume()` before it has validated
-  // the durable state that follows, and its descendant authority was captured at hydration — so a job
-  // this pass creates is not in the envelope this pass later cleans up.
-  //
-  // Every other replacement test in this file is structurally unable to see it: they pass
-  // `noFailedWorkflowDescendants`, a bare function with no `composeAtomic`, so `atomicReleaser()`
-  // returns null and the production release never runs at all. This one uses the real releaser and a
-  // real `resume()` — the canonical-path mock above does update the session projection, but only to the
-  // shape that test asserts, and the defect is exactly what the real claim swap writes there.
-  //
-  // The session must hold its claim when the child launches (`appendLaunchRequested` validates the
-  // binding) and must have released it by the time recovery runs (`resumeResolved` rejects
-  // `session_busy` before it ever reaches the replacement branch). That ordering is not incidental —
-  // it is why the replaced session is never itself a descendant, and why the damage is an omission
-  // rather than a rejection.
-  it('cleans up the replacement it launched when recovery then fails', async () => {
-    const backend = createSimulationBackend({ projectRoot: PROJECT_ROOT, pluginRoot: PROJECT_ROOT });
-    const workflowId = 'workflow-replacement-envelope';
-    const plan = buildWorkflowPlan(workflowId, parseExpression('architect'), { defaultProvider: 'codex' });
-    const childJobId = plan.slots[0].slotId;
-    const sessionId = 'session-replacement-envelope';
-    const providerScope = backend.createInvocationContext().providerScope;
-    if (providerScope === undefined) throw new Error('expected simulation provider scope');
-
-    commitWorkflowEvents(
-      backend.progressStore.getDb(),
-      (c) => {
-        c.append(workflowPlanDeclaredEvent(workflowId, plan, providerScope));
-        return undefined;
-      },
-      backend.runtime.time,
-      permissiveProviderLookupPort,
-    );
-    backend.progressStore.appendLaunchRequested(workflowId, {
-      jobId: workflowId,
-      owner: { kind: 'workflow', id: workflowId },
-      sessionId: null,
-      provider: null,
-      projectRoot: backend.projectRoot,
-      backendNamespace: backend.namespace,
-      jobKind: 'workflow',
-      pool: 'default',
-      enqueueSequence: backend.progressStore.nextEnqueueSequence(),
-      request: { prompt: '', cwd: backend.projectRoot, bypassPermissions: false, coralEnv: {} },
-      createdAt: '2026-04-27T00:00:00.000Z',
-    });
-    backend.progressStore.commit((c) => {
-      c.append({
-        type: 'job.runtime.started',
-        stream: { kind: 'job', id: workflowId },
-        namespace: backend.namespace,
-        project: backend.projectRoot,
-        refs: { jobId: workflowId, workflowId },
-        body: { transport: 'workflow', startedAt: '2026-04-27T00:00:00.000Z' },
-      });
-      return undefined;
-    });
-
-    seedTestSessionProjection(backend.progressStore.getDb(), {
-      sessionId,
-      provider: 'codex',
-      projectRoot: backend.projectRoot,
-      backendNamespace: backend.namespace,
-      activeJobId: childJobId,
-    });
-    backend.progressStore.appendLaunchRequested(childJobId, {
-      jobId: childJobId,
-      owner: { kind: 'workflow', id: workflowId },
-      sessionId,
-      provider: 'codex',
-      projectRoot: backend.projectRoot,
-      backendNamespace: backend.namespace,
-      jobKind: 'provider',
-      pool: 'default',
-      enqueueSequence: backend.progressStore.nextEnqueueSequence(),
-      providerAction: 'exec',
-      parentWorkflowJobId: workflowId,
-      workflowSlotId: childJobId,
-      workflowSlotGeneration: 0,
-      request: { prompt: '', cwd: backend.projectRoot, bypassPermissions: false, coralEnv: {} },
-      createdAt: '2026-04-27T00:00:00.000Z',
-    });
-    commitJobTerminal(backend.progressStore, childJobId, sessionId, {
-      content: '',
-      outcome: { kind: 'job_fault', fault: { kind: 'ghost_launch' } },
-      durationMs: 0,
-    });
-
-    // The crashed daemon released the claim and recorded a replacement intent it never completed.
-    const sessionRow = backend.progressStore
-      .getDb()
-      .prepare<[string], { entry: string }>('SELECT entry FROM projection_sessions WHERE session_id = ?')
-      .get(sessionId);
-    if (sessionRow === undefined) throw new Error('expected persisted provider session');
-    const sessionEntry = JSON.parse(sessionRow.entry) as ProviderSession & Record<string, unknown>;
-    delete sessionEntry.activeJobId;
-    sessionEntry.binding = {
-      provider: 'codex',
-      kind: 'profile',
-      binding: {
-        profile: { canonicalLocation: '/tmp/sim/accounts/codex', routing: { kind: 'home' } },
-        guarantee: 'profile-only',
-      },
-    };
-    sessionEntry.continuationLease = {
-      status: 'pending',
-      staleJobId: childJobId,
-      workflowId,
-      workflowSlotId: childJobId,
-      replacementGeneration: 1,
-      reason: 'stale_recovery',
-      expiresAt: '2099-01-01T00:00:00.000Z',
-      recordedAt: '2026-04-27T00:00:00.000Z',
-    };
-    sessionEntry.version = Number(sessionEntry.version) + 1;
-    backend.progressStore
-      .getDb()
-      .prepare('UPDATE projection_sessions SET entry = ? WHERE session_id = ?')
-      .run(JSON.stringify(sessionEntry), sessionId);
-
-    const log = vi.fn<(message: string) => void>();
-    const coordinatorCommit = (cb: Parameters<JobStore['commit']>[0]) => backend.progressStore.commit(cb);
-    const releaseFailedWorkflowDescendants = createFailedWorkflowDescendantReleaser({
-      progressStore: backend.progressStore,
-      runtime: backend.runtime,
-      coordinatorCommit,
-      getExecutionService: () => backend.service,
-      createInvocationContext: backend.createInvocationContext,
-      releaseAdoptedJob: () => {},
-      emitSessionReleased: () => {},
-      log,
-    });
-
-    // Fails the step *after* the replacement has already committed — the window the ordering opens.
-    // A Proxy rather than a spread: the execution service is a class instance, so spreading it drops
-    // every prototype method and the run fails on `service.resume is not a function` instead of on the
-    // defect. Methods bind to the target so private fields still resolve.
-    //
-    // The override also records what it was called with, because the assertions below cannot tell a
-    // launched-then-abandoned replacement from a `resume()` that never launched one: if `resume()`
-    // returned `rejected`, recovery still settles the workflow as failed and the session still ends with
-    // no claim, so every assertion would pass while nothing was exercised. That is not hypothetical —
-    // an earlier revision of this test kept the session's claim, `resumeResolved` rejected it as
-    // `session_busy` before the replacement branch, and the test passed against the unfixed code.
-    let replacementJobId: string | undefined;
-    let claimWhileLaunching: string | undefined;
-    const abort = vi.spyOn(backend.service, 'abort');
-    const executionSvc = new Proxy(backend.service as object, {
-      get: (target, property) => {
-        if (property === 'awaitLaunch') {
-          return async (jobId: string): Promise<'error'> => {
-            replacementJobId = jobId;
-            claimWhileLaunching = createProjectionSessionLookup(backend.progressStore.getDb()).readProviderSession(
-              sessionId,
-            )?.activeJobId;
-            return 'error';
-          };
-        }
-        const value = Reflect.get(target, property, target) as unknown;
-        return typeof value === 'function' ? (value as (...a: unknown[]) => unknown).bind(target) : value;
-      },
-    }) as typeof backend.service;
-
-    try {
-      const settled = await settleWithVirtualTime(
-        resumeAll({
-          db: backend.progressStore.getDb(),
-          progressStore: backend.progressStore,
-          loadJobDetails: loadJobProjectionDetails,
-          getExecutionService: () => executionSvc as never,
-          createInvocationContext: backend.createInvocationContext,
-          finalizeWorkflow: createWorkflowRecoveryFinalizer({
-            runtime: backend.runtime,
-            progressStore: backend.progressStore,
-            coordinatorCommit,
-            log,
-          }),
-          releaseFailedWorkflowDescendants,
-          log,
-          time: backend.runtime.time,
-        }),
-        backend.advance,
-      );
-
-      // The workflow does settle, and its close is not rejected. Pinned because the issue predicted the
-      // opposite — that stale descendant authority would fail `composeAtomic` and defer recovery
-      // permanently. It cannot: the replaced session had already released its claim, so it was never in
-      // the descendant set whose version the close checks. The damage is only what is missing from that
-      // set, and a passing close is what makes the omission silent.
-      expect(settled).toEqual([workflowId]);
-      expect(backend.progressStore.readStatus(workflowId)?.phase).toBe('error');
-
-      // A replacement really launched, and really held the session — without this the assertions below
-      // are satisfied by a `resume()` that never launched anything.
-      expect(replacementJobId, 'recovery must have launched a replacement').toBeDefined();
-      expect(replacementJobId).not.toBe(childJobId);
-      expect(claimWhileLaunching, 'the replacement must hold the session claim while it launches').toBe(
-        replacementJobId,
-      );
-
-      // Two obligations, and reverting either one alone must fail here. The claim release is what the
-      // atomic close performs; the abort is what process-local cleanup performs. Asserting only the
-      // first would let a reverted cleanup site pass while the replacement kept running.
-      expect(
-        createProjectionSessionLookup(backend.progressStore.getDb()).readProviderSession(sessionId)?.activeJobId,
-        'the replacement launched during recovery must be released with the workflow it belongs to, not left holding its session',
-      ).toBeUndefined();
-      expect(abort, 'the replacement must also be stopped, not merely unclaimed').toHaveBeenCalledWith([
-        replacementJobId,
-      ]);
-    } finally {
-      await settleWithVirtualTime(backend.backend.shutdown('test-teardown'), backend.advance);
-    }
-  });
-
-  // The sibling of the case above, and the one that was live on main before it: recovery's own lawful
-  // work moves a claim it is going to release. Waiting for a child to terminate releases that child's
-  // claim; completing a replacement intent swaps it. The close then has to release a descendant whose
-  // claim has already moved.
-  //
-  // `composeAtomic` used to re-derive that judgement from a projection read and reject it — treating an
-  // already-released claim as a conflict, and comparing a session version captured at hydration against
-  // one this pass had itself advanced. A rejected close is not retried into a fresh read: the persisted
-  // `ready-to-close` continuation comes back unchanged, so the workflow deferred forever.
-  //
-  // Nothing pinned it because the release primitive's own `already_absent` result was unreachable —
-  // `describeSessionJobClaimReleaseResult` has carried a string for it that no run could produce.
-  it('closes when a descendant claim was already released by recovery itself', async () => {
-    const backend = createSimulationBackend({ projectRoot: PROJECT_ROOT, pluginRoot: PROJECT_ROOT });
-    const workflowId = 'workflow-descendant-already-released';
-    const plan = buildWorkflowPlan(workflowId, parseExpression('architect'), { defaultProvider: 'codex' });
-    const childJobId = plan.slots[0].slotId;
-    const sessionId = 'session-descendant-already-released';
-    const providerScope = backend.createInvocationContext().providerScope;
-    if (providerScope === undefined) throw new Error('expected simulation provider scope');
-
-    commitWorkflowEvents(
-      backend.progressStore.getDb(),
-      (c) => {
-        c.append(workflowPlanDeclaredEvent(workflowId, plan, providerScope));
-        return undefined;
-      },
-      backend.runtime.time,
-      permissiveProviderLookupPort,
-    );
-    backend.progressStore.appendLaunchRequested(workflowId, {
-      jobId: workflowId,
-      owner: { kind: 'workflow', id: workflowId },
-      sessionId: null,
-      provider: null,
-      projectRoot: backend.projectRoot,
-      backendNamespace: backend.namespace,
-      jobKind: 'workflow',
-      pool: 'default',
-      enqueueSequence: backend.progressStore.nextEnqueueSequence(),
-      request: { prompt: '', cwd: backend.projectRoot, bypassPermissions: false, coralEnv: {} },
-      createdAt: '2026-04-27T00:00:00.000Z',
-    });
-    backend.progressStore.commit((c) => {
-      c.append({
-        type: 'job.runtime.started',
-        stream: { kind: 'job', id: workflowId },
-        namespace: backend.namespace,
-        project: backend.projectRoot,
-        refs: { jobId: workflowId, workflowId },
-        body: { transport: 'workflow', startedAt: '2026-04-27T00:00:00.000Z' },
-      });
-      return undefined;
-    });
-
-    // A running child still holding its claim — this is what makes it a descendant.
-    seedTestSessionProjection(backend.progressStore.getDb(), {
-      sessionId,
-      provider: 'codex',
-      projectRoot: backend.projectRoot,
-      backendNamespace: backend.namespace,
-      activeJobId: childJobId,
-    });
-    backend.progressStore.appendLaunchRequested(childJobId, {
-      jobId: childJobId,
-      owner: { kind: 'workflow', id: workflowId },
-      sessionId,
-      provider: 'codex',
-      projectRoot: backend.projectRoot,
-      backendNamespace: backend.namespace,
-      jobKind: 'provider',
-      pool: 'default',
-      enqueueSequence: backend.progressStore.nextEnqueueSequence(),
-      providerAction: 'exec',
-      parentWorkflowJobId: workflowId,
-      workflowSlotId: childJobId,
-      workflowSlotGeneration: 0,
-      request: { prompt: '', cwd: backend.projectRoot, bypassPermissions: false, coralEnv: {} },
-      createdAt: '2026-04-27T00:00:00.000Z',
-    });
-
-    const log = vi.fn<(message: string) => void>();
-    const coordinatorCommit = (cb: Parameters<JobStore['commit']>[0]) => backend.progressStore.commit(cb);
-    const releaseFailedWorkflowDescendants = createFailedWorkflowDescendantReleaser({
-      progressStore: backend.progressStore,
-      runtime: backend.runtime,
-      coordinatorCommit,
-      getExecutionService: () => backend.service,
-      createInvocationContext: backend.createInvocationContext,
-      releaseAdoptedJob: () => {},
-      emitSessionReleased: () => {},
-      log,
-    });
-
-    // Recovery releases the claim itself — through the production primitive, not a hand-written row —
-    // and then fails, so the close runs against a descendant that is already absent.
-    const executionSvc = new Proxy(backend.service as object, {
-      get: (target, property) => {
-        if (property === 'waitStream') {
-          return () => {
-            releaseSessionJobClaim({
-              projectRoot: backend.projectRoot,
-              runtime: backend.runtime,
-              db: backend.progressStore.getDb(),
-              commitEvents: coordinatorCommit,
-              emitSessionReleased: () => {},
-              sessionId,
-              jobId: childJobId,
-            });
-            throw new Error('workflow recovery failed after its own claim release');
-          };
-        }
-        const value = Reflect.get(target, property, target) as unknown;
-        return typeof value === 'function' ? (value as (...a: unknown[]) => unknown).bind(target) : value;
-      },
-    }) as typeof backend.service;
-
-    try {
-      const settled = await resumeAll({
-        db: backend.progressStore.getDb(),
-        progressStore: backend.progressStore,
-        loadJobDetails: loadJobProjectionDetails,
-        getExecutionService: () => executionSvc as never,
-        createInvocationContext: backend.createInvocationContext,
-        finalizeWorkflow: createWorkflowRecoveryFinalizer({
-          runtime: backend.runtime,
-          progressStore: backend.progressStore,
-          coordinatorCommit,
-          log,
-        }),
-        releaseFailedWorkflowDescendants,
-        log,
-        time: backend.runtime.time,
-      });
-
-      expect(settled, 'a claim recovery released itself must not make its own close unsatisfiable').toEqual([
-        workflowId,
-      ]);
-      expect(backend.progressStore.readStatus(workflowId)?.phase).toBe('error');
-      expect(log).toHaveBeenCalledWith(
-        `Workflow recovery child ${childJobId} session claim ${sessionId} disposition: already absent.\n`,
-      );
-    } finally {
-      await backend.backend.shutdown('test-teardown');
-    }
-  });
-
-  // `resume()` starts the provider before it resolves (`activateCommittedProviderLaunch`), so a
-  // replacement that terminalizes quickly has already released its own claim by the time the caller sees
-  // a job id. The checkpoint must record it anyway. An earlier revision required the claim to still be
-  // held there and threw — turning a replacement that had *succeeded* into a failed workflow and
-  // dropping it from the cleanup envelope in the same move, which is the one thing the checkpoint exists
-  // to prevent. It was the same moment-in-time expectation about a moving claim that `composeAtomic`
-  // used to hold, re-introduced one layer up.
-  it('records a replacement that released its claim before the checkpoint ran', async () => {
-    const backend = createSimulationBackend({ projectRoot: PROJECT_ROOT, pluginRoot: PROJECT_ROOT });
-    const workflowId = 'workflow-replacement-fast-terminal';
-    const plan = buildWorkflowPlan(workflowId, parseExpression('architect'), { defaultProvider: 'codex' });
-    const childJobId = plan.slots[0].slotId;
-    const sessionId = 'session-replacement-fast-terminal';
-    const providerScope = backend.createInvocationContext().providerScope;
-    if (providerScope === undefined) throw new Error('expected simulation provider scope');
-
-    commitWorkflowEvents(
-      backend.progressStore.getDb(),
-      (c) => {
-        c.append(workflowPlanDeclaredEvent(workflowId, plan, providerScope));
-        return undefined;
-      },
-      backend.runtime.time,
-      permissiveProviderLookupPort,
-    );
-    backend.progressStore.appendLaunchRequested(workflowId, {
-      jobId: workflowId,
-      owner: { kind: 'workflow', id: workflowId },
-      sessionId: null,
-      provider: null,
-      projectRoot: backend.projectRoot,
-      backendNamespace: backend.namespace,
-      jobKind: 'workflow',
-      pool: 'default',
-      enqueueSequence: backend.progressStore.nextEnqueueSequence(),
-      request: { prompt: '', cwd: backend.projectRoot, bypassPermissions: false, coralEnv: {} },
-      createdAt: '2026-04-27T00:00:00.000Z',
-    });
-    backend.progressStore.commit((c) => {
-      c.append({
-        type: 'job.runtime.started',
-        stream: { kind: 'job', id: workflowId },
-        namespace: backend.namespace,
-        project: backend.projectRoot,
-        refs: { jobId: workflowId, workflowId },
-        body: { transport: 'workflow', startedAt: '2026-04-27T00:00:00.000Z' },
-      });
-      return undefined;
-    });
-
-    seedTestSessionProjection(backend.progressStore.getDb(), {
-      sessionId,
-      provider: 'codex',
-      projectRoot: backend.projectRoot,
-      backendNamespace: backend.namespace,
-      activeJobId: childJobId,
-    });
-    backend.progressStore.appendLaunchRequested(childJobId, {
-      jobId: childJobId,
-      owner: { kind: 'workflow', id: workflowId },
-      sessionId,
-      provider: 'codex',
-      projectRoot: backend.projectRoot,
-      backendNamespace: backend.namespace,
-      jobKind: 'provider',
-      pool: 'default',
-      enqueueSequence: backend.progressStore.nextEnqueueSequence(),
-      providerAction: 'exec',
-      parentWorkflowJobId: workflowId,
-      workflowSlotId: childJobId,
-      workflowSlotGeneration: 0,
-      request: { prompt: '', cwd: backend.projectRoot, bypassPermissions: false, coralEnv: {} },
-      createdAt: '2026-04-27T00:00:00.000Z',
-    });
-    commitJobTerminal(backend.progressStore, childJobId, sessionId, {
-      content: '',
-      outcome: { kind: 'job_fault', fault: { kind: 'ghost_launch' } },
-      durationMs: 0,
-    });
-
-    const sessionRow = backend.progressStore
-      .getDb()
-      .prepare<[string], { entry: string }>('SELECT entry FROM projection_sessions WHERE session_id = ?')
-      .get(sessionId);
-    if (sessionRow === undefined) throw new Error('expected persisted provider session');
-    const sessionEntry = JSON.parse(sessionRow.entry) as ProviderSession & Record<string, unknown>;
-    delete sessionEntry.activeJobId;
-    sessionEntry.binding = {
-      provider: 'codex',
-      kind: 'profile',
-      binding: {
-        profile: { canonicalLocation: '/tmp/sim/accounts/codex', routing: { kind: 'home' } },
-        guarantee: 'profile-only',
-      },
-    };
-    sessionEntry.continuationLease = {
-      status: 'pending',
-      staleJobId: childJobId,
-      workflowId,
-      workflowSlotId: childJobId,
-      replacementGeneration: 1,
-      reason: 'stale_recovery',
-      expiresAt: '2099-01-01T00:00:00.000Z',
-      recordedAt: '2026-04-27T00:00:00.000Z',
-    };
-    sessionEntry.version = Number(sessionEntry.version) + 1;
-    backend.progressStore
-      .getDb()
-      .prepare('UPDATE projection_sessions SET entry = ? WHERE session_id = ?')
-      .run(JSON.stringify(sessionEntry), sessionId);
-
-    const log = vi.fn<(message: string) => void>();
-    const coordinatorCommit = (cb: Parameters<JobStore['commit']>[0]) => backend.progressStore.commit(cb);
-    const releaseFailedWorkflowDescendants = createFailedWorkflowDescendantReleaser({
-      progressStore: backend.progressStore,
-      runtime: backend.runtime,
-      coordinatorCommit,
-      getExecutionService: () => backend.service,
-      createInvocationContext: backend.createInvocationContext,
-      releaseAdoptedJob: () => {},
-      emitSessionReleased: () => {},
-      log,
-    });
-
-    // `resume()` returns only after the replacement has already released its own claim — the race the
-    // asynchronous activation makes reachable. `awaitLaunch` then fails so the close runs deterministically.
-    let replacementJobId: string | undefined;
-    const abort = vi.spyOn(backend.service, 'abort');
-    const executionSvc = new Proxy(backend.service as object, {
-      get: (target, property) => {
-        if (property === 'awaitLaunch') return async (): Promise<'error'> => 'error';
-        if (property === 'resume') {
-          return async (...args: unknown[]) => {
-            const decision = await (
-              Reflect.get(target, property, target) as (...a: unknown[]) => Promise<ProviderSessionLaunchDecision>
-            ).apply(target, args);
-            if (decision.status === 'running' || decision.status === 'queued') {
-              replacementJobId = decision.jobId;
-              releaseSessionJobClaim({
-                projectRoot: backend.projectRoot,
-                runtime: backend.runtime,
-                db: backend.progressStore.getDb(),
-                commitEvents: coordinatorCommit,
-                emitSessionReleased: () => {},
-                sessionId,
-                jobId: decision.jobId,
-              });
-            }
-            return decision;
-          };
-        }
-        const value = Reflect.get(target, property, target) as unknown;
-        return typeof value === 'function' ? (value as (...a: unknown[]) => unknown).bind(target) : value;
-      },
-    }) as typeof backend.service;
-
-    try {
-      const settled = await settleWithVirtualTime(
-        resumeAll({
-          db: backend.progressStore.getDb(),
-          progressStore: backend.progressStore,
-          loadJobDetails: loadJobProjectionDetails,
-          getExecutionService: () => executionSvc as never,
-          createInvocationContext: backend.createInvocationContext,
-          finalizeWorkflow: createWorkflowRecoveryFinalizer({
-            runtime: backend.runtime,
-            progressStore: backend.progressStore,
-            coordinatorCommit,
-            log,
-          }),
-          releaseFailedWorkflowDescendants,
-          log,
-          time: backend.runtime.time,
-        }),
-        backend.advance,
-      );
-
-      expect(replacementJobId, 'recovery must have launched a replacement').toBeDefined();
-      expect(settled).toEqual([workflowId]);
-      expect(
-        abort,
-        'a replacement that finished before it could be checkpointed still belongs in the cleanup envelope',
-      ).toHaveBeenCalledWith([replacementJobId]);
-    } finally {
-      await settleWithVirtualTime(backend.backend.shutdown('test-teardown'), backend.advance);
-    }
-  });
-
-  // The third arm of the same result. A close that this pass defers is retried on a later pass, and by
-  // then the launch fence is down — so another job can lawfully hold the session a stale descendant
-  // names. Treating that as a conflict made the close permanently unsatisfiable: the persisted
-  // `ready-to-close` record comes back unchanged every pass, and the descendant it names is never going
-  // to hold that session again. `releaseJob` refusing to touch the other owner is the safety property;
-  // the throw on top of it only converted a benign state into a workflow that never finishes.
-  it('closes when a descendant session has since been claimed by another job', async () => {
-    const backend = createSimulationBackend({ projectRoot: PROJECT_ROOT, pluginRoot: PROJECT_ROOT });
-    const workflowId = 'workflow-descendant-foreign-owner';
-    const plan = buildWorkflowPlan(workflowId, parseExpression('architect'), { defaultProvider: 'codex' });
-    const childJobId = plan.slots[0].slotId;
-    const sessionId = 'session-descendant-foreign-owner';
-    const successorJobId = 'job-unrelated-successor';
-    const providerScope = backend.createInvocationContext().providerScope;
-    if (providerScope === undefined) throw new Error('expected simulation provider scope');
-
-    commitWorkflowEvents(
-      backend.progressStore.getDb(),
-      (c) => {
-        c.append(workflowPlanDeclaredEvent(workflowId, plan, providerScope));
-        return undefined;
-      },
-      backend.runtime.time,
-      permissiveProviderLookupPort,
-    );
-    backend.progressStore.appendLaunchRequested(workflowId, {
-      jobId: workflowId,
-      owner: { kind: 'workflow', id: workflowId },
-      sessionId: null,
-      provider: null,
-      projectRoot: backend.projectRoot,
-      backendNamespace: backend.namespace,
-      jobKind: 'workflow',
-      pool: 'default',
-      enqueueSequence: backend.progressStore.nextEnqueueSequence(),
-      request: { prompt: '', cwd: backend.projectRoot, bypassPermissions: false, coralEnv: {} },
-      createdAt: '2026-04-27T00:00:00.000Z',
-    });
-    backend.progressStore.commit((c) => {
-      c.append({
-        type: 'job.runtime.started',
-        stream: { kind: 'job', id: workflowId },
-        namespace: backend.namespace,
-        project: backend.projectRoot,
-        refs: { jobId: workflowId, workflowId },
-        body: { transport: 'workflow', startedAt: '2026-04-27T00:00:00.000Z' },
-      });
-      return undefined;
-    });
-
-    seedTestSessionProjection(backend.progressStore.getDb(), {
-      sessionId,
-      provider: 'codex',
-      projectRoot: backend.projectRoot,
-      backendNamespace: backend.namespace,
-      activeJobId: childJobId,
-    });
-    backend.progressStore.appendLaunchRequested(childJobId, {
-      jobId: childJobId,
-      owner: { kind: 'workflow', id: workflowId },
-      sessionId,
-      provider: 'codex',
-      projectRoot: backend.projectRoot,
-      backendNamespace: backend.namespace,
-      jobKind: 'provider',
-      pool: 'default',
-      enqueueSequence: backend.progressStore.nextEnqueueSequence(),
-      providerAction: 'exec',
-      parentWorkflowJobId: workflowId,
-      workflowSlotId: childJobId,
-      workflowSlotGeneration: 0,
-      request: { prompt: '', cwd: backend.projectRoot, bypassPermissions: false, coralEnv: {} },
-      createdAt: '2026-04-27T00:00:00.000Z',
-    });
-
-    const log = vi.fn<(message: string) => void>();
-    const coordinatorCommit = (cb: Parameters<JobStore['commit']>[0]) => backend.progressStore.commit(cb);
-    const releaseFailedWorkflowDescendants = createFailedWorkflowDescendantReleaser({
-      progressStore: backend.progressStore,
-      runtime: backend.runtime,
-      coordinatorCommit,
-      getExecutionService: () => backend.service,
-      createInvocationContext: backend.createInvocationContext,
-      releaseAdoptedJob: () => {},
-      emitSessionReleased: () => {},
-      log,
-    });
-
-    // The child releases, an unrelated job claims the session, and only then does recovery fail — the
-    // shape a deferred close finds when it is retried after the launch fence has lifted.
-    const executionSvc = new Proxy(backend.service as object, {
-      get: (target, property) => {
-        if (property === 'waitStream') {
-          return () => {
-            releaseSessionJobClaim({
-              projectRoot: backend.projectRoot,
-              runtime: backend.runtime,
-              db: backend.progressStore.getDb(),
-              commitEvents: coordinatorCommit,
-              emitSessionReleased: () => {},
-              sessionId,
-              jobId: childJobId,
-            });
-            seedTestSessionProjection(backend.progressStore.getDb(), {
-              sessionId,
-              provider: 'codex',
-              projectRoot: backend.projectRoot,
-              backendNamespace: backend.namespace,
-              activeJobId: successorJobId,
-            });
-            throw new Error('workflow recovery failed while an unrelated job held the session');
-          };
-        }
-        const value = Reflect.get(target, property, target) as unknown;
-        return typeof value === 'function' ? (value as (...a: unknown[]) => unknown).bind(target) : value;
-      },
-    }) as typeof backend.service;
-
-    try {
-      const settled = await resumeAll({
-        db: backend.progressStore.getDb(),
-        progressStore: backend.progressStore,
-        loadJobDetails: loadJobProjectionDetails,
-        getExecutionService: () => executionSvc as never,
-        createInvocationContext: backend.createInvocationContext,
-        finalizeWorkflow: createWorkflowRecoveryFinalizer({
-          runtime: backend.runtime,
-          progressStore: backend.progressStore,
-          coordinatorCommit,
-          log,
-        }),
-        releaseFailedWorkflowDescendants,
-        log,
-        time: backend.runtime.time,
-      });
-
-      expect(settled, 'a session another job now owns must not make this close unsatisfiable forever').toEqual([
-        workflowId,
-      ]);
-      expect(log).toHaveBeenCalledWith(
-        `Workflow recovery child ${childJobId} session claim ${sessionId} disposition: owned by another job.\n`,
-      );
-      // The successor keeps its claim: recovery released nothing it did not own.
-      expect(
-        createProjectionSessionLookup(backend.progressStore.getDb()).readProviderSession(sessionId)?.activeJobId,
-      ).toBe(successorJobId);
-    } finally {
-      await backend.backend.shutdown('test-teardown');
     }
   });
 });
