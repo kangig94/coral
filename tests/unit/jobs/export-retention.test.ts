@@ -66,6 +66,29 @@ async function prune(
 }
 
 describe('export retention', () => {
+  it('does not count enumerated entries before the cursor as reads', async () => {
+    const f = fixture();
+    const root = f.runtime.paths.coral.exports.jobsRoot;
+    mkdirSync(root, { recursive: true });
+    for (const name of ['a.json', 'b.json', 'ignored.tmp']) writeFileSync(join(root, name), 'unread');
+    const record = vi.fn();
+    const jobState = vi.fn((): ExportJobRetentionState => ({ kind: 'absent' }));
+
+    await pruneJobExports({
+      db: f.db,
+      runtime: f.runtime,
+      cutoff: RETENTION_CUTOFF,
+      afterId: 'z.json',
+      budget: { ...f.budget, observation: { record } },
+      jobState,
+      resultHold: () => 'released',
+      mutate: (operation) => operation(),
+    });
+
+    expect(record.mock.calls).toEqual([['exports', { subjects: 3 }]]);
+    expect(jobState).not.toHaveBeenCalled();
+  });
+
   it('finishes a slow 320-entry eligibility scan in one slice, then deletes across retries', async () => {
     const f = fixture();
     const path = join(f.runtime.paths.coral.exports.jobsRoot, 'wide-residue');

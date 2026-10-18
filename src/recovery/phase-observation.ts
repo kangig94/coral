@@ -86,6 +86,7 @@ export type StartupPhaseObserver = {
   finish(): void;
 };
 
+/** A boot reports each startup phase once, however many recovery attempts contribute to it. */
 export function createStartupPhaseObserver(options: {
   time: Pick<TimePort, 'monotonicNow'>;
   log(message: string): void;

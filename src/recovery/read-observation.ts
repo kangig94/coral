@@ -1,6 +1,7 @@
 import type { Database, Statement } from '../store/db.js';
 import type { RecoveryObservation } from './phase-observation.js';
 
+/** Observation must not change query results, errors or transaction behavior of the wrapped database. */
 export function observeDatabaseReads(db: Database, observation: RecoveryObservation, source: string): Database {
   return new Proxy(db, {
     get(target, property) {

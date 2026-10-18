@@ -88,7 +88,7 @@ it.each(['deadline', 'stop', 'on-time'] as const)(
       `outcome=${completion === 'on-time' ? 'complete' : 'failed'}`,
     );
     expect(finishes('storage-retention.exports')[0]).toContain(`duration_ms=${Number(monotonic).toFixed(3)}`);
-    expect(finishes('storage-retention.exports')[0]).toMatch(/subjects=1 reads=[1-9]\d*/);
+    expect(finishes('storage-retention.exports')[0]).toMatch(/subjects=1 reads=0 /);
     expect(finishes('storage-retention')[0]).toContain(`duration_ms=${Number(monotonic).toFixed(3)}`);
 
     expect(

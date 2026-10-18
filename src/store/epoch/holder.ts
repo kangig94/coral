@@ -347,7 +347,6 @@ export async function pruneStoreEpochHolders(
   const entries = (await runtime.storage.readdir(root)).sort();
   budget.observation?.record('epoch-holders', {
     subjects: entries.filter((entry) => entry.startsWith(EPOCH_HOLDER_PREFIX)).length,
-    reads: entries.length,
   });
   let cursor = afterName;
   for (const entry of entries) {

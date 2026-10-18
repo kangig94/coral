@@ -1011,7 +1011,6 @@ export class JobLocationIndex {
     const names = this.runtime.storage.readdirSync(dir).sort();
     budget.observation?.record('job-locations', {
       subjects: names.filter((name) => name.endsWith('.json')).length,
-      reads: names.length,
     });
     for (const name of names) {
       if (!name.endsWith('.json') || name <= afterId) continue;
