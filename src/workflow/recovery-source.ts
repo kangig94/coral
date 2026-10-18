@@ -1,3 +1,5 @@
+import { observeDatabaseReads } from '../recovery/read-observation.js';
+import type { RecoveryObservation } from '../recovery/phase-observation.js';
 import { PROJECTION_JOB_COLUMNS, type ProjectionJobStoredRow } from '../jobs/projection-row.js';
 import type { Database } from '../store/db.js';
 import { sqlPlaceholders } from '../store/db.js';
@@ -175,7 +177,11 @@ function readWorkflowEnvelope(db: Database, projection: ProjectionJobStoredRow):
   };
 }
 
-function scanWorkflowRecoveryEnvelopes(db: Database, subjectKey?: string): readonly RawWorkflowRecoveryEnvelope[] {
+function scanWorkflowRecoveryEnvelopes(
+  db: Database,
+  subjectKey?: string,
+  observation?: RecoveryObservation,
+): readonly RawWorkflowRecoveryEnvelope[] {
   return withConsistentRead(db, () => {
     const projections =
       subjectKey === undefined
@@ -197,6 +203,7 @@ function scanWorkflowRecoveryEnvelopes(db: Database, subjectKey?: string): reado
                   AND job_id = ?`,
             )
             .all(subjectKey);
+    observation?.record(WORKFLOW_RECOVERY_BOUNDARY, { subjects: projections.length });
     return projections.map((projection) => readWorkflowEnvelope(db, projection));
   });
 }
@@ -204,11 +211,13 @@ function scanWorkflowRecoveryEnvelopes(db: Database, subjectKey?: string): reado
 export function workflowRecoverySource(
   db: Database,
   subject?: RecoverySubject,
+  observation?: RecoveryObservation,
 ): RecoverySource<RawWorkflowRecoveryEnvelope> {
+  const observedDb = observation === undefined ? db : observeDatabaseReads(db, observation, 'workflow-recovery');
   return defineRecoverySource({
     boundary: WORKFLOW_RECOVERY_BOUNDARY,
     scanSubject: subject ?? { key: 'workflow-recovery-discovery', revision: { kind: 'until-cleared' } },
-    scan: () => scanWorkflowRecoveryEnvelopes(db, subject?.key),
+    scan: () => scanWorkflowRecoveryEnvelopes(observedDb, subject?.key, observation),
     subject: (raw) => raw.subject,
   });
 }

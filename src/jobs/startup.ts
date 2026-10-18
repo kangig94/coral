@@ -1,3 +1,4 @@
+import type { RecoveryObservation } from '../recovery/phase-observation.js';
 import type { JobStore } from './store.js';
 import type { RecoveryCapableService } from './reconcile/contracts.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
@@ -112,6 +113,7 @@ export type ProviderOperationStartupOwnership = Readonly<{
 }>;
 
 export type JobsStartupContext = {
+  observation?: RecoveryObservation;
   namespace: string;
   bundleHash: string;
   runtime: Runtime;

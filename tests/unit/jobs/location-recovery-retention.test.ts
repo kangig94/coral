@@ -29,10 +29,25 @@ it('recovers terminals without loading progress and writes nothing on an unchang
     outcome: { kind: 'completed' },
     durationMs: 1,
   });
+  const locationReads = vi.spyOn(f.runtime.storage, 'readFileSync');
+  const locations = vi.spyOn(index, 'locationsFor');
   const read = vi.spyOn(f.store, 'readJobEvents');
-  recoverJobLocations(index, 'epoch', f.store);
-  expect(read).toHaveBeenCalledWith('terminal', true);
-  expect(read).toHaveBeenCalledWith('live');
+  const record = vi.fn();
+  recoverJobLocations(index, 'epoch', f.store, { record });
+  const actualLocationReads = locationReads.mock.calls.filter(
+    ([path], i) => String(path).includes('/job-locations.v1/jobs/') && locationReads.mock.results[i].type === 'return',
+  ).length;
+  const reportedLocationReads = record.mock.calls.reduce(
+    (total, [source, counts]) => total + (source === 'job-locations' ? (counts.reads ?? 0) : 0),
+    0,
+  );
+  expect(actualLocationReads).toBeGreaterThan(0);
+  expect(reportedLocationReads).toBe(actualLocationReads);
+  expect(locations).toHaveBeenCalledWith('epoch', { record });
+  expect(record).toHaveBeenCalledWith('job-locations', { reads: 1 });
+  expect(record).toHaveBeenCalledWith('job-launches', { subjects: 2, reads: 2 });
+  expect(read).toHaveBeenCalledWith('terminal', true, 0, { record });
+  expect(read).toHaveBeenCalledWith('live', false, 0, { record });
   expect(index.read('terminal')?.detail).toMatchObject({ kind: 'recorded', value: { events: [{ type: 'terminal' }] } });
   expect(index.read('live')?.detail).toMatchObject({
     kind: 'recorded',
@@ -84,4 +99,32 @@ it('isolates a failing terminal record while recovering its siblings', () => {
     reason: 'record failed',
     retryScheduled: true,
   });
+});
+
+it('counts stored progress rows that replay filters out', () => {
+  const f = createRetentionFixture();
+  fixtures.push(f);
+  const index = new JobLocationIndex(f.runtime, f.runtime.paths.coral.generation.dataRoot);
+  initTestJob(f.store, {
+    jobId: 'filtered-progress',
+    sessionId: 'filtered-session',
+    provider: 'codex',
+    projectRoot: '/workspace',
+    backendNamespace: 'test',
+  });
+  f.store.commit((c) => {
+    c.append({
+      type: 'job.progress.emitted',
+      stream: { kind: 'job', id: 'filtered-progress' },
+      namespace: 'test',
+      project: '/workspace',
+      refs: { jobId: 'filtered-progress' },
+      body: { kind: 'missing_launch_record' },
+    });
+    return undefined;
+  });
+  const record = vi.fn();
+  recoverJobLocations(index, 'epoch', f.store, { record });
+  expect(f.store.readJobEvents('filtered-progress')).toHaveLength(0);
+  expect(record).toHaveBeenCalledWith('job-events', { reads: 1 });
 });

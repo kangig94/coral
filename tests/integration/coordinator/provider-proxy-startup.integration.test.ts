@@ -114,7 +114,9 @@ function composeProductionStartup(
   const reapRecordedContainment = vi.fn<ReturnType<typeof createProviderProxySetRecordedContainmentReaper>>(() => {
     throw new Error('provider proxy startup fixture unexpectedly requested recorded containment reaping');
   });
+  const logs: string[] = [];
   const world = {
+    log: (line: string) => logs.push(line),
     identity: { instanceId: randomUUID(), buildSetId: FIXTURE_BUILD_SET_ID },
     storeServicesRef: { tryGet: () => ({ progressStore }) },
     operationRegistry: new LocalOperationRegistry(),
@@ -140,6 +142,7 @@ function composeProductionStartup(
   return {
     db,
     time,
+    logs,
     fatals,
     lifecycleRef,
     containmentProver,
@@ -1056,3 +1059,77 @@ it.each(['rejection', 'held'] as const)(
     }
   },
 );
+
+it('observes each scheduled durable disposition pass and its containment journal reads', async () => {
+  const record = providerOperationRecord('executing');
+  const time = new VirtualTime();
+  const base = sandboxedRuntime(time);
+  const runtime = {
+    ...base,
+    process: { ...base.process, observeLiveness: () => 'unknown' as const, readProcessIncarnation: () => null },
+  };
+  const dispositions = new ProviderProxySetOperatorDispositionStore(
+    runtime.storage,
+    runtime.paths.coral.coordinator.runDir,
+  );
+  expect(
+    dispositions.replace([
+      durableProviderProxySetOperatorDispositionRecord({
+        writerIncarnation: 'previous-coordinator',
+        setIdentity: providerProxySetIdentityFromRecord(record),
+        subjectKey: 'proxy',
+        disposition: { disposition: 'held', incidentReason: 'control loss', waitingFor: 'control-reattachment' },
+        status: { kind: 'stale', markedByIncarnation: 'previous-coordinator', markedAtMs: 1 },
+      }),
+    ]).kind,
+  ).toBe('recorded');
+  const harness = composeProductionStartup(
+    record,
+    undefined,
+    runtime,
+    (db) =>
+      new JobStore('disposition-observation', runtime, createEventBodyCodec(), {
+        db,
+        providers: permissiveProviderLookupPort,
+      }),
+  );
+  const lifecycle = harness.lifecycleRef.get()!;
+  const lines = (event: string) =>
+    harness.logs.filter((line) =>
+      line.includes(`kind=background phase=provider-proxy-set-disposition-reconciliation event=${event}`),
+    );
+  try {
+    lifecycle.activateDurableOperatorDispositions();
+    await expect(lifecycle.reconcileDurableOperatorDispositions()).resolves.toEqual({ kind: 'completed' });
+    expect(lines('start')).toHaveLength(0);
+    for (let pass = 1; pass <= 2; pass++) {
+      time.tick(60_000);
+      await drainMicrotasks(100);
+      expect(lines('start')).toHaveLength(pass);
+      expect(lines('finish')).toHaveLength(pass);
+      expect(lines('finish')[pass - 1]).toContain('outcome=complete');
+      expect(lines('finish')[pass - 1]).toContain('subjects=1 reads=1');
+      expect(lines('finish')[pass - 1]).toContain('"provider-proxy-disposition-proof":{"subjects":0,"reads":1}');
+      expect(dispositions.read().records[0]?.status).toMatchObject({
+        kind: 'successor-observed',
+        evidence: { kind: 'enforcers-observed' },
+      });
+    }
+    const reconcile = vi.spyOn(lifecycle, 'reconcileDurableOperatorDispositions').mockResolvedValueOnce({
+      kind: 'retry',
+      reason: 'temporary reconciliation failure',
+    });
+    time.tick(60_000);
+    await drainMicrotasks(100);
+    expect(lines('start')).toHaveLength(3);
+    expect(lines('finish')).toHaveLength(3);
+    expect(lines('finish')[2]).toContain('outcome=failed');
+    reconcile.mockRestore();
+    expect(harness.fatals).not.toHaveBeenCalled();
+  } finally {
+    harness.services.stopProviderOperationReconciler();
+    harness.ownershipService.releaseAll();
+    harness.db.close();
+    vi.restoreAllMocks();
+  }
+});

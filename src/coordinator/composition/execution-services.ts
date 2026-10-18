@@ -1,3 +1,4 @@
+import { observeDatabaseReads } from '../../recovery/read-observation.js';
 import { JobAttention } from '../services/job-attention.js';
 import { readLaunchStatus, recordControllerEvidenceRefusals } from '../../infra/launch-status.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
@@ -426,6 +427,7 @@ function createExecutionOperationReconciler(input: {
     initializeAtStartup,
   } = input;
   return new ProviderOperationReconciler({
+    observation: { bootId: world.identity.instanceId, log: world.log },
     getProgressStore,
     requestContainment: (identity, cause) => {
       const lifecycle = world.providerProxyLifecycleRef.get();
@@ -518,7 +520,8 @@ function createExecutionProxyLifecycle(input: {
       runtime.paths.coral.coordinator.runDir,
     ),
     writerIncarnation: world.identity.instanceId,
-    collectOperatorDispositionContainmentProof: (identity, signal) => {
+    observation: { bootId: world.identity.instanceId, log: world.log },
+    collectOperatorDispositionContainmentProof: (identity, signal, observation) => {
       const db = getProgressStore().getDb();
       const mutationFence = providerOperationMutationAdmission(db).closeSet(identity);
       return world.providerProxySetContainmentProver.collectContainmentProof(
@@ -528,7 +531,7 @@ function createExecutionProxyLifecycle(input: {
             if (mutationFence.kind === 'holding') await mutationFence.retryAfter;
           },
         }),
-        db,
+        observation === undefined ? db : observeDatabaseReads(db, observation, 'provider-proxy-disposition-proof'),
         signal,
       );
     },

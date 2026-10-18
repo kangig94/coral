@@ -1,3 +1,4 @@
+import type { RecoveryObservation } from '../recovery/phase-observation.js';
 import type { Database } from './db.js';
 
 import { decodeStoredBody, type StoreReadContext } from './body-codec.js';
@@ -68,7 +69,12 @@ export function getEventsSince(
   return { events, nextCursor };
 }
 
-export function readLatestEvent(db: Database, streamId: string, type: string): EventsRow | null {
+export function readLatestEvent(
+  db: Database,
+  streamId: string,
+  type: string,
+  observation?: RecoveryObservation,
+): EventsRow | null {
   const row = prepareCached<[string, string], EventsRow | undefined>(
     db,
     `SELECT *
@@ -78,6 +84,7 @@ export function readLatestEvent(db: Database, streamId: string, type: string): E
       LIMIT 1`,
   ).get(streamId, type);
 
+  observation?.record('job-details', { reads: row === undefined ? 0 : 1 });
   if (row === undefined) return null;
   rowToCoralEvent(row, null);
   return row;

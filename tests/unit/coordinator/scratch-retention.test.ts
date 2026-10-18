@@ -67,6 +67,7 @@ function runner(f: ReturnType<typeof createRetentionFixture>) {
     },
   };
   const scheduler = createStorageRetentionScheduler({
+    bootId: 'test-boot',
     runtime,
     getProgressStore: () => f.store,
     openEpoch: () => ({

@@ -1,3 +1,4 @@
+import type { RecoveryObservation } from '../recovery/phase-observation.js';
 import { createHash } from 'node:crypto';
 import { sameEpoch, epochHoldDirectory, epochIdentity } from '../store/epoch/identity.js';
 import { dirname, join } from 'node:path';
@@ -265,9 +266,16 @@ function atomicJson(runtime: Runtime, path: string, value: unknown): string {
   return raw;
 }
 
-function optionalJson<T>(runtime: Runtime, path: string, schema: z.ZodType<T>): T | null {
+function optionalJson<T>(
+  runtime: Runtime,
+  path: string,
+  schema: z.ZodType<T>,
+  observation?: RecoveryObservation,
+): T | null {
   try {
-    return schema.parse(JSON.parse(runtime.storage.readFileSync(path, 'utf-8')) as unknown);
+    const content = runtime.storage.readFileSync(path, 'utf-8');
+    observation?.record('job-locations', { reads: 1 });
+    return schema.parse(JSON.parse(content) as unknown);
   } catch (error: unknown) {
     if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return null;
     throw error;
@@ -416,20 +424,20 @@ export class JobLocationIndex {
     }
   }
 
-  private readStored(jobId: string): StoredJobLocation | null {
+  private readStored(jobId: string, observation?: RecoveryObservation): StoredJobLocation | null {
     if (this.pollReads?.has(jobId)) return this.pollReads.get(jobId) ?? null;
     if (this.pollReads && !this.livePollJobs.has(jobId)) {
       if (this.pollReadCount >= 32)
         throw new LocationObservationDeferred('Location observation deferred to the next bounded poll');
       this.pollReadCount++;
     }
-    const stored = optionalJson(this.runtime, this.jobPath(jobId), locationSchema);
+    const stored = optionalJson(this.runtime, this.jobPath(jobId), locationSchema, observation);
     this.pollReads?.set(jobId, stored);
     return stored;
   }
 
-  read(jobId: string): JobLocation | null {
-    const stored = this.readStored(jobId);
+  read(jobId: string, observation?: RecoveryObservation): JobLocation | null {
+    const stored = this.readStored(jobId, observation);
     return stored === null ? null : viewLocation(stored);
   }
 
@@ -469,9 +477,10 @@ export class JobLocationIndex {
     epochKey: string,
     subject: JobLocationSubject,
     controller?: JobLocationController,
+    observation?: RecoveryObservation,
   ): JobLocation {
     return this.withRevisionLock(epochKey, () => {
-      const existing = this.readStored(jobId);
+      const existing = this.readStored(jobId, observation);
       if (existing !== null) {
         if (!sameEpoch(existing.epochKey, epochKey)) throw new Error(`Job ${jobId} already belongs to another epoch`);
         return viewLocation(existing);
@@ -520,13 +529,19 @@ export class JobLocationIndex {
   }
 
   /** A terminal is recorded only when the copies its detail carries agree; readers trust the record after that. */
-  recordTerminal(jobId: string, detail: JobDetailResponse, resultPath: string, terminalSeq: number): JobLocation {
-    const existing = this.readStored(jobId);
+  recordTerminal(
+    jobId: string,
+    detail: JobDetailResponse,
+    resultPath: string,
+    terminalSeq: number,
+    observation?: RecoveryObservation,
+  ): JobLocation {
+    const existing = this.readStored(jobId, observation);
     if (existing === null) throw new Error(`Terminal has no durable job location: ${jobId}`);
     const terminal = validatedTerminal(detail, jobId, existing.epochKey, terminalSeq);
     if (terminal === null) throw new Error(`Terminal detail disagrees: ${jobId}`);
     return this.withRevisionLock(existing.epochKey, () => {
-      const current = this.readStored(jobId);
+      const current = this.readStored(jobId, observation);
       if (current === null) throw new Error(`Terminal has no durable job location: ${jobId}`);
       const location: StoredJobLocation = {
         ...current,
@@ -549,11 +564,11 @@ export class JobLocationIndex {
     });
   }
 
-  recordObserved(jobId: string, detail: JobDetailResponse): void {
-    const existing = this.read(jobId);
+  recordObserved(jobId: string, detail: JobDetailResponse, observation?: RecoveryObservation): void {
+    const existing = this.read(jobId, observation);
     if (existing === null || existing.disposition === 'terminal') return;
     this.withRevisionLock(existing.epochKey, () => {
-      const current = this.readStored(jobId);
+      const current = this.readStored(jobId, observation);
       if (current === null || current.disposition === 'terminal') return;
       const retained = viewLocation(current);
       const location = {
@@ -575,12 +590,12 @@ export class JobLocationIndex {
     });
   }
 
-  markUnresolved(jobId: string): void {
-    const existing = this.readStored(jobId);
+  markUnresolved(jobId: string, observation?: RecoveryObservation): void {
+    const existing = this.readStored(jobId, observation);
     if (existing === null) throw new Error(`Unresolved job has no durable location: ${jobId}`);
     if (existing.disposition === 'terminal') return;
     this.withRevisionLock(existing.epochKey, () => {
-      const current = this.readStored(jobId);
+      const current = this.readStored(jobId, observation);
       if (current === null) throw new Error(`Unresolved job has no durable location: ${jobId}`);
       if (current.disposition === 'terminal' || current.disposition === 'unresolved') return;
       this.advanceRevision(current.epochKey);
@@ -604,9 +619,9 @@ export class JobLocationIndex {
    * The caller must hold the epoch store write lock while proving no launch event exists; without it, a launch may
    * still be in flight.
    */
-  retireNeverAccepted(jobId: string, epochKey: string): void {
+  retireNeverAccepted(jobId: string, epochKey: string, observation?: RecoveryObservation): void {
     this.withRevisionLock(epochKey, () => {
-      const current = this.readStored(jobId);
+      const current = this.readStored(jobId, observation);
       if (current === null || !sameEpoch(current.epochKey, epochKey) || current.disposition === 'terminal') return;
       this.runtime.storage.unlinkSync(this.jobPath(jobId));
       this.advanceRevision(epochKey);
@@ -743,14 +758,19 @@ export class JobLocationIndex {
    * Records this build cannot decode must be reported by file and epoch, or with null when even the epoch is
    * unreadable.
    */
-  private scan(): { readable: JobLocation[]; unreadable: Array<{ file: string; epochKey: string | null }> } {
+  private scan(observation?: RecoveryObservation): {
+    readable: JobLocation[];
+    unreadable: Array<{ file: string; epochKey: string | null }>;
+  } {
     const dir = join(this.root, 'jobs');
     const result: ReturnType<JobLocationIndex['scan']> = { readable: [], unreadable: [] };
     if (!this.runtime.storage.existsSync(dir)) return result;
     for (const name of this.runtime.storage.readdirSync(dir).filter((entry) => entry.endsWith('.json'))) {
       let raw: unknown;
       try {
-        raw = JSON.parse(this.runtime.storage.readFileSync(join(dir, name), 'utf-8')) as unknown;
+        const content = this.runtime.storage.readFileSync(join(dir, name), 'utf-8');
+        observation?.record('job-locations', { reads: 1 });
+        raw = JSON.parse(content) as unknown;
       } catch (error: unknown) {
         if (error instanceof Error && 'code' in error && error.code === 'ENOENT') continue;
         result.unreadable.push({ file: name, epochKey: null });
@@ -786,7 +806,7 @@ export class JobLocationIndex {
     return optionalJson(this.runtime, this.epochPath(epochKey, 'revision.v1.json'), revisionSchema)?.revision ?? 0;
   }
 
-  locationsFor(epochKey: string): JobLocation[] {
+  locationsFor(epochKey: string, observation?: RecoveryObservation): JobLocation[] {
     const revision = this.revision(epochKey);
     if (this.epochRevisions.get(epochKey) !== revision) this.locationsStamp = undefined;
     this.epochRevisions.set(epochKey, revision);
@@ -795,7 +815,7 @@ export class JobLocationIndex {
     const stamp = stat ? `${stat.dev}:${stat.ino}:${stat.mtimeNs}:${stat.ctimeNs}:${stat.birthtimeNs}` : 'absent';
     if (this.locationsStamp !== stamp) {
       this.locationsByEpoch.clear();
-      const scan = this.scan();
+      const scan = this.scan(observation);
       this.locationsUnreadable = scan.unreadable;
       for (const location of scan.readable) {
         const locations = this.locationsByEpoch.get(epochIdentity(location.epochKey)) ?? [];
@@ -805,13 +825,17 @@ export class JobLocationIndex {
       this.locationsStamp = stamp;
     }
     return (this.locationsByEpoch.get(epochIdentity(epochKey)) ?? []).map(
-      (location) => this.read(location.jobId) ?? location,
+      (location) => this.read(location.jobId, observation) ?? location,
     );
   }
 
-  certify(epochKey: string, terminalHighWaterSeq: number): JobLocationCertificate | null {
+  certify(
+    epochKey: string,
+    terminalHighWaterSeq: number,
+    observation?: RecoveryObservation,
+  ): JobLocationCertificate | null {
     return this.withRevisionLock(epochKey, () => {
-      const locations = this.locationsFor(epochKey);
+      const locations = this.locationsFor(epochKey, observation);
       if (this.unknownLocationHold(epochKey) !== null) return null;
       if (this.locationsUnreadable.some((entry) => entry.epochKey === null || sameEpoch(entry.epochKey, epochKey)))
         return null;
@@ -984,12 +1008,16 @@ export class JobLocationIndex {
     const dir = join(this.root, 'jobs');
     if (!this.runtime.storage.existsSync(dir)) return '';
     let cursor = afterId;
-    for (const name of this.runtime.storage.readdirSync(dir).sort()) {
+    const names = this.runtime.storage.readdirSync(dir).sort();
+    budget.observation?.record('job-locations', {
+      subjects: names.filter((name) => name.endsWith('.json')).length,
+    });
+    for (const name of names) {
       if (!name.endsWith('.json') || name <= afterId) continue;
       if (!budget.canContinue()) return cursor;
       const refusalPath = join(this.root, 'compaction-refusals.v1', name);
       try {
-        const stored = optionalJson(this.runtime, join(dir, name), locationSchema);
+        const stored = optionalJson(this.runtime, join(dir, name), locationSchema, budget.observation);
         const location = stored === null ? null : viewLocation(stored);
         if (location?.detail.kind === 'unreadable') throw new Error('location-detail-unreadable');
         if (
@@ -1000,7 +1028,7 @@ export class JobLocationIndex {
         ) {
           mutate(() =>
             this.withRevisionLock(location.epochKey, () => {
-              const current = optionalJson(this.runtime, join(dir, name), locationSchema);
+              const current = optionalJson(this.runtime, join(dir, name), locationSchema, budget.observation);
               if (current === null) return;
               const location = viewLocation(current);
               if (!hasReadableTerminalDetail(location) || location.detail.kind !== 'recorded') return;

@@ -1,3 +1,5 @@
+import { observeDatabaseReads } from '../recovery/read-observation.js';
+import type { RecoveryObservation } from '../recovery/phase-observation.js';
 import type { z } from 'zod';
 
 import type { Database } from '../store/db.js';
@@ -40,7 +42,11 @@ function continuationSessionId(subjectKey: string): string | null {
   return separator > 0 ? subjectKey.slice(0, separator) : null;
 }
 
-function scanSessionProjectionRows(db: Database, subjectKey?: string): readonly RawSessionProjectionEnvelope[] {
+function scanSessionProjectionRows(
+  db: Database,
+  subjectKey?: string,
+  observation?: RecoveryObservation,
+): readonly RawSessionProjectionEnvelope[] {
   return withConsistentRead(db, () => {
     const rows =
       subjectKey === undefined
@@ -67,6 +73,7 @@ function scanSessionProjectionRows(db: Database, subjectKey?: string): readonly 
           ORDER BY subject_key ASC`,
       )
       .all(RETENTION_WORK_BOUNDARY);
+    observation?.record('session-projection', { subjects: rows.length });
     const bySession = new Map<string, RawRetentionContinuationRow[]>();
     for (const continuation of continuations) {
       const sessionId = continuationSessionId(continuation.subject_key);
@@ -94,11 +101,13 @@ export function sessionProjectionRecoverySource(
   db: Database,
   subject?: RecoverySubject,
   subjectKey?: string,
+  observation?: RecoveryObservation,
 ): RecoverySource<RawSessionProjectionEnvelope> {
+  const observedDb = observation === undefined ? db : observeDatabaseReads(db, observation, 'session-projection');
   return defineRecoverySource({
     boundary: 'session-projection',
     scanSubject: subject ?? { key: 'session-projection-discovery', revision: { kind: 'until-cleared' } },
-    scan: () => scanSessionProjectionRows(db, subject?.key ?? subjectKey),
+    scan: () => scanSessionProjectionRows(observedDb, subject?.key ?? subjectKey, observation),
     subject: sessionProjectionSubject,
   });
 }

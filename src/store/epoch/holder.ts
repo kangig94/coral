@@ -1,3 +1,4 @@
+import type { RecoveryObservation } from '../../recovery/phase-observation.js';
 import { type Runtime } from '../../runtime/ports.js';
 import { type FileLockLease, acquireSharedFileLockSync, attemptExclusiveFileLockSync } from '../../infra/fs-lock.js';
 import { type SuccessionWriterEntitlement } from '../succession-writer-generation.js';
@@ -260,6 +261,7 @@ async function observeStoreEpochHolderAsync(
   runtime: Runtime,
   dbDir: string,
   entry: string,
+  observation?: RecoveryObservation,
 ): Promise<StoreEpochHolderObservation | null> {
   const path = join(dbDir, entry);
   const id = entry.slice(EPOCH_HOLDER_PREFIX.length, -'.json'.length);
@@ -278,7 +280,9 @@ async function observeStoreEpochHolderAsync(
     if (proof.kind !== 'proven') return unobservable(false);
     const kind = await runtime.storage.lstat(path);
     if (kind.size > MAX_STORE_EPOCH_HOLDER_BYTES) return unobservable(false);
-    const value: unknown = JSON.parse(await runtime.storage.readFile(path, 'utf-8'));
+    const content = await runtime.storage.readFile(path, 'utf-8');
+    observation?.record('epoch-holders', { reads: 1 });
+    const value: unknown = JSON.parse(content);
     if (
       !isRecord(value) ||
       typeof value.epoch !== 'string' ||
@@ -314,8 +318,9 @@ export async function inspectStoreEpochHolderAsync(
   runtime: Runtime,
   dbDir: string,
   entry: string,
+  observation?: RecoveryObservation,
 ): Promise<StoreEpochHolderObservation | null> {
-  const holder = await observeStoreEpochHolderAsync(runtime, dbDir, entry);
+  const holder = await observeStoreEpochHolderAsync(runtime, dbDir, entry, observation);
   if (holder === null || holder.pid === null) return holder;
   const owner = runtime.process.observeLiveness(holder.pid);
   const attempt =
@@ -340,6 +345,9 @@ export async function pruneStoreEpochHolders(
   const root = runtime.paths.coral.store.dbDir;
   if (!budget.canContinue()) return afterName;
   const entries = (await runtime.storage.readdir(root)).sort();
+  budget.observation?.record('epoch-holders', {
+    subjects: entries.filter((entry) => entry.startsWith(EPOCH_HOLDER_PREFIX)).length,
+  });
   let cursor = afterName;
   for (const entry of entries) {
     if (entry <= afterName) continue;
@@ -350,7 +358,7 @@ export async function pruneStoreEpochHolders(
         const identity = runtime.storage.lstatSync(subject, { bigint: true });
         const holder =
           entry.endsWith('.json') || entry.endsWith('.json.tmp')
-            ? await inspectStoreEpochHolderAsync(runtime, root, entry)
+            ? await inspectStoreEpochHolderAsync(runtime, root, entry, budget.observation)
             : null;
         if (holder?.state !== 'stale' || !holder.removable) {
           budget.record({

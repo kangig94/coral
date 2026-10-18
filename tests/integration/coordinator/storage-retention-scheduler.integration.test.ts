@@ -62,6 +62,7 @@ function scheduler(
     },
   };
   const s = createStorageRetentionScheduler({
+    bootId: 'test-boot',
     runtime,
     getProgressStore: () => f.store,
     openEpoch: () => ({

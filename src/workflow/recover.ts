@@ -1,3 +1,4 @@
+import type { RecoveryObservation } from '../recovery/phase-observation.js';
 import type { Database } from '../store/db.js';
 
 import { errorMessage } from '../infra/error-format.js';
@@ -855,6 +856,7 @@ function atomicReleaser(
 }
 
 type RecoverAllOptions = {
+  observation?: RecoveryObservation;
   db: Database;
   progressStore: StoreReadContext;
   clearContinuationLease: (projectRoot: CanonicalWorkDir, input: ClearContinuationLeaseInput) => Promise<boolean>;
@@ -1137,7 +1139,7 @@ export async function recoverAll(options: RecoverAllOptions): Promise<string[]> 
   const quarantine = new RecoveryQuarantineStore(options.db, options.time);
   workflowRetryOptions.set(options.db, options);
   await runWorkflowStartupRecovery<RawWorkflowRecoveryEnvelope, HydratedWorkflowRecovery>({
-    source: workflowRecoverySource(options.db),
+    source: workflowRecoverySource(options.db, undefined, options.observation),
     policy: {
       signal,
       quarantine,

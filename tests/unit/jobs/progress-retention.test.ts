@@ -50,6 +50,29 @@ async function prune(f: ReturnType<typeof fixture>) {
 }
 
 describe('progress retention', () => {
+  it('counts terminal jobs as subjects, including an empty pass', async () => {
+    const f = fixture();
+    const record = vi.fn();
+    const run = () =>
+      pruneJobProgress({
+        db: f.db,
+        readCtx: f.store,
+        cutoff: RETENTION_CUTOFF,
+        afterSeq: 0,
+        budget: { ...f.budget, observation: { record } },
+      });
+    await run();
+    expect(record).not.toHaveBeenCalled();
+    for (const id of ['first', 'second']) {
+      launch(f, id);
+      terminal(f, id);
+    }
+    await run();
+    expect(record.mock.calls).toEqual([
+      ['journal-progress', { subjects: 1 }],
+      ['journal-progress', { subjects: 1 }],
+    ]);
+  });
   it.each(['terminal', 'message'] as const)(
     'prunes both jobs when %s text mentions causeRef, including quoted JSON',
     async (location) => {

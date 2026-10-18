@@ -234,6 +234,33 @@ function terminalEvent(events: ReturnType<typeof readJobEvents>) {
 }
 
 describe('workflow usage aggregation', () => {
+  it('counts every storage row on repeated detail reads, including workflow child diagnostics', () => {
+    const db = createDb();
+    try {
+      seedWorkflowWithChildren(db, 'workflow-counts');
+      const counts = new Map<string, number>();
+      const observation = {
+        record(source: string, count: { reads?: number }) {
+          counts.set(source, (counts.get(source) ?? 0) + (count.reads ?? 0));
+        },
+      };
+      loadJobProjectionDetail(db, 'workflow-counts', readCtx, observation);
+      expect(counts.get('job-projections')).toBe(1);
+      expect(counts.get('job-details')).toBe(2);
+      expect(counts.get('workflow-child-diagnostics')).toBe(2);
+      loadJobProjectionDetail(db, 'workflow-counts', readCtx, observation);
+      expect(counts.get('job-projections')).toBe(2);
+      expect(counts.get('job-details')).toBe(4);
+      expect(counts.get('workflow-child-diagnostics')).toBe(4);
+      db.prepare('UPDATE projection_jobs SET parent_workflow_job_id = NULL WHERE job_id = ?').run('codex-child');
+      counts.clear();
+      loadJobProjectionDetail(db, 'workflow-counts', readCtx, observation);
+      expect(counts.get('workflow-child-diagnostics')).toBe(1);
+    } finally {
+      db.close();
+    }
+  });
+
   it('sums child usage from projection rows, including failed children and costless Codex jobs', () => {
     const db = createDb();
     try {

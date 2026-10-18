@@ -65,6 +65,42 @@ afterEach(() => {
 });
 
 describe('job location additive records', () => {
+  it.each(['', 'z.json'])('counts compaction file reads separately from enumeration after %j', async (afterId) => {
+    const { root, index } = fixture();
+    const subject = { projectRoot: '/workspace/project', workDir: '/workspace/project', jobKind: 'provider' as const };
+    index.register('a', 'epoch-1', subject);
+    index.register('b', 'epoch-1', subject);
+    writeFileSync(join(root, 'job-locations.v1', 'jobs', 'ignored.tmp'), 'ignored');
+    const record = vi.fn();
+
+    await index.compactTerminalRecords(
+      afterId,
+      { canContinue: () => true, record: () => {}, observation: { record } },
+      (operation) => operation(),
+    );
+
+    expect(record.mock.calls).toEqual([
+      ['job-locations', { subjects: 2 }],
+      ...Array.from({ length: afterId === '' ? 2 : 0 }, () => ['job-locations', { reads: 1 }]),
+    ]);
+  });
+
+  it('counts every cold-scan file and each selected refresh at its read boundary', () => {
+    const { root, index } = fixture();
+    const subject = { projectRoot: '/workspace/project', workDir: '/workspace/project', jobKind: 'provider' as const };
+    index.register('selected', 'epoch-1', subject);
+    index.register('other', 'epoch-2', subject);
+    writeFileSync(join(root, 'job-locations.v1', 'jobs', 'invalid.json'), 'invalid json');
+    const record = vi.fn();
+
+    expect(index.locationsFor('epoch-1', { record }).map((location) => location.jobId)).toEqual(['selected']);
+    expect(record.mock.calls).toEqual(Array.from({ length: 4 }, () => ['job-locations', { reads: 1 }]));
+
+    record.mockClear();
+    expect(index.locationsFor('epoch-1', { record }).map((location) => location.jobId)).toEqual(['selected']);
+    expect(record.mock.calls).toEqual([['job-locations', { reads: 1 }]]);
+  });
+
   it('preserves unknown detail fields through an additive merge', () => {
     const { root, index } = fixture();
     const jobId = 'job-1';

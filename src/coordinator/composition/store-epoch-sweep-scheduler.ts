@@ -1,3 +1,4 @@
+import { startRecoveryPhase } from '../../recovery/phase-observation.js';
 import { sameEpoch } from '../../store/epoch/identity.js';
 import { formatError } from '../../infra/error-format.js';
 import type { TimerHandle } from '../../infra/port-types.js';
@@ -15,6 +16,7 @@ import type { CoordinatorWorld } from './world.js';
 
 export function createStoreEpochSweepScheduler(input: {
   runtime: Runtime;
+  bootId: string;
   world: Pick<CoordinatorWorld, 'log'>;
   jobLocationIndex: JobLocationIndex;
   selectedStoreEpochKey: () => string | null;
@@ -41,17 +43,22 @@ export function createStoreEpochSweepScheduler(input: {
         timer = runtime.time.setTimeout(() => {
           timer = null;
           lastSweepStart = Number(runtime.time.monotonicNow());
+          const observation = startRecoveryPhase({
+            time: runtime.time,
+            log: world.log,
+            bootId: input.bootId,
+            kind: 'background',
+            phase: 'store-epoch-sweep',
+          });
+          let failed = false;
           void (async () => {
             const budget = { remaining: 0 };
             try {
-              registerPresentHistoricalEpochs(
-                runtime,
-                jobLocationIndex,
-                listStoreEpochs(runtime),
-                input.selectedStoreEpochKey(),
-                budget,
-              );
+              const epochs = listStoreEpochs(runtime);
+              observation.record('store-epochs', { subjects: epochs.length, reads: epochs.length });
+              registerPresentHistoricalEpochs(runtime, jobLocationIndex, epochs, input.selectedStoreEpochKey(), budget);
             } catch (error) {
+              failed = true;
               world.log(`Historical epoch registration could not complete: ${formatError(error)}\n`);
             }
             await retryUnknownHistoricalEpochs(jobLocationIndex, budget);
@@ -65,6 +72,7 @@ export function createStoreEpochSweepScheduler(input: {
                 input.closeProxySetForEpochClosure,
               );
             } catch (error) {
+              failed = true;
               world.log(`Superseded epoch closure could not complete: ${formatError(error)}\n`);
             }
             if (!controller.signal.aborted) {
@@ -74,15 +82,18 @@ export function createStoreEpochSweepScheduler(input: {
                 { ...openStore, storeRoot: openStore.canonicalStoreRoot ?? openStore.storeRoot },
                 {
                   signal: controller.signal,
+                  observation,
                   resultsReleased: (epochKey, closedSource) => jobLocationIndex.resultsReleased(epochKey, closedSource),
                 },
               ));
             }
           })()
             .catch((error: unknown) => {
+              failed = true;
               world.log(`Store epoch closure or retention sweep could not complete: ${formatError(error)}\n`);
             })
             .finally(() => {
+              observation.finish(failed ? 'failed' : 'complete');
               lastSweepDuration = Number(runtime.time.monotonicNow()) - lastSweepStart;
               settleScheduled?.();
               settleScheduled = null;

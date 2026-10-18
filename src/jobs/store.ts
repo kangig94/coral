@@ -1,3 +1,4 @@
+import type { RecoveryObservation } from '../recovery/phase-observation.js';
 import type { ProgressSource, ProgressVisitResult } from './wait/contract.js';
 import { visitJobProgress } from './read-queries.js';
 import { sameEpoch } from '../store/epoch/identity.js';
@@ -504,8 +505,8 @@ export class JobStore implements JobProgressStore {
     });
   }
 
-  private detail(jobId: string) {
-    return this.applyNamespaceOverride(loadJobProjectionDetail(this.db, jobId, this), jobId);
+  private detail(jobId: string, observation?: RecoveryObservation) {
+    return this.applyNamespaceOverride(loadJobProjectionDetail(this.db, jobId, this, observation), jobId);
   }
 
   private applyNamespaceOverrideToStatus(jobId: string, status: JobStatus): JobStatus {
@@ -548,8 +549,8 @@ export class JobStore implements JobProgressStore {
     };
   }
 
-  loadJobProjectionDetail(jobId: string) {
-    return this.detail(jobId);
+  loadJobProjectionDetail(jobId: string, observation?: RecoveryObservation) {
+    return this.detail(jobId, observation);
   }
 
   loadJobWaitDetail(jobId: string): JobWaitDetail {
@@ -563,8 +564,8 @@ export class JobStore implements JobProgressStore {
     return readJobLastSeq(this.db, jobId);
   }
 
-  readJobEvents(jobId: string, terminalOnly = false, afterSeq = 0) {
-    return readJobEvents(this.db, jobId, this, terminalOnly, afterSeq);
+  readJobEvents(jobId: string, terminalOnly = false, afterSeq = 0, observation?: RecoveryObservation) {
+    return readJobEvents(this.db, jobId, this, terminalOnly, afterSeq, observation);
   }
 
   visitProgress<T>(read: (source: ProgressSource) => T): ProgressVisitResult<T> {
@@ -611,9 +612,9 @@ export class JobStore implements JobProgressStore {
         if (!index || !location || hasReadableTerminalDetail(location)) return;
         index.prepareTerminal(jobId, db, location.epochKey, this.runtime.paths.coral.exports.jobsRoot);
       },
-      location: (jobId): JobLocation | null => {
-        if (this.exportLocations) return this.exportLocations.read(jobId);
-        const detail = this.loadJobProjectionDetail(jobId);
+      location: (jobId, observation): JobLocation | null => {
+        if (this.exportLocations) return this.exportLocations.read(jobId, observation);
+        const detail = this.loadJobProjectionDetail(jobId, observation);
         if (!detail.status || !detail.exit) return null;
         const accepted = readAcceptedTerminal(this.db, jobId);
         if (!accepted) return null;
@@ -653,8 +654,8 @@ export class JobStore implements JobProgressStore {
     return this.getResultExportOwner().publishTerminalResult(jobId);
   }
 
-  ensureResultArtifact(jobId: string): string {
-    return this.getResultExportOwner().ensureResultMarkdownArtifact(jobId);
+  ensureResultArtifact(jobId: string, observation?: RecoveryObservation): string {
+    return this.getResultExportOwner().ensureResultMarkdownArtifact(jobId, observation);
   }
 
   listJobProjections() {

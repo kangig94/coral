@@ -47,6 +47,7 @@ export type SuccessionReconcilerOptions = Readonly<{
   launchPrepared?: (intent: UpgradeIntent, preparation: SuccessionPreparation) => Promise<SuccessionLaunch>;
   discardUnservedMint?: (incumbentEpochKey: string, attemptId: string) => UnservedMintDiscard;
   retryIntervalMs?: number;
+  observation?: { bootId: string; log(message: string): void };
 }>;
 
 /**
@@ -95,8 +96,9 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
   const scheduler = createSuccessionReconciliationScheduler({
     time: options.runtime.time,
     retryIntervalMs: options.retryIntervalMs ?? 30_000,
+    observation: options.observation,
     subscribe: options.subscribeObligationChanges,
-    runPass: () => reconcilePending(),
+    runPass: (observation) => reconcilePending(observation),
     onError: options.onReconcileError,
   });
   const { reconcile, notifyObligationChange } = scheduler;

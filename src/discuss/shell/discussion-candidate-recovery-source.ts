@@ -1,3 +1,5 @@
+import { observeDatabaseReads } from '../../recovery/read-observation.js';
+import type { RecoveryObservation } from '../../recovery/phase-observation.js';
 import type { ProjectionJobStoredRow } from '../../jobs/projection-row.js';
 import { PROJECTION_JOB_COLUMNS } from '../../jobs/projection-row.js';
 import { sqlPlaceholders, type Database } from '../../store/db.js';
@@ -148,6 +150,7 @@ function readCandidateEnvelope(
 function scanDiscussionCandidateEnvelopes(
   db: Database,
   subjectKey?: string,
+  observation?: RecoveryObservation,
 ): readonly RawDiscussionCandidateEnvelope[] {
   return withConsistentRead(db, () => {
     const discussions =
@@ -166,6 +169,7 @@ function scanDiscussionCandidateEnvelopes(
                 WHERE discuss_id = ?`,
             )
             .all(subjectKey);
+    observation?.record(CANDIDATE_BOUNDARY, { subjects: discussions.length });
     return discussions.map((discussion) => readCandidateEnvelope(db, discussion));
   });
 }
@@ -173,14 +177,16 @@ function scanDiscussionCandidateEnvelopes(
 export function discussionCandidateRecoverySource(
   db: Database,
   subject?: RecoverySubject,
+  observation?: RecoveryObservation,
 ): RecoverySource<RawDiscussionCandidateEnvelope> {
+  const observedDb = observation === undefined ? db : observeDatabaseReads(db, observation, 'discussion-candidate');
   return defineRecoverySource({
     boundary: CANDIDATE_BOUNDARY,
     scanSubject: subject ?? {
       key: 'discussion-candidate-discovery',
       revision: { kind: 'until-cleared' },
     },
-    scan: () => scanDiscussionCandidateEnvelopes(db, subject?.key),
+    scan: () => scanDiscussionCandidateEnvelopes(observedDb, subject?.key, observation),
     subject: (raw) => raw.subject,
   });
 }

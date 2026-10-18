@@ -22,6 +22,22 @@ function fixture() {
 }
 
 describe('epoch holder retention', () => {
+  it.each(['', 'z.json'])('does not count unread or filtered holder entries as reads after %j', async (afterName) => {
+    const f = fixture();
+    const root = f.runtime.paths.coral.store.dbDir;
+    for (const name of ['.epoch-holder-ignored.tmp', 'ignored.tmp']) writeFileSync(join(root, name), 'unread');
+    const record = vi.fn();
+
+    await pruneStoreEpochHolders(
+      f.runtime,
+      { ...f.budget, observation: { record } },
+      (operation) => operation(),
+      afterName,
+    );
+
+    expect(record.mock.calls).toEqual([['epoch-holders', { subjects: 1 }]]);
+  });
+
   it('removes an absent owner even when another process still holds the same epoch, keeping alive and unknown owners', async () => {
     const f = fixture();
     const root = f.runtime.paths.coral.store.dbDir;
@@ -44,7 +60,12 @@ describe('epoch holder retention', () => {
       },
     };
     try {
-      await pruneStoreEpochHolders(runtime, f.budget, (operation) => operation());
+      const record = vi.fn();
+      await pruneStoreEpochHolders(runtime, { ...f.budget, observation: { record } }, (operation) => operation());
+      expect(record.mock.calls).toEqual([
+        ['epoch-holders', { subjects: 4 }],
+        ...Array.from({ length: 4 }, () => ['epoch-holders', { reads: 1 }]),
+      ]);
       expect(existsSync(join(root, '.epoch-holder-absent.json'))).toBe(false);
       for (const name of ['alive', 'unknown', 'corrupt'])
         expect(existsSync(join(root, `.epoch-holder-${name}.json`))).toBe(true);

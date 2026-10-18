@@ -104,6 +104,7 @@ export async function pruneJobProgress(input: {
         return cursor.afterSeq || terminal.seq;
       }
       const subject = `progress:${terminal.stream_id}`;
+      budget.observation?.record('journal-progress', { subjects: 1 });
       let deleted = 0;
       let kept = 0;
       let unknownEvidence = false;

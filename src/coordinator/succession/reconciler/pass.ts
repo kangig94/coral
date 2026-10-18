@@ -1,3 +1,4 @@
+import type { RecoveryObservation } from '../../../recovery/phase-observation.js';
 import { join } from 'node:path';
 
 import {
@@ -41,8 +42,10 @@ type ReconciliationContext = Readonly<{
   abort: (attemptId: string) => Promise<SuccessionDecision>;
 }>;
 
-export function createSuccessionReconciliationPass(context: ReconciliationContext): () => Promise<SuccessionDecision> {
-  return () => reconcilePending(context);
+export function createSuccessionReconciliationPass(
+  context: ReconciliationContext,
+): (observation?: RecoveryObservation) => Promise<SuccessionDecision> {
+  return (observation) => reconcilePending(context, observation);
 }
 
 function wakeAt(context: ReconciliationContext, atMs: number): void {
@@ -133,13 +136,17 @@ async function landOwedClear(
   return { kind: 'deferred', reason: 'a settled attempt was cleared from the upgrade intent' };
 }
 
-async function reconcilePending(context: ReconciliationContext): Promise<SuccessionDecision> {
+async function reconcilePending(
+  context: ReconciliationContext,
+  observation?: RecoveryObservation,
+): Promise<SuccessionDecision> {
   const { options, state, status, notifyObligationChange, adopt, adoptNextTarget, commit } = context;
   if (!state.disposed && state.owedClear !== null) {
     const owed = await landOwedClear(context, state.owedClear);
     if (owed !== null) return owed;
   }
   const observed = status();
+  if (observed.kind === 'readable') observation?.record('upgrade-intents', { subjects: 1, reads: 1 });
   if (!state.disposed && observed.kind === 'corrupt' && state.launchedAttempt === null && state.owedClear === null) {
     if ((await quarantineCorruptUpgradeIntent(options.runDir)) === 'quarantined') {
       options.onIntentChanged?.();

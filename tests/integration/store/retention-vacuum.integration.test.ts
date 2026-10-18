@@ -64,11 +64,13 @@ describe('retention vacuum', () => {
     freePages(f);
     const exec = vi.spyOn(f.db, 'exec');
     const before = f.db.prepare('PRAGMA freelist_count').get() as { freelist_count: number };
-    expect(await vacuumRetainedJournal(f.db, f.budget)).toEqual({
+    const record = vi.fn();
+    expect(await vacuumRetainedJournal(f.db, { ...f.budget, observation: { record } })).toEqual({
       kind: 'deleted',
       subject: 'journal-vacuum',
       count: before.freelist_count,
     });
+    expect(record.mock.calls).toEqual([['journal-vacuum', { subjects: before.freelist_count }]]);
     expect(f.db.prepare('PRAGMA freelist_count').get()).toEqual({ freelist_count: 0 });
     expect(exec.mock.calls.filter(([sql]) => sql.includes('vacuum'))).toEqual(
       expect.arrayContaining([['PRAGMA incremental_vacuum(32)']]),

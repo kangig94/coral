@@ -12,6 +12,7 @@ import { workflowRecover } from '#src/workflow/recover.js';
 import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-supervisor.js';
 import { sessionContinuationLeaseRecordedEvent } from '#src/sessions/continuation-lease-events.js';
 import { providerSessionSchema } from '#src/sessions/entry.js';
+import { appendRetentionDiscardRequested, appendRetentionDiscardCompleted } from '#src/sessions/retention-outbox.js';
 import { TEST_CODEX_BINDING } from '#tests/helpers/provider-credentials.js';
 
 import { LifecycleReactor } from '#src/sessions/lifecycle-reactor.js';
@@ -23,7 +24,11 @@ import { OperationSupervisor } from '#src/provider-proxy/operation-supervisor.js
 import { buildWorkflowPlan } from '#src/workflow/plan.js';
 import { parseExpression } from '#src/workflow/parser.js';
 import { workflowPlanDeclaredEvent } from '#src/workflow/events.js';
-import { seedTestSessionProjection } from '#tests/helpers/session.js';
+import * as locationRecovery from '#src/jobs/location-recovery.js';
+import * as discussRecovery from '#src/discuss/shell/recovery.js';
+import { makeEvent } from '#src/discuss/events.js';
+import { toJournalInput } from '#src/discuss/event-registry.js';
+import { initTestJob, seedTestSessionProjection } from '#tests/helpers/session.js';
 import { commitJobTerminal } from '#tests/helpers/job-commits.js';
 import { TEST_CODEX_SCOPE } from '#tests/helpers/provider-credentials.js';
 import * as storeEpochSweep from '#src/coordinator/composition/store-epoch-sweep-scheduler.js';
@@ -325,97 +330,150 @@ describe('coordinator pending workflow replacement recovery', () => {
     const sessionId = 'pending-replacement-session';
     let startupOptions: JobsStartupContext | undefined;
     const order: string[] = [];
-    vi.spyOn(jobsStartup, 'createJobsStartupRunner').mockReturnValue(async (options) => {
-      startupOptions = options;
-      const plan = buildWorkflowPlan(workflowId, parseExpression('architect'), { defaultProvider: 'codex' });
-      options.coordinatorCommit((c) => {
-        c.append(workflowPlanDeclaredEvent(workflowId, plan, TEST_CODEX_SCOPE));
-        return undefined;
-      });
-      options.progressStore.appendLaunchRequested(workflowId, {
-        jobId: workflowId,
-        owner: { kind: 'workflow', id: workflowId },
-        sessionId: null,
-        provider: null,
+    const phaseLines: string[] = [];
+    const recoverLocations = locationRecovery.recoverJobLocations;
+    vi.spyOn(locationRecovery, 'recoverJobLocations').mockImplementation((index, epoch, store, observation) => {
+      const progressStore = store as JobsStartupContext['progressStore'];
+      initTestJob(progressStore, {
+        jobId: 'located-job',
+        sessionId: 'located-session',
+        provider: 'codex',
         projectRoot,
-        backendNamespace: options.namespace,
-        jobKind: 'workflow',
-        pool: 'default',
-        enqueueSequence: options.progressStore.nextEnqueueSequence(),
-        request: { prompt: '', cwd: projectRoot, bypassPermissions: false, coralEnv: {} },
-        createdAt: new Date(runtime.time.now()).toISOString(),
+        backendNamespace: 'startup-ordering',
       });
-      options.coordinatorCommit((c) => {
-        c.append({
-          type: 'job.runtime.started',
-          stream: { kind: 'job', id: workflowId },
-          namespace: options.namespace,
-          project: projectRoot,
-          refs: { jobId: workflowId, workflowId },
-          body: { transport: 'workflow', startedAt: new Date(runtime.time.now()).toISOString() },
+      commitJobTerminal(progressStore, 'located-job', 'located-session', {
+        content: 'done',
+        outcome: { kind: 'completed' },
+        durationMs: 1,
+      });
+      recoverLocations(index, epoch, progressStore, observation);
+    });
+    const createJobsStartupRunner = jobsStartup.createJobsStartupRunner;
+    vi.spyOn(jobsStartup, 'createJobsStartupRunner').mockImplementation((runRecovery) => {
+      const runStartup = createJobsStartupRunner(runRecovery);
+      return async (options) => {
+        startupOptions = options;
+        const plan = buildWorkflowPlan(workflowId, parseExpression('architect'), { defaultProvider: 'codex' });
+        options.coordinatorCommit((c) => {
+          c.append(workflowPlanDeclaredEvent(workflowId, plan, TEST_CODEX_SCOPE));
+          return undefined;
         });
-        return undefined;
-      });
-      seedTestSessionProjection(options.progressStore.getDb(), {
-        sessionId,
-        provider: 'codex',
-        projectRoot,
-        backendNamespace: options.namespace,
-        activeJobId: childId,
-      });
-      options.progressStore.appendLaunchRequested(childId, {
-        jobId: childId,
-        owner: { kind: 'workflow', id: workflowId },
-        sessionId,
-        provider: 'codex',
-        projectRoot,
-        backendNamespace: options.namespace,
-        jobKind: 'provider',
-        pool: 'default',
-        enqueueSequence: options.progressStore.nextEnqueueSequence(),
-        providerAction: 'exec',
-        parentWorkflowJobId: workflowId,
-        workflowSlotId: plan.slots[0].slotId,
-        workflowSlotGeneration: 0,
-        request: { prompt: '', cwd: projectRoot, bypassPermissions: false, coralEnv: {} },
-        createdAt: new Date(runtime.time.now()).toISOString(),
-      });
-      commitJobTerminal(options.progressStore, childId, sessionId, {
-        content: '',
-        outcome: { kind: 'job_fault', fault: { kind: 'ghost_launch' } },
-        durationMs: 0,
-      });
-      const row = options.progressStore
-        .getDb()
-        .prepare<[string], { entry: string }>('SELECT entry FROM projection_sessions WHERE session_id = ?')
-        .get(sessionId);
-      const entry = providerSessionSchema.parse(JSON.parse(row?.entry ?? 'null'));
-      const lease = {
-        status: 'pending' as const,
-        staleJobId: childId,
-        workflowId,
-        workflowSlotId: plan.slots[0].slotId,
-        replacementGeneration: 1,
-        reason: 'stale_recovery' as const,
-        expiresAt: new Date(runtime.time.now() + 60_000).toISOString(),
-        recordedAt: new Date(runtime.time.now()).toISOString(),
-      };
-      options.coordinatorCommit((c) => {
-        c.append(
-          sessionContinuationLeaseRecordedEvent(
-            { ...entry, continuationLease: lease, version: entry.version + 1 },
-            lease,
-          ),
+        options.progressStore.appendLaunchRequested(workflowId, {
+          jobId: workflowId,
+          owner: { kind: 'workflow', id: workflowId },
+          sessionId: null,
+          provider: null,
+          projectRoot,
+          backendNamespace: options.namespace,
+          jobKind: 'workflow',
+          pool: 'default',
+          enqueueSequence: options.progressStore.nextEnqueueSequence(),
+          request: { prompt: '', cwd: projectRoot, bypassPermissions: false, coralEnv: {} },
+          createdAt: new Date(runtime.time.now()).toISOString(),
+        });
+        options.coordinatorCommit((c) => {
+          c.append({
+            type: 'job.runtime.started',
+            stream: { kind: 'job', id: workflowId },
+            namespace: options.namespace,
+            project: projectRoot,
+            refs: { jobId: workflowId, workflowId },
+            body: { transport: 'workflow', startedAt: new Date(runtime.time.now()).toISOString() },
+          });
+          return undefined;
+        });
+        seedTestSessionProjection(options.progressStore.getDb(), {
+          sessionId,
+          provider: 'codex',
+          projectRoot,
+          backendNamespace: options.namespace,
+          activeJobId: childId,
+        });
+        options.progressStore.appendLaunchRequested(childId, {
+          jobId: childId,
+          owner: { kind: 'workflow', id: workflowId },
+          sessionId,
+          provider: 'codex',
+          projectRoot,
+          backendNamespace: options.namespace,
+          jobKind: 'provider',
+          pool: 'default',
+          enqueueSequence: options.progressStore.nextEnqueueSequence(),
+          providerAction: 'exec',
+          parentWorkflowJobId: workflowId,
+          workflowSlotId: plan.slots[0].slotId,
+          workflowSlotGeneration: 0,
+          request: { prompt: '', cwd: projectRoot, bypassPermissions: false, coralEnv: {} },
+          createdAt: new Date(runtime.time.now()).toISOString(),
+        });
+        commitJobTerminal(options.progressStore, childId, sessionId, {
+          content: '',
+          outcome: { kind: 'job_fault', fault: { kind: 'ghost_launch' } },
+          durationMs: 0,
+        });
+        const row = options.progressStore
+          .getDb()
+          .prepare<[string], { entry: string }>('SELECT entry FROM projection_sessions WHERE session_id = ?')
+          .get(sessionId);
+        const entry = providerSessionSchema.parse(JSON.parse(row?.entry ?? 'null'));
+        const lease = {
+          status: 'pending' as const,
+          staleJobId: childId,
+          workflowId,
+          workflowSlotId: plan.slots[0].slotId,
+          replacementGeneration: 1,
+          reason: 'stale_recovery' as const,
+          expiresAt: new Date(runtime.time.now() + 60_000).toISOString(),
+          recordedAt: new Date(runtime.time.now()).toISOString(),
+        };
+        options.coordinatorCommit((c) => {
+          c.append(
+            sessionContinuationLeaseRecordedEvent(
+              { ...entry, continuationLease: lease, version: entry.version + 1 },
+              lease,
+            ),
+          );
+          return undefined;
+        });
+        const createdAt = new Date(runtime.time.now()).toISOString();
+        const created = makeEvent(
+          'observed-discussion',
+          projectRoot,
+          'observed discussion',
+          1,
+          'session.created',
+          createdAt,
+          {
+            input: { topic: 'observed discussion', agents: [], min_bid_delay_ms: 0 },
+            config: { bidThreshold: 30, maxEpochs: 1, quotaPerEpoch: 1 },
+            providerScope: { origin: 'caller', profiles: [] },
+            agentExecution: {},
+          },
         );
-        return undefined;
-      });
-      order.push('jobs-recovered');
-      return { kind: 'complete', progressStore: options.progressStore } as const;
+        const ended = makeEvent(
+          'observed-discussion',
+          projectRoot,
+          'observed discussion',
+          2,
+          'session.ended',
+          createdAt,
+          { reason: 'abort', force: true, endReasonContent: 'done' },
+        );
+        options.coordinatorCommit((c) => {
+          c.append(toJournalInput(created));
+          c.append(toJournalInput(ended));
+          return undefined;
+        });
+        const result = await runStartup(options);
+        order.push('jobs-recovered');
+        return result;
+      };
     });
     const scanStartup = LifecycleReactor.prototype.scanStartup;
     const scan = vi.spyOn(LifecycleReactor.prototype, 'scanStartup').mockImplementation(async function (
       this: LifecycleReactor,
       signal,
+      observation,
     ) {
       if (startupOptions === undefined) throw new Error('Expected jobs startup before lifecycle scan.');
       const row = startupOptions.progressStore
@@ -425,8 +483,24 @@ describe('coordinator pending workflow replacement recovery', () => {
       const entry = providerSessionSchema.parse(JSON.parse(row?.entry ?? 'null'));
       expect(entry.continuationLease).toMatchObject({ status: 'cleared', outcome: 'explicit_clear' });
       expect(startupOptions.progressStore.readStatus(workflowId)?.phase).toBe('error');
+      appendRetentionDiscardRequested(startupOptions.coordinatorCommit, { sessionId, attempt: 1, handles: [] });
+      appendRetentionDiscardCompleted(startupOptions.coordinatorCommit, {
+        sessionId,
+        attempt: 1,
+        handles: [],
+        outcome: 'skipped_protected',
+      });
+      const db = startupOptions.progressStore.getDb();
+      const current = db
+        .prepare<[string], { entry: string }>('SELECT entry FROM projection_sessions WHERE session_id = ?')
+        .get(sessionId);
+      const retained = providerSessionSchema.parse(JSON.parse(current?.entry ?? 'null'));
+      db.prepare<[string, string]>('UPDATE projection_sessions SET entry = ? WHERE session_id = ?').run(
+        JSON.stringify({ ...retained, retention: 'discard_provider_artifacts_on_terminal' }),
+        sessionId,
+      );
       order.push('lifecycle-scan');
-      await scanStartup.call(this, signal);
+      await scanStartup.call(this, signal, observation);
     });
     const dispatch = vi.spyOn(ExecutionService.prototype, 'coralDispatch');
     const resume = vi.spyOn(ExecutionService.prototype, 'resume');
@@ -434,8 +508,18 @@ describe('coordinator pending workflow replacement recovery', () => {
       onFatalShutdownError: vi.fn(),
       runtime,
       pluginRoot,
+      bootSnapshot: {
+        log: (message) => {
+          if (!message.startsWith('recovery-phase ') || !message.includes(' kind=startup ')) return;
+          phaseLines.push(message);
+          order.push(/ phase=(\S+) /.exec(message)?.[1] ?? 'invalid-phase');
+        },
+      },
       kbDaemonSupervisor: createMockKbDaemonSupervisor(),
-      recoverPersistedDiscussFn: async () => {},
+      recoverPersistedDiscussFn: async (deps) => {
+        await discussRecovery.runStartup(deps);
+        order.push('discussion-recovered');
+      },
       writeBackendInfoFn: () => true,
       removeBackendInfoIfOwnerFn: () => {},
       createServerFn: (handler) => createServer(handler),
@@ -443,9 +527,77 @@ describe('coordinator pending workflow replacement recovery', () => {
       closeServerFn: async () => {},
     });
     try {
-      await coordinator.start();
+      const info = await coordinator.start();
       expect(scan).toHaveBeenCalledOnce();
-      expect(order).toEqual(['jobs-recovered', 'lifecycle-scan']);
+      expect(order).toEqual([
+        'jobs-recovered',
+        'discussion-recovered',
+        'lifecycle-scan',
+        'store-open',
+        'kernel',
+        'job-locations',
+        'journal-barrier',
+        'jobs-startup',
+        'discussion',
+        'workflow',
+        'reactor-scan',
+        'serving',
+        'recovery-and-serve',
+        'boot',
+      ]);
+      expect(phaseLines).toHaveLength(11);
+      for (const line of phaseLines) {
+        expect(line).toMatch(
+          line.includes(' phase=store-open ')
+            ? /^recovery-phase boot=\S+ kind=startup phase=store-open event=finish outcome=complete duration_ms=\d+\.\d{3} attempts=\d+\n$/
+            : /^recovery-phase boot=\S+ kind=startup phase=\S+ event=finish outcome=complete duration_ms=\d+\.\d{3} subjects=\d+ reads=\d+ sources=\{.*\}\n$/,
+        );
+        expect(line).toContain(`boot=${info.instanceId} `);
+      }
+      for (const phase of ['job-locations', 'jobs-startup', 'discussion', 'workflow', 'reactor-scan']) {
+        const line = phaseLines.find((line) => line.includes(` phase=${phase} `));
+        const counts = / subjects=(\d+) reads=(\d+) /.exec(line ?? '');
+        expect(counts, phase).not.toBeNull();
+        expect(Number(counts?.[1]), `${phase} subjects`).toBeGreaterThan(0);
+        expect(Number(counts?.[2]), `${phase} reads`).toBeGreaterThan(0);
+      }
+      const expectedSources = {
+        'job-locations': [
+          'uncommitted-launches',
+          'job-locations',
+          'job-launches',
+          'job-high-water',
+          'job-projections',
+          'job-details',
+          'job-events',
+        ],
+        'jobs-startup': ['coordinator-job-recovery'],
+        discussion: ['discussion-source', 'discussion-candidate'],
+        workflow: ['workflow-recovery'],
+        'reactor-scan': [
+          'session-projection',
+          'session-continuation-lease',
+          'terminal-retention-outcome',
+          'retention-release-pair',
+        ],
+      };
+      for (const [phase, expected] of Object.entries(expectedSources)) {
+        const line = phaseLines.find((line) => line.includes(` phase=${phase} `));
+        const sources = JSON.parse(/ sources=(.*)\n$/.exec(line ?? '')?.[1] ?? '{}') as Record<
+          string,
+          { subjects: number; reads: number }
+        >;
+        for (const source of expected) {
+          expect(sources[source], `${phase}/${source}`).toBeDefined();
+          expect(sources[source]?.reads, `${phase}/${source} reads`).toBeGreaterThan(0);
+          if (phase !== 'job-locations')
+            expect(sources[source]?.subjects, `${phase}/${source} subjects`).toBeGreaterThan(0);
+        }
+        if (phase === 'reactor-scan') {
+          expect(sources['session-retention-work']?.subjects).toBeGreaterThan(0);
+          expect(sources['session-retention-work']?.reads).toBe(0);
+        }
+      }
       expect(dispatch).not.toHaveBeenCalled();
       expect(resume).not.toHaveBeenCalled();
     } finally {

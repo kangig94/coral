@@ -79,6 +79,7 @@ function preparedFor(provider: string) {
 }
 
 export type ProviderOperationReconcilerHarnessOverrides = {
+  observation?: ConstructorParameters<typeof ProviderOperationReconciler>[0]['observation'];
   progressStore?: (
     db: ReturnType<typeof newRawDatabase>,
     record: Extract<ProviderOperationRecord, { phase: 'prepare-pending' }>,
@@ -345,6 +346,7 @@ export function createProviderOperationReconcilerHarness(overrides: ProviderOper
     },
   );
   const reconcilerDependencies = {
+    observation: overrides.observation,
     requestContainment: overrides.requestContainment ?? (() => undefined),
     getProgressStore: () => progressStore,
     authorityFor: overrides.authorityFor ?? (() => authority),

@@ -1,3 +1,5 @@
+import { startRecoveryPhase } from '../../recovery/phase-observation.js';
+import { observeDatabaseReads } from '../../recovery/read-observation.js';
 import { ControlClientError } from '../../provider-proxy/control-client.js';
 import type { ProcessIncarnation } from '../../infra/node-process.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
@@ -346,6 +348,7 @@ function isTemporarilyUnavailableAcquisition(
 }
 
 type ProviderOperationReconcilerDeps = Readonly<{
+  observation?: { bootId: string; log(message: string): void };
   requestContainment(identity: ProviderProxySetIdentity, cause: string): void;
   getProgressStore: () => Pick<JobProgressStore, 'getDb' | 'commit' | 'readStatus' | 'readLaunchProjection'>;
   custody?: () => Readonly<{ runtime: Runtime; runDir: string; epoch: string; nowMs: number; bindWithinMs: number }>;
@@ -3082,13 +3085,27 @@ export class ProviderOperationReconciler
         return;
       }
       this.#polling = true;
+      const observation =
+        this.#deps.observation === undefined
+          ? undefined
+          : startRecoveryPhase({
+              ...this.#deps.observation,
+              time: this.#deps.time,
+              kind: 'background',
+              phase: 'provider-operation-reconciliation',
+            });
+      let failed = false;
       try {
         const progressStore = this.#deps.getProgressStore();
+        const getDb = (): ReturnType<typeof progressStore.getDb> => {
+          const db = progressStore.getDb();
+          return observation === undefined ? db : observeDatabaseReads(db, observation, 'provider-operations');
+        };
         const scanCutoffMs = this.#deps.time.now();
         let selections: readonly ProviderOperationDueSelection[];
         try {
           selections = readProviderOperationDueSelections(
-            progressStore.getDb(),
+            getDb(),
             scanCutoffMs,
             this.#batchSize,
             (record) => !this.#startupSets.has(providerProxySetKey(providerProxySetIdentityFromRecord(record))),
@@ -3108,16 +3125,19 @@ export class ProviderOperationReconciler
           throw error;
         }
         for (const selection of selections) {
+          observation?.record('provider-operations', { subjects: 1 });
           const startup = this.#startupSets.get(
             providerProxySetKey(providerProxySetIdentityFromRecord(selection.record)),
           );
           if (startup !== undefined) continue;
           const result = await this.#reconcileDueSelection(selection, scanCutoffMs, preferredAuthority);
+          failed ||= result === 'fatal' || result === 'finished-with-drive-error';
           if (result === 'fatal') return;
         }
         if (this.#fatal) return;
         for (const [key, identity] of this.#settlements) {
-          const record = readProviderOperation(progressStore.getDb(), identity);
+          const record = readProviderOperation(getDb(), identity);
+          if (record !== null) observation?.record('provider-operations', { subjects: 1 });
           if (record === null) {
             this.#settlements.delete(key);
             continue;
@@ -3128,7 +3148,8 @@ export class ProviderOperationReconciler
           await this.reconcile(record, preferredAuthority);
         }
         for (const [key, identity] of this.#attachments) {
-          const record = readProviderOperation(progressStore.getDb(), identity);
+          const record = readProviderOperation(getDb(), identity);
+          if (record !== null) observation?.record('provider-operations', { subjects: 1 });
           if (record === null || record.phase !== 'executing') {
             this.#attachments.delete(key);
             continue;
@@ -3139,10 +3160,12 @@ export class ProviderOperationReconciler
           await this.reconcile(record, preferredAuthority);
         }
       } catch (error: unknown) {
+        failed = true;
         if (!this.#observeFatal(error)) {
           this.#deps.onError?.(`Provider operation reconciliation failed: ${providerOperationErrorReason(error)}`);
         }
       } finally {
+        observation?.finish(failed || this.#fatal ? 'failed' : 'complete');
         this.#polling = false;
         const pollRequested = this.#pollRequested;
         this.#pollRequested = false;

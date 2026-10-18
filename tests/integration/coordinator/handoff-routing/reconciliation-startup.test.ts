@@ -64,6 +64,9 @@ async function verifyReconciliationStartup(gateBeforeReadiness: boolean): Promis
   const listening = new Promise<void>((resolve) => {
     enteredListener = resolve;
   });
+  const logs: string[] = [];
+  const routingPhases = (event: string) =>
+    logs.filter((line) => line.includes(`kind=background phase=handoff-routing-reconciliation event=${event}`));
   const core = createCoordinatorCore(
     {
       onFatalShutdownError: vi.fn(),
@@ -78,7 +81,7 @@ async function verifyReconciliationStartup(gateBeforeReadiness: boolean): Promis
         instanceId: 'routing-startup',
         token: 'test-token',
         now: runtime.time.now,
-        log: () => {},
+        log: (line) => logs.push(line),
       },
       kbDaemonSupervisor: createMockKbDaemonSupervisor(),
       createStoreServicesFromDbFn: (db) => ({
@@ -117,6 +120,7 @@ async function verifyReconciliationStartup(gateBeforeReadiness: boolean): Promis
       expect(core.runtimeState.getLifecycle()).toBe('starting');
       await new Promise<void>((resolve) => setImmediate(resolve));
       expect(runtime.process.observeProcessIdentities).not.toHaveBeenCalled();
+      expect(routingPhases('start')).toHaveLength(0);
       expect(interval.mock.calls.some(([, ms]) => ms === 1_000)).toBe(false);
       expect(readHandoffRoutingStatus(runtime, path)).toMatchObject({
         kind: 'current',
@@ -135,6 +139,17 @@ async function verifyReconciliationStartup(gateBeforeReadiness: boolean): Promis
     const index = interval.mock.calls.findIndex(([, ms]) => ms === 1_000);
     expect(index).toBeGreaterThanOrEqual(0);
     const timer = interval.mock.results[index].value;
+    await vi.waitFor(() => expect(routingPhases('finish')).toHaveLength(1));
+    expect(routingPhases('start')).toHaveLength(1);
+    expect(routingPhases('finish')[0]).toContain('boot=routing-startup');
+    expect(routingPhases('finish')[0]).toContain('subjects=1 reads=0');
+    expect(routingPhases('finish')[0]).toContain('"handoff-routing-statuses":{"subjects":1,"reads":0}');
+    const tick = interval.mock.calls[index][0];
+    tick();
+    await vi.waitFor(() => expect(routingPhases('finish')).toHaveLength(2));
+    expect(routingPhases('start')).toHaveLength(2);
+    expect(routingPhases('finish')[1]).toContain('outcome=complete');
+    expect(routingPhases('finish')[1]).toContain('subjects=1 reads=0');
     releaseRecovery();
     await starting;
     expect(core.runtimeState.getLifecycle()).toBe('running');

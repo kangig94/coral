@@ -7,12 +7,13 @@ import { setImmediate } from 'node:timers/promises';
 /** The fenced database owns every vacuum write turn, including succession park exclusion. */
 export async function vacuumRetainedJournal(
   db: Database,
-  budget: Pick<RetentionRunBudget, 'canContinue'>,
+  budget: Pick<RetentionRunBudget, 'canContinue' | 'observation'>,
 ): Promise<RetentionOutcome> {
   const subject = 'journal-vacuum';
   try {
     if (!budget.canContinue()) return { kind: 'kept', subject, reason: 'run-interrupted' };
     const free = db.prepare<[], { freelist_count: number }>('PRAGMA freelist_count').get()?.freelist_count;
+    if (free !== undefined) budget.observation?.record('journal-vacuum', { subjects: free });
     const mode = db.prepare<[], { auto_vacuum: number }>('PRAGMA auto_vacuum').get()?.auto_vacuum;
     if (free === undefined || mode === undefined) {
       return { kind: 'kept', subject, reason: 'vacuum-metadata-unknown' };

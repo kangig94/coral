@@ -1,3 +1,11 @@
+import { observeDatabaseReads } from '../recovery/read-observation.js';
+import {
+  createStartupPhaseObserver,
+  observeRecoveryPhase,
+  startRecoveryPhase,
+  type StartupPhaseObserver,
+  type RecoveryObservation,
+} from '../recovery/phase-observation.js';
 import { sameEpoch } from '../store/epoch/identity.js';
 import { renderWorkflowReport } from '../workflow/result-report.js';
 import { removeTreeNoFollowSync, type TreeRemovalStorage } from '../infra/remove-tree.js';
@@ -743,7 +751,10 @@ export async function cleanupStaleJobs(
   const context = { progressStore, currentBundleHash, log, storage, nowMs, retentionMs };
   staleJobCleanupRetryContexts.set(progressStore.getDb(), context);
   const quarantine = new RecoveryQuarantineStore(progressStore.getDb(), { now: () => nowMs });
-  const db = progressStore.getDb();
+  const db =
+    budget?.observation === undefined
+      ? progressStore.getDb()
+      : observeDatabaseReads(progressStore.getDb(), budget.observation, 'scratch-jobs');
   const pending = createRetentionPendingSet(
     db,
     'storage-retention.scratch.pending.v1',
@@ -790,6 +801,7 @@ export async function cleanupStaleJobs(
           detail: 'scratch cleanup budget exhausted; retry next cycle',
         };
       attempted.add(item.jobId);
+      budget?.observation?.record('scratch-jobs', { subjects: 1 });
       const result = await cleanupPolicy.settle(item);
       assertOwnerActive();
       if (result.kind === 'advanced') {
@@ -939,6 +951,7 @@ export async function listen(
 export type RegisterBuiltInProvidersFn = (providerRegistry: ProviderRegistry) => void;
 
 export type RecoverPersistedDiscussDeps = {
+  readonly observation?: RecoveryObservation;
   readonly knownDiscussSources: () => Set<string>;
   readonly getDiscussStoreForSource: (source: string) => DiscussSessionStore;
   readonly getDiscussContext: (ctx: InvocationContext) => DiscussContext;
@@ -949,6 +962,7 @@ export type RecoverPersistedDiscussDeps = {
 export type RecoverPersistedDiscussFn = (deps: RecoverPersistedDiscussDeps) => Promise<void>;
 
 export type StartupRecoveryInputs = {
+  readonly startupPhases?: StartupPhaseObserver;
   readonly identity: CoordinatorIdentity;
   readonly runtime: Runtime;
   readonly progressStore: JobStore;
@@ -1290,6 +1304,7 @@ async function openOrdinaryStore(
   deps: LifecycleDeps,
   currentSelection: ActiveStoreSelection | null,
   signal: AbortSignal,
+  startupPhases: StartupPhaseObserver,
 ): Promise<Readonly<{ db: Database; store: ResolvedStoreEpoch }>> {
   const { runtime, identity } = deps;
   if (currentSelection === null) {
@@ -1301,29 +1316,31 @@ async function openOrdinaryStore(
   const authorizeStartupMint = deps.authorizeStartupMint;
   let mintWithheld = false;
   const routeStore = () =>
-    routeOrOpenBackendStoreAtStartup({
-      runtime,
-      validateForeignTarget: validateForeignHandoffTarget,
-      options: {
-        storeFormat: deps.storeFormat,
-        startupBusyTimeoutMs: STARTUP_STORE_BUSY_TIMEOUT_MS,
-        selectProtectedPredecessor: (addresses) =>
-          selectProtectedPredecessorFromControllers(
-            runtime,
-            runtime.storage.realpathSync(runtime.paths.coral.store.dbDir),
-            addresses,
-          ),
-        ...(authorizeStartupMint === undefined
-          ? {}
-          : {
-              authorizeMint: (observation: Parameters<typeof authorizeStartupMint>[0]) => {
-                const disposition = authorizeStartupMint(observation);
-                mintWithheld = disposition === null;
-                return disposition;
-              },
-            }),
-        currentSelection,
-      },
+    observeRecoveryPhase(startupPhases.options('store-open'), async () => {
+      return routeOrOpenBackendStoreAtStartup({
+        runtime,
+        validateForeignTarget: validateForeignHandoffTarget,
+        options: {
+          storeFormat: deps.storeFormat,
+          startupBusyTimeoutMs: STARTUP_STORE_BUSY_TIMEOUT_MS,
+          selectProtectedPredecessor: (addresses) =>
+            selectProtectedPredecessorFromControllers(
+              runtime,
+              runtime.storage.realpathSync(runtime.paths.coral.store.dbDir),
+              addresses,
+            ),
+          ...(authorizeStartupMint === undefined
+            ? {}
+            : {
+                authorizeMint: (observation: Parameters<typeof authorizeStartupMint>[0]) => {
+                  const disposition = authorizeStartupMint(observation);
+                  mintWithheld = disposition === null;
+                  return disposition;
+                },
+              }),
+          currentSelection,
+        },
+      });
     });
   let routing: Awaited<ReturnType<typeof routeStore>>;
   try {
@@ -1591,6 +1608,7 @@ async function selectStartupStore(
   unserved: UnservedSuccession,
   noCoordinatorAnswers: boolean,
   successionStoreContext: Awaited<ReturnType<typeof prepareStartupBuild>>['successionStoreContext'],
+  startupPhases: StartupPhaseObserver,
 ) {
   const { runtime, providerRegistry, registerBuiltInProvidersFn } = deps;
   const { instanceId } = deps.identity;
@@ -1639,17 +1657,20 @@ async function selectStartupStore(
   const preferredStore =
     preferredStoreEpochKey === null
       ? null
-      : await openPreferredStoreEpoch(
-          successionStoreContext,
-          instanceId,
-          preferredStoreEpochKey,
-          pendingDeadAttempt?.attemptId ?? null,
+      : await observeRecoveryPhase(startupPhases.options('store-open'), async () =>
+          openPreferredStoreEpoch(
+            successionStoreContext,
+            instanceId,
+            preferredStoreEpochKey,
+            pendingDeadAttempt?.attemptId ?? null,
+          ),
         );
 
   return { preferredStore, pendingDeadAttempt };
 }
 
 async function openSelectedStartupStore({
+  startupPhases,
   deps,
   prepared,
   selected,
@@ -1658,6 +1679,7 @@ async function openSelectedStartupStore({
   committedRecoveryStep,
   committedRecovery,
 }: Readonly<{
+  startupPhases: StartupPhaseObserver;
   deps: LifecycleDeps;
   prepared: Awaited<ReturnType<typeof prepareStartupBuild>>;
   selected: Awaited<ReturnType<typeof selectStartupStore>>;
@@ -1685,19 +1707,23 @@ async function openSelectedStartupStore({
     if (preinjectedStoreServices.storeDb.location() !== null) {
       throw new Error('Pre-injected lifecycle store must be non-filesystem-backed.');
     }
+    const reused = startRecoveryPhase({ ...startupPhases.options('store-open'), attempts: 0 });
     storeDb = preinjectedStoreServices.storeDb;
+    reused.finish();
   } else {
     if (committedRecovery !== null) {
       const recovery = committedRecovery;
       const opened = await committedRecoveryStep(() =>
-        openCommittedRecoveryStore(successionStoreContext, recovery, {
-          pid: backendPid,
-          incarnation: deps.readSelfIncarnationFn,
-        }),
+        observeRecoveryPhase(startupPhases.options('store-open'), async () =>
+          openCommittedRecoveryStore(successionStoreContext, recovery, {
+            pid: backendPid,
+            incarnation: deps.readSelfIncarnationFn,
+          }),
+        ),
       );
       if (opened === ABANDONED_COMMITTED_RECOVERY) {
         committedRecovery = null;
-        const ordinary = await openOrdinaryStore(deps, currentSelection, signal);
+        const ordinary = await openOrdinaryStore(deps, currentSelection, signal, startupPhases);
         storeDb = ordinary.db;
         openedStore = ordinary.store;
       } else {
@@ -1712,18 +1738,15 @@ async function openSelectedStartupStore({
         throw new SuccessionAttemptStartupHoldError('committed epoch was not prepared');
       }
       const historical = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot, renderWorkflowReport);
-      const opened = await openSuccessionAttemptStore(
-        successionStoreContext,
-        successionAttemptChild,
-        preparedCommittedStore,
-        {
+      const opened = await observeRecoveryPhase(startupPhases.options('store-open'), async () =>
+        openSuccessionAttemptStore(successionStoreContext, successionAttemptChild, preparedCommittedStore, {
           interposition,
           retirementCertificate: {
             certificate: (epochKey) => historical.certificate(epochKey),
             resultsReleased: (epochKey) => historical.resultsReleased(epochKey),
           },
           ...(deps.onRetiredEpochOpened === undefined ? {} : { onRetiredEpochOpened: deps.onRetiredEpochOpened }),
-        },
+        }),
       );
       storeDb = opened.db;
       openedStore = opened.store;
@@ -1733,7 +1756,7 @@ async function openSelectedStartupStore({
       storeDb = preferredStore.db;
       openedStore = preferredStore.store;
     } else {
-      const ordinary = await openOrdinaryStore(deps, currentSelection, signal);
+      const ordinary = await openOrdinaryStore(deps, currentSelection, signal, startupPhases);
       storeDb = ordinary.db;
       openedStore = ordinary.store;
     }
@@ -2181,6 +2204,7 @@ async function publishStartupServing({
 }
 
 async function registerStartupStoreServices({
+  startupPhases,
   deps,
   state,
   opened,
@@ -2189,6 +2213,7 @@ async function registerStartupStoreServices({
   committedRecoveryStep,
   replaceStoreServices,
 }: Readonly<{
+  startupPhases: StartupPhaseObserver;
   deps: LifecycleDeps;
   state: LifecycleControlState;
   opened: Awaited<ReturnType<typeof openSelectedStartupStore>>;
@@ -2237,7 +2262,7 @@ async function registerStartupStoreServices({
       recoveryIncarnation = null;
       if (state.rebindableStoreDb === null) throw new Error('Committed recovery store has no rebindable database.');
       state.rebindableStoreDb.closeCurrent();
-      const ordinary = await openOrdinaryStore(deps, currentSelection, signal);
+      const ordinary = await openOrdinaryStore(deps, currentSelection, signal, startupPhases);
       state.rebindableStoreDb.replace(ordinary.db);
       openedStore = ordinary.store;
       deps.onStoreOpened?.(ordinary.store);
@@ -2315,6 +2340,7 @@ async function prepareStartupAuthority(
   deps: LifecycleDeps,
   runStartupRecovery: RunStartupRecoveryOrchestratorFn,
   signal: AbortSignal,
+  startupPhases: StartupPhaseObserver,
 ) {
   const { runtime } = deps;
   if (deps.storeServicesRef.tryGet() === null) recoverDamagedStartupWriter(runtime);
@@ -2342,7 +2368,13 @@ async function prepareStartupAuthority(
     : unservedBeforeBind;
   if (unserved.hold !== null) throw startupHoldError(unserved.hold);
   const noCoordinatorAnswers = noCoordinatorServes || boundUnanswered;
-  const selected = await selectStartupStore(deps, unserved, noCoordinatorAnswers, successionStoreContext);
+  const selected = await selectStartupStore(
+    deps,
+    unserved,
+    noCoordinatorAnswers,
+    successionStoreContext,
+    startupPhases,
+  );
 
   if (successionAttemptChild !== null && preinjectedStoreServices !== null) {
     throw new SuccessionAttemptStartupHoldError('committed open requires a filesystem store');
@@ -2362,11 +2394,12 @@ async function runStartupKernel(
   legacyDiscovery: LegacyDiscoveryState,
   interposition: SuccessionInterposition,
   replaceStoreServices: (services: CoordinatorStoreServices) => void,
+  startupPhases: StartupPhaseObserver,
 ) {
   const { deps, state, runStartupRecovery, createInvocationContext } = context;
   const { runtime, runtimeState, listenFn, server } = deps;
   const { instanceId, now } = deps.identity;
-  const authority = await prepareStartupAuthority(deps, runStartupRecovery, signal);
+  const authority = await prepareStartupAuthority(deps, runStartupRecovery, signal, startupPhases);
   const { prepared, bound, unserved, selected, shouldScheduleStoreEpochSweep } = authority;
   const { successionAttemptChild, legacySupervisedChild, currentSelection } = prepared;
   const committedState: StartupCommittedRecoveryState = { recovery: unserved.committedRecovery };
@@ -2382,6 +2415,7 @@ async function runStartupKernel(
     }
   };
   const opened = await openSelectedStartupStore({
+    startupPhases,
     deps,
     prepared,
     selected,
@@ -2391,6 +2425,7 @@ async function runStartupKernel(
     committedRecovery: committedState.recovery,
   });
   const registered = await registerStartupStoreServices({
+    startupPhases,
     deps,
     state,
     opened,
@@ -2444,6 +2479,7 @@ async function runStartupKernel(
     publishLegacyDiscovery,
     committedState,
     committedRecoveryStep,
+    startupPhases,
   };
 }
 
@@ -2516,26 +2552,28 @@ async function runStartupRecoveryAndServe(
   startProviderOperationReconciler?.();
   if (deps.startStorageRetentionFn === undefined) await Promise.resolve(cleanupStaleJobsFn(bundleHash, signal));
   signal.throwIfAborted();
-  await publishStartupServing({
-    deps,
-    address,
-    legacyDiscovery,
-    signal,
-    interposition,
-    successionAttemptChild,
-    currentBuild,
-    storeDb,
-    openedStore,
-    successionGeneration,
-    recoveryGeneration,
-    recoveryIncarnation,
-    committedRecovery: committedState.recovery,
-    acceptedSuccessionPreparation,
-    shouldScheduleStoreEpochSweep,
-    publishDiscovery,
-    publishLegacyDiscovery,
-    legacySupervisedChild,
-  });
+  await observeRecoveryPhase(kernel.startupPhases.options('serving'), async () =>
+    publishStartupServing({
+      deps,
+      address,
+      legacyDiscovery,
+      signal,
+      interposition,
+      successionAttemptChild,
+      currentBuild,
+      storeDb,
+      openedStore,
+      successionGeneration,
+      recoveryGeneration,
+      recoveryIncarnation,
+      committedRecovery: committedState.recovery,
+      acceptedSuccessionPreparation,
+      shouldScheduleStoreEpochSweep,
+      publishDiscovery,
+      publishLegacyDiscovery,
+      legacySupervisedChild,
+    }),
+  );
   deps.startStorageRetentionFn?.();
   if (runtimeState.getLaunchFenceActive()) {
     runtimeState.setLaunchFenceActive(false);
@@ -2548,7 +2586,7 @@ async function runStartupRecoveryAndServe(
 
 async function runLifecycleStartup({
   deps,
-  runStartupRecovery,
+  runStartupRecovery: runRecovery,
   state,
   createInvocationContext,
   ownershipChecker,
@@ -2560,6 +2598,10 @@ async function runLifecycleStartup({
   if (state.started || runtimeState.getLifecycle() !== 'starting') {
     throw new Error('Backend server already started');
   }
+  const startupPhases = createStartupPhaseObserver({ time: runtime.time, log: identity.log, bootId: instanceId });
+  const runStartupRecovery: RunStartupRecoveryOrchestratorFn = (inputs, runJobsStartup) =>
+    runRecovery({ ...inputs, startupPhases }, runJobsStartup);
+  const boot = startRecoveryPhase({ time: runtime.time, log: identity.log, bootId: instanceId, phase: 'boot' });
   const interposition = deps.successionInterposition ?? NO_SUCCESSION_INTERPOSITION;
 
   const startupAbort = new AbortController();
@@ -2592,22 +2634,27 @@ async function runLifecycleStartup({
   });
 
   try {
-    const kernel = await runStartupKernel(
-      { deps, runStartupRecovery, state, createInvocationContext, ownershipChecker, shutdown },
-      signal,
-      address,
-      legacyDiscovery,
-      interposition,
-      replaceStoreServices,
+    const kernel = await observeRecoveryPhase(startupPhases.options('kernel'), async () =>
+      runStartupKernel(
+        { deps, runStartupRecovery, state, createInvocationContext, ownershipChecker, shutdown },
+        signal,
+        address,
+        legacyDiscovery,
+        interposition,
+        replaceStoreServices,
+        startupPhases,
+      ),
     );
     publishLegacyDiscovery = kernel.publishLegacyDiscovery;
-    await runStartupRecoveryAndServe(
-      { deps, runStartupRecovery, state, createInvocationContext, ownershipChecker, shutdown },
-      kernel,
-      signal,
-      address,
-      legacyDiscovery,
-      interposition,
+    await observeRecoveryPhase(startupPhases.options('recovery-and-serve'), async () =>
+      runStartupRecoveryAndServe(
+        { deps, runStartupRecovery, state, createInvocationContext, ownershipChecker, shutdown },
+        kernel,
+        signal,
+        address,
+        legacyDiscovery,
+        interposition,
+      ),
     );
     const { registered, recoveryCoordinator, progressStore } = kernel;
     const { openedStore, storeServices } = registered;
@@ -2626,19 +2673,30 @@ async function runLifecycleStartup({
       publishLegacyDiscovery,
     });
 
+    startupPhases.finish();
+    boot.finish();
     return serverInfo();
   } catch (error: unknown) {
-    return await settleFailedLifecycleStartup(
-      { deps, runStartupRecovery, state, createInvocationContext, ownershipChecker, shutdown },
-      error,
-      {
-        signal,
-        legacyServingCompleted: legacyDiscovery.servingCompleted,
-        legacyDiscoveryPublished: legacyDiscovery.published,
-        publishLegacyDiscovery,
-        serverInfo,
-      },
-    );
+    try {
+      const settled = await settleFailedLifecycleStartup(
+        { deps, runStartupRecovery, state, createInvocationContext, ownershipChecker, shutdown },
+        error,
+        {
+          signal,
+          legacyServingCompleted: legacyDiscovery.servingCompleted,
+          legacyDiscoveryPublished: legacyDiscovery.published,
+          publishLegacyDiscovery,
+          serverInfo,
+        },
+      );
+      startupPhases.finish();
+      boot.finish();
+      return settled;
+    } catch (settlementError: unknown) {
+      startupPhases.finish();
+      boot.finish('failed');
+      throw settlementError;
+    }
   } finally {
     state.startupAbort = null;
   }

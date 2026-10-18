@@ -1,3 +1,4 @@
+import type { RecoveryObservation } from '../recovery/phase-observation.js';
 import { sameEpoch } from './epoch/identity.js';
 import { basename, dirname, join } from 'node:path';
 import { setImmediate } from 'node:timers/promises';
@@ -151,17 +152,34 @@ function writeOnce(runtime: Runtime, path: string, value: unknown): void {
   }
 }
 
-function readRecord<T>(runtime: Pick<Runtime, 'storage'>, path: string, schema: z.ZodType<T>): T | null {
+function readRecord<T>(
+  runtime: Pick<Runtime, 'storage'>,
+  path: string,
+  schema: z.ZodType<T>,
+  metrics?: RecoveryObservation,
+): T | null {
   try {
-    return schema.parse(JSON.parse(runtime.storage.readFileSync(path, 'utf-8')) as unknown);
+    const value = runtime.storage.readFileSync(path, 'utf-8');
+    metrics?.record('custody-ledger', { reads: 1 });
+    return schema.parse(JSON.parse(value) as unknown);
   } catch (error: unknown) {
     if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return null;
     throw error;
   }
 }
 
-function readCustodyAbsence(runtime: Pick<Runtime, 'storage'>, runDir: string, intent: CustodyIntent) {
-  const absence = readRecord(runtime, join(intentDir(runDir, intent.id), 'absence.v1.json'), custodyAbsenceSchema);
+function readCustodyAbsence(
+  runtime: Pick<Runtime, 'storage'>,
+  runDir: string,
+  intent: CustodyIntent,
+  metrics?: RecoveryObservation,
+) {
+  const absence = readRecord(
+    runtime,
+    join(intentDir(runDir, intent.id), 'absence.v1.json'),
+    custodyAbsenceSchema,
+    metrics,
+  );
   if (absence !== null && (absence.intentId !== intent.id || absence.processToken !== intent.processToken)) {
     throw new Error('Custody absence does not match its intent.');
   }
@@ -354,11 +372,12 @@ export function readCustodyBinding(
   runtime: Pick<Runtime, 'storage'>,
   runDir: string,
   intent: CustodyIntent,
+  metrics?: RecoveryObservation,
 ): CustodyBinding | null {
   let invalid = false;
   for (const name of ['binding.v1.json', 'binding.recovered.v1.json']) {
     try {
-      const binding = readRecord(runtime, join(intentDir(runDir, intent.id), name), custodyBindingSchema);
+      const binding = readRecord(runtime, join(intentDir(runDir, intent.id), name), custodyBindingSchema, metrics);
       if (binding === null) continue;
       if (
         binding.intentId === intent.id &&
@@ -377,7 +396,11 @@ export function readCustodyBinding(
   return null;
 }
 
-export function readCustodyLedger(runtime: Pick<Runtime, 'storage'>, runDir: string): CustodyEntry[] {
+export function readCustodyLedger(
+  runtime: Pick<Runtime, 'storage'>,
+  runDir: string,
+  observation?: RecoveryObservation,
+): CustodyEntry[] {
   let names: string[];
   try {
     names = runtime.storage.readdirSync(custodyLedgerDir(runDir));
@@ -387,20 +410,29 @@ export function readCustodyLedger(runtime: Pick<Runtime, 'storage'>, runDir: str
   }
   return names
     .filter((name) => name !== 'root.v1.json' && !name.includes('.stage.'))
-    .map((name) => readCustodyEntry(runtime, runDir, name));
+    .map((name) => {
+      const entry = readCustodyEntry(runtime, runDir, name, observation);
+      observation?.record('custody-ledger', { subjects: 1 });
+      return entry;
+    });
 }
 
-function readCustodyEntry(runtime: Pick<Runtime, 'storage'>, runDir: string, id: string): CustodyEntry {
+function readCustodyEntry(
+  runtime: Pick<Runtime, 'storage'>,
+  runDir: string,
+  id: string,
+  metrics?: RecoveryObservation,
+): CustodyEntry {
   const dir = join(custodyLedgerDir(runDir), id);
   try {
-    const intent = readRecord(runtime, join(dir, 'intent.v1.json'), custodyIntentSchema);
+    const intent = readRecord(runtime, join(dir, 'intent.v1.json'), custodyIntentSchema, metrics);
     if (intent === null || intent.id !== id) throw new Error('Custody intent is missing or mismatched.');
     let bindingInvalid = false;
     try {
-      const binding = readCustodyBinding(runtime, runDir, intent);
+      const binding = readCustodyBinding(runtime, runDir, intent, metrics);
       if (binding !== null) {
         try {
-          const absence = readCustodyAbsence(runtime, runDir, intent);
+          const absence = readCustodyAbsence(runtime, runDir, intent, metrics);
           if (absence?.dischargedBinding !== undefined && isDeepStrictEqual(absence.dischargedBinding, binding))
             return { kind: 'absent', intent, evidence: absence.evidence };
         } catch {
@@ -413,7 +445,7 @@ function readCustodyEntry(runtime: Pick<Runtime, 'storage'>, runDir: string, id:
     }
     let absenceInvalid = false;
     try {
-      const absence = readCustodyAbsence(runtime, runDir, intent);
+      const absence = readCustodyAbsence(runtime, runDir, intent, metrics);
       if (absence !== null) {
         return { kind: 'absent', intent, evidence: absence.evidence };
       }
@@ -442,10 +474,11 @@ export function reconcileCustodyLedger(
   nowMs: number,
   graceMs: number,
   observe: (intent: CustodyIntent) => CustodyObservation,
+  metrics?: RecoveryObservation,
 ): CustodyEntry[] {
   if (!Number.isSafeInteger(nowMs) || nowMs < 0) throw new RangeError('Custody observation time is invalid.');
   if (!Number.isSafeInteger(graceMs) || graceMs < 0) throw new RangeError('Custody grace must be nonnegative.');
-  return readCustodyLedger(runtime, runDir).map((entry): CustodyEntry => {
+  return readCustodyLedger(runtime, runDir, metrics).map((entry): CustodyEntry => {
     if (entry.kind !== 'holding') return entry;
     const release = tryAcquireDirectoryLock(join(intentDir(runDir, entry.intent.id), '.reconcile.lock'), {
       storage: runtime.storage,
@@ -454,7 +487,7 @@ export function reconcileCustodyLedger(
     if (release === null) return entry;
     try {
       release.assertOwned();
-      const current = readCustodyEntry(runtime, runDir, entry.intent.id);
+      const current = readCustodyEntry(runtime, runDir, entry.intent.id, metrics);
       if (current.kind === 'unreadable') return entry;
       if (current.kind !== 'holding' || current.intent.processToken !== entry.intent.processToken) return current;
       quarantineDamagedCustodyAbsence(runtime, runDir, current.intent);
@@ -581,7 +614,7 @@ export async function pruneCustodyLedger(input: {
     );
     if (release === null) return false;
     try {
-      const receipt = readRecord(runtime, receiptPath, retirementReceiptSchema);
+      const receipt = readRecord(runtime, receiptPath, retirementReceiptSchema, budget.observation);
       if (
         receipt === null ||
         receipt.ledgerId !== ledgerId ||
@@ -670,7 +703,12 @@ export async function pruneCustodyLedger(input: {
   };
   let cursor = input.afterId;
   let scanned = 0;
-  for (const name of runtime.storage.readdirSync(root).sort()) {
+  const names = runtime.storage.readdirSync(root).sort();
+  budget.observation?.record('custody', {
+    subjects: names.filter((name) => name !== 'root.v1.json').length,
+    reads: names.length,
+  });
+  for (const name of names) {
     if (name === 'root.v1.json') continue;
     const staged = retirementStagePattern.test(name);
     const orphanReceipt = name.endsWith('.receipt.json') && retirementStagePattern.test(name.slice(0, -13));
@@ -682,7 +720,7 @@ export async function pruneCustodyLedger(input: {
         if (!(await cleanup(staged ? name : name.slice(0, -13)))) return cursor;
         continue;
       }
-      const entry = readCustodyEntry(runtime, runDir, name);
+      const entry = readCustodyEntry(runtime, runDir, name, budget.observation);
       if (entry.kind === 'absent') {
         let stage: string | null = null;
         mutate(() => {
@@ -694,9 +732,9 @@ export async function pruneCustodyLedger(input: {
           if (release === null) return;
           try {
             release.assertOwned();
-            const current = readCustodyEntry(runtime, runDir, name);
+            const current = readCustodyEntry(runtime, runDir, name, budget.observation);
             if (current.kind !== 'absent') return;
-            const absence = readCustodyAbsence(runtime, runDir, current.intent);
+            const absence = readCustodyAbsence(runtime, runDir, current.intent, budget.observation);
             if (absence === null || absence.provenAtMs >= cutoff) return;
             const path = join(root, name);
             const entryIdentity = runtime.storage.lstatSync(path, { bigint: true });

@@ -1,3 +1,4 @@
+import type { RecoveryObservation } from '../../recovery/phase-observation.js';
 import { z } from 'zod';
 
 import { errorMessage } from '../../infra/error-format.js';
@@ -701,6 +702,7 @@ export async function recoverPersistedSessionsFromStore(
 }
 
 type DiscussStartupDeps = {
+  observation?: RecoveryObservation;
   readonly getDiscussContext: (ctx: InvocationContext) => DiscussContext;
   readonly createInvocationContext: (projectRoot: string) => InvocationContext;
   readonly signal: AbortSignal;
@@ -808,7 +810,7 @@ export const runStartup: DiscussRunStartup = async (deps) => {
   const runtime = discussionRecoveryRuntime(deps);
   const db = runtime.getDatabase();
   const quarantine = new RecoveryQuarantineStore(db, runtime.time);
-  const source = discussionSourceRecoverySource(db);
+  const source = discussionSourceRecoverySource(db, undefined, deps.observation);
   const context = discussionPolicyContext(deps, quarantine);
   const sourcePolicy: RecoveryPolicy<RawDiscussionSourceRow, DiscussionSourceCoordinate> = {
     signal: deps.signal,
@@ -822,7 +824,7 @@ export const runStartup: DiscussRunStartup = async (deps) => {
     candidates: {
       settle: async (receipts: readonly RecoveryReceipt<DiscussionSourceCoordinate>[]) => {
         if (receipts.length === 0) return;
-        const candidateSource = discussionCandidateRecoverySource(db);
+        const candidateSource = discussionCandidateRecoverySource(db, undefined, deps.observation);
         await RecoveryContainment.each(candidateSource, {
           signal: deps.signal,
           quarantine,

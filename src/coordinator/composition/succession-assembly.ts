@@ -50,6 +50,7 @@ export function createSuccessionJobView(core: CoreContext, providerHostOwners: P
   };
 
   const { arm: armCustodyReconciliation } = createCustodyReconciliationScheduler({
+    bootId: core.identity.instanceId,
     runtime,
     world,
     selectedStoreEpochPath: () => state.selectedStoreEpochPath,
@@ -257,6 +258,7 @@ export function createCoordinatorSuccessionAssembly(input: SuccessionAssemblyInp
   );
   const succession = createSuccessionCoordinator({
     runtime,
+    observation: { bootId: identity.instanceId, log: world.log },
     runDir: runtime.paths.coral.coordinator.runDir,
     incumbent: successionIncumbent,
     runningBuildSetId: identity.buildSetId,
