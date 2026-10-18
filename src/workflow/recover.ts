@@ -183,6 +183,8 @@ type HydratedWorkflowRecovery = {
 };
 
 const WORKFLOW_RECOVERY_CONTINUATION_KIND = 'workflow-recovery.v1';
+const WORKFLOW_CHILD_SETTLEMENT_MESSAGE =
+  'Workflow recovery awaits recorded child terminals or a durable workflow completion; the next coordinator start rechecks them.';
 const WORKFLOW_RESTART_MESSAGE = 'The coordinator restarted; the remaining workflow steps were not resumed.';
 const RESUME_OBLIGATION = 'workflow-recovery.resume' as RecoveryObligationId;
 const FINALIZE_OBLIGATION = 'workflow-recovery.finalize' as RecoveryObligationId;
@@ -241,11 +243,12 @@ function validateAndReadCurrentSlotJobIds(
 
 async function clearPendingReplacementIntents(
   item: HydratedWorkflowRecovery,
-  options: ResumeAllOptions,
+  options: RecoverAllOptions,
 ): Promise<void> {
   for (const session of item.providerSessionsById.values()) {
     const lease = session.continuationLease;
     if (lease?.status !== 'pending' || lease.workflowId !== item.envelope.subject.key) continue;
+    if (item.childRows.some((child) => child.job_id === session.activeJobId && child.terminal === null)) continue;
     await options.clearContinuationLease(canonicalizeWorkDir(session.projectRoot, process.cwd()), {
       sessionId: session.sessionId,
       jobId: lease.staleJobId,
@@ -851,7 +854,7 @@ function atomicReleaser(
     : (candidate as AtomicFailedWorkflowDescendantReleaser);
 }
 
-type ResumeAllOptions = {
+type RecoverAllOptions = {
   db: Database;
   progressStore: StoreReadContext;
   clearContinuationLease: (projectRoot: CanonicalWorkDir, input: ClearContinuationLeaseInput) => Promise<boolean>;
@@ -863,7 +866,7 @@ type ResumeAllOptions = {
   time: Pick<TimePort, 'now'>;
 };
 
-const workflowRetryOptions = new WeakMap<Database, ResumeAllOptions>();
+const workflowRetryOptions = new WeakMap<Database, RecoverAllOptions>();
 
 function finalizationRecording(item: HydratedWorkflowRecovery): WorkflowRecoveryAtomicClose['recording'] {
   const status = item.rootDetail.status;
@@ -891,7 +894,7 @@ function clearWorkflowContinuation(item: HydratedWorkflowRecovery, quarantine: R
 function closeRecoveredWorkflow(
   item: HydratedWorkflowRecovery,
   intent: WorkflowFinalizationIntent,
-  options: ResumeAllOptions,
+  options: RecoverAllOptions,
   quarantine: RecoveryQuarantineStore,
 ): void {
   item.deferredReason = 'close-failed';
@@ -932,31 +935,10 @@ function settledWorkflowResult(
   };
 }
 
-async function settleWorkflowRecovery(
+function recoverWorkflowFinalization(
   item: HydratedWorkflowRecovery,
-  options: ResumeAllOptions,
-  quarantine: RecoveryQuarantineStore,
-  resumedWorkflowIds: string[],
-): Promise<RecoveryDisposition> {
-  await clearPendingReplacementIntents(item, options);
-  await persistWorkflowContinuation(item, quarantine);
-  if (
-    item.continuationRecovered &&
-    (item.continuation.stage === 'prepared' || item.continuation.stage === 'external-outcome-unknown')
-  ) {
-    item.deferredReason = 'unknown-external';
-    return {
-      kind: 'deferred',
-      continuation: continuationToken(item),
-      detail: 'workflow external recovery outcome remains unknown',
-    };
-  }
-  if (item.continuation.stage === 'ready-to-close' && item.continuation.intendedFinalization.kind === 'intent') {
-    closeRecoveredWorkflow(item, item.continuation.intendedFinalization.intent, options, quarantine);
-    resumedWorkflowIds.push(item.envelope.subject.key);
-    return settledWorkflowResult(item, 'workflow recovery durable close settled');
-  }
-
+  options: RecoverAllOptions,
+): { recovered: RecoveredWorkflowFinalization | null; containedFailure: unknown } {
   let recovered: RecoveredWorkflowFinalization | null;
   let containedFailure: unknown = null;
   try {
@@ -990,8 +972,61 @@ async function settleWorkflowRecovery(
     };
   }
 
+  return { recovered, containedFailure };
+}
+
+function logWorkflowRecoveryClose(
+  item: HydratedWorkflowRecovery,
+  intent: WorkflowFinalizationIntent,
+  containedFailure: unknown,
+  options: RecoverAllOptions,
+): void {
+  for (const released of item.descendantReleases) {
+    options.log?.(
+      `Workflow recovery child ${released.jobId} session claim ${released.sessionId} disposition: ${describeSessionJobClaimReleaseResult(released.sessionClaimRelease)}.\n`,
+    );
+  }
+  if (containedFailure !== null) {
+    const outcomeDescription =
+      intent.outcome === 'failed' ? 'after recovery failed' : `with ${intent.outcome} outcome after recovery error`;
+    options.log?.(
+      `Workflow recovery finalized ${item.envelope.subject.key} ${outcomeDescription}: ${errorMessage(containedFailure)}\n`,
+    );
+  }
+}
+
+async function settleWorkflowRecovery(
+  item: HydratedWorkflowRecovery,
+  options: RecoverAllOptions,
+  quarantine: RecoveryQuarantineStore,
+  closedWorkflowIds: string[],
+): Promise<RecoveryDisposition> {
+  await clearPendingReplacementIntents(item, options);
+  // Provider work requires a committed launch; a dead issuing writer cannot publish a missing child.
+  if (
+    item.continuationRecovered &&
+    (item.continuation.stage === 'prepared' || item.continuation.stage === 'external-outcome-unknown') &&
+    item.completion === null &&
+    item.childRows.some((child) => child.terminal === null)
+  ) {
+    item.deferredReason = 'unknown-external';
+    await persistWorkflowContinuation(item, quarantine);
+    return {
+      kind: 'deferred',
+      continuation: continuationToken(item),
+      detail: WORKFLOW_CHILD_SETTLEMENT_MESSAGE,
+    };
+  }
+
+  const { recovered, containedFailure } =
+    item.continuation.stage === 'ready-to-close' && item.continuation.intendedFinalization.kind === 'intent'
+      ? { recovered: { intent: item.continuation.intendedFinalization.intent }, containedFailure: null }
+      : recoverWorkflowFinalization(item, options);
   if (recovered === null) {
-    if (!clearWorkflowContinuation(item, quarantine)) {
+    if (
+      quarantine.read('workflow-recovery', item.envelope.subject.key) !== null &&
+      !clearWorkflowContinuation(item, quarantine)
+    ) {
       throw new Error(`Workflow recovery continuation changed for '${item.envelope.subject.key}'.`);
     }
     return settledWorkflowResult(item, 'workflow already had a durable completion');
@@ -1005,29 +1040,15 @@ async function settleWorkflowRecovery(
   };
   await persistWorkflowContinuation(item, quarantine);
   closeRecoveredWorkflow(item, recovered.intent, options, quarantine);
-  resumedWorkflowIds.push(item.envelope.subject.key);
-
-  for (const released of item.descendantReleases) {
-    options.log?.(
-      `Workflow recovery child ${released.jobId} session claim ${released.sessionId} disposition: ${describeSessionJobClaimReleaseResult(released.sessionClaimRelease)}.\n`,
-    );
-  }
-  if (containedFailure !== null) {
-    const outcomeDescription =
-      recovered.intent.outcome === 'failed'
-        ? 'after recovery failed'
-        : `with ${recovered.intent.outcome} outcome after recovery error`;
-    options.log?.(
-      `Workflow recovery finalized ${item.envelope.subject.key} ${outcomeDescription}: ${errorMessage(containedFailure)}\n`,
-    );
-  }
-  return settledWorkflowResult(item, 'workflow recovery finalized and descendant claims released');
+  closedWorkflowIds.push(item.envelope.subject.key);
+  logWorkflowRecoveryClose(item, recovered.intent, containedFailure, options);
+  return settledWorkflowResult(item, 'workflow recovery finalized and eligible descendant claims released');
 }
 
 function createWorkflowRecoveryPolicy(
-  options: ResumeAllOptions,
+  options: RecoverAllOptions,
   quarantine: RecoveryQuarantineStore,
-  resumedWorkflowIds: string[],
+  closedWorkflowIds: string[],
 ): RecoveryRetryPolicy<RawWorkflowRecoveryEnvelope, HydratedWorkflowRecovery> {
   return {
     processLocalCleanup: {
@@ -1052,7 +1073,7 @@ function createWorkflowRecoveryPolicy(
     },
     hydrate: (raw) => hydrateWorkflowRecovery(raw, options.progressStore),
     requiredObligations: () => [RESUME_OBLIGATION, FINALIZE_OBLIGATION, DESCENDANT_RELEASE_OBLIGATION],
-    settle: (item) => settleWorkflowRecovery(item, options, quarantine, resumedWorkflowIds),
+    settle: (item) => settleWorkflowRecovery(item, options, quarantine, closedWorkflowIds),
     onFault: (fault) => {
       if (fault.stage === 'scan') return { kind: 'fatal', error: fault.error };
       if (fault.stage === 'hydrate') {
@@ -1068,7 +1089,7 @@ function createWorkflowRecoveryPolicy(
           detail:
             fault.item.deferredReason === 'close-failed'
               ? 'workflow recovery durable close remains pending'
-              : 'workflow external recovery outcome remains unknown',
+              : WORKFLOW_CHILD_SETTLEMENT_MESSAGE,
         };
       }
       return { kind: 'quarantine', detail: 'workflow recovery settlement failed before durable close' };
@@ -1110,8 +1131,8 @@ export function createWorkflowRecoveryRetryPlan(
   };
 }
 
-export async function resumeAll(options: ResumeAllOptions): Promise<string[]> {
-  const resumedWorkflowIds: string[] = [];
+export async function recoverAll(options: RecoverAllOptions): Promise<string[]> {
+  const closedWorkflowIds: string[] = [];
   const signal = options.signal ?? new AbortController().signal;
   const quarantine = new RecoveryQuarantineStore(options.db, options.time);
   workflowRetryOptions.set(options.db, options);
@@ -1120,12 +1141,12 @@ export async function resumeAll(options: ResumeAllOptions): Promise<string[]> {
     policy: {
       signal,
       quarantine,
-      ...createWorkflowRecoveryPolicy(options, quarantine, resumedWorkflowIds),
+      ...createWorkflowRecoveryPolicy(options, quarantine, closedWorkflowIds),
     },
   });
-  return resumedWorkflowIds;
+  return closedWorkflowIds;
 }
 
 export const workflowRecover = {
-  resumeAll,
+  recoverAll,
 } as const;

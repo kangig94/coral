@@ -684,7 +684,7 @@ export interface ProviderAppServerCapability<
 
 export interface ProviderRecoveryContract<Access extends ProviderAccess = ProviderAccess> {
   finalizeInterrupted(
-    probeResult: { resumable: boolean; updatedContinuity?: ProviderContinuityBlob },
+    preservedState: { resumable: boolean; updatedContinuity?: ProviderContinuityBlob },
     continuity: ProviderContinuityBlob | undefined,
     context: { preservedConversationRef?: string },
   ): SessionContinuityMutation;

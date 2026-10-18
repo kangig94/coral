@@ -130,7 +130,7 @@ function snapshotRecovery<Access extends JsonValue>(
       snapshotProviderResult(
         finalizeInterrupted.call(
           receiver,
-          snapshotBoundaryData(args[0], 'Provider recovery probe result'),
+          snapshotBoundaryData(args[0], 'Provider interrupted session state'),
           snapshotBoundaryData(args[1], 'Provider recovery continuity'),
           snapshotBoundaryData(args[2], 'Provider recovery context'),
         ),

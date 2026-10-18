@@ -52,7 +52,7 @@ type TestAppServerLifecycle = {
   interrupt(lease: AppServerTransport, continuity: ProviderContinuityBlob): Promise<void>;
   onNotification?(message: { method: string; params?: Record<string, unknown> }): void;
   finalizeInterrupted(
-    probeResult: { resumable: boolean; updatedContinuity?: ProviderContinuityBlob },
+    preservedState: { resumable: boolean; updatedContinuity?: ProviderContinuityBlob },
     continuity: ProviderContinuityBlob | undefined,
     context: { preservedConversationRef?: string },
   ): SessionContinuityMutation;

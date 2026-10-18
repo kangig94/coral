@@ -118,24 +118,26 @@ function readWorkflowEnvelope(db: Database, projection: ProjectionJobStoredRow):
     projection: child,
     events: eventsByJob.get(child.job_id) ?? [],
   }));
+  const providerSessions = db
+    .prepare<[string, string], RawSessionProjectionRow>(
+      `SELECT ${PROJECTION_SESSION_COLUMNS}
+         FROM projection_sessions
+        WHERE session_id IN (SELECT session_id FROM projection_jobs WHERE parent_workflow_job_id = ?)
+           OR CASE WHEN json_valid(entry) THEN
+                json_extract(entry, '$.continuationLease.workflowId') = ?
+                AND json_extract(entry, '$.continuationLease.status') = 'pending'
+              ELSE 0 END
+        ORDER BY session_id ASC`,
+    )
+    .all(workflowId, workflowId);
   const sessionIds = [
     ...new Set(
-      childProjections
-        .map((child) => child.session_id)
-        .filter((sessionId): sessionId is string => typeof sessionId === 'string' && sessionId.length > 0),
+      [
+        ...childProjections.map((child) => child.session_id),
+        ...providerSessions.map((session) => session.session_id),
+      ].filter((sessionId): sessionId is string => typeof sessionId === 'string' && sessionId.length > 0),
     ),
   ].sort();
-  const providerSessions =
-    sessionIds.length === 0
-      ? []
-      : db
-          .prepare<unknown[], RawSessionProjectionRow>(
-            `SELECT ${PROJECTION_SESSION_COLUMNS}
-               FROM projection_sessions
-              WHERE session_id IN (${sqlPlaceholders(sessionIds.length)})
-              ORDER BY session_id ASC`,
-          )
-          .all(...sessionIds);
   const continuation =
     db
       .prepare<[string, string], RawWorkflowRecoveryContinuationRow>(

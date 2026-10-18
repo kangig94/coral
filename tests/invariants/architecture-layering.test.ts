@@ -403,8 +403,6 @@ describe('architecture layering invariants', () => {
 
   it('workflow reads jobs projection internals only as types — runtime access is coordinator-injected', () => {
     // Ownership matrix: workflow may read jobs only via coordinator composition.
-    // jobs/read-queries.ts is not a published jobs contract surface; workflow
-    // receives `loadJobDetails` through resumeAll options instead of importing it.
     const violations = IMPORT_EDGES.filter(
       ({ source, target, runtime }) =>
         source.startsWith('src/workflow/') && target === 'src/jobs/read-queries.ts' && runtime,

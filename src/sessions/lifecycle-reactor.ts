@@ -167,8 +167,11 @@ function hydrateSessionContinuationLeaseComponent(
   if (entry.continuationLease === undefined) {
     throw new TypeError(`Continuation lease projection '${row.session_id}' has no lease.`);
   }
+  // A claimed session's version belongs to its job until claim release triggers recovery.
   const overdueLease =
-    entry.continuationLease.status === 'pending' && Date.parse(entry.continuationLease.expiresAt) <= nowMs
+    entry.activeJobId === undefined &&
+    entry.continuationLease.status === 'pending' &&
+    Date.parse(entry.continuationLease.expiresAt) <= nowMs
       ? entry.continuationLease
       : null;
   if (overdueLease === null) {
@@ -1268,7 +1271,7 @@ export class LifecycleReactor {
     let earliestExpiresAt: number | null = null;
     for (const component of leases) {
       const lease = component.persistedEntry.continuationLease;
-      if (lease?.status !== 'pending') continue;
+      if (lease?.status !== 'pending' || component.persistedEntry.activeJobId !== undefined) continue;
       const expiresAt = Date.parse(lease.expiresAt);
       if (expiresAt <= nowMs) {
         earliestExpiresAt = nowMs;

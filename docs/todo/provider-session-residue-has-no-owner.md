@@ -1,6 +1,6 @@
 # TODO — on-demand provider session discard leaves residue
 
-**Status**: partly implemented. Retention discards provider residue; on-demand discard, unrecorded interrupted-job artifacts, and retirement of the temporary backlog tool remain open.
+**Status**: partly implemented. Retention discards provider residue; on-demand discard, undiscoverable interrupted-job artifacts, and retirement of the temporary backlog tool remain open.
 
 ## Remaining on-demand gap
 
@@ -10,7 +10,7 @@
 
 ## Unrecorded interrupted-job artifacts
 
-Live artifact handles are persisted through `sessionArtifactHandleRecordedEvent` in `src/sessions/shell.ts`. Interrupted app-server recovery no longer parses stdout or stderr through `finalizeFromArtifacts`, so artifact handles produced after the last live record are no longer collected at restart. Those unrecorded handles, such as provider rollout files, have no retention owner and can remain on disk. This residue is accepted under the decision to preserve recorded session state without recovery parsing. Already-recorded handles retain their existing ownership; durable CLI recovery still interprets and records artifact handles.
+Live artifact handles are persisted through `sessionArtifactHandleRecordedEvent` in `src/sessions/shell.ts`. Interrupted app-server recovery no longer parses stdout or stderr through `finalizeFromArtifacts`, so artifact handles produced after the last live record are no longer collected at restart. Retention still calls `discardSessionResidue` even with zero recorded handles, and Codex cleanup discovers descendant rollouts from a recorded conversation reference. Artifacts that residue cleanup cannot discover, for example because there is no usable conversation reference, can remain on disk. That undiscoverable residue is accepted under the decision to preserve recorded session state without recovery parsing. Already-recorded handles retain their existing ownership; durable CLI recovery still interprets and records artifact handles.
 
 ## Temporary backlog tool
 

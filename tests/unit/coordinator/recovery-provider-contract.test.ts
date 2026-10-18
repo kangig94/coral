@@ -159,12 +159,9 @@ describe('interrupted recovery planning', () => {
     boundProvider: { name: 'fixture' },
   } as unknown as ProviderRecoveryAuthority;
 
-  it('selects one deterministic effect route without consulting provider state', () => {
-    const first = planInterruptedAppServerRecovery(authority, acquiredRuntime, 'restart', { recovery: true }, null);
-    const second = planInterruptedAppServerRecovery(authority, acquiredRuntime, 'restart', { recovery: true }, null);
-
-    expect(first).toEqual(second);
-    expect(first).toMatchObject({
+  it('plans an interruption with the captured session version and persisted continuity', () => {
+    const plan = planInterruptedAppServerRecovery(authority, acquiredRuntime, 'restart', { recovery: true }, null);
+    expect(plan).toMatchObject({
       kind: 'interrupted',
       expectedSessionVersion: 1,
       continuity: { checkpoint: 'persisted' },

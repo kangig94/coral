@@ -127,9 +127,7 @@ function exportResultAndReleaseOwnership(receipt: RecoveryCommitReceipt, deps: I
   }
 }
 
-function continuityState(
-  mutation: ProviderValidatedSessionContinuityMutation,
-): SessionInterruptedFault['continuity'] {
+function continuityState(mutation: ProviderValidatedSessionContinuityMutation): SessionInterruptedFault['continuity'] {
   return mutation.kind === 'clear_non_resumable' ? 'pre_checkpoint_empty' : 'pre_checkpoint_preserved';
 }
 

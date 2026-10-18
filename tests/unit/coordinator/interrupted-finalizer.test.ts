@@ -210,7 +210,11 @@ describe('interrupted app-server recovery performer', () => {
 
   it.each([
     { conversationRef: 'thread-recovered', continuity: undefined, mutationKind: 'set_resumable' },
-    { conversationRef: undefined, continuity: validatedTestContinuityBlob({}), mutationKind: 'preserve' },
+    {
+      conversationRef: undefined,
+      continuity: validatedTestContinuityBlob({ cwd: '/project' }),
+      mutationKind: 'preserve',
+    },
     { conversationRef: undefined, continuity: undefined, mutationKind: 'clear_non_resumable' },
   ])(
     'uses $mutationKind for recorded reference and continuity',

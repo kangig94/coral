@@ -186,7 +186,7 @@ function createCoordinatorStartupRecoveryRunner({
     });
     signal.throwIfAborted();
 
-    await workflowRecover.resumeAll({
+    await workflowRecover.recoverAll({
       db,
       progressStore: recoveryProgressStore,
       clearContinuationLease: (projectRoot, input) =>
@@ -236,7 +236,7 @@ async function scanLifecycleReactorAtStartup(
   lifecycleReactorLifetime: AbortController,
   signal: AbortSignal,
 ): Promise<void> {
-  // Workflow recovery must renew or consume replacement intents before retention scans them.
+  // Workflow recovery must clear replacement intents before retention scans, except claims held by live children.
   const abortReactorLifetime = () => lifecycleReactorLifetime.abort();
   signal.addEventListener('abort', abortReactorLifetime, { once: true });
   try {

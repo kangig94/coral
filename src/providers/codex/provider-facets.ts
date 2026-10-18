@@ -73,7 +73,7 @@ async function rpc<M extends AppServerMethod>(
   return lease.rpc<AppServerResponse<M>>(method, params as unknown as Record<string, unknown>);
 }
 
-type CodexProbeResult = {
+type CodexInterruptedSessionState = {
   resumable: boolean;
   updatedContinuity?: ProviderContinuityBlob;
 };
@@ -344,16 +344,16 @@ export const codexAppServerLifecycle: ProviderAppServerCapability<CodexExecution
 
 export const codexRecoveryLifecycle = {
   finalizeInterrupted(
-    probeResult: CodexProbeResult,
+    preservedState: CodexInterruptedSessionState,
     continuity: ProviderContinuityBlob | undefined,
     context: { preservedConversationRef?: string },
   ): SessionContinuityMutation {
     const nextContinuity = sanitizeCodexProviderContinuity(
-      probeResult.updatedContinuity ?? (continuity === undefined ? undefined : clearCodexTurnContinuity(continuity)),
+      preservedState.updatedContinuity ?? (continuity === undefined ? undefined : clearCodexTurnContinuity(continuity)),
     );
     const parsed = readCodexPersistedContinuity(nextContinuity ?? continuity);
     const effectiveConversationRef = parsed.threadId ?? context.preservedConversationRef;
-    if (probeResult.resumable && effectiveConversationRef !== undefined) {
+    if (preservedState.resumable && effectiveConversationRef !== undefined) {
       return {
         kind: 'set_resumable',
         conversationRef: effectiveConversationRef,
@@ -361,7 +361,7 @@ export const codexRecoveryLifecycle = {
       };
     }
 
-    if (probeResult.resumable) {
+    if (preservedState.resumable) {
       return {
         kind: 'preserve',
         ...(nextContinuity ? { providerContinuity: nextContinuity } : {}),

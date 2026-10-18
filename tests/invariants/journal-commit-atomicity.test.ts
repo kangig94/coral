@@ -23,7 +23,7 @@ import { workflowRegistry, workflowPlanDeclaredEvent } from '#src/workflow/event
 import type { WorkflowFinalizationIntent } from '#src/workflow/finalization.js';
 import { parseExpression } from '#src/workflow/parser.js';
 import { buildWorkflowPlan, type PlanSlot, type WorkflowPlan } from '#src/workflow/plan.js';
-import { resumeAll } from '#src/workflow/recover.js';
+import { recoverAll } from '#src/workflow/recover.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { seedTestSessionProjection } from '#tests/helpers/session.js';
@@ -188,11 +188,11 @@ function captureWorkflowIntents(delegate: (intent: WorkflowFinalizationIntent) =
   };
 }
 
-async function resumeRecoveryHarness(
+async function closeRecoveryHarness(
   harness: WorkflowRecoveryHarness,
   finalizeWorkflow: (intent: WorkflowFinalizationIntent) => void,
 ): Promise<string[]> {
-  return resumeAll({
+  return recoverAll({
     db: harness.db,
     progressStore: harness.progressStore,
     clearContinuationLease: async () => true,
@@ -278,7 +278,7 @@ describe('journal commit atomicity invariant', () => {
     }
   });
 
-  it('drives resumeAll through failure recovery with the real finalizer and persists causal rows', async () => {
+  it('drives recoverAll through failure recovery with the real finalizer and persists causal rows', async () => {
     const db = createDb();
     try {
       const harness = createWorkflowRecoveryHarness(db, 'workflow-recover-path', '(architect, critic)');
@@ -305,7 +305,7 @@ describe('journal commit atomicity invariant', () => {
       const captured = captureWorkflowIntents(realFinalizer);
       const message = "Step 0, atom 'architect' failed: exited with code 1";
 
-      await expect(resumeRecoveryHarness(harness, captured.finalizeWorkflow)).resolves.toEqual([harness.workflowId]);
+      await expect(closeRecoveryHarness(harness, captured.finalizeWorkflow)).resolves.toEqual([harness.workflowId]);
 
       expect(captured.intents).toEqual([
         {

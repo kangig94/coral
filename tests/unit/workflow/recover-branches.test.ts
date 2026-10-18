@@ -1,11 +1,12 @@
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
-import { TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
+import { TEST_CODEX_SCOPE } from '#tests/helpers/provider-credentials.js';
 import { describe, expect, it, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { AbortRegistry } from '#src/jobs/shell/abort-registry.js';
 import { JobStore } from '#src/jobs/store.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
@@ -17,7 +18,7 @@ import { parseExpression } from '#src/workflow/parser.js';
 import { workflowCompletedEvent, workflowPlanDeclaredEvent, workflowRegistry } from '#src/workflow/events.js';
 import { buildWorkflowPlan, type WorkflowPlan } from '#src/workflow/plan.js';
 import { commitWorkflowEvents } from '#src/workflow/projections.js';
-import { resumeAll as resumeAllWorkflowRecovery } from '#src/workflow/recover.js';
+import { recoverAll as recoverAllWorkflows } from '#src/workflow/recover.js';
 import { type WorkflowExecutionPort } from '#src/workflow/execution-contract.js';
 import type { WorkflowFinalizationIntent } from '#src/workflow/finalization.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
@@ -32,6 +33,9 @@ import { createWorkflowRecoveryFinalizer } from '#src/coordinator/services/workf
 import { createFailedWorkflowDescendantReleaser } from '#src/coordinator/services/workflow-recovery-descendants.js';
 import { releaseSessionJobClaim } from '#src/sessions/job-release.js';
 import { SessionManager } from '#src/sessions/shell.js';
+import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
+import { finalizeInterruptedDurableRecovery } from '#src/coordinator/services/recovery/interrupted-finalizer.js';
+import type { DurableInterruptedRecoveryPlan } from '#src/coordinator/services/recovery/interrupted-plan.js';
 import { RecoveryQuarantineStore } from '#src/recovery/quarantine.js';
 import { seedTestSessionProjection } from '#tests/helpers/session.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
@@ -39,7 +43,7 @@ import { canonicalizeWorkDir } from '#src/runtime/canonical-work-dir.js';
 
 const PROJECT_ROOT = canonicalizeWorkDir(process.cwd(), process.cwd());
 const BACKEND_NAMESPACE = 'workflow-test-ns';
-type ResumeAllOptions = Parameters<typeof resumeAllWorkflowRecovery>[0];
+type RecoverAllOptions = Parameters<typeof recoverAllWorkflows>[0];
 
 function createWorkflowPlan(expression = 'architect', workflowId = 'workflow-1'): WorkflowPlan {
   return buildWorkflowPlan(workflowId, parseExpression(expression), {
@@ -82,7 +86,7 @@ function createHarness(options: {
   commitWorkflowEvents(
     db,
     (c) => {
-      c.append(workflowPlanDeclaredEvent(workflowId, plan, TEST_PROVIDER_SCOPE));
+      c.append(workflowPlanDeclaredEvent(workflowId, plan, TEST_CODEX_SCOPE));
       return undefined;
     },
     runtime.time,
@@ -229,7 +233,7 @@ function createHarness(options: {
   return { db, plan, progressStore, executionSvc, createInvocationContext, runtime, jobIdForSlot };
 }
 
-function recoveryOptions(harness: ReturnType<typeof createHarness>): ResumeAllOptions {
+function recoveryOptions(harness: ReturnType<typeof createHarness>): RecoverAllOptions {
   const coordinatorCommit = (cb: Parameters<JobStore['commit']>[0]) => harness.progressStore.commit(cb);
   return {
     db: harness.db,
@@ -258,8 +262,8 @@ function recoveryOptions(harness: ReturnType<typeof createHarness>): ResumeAllOp
   };
 }
 
-async function recover(harness: ReturnType<typeof createHarness>, overrides: Partial<ResumeAllOptions> = {}) {
-  const result = await resumeAllWorkflowRecovery({ ...recoveryOptions(harness), ...overrides });
+async function recover(harness: ReturnType<typeof createHarness>, overrides: Partial<RecoverAllOptions> = {}) {
+  const result = await recoverAllWorkflows({ ...recoveryOptions(harness), ...overrides });
   expect(harness.executionSvc.coralDispatch).not.toHaveBeenCalled();
   expect(harness.executionSvc.resume).not.toHaveBeenCalled();
   expect(harness.executionSvc.awaitLaunch).not.toHaveBeenCalled();
@@ -309,7 +313,7 @@ function storeContinuation(
   expect(
     new RecoveryQuarantineStore(harness.db, harness.runtime.time).upsert({
       boundary: 'workflow-recovery',
-      subject: { key: 'workflow-1', revision: { kind: 'until-cleared' } },
+      subject: { key: 'workflow-1', revision: { kind: 'fingerprint', value: 'earlier-build-revision' } },
       state: 'continuation',
       stage: 'settle',
       errorMessage: '',
@@ -421,7 +425,7 @@ describe('workflow recovery without execution', () => {
             ? {
                 lifecycleFault: {
                   kind: 'recovery_failed',
-                  message: "Step 0, atom 'reviewer' failed: exited with code 1",
+                  message: "Step 0, atom 'reviewer' failed: saved error",
                 },
                 failureLocation: {
                   slotId: harness.plan.slots[1].slotId,
@@ -532,10 +536,90 @@ describe('workflow recovery without execution', () => {
         );
         expect(
           createProjectionSessionLookup(harness.db).readProviderSession('session-atom-1')?.continuationLease,
-        ).toMatchObject({ status: 'cleared', outcome: 'explicit_clear' });
+        ).toMatchObject({ status: 'pending' });
         expect(finalizeWorkflow).not.toHaveBeenCalled();
         expect(releaseFailedWorkflowDescendants).not.toHaveBeenCalled();
         expect(harness.executionSvc.abort).not.toHaveBeenCalled();
+      } finally {
+        harness.db.close();
+      }
+    },
+  );
+
+  it.each(['prepared', 'external-outcome-unknown'] as const)(
+    'settles a stored %s continuation after its last child records a terminal',
+    async (stage) => {
+      const harness = createHarness({
+        expression: '(architect, reviewer)',
+        atomPhase: 'running',
+        projectionPhase: 'running',
+      });
+      storeContinuation(harness, stage);
+      try {
+        expect(await recover(harness)).toEqual([]);
+        const firstChild = harness.jobIdForSlot(harness.plan.slots[0].slotId);
+        const secondChild = harness.jobIdForSlot(harness.plan.slots[1].slotId);
+        commitJobTerminal(harness.progressStore, firstChild, 'session-atom-1', completed);
+        expect(await recover(harness)).toEqual([]);
+        expect(harness.progressStore.readStatus('workflow-1')?.phase).toBe('running');
+        commitJobTerminal(harness.progressStore, secondChild, 'session-atom-2', failed);
+        expect(await recover(harness)).toEqual(['workflow-1']);
+        expect(harness.progressStore.readStatus('workflow-1')?.phase).toBe('error');
+        const completionRow = harness.db
+          .prepare<
+            [],
+            { body: Buffer }
+          >("SELECT body FROM events WHERE stream_id = 'workflow-1' AND type = 'workflow.completed'")
+          .get();
+        if (completionRow === undefined) throw new Error('Expected durable workflow completion.');
+        expect(decodeEventBody(completionRow.body)).toMatchObject({
+          outcome: 'failed',
+          stepDetails: [{ output: 'saved output' }, { output: 'saved error' }],
+          failureLocation: { jobId: secondChild },
+        });
+        expect(readContinuation(harness)).toBeUndefined();
+        expect(
+          createProjectionSessionLookup(harness.db).readProviderSession('session-atom-1')?.activeJobId,
+        ).toBeUndefined();
+        expect(
+          createProjectionSessionLookup(harness.db).readProviderSession('session-atom-2')?.activeJobId,
+        ).toBeUndefined();
+      } finally {
+        harness.db.close();
+      }
+    },
+  );
+
+  it.each(['prepared', 'external-outcome-unknown'] as const)(
+    'clears a stored %s continuation when durable workflow completion is recorded',
+    async (stage) => {
+      const harness = createHarness({ atomPhase: 'running', projectionPhase: 'running' });
+      storeContinuation(harness, stage);
+      const finalizeWorkflow = vi.fn();
+      try {
+        expect(await recover(harness, { finalizeWorkflow })).toEqual([]);
+        harness.progressStore.commit((c) => {
+          c.append(workflowCompletedEvent('workflow-1', { outcome: 'completed', stepDetails: [] }));
+          return undefined;
+        });
+        expect(await recover(harness, { finalizeWorkflow })).toEqual([]);
+        expect(finalizeWorkflow).not.toHaveBeenCalled();
+        expect(readContinuation(harness)).toBeUndefined();
+      } finally {
+        harness.db.close();
+      }
+    },
+  );
+
+  it.each(['prepared', 'external-outcome-unknown'] as const)(
+    'settles a stored %s continuation with no child journal rows',
+    async (stage) => {
+      const harness = createHarness({ atomPhase: null, projectionPhase: null });
+      storeContinuation(harness, stage);
+      try {
+        expect(await recover(harness)).toEqual(['workflow-1']);
+        expect(harness.progressStore.readStatus('workflow-1')?.phase).toBe('error');
+        expect(readContinuation(harness)).toBeUndefined();
       } finally {
         harness.db.close();
       }
@@ -558,7 +642,7 @@ describe('workflow recovery without execution', () => {
         expect(finalizeWorkflow).toHaveBeenCalledExactlyOnceWith(intent);
         expect(
           createProjectionSessionLookup(harness.db).readProviderSession('session-atom-1')?.continuationLease,
-        ).toMatchObject({ status: 'cleared', outcome: 'explicit_clear' });
+        ).toMatchObject({ status: 'pending' });
         expect(readContinuation(harness)).toBeUndefined();
       } finally {
         harness.db.close();
@@ -594,36 +678,120 @@ describe('workflow recovery without execution', () => {
     },
   );
 
-  it('releases the descendant claim and process-local adoption when closing an unfinished workflow', async () => {
-    const harness = createHarness({ atomPhase: 'running', projectionPhase: 'running' });
-    const options = recoveryOptions(harness);
-    const releaseAdoptedJob = vi.fn();
-    const emitSessionReleased = vi.fn();
-    options.releaseFailedWorkflowDescendants = createFailedWorkflowDescendantReleaser({
-      progressStore: harness.progressStore,
-      runtime: harness.runtime,
-      coordinatorCommit: (cb) => harness.progressStore.commit(cb),
-      getExecutionService: () => harness.executionSvc,
-      createInvocationContext: harness.createInvocationContext,
-      releaseAdoptedJob,
-      emitSessionReleased,
-      log: vi.fn(),
-    });
-    try {
-      expect(await recover(harness, options)).toEqual(['workflow-1']);
-      expect(harness.progressStore.readStatus('workflow-1')?.phase).toBe('error');
-      expect(
-        createProjectionSessionLookup(harness.db).readProviderSession('session-atom-1')?.activeJobId,
-      ).toBeUndefined();
+  it.each([false, true])(
+    'preserves an adopted durable child with pending lease %s so its later finalization commits',
+    async (pendingLease) => {
+      const harness = createHarness({ atomPhase: 'running', projectionPhase: 'running' });
+      const options = recoveryOptions(harness);
       const childJobId = harness.jobIdForSlot(harness.plan.slots[0].slotId);
-      expect(harness.executionSvc.abort).toHaveBeenCalledWith([childJobId]);
-      expect(releaseAdoptedJob).toHaveBeenCalledWith(childJobId);
-      expect(emitSessionReleased).toHaveBeenCalledWith({ sessionId: 'session-atom-1', jobId: childJobId });
-      expect(readContinuation(harness)).toBeUndefined();
-    } finally {
-      harness.db.close();
-    }
-  });
+      const launchAdmission = new LaunchCoordinator({ runtime: harness.runtime });
+      const launchPermit = launchAdmission.restoreActiveLaunch(
+        childJobId,
+        'codex',
+        { kind: 'workflow', id: 'workflow-1' },
+        'default',
+      );
+      const releaseAdoptedJob = vi.fn(() => launchAdmission.releaseLaunch(launchPermit));
+      const emitSessionReleased = vi.fn();
+      options.releaseFailedWorkflowDescendants = createFailedWorkflowDescendantReleaser({
+        progressStore: harness.progressStore,
+        runtime: harness.runtime,
+        coordinatorCommit: (cb) => harness.progressStore.commit(cb),
+        getExecutionService: () => harness.executionSvc,
+        createInvocationContext: harness.createInvocationContext,
+        releaseAdoptedJob,
+        emitSessionReleased,
+        log: vi.fn(),
+      });
+      const lookup = createProjectionSessionLookup(harness.db);
+      const sessionManager = SessionManager.forProduction(
+        PROJECT_ROOT,
+        harness.runtime,
+        (cb) => harness.progressStore.commit(cb),
+        emitSessionReleased,
+        { db: harness.db },
+      );
+      if (pendingLease) {
+        sessionManager.recordContinuationLease({
+          sessionId: 'session-atom-1',
+          jobId: childJobId,
+          workflowId: 'workflow-1',
+          workflowSlotId: harness.plan.slots[0].slotId,
+          replacementGeneration: 1,
+          reason: 'stale_recovery',
+          expiresAt: new Date(harness.runtime.time.now() + 100).toISOString(),
+        });
+      }
+      const session = lookup.readProviderSession('session-atom-1');
+      const launch = harness.progressStore.readLaunchProjection(childJobId);
+      const status = harness.progressStore.readStatus(childJobId);
+      if (
+        session === null ||
+        launch?.jobKind !== 'provider' ||
+        launch.sessionId === null ||
+        launch.provider === null ||
+        status === null
+      ) {
+        throw new Error('Expected a claimed provider child.');
+      }
+      const runtimeRecord = {
+        transport: 'durable-cli' as const,
+        pid: 42,
+        stdoutPath: '/jobs/stdout',
+        stderrPath: '/jobs/stderr',
+        startTime: new Date(harness.runtime.time.now()).toISOString(),
+      };
+      harness.progressStore.appendRuntimeStarted(childJobId, runtimeRecord);
+      const plan: DurableInterruptedRecoveryPlan = {
+        kind: 'durable-artifacts',
+        launchRecord: { ...launch, sessionId: launch.sessionId, provider: launch.provider },
+        session,
+        expectedSessionVersion: session.version,
+        runtimeRecord,
+        exit: { exitCode: 0, signal: null, endTime: new Date(harness.runtime.time.now()).toISOString() },
+      };
+      try {
+        expect(await recover(harness, options)).toEqual(['workflow-1']);
+        expect(harness.progressStore.readStatus('workflow-1')?.phase).toBe('error');
+        expect(lookup.readProviderSession(session.sessionId)).toMatchObject({
+          activeJobId: childJobId,
+          version: session.version,
+        });
+        expect(lookup.readProviderSession(session.sessionId)?.continuationLease).toEqual(session.continuationLease);
+        expect(harness.progressStore.readTerminalProjection(childJobId)).toBeNull();
+        expect(harness.executionSvc.abort).not.toHaveBeenCalled();
+        expect(releaseAdoptedJob).not.toHaveBeenCalled();
+        expect(emitSessionReleased).not.toHaveBeenCalled();
+        expect(launchAdmission.getActiveJobIds()).toContain(childJobId);
+        expect(readContinuation(harness)).toBeUndefined();
+
+        await finalizeInterruptedDurableRecovery(
+          plan,
+          {
+            kind: 'durable-resolved',
+            terminal: { kind: 'direct', value: completed },
+            mutation: { kind: 'preserve' },
+            artifactHandles: [],
+          },
+          status,
+          {
+            runtime: harness.runtime,
+            sessionManager,
+            abortRegistry: new AbortRegistry(harness.runtime.ids),
+            launchAdmission,
+            launchPermit,
+            publishTerminalResult: (jobId) => harness.progressStore.ensureResultArtifact(jobId),
+          },
+        );
+        expect(harness.progressStore.readTerminalProjection(childJobId)).toMatchObject(completed);
+        expect(lookup.readProviderSession(session.sessionId)?.activeJobId).toBeUndefined();
+        expect(launchAdmission.getActiveJobIds()).not.toContain(childJobId);
+        expect(emitSessionReleased).toHaveBeenCalledWith({ sessionId: session.sessionId, jobId: childJobId });
+      } finally {
+        harness.db.close();
+      }
+    },
+  );
 
   it('retries a failed durable close with its recorded intent', async () => {
     const harness = createHarness({ atomPhase: 'running', projectionPhase: 'running' });
@@ -631,8 +799,13 @@ describe('workflow recovery without execution', () => {
       throw new Error('workflow finalizer unavailable');
     });
     const releaseFailedWorkflowDescendants = vi.fn(() => []);
+    const upsert = vi.spyOn(RecoveryQuarantineStore.prototype, 'upsert');
     try {
       expect(await recover(harness, { finalizeWorkflow, releaseFailedWorkflowDescendants })).toEqual([]);
+      expect(upsert.mock.calls.length).toBeGreaterThan(0);
+      for (const [write] of upsert.mock.calls) {
+        expect(JSON.parse(write.continuation?.key ?? 'null')).toMatchObject({ stage: 'ready-to-close' });
+      }
       const stored = JSON.parse(readContinuation(harness)?.continuation_key ?? 'null') as {
         stage: string;
         intendedFinalization: { intent: WorkflowFinalizationIntent };
@@ -646,6 +819,7 @@ describe('workflow recovery without execution', () => {
       expect(releaseFailedWorkflowDescendants).toHaveBeenCalledOnce();
       expect(readContinuation(harness)).toBeUndefined();
     } finally {
+      upsert.mockRestore();
       harness.db.close();
     }
   });
@@ -693,7 +867,11 @@ describe('workflow recovery without execution', () => {
   it.each(['already absent', 'owned by another job'] as const)(
     'closes when a stored descendant claim is %s',
     async (disposition) => {
-      const harness = createHarness({ atomPhase: 'running', projectionPhase: 'running' });
+      const harness = createHarness({
+        atomPhase: null,
+        projectionPhase: null,
+        slotStates: { 0: { terminal: failed } },
+      });
       const childJobId = harness.jobIdForSlot(harness.plan.slots[0].slotId);
       storeContinuation(harness, 'ready-to-close', {
         outcome: 'failed',
@@ -734,13 +912,44 @@ describe('workflow recovery without execution', () => {
     },
   );
 
+  it('releases a stored descendant claim when the child row is absent', async () => {
+    const harness = createHarness({ atomPhase: null, projectionPhase: null, slotStates: { 0: { terminal: failed } } });
+    const childJobId = harness.jobIdForSlot(harness.plan.slots[0].slotId);
+    setPendingReplacement(harness);
+    storeContinuation(harness, 'ready-to-close', {
+      outcome: 'failed',
+      workflowJobId: 'workflow-1',
+      lifecycleFault: restartFault,
+      stepDetails: [],
+    });
+    harness.db.prepare('DELETE FROM projection_jobs WHERE job_id = ?').run(childJobId);
+    try {
+      expect(await recover(harness)).toEqual(['workflow-1']);
+      expect(
+        createProjectionSessionLookup(harness.db).readProviderSession('session-atom-1')?.activeJobId,
+      ).toBeUndefined();
+      expect(
+        createProjectionSessionLookup(harness.db).readProviderSession('session-atom-1')?.continuationLease,
+      ).toMatchObject({ status: 'cleared', outcome: 'explicit_clear' });
+      expect(harness.executionSvc.abort).toHaveBeenCalledWith([childJobId]);
+      expect(readContinuation(harness)).toBeUndefined();
+    } finally {
+      harness.db.close();
+    }
+  });
+
   it('uses the canonical target of a persisted symlink root for lease clearance', async () => {
     const root = mkdtempSync(join(tmpdir(), 'coral-workflow-recovery-canonical-'));
     const physicalProject = join(root, 'physical-project');
     const selectedProject = join(root, 'selected-project');
     mkdirSync(physicalProject);
     symlinkSync(physicalProject, selectedProject, 'dir');
-    const harness = createHarness({ projectRoot: selectedProject, atomPhase: 'running', projectionPhase: 'running' });
+    const harness = createHarness({
+      projectRoot: selectedProject,
+      atomPhase: null,
+      projectionPhase: null,
+      slotStates: { 0: { terminal: failed } },
+    });
     setPendingReplacement(harness);
     const options = recoveryOptions(harness);
     const clearContinuationLease = vi.fn(options.clearContinuationLease);

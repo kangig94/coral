@@ -31,6 +31,13 @@ function nestedCommit<Scope>(commit: CommitContext<Scope>): CommitEventsFn {
 export function createFailedWorkflowDescendantReleaser(
   deps: FailedWorkflowDescendantReleaserDeps,
 ): AtomicFailedWorkflowDescendantReleaser {
+  const hasNonterminalChild = (jobId: string): boolean => {
+    const child = deps.progressStore
+      .getDb()
+      .prepare<[string], { terminal: string | null }>('SELECT terminal FROM projection_jobs WHERE job_id = ?')
+      .get(jobId);
+    return child !== undefined && child.terminal === null;
+  };
   const pendingEmits = new Set<string>();
   const release = (() => []) as unknown as AtomicFailedWorkflowDescendantReleaser;
 
@@ -40,14 +47,8 @@ export function createFailedWorkflowDescendantReleaser(
   ): readonly WorkflowRecoveryDescendantRelease[] => {
     const releases: WorkflowRecoveryDescendantRelease[] = [];
     for (const descendant of descendants) {
-      // The obligation is per-job and idempotent: what must hold afterwards is that `jobId` does not hold
-      // `sessionId`. All three results say that it does not — `released` because we just released it,
-      // `already_absent` because nothing held it, `owned_by_another_job` because someone else does. None
-      // is a conflict, and the safety property is `releaseJob` itself refusing to touch another owner,
-      // not a throw here. Throwing on the third only turned a benign state into a close this pass can
-      // never satisfy, retried from the persisted `ready-to-close` record on every later pass.
-      // The disposition is reported rather than swallowed: `describeSessionJobClaimReleaseResult`
-      // renders all three, and workflow recovery logs whichever occurred.
+      // Non-terminal children retain their claim and adoption until their own recovery finalizes.
+      if (hasNonterminalChild(descendant.jobId)) continue;
       const sessionClaimRelease = releaseSessionJobClaim({
         projectRoot: descendant.projectRoot,
         runtime: deps.runtime,
@@ -68,6 +69,7 @@ export function createFailedWorkflowDescendantReleaser(
 
   release.cleanup = (descendants) => {
     for (const descendant of descendants) {
+      if (hasNonterminalChild(descendant.jobId)) continue;
       deps.getExecutionService(deps.createInvocationContext(descendant.projectRoot)).abort([descendant.jobId]);
       deps.releaseAdoptedJob(descendant.jobId);
       const emitKey = `${descendant.sessionId}\u0000${descendant.jobId}`;

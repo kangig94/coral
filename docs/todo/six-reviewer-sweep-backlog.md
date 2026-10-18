@@ -16,22 +16,12 @@ The rest is here rather than in six entries because it is one observation with m
 that decides something is written down once and then re-derived, widened, or discarded by the next reader.**
 Splitting it per-file would lose that, and each instance is individually small.
 
-## 1. A cast asserts a port the object does not implement — BLOCKING
+## 1. Workflow recovery execution-port cast — resolved
 
-`createCoordinatorServer` in `src/coordinator/index.ts` bridges `getExecutionService` into `resumeAll` with `getExecutionService(ctx) as never`,
-mirrored at `createSimulationBackend` in `tools/simulation/core/backend.ts`. `ResumeAllOptions` requires a `WorkflowExecutionPort`
-(`src/workflow/recover.ts`), which declares `recordContinuationLease` and `clearContinuationLease`
-(`src/workflow/execution-contract.ts`). `ExecutionService` implements `RecoveryCapableService`,
-`ProjectRequestPort` and `HandoffQuiescePort` — not that port — and supplies the two lease methods only inside a
-nested `executionPort:` object literal, not as public members. `src/workflow/recover.ts` calls
-`deps.executionSvc.recordContinuationLease(...)` directly on the expired/prior-replacement path.
-
-Verified here: the class's `implements` clause, the absence of both methods as public members, the nested
-literal that does have them, and the direct call. What is **not** established is how often that recovery path
-is entered — the finding is a type gap with a matching call site, not an observed crash.
-
-Fix: expose a compiler-checked `WorkflowExecutionPort` from coordinator composition — implement the two
-methods on `ExecutionService`, or return a dedicated typed adapter — and delete both `as never`.
+Cold-boot workflow recovery now uses `recoverAll` to close workflows without launching replacements.
+Coordinator and simulation composition supply lease clearing through `SessionManager`; recovery no longer
+requires an execution port or casts `getExecutionService(ctx)` to one. Pending leases on sessions claimed
+by non-terminal children remain under job recovery ownership until claim release permits lifecycle expiry.
 
 ## 2. Branches the call graph cannot reach
 

@@ -857,7 +857,7 @@ export function createSimulationBackend(
       });
       signal.throwIfAborted();
 
-      await workflowRecover.resumeAll({
+      await workflowRecover.recoverAll({
         db: storeDb,
         progressStore: recoveryProgressStore,
         clearContinuationLease: (projectRoot, input) =>

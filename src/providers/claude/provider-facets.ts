@@ -236,8 +236,8 @@ export const claudeAppServerLifecycle: ProviderAppServerCapability<ClaudeExecuti
 };
 
 export const claudeRecoveryLifecycle = {
-  finalizeInterrupted(probeResult, continuity, context) {
-    const persistedContinuity = readClaudePersistedContinuity(probeResult.updatedContinuity ?? continuity);
+  finalizeInterrupted(preservedState, continuity, context) {
+    const persistedContinuity = readClaudePersistedContinuity(preservedState.updatedContinuity ?? continuity);
     const providerContinuity = persistedContinuity.bootstrapSignature
       ? buildClaudeContinuity({
           bootstrapSignature: persistedContinuity.bootstrapSignature,
@@ -245,7 +245,7 @@ export const claudeRecoveryLifecycle = {
       : undefined;
     const effectiveConversationRef = context.preservedConversationRef;
 
-    if (probeResult.resumable) {
+    if (preservedState.resumable) {
       if (effectiveConversationRef !== undefined) {
         return {
           kind: 'set_resumable',

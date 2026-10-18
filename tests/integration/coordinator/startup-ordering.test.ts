@@ -2,7 +2,7 @@ import { createServer } from 'node:http';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createRealRuntime } from '#src/runtime/real.js';
 import * as jobsStartup from '#src/jobs/startup.js';
@@ -21,12 +21,31 @@ import { parseExpression } from '#src/workflow/parser.js';
 import { workflowPlanDeclaredEvent } from '#src/workflow/events.js';
 import { seedTestSessionProjection } from '#tests/helpers/session.js';
 import { commitJobTerminal } from '#tests/helpers/job-commits.js';
-import { TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
+import { TEST_CODEX_SCOPE } from '#tests/helpers/provider-credentials.js';
+import * as storeEpochSweep from '#src/coordinator/composition/store-epoch-sweep-scheduler.js';
+import * as storageRetention from '#src/coordinator/composition/storage-retention-scheduler.js';
 import { canonicalizeWorkDir } from '#src/runtime/canonical-work-dir.js';
 
 const tempRoots: string[] = [];
+const stopStoreWork: (() => Promise<void>)[] = [];
 
-afterEach(() => {
+beforeEach(() => {
+  const createSweep = storeEpochSweep.createStoreEpochSweepScheduler;
+  vi.spyOn(storeEpochSweep, 'createStoreEpochSweepScheduler').mockImplementation((input) => {
+    const scheduler = createSweep(input);
+    stopStoreWork.push(scheduler.stop);
+    return scheduler;
+  });
+  const createRetention = storageRetention.createStorageRetentionScheduler;
+  vi.spyOn(storageRetention, 'createStorageRetentionScheduler').mockImplementation((input) => {
+    const scheduler = createRetention(input);
+    stopStoreWork.push(scheduler.stop);
+    return scheduler;
+  });
+});
+
+afterEach(async () => {
+  for (const stop of stopStoreWork.splice(0)) await stop();
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
 
@@ -98,7 +117,7 @@ describe('coordinator pending workflow replacement recovery', () => {
       return { kind: 'complete', progressStore: options.progressStore } as const;
     });
     vi.spyOn(jobsStartup, 'createJobsStartupRunner').mockReturnValue(runStartup);
-    const resumeAll = vi.spyOn(workflowRecover, 'resumeAll').mockImplementation(async (options) => {
+    const recoverAll = vi.spyOn(workflowRecover, 'recoverAll').mockImplementation(async (options) => {
       const row = options.db
         .prepare<[string], { entry: string }>('SELECT entry FROM projection_sessions WHERE session_id = ?')
         .get('pending-replacement-session');
@@ -126,9 +145,9 @@ describe('coordinator pending workflow replacement recovery', () => {
 
     try {
       await coordinator.start();
-      expect(resumeAll).toHaveBeenCalledOnce();
+      expect(recoverAll).toHaveBeenCalledOnce();
     } finally {
-      resumeAll.mockRestore();
+      recoverAll.mockRestore();
       await coordinator.shutdown('test-teardown');
       await coordinator.waitForShutdown();
     }
@@ -156,7 +175,7 @@ describe('coordinator pending workflow replacement recovery', () => {
       startupOptions = options;
       const plan = buildWorkflowPlan(workflowId, parseExpression('architect'), { defaultProvider: 'codex' });
       options.coordinatorCommit((c) => {
-        c.append(workflowPlanDeclaredEvent(workflowId, plan, TEST_PROVIDER_SCOPE));
+        c.append(workflowPlanDeclaredEvent(workflowId, plan, TEST_CODEX_SCOPE));
         return undefined;
       });
       options.progressStore.appendLaunchRequested(workflowId, {
