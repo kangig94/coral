@@ -165,6 +165,7 @@ export async function parseProgramWithHandoff(
 export function buildProgram(providerRegistry: ProviderRegistry = createBuiltInProviderRegistry()): Command {
   const program = new Command();
   program.exitOverride();
+  program.configureOutput({ outputError: () => {} });
 
   program
     .name('coral-cli')

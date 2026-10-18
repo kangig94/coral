@@ -437,7 +437,6 @@ describe('PrintSessionController', () => {
       expect(notifications.filter((n) => n.method === 'turn/progress').map((n) => n.params.message)).toEqual([
         `Sent message ${secondSendId} read by the agent`,
         `Sent message ${firstSendId} read by the agent`,
-        'Claude aggregate: 1 result segments; turns=2',
       ]);
       expect(notifications.at(-1)?.method).toBe('turn/completed');
       expect(child.writes).toHaveLength(4);
@@ -505,7 +504,9 @@ describe('PrintSessionController', () => {
         isError: false,
         subtype: 'success',
       });
-      expect(notifications.at(-2)?.params).toMatchObject({ message: 'Claude aggregate: 2 result segments; turns=2' });
+      expect(notifications.at(-2)?.params).toMatchObject({
+        message: 'Claude follow-on aggregate: 2 result segments; turns=2',
+      });
       expect(child.killedSignals).toEqual([]);
     } finally {
       await controller.shutdown();
@@ -544,7 +545,9 @@ describe('PrintSessionController', () => {
           durationMs: 1200,
         });
         expect(completions[0].params.costUsd).toBeCloseTo(0.03);
-        expect(notifications.at(-2)?.params).toMatchObject({ message: 'Claude aggregate: 2 result segments; turns=5' });
+        expect(notifications.at(-2)?.params).toMatchObject({
+          message: 'Claude follow-on aggregate: 2 result segments; turns=5',
+        });
       } finally {
         await controller.shutdown();
       }
@@ -656,7 +659,7 @@ describe('PrintSessionController', () => {
       expect(terminal?.params.usage).not.toHaveProperty('input_tokens');
       expect(terminal?.params.usage).not.toHaveProperty('cache_creation_input_tokens');
       expect(notifications.at(-2)?.params).toMatchObject({
-        message: 'Claude aggregate: 2 result segments; turns=unavailable',
+        message: 'Claude follow-on aggregate: 2 result segments; turns=unavailable',
       });
     } finally {
       await controller.shutdown();
@@ -810,7 +813,8 @@ describe('PrintSessionController', () => {
             body: { message: expect.stringContaining('final segment failed') },
           });
         const summaryIndex = events.findIndex(
-          (event) => event.kind === 'progress' && event.message === 'Claude aggregate: 2 result segments; turns=5',
+          (event) =>
+            event.kind === 'progress' && event.message === 'Claude follow-on aggregate: 2 result segments; turns=5',
         );
         expect(summaryIndex).toBeGreaterThanOrEqual(0);
         expect(events.indexOf(terminal!)).toBeGreaterThan(summaryIndex);
@@ -1079,7 +1083,9 @@ describe('PrintSessionController', () => {
         numTurns: 0,
         durationMs: 0,
       });
-      expect(notifications.at(-2)?.params).toMatchObject({ message: 'Claude aggregate: 2 result segments; turns=0' });
+      expect(notifications.at(-2)?.params).toMatchObject({
+        message: 'Claude follow-on aggregate: 2 result segments; turns=0',
+      });
     } finally {
       await controller.shutdown();
     }
@@ -1125,7 +1131,6 @@ describe('PrintSessionController', () => {
       child.emitStdout(result);
       expect(notifications.filter((n) => n.method === 'turn/progress').map((n) => n.params.message)).toEqual([
         `Sent message ${firstSendId} read by the agent`,
-        'Claude aggregate: 1 result segments; turns=2',
       ]);
       expect(notifications.filter((n) => n.method === 'turn/completed')).toHaveLength(1);
     } finally {
