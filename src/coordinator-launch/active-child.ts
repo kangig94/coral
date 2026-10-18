@@ -1,5 +1,6 @@
 import { type ChildProcess } from 'node:child_process';
 
+import { type StrictBundleManifest } from '../infra/bundle-manifest.js';
 import { compareProductVersions } from '../infra/product-version.js';
 import { type SentinelTiming } from '../infra/sentinel-timing.js';
 import { createActiveChildRouter, type PendingAttempt } from './active-child-router.js';
@@ -9,7 +10,12 @@ import { watchChild, type WatchResult } from './child-watch.js';
 import { targetValidation, validatedExecutable } from './executable.js';
 import { requestInheritedSuccession } from './health.js';
 import { type OwnerHandle } from './ownership.js';
-import { closeUnavailableLegacyRequest, pendingExecutable, pendingIntent } from './pending-upgrade.js';
+import {
+  adoptedByIncumbent,
+  closeUnavailableLegacyRequest,
+  pendingExecutable,
+  pendingIntent,
+} from './pending-upgrade.js';
 import { type createRepairBridge, type RepairChild } from './repair-bridge.js';
 import { type SupervisorLaunchMemory, type LaunchReservation } from './state.js';
 
@@ -25,7 +31,11 @@ type PendingRequestDispatch = {
   route: (source: ChildProcess, message: unknown, handle: unknown) => boolean;
 };
 
-function pendingRequestCandidate(runDir: string, current: RunningChild, lastDispatch: Map<string, number>) {
+export function pendingRequestCandidate(
+  runDir: string,
+  current: Pick<RunningChild, 'identity' | 'manifest'>,
+  lastDispatch: Map<string, number>,
+): Readonly<{ requestId: string; executable: string; manifest: StrictBundleManifest }> | null {
   const intent = pendingIntent(runDir);
   if (
     intent === null ||
@@ -40,6 +50,7 @@ function pendingRequestCandidate(runDir: string, current: RunningChild, lastDisp
     return null;
   }
   if (manifest === 'indeterminate' || manifest.buildSetId !== intent.target.build.buildSetId) return null;
+  if (adoptedByIncumbent(intent, current.identity)) return null;
   return { requestId: intent.requestId, executable, manifest };
 }
 
