@@ -2,6 +2,15 @@ import { join } from 'node:path';
 
 import { readUpgradeIntent, retryUpgradeIntentCas, type UpgradeIntent } from '../infra/upgrade-intent.js';
 import { targetValidation } from './executable.js';
+import { type LaunchProcess } from './state.js';
+
+export function adoptedByIncumbent(intent: UpgradeIntent, incumbent: LaunchProcess): boolean {
+  return (
+    intent.disposition !== 'pending' &&
+    intent.incumbent.pid === incumbent.pid &&
+    intent.incumbent.incarnation === incumbent.incarnation
+  );
+}
 
 export function pendingIntent(runDir: string): UpgradeIntent | null {
   const observed = readUpgradeIntent(runDir);
