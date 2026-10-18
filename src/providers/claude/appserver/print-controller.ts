@@ -789,10 +789,10 @@ export class PrintSessionController implements BrokerSessionController {
   }
 
   private emitAggregateAccounting(turn: ActiveTurnState, completed: ResultSegment): void {
-    if (turn.pendingSends.size === 0) return;
+    if (turn.segments.length <= 1) return;
     this.emitTurnProgress(
       turn.brokerTurnId,
-      `Claude aggregate: ${turn.segments.length} result segments; turns=${completed.numTurns ?? 'unavailable'}`,
+      `Claude follow-on aggregate: ${turn.segments.length} result segments; turns=${completed.numTurns ?? 'unavailable'}`,
     );
   }
 

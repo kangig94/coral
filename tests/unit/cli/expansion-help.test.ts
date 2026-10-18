@@ -79,6 +79,18 @@ describe('CLI help exit boundary', () => {
     expect(process.exitCode).toBe(0);
   });
 
+  it('prints a usage error once with remediation and exit 2', async () => {
+    await run(['jobs', '--all']);
+
+    expect(stdout).toBe('');
+    expect(stderr).toBe(
+      "error: unknown option '--all' [code=invalid_usage]\n" +
+        'remediation: Run coral-cli jobs --help to see valid commands and options.\n',
+    );
+    expect(process.exit).toHaveBeenCalledWith(2);
+    expect(process.exitCode).toBe(2);
+  });
+
   it('preserves bare expansion help as exit 1 without a JSON error', async () => {
     await run(['expansion']);
 

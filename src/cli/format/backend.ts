@@ -1051,10 +1051,7 @@ function formatDaemonStatus(result: BackendStatusFull, liveShutdownGuidance: rea
       );
     case 'unauthorized':
       return withShutdownRemainderSection(
-        [
-          'Backend unauthorized. The discovery record and daemon token disagree. Run the shutdown command below, then retry a mutating Coral command; it attempts startup or handoff with a fresh token.',
-          formatBackendOperatorCommand({ kind: 'backend-shutdown' }),
-        ].join('\n'),
+        "Backend unauthorized. The coordinator answering at the recorded address does not accept this discovery record's token. Coral cannot stop or replace it with that token. Startup remains blocked until that coordinator exits: it shuts itself down after its idle timeout (six hours by default) passes with no authenticated request, since rejected requests do not count as activity, or when the machine restarts.",
         result.shutdownRemainder,
       );
     default:
