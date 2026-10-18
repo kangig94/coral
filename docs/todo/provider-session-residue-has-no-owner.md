@@ -1,12 +1,16 @@
 # TODO — on-demand provider session discard leaves residue
 
-**Status**: partly implemented. Retention discards provider residue; on-demand discard and retirement of the temporary backlog tool remain open.
+**Status**: partly implemented. Retention discards provider residue; on-demand discard, unrecorded interrupted-job artifacts, and retirement of the temporary backlog tool remain open.
 
 ## Remaining on-demand gap
 
 `LifecycleReactor.enforceRetention` in `src/sessions/lifecycle-reactor.ts` calls `discardSessionResidue` after the primary discard, including when no primary handle remains. Managed providers implement the contract through `discardCodexRolloutResidue` in `src/providers/codex/artifacts.ts` and `discardClaudeSessionResidue` in `src/providers/claude/artifacts.ts`. Codex discovers descendant forks and removes leaves before parents; Claude removes the conversation's `tool-results` directory. Residue failures are logged and retention completes, leaving those files for separate cleanup.
 
 `LifecycleReactor.discardSessionArtifacts` in `src/sessions/lifecycle-reactor.ts` is the on-demand path used by discuss synthesis. It does not call `discardSessionResidue`: a concurrent resume can create a new fork descended from the same conversation while the walk runs. Before adding residue discard here, establish an exclusion that remains effective through the walk. Keep the on-demand path's fatal artifact invariants; [`comment-sweep-bug-ledger.md`](./comment-sweep-bug-ledger.md) records the discuss finalization catch that currently reduces them to warnings.
+
+## Unrecorded interrupted-job artifacts
+
+Live artifact handles are persisted through `sessionArtifactHandleRecordedEvent` in `src/sessions/shell.ts`. Interrupted app-server recovery no longer parses stdout or stderr through `finalizeFromArtifacts`, so artifact handles produced after the last live record are no longer collected at restart. Those unrecorded handles, such as provider rollout files, have no retention owner and can remain on disk. This residue is accepted under the decision to preserve recorded session state without recovery parsing. Already-recorded handles retain their existing ownership; durable CLI recovery still interprets and records artifact handles.
 
 ## Temporary backlog tool
 

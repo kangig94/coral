@@ -30,7 +30,7 @@ Coordinator startup/recovery and HTTP transport stay outside the discuss module;
 The persisted snapshot has two facets:
 
 - `state`: user-visible discuss state
-- `runtime`: control metadata used to resume live execution
+- `runtime`: control metadata for the discussion loop and recovery reconciliation
 
 ## Event Flow
 
@@ -85,7 +85,9 @@ Cursor rules:
 
 Discuss storage is Journal-scoped. Events live in `events` on the `discuss/<session-id>` stream, snapshots live in `projection_discuss`, and source-scoped discovery/summary views are derived from those projections.
 
-Hydration reads the projected snapshot plus the persisted event tail. On coordinator startup, Coral recovers known discuss sources and reattaches non-terminal sessions.
+Hydration reads the projected snapshot plus the persisted event tail. On coordinator startup, Coral reconciles discussion-owned jobs and reattaches non-terminal sessions without resuming the discussion loop or launching provider work. Successful settlement retains the attachment and clears the recovery continuation; settlement failures retain the existing cleanup, quarantine, and retry behavior.
+
+Stored `discussion-resume.v1` continuations remain readable. Their `discussion.resume` obligation settles as `not-applicable` without execution, whether it was pending or already recorded as completed. Restart recovery does not judge provider-session resumability.
 
 ### Completed-discussion record
 

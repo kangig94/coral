@@ -218,7 +218,7 @@ A provider host has three independent states. They answer different questions an
 
 This is intentionally not carrier-liveness vocabulary. Carrier observation asks whether work is still there; the incidents handled here involve a provider process that is present but cannot serve. Each new host instance starts at `unknown`, and `unserviceable` is terminal for that instance. Serviceability is derived only from a completed provider response. For Codex, a successful required `config/read` prerequisite is `serviceable` and its typed failure is `unserviceable`; unrelated responses remain `unknown`. A silent request and a host/process fault publish no response fact at all. There is no clock, elapsed-time comparison, retry count, or transport timeout that turns silence into a finding, so a mute host may remain `unknown` indefinitely.
 
-A negative finding changes fresh-placement admission only. It does not close the process and does not gate exact attachment, because an already-running job still needs that attachment for provider interrupt and probe. If a blocked process exits naturally, its owner retains a `retired-blocked` tombstone with canonical non-secret metadata and bounded diagnostic evidence; the slot remains blocked. The only path that clears either blocked form is an operator eviction of the exact `HostRef`, after the owning process has closed that live host or confirmed the retained tombstone's process is absent.
+A negative finding changes fresh-placement admission only. It does not close the process and does not gate exact attachment, because an already-running job still needs that attachment for provider interrupt. If a blocked process exits naturally, its owner retains a `retired-blocked` tombstone with canonical non-secret metadata and bounded diagnostic evidence; the slot remains blocked. The only path that clears either blocked form is an operator eviction of the exact `HostRef`, after the owning process has closed that live host or confirmed the retained tombstone's process is absent.
 
 Host ownership is process-local in two places. `DefaultProviderHostManager` owns coordinator-local hosts, while each provider-proxy process owns the hosts used by operations routed through that proxy. Both run the same admission model, but each performs its own placement and physical eviction. The RPC boundary performs capability and resource authorization before calling `ProviderHostAdministrationService`; the service itself receives no principal. It captures the current owner set and, for exact-reference eviction, first asks every owner whether it retains a terminal disposition for that reference. One match reconstructs the route and replays the eviction through that owner; no match falls through to complete-inventory selection; multiple matches are identity corruption. An unavailable owner fails the whole request, so neither discovery nor inventory selection can silently omit part of the federation. `--work-dir` is only a convenience resolver over complete inventory: it is canonicalized relative to the CLI invocation root and refuses zero or multiple matches rather than guessing. See [Configuration](./configuration.md#provider-host-recovery) for the operator commands.
 
@@ -429,6 +429,12 @@ Recovery completeness is also a per-job classification, not a single global post
 
 The operational health snapshot uses the same conservative but network-free local policy. `activeJobs` is `live + unknown`; `diagnostics.carriers` reports exact fields `{ coverage, liveJobs, unknownJobs, recoveryDefectJobs }`, where normal local classification yields `coverage: 'complete'`. If the store or classification cannot provide a complete mapping, the fallback is `coverage: 'unknown'`, `liveJobs: 0`, `unknownJobs: activeJobs`, and `recoveryDefectJobs: 0`: every job still counted active by the fallback is explicitly counted unknown rather than silently presented as live. Reading `/health` never invokes `operation.status.v1`.
 
+### Interrupted jobs after restart
+
+Cold-boot recovery finalizes interrupted app-server jobs without provider I/O: it opens no replacement host, probes no thread, and parses no stdout or stderr artifacts. The session keeps its recorded resumable state and conversation reference; recovery makes no new resumability judgement. A later explicit `resume` lets the provider try the recorded thread, and that job fails if the thread is gone. If no conversation reference or continuity was recorded, recovery reports `pre_checkpoint_empty`; it does not recover a reference from stdout.
+
+An interrupted job backed by a detached provider-operation carrier still awaits carrier reaping before its terminal is recorded. If reaping fails, the job remains non-terminal for recovery retry. Durable CLI recovery still collects wrapper exit evidence and interprets result artifacts, including terminal outcome, continuity, and provider artifact handles. Upgrade handoff still attaches transferred live jobs instead of finalizing them as interrupted.
+
 ### Job inspection and control
 
 1. `coral-cli jobs list [--phase <phase>] [--provider <name>] [--all]` reads `read-model/CoralStore` directly for local no-coordinator paths; the same shape remains available through `GET /jobs` on the HTTP gateway
@@ -547,8 +553,10 @@ listing.
 1. `coral-cli workflow ...` posts to `POST /workflow`
 2. The workflow domain compiles the DSL into a semantic plan (slot id, dependencies, provider, instruction, optional agent)
 3. The executor launches provider or `coral:` atoms through the coordinator API; launch and retry stay intertwined per architecture §10.1a
-4. Workflow state is persisted as Journal events with a projection row per workflow. `workflowSlotId` identifies a semantic slot and is carried and surfaced separately from child job identity. Each child receives a separately minted canonical UUID job id from the runtime `ids` port. Recovery reconstructs the current slot-to-job mapping from durable child rows, reuses the durable job id for a slot with a current row, mints an id for a plan slot without a row, and mints a new id for the next replacement generation when a pending continuation lease requires one; job ids are never stored in the semantic plan. `coral-cli jobs wait` reads the same job store
+4. Workflow state is persisted as Journal events with a projection row per workflow. `workflowSlotId` identifies a semantic slot and is carried and surfaced separately from child job identity. Each launched child receives a separately minted canonical UUID job id from the runtime `ids` port; job ids are never stored in the semantic plan. Recovery reads durable child rows to interpret recorded results without launching missing slots or replacements. `coral-cli jobs wait` reads the same job store
 5. Workflow usage is resolved from child job terminal diagnostics at read time, not stored on the workflow terminal event
+
+Cold-boot workflow recovery closes interrupted work and releases descendant claims without resuming remaining steps, relaunching slots, or launching pending replacements. It preserves an existing durable completion, completes a workflow whose steps have all finished, or closes from recorded active-step terminal failures. Otherwise it closes `failed` with a `recovery_failed` lifecycle fault explaining that the coordinator restarted and the remaining steps were not resumed. Recorded step results remain available; the user can run the workflow again. Pending replacement intents are cleared before the lifecycle reactor's retention scan. Stored `ready-to-close` continuations close with their recorded intent; stored `prepared` or `external-outcome-unknown` continuations retain their quarantine deferral for retry once the earlier launch outcome can be established.
 
 ### Boot Eras
 
@@ -712,8 +720,8 @@ Coordinator startup
     -> Bind IPC socket + install transport listeners
   Era II — Recovery (blocks until lifecycle = 'running')
     -> jobs recovery coordinator startup
-    -> discuss shell recovery startup
-    -> workflowRecover.resumeAll
+    -> discuss shell recovery startup (reconciliation and attachment; no loop resume)
+    -> workflowRecover.resumeAll (closure and descendant release; no launches)
   Era III — Runtime Components (fire-and-forget; CLI no longer blocked)
     -> createKbDaemonHealthComponent(kbDaemonSupervisor)
        (CORAL_KB_ENABLE=0 uses a disabled supervisor: terminal offline, no KB daemon spawn)

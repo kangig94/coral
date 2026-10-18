@@ -42,7 +42,7 @@ code: it documents a failure mode that does not exist.
 
 | Site | What cannot happen |
 | --- | --- |
-| `performInterruptedAppServerRecovery` and `performInterruptedDurableRecovery` in `src/coordinator/services/recovery/interrupted-performer.ts` | The "lost capability" throws; the service derives recovery/probe capability and passes the same object to the performer, and the planner only emits `probe` when probe capability is present |
+| `performInterruptedAppServerRecovery` and `performInterruptedDurableRecovery` in `src/coordinator/services/recovery/interrupted-performer.ts` | The "lost capability" throws; the service derives recovery capability and passes the same bound provider to the performer |
 | `materializePlannedOutcomeInCommit` in `src/coordinator/services/terminal-materializer.ts` | The missing failed-cause event error; `RuntimeIngestPlan` declares `immediateOutcome: null` only on `failed_cause`, whose `domainEvents` is a one-element tuple |
 | `createProviderProxyAcquisitionSteps` in `src/coordinator/live/provider-proxy/acquisition-steps.ts` | Two out-of-order errors; the sole caller runs `createCapsules` → `spawnGuardian` → `establishControl` and returns on every failed cut |
 | `createProviderProxyAuthorityHeartbeatAssembly` in `src/coordinator/live/provider-proxy/heartbeat.ts` | Duplicate-role and incomplete-role errors; both production constructors start each role once before `complete`, and neither loops. Unit tests preserve both impossible states |
