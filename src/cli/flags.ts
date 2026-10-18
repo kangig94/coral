@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 
 import { UsageError } from './errors.js';
 
@@ -23,17 +23,14 @@ function readStdinInput(): string {
 }
 
 /**
- * Resolve a text-or-file input. `-` reads stdin, so a caller can pass text through a quoted heredoc
- * (`<<'EOF'`), which the shell leaves unexpanded. Multi-value inputs are joined with spaces, which
- * recovers a prompt a shell split into several argv entries (e.g. unquoted `-i hello world`).
+ * A path or `-` that is only one token among several must stay literal text. Only an input that is exactly `-`
+ * may read stdin: it is how a quoted heredoc (`<<'EOF'`) passes text the shell left unexpanded.
  */
 export function resolveInput(values: string[]): string {
-  return values
-    .map((token) => {
-      if (token === STDIN_INPUT) return readStdinInput();
-      return existsSync(token) ? readFileSync(token, 'utf8') : token;
-    })
-    .join(' ');
+  const input = values.join(' ');
+  if (input === STDIN_INPUT) return readStdinInput();
+  if (existsSync(input) && statSync(input).isFile()) return readFileSync(input, 'utf8');
+  return input;
 }
 
 export function parseIntegerFlag(flagName: string, value: string): number {

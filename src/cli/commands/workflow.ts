@@ -12,11 +12,11 @@ export function registerWorkflowCommands(program: Command): void {
     .option('-e, --expression <expr>', 'Pipeline DSL expression')
     .option(
       '-s, --start-prompt <text-or-file...>',
-      'Start prompt text or file path (multiple tokens are joined with spaces; a single existing path is read as a file)',
+      'Start prompt input (tokens are joined with single spaces; the whole input is read if it names an existing regular file, or stdin if exactly -; otherwise literal text)',
     )
     .option(
       '-c, --context <text-or-file...>',
-      'Shared context text or file path (multiple tokens are joined with spaces; a single existing path is read as a file)',
+      'Shared context input (tokens are joined with single spaces; the whole input is read if it names an existing regular file, or stdin if exactly -; otherwise literal text)',
     )
     .option('-p, --provider <name>', 'Provider name (registered provider)')
     .option('-w, --work-dir <path>', 'Working directory')

@@ -439,6 +439,8 @@ The operational health snapshot uses the same conservative but network-free loca
 
 #### Sending to a running turn
 
+`jobs send -i` resolves input like provider `-i` and workflow `-s`/`-c`: tokens are joined with single spaces first. The whole input reads stdin if exactly `-`, or file contents if it names an existing regular file (following symlinks); otherwise it stays literal text, including directories and embedded `-` or file paths. Only one input per command may read stdin.
+
 The CLI supplies the caller's project root, resolved input, and one `clientMessageId`. The `jobs.send` route canonicalizes the root and requires `jobs:control`. `JobSendService` gates job existence, caller scope, provider-job kind, turn lifecycle, run intent, and usable proxy authority before contacting the provider proxy. It records no durable control intent. An answered lifecycle refusal is pre-effect and permits re-issue to a successor; response loss after issuance becomes `unknown`, with no resend. [CLI outcomes and remedies](./cli-errors.md#jobs-send-outcomes) distinguish receipt from consumption and from following the instruction.
 
 The coordinator calls `operation.send.v1` under the mutation policy `indeterminate: 'caller-reported'`. Send uncertainty returns to the caller without authorizing replay, fencing, settlement, or containment. A closed control channel still reports its independent channel incident. The proxy method uses the caller's deadline; the runner bounds the provider attempt and releases its temporary attachment when that attempt expires, without interrupting execution.

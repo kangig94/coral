@@ -94,7 +94,7 @@ function jobSendRefusalRemedy(
 }
 
 function jobSendRetryRemedy(jobId: string, context: JobSendOutputContext | undefined): readonly string[] {
-  return context === undefined || context.inputTokens.includes('-')
+  return context === undefined || context.inputTokens.join(' ') === '-'
     ? ['Nothing was written. Try again with the same message.']
     : [
         'Nothing was written. Run the same request again.',
@@ -104,7 +104,7 @@ function jobSendRetryRemedy(jobId: string, context: JobSendOutputContext | undef
 
 function jobSendTerminalRemedy(jobId: string, context: JobSendOutputContext | undefined): readonly string[] {
   const lines = ["Read the job's result.", formatJobsOperatorCommand({ kind: 'wait-job', jobId, grammar: 'current' })];
-  if (context === undefined || context.inputTokens.includes('-')) {
+  if (context === undefined || context.inputTokens.join(' ') === '-') {
     return [...lines, 'Start a new job with the same message; that is a new conversation.'];
   }
   if (context.launch === null) {

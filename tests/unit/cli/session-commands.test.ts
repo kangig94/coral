@@ -113,9 +113,9 @@ it('explains required send input resolution and ended-turn behavior in help', ()
     .helpInformation()
     .replace(/\s+/gu, ' ');
   expect(help).toContain('required');
-  expect(help).toContain('multiple tokens are joined with spaces');
-  expect(help).toContain('a single existing path is read as a file');
-  expect(help).toContain('- for stdin');
+  expect(help).toContain('tokens are joined with single spaces');
+  expect(help).toContain('the whole input is read if it names an existing regular file');
+  expect(help).toContain('stdin if exactly -');
   expect(help).toContain('An ended turn is not resumed');
 });
 
@@ -195,7 +195,7 @@ it('resolves text tokens and existing files identically for send and provider la
     for (const [tokens, expected] of [
       [['literal', 'message'], 'literal message'],
       [[path], 'file body\n'],
-      [['prefix', path, 'suffix'], 'prefix file body\n suffix'],
+      [['prefix', path, 'suffix'], `prefix ${path} suffix`],
     ] as const) {
       const root = program();
       registerProviderCommands(root, createBuiltInProviderRegistry());
@@ -317,13 +317,14 @@ it.each(['turn_not_started', 'control_unavailable'] as const)(
     const dir = mkdtempSync(join(tmpdir(), 'coral-send-remedy-'));
     const path = join(dir, "agent's message.txt");
     writeFileSync(path, 'file body');
-    const tokens = ['prefix', path, '$HOME `literal` $(printf literal)'];
+    const tokens = ['prefix', '-', path, '$HOME `literal` $(printf literal)'];
     try {
       client.sendJob.mockResolvedValueOnce({ state: 'refused', code, reason: 'Not ready.' });
       await program().parseAsync(['jobs', 'send', 'job-1', '-i', ...tokens], { from: 'user' });
       expect(process.exitCode).toBe(1);
       const commands = printedCommands(output.mock.calls.map(([text]) => String(text)).join(''));
-      expect(commands).toEqual([['jobs', 'send', 'job-1', '-i', ...tokens]]);
+      expect(commands).toEqual([['jobs', 'send', 'job-1', ...tokens.map((token) => `--input=${token}`)]]);
+      expect(client.sendJob).toHaveBeenLastCalledWith('job-1', tokens.join(' '));
       await program().parseAsync(commands[0], { from: 'user' });
       expect(client.sendJob).toHaveBeenCalledTimes(2);
       expect(client.sendJob.mock.calls[1]).toEqual(client.sendJob.mock.calls[0]);
@@ -348,13 +349,14 @@ it.each([
       ...(agent === undefined ? {} : { agentName: agent }),
     });
     client.sendJob.mockResolvedValueOnce({ state: 'refused', code: 'turn_ended', reason: 'Ended.' });
-    const inputTokens = ['a message', '$HOME', "don't expand"];
+    const inputTokens = ['a message', '-', '$HOME', "don't expand"];
     await program().parseAsync(['jobs', 'send', 'job-1', '-i', ...inputTokens], { from: 'user' });
+    expect(client.sendJob).toHaveBeenLastCalledWith('job-1', inputTokens.join(' '));
     expect(process.exitCode).toBe(1);
     const commands = printedCommands(output.mock.calls.map(([text]) => String(text)).join(''));
     expect(commands).toEqual([
       ['jobs', 'wait', 'job-1'],
-      [provider, ...(agent === undefined ? [] : [agent]), '-i', ...inputTokens],
+      [provider, ...(agent === undefined ? [] : [agent]), ...inputTokens.map((token) => `--input=${token}`)],
     ]);
     const root = program();
     registerProviderCommands(root, createBuiltInProviderRegistry());

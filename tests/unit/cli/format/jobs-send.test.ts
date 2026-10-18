@@ -123,7 +123,7 @@ it.each(['turn_not_started', 'control_unavailable', 'turn_ended'] as const)(
       { state: 'refused', code, reason: 'Not delivered.' },
       {
         ...context,
-        inputTokens: ['prefix', '-', 'suffix'],
+        inputTokens: ['-'],
       },
     );
     const commands = output.text.split('\n').filter((line) => line.startsWith('command='));
