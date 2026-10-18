@@ -36,7 +36,7 @@ function options(bindAttempt: () => Promise<{ kind: 'bound' } | { kind: 'incumbe
       socketPath: '/tmp/coral-consent-test.sock',
       desired: { version: '0.10.14', bundleHash: 'branch', flavor: 'prod' as const, namespace: 'branch' },
       bindAttempt,
-      runStartupRecovery: async () => [],
+      runStartupRecovery: async () => {},
       runtime,
       readVerifiedIncumbentFromDiscovery: () => null,
       totalBudgetMs: 450,

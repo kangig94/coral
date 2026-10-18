@@ -108,7 +108,6 @@ async function verifyReconciliationStartup(gateBeforeReadiness: boolean): Promis
     async () => {
       enteredRecovery();
       await recovery;
-      return [];
     },
   );
   const starting = core.lifecycleController.start();

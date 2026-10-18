@@ -178,7 +178,7 @@ function createCoordinatorStartupRecoveryRunner({
     const recoveryProgressStore = jobsStartup.progressStore;
     signal.throwIfAborted();
 
-    const recoveredDiscussResumes = await recoverPersistedDiscussFn({
+    await recoverPersistedDiscussFn({
       knownDiscussSources,
       getDiscussStoreForSource,
       getDiscussContext,
@@ -220,8 +220,6 @@ function createCoordinatorStartupRecoveryRunner({
 
     await scanLifecycleReactorAtStartup(lifecycleReactor, lifecycleReactorLifetime, signal);
     signal.throwIfAborted();
-
-    return recoveredDiscussResumes;
   };
 }
 

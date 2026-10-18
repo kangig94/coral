@@ -204,7 +204,7 @@ describe('cross-version election on the daemon bind path', () => {
         socketPath,
         desired: { version: '2.1.0', bundleHash: 'build-B-hash', flavor: 'prod', namespace: 'ns' },
         bindAttempt: realBindAttempt(socketPath),
-        runStartupRecovery: async () => [],
+        runStartupRecovery: async () => {},
         runtime: noSignalRuntime(),
         readVerifiedIncumbentFromDiscovery: () => null,
         totalBudgetMs: 5_000,

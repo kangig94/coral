@@ -7,7 +7,6 @@ import { recoverPersistedSessionsFromStore } from '#src/discuss/shell/recovery.j
 import { getSession, getWatchState } from '#src/discuss/shell/registry.js';
 import * as discussSpeechFlow from '#src/discuss/shell/flow/speech.js';
 import { submitManualSpeech } from '#src/discuss/shell/operations.js';
-import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import {
   advanceDiscussRuntime,
   cleanupDiscussHarnesses,
@@ -16,7 +15,6 @@ import {
   persistSession,
   type DiscussHarness,
 } from '#tests/unit/discuss/shell/discuss-test-helpers.js';
-import { testProjectPrincipal } from '#tests/helpers/principal.js';
 
 afterEach(() => {
   cleanupDiscussHarnesses();
@@ -25,24 +23,8 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-async function recoverSessions(harness: DiscussHarness) {
-  return recoverPersistedSessionsFromStore(
-    harness.store,
-    () => harness.context,
-    (snapshot) => ({
-      projectRoot: fixtureCanonicalWorkDir(snapshot.projectRoot),
-      pluginRoot: harness.ctx.pluginRoot,
-      coralEnv: {},
-      principal: testProjectPrincipal(snapshot.projectRoot),
-      providerScope: snapshot.providerScope ?? harness.ctx.providerScope,
-    }),
-  );
-}
-
-function resumeRecoveredSessions(recovered: Awaited<ReturnType<typeof recoverSessions>>): void {
-  for (const session of recovered) {
-    discussLoop.resumeLoop(session.ctx, session.sessionId, session.invocationCtx);
-  }
+async function recoverSessions(harness: DiscussHarness): Promise<void> {
+  await recoverPersistedSessionsFromStore(harness.store, () => harness.context);
 }
 
 describe('Discuss speech collection', () => {
@@ -274,9 +256,9 @@ describe('Discuss speech collection', () => {
       getSession(harness.context, 'discuss-1')?.controller.abort();
       return { shouldResume: false };
     });
-    const recovered = await recoverSessions(harness);
-    expect(recovered).toHaveLength(1);
-    resumeRecoveredSessions(recovered);
+    await recoverSessions(harness);
+    expect(getSession(harness.context, 'discuss-1')).toBeDefined();
+    discussLoop.resumeLoop(harness.context, 'discuss-1', harness.ctx);
     await advanceDiscussRuntime(harness, 1);
 
     const snapshot = harness.store.load('discuss-1');

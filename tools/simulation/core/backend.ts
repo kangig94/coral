@@ -809,7 +809,6 @@ export function createSimulationBackend(
         if (scenario.recoverPersistedDiscuss === 'default') {
           return discussRecovery.runStartup(deps);
         }
-        return [];
       },
     },
     async (
@@ -849,7 +848,7 @@ export function createSimulationBackend(
       const recoveryProgressStore = startupDisposition.progressStore;
       signal.throwIfAborted();
 
-      const recoveredDiscussResumes = await recoverPersistedDiscussFn({
+      await recoverPersistedDiscussFn({
         knownDiscussSources,
         getDiscussStoreForSource,
         getDiscussContext,
@@ -885,8 +884,6 @@ export function createSimulationBackend(
         time: runtime.time,
       });
       signal.throwIfAborted();
-
-      return recoveredDiscussResumes;
     },
   );
   setStoreServicesForTest(core.storeServicesRef, storeServices);

@@ -106,7 +106,7 @@ describe('coordinator pending workflow replacement recovery', () => {
       runtime,
       pluginRoot,
       kbDaemonSupervisor,
-      recoverPersistedDiscussFn: async () => [],
+      recoverPersistedDiscussFn: async () => {},
       writeBackendInfoFn: () => true,
       removeBackendInfoIfOwnerFn: () => {},
       createServerFn: (handler) => createServer(handler),

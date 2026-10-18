@@ -20,7 +20,6 @@ import type { InvocationContext } from '../runtime/invocation-context.js';
 import { canonicalizeWorkDir } from '../runtime/canonical-work-dir.js';
 import type { Principal } from '../security/principal.js';
 import type { DiscussContext } from '../discuss/shell/types.js';
-import type { RecoveredDiscussResume } from '../discuss/shell/recovery.js';
 import type { DiscussSessionStore } from '../discuss/shell/session-store.js';
 import { type ProviderRegistry } from '../providers/registry.js';
 import { isTerminalPhase } from '../jobs/phase.js';
@@ -307,7 +306,6 @@ export type CreateKbHealthComponentFn = () => RuntimeComponent;
 export interface LifecycleHooks {
   onShutdown(mode: ShutdownMode, signal: AbortSignal): Promise<void>;
   onIdleCheck(): boolean;
-  onRecoveryComplete(resumes: RecoveredDiscussResume[]): Promise<void>;
 }
 
 /**
@@ -948,7 +946,7 @@ export type RecoverPersistedDiscussDeps = {
   readonly signal: AbortSignal;
 };
 
-export type RecoverPersistedDiscussFn = (deps: RecoverPersistedDiscussDeps) => Promise<RecoveredDiscussResume[]>;
+export type RecoverPersistedDiscussFn = (deps: RecoverPersistedDiscussDeps) => Promise<void>;
 
 export type StartupRecoveryInputs = {
   readonly identity: CoordinatorIdentity;
@@ -973,12 +971,12 @@ export type StartupRecoveryInputs = {
   readonly transferredJobIds?: ReadonlySet<string>;
 };
 
-export type RunStartupRecoveryFn = (inputs: StartupRecoveryInputs) => Promise<RecoveredDiscussResume[]>;
+export type RunStartupRecoveryFn = (inputs: StartupRecoveryInputs) => Promise<void>;
 
 export type RunStartupRecoveryOrchestratorFn = (
   inputs: StartupRecoveryInputs,
   runJobsStartup: RunJobsStartupFn,
-) => Promise<RecoveredDiscussResume[]>;
+) => Promise<void>;
 
 export type LifecycleDeps = {
   readonly identity: CoordinatorIdentity;
@@ -1761,7 +1759,6 @@ async function activateRunningLifecycle({
   recoveryCoordinator,
   progressStore,
   storeServices,
-  recoveredDiscussResumes,
   legacyServingCompleted,
   legacyDiscoveryPublished,
   publishLegacyDiscovery,
@@ -1775,7 +1772,6 @@ async function activateRunningLifecycle({
   recoveryCoordinator: RecoveryCoordinator;
   progressStore: CoordinatorStoreServices['progressStore'];
   storeServices: CoordinatorStoreServices;
-  recoveredDiscussResumes: Parameters<LifecycleDeps['hooks']['onRecoveryComplete']>[0];
   legacyServingCompleted: boolean;
   legacyDiscoveryPublished: boolean;
   publishLegacyDiscovery: (() => void) | null;
@@ -1829,7 +1825,6 @@ async function activateRunningLifecycle({
   );
 
   state.ownershipCheckerTeardown = ownershipChecker.install();
-  await hooks.onRecoveryComplete(recoveredDiscussResumes);
 
   try {
     runtimeState.components.initAll(signal);
@@ -2003,16 +1998,15 @@ async function recoverStartupJobs({
   };
   // A startup that bound no socket owes recovery only for work it was handed: a succession child that
   // inherited its listeners owns exactly the obligations its accepted receipts transferred, and nothing else.
-  const recoveredDiscussResumes =
-    bound !== null
-      ? await bound.runStartupRecovery(recoveryInputs)
-      : (acceptedSuccessionPreparation?.receipts.length ?? 0) > 0
-        ? await runStartupRecovery(
-            { ...recoveryInputs, interruptedAppServerReason: 'restart' },
-            recoveryCoordinator.runStartupRecovery,
-          )
-        : [];
-  return { recoveredDiscussResumes, recoveryInputs };
+  if (bound !== null) {
+    await bound.runStartupRecovery(recoveryInputs);
+  } else if ((acceptedSuccessionPreparation?.receipts.length ?? 0) > 0) {
+    await runStartupRecovery(
+      { ...recoveryInputs, interruptedAppServerReason: 'restart' },
+      recoveryCoordinator.runStartupRecovery,
+    );
+  }
+  return recoveryInputs;
 }
 
 async function adoptStartupReceipts({
@@ -2031,7 +2025,6 @@ async function adoptStartupReceipts({
   committedRecovery,
   acceptedSuccessionPreparation,
   acceptedSuccessionJobs,
-  recoveredDiscussResumes,
 }: Readonly<{
   deps: LifecycleDeps;
   bound: BoundCoordinator | null;
@@ -2048,7 +2041,6 @@ async function adoptStartupReceipts({
   committedRecovery: UnservedSuccession['committedRecovery'];
   acceptedSuccessionPreparation: SuccessionPreparation | null;
   acceptedSuccessionJobs: readonly string[];
-  recoveredDiscussResumes: RecoveredDiscussResume[];
 }>) {
   const { runtimeState } = deps;
   const adoptedGeneration = successionGeneration ?? recoveryGeneration;
@@ -2068,20 +2060,15 @@ async function adoptStartupReceipts({
         publishDiscovery();
         if (shouldScheduleStoreEpochSweep && openedStore !== null) deps.scheduleStoreEpochSweepFn?.(openedStore);
       }
-      const ordinaryResumes = await (bound !== null
+      await (bound !== null
         ? bound.runStartupRecovery({ ...recoveryInputs, transferredJobIds: new Set() })
         : runStartupRecovery(
             { ...recoveryInputs, transferredJobIds: new Set(), interruptedAppServerReason: 'restart' },
             recoveryCoordinator.runStartupRecovery,
           ));
-      recoveredDiscussResumes = [
-        ...new Map(
-          [...recoveredDiscussResumes, ...ordinaryResumes].map((resume) => [resume.sessionId, resume]),
-        ).values(),
-      ];
     }
   }
-  return { committedRecovery, acceptedSuccessionPreparation, acceptedSuccessionJobs, recoveredDiscussResumes };
+  return { committedRecovery, acceptedSuccessionPreparation, acceptedSuccessionJobs };
 }
 
 async function publishStartupServing({
@@ -2467,7 +2454,7 @@ async function runStartupRecoveryAndServe(
   address: StartupAddressState,
   legacyDiscovery: LegacyDiscoveryState,
   interposition: SuccessionInterposition,
-): Promise<RecoveredDiscussResume[]> {
+): Promise<void> {
   const { deps, runStartupRecovery, createInvocationContext } = context;
   const {
     runtime,
@@ -2496,7 +2483,7 @@ async function runStartupRecoveryAndServe(
   let { acceptedSuccessionPreparation } = registered;
   const { recoveryGeneration, recoveryIncarnation, acceptedSuccessionJobs } = registered;
   const { successionGeneration } = opened;
-  const recovered = await recoverStartupJobs({
+  const recoveryInputs = await recoverStartupJobs({
     deps,
     runStartupRecovery,
     createInvocationContext,
@@ -2506,8 +2493,6 @@ async function runStartupRecoveryAndServe(
     acceptedSuccessionPreparation,
     signal,
   });
-  let { recoveredDiscussResumes } = recovered;
-  const { recoveryInputs } = recovered;
   const adoption = await adoptStartupReceipts({
     deps,
     bound,
@@ -2524,11 +2509,9 @@ async function runStartupRecoveryAndServe(
     committedRecovery: committedState.recovery,
     acceptedSuccessionPreparation,
     acceptedSuccessionJobs,
-    recoveredDiscussResumes,
   });
   committedState.recovery = adoption.committedRecovery;
   acceptedSuccessionPreparation = adoption.acceptedSuccessionPreparation;
-  recoveredDiscussResumes = adoption.recoveredDiscussResumes;
   startupRecoveryBarrierPublisher?.publish();
   startProviderOperationReconciler?.();
   if (deps.startStorageRetentionFn === undefined) await Promise.resolve(cleanupStaleJobsFn(bundleHash, signal));
@@ -2561,8 +2544,6 @@ async function runStartupRecoveryAndServe(
   if (deadAttemptId !== null) {
     await dischargeDeadSuccessionAttempt(runtime, deadAttemptId, deps.successionIncumbent());
   }
-
-  return recoveredDiscussResumes;
 }
 
 async function runLifecycleStartup({
@@ -2620,7 +2601,7 @@ async function runLifecycleStartup({
       replaceStoreServices,
     );
     publishLegacyDiscovery = kernel.publishLegacyDiscovery;
-    const recoveredDiscussResumes = await runStartupRecoveryAndServe(
+    await runStartupRecoveryAndServe(
       { deps, runStartupRecovery, state, createInvocationContext, ownershipChecker, shutdown },
       kernel,
       signal,
@@ -2640,7 +2621,6 @@ async function runLifecycleStartup({
       recoveryCoordinator,
       progressStore,
       storeServices,
-      recoveredDiscussResumes,
       legacyServingCompleted: legacyDiscovery.servingCompleted,
       legacyDiscoveryPublished: legacyDiscovery.published,
       publishLegacyDiscovery,

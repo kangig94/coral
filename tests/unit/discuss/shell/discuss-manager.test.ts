@@ -29,9 +29,8 @@ import {
   type DiscussHarness,
 } from '#tests/unit/discuss/shell/discuss-test-helpers.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
-import { TEST_CODEX_SCOPE, TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
+import { TEST_CODEX_SCOPE } from '#tests/helpers/provider-credentials.js';
 import { canonicalizeWorkDir } from '#src/runtime/canonical-work-dir.js';
-import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
 afterEach(() => {
   cleanupDiscussHarnesses();
@@ -40,24 +39,8 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-async function recoverSessions(harness: DiscussHarness) {
-  return recoverPersistedSessionsFromStore(
-    harness.store,
-    () => harness.context,
-    (snapshot) => ({
-      projectRoot: fixtureCanonicalWorkDir(snapshot.projectRoot),
-      pluginRoot: harness.ctx.pluginRoot,
-      coralEnv: {},
-      principal: testProjectPrincipal(snapshot.projectRoot),
-      providerScope: snapshot.providerScope ?? TEST_PROVIDER_SCOPE,
-    }),
-  );
-}
-
-function resumeRecoveredSessions(recovered: Awaited<ReturnType<typeof recoverSessions>>): void {
-  for (const session of recovered) {
-    discussLoop.resumeLoop(session.ctx, session.sessionId, session.invocationCtx);
-  }
+async function recoverSessions(harness: DiscussHarness): Promise<void> {
+  await recoverPersistedSessionsFromStore(harness.store, () => harness.context);
 }
 
 describe('Discuss context registry', () => {
@@ -281,9 +264,8 @@ describe('Discuss executor and operations', () => {
       ],
     });
 
-    const recovered = await recoverSessions(harness);
+    await recoverSessions(harness);
 
-    expect(recovered).toHaveLength(0);
     expect(getSession(harness.context, 'discuss-recovery')).toBeUndefined();
     expect(getWatchState(harness.context, 'discuss-recovery')).toMatchObject({
       cursor: 2,
@@ -295,7 +277,7 @@ describe('Discuss executor and operations', () => {
     harness.cleanup();
   });
 
-  it('recovered observer_wait sessions restart the full bid delay from startup time', async () => {
+  it('explicitly resumed observer_wait sessions restart the full bid delay', async () => {
     const harness = createDiscussHarness();
     vi.spyOn(discussSpeechFlow, 'collectSpeech').mockResolvedValue({ shouldResume: false });
     await persistSession(harness, {
@@ -319,10 +301,10 @@ describe('Discuss executor and operations', () => {
       ],
     });
 
-    const recovered = await recoverSessions(harness);
+    await recoverSessions(harness);
 
-    expect(recovered).toHaveLength(1);
-    resumeRecoveredSessions(recovered);
+    expect(getSession(harness.context, 'discuss-observer-wait')).toBeDefined();
+    discussLoop.resumeLoop(harness.context, 'discuss-observer-wait', harness.ctx);
 
     await advanceDiscussRuntime(harness, 4_999);
     expect(harness.store.load('discuss-observer-wait')?.state).toMatchObject({

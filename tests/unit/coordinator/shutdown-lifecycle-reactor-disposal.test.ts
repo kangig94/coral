@@ -62,7 +62,7 @@ function buildServerOptions(disposeLifecycleReactor: () => Promise<void>): Coord
     runtime: createRealRuntime('prod'),
     pluginRoot,
     kbDaemonSupervisor: createMockKbDaemonSupervisor(),
-    recoverPersistedDiscussFn: async () => [],
+    recoverPersistedDiscussFn: async () => {},
     createServerFn: (handler) => createServer(handler),
     listenFn: async () => ({ port: 0, host: '127.0.0.1' }),
     closeServerFn: async () => {},

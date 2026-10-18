@@ -160,26 +160,8 @@ export function buildEffectiveCoralEnv(
   return merged;
 }
 
-export function buildInterruptedAppServerReport(fault: SessionInterruptedFault, conversationRef?: string): string {
+export function buildInterruptedAppServerReport(fault: SessionInterruptedFault): string {
   const lines = [describeSessionInterrupted(fault), ''];
-
-  if (fault.continuity === 'verified') {
-    lines.push('Session is resumable. Use resume to continue.');
-    if (conversationRef !== undefined) {
-      lines.push(`Conversation reference preserved: ${conversationRef}`);
-    }
-    return lines.join('\n');
-  }
-
-  if (fault.continuity === 'missing') {
-    lines.push('Session thread is no longer available. Marked as non-resumable.');
-    return lines.join('\n');
-  }
-
-  if (fault.continuity === 'unavailable') {
-    lines.push('Could not reach provider server to verify session. Marked as non-resumable.');
-    return lines.join('\n');
-  }
 
   lines.push(
     fault.continuity === 'pre_checkpoint_empty'

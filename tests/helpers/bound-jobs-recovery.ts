@@ -53,7 +53,6 @@ export async function createBoundJobsRecoveryHarness(
         coordinatorCommit: options.coordinatorCommit,
         interruptedAppServerReason: inputs.interruptedAppServerReason,
       });
-      return [];
     },
     runtime: options.runtime,
     readVerifiedIncumbentFromDiscovery: () => null,
@@ -84,7 +83,7 @@ export async function createBoundJobsRecoveryHarness(
         createInvocationContext: options.createInvocationContext,
         recoveryCoordinator,
         signal: options.signal,
-        recoverPersistedDiscussFn: async () => [],
+        recoverPersistedDiscussFn: async () => {},
       });
       const disposition = jobsStartupCapture.disposition;
       if (disposition === null) throw new Error('Jobs startup recovery did not return a disposition');

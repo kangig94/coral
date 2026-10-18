@@ -51,7 +51,6 @@ import { buildWatchEvents } from '../watch.js';
 import { nowIsoString } from '../../infra/time.js';
 import { isAbortError, throwIfAborted } from '../../runtime/abort.js';
 import { providerScopeSchema } from '../../infra/provider-scope.js';
-import { isManualParticipant } from './runtime-build.js';
 import { attachSession, detachSession, getSession } from './registry.js';
 import { appendRuntimeEvents, isAbortEnded, readSessionEvents } from './persistence.js';
 import { runDiscussionStartupRecovery } from './startup-recovery.js';
@@ -99,15 +98,12 @@ type DiscussionStartupRuntime = {
   readonly getDatabase: () => Database;
   readonly time: Pick<TimePort, 'now'>;
   readonly resolveProjectSource: (projectRoot: string) => string;
-  readonly resumeLoop: (ctx: DiscussContext, sessionId: string, invocationCtx: InvocationContext) => void;
-  readonly completedResumes: Set<string>;
 };
 
 type DiscussionStartupContextResolver = (ctx: InvocationContext) => DiscussContext;
 
 type HydratedDiscussionCandidate = {
   readonly envelope: RawDiscussionCandidateEnvelope;
-  readonly sourceId: string;
   readonly discussionEvents: DiscussDomainEvent[];
   readonly ownedJobs: readonly DiscussionOwnedLaunch[];
   readonly completed: Set<RecoveryObligationId>;
@@ -118,7 +114,6 @@ type HydratedDiscussionCandidate = {
   continuationPersisted: boolean;
   cleanupAttachedSession: boolean;
   retainAttachedSession: boolean;
-  resumeAttempted: boolean;
 };
 
 const discussionStartupRuntimes = new WeakMap<DiscussionStartupContextResolver, DiscussionStartupRuntime>();
@@ -131,12 +126,9 @@ const discussionRecoveryReadContext: StoreReadContext = {
 
 export function registerDiscussionStartupRuntime(
   getDiscussContext: DiscussionStartupContextResolver,
-  runtime: Omit<DiscussionStartupRuntime, 'completedResumes'>,
+  runtime: DiscussionStartupRuntime,
 ): void {
-  discussionStartupRuntimes.set(getDiscussContext, {
-    ...runtime,
-    completedResumes: new Set(),
-  });
+  discussionStartupRuntimes.set(getDiscussContext, runtime);
 }
 
 function recoveryFact(
@@ -266,7 +258,6 @@ function hydrateDiscussionCandidate(
 
   return {
     envelope,
-    sourceId,
     snapshot,
     discussionEvents: envelope.discussionEvents.map((row) => discussEventFromRaw(row, snapshot)),
     ownedJobs: ownedLaunchesFromRaw(envelope),
@@ -277,7 +268,6 @@ function hydrateDiscussionCandidate(
     continuationPersisted: false,
     cleanupAttachedSession: false,
     retainAttachedSession: false,
-    resumeAttempted: false,
   };
 }
 
@@ -363,36 +353,6 @@ export async function reconcileDiscussionOwnedJobs(
   const reconciled = ctx.store.load(sessionId);
   if (reconciled === null) throw new Error(`Discuss session not found after job reconciliation: ${sessionId}`);
   return reconciled;
-}
-
-export type RecoveredDiscussResume = {
-  ctx: DiscussContext;
-  sessionId: string;
-  invocationCtx: InvocationContext;
-};
-
-function shouldResumeRecoveredSession(snapshot: PersistedDiscussSnapshot): boolean {
-  const { controlPhase } = snapshot.runtime;
-  if (controlPhase === 'synthesize' || controlPhase === 'evaluate_epoch' || controlPhase === 'collect_follow_up') {
-    return true;
-  }
-
-  if (snapshot.state.status === 'ended') {
-    return false;
-  }
-
-  if (snapshot.state.status === 'speaking') {
-    if (!snapshot.state.current_speaker) {
-      return false;
-    }
-    return !isManualParticipant(snapshot, snapshot.state.current_speaker);
-  }
-
-  if (controlPhase === 'observer_wait') {
-    return true;
-  }
-
-  return snapshot.state.status === 'bidding';
 }
 
 async function reconcileDiscussionOwnedJobsFromEnvelope(
@@ -504,9 +464,7 @@ async function settleDiscussionCandidate(
   boundary: string,
   candidate: HydratedDiscussionCandidate,
   quarantine: RecoveryQuarantinePort,
-  runtime: DiscussionStartupRuntime,
   resolveContext: (snapshot: PersistedDiscussSnapshot) => DiscussContext,
-  resolveInvocationContext: (snapshot: PersistedDiscussSnapshot) => InvocationContext,
 ): Promise<RecoveryDisposition> {
   if (isAbortEnded(candidate.discussionEvents) || !isWithinLiveSessionBoundary(candidate.snapshot)) {
     return inactiveCandidateDisposition();
@@ -547,27 +505,13 @@ async function settleDiscussionCandidate(
   completeObligation(candidate, ATTACH_OBLIGATION, 'done');
   await persistDiscussionContinuation(boundary, candidate, quarantine);
 
-  const shouldResume = shouldResumeRecoveredSession(candidate.snapshot);
-  if (shouldResume) {
-    const invocationCtx = resolveInvocationContext(candidate.snapshot);
-    candidate.retainAttachedSession = true;
-    const processKey = `${candidate.sourceId}:${candidate.snapshot.sessionId}`;
-    if (!runtime.completedResumes.has(processKey)) {
-      candidate.resumeAttempted = true;
-      runtime.resumeLoop(ctx, candidate.snapshot.sessionId, invocationCtx);
-      runtime.completedResumes.add(processKey);
-    }
-    completeObligation(candidate, RESUME_OBLIGATION, 'done');
-  } else {
-    candidate.retainAttachedSession = true;
-    completeObligation(candidate, RESUME_OBLIGATION, 'not-applicable');
-  }
+  completeObligation(candidate, RESUME_OBLIGATION, 'not-applicable');
   completeObligation(candidate, ATTACH_CLEANUP_OBLIGATION, 'not-applicable');
   await persistDiscussionContinuation(boundary, candidate, quarantine);
 
   const facts = completedCandidateFacts(candidate);
   await clearDiscussionContinuation(boundary, candidate, quarantine);
-  runtime.completedResumes.delete(`${candidate.sourceId}:${candidate.snapshot.sessionId}`);
+  candidate.retainAttachedSession = true;
   return {
     kind: 'advanced',
     outcome: 'settled',
@@ -591,18 +535,6 @@ function candidateFaultDisposition(
       detail: `discussion continuation persistence failed: ${errorMessage(fault.error)}`,
     };
   }
-  if (fault.item.retainAttachedSession) {
-    completeObligation(fault.item, ATTACH_CLEANUP_OBLIGATION, 'not-applicable');
-  }
-  if (fault.item.resumeAttempted) {
-    try {
-      backendLog.warn(
-        `Discuss resume remains retryable for session ${fault.item.snapshot.sessionId}: ${errorMessage(fault.error)}`,
-      );
-    } catch {
-      // Resume diagnostics are best-effort and never select the disposition.
-    }
-  }
   return {
     kind: 'deferred',
     continuation: continuationToken(fault.item),
@@ -614,14 +546,12 @@ async function releaseCandidateAttachment(
   boundary: string,
   candidate: HydratedDiscussionCandidate,
   quarantine: RecoveryQuarantinePort,
-  runtime: DiscussionStartupRuntime,
 ): Promise<{ readonly kind: 'released' } | { readonly kind: 'incomplete'; readonly error: unknown }> {
   if (candidate.ctx === null || !candidate.cleanupAttachedSession || candidate.retainAttachedSession) {
     return { kind: 'released' };
   }
   try {
     detachSession(candidate.ctx, candidate.snapshot.sessionId);
-    runtime.completedResumes.delete(`${candidate.sourceId}:${candidate.snapshot.sessionId}`);
     candidate.cleanupAttachedSession = false;
     completeObligation(candidate, ATTACH_CLEANUP_OBLIGATION, 'done');
     if (candidate.continuationPersisted) {
@@ -737,10 +667,7 @@ export async function persistAbortEndForPersistedShutdownCandidates(
 export async function recoverPersistedSessionsFromStore(
   store: DiscussSessionStore,
   resolveContext: (snapshot: PersistedDiscussSnapshot) => DiscussContext,
-  resolveInvocationContext: (snapshot: PersistedDiscussSnapshot) => InvocationContext,
-): Promise<RecoveredDiscussResume[]> {
-  const recovered: RecoveredDiscussResume[] = [];
-
+): Promise<void> {
   for (const candidate of store.listRecoveryCandidates()) {
     const snapshot = store.load(candidate.sessionId);
     if (!snapshot) {
@@ -770,17 +697,7 @@ export async function recoverPersistedSessionsFromStore(
       },
       abortEnded,
     );
-
-    if (shouldResumeRecoveredSession(reconciledSnapshot)) {
-      recovered.push({
-        ctx,
-        sessionId: reconciledSnapshot.sessionId,
-        invocationCtx: resolveInvocationContext(reconciledSnapshot),
-      });
-    }
   }
-
-  return recovered;
 }
 
 type DiscussStartupDeps = {
@@ -793,7 +710,6 @@ type DiscussionRecoveryPolicyContext = {
   readonly runtime: DiscussionStartupRuntime;
   readonly quarantine: RecoveryQuarantinePort;
   readonly resolveContext: (snapshot: PersistedDiscussSnapshot) => DiscussContext;
-  readonly resolveInvocationContext: (snapshot: PersistedDiscussSnapshot) => InvocationContext;
 };
 
 function discussionRecoveryRuntime(deps: Pick<DiscussStartupDeps, 'getDiscussContext'>): DiscussionStartupRuntime {
@@ -837,17 +753,16 @@ function createDiscussionSourcePolicy(
 function createDiscussionCandidatePolicy(
   context: DiscussionRecoveryPolicyContext,
 ): RecoveryRetryPolicy<RawDiscussionCandidateEnvelope, HydratedDiscussionCandidate> {
-  const { runtime, quarantine, resolveContext, resolveInvocationContext } = context;
+  const { runtime, quarantine, resolveContext } = context;
   const boundary = 'discussion-candidate';
   return {
     processLocalCleanup: {
       kind: 'boundary-required',
-      release: (candidate) => releaseCandidateAttachment(boundary, candidate, quarantine, runtime),
+      release: (candidate) => releaseCandidateAttachment(boundary, candidate, quarantine),
     },
     hydrate: (envelope) => hydrateDiscussionCandidate(envelope, runtime.resolveProjectSource),
     requiredObligations: () => CANDIDATE_OBLIGATIONS,
-    settle: (candidate) =>
-      settleDiscussionCandidate(boundary, candidate, quarantine, runtime, resolveContext, resolveInvocationContext),
+    settle: (candidate) => settleDiscussionCandidate(boundary, candidate, quarantine, resolveContext),
     onFault: candidateFaultDisposition,
   };
 }
@@ -861,11 +776,7 @@ function discussionPolicyContext(
     const base = deps.createInvocationContext(snapshot.projectRoot);
     return deps.getDiscussContext({ ...base, providerScope: snapshot.providerScope });
   };
-  const resolveInvocationContext = (snapshot: PersistedDiscussSnapshot): InvocationContext => {
-    const base = deps.createInvocationContext(snapshot.projectRoot);
-    return { ...base, providerScope: snapshot.providerScope };
-  };
-  return { runtime, quarantine, resolveContext, resolveInvocationContext };
+  return { runtime, quarantine, resolveContext };
 }
 
 export function createDiscussionSourceRetryPlan(
@@ -891,7 +802,7 @@ export function createDiscussionCandidateRetryPlan(
   };
 }
 
-export type DiscussRunStartup = (deps: DiscussStartupDeps) => Promise<RecoveredDiscussResume[]>;
+export type DiscussRunStartup = (deps: DiscussStartupDeps) => Promise<void>;
 
 export const runStartup: DiscussRunStartup = async (deps) => {
   const runtime = discussionRecoveryRuntime(deps);
@@ -920,6 +831,4 @@ export const runStartup: DiscussRunStartup = async (deps) => {
       },
     },
   });
-
-  return [];
 };
