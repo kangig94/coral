@@ -266,6 +266,7 @@ describe('pipe executor coral cascade invariant', () => {
         signal: new AbortController().signal,
       });
       reactorRef.current = reactor;
+      reactor.admitRetention();
       const executionSvc = new ExecutionService(
         {
           projectRoot,

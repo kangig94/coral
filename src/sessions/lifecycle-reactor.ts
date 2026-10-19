@@ -359,7 +359,6 @@ export class LifecycleReactor {
   admitRetention(): void {
     if (this.retentionAdmission === 'admitted' || this.lifetimeSignal.aborted) return;
     this.retentionAdmission = 'admitted';
-    // A drain already in flight may have started its pass while deferred, so admission joins or reruns a full pass.
     if (this.recoveryRearmTimer === null) void this.runContainedRecovery(this.lifetimeSignal).catch(() => {});
   }
 
@@ -437,29 +436,25 @@ export class LifecycleReactor {
       return this.recoveryPromise;
     }
     const promise = (async () => {
-      do {
-        this.recoveryRerunRequested = false;
-        await this.performContainedRecovery(signal);
-      } while (this.recoveryRerunRequested && !signal.aborted);
-    })()
-      .then(
-        () => {
-          if (owner === 'background') {
-            this.clearRecoveryRearmTimer();
-            this.recoveryFailureStreak = 0;
-          }
-        },
-        (error: unknown) => {
-          if (owner === 'background' && !this.lifetimeSignal.aborted) {
-            this.log(`Retention lifecycle reactor failed: ${errorMessage(error)}`);
-            this.scheduleRecoveryRearm();
-          }
-          throw error;
-        },
-      )
-      .finally(() => {
-        if (this.recoveryPromise === promise) this.recoveryPromise = null;
-      });
+      try {
+        do {
+          this.recoveryRerunRequested = false;
+          await this.performContainedRecovery(signal);
+        } while (this.recoveryRerunRequested && !signal.aborted);
+        if (owner === 'background') {
+          this.clearRecoveryRearmTimer();
+          this.recoveryFailureStreak = 0;
+        }
+      } catch (error: unknown) {
+        if (owner === 'background' && !this.lifetimeSignal.aborted) {
+          this.log(`Retention lifecycle reactor failed: ${errorMessage(error)}`);
+          this.scheduleRecoveryRearm();
+        }
+        throw error;
+      } finally {
+        this.recoveryPromise = null;
+      }
+    })();
     this.recoveryPromise = promise;
     return promise;
   }

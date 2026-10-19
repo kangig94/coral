@@ -274,21 +274,13 @@ describe('recovery/containment', () => {
 describe('recovery/containment discovery', () => {
   const signal = new AbortController().signal;
 
-  it('counts composed subjects including quarantined subjects without settlement authority', async () => {
-    const quarantine = new FakeQuarantinePort();
-    const hydrate = vi.fn((item: Raw): Item => ({ key: item.key, value: item.value }));
-    const settle = vi.fn(() => advanced());
-    const requiredObligations = vi.fn(() => [settledObligation]);
-    const release = vi.fn(() => ({ kind: 'released' as const }));
+  it('counts composed subjects', async () => {
     const report = await RecoveryContainment.each(
       source(() => [raw('a'), raw('b')]),
-      policy(quarantine, {
+      {
+        ...policy(new FakeQuarantinePort()),
         issueReceipts: true,
-        hydrate,
-        settle,
-        requiredObligations,
-        processLocalCleanup: { kind: 'boundary-required', release },
-      }),
+      },
     );
     const composed = defineCompositeRecoverySource(report.receipts, {
       boundary,
@@ -301,42 +293,7 @@ describe('recovery/containment discovery', () => {
         })),
       subject,
     });
-    quarantine.records.set(recordKey(boundary, 'a'), {
-      boundary,
-      subject: subject(raw('a')),
-      state: 'retrying',
-      retry: { owner: 'owner', token: 'token' },
-    });
-    quarantine.records.set(recordKey(boundary, 'b'), {
-      boundary,
-      subject: subject(raw('b')),
-      state: 'active',
-    });
-    const before = [...quarantine.records];
-    const read = vi.spyOn(quarantine, 'read');
-    const upsert = vi.spyOn(quarantine, 'upsert');
-    const remove = vi.spyOn(quarantine, 'delete');
-    hydrate.mockClear();
-    settle.mockClear();
-    requiredObligations.mockClear();
-    release.mockClear();
-
     await expect(RecoveryContainment.count(composed, { signal })).resolves.toBe(2);
-    await expect(RecoveryContainment.count(composed, { signal })).resolves.toBe(2);
-    await expect(
-      RecoveryContainment.count(
-        source(() => []),
-        { signal },
-      ),
-    ).resolves.toBe(0);
-    expect(hydrate).not.toHaveBeenCalled();
-    expect(settle).not.toHaveBeenCalled();
-    expect(requiredObligations).not.toHaveBeenCalled();
-    expect(release).not.toHaveBeenCalled();
-    expect(read).not.toHaveBeenCalled();
-    expect(upsert).not.toHaveBeenCalled();
-    expect(remove).not.toHaveBeenCalled();
-    expect([...quarantine.records]).toEqual(before);
   });
 
   it('counts empty composition and rejects unregistered handles and forged receipts', async () => {

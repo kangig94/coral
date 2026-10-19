@@ -7,12 +7,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createCoordinatorServer } from '#src/coordinator/index.js';
 import * as composition from '#src/coordinator/composition/index.js';
+import * as coordinatorLifecycle from '#src/coordinator/lifecycle.js';
 import type { CoordinatorCoreOptions, CoordinatorCoreResult } from '#src/coordinator/composition/types.js';
 import * as resultExports from '#src/jobs/terminal/export.js';
 import type { JobLocationIndex } from '#src/jobs/location-index.js';
 import type { ProviderEventHandler } from '#src/provider-proxy/control-client.js';
-import { managed } from '#src/providers/capability.js';
-import { defineProvider } from '#src/providers/registry.js';
 import { RecoveryQuarantineStore } from '#src/recovery/quarantine.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { ProviderSession } from '#src/sessions/entry.js';
@@ -22,10 +21,9 @@ import { sessionRetentionWorkKey } from '#src/sessions/retention-work.js';
 import { SessionManager } from '#src/sessions/shell.js';
 import type { AppendedEvent } from '#src/store/append.js';
 import type { Database } from '#src/store/db.js';
+import * as rebindableStore from '#src/store/rebindable-database.js';
 import { insertProviderOperation } from '#src/store/provider-operation-journal.js';
-import { fixtureProviderBindingCodec, type FixtureProviderAccess } from '#tests/helpers/provider-binding.js';
-import { TEST_CODEX_BINDING } from '#tests/helpers/provider-credentials.js';
-import { prepareFixtureExecutionPlan, type FixtureExecutionPlan } from '#tests/helpers/scripted-provider.js';
+import { TEST_CODEX_BINDING, withTestBindingLocation } from '#tests/helpers/provider-credentials.js';
 import { openTestStoreDatabase } from '#tests/helpers/store-db.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-supervisor.js';
@@ -58,12 +56,37 @@ async function fixture() {
     JSON.stringify({ bundleHash: '0123456789abcdef', flavor: 'prod' }),
   );
   vi.stubEnv('HOME', home);
+  const codexHome = join(home, '.codex');
+  mkdirSync(codexHome);
+  writeFileSync(join(codexHome, 'auth.json'), JSON.stringify({ tokens: { account_id: 'test-account' } }));
+  const binding = withTestBindingLocation(TEST_CODEX_BINDING, codexHome);
   const runtime = createRealRuntime('prod', { baseDir: join(home, '.coral') });
+  const createLifecycle = coordinatorLifecycle.createLifecycle;
+  vi.spyOn(coordinatorLifecycle, 'createLifecycle').mockImplementation((deps, recover) =>
+    createLifecycle({ ...deps, startProviderOperationReconciler: undefined }, recover),
+  );
   const captured: {
     core?: CoordinatorCoreResult;
     options?: CoordinatorCoreOptions;
     reactor?: lifecycle.LifecycleReactor;
   } = {};
+  const rebindDatabase = rebindableStore.createRebindableStoreDatabase;
+  vi.spyOn(rebindableStore, 'createRebindableStoreDatabase').mockImplementation((db) => {
+    const database = rebindDatabase(db);
+    return {
+      ...database,
+      db: new Proxy(database.db, {
+        get(target, property) {
+          if (property !== 'exec') return Reflect.get(target, property);
+          return (sql: string) => {
+            const result = target.exec(sql);
+            recordCommit(sql);
+            return result;
+          };
+        },
+      }),
+    };
+  });
   const createCore = composition.createCoordinatorCore;
   vi.spyOn(composition, 'createCoordinatorCore').mockImplementation((options, recover) => {
     captured.options = options;
@@ -129,19 +152,6 @@ async function fixture() {
     pluginRoot,
     onFatalShutdownError: vi.fn(),
     kbDaemonSupervisor: createMockKbDaemonSupervisor(),
-    registerBuiltInProvidersFn: (registry) => {
-      registry.register(
-        defineProvider<FixtureExecutionPlan, FixtureProviderAccess>({
-          name: 'codex',
-          transport: 'standalone',
-          run: async function* () {},
-          prepareExecutionPlan: prepareFixtureExecutionPlan,
-        })
-          .binding(fixtureProviderBindingCodec('codex'))
-          .artifacts(managed<FixtureProviderAccess>({ discardArtifacts: async () => ({ kind: 'discarded' }) }))
-          .build(),
-      );
-    },
     writeBackendInfoFn: () => true,
     removeBackendInfoIfOwnerFn: () => {},
     createServerFn: (handler) => createServer(handler),
@@ -168,9 +178,7 @@ async function fixture() {
     readonly: true,
   });
   readers.push(reader);
-  const exec = db.exec.bind(db);
-  vi.spyOn(db, 'exec').mockImplementation((sql) => {
-    exec(sql);
+  function recordCommit(sql: string) {
     const current = trace;
     if (sql !== 'COMMIT' || current === undefined) return;
     const rows = reader
@@ -193,7 +201,7 @@ async function fixture() {
         type,
       })),
     });
-  });
+  }
   const recordObserved = locations.recordObserved.bind(locations);
   const recordLocation = vi.spyOn(locations, 'recordObserved').mockImplementation((jobId, detail, observation) => {
     recordObserved(jobId, detail, observation);
@@ -225,7 +233,7 @@ async function fixture() {
   );
   function seedOperation(retention: ProviderSession['retention'] = 'retain') {
     const session = sessions.open({
-      binding: TEST_CODEX_BINDING,
+      binding,
       name: 'provider event retention',
       cwd: home,
       projectRoot: home,

@@ -5,16 +5,25 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createCoordinatorServer } from '#src/coordinator/index.js';
+import * as composition from '#src/coordinator/composition/index.js';
+import type { CoordinatorCoreResult } from '#src/coordinator/composition/types.js';
 import * as lifecycle from '#src/coordinator/lifecycle.js';
 import * as startup from '#src/coordinator/succession/startup.js';
 import * as storeRouting from '#src/store/startup-store-routing.js';
-import * as jobsStartup from '#src/jobs/startup.js';
+import { JobStore } from '#src/jobs/store.js';
+import { jobsRegistry } from '#src/jobs/events.js';
+import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
+import { createBuiltInProviderRegistry } from '#src/providers/bootstrap.js';
+import { providerLookupPortFromCatalog } from '#src/providers/catalog.js';
 import * as reactorModule from '#src/sessions/lifecycle-reactor.js';
 import * as phaseObservation from '#src/recovery/phase-observation.js';
 import { SessionManager } from '#src/sessions/shell.js';
+import { sessionsRegistry } from '#src/sessions/events.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
+import { composeReducers } from '#src/store/reducers.js';
 import { initTestJob } from '#tests/helpers/session.js';
 import { commitJobTerminal } from '#tests/helpers/job-commits.js';
-import { TEST_CODEX_BINDING } from '#tests/helpers/provider-credentials.js';
+import { TEST_CODEX_BINDING, withTestBindingLocation } from '#tests/helpers/provider-credentials.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { encodeResolvedStoreEpoch, resolveCurrentStoreEpoch, resolvedStoreEpoch } from '#src/store/epoch/index.js';
 import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-supervisor.js';
@@ -45,6 +54,10 @@ function fixture(overrides: Partial<lifecycle.LifecycleDeps> = {}, backlog = 0) 
     JSON.stringify({ bundleHash: '0123456789abcdef', flavor: 'prod' }),
   );
   vi.stubEnv('HOME', home);
+  const codexHome = join(home, '.codex');
+  mkdirSync(codexHome);
+  writeFileSync(join(codexHome, 'auth.json'), JSON.stringify({ tokens: { account_id: 'test-account' } }));
+  const binding = withTestBindingLocation(TEST_CODEX_BINDING, codexHome);
   let now = 0n;
   const real = createRealRuntime('prod', { baseDir: join(home, '.coral') });
   const runtime = { ...real, time: { ...real.time, monotonicNow: () => now } };
@@ -53,10 +66,21 @@ function fixture(overrides: Partial<lifecycle.LifecycleDeps> = {}, backlog = 0) 
   const writeBackendInfo = vi.fn(() => true);
   let runtimeState: lifecycle.LifecycleDeps['runtimeState'];
   let reactor: reactorModule.LifecycleReactor;
-  let startupOptions: jobsStartup.JobsStartupContext;
+  let core: CoordinatorCoreResult;
+  const createCore = composition.createCoordinatorCore;
+  vi.spyOn(composition, 'createCoordinatorCore').mockImplementation((options, recover) => {
+    core = createCore(options, recover);
+    return core;
+  });
   const createReactor = reactorModule.createLifecycleReactor;
   vi.spyOn(reactorModule, 'createLifecycleReactor').mockImplementation((options) => {
     reactor = createReactor(options);
+    vi.spyOn(reactor, 'scanStartup').mockImplementation((signal, observation) => {
+      const db = core.storeServicesRef.get().storeDb;
+      expect(db.prepare('SELECT session_id FROM projection_sessions').all()).toHaveLength(backlog);
+      expect(db.prepare("SELECT seq FROM events WHERE type LIKE 'session.retention.discard.%'").all()).toEqual([]);
+      return reactorModule.LifecycleReactor.prototype.scanStartup.call(reactor, signal, observation);
+    });
     const admit = reactor.admitRetention.bind(reactor);
     vi.spyOn(reactor, 'admitRetention').mockImplementation(() => {
       const admitted = reactor.isRetentionAdmitted();
@@ -96,47 +120,56 @@ function fixture(overrides: Partial<lifecycle.LifecycleDeps> = {}, backlog = 0) 
       },
     };
   });
-  const createJobsRunner = jobsStartup.createJobsStartupRunner;
-  let backlogSeeded = false;
-  vi.spyOn(jobsStartup, 'createJobsStartupRunner').mockImplementation((recover) => {
-    const run = createJobsRunner(recover);
-    return async (options) => {
-      startupOptions = options;
-      const result = await run(options);
-      if (backlogSeeded) return result;
-      backlogSeeded = true;
-      const sessions = SessionManager.forProduction(home, runtime, options.coordinatorCommit, () => {}, {
-        db: options.progressStore.getDb(),
+  if (backlog > 0) {
+    const db = openSettledTestStoreDb(runtime);
+    try {
+      const namespace = pluginRootNamespace(pluginRoot);
+      const progressStore = new JobStore(namespace, runtime, createEventBodyCodec(), {
+        db,
+        reducers: composeReducers(jobsRegistry, sessionsRegistry),
+        providers: providerLookupPortFromCatalog(createBuiltInProviderRegistry()),
       });
+      const sessions = SessionManager.forProduction(
+        home,
+        runtime,
+        (cb) => progressStore.commit(cb),
+        () => {},
+        { db },
+      );
       for (let index = 0; index < backlog; index += 1) {
         const session = sessions.open({
-          binding: TEST_CODEX_BINDING,
+          binding,
           name: `backlog-${index}`,
           cwd: home,
           projectRoot: home,
-          backendNamespace: options.namespace,
+          backendNamespace: namespace,
           retention: 'discard_provider_artifacts_on_terminal',
         });
         const jobId = `backlog-${index}`;
         sessions.claimForJobSync(session.sessionId, jobId);
-        initTestJob(options.progressStore, {
+        initTestJob(progressStore, {
           jobId,
           sessionId: session.sessionId,
           provider: 'codex',
           projectRoot: home,
-          backendNamespace: options.namespace,
+          backendNamespace: namespace,
           initialPhase: 'running',
         });
-        commitJobTerminal(options.progressStore, jobId, session.sessionId, {
+        commitJobTerminal(progressStore, jobId, session.sessionId, {
           content: 'done',
           outcome: { kind: 'completed' },
           durationMs: 1,
         });
         sessions.releaseJob(session.sessionId, jobId);
       }
-      return result;
-    };
-  });
+      expect(db.prepare('SELECT session_id FROM projection_sessions').all()).toHaveLength(backlog);
+      expect(db.prepare("SELECT seq FROM events WHERE type = 'job.terminal.recorded'").all()).toHaveLength(backlog);
+      expect(db.prepare("SELECT seq FROM events WHERE type = 'session.claim.released'").all()).toHaveLength(backlog);
+      expect(db.prepare("SELECT seq FROM events WHERE type LIKE 'session.retention.discard.%'").all()).toEqual([]);
+    } finally {
+      db.close();
+    }
+  }
   const createLifecycle = lifecycle.createLifecycle;
   let lifecycleOverrides = overrides;
   vi.spyOn(lifecycle, 'createLifecycle').mockImplementation((deps, recover) => {
@@ -205,9 +238,9 @@ function fixture(overrides: Partial<lifecycle.LifecycleDeps> = {}, backlog = 0) 
     transitions,
     reactor: () => reactor,
     retentionEvents: () =>
-      startupOptions.progressStore
-        .getDb()
-        .prepare<[], { type: string }>("SELECT type FROM events WHERE type LIKE 'session.retention.discard.%'")
+      core.storeServicesRef
+        .get()
+        .storeDb.prepare<[], { type: string }>("SELECT type FROM events WHERE type LIKE 'session.retention.discard.%'")
         .all()
         .map(({ type }) => type),
     advance: (ms: number) => {
@@ -228,6 +261,8 @@ describe('startup phase observations through lifecycle fallbacks', () => {
     const settlement = vi
       .spyOn(reactorModule.LifecycleReactor.prototype, 'enforceRetention')
       .mockImplementation(async function (this: reactorModule.LifecycleReactor, work) {
+        expect(this.isRetentionAdmitted()).toBe(true);
+        expect(f.order.slice(0, 2)).toEqual(['serving-complete', 'admitted']);
         await held.promise;
         f.advance(1_000);
         return settle.call(this, work);
@@ -260,9 +295,9 @@ describe('startup phase observations through lifecycle fallbacks', () => {
     expect(f.order.indexOf('discard-requested')).toBeGreaterThan(f.order.indexOf('admitted'));
     expect(f.retentionEvents().filter((type) => type.endsWith('.completed'))).toHaveLength(backlog);
     const background = f.logs.filter((line) => line.includes('kind=background phase=reactor-recovery event=finish'));
-    expect(
-      background.some((line) => line.includes(`"session-retention-work":{"subjects":${backlog},"reads":0}`)),
-    ).toBe(true);
+    expect(background.some((line) => line.includes(`"session-retention-work":{"subjects":${backlog},"reads":0}`))).toBe(
+      true,
+    );
     const passes = f.logs.filter((line) => line.includes('kind=background phase=reactor-recovery event=start')).length;
     f.reactor().admitRetention();
     f.reactor().admitRetention();
@@ -343,9 +378,9 @@ describe('startup phase observations through lifecycle fallbacks', () => {
     expect(f.transitions).not.toHaveBeenCalled();
     expect(f.order).toEqual([]);
     const persisted = f.open();
-    expect(
-      persisted.db.prepare("SELECT type FROM events WHERE type LIKE 'session.retention.discard.%'").all(),
-    ).toEqual([]);
+    expect(persisted.db.prepare("SELECT type FROM events WHERE type LIKE 'session.retention.discard.%'").all()).toEqual(
+      [],
+    );
     persisted.db.close();
     const successor = f.successor();
     await successor.start();

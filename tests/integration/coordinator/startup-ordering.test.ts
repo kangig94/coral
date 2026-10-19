@@ -332,7 +332,6 @@ describe('coordinator pending workflow replacement recovery', () => {
     const order: string[] = [];
     const phaseLines: string[] = [];
     const backgroundLines: string[] = [];
-    let scannedReactor: LifecycleReactor | undefined;
     const recoverLocations = locationRecovery.recoverJobLocations;
     vi.spyOn(locationRecovery, 'recoverJobLocations').mockImplementation((index, epoch, store, observation) => {
       const progressStore = store as JobsStartupContext['progressStore'];
@@ -477,7 +476,6 @@ describe('coordinator pending workflow replacement recovery', () => {
       signal,
       observation,
     ) {
-      scannedReactor = this;
       if (startupOptions === undefined) throw new Error('Expected jobs startup before lifecycle scan.');
       const row = startupOptions.progressStore
         .getDb()
@@ -532,6 +530,7 @@ describe('coordinator pending workflow replacement recovery', () => {
     });
     try {
       const info = await coordinator.start();
+      const scannedReactor = scan.mock.contexts[0] as LifecycleReactor | undefined;
       if (scannedReactor === undefined) throw new Error('Expected lifecycle startup scan.');
       await scannedReactor.waitForIdle();
       expect(scan).toHaveBeenCalledOnce();

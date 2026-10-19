@@ -46,6 +46,7 @@ const SETUP_ERROR_STATUS_CODES = new Map<string, number>([
   ['recovery_quarantine_revision_changed', 409],
   ['recovery_quarantine_continuation_pending', 409],
   ['recovery_quarantine_retry_in_progress', 409],
+  ['recovery_quarantine_retention_not_admitted', 409],
   ['kb_commit_id_invalid', 400],
   ['startup_not_ready', 503],
   ['request_deadline_exceeded', 503],
@@ -74,6 +75,8 @@ function publicRecoveryQuarantineError(error: unknown): CoralSetupError | null {
       return documentedCoralSetupError('recovery_quarantine_continuation_pending');
     case 'retry-in-progress':
       return documentedCoralSetupError('recovery_quarantine_retry_in_progress');
+    case 'retention-not-admitted':
+      return documentedCoralSetupError('recovery_quarantine_retention_not_admitted');
     default:
       return null;
   }

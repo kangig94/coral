@@ -200,7 +200,7 @@ Publication is a durable saga rather than a returned transport result. Before ea
 
 Events may be buffered after the kernel starts, but they cannot leave the proxy until the coordinator commits `executing + job.runtime.started` and attaches the operation to the current control epoch with `operation.attach.v1`. They then travel back over that connection as `provider.event.v1` — the one method in the protocol that runs proxy-to-coordinator. Each is applied durably by `applyProviderEventAtSeq` and acknowledged only after its transaction commits.
 
-`createCoordinatorProviderEventHandler` uses the shared `createJournalCommitObserver` observer after each provider-applied commit. The order is `COMMIT`, terminal result export, `JobLocationIndex.recordObserved` for applicable progress events, `observeLifecycleCommitted`, then `progressStore.announceCommitted`, each exactly once for that commit. Provider-applied terminal and claim-release events therefore wake `LifecycleReactor.observe` for live retention recovery.
+Provider-applied commits use the shared post-commit observer, so terminal and claim-release events wake lifecycle retention recovery while preserving result export, progress-location recording and announcement ordering. See [Lifecycle retention](./core-modules.md#lifecycle-retention) for the observer sequence.
 
 That makes durable-effect authority exclusive, and the two paths are kept apart structurally rather than by discipline: a proxied job returns from `executeJob` before the local consume/finalize path is ever entered, so the applier is the only writer. Running both would record every terminal twice.
 
@@ -570,18 +570,9 @@ Backend boot is split into three sequential eras so the CLI gets a usable socket
 | II — Recovery                   | jobs / discuss / workflow shells             | One-shot startup reconciliation for in-flight work                                                                   | `running`                                     |
 | III — Runtime Health Components | `coordinator/runtime-components/registry.ts` | Fire-and-forget `initAll()`; each `RuntimeComponent` projects daemon-visible health without blocking the kernel path | per-component `online \| degraded \| offline` |
 
-`LifecycleReactor.scanStartup` runs the session, continuation-lease, terminal-outcome and release-pair component sources, lease expiry and lease timer scheduling before serving. Startup only discovers retention work: the process-local reactor begins with retention admission `deferred`, and `containedRecoverySources` passes `retentionWorkItemRecoverySource(receipts)` to `RecoveryContainment.count(source, { signal })`. Counting validates the opaque source and composes subjects, including quarantined subjects, without hydration, settlement, receipt issuance or quarantine/retry mutation. The startup `reactor-scan` phase records only the discovered `session-retention-work` subject count, with no retention settlement time. Discovery failures propagate to startup. Every recovery pass while deferred, including observe-triggered drains and lease recovery, skips retention settlement and its continuation writes, retention events, archive, discard and residue cleanup. Retention quarantine clear refuses before retry authority acquisition, and `createRetentionWorkRetryPlan` also refuses until admission.
+Startup recovers lifecycle components, expires leases and schedules lease timers, but only discovers retention work. Retention settlement is admitted after serving and runs as background contained recovery; a startup attempt that fails or aborts before serving leaves it deferred.
 
-Retention settlement is admitted after serving. `runStartupRecoveryAndServe` calls the wired `admitLifecycleRetention` dependency immediately after the observed `serving` phase completes. `LifecycleReactor.admitRetention` makes one idempotent `deferred` → `admitted` transition and requests background contained recovery on the reactor lifetime signal without awaiting settlement. `settleFailedLifecycleStartup` also admits in its retained legacy-serving success branch after restoring running state, clearing the launch fence and publishing discovery if needed. Failure or abort before serving leaves retention deferred. Admission does not wait for later dead-attempt discharge or the bootstrap `Running on` log. `performContainedRecovery` reports the admitted work and its subject count under `kind=background phase=reactor-recovery`; `RecoveryContainment.each` applies the existing retention policy, including the fresh `hasRetentionProtection` check and claim guards.
-
-`LifecycleReactor.runContainedRecovery` owns the shared recovery promise and its failure disposition for admission, pair drains, continuation-lease events, lease timers and recovery re-arm timers:
-
-- A contained subject fault follows the existing quarantine and exact-subject retry path; it does not reject the pass.
-- A background promise rejection other than lifetime abort is logged once by its owner. Once admitted, `scheduleRecoveryRearm` allows three automatic re-arms per failure streak, after 30 s, 60 s and 120 s. `performContainedRecovery` retains structured phase outcomes; `observe`, `scheduleDrain` and `scheduleContinuationLeaseTimer` consume rejections without another failure log or independent retry.
-- During backoff, the dispatcher coalesces triggers without entering `drainQueue` or releasing pending pairs. Timer expiry drains pending pairs through their normal bookkeeping, or requests a full pass when the queue is empty. This also retries admission and lease failures while idle. At most one shared recovery promise and one re-arm timer exist; backoff delays background component and lease recovery too.
-- Only successful completion of the shared background promise clears a pending re-arm and resets the failure streak. Scheduling, joining, observing events and exhausting retries do not reset it. After three re-arms, a failed drain's remaining queue cannot dispatch autonomously. The named successors are a fresh lifecycle commit or existing lease timer, or the next boot, which re-derives retention work. A fresh trigger may dispatch after exhaustion; another failure stays exhausted until a successful pass resets the streak.
-- Startup scans await and propagate rejection to startup without a background re-arm. A background caller joining a promise created by a startup scan does not change that promise's owner. Failed-drain bookkeeping prevents immediate rescheduling from unreleased pairs.
-- The `lifecycle reactor dispose` shutdown obligation in `coordinator/shutdown.ts` calls `LifecycleReactor.dispose`, aborting the admitted pass, cancelling both the recovery re-arm and continuation-lease timers, and waiting for existing drain/recovery promises. Lifetime abort prevents queued callbacks from dispatching and neither logs a background failure nor re-arms. Interruption between subjects leaves untouched work for the next process; interruption inside `enforceRetention` resumes from its persisted continuation.
+Contained subject faults retain quarantine and exact-subject retry. Rejected background passes have one failure owner and bounded autonomous recovery; after exhaustion, the successors are a fresh lifecycle commit or existing lease timer, or next-boot re-derivation. Startup failures propagate without background retry. Shutdown aborts recovery and cancels timers, leaving untouched work or persisted continuations for the next process. See [Lifecycle retention](./core-modules.md#lifecycle-retention) for admission paths, failure exits, timers and disposal.
 
 Era II waits for provider-operation startup reconciliation for at most 500 ms, measured by the runtime's monotonic clock. This is a serving responsiveness budget, not an estimate of healthy inheritance latency: crossing it only ends the lifecycle's await. It leaves room in succession's 2.5 s serving window (5 s admission pause minus the 2.5 s writer-reclaim reserve) for component registration and reaching `running`. Expiry never aborts recovery, revokes a fence lease, proves containment absence, or releases startup job ownership.
 
@@ -726,8 +717,6 @@ Domain-owned recovery sources and settlement policies
   -> recovery/ RecoveryContainment.each(source, policy)
       -> scan -> hydrate -> settle
       -> recovery_quarantine convergence
-  -> recovery/ RecoveryContainment.count(source, { signal })
-      -> scan -> derive subjects -> count (discovery only)
 
 Coordinator startup
   Era I — Kernel (blocks until lifecycle = 'kernel-ready')
@@ -739,8 +728,6 @@ Coordinator startup
     -> jobs recovery coordinator startup
     -> discuss shell recovery startup (reconciliation and attachment; no loop resume)
     -> workflowRecover.recoverAll (closure and descendant release; no launches)
-    -> LifecycleReactor.scanStartup (component recovery, lease expiry/timers, retention discovery only)
-    -> publish serving; LifecycleReactor.admitRetention requests background retention settlement
   Era III — Runtime Components (fire-and-forget; CLI no longer blocked)
     -> createKbDaemonHealthComponent(kbDaemonSupervisor)
        (CORAL_KB_ENABLE=0 uses a disabled supervisor: terminal offline, no KB daemon spawn)

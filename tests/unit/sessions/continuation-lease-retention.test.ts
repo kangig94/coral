@@ -140,6 +140,7 @@ function createHarness(): {
     signal: new AbortController().signal,
   });
   reactorRef.current = reactor;
+  reactor.admitRetention();
   return {
     runtime,
     db,

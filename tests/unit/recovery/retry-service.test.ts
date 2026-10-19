@@ -149,7 +149,7 @@ describe('recovery quarantine retry service', () => {
           quarantine.claimRetry({
             boundary: retentionBoundary,
             subject: retrySubject,
-            retry: { subject: retrySubject, owner: 'previous-process', token: 'previous-token' },
+            retry: { owner: 'previous-process', token: 'previous-token' },
           }),
         ).toBe(true);
       }
@@ -213,7 +213,7 @@ describe('recovery quarantine retry service', () => {
       source: defineRecoverySource({
         boundary: retentionBoundary,
         scanSubject: exactSubject,
-        scan: () => [],
+        scan: (): Envelope[] => [],
         subject: (item) => item.subject,
       }),
       policy: {

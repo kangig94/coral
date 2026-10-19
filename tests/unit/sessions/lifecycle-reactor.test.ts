@@ -1,6 +1,7 @@
 import { join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type * as RetentionWorkItemRecoverySourceModule from '#src/sessions/retention-work-item-recovery-source.js';
 import type * as SessionStartupRecoveryModule from '#src/sessions/startup-recovery.js';
 
 import { defineRecoverySource } from '#src/recovery/containment.js';
@@ -55,7 +56,7 @@ vi.mock('#src/sessions/startup-recovery.js', async (importOriginal) => {
 });
 
 vi.mock('#src/sessions/retention-work-item-recovery-source.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('#src/sessions/retention-work-item-recovery-source.js')>();
+  const actual = await importOriginal<typeof RetentionWorkItemRecoverySourceModule>();
   return { ...actual, retentionWorkItemRecoverySource: vi.fn(actual.retentionWorkItemRecoverySource) };
 });
 
@@ -865,7 +866,7 @@ describe('LifecycleReactor retention enforcement', () => {
     expect(phases[1]).toMatch(/event=finish outcome=complete duration_ms=\d+\.\d{3}/);
     expect(JSON.parse(/ sources=(.*)\n$/.exec(phases[1])![1])).toEqual({
       'session-projection': { subjects: 1, reads: 1 },
-      'session-continuation-lease': { subjects: 0, reads: 0 },
+      'session-continuation-lease': { subjects: 1, reads: 1 },
       'terminal-retention-outcome': { subjects: 0, reads: 0 },
       'retention-release-pair': { subjects: 2, reads: 2 },
       'session-retention-work': { subjects: 1, reads: 0 },
@@ -932,6 +933,30 @@ describe('LifecycleReactor retention admission and failure ownership', () => {
     await harness.reactor.dispose();
   });
 
+  it('runs an admitted pass when admission arrives after the final rerun check', async () => {
+    const harness = createHarness({ autoObserveCoordinator: false });
+    const sessionId = await seedEligible(harness, 'completion-admission');
+    const passes = vi.spyOn(
+      harness.reactor as unknown as { performContainedRecovery(signal: AbortSignal): Promise<void> },
+      'performContainedRecovery',
+    );
+    const startup = harness.reactor.scanStartup(harness.reactorLifetime.signal);
+    const deferredPass = passes.mock.results[0].value;
+    await deferredPass.then(() => {
+      expect(readRetentionEvents(harness, sessionId)).toEqual([]);
+      queueMicrotask(() => harness.reactor.admitRetention());
+    });
+    await startup;
+    await harness.reactor.waitForIdle();
+
+    expect(passes).toHaveBeenCalledTimes(2);
+    expect(readRetentionEvents(harness, sessionId).map(({ type }) => type)).toEqual([
+      'session.retention.discard.requested',
+      'session.retention.discard.completed',
+    ]);
+    await harness.reactor.dispose();
+  });
+
   it('recovers lease events and timers while deferred without retention effects', async () => {
     const harness = createHarness();
     const jobId = 'deferred-lease';
@@ -951,7 +976,19 @@ describe('LifecycleReactor retention admission and failure ownership', () => {
     await harness.reactor.dispose();
   });
 
-  it('refuses direct retry plans for deferred and missing reactors even for absent subjects', async () => {
+  it('refuses direct retry plans without a registered reactor even for absent subjects', async () => {
+    const runtime = new SimulationRuntime();
+    const db = openTestStoreDb(runtime, ':memory:');
+    openDbs.add(db);
+    const quarantine = new RecoveryQuarantineStore(db, runtime.time);
+    const subject = { key: 'absent\u0000job', revision: { kind: 'fingerprint' as const, value: 'revision' } };
+
+    await expect(createRetentionWorkRetryPlan(db, subject, new AbortController().signal, quarantine)).rejects.toThrow(
+      'not admitted',
+    );
+  });
+
+  it('refuses direct retry plans for deferred reactors even for absent subjects', async () => {
     const harness = createHarness({ autoObserveCoordinator: false });
     const quarantine = new RecoveryQuarantineStore(harness.db, harness.runtime.time);
     const subject = { key: 'absent\u0000job', revision: { kind: 'fingerprint' as const, value: 'revision' } };
@@ -1241,7 +1278,7 @@ describe('LifecycleReactor retention admission and failure ownership', () => {
     expect(callback).toBeDefined();
     const passes = vi.mocked(runSessionStartupRecovery).mock.calls.length;
     await harness.reactor.dispose();
-    callback!();
+    callback();
     harness.runtime.time.tick(1_000_000);
     harness.reactor.admitRetention();
     harness.reactor.observe([]);
