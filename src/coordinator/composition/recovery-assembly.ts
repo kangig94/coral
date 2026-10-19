@@ -15,6 +15,7 @@ import {
 import {
   createRetentionReleasePairRetryPlan,
   createRetentionWorkRetryPlan,
+  isLifecycleRetentionAdmitted,
   createSessionContinuationLeaseRetryPlan,
   createSessionProjectionRetryPlan,
   createTerminalRetentionOutcomeRetryPlan,
@@ -177,6 +178,7 @@ export function createRecoveryAssembly(input: RecoveryAssemblyInput) {
     ids: runtime.ids,
     quarantine: recoveryQuarantineStore,
     sources: recoverySources,
+    isRetryAdmitted: (boundary) => boundary !== 'session-retention-work' || isLifecycleRetentionAdmitted(recoveryDb()),
   });
   const recoveryQuarantine = createRecoveryQuarantinePorts({
     runtime,

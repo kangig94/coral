@@ -509,7 +509,7 @@ function createCoordinatorJournalAssembly({
       eventBus,
       operationRegistry,
       beforeJobAppend,
-      exportTerminalResults,
+      observeCommitted,
     });
   return {
     getStoreDb,
@@ -656,7 +656,7 @@ function createCoordinatorProviderEventHandler({
   eventBus,
   operationRegistry,
   beforeJobAppend,
-  exportTerminalResults,
+  observeCommitted,
 }: {
   runtime: Runtime;
   getStoreDb: () => Database;
@@ -667,7 +667,7 @@ function createCoordinatorProviderEventHandler({
   eventBus: TypedEventBus;
   operationRegistry: LocalOperationRegistry;
   beforeJobAppend: (input: Parameters<JobLocationIndex['beforeAppend']>[0]) => void;
-  exportTerminalResults: PostCommitObserver;
+  observeCommitted: PostCommitObserver;
 }): ProviderEventHandler {
   return createProviderEventHandler({
     db: getStoreDb(),
@@ -684,7 +684,7 @@ function createCoordinatorProviderEventHandler({
     emitSessionReleased: (payload) => eventBus.emit('session:released', payload),
     // A terminal committed here must release its in-process holdings, including child principal handles.
     observeCommitted: (appended) => {
-      exportTerminalResults(appended);
+      observeCommitted(appended);
       getStoreServices().progressStore.announceCommitted(appended);
     },
 
@@ -937,6 +937,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions): Coor
       storeFormat,
       discardSessionArtifacts: (sessionId) => lifecycleReactor.discardSessionArtifacts(sessionId),
       disposeLifecycleReactor: shutdownLifecycleReactor,
+      admitLifecycleRetention: () => lifecycleReactor.admitRetention(),
       createStoreServicesFromDbFn,
       buildProviderEventHandler,
       operationRegistry,

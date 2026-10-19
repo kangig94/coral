@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   RecoveryContainment,
   defineRecoverySource,
+  defineCompositeRecoverySource,
+  type RecoveryReceipt,
   type RecoveryDisposition,
   type RecoveryObligationId,
   type RecoveryPolicy,
@@ -266,5 +268,138 @@ describe('recovery/containment', () => {
     expect(events.indexOf('upsert:contained')).toBeLessThan(events.indexOf('release:contained'));
     expect(events.filter((event) => event.startsWith('release:'))).toEqual(['release:advanced', 'release:contained']);
     expect(report).toMatchObject({ advanced: 1, quarantined: 1 });
+  });
+});
+
+describe('recovery/containment discovery', () => {
+  const signal = new AbortController().signal;
+
+  it('counts composed subjects', async () => {
+    const report = await RecoveryContainment.each(
+      source(() => [raw('a'), raw('b')]),
+      {
+        ...policy(new FakeQuarantinePort()),
+        issueReceipts: true,
+      },
+    );
+    const composed = defineCompositeRecoverySource(report.receipts, {
+      boundary,
+      scanSubject: { key: 'composition', revision: { kind: 'until-cleared' } },
+      scan: (receipts) =>
+        receipts.map(({ payload, subject: receiptSubject }) => ({
+          key: payload.key,
+          value: payload.value,
+          revision: receiptSubject.revision.kind === 'fingerprint' ? receiptSubject.revision.value : 'unknown',
+        })),
+      subject,
+    });
+    await expect(RecoveryContainment.count(composed, { signal })).resolves.toBe(2);
+  });
+
+  it('counts empty composition and rejects unregistered handles and forged receipts', async () => {
+    const empty = defineCompositeRecoverySource<Item, Raw>([], {
+      boundary,
+      scanSubject: { key: 'composition', revision: { kind: 'until-cleared' } },
+      scan: () => [],
+      subject,
+    });
+    await expect(RecoveryContainment.count(empty, { signal })).resolves.toBe(0);
+    await expect(RecoveryContainment.count({ boundary } as RecoverySource<Raw>, { signal })).rejects.toThrow(
+      'Recovery source handle is not registered',
+    );
+    const scan = vi.fn(() => []);
+    expect(() =>
+      defineCompositeRecoverySource([{} as RecoveryReceipt<Item>], {
+        boundary,
+        scanSubject: { key: 'composition', revision: { kind: 'until-cleared' } },
+        scan,
+        subject,
+      }),
+    ).toThrow('Recovery receipt is not boundary-issued');
+    expect(scan).not.toHaveBeenCalled();
+  });
+
+  it('does not scan when discovery is already aborted', async () => {
+    const abort = new AbortController();
+    abort.abort();
+    const scan = vi.fn(() => [raw('a')]);
+    await expect(RecoveryContainment.count(source(scan), { signal: abort.signal })).rejects.toMatchObject({
+      name: 'AbortError',
+    });
+    expect(scan).not.toHaveBeenCalled();
+  });
+
+  it('rejects an awaited scan after abort without deriving partial subjects', async () => {
+    const abort = new AbortController();
+    let finish!: (items: readonly Raw[]) => void;
+    const derive = vi.fn(subject);
+    const handle = defineRecoverySource({
+      boundary,
+      scanSubject: { key: 'scan', revision: { kind: 'until-cleared' } },
+      scan: () =>
+        new Promise<readonly Raw[]>((resolve) => {
+          finish = resolve;
+        }),
+      subject: derive,
+    });
+    const pending = RecoveryContainment.count(handle, { signal: abort.signal });
+    abort.abort();
+    finish([raw('a')]);
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    expect(derive).not.toHaveBeenCalled();
+  });
+
+  it('checks cancellation after subject derivation', async () => {
+    const abort = new AbortController();
+    const handle = defineRecoverySource({
+      boundary,
+      scanSubject: { key: 'scan', revision: { kind: 'until-cleared' } },
+      scan: () => [raw('a')],
+      subject: (item) => {
+        abort.abort();
+        return subject(item);
+      },
+    });
+    await expect(RecoveryContainment.count(handle, { signal: abort.signal })).rejects.toMatchObject({
+      name: 'AbortError',
+    });
+  });
+
+  it('rejects scan, composition and subject derivation faults', async () => {
+    const failure = new Error('discovery failed');
+    await expect(
+      RecoveryContainment.count(
+        source(() => {
+          throw failure;
+        }),
+        { signal },
+      ),
+    ).rejects.toBe(failure);
+    await expect(
+      RecoveryContainment.count(
+        source(async () => {
+          throw failure;
+        }),
+        { signal },
+      ),
+    ).rejects.toBe(failure);
+    const composite = defineCompositeRecoverySource<Item, Raw>([], {
+      boundary,
+      scanSubject: { key: 'composition', revision: { kind: 'until-cleared' } },
+      scan: () => {
+        throw failure;
+      },
+      subject,
+    });
+    await expect(RecoveryContainment.count(composite, { signal })).rejects.toBe(failure);
+    const handle = defineRecoverySource({
+      boundary,
+      scanSubject: { key: 'scan', revision: { kind: 'until-cleared' } },
+      scan: () => [raw('a')],
+      subject: () => {
+        throw failure;
+      },
+    });
+    await expect(RecoveryContainment.count(handle, { signal })).rejects.toBe(failure);
   });
 });

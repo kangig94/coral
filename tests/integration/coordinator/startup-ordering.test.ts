@@ -331,6 +331,7 @@ describe('coordinator pending workflow replacement recovery', () => {
     let startupOptions: JobsStartupContext | undefined;
     const order: string[] = [];
     const phaseLines: string[] = [];
+    const backgroundLines: string[] = [];
     const recoverLocations = locationRecovery.recoverJobLocations;
     vi.spyOn(locationRecovery, 'recoverJobLocations').mockImplementation((index, epoch, store, observation) => {
       const progressStore = store as JobsStartupContext['progressStore'];
@@ -510,6 +511,7 @@ describe('coordinator pending workflow replacement recovery', () => {
       pluginRoot,
       bootSnapshot: {
         log: (message) => {
+          if (message.includes(' kind=background phase=reactor-recovery ')) backgroundLines.push(message);
           if (!message.startsWith('recovery-phase ') || !message.includes(' kind=startup ')) return;
           phaseLines.push(message);
           order.push(/ phase=(\S+) /.exec(message)?.[1] ?? 'invalid-phase');
@@ -528,6 +530,9 @@ describe('coordinator pending workflow replacement recovery', () => {
     });
     try {
       const info = await coordinator.start();
+      const scannedReactor = scan.mock.contexts[0] as LifecycleReactor | undefined;
+      if (scannedReactor === undefined) throw new Error('Expected lifecycle startup scan.');
+      await scannedReactor.waitForIdle();
       expect(scan).toHaveBeenCalledOnce();
       expect(order).toEqual([
         'jobs-recovered',
@@ -598,6 +603,16 @@ describe('coordinator pending workflow replacement recovery', () => {
           expect(sources['session-retention-work']?.reads).toBe(0);
         }
       }
+      const retentionPasses = backgroundLines.filter((line) => line.includes(' event=finish outcome=complete '));
+      expect(
+        retentionPasses.some((line) => {
+          const sources = JSON.parse(/ sources=(.*)\n$/.exec(line)?.[1] ?? '{}') as Record<
+            string,
+            { subjects: number; reads: number }
+          >;
+          return (sources['session-retention-work']?.subjects ?? 0) > 0;
+        }),
+      ).toBe(true);
       expect(dispatch).not.toHaveBeenCalled();
       expect(resume).not.toHaveBeenCalled();
     } finally {

@@ -407,6 +407,8 @@ describe('sessions retention-work', () => {
     });
 
     await harness.reactor.scanStartup(harness.signal);
+    harness.reactor.admitRetention();
+    await harness.reactor.waitForIdle();
     const continuation = readContinuation(harness, sessionId, jobId);
     const publishedManifest = readManifest(harness.runtime, continuation.descriptor);
     expect(continuation.stage).toBe('discard-pending');
@@ -419,6 +421,9 @@ describe('sessions retention-work', () => {
     const callsBeforeRestart = harness.capabilityCalls.length;
     harness.restart();
     await harness.reactor.scanStartup(harness.signal);
+    expect(harness.capabilityCalls).toHaveLength(callsBeforeRestart);
+    harness.reactor.admitRetention();
+    await harness.reactor.waitForIdle();
     const retryCalls = harness.capabilityCalls.slice(callsBeforeRestart);
     const retriedManifest = readManifest(harness.runtime, continuation.descriptor);
 
@@ -468,6 +473,9 @@ describe('sessions retention-work', () => {
     const callsBeforeRestart = harness.capabilityCalls.length;
     harness.restart();
     await harness.reactor.scanStartup(harness.signal);
+    expect(harness.capabilityCalls).toHaveLength(callsBeforeRestart);
+    harness.reactor.admitRetention();
+    await harness.reactor.waitForIdle();
 
     expect(harness.capabilityCalls.slice(callsBeforeRestart).map(({ kind }) => kind)).toEqual(['reconcile']);
     expect(harness.providerEffects).toHaveLength(1);

@@ -133,6 +133,7 @@ function createCoordinatorLifecycleDeps(
     startupRecoveryBarrierPublisher: startupRecoveryBarrier.publication,
     scheduleStoreEpochSweepFn: storeEpochSweep.schedule,
     startStorageRetentionFn: storageRetention.start,
+    admitLifecycleRetention: options.admitLifecycleRetention,
     stopStoreEpochSweepFn: async () => {
       await storageRetention.stop();
       await storeEpochSweep.stop();

@@ -126,6 +126,7 @@ export type CoordinatorCoreOptions = {
   captureProviderProxyLifecycleFatal?: (handler: (error: unknown) => void) => void;
   handoffDrainBudgetMs?: number;
   disposeLifecycleReactor?: () => void | Promise<void>;
+  admitLifecycleRetention?: () => void;
   onStopped?: (exitCode: number) => void;
   acceptProcessExitRemainder?: (remainder: ProcessExitRemainder) => ProcessExitRemainderAcceptance;
   onFatalShutdownError?: (error: unknown) => void;

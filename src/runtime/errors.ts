@@ -94,6 +94,7 @@ export type DocumentedCoralSetupErrorCode =
   | 'recovery_quarantine_revision_changed'
   | 'recovery_quarantine_continuation_pending'
   | 'recovery_quarantine_retry_in_progress'
+  | 'recovery_quarantine_retention_not_admitted'
   | 'expansion_binary_corrupt'
   | 'installer_payload_invalid'
   | 'coordinator_record_unreadable'
@@ -462,6 +463,11 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
     userMessage: 'A recovery retry is already in progress for that quarantine row.',
     remediation:
       'Wait for the coordinator to finish the retry, then run `coral-cli backend recovery-quarantine list`. Retry clear only if the row returns to the active state.',
+  },
+  recovery_quarantine_retention_not_admitted: {
+    userMessage: 'Session retention recovery is not admitted while the coordinator is starting.',
+    remediation:
+      'Retention recovery is admitted automatically once the coordinator is serving. Retry the same clear after startup finishes.',
   },
   expansion_binary_corrupt: {
     userMessage: (context) =>

@@ -61,6 +61,7 @@ describe('unreadable provider operation recovery quarantine', () => {
       }),
     );
     const retry = createRecoveryQuarantineRetryService({
+      isRetryAdmitted: () => true,
       instanceId: 'coordinator-1',
       ids: { uuid: () => randomUUID() },
       quarantine,

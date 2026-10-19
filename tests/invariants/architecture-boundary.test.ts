@@ -2481,7 +2481,7 @@ function collectStartupSliceSyntaxViolations(
               node,
               recoverySourceSymbol ?? unresolvedAuthorityDescription(context, node, 'RecoverySource'),
               'startup-input-seal: opaque RecoverySource handles expose no scan authority',
-              'RecoveryContainment.each(source, policy)',
+              'RecoveryContainment.each(source, policy) or RecoveryContainment.count(source, { signal })',
             ),
           );
         }
@@ -2503,7 +2503,7 @@ function collectStartupSliceSyntaxViolations(
             node,
             recoverySourceSymbol ?? unresolvedAuthorityDescription(context, node, 'RecoverySource'),
             'startup-input-seal: opaque RecoverySource handles may not be destructured for scan authority',
-            'RecoveryContainment.each(source, policy)',
+            'RecoveryContainment.each(source, policy) or RecoveryContainment.count(source, { signal })',
           ),
         );
       }

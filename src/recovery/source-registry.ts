@@ -164,7 +164,8 @@ export type RecoveryQuarantineClearErrorCode =
   | 'continuation-not-active'
   | 'retry-in-progress'
   | 'lost-authority'
-  | 'invalid-retry-report';
+  | 'invalid-retry-report'
+  | 'retention-not-admitted';
 
 export class RecoveryQuarantineClearError extends Error {
   readonly code: RecoveryQuarantineClearErrorCode;
@@ -190,6 +191,7 @@ export type RecoveryQuarantineRetryServiceOptions = {
   readonly ids: Pick<IdPort, 'uuid'>;
   readonly quarantine: RecoveryRetryQuarantinePort;
   readonly sources: RecoverySourceRegistry;
+  readonly isRetryAdmitted: (boundary: string) => boolean;
 };
 
 const neverAbortedSignal = new AbortController().signal;
@@ -230,6 +232,10 @@ export function createRecoveryQuarantineRetryService(
           'continuation-not-active',
           `Recovery quarantine subject is a continuation: ${request.boundary}:${request.key}`,
         );
+      }
+
+      if (request.boundary === 'session-retention-work' && !options.isRetryAdmitted(request.boundary)) {
+        throw new RecoveryQuarantineClearError('retention-not-admitted', 'Session retention recovery is not admitted.');
       }
 
       const token = options.ids.uuid();
