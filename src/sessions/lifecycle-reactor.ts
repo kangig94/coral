@@ -330,6 +330,9 @@ export class LifecycleReactor {
   private drainPromise: Promise<void> | null = null;
   private recoveryPromise: Promise<void> | null = null;
   private recoveryRerunRequested = false;
+  private retentionAdmission: 'deferred' | 'admitted' = 'deferred';
+  private recoveryFailureStreak = 0;
+  private recoveryRearmTimer: TimerHandle | null = null;
   private containedRecoveryDepth = 0;
   private continuationLeaseTimer: TimerHandle | null = null;
   private readonly disposeAbort = new AbortController();
@@ -339,6 +342,25 @@ export class LifecycleReactor {
   constructor(options: LifecycleReactorOptions) {
     this.options = options;
     this.lifetimeSignal = AbortSignal.any([options.signal, this.disposeAbort.signal]);
+    this.lifetimeSignal.addEventListener(
+      'abort',
+      () => {
+        this.clearRecoveryRearmTimer();
+        this.clearContinuationLeaseTimer();
+      },
+      { once: true },
+    );
+  }
+
+  isRetentionAdmitted(): boolean {
+    return this.retentionAdmission === 'admitted' && !this.lifetimeSignal.aborted;
+  }
+
+  admitRetention(): void {
+    if (this.retentionAdmission === 'admitted' || this.lifetimeSignal.aborted) return;
+    this.retentionAdmission = 'admitted';
+    // A drain already in flight may have started its pass while deferred, so admission joins or reruns a full pass.
+    if (this.recoveryRearmTimer === null) void this.runContainedRecovery(this.lifetimeSignal).catch(() => {});
   }
 
   private async readyBoundProvider(entry: ProviderSession, operation: string): Promise<BoundProvider | null> {
@@ -384,9 +406,7 @@ export class LifecycleReactor {
     }
 
     if (sawContinuationLeaseEvent) {
-      void this.runContainedRecovery(this.lifetimeSignal).catch((error: unknown) => {
-        this.log(`Continuation lease recovery failed: ${errorMessage(error)}`);
-      });
+      this.dispatchBackgroundRecovery();
     }
     for (const pair of queuePairs.values()) this.enqueue(pair.sessionId, pair.jobId);
     for (const sessionId of skippedSessionIds) {
@@ -403,7 +423,7 @@ export class LifecycleReactor {
     this.scanningStartup = true;
     this.startupObservation = observation;
     try {
-      await this.runContainedRecovery(AbortSignal.any([this.lifetimeSignal, signal]));
+      await this.runContainedRecovery(AbortSignal.any([this.lifetimeSignal, signal]), 'startup');
       await this.waitForIdle();
     } finally {
       this.startupObservation = undefined;
@@ -411,7 +431,7 @@ export class LifecycleReactor {
     }
   }
 
-  private runContainedRecovery(signal: AbortSignal): Promise<void> {
+  private runContainedRecovery(signal: AbortSignal, owner: 'startup' | 'background' = 'background'): Promise<void> {
     if (this.recoveryPromise !== null) {
       this.recoveryRerunRequested = true;
       return this.recoveryPromise;
@@ -421,9 +441,25 @@ export class LifecycleReactor {
         this.recoveryRerunRequested = false;
         await this.performContainedRecovery(signal);
       } while (this.recoveryRerunRequested && !signal.aborted);
-    })().finally(() => {
-      if (this.recoveryPromise === promise) this.recoveryPromise = null;
-    });
+    })()
+      .then(
+        () => {
+          if (owner === 'background') {
+            this.clearRecoveryRearmTimer();
+            this.recoveryFailureStreak = 0;
+          }
+        },
+        (error: unknown) => {
+          if (owner === 'background' && !this.lifetimeSignal.aborted) {
+            this.log(`Retention lifecycle reactor failed: ${errorMessage(error)}`);
+            this.scheduleRecoveryRearm();
+          }
+          throw error;
+        },
+      )
+      .finally(() => {
+        if (this.recoveryPromise === promise) this.recoveryPromise = null;
+      });
     this.recoveryPromise = promise;
     return promise;
   }
@@ -596,6 +632,11 @@ export class LifecycleReactor {
       },
       retentionWork: {
         settle: async (receipts) => {
+          if (!this.isRetentionAdmitted()) {
+            const count = await RecoveryContainment.count(retentionWorkItemRecoverySource(receipts), { signal });
+            observation?.record('session-retention-work', { subjects: count });
+            return;
+          }
           await RecoveryContainment.each(retentionWorkItemRecoverySource(receipts), {
             signal,
             quarantine,
@@ -612,6 +653,7 @@ export class LifecycleReactor {
 
   async dispose(): Promise<void> {
     this.disposeAbort.abort();
+    this.clearRecoveryRearmTimer();
     this.clearContinuationLeaseTimer();
     while (this.drainPromise !== null || this.recoveryPromise !== null) {
       await Promise.allSettled([this.drainPromise, this.recoveryPromise].filter((promise) => promise !== null));
@@ -731,6 +773,7 @@ export class LifecycleReactor {
   }
 
   async enforceRetention(work: SessionRetentionWork): Promise<RecoveryDisposition> {
+    this.lifetimeSignal.throwIfAborted();
     const recoveryWork: RecoverySessionRetentionWork = isRecoveryRetentionWork(work)
       ? work
       : this.legacyRecoveryWork(work);
@@ -740,6 +783,7 @@ export class LifecycleReactor {
     }
 
     const bound = await this.readyBoundProvider(recoveryWork.entry, 'Retention discard');
+    this.lifetimeSignal.throwIfAborted();
     if (bound === null) {
       throw new Error(`Retention provider binding is unavailable for session ${sessionId}.`);
     }
@@ -807,6 +851,7 @@ export class LifecycleReactor {
     }
 
     await this.archiveArtifactsBeforeDiscard(continuation.descriptor);
+    this.lifetimeSignal.throwIfAborted();
     if (continuation.stage === 'requested') {
       continuation = { ...continuation, stage: 'discard-pending' };
       this.persistRetentionContinuation(recoveryWork, continuation);
@@ -817,10 +862,13 @@ export class LifecycleReactor {
           payloadHash: continuation.descriptor.discardPayloadHash,
           runtime: this.options.runtime,
         });
+        this.lifetimeSignal.throwIfAborted();
         continuation = this.recordAppliedDiscard(continuation, outcome);
         this.persistRetentionContinuation(recoveryWork, continuation);
       } catch (error: unknown) {
+        this.lifetimeSignal.throwIfAborted();
         const reconciled = await this.reconcileDiscard(bound, continuation);
+        this.lifetimeSignal.throwIfAborted();
         if (reconciled.kind === 'definitive-failure') {
           return this.failRetention(recoveryWork, continuation, reconciled.reason);
         }
@@ -838,6 +886,7 @@ export class LifecycleReactor {
       }
     } else if (continuation.stage === 'discard-pending') {
       const reconciled = await this.reconcileDiscard(bound, continuation);
+      this.lifetimeSignal.throwIfAborted();
       if (reconciled.kind === 'unknown') {
         return this.deferUnknownProviderOutcome(continuation, 'provider discard reconciliation remains unknown');
       }
@@ -852,10 +901,13 @@ export class LifecycleReactor {
             payloadHash: continuation.descriptor.discardPayloadHash,
             runtime: this.options.runtime,
           });
+          this.lifetimeSignal.throwIfAborted();
           continuation = this.recordAppliedDiscard(continuation, outcome);
           this.persistRetentionContinuation(recoveryWork, continuation);
         } catch (error: unknown) {
+          this.lifetimeSignal.throwIfAborted();
           const replayReconciliation = await this.reconcileDiscard(bound, continuation);
+          this.lifetimeSignal.throwIfAborted();
           if (replayReconciliation.kind === 'definitive-failure') {
             return this.failRetention(recoveryWork, continuation, replayReconciliation.reason);
           }
@@ -884,6 +936,7 @@ export class LifecycleReactor {
     // Before the completion append: a crash here re-runs retention from its continuation, and residue is
     // re-derived rather than recorded, so the next run discards whatever this one did not reach.
     await this.discardSessionResidue(bound, recoveryWork.entry);
+    this.lifetimeSignal.throwIfAborted();
     try {
       appendRetentionDiscardCompleted(this.options.commitEvents, {
         sessionId,
@@ -1005,6 +1058,7 @@ export class LifecycleReactor {
     work: RecoverySessionRetentionWork,
     continuation: RetentionDiscardContinuation,
   ): void {
+    this.lifetimeSignal.throwIfAborted();
     const persisted = new RecoveryQuarantineStore(this.options.db(), this.options.time).upsert({
       boundary: 'session-retention-work',
       subject: work.recovery.subject,
@@ -1026,6 +1080,7 @@ export class LifecycleReactor {
     work: RecoverySessionRetentionWork,
     continuation: RetentionDiscardContinuation,
   ): void {
+    this.lifetimeSignal.throwIfAborted();
     const deleted = new RecoveryQuarantineStore(this.options.db(), this.options.time).delete({
       boundary: 'session-retention-work',
       subject: work.recovery.subject,
@@ -1104,6 +1159,7 @@ export class LifecycleReactor {
       'skipped_protected' | 'provider_declares_none' | 'skipped_no_handles'
     >,
   ): RecoveryDisposition {
+    this.lifetimeSignal.throwIfAborted();
     try {
       appendRetentionDiscardCompleted(this.options.commitEvents, {
         sessionId: continuation.sessionId,
@@ -1227,15 +1283,19 @@ export class LifecycleReactor {
   }
 
   private scheduleDrain(): void {
-    if (this.drainPromise !== null || !this.hasPendingWork()) {
+    if (
+      this.lifetimeSignal.aborted ||
+      this.recoveryRearmTimer !== null ||
+      this.drainPromise !== null ||
+      !this.hasPendingWork()
+    ) {
       return;
     }
 
     let failed = false;
     const promise = this.drainQueue()
-      .catch((error: unknown) => {
+      .catch(() => {
         failed = true;
-        this.log(`Retention lifecycle reactor failed: ${errorMessage(error)}`);
       })
       .finally(() => {
         if (this.drainPromise === promise) {
@@ -1278,7 +1338,7 @@ export class LifecycleReactor {
   }
 
   private async drainQueue(): Promise<void> {
-    for (;;) {
+    while (!this.lifetimeSignal.aborted) {
       const pair = this.nextPendingPair();
       if (pair === null) return;
       const key = sessionRetentionWorkKey(pair.sessionId, pair.jobId);
@@ -1312,8 +1372,37 @@ export class LifecycleReactor {
     this.continuationLeaseTimer = null;
   }
 
+  private dispatchBackgroundRecovery(): void {
+    if (this.lifetimeSignal.aborted || this.recoveryRearmTimer !== null) return;
+    if (this.hasPendingWork()) {
+      this.scheduleDrain();
+      return;
+    }
+    void this.runContainedRecovery(this.lifetimeSignal).catch(() => {});
+  }
+
+  private clearRecoveryRearmTimer(): void {
+    if (this.recoveryRearmTimer === null) return;
+    this.options.time.clearTimeout(this.recoveryRearmTimer);
+    this.recoveryRearmTimer = null;
+  }
+
+  private scheduleRecoveryRearm(): void {
+    if (!this.isRetentionAdmitted() || this.recoveryRearmTimer !== null || this.recoveryFailureStreak >= 3) return;
+    const delayMs = 30_000 * 2 ** this.recoveryFailureStreak;
+    this.recoveryFailureStreak += 1;
+    const timer = this.options.time.setTimeout(() => {
+      if (this.lifetimeSignal.aborted || this.recoveryRearmTimer !== timer) return;
+      this.recoveryRearmTimer = null;
+      this.dispatchBackgroundRecovery();
+    }, delayMs);
+    this.recoveryRearmTimer = timer;
+    timer.unref?.();
+  }
+
   private scheduleContinuationLeaseTimer(leases: readonly SessionContinuationLeaseComponent[]): void {
     this.clearContinuationLeaseTimer();
+    if (this.lifetimeSignal.aborted) return;
 
     const nowMs = this.options.time.now();
     let earliestExpiresAt: number | null = null;
@@ -1334,16 +1423,16 @@ export class LifecycleReactor {
       return;
     }
 
-    this.continuationLeaseTimer = this.options.time.setTimeout(
+    const timer = this.options.time.setTimeout(
       () => {
+        if (this.lifetimeSignal.aborted || this.continuationLeaseTimer !== timer) return;
         this.continuationLeaseTimer = null;
-        void this.runContainedRecovery(this.lifetimeSignal).catch((error: unknown) => {
-          this.log(`Continuation lease timer recovery failed: ${errorMessage(error)}`);
-        });
+        this.dispatchBackgroundRecovery();
       },
       Math.max(0, earliestExpiresAt - nowMs),
     );
-    this.continuationLeaseTimer.unref?.();
+    this.continuationLeaseTimer = timer;
+    timer.unref?.();
   }
 
   private log(message: string): void {
@@ -1438,55 +1527,17 @@ function retentionWorkPair(subject: RecoverySubject): Readonly<{ sessionId: stri
   return { sessionId: subject.key.slice(0, separator), jobId: subject.key.slice(separator + 1) };
 }
 
-function hasRetentionWorkInputs(db: Database, pair: Readonly<{ sessionId: string; jobId: string }>): boolean {
-  const session = db
-    .prepare<[string], { readonly present: number }>(
-      `SELECT 1 AS present
-         FROM projection_sessions
-        WHERE session_id = ?`,
-    )
-    .get(pair.sessionId);
-  const release = db
-    .prepare<[string, string], { readonly present: number }>(
-      `SELECT 1 AS present
-         FROM events
-        WHERE type = 'session.claim.released'
-          AND stream_id = ?
-          AND json_extract(refs, '$.jobId') = ?
-        LIMIT 1`,
-    )
-    .get(pair.sessionId, pair.jobId);
-  const terminal = db
-    .prepare<[string, string], { readonly present: number }>(
-      `SELECT 1 AS present
-         FROM events
-        WHERE type = 'job.terminal.recorded'
-          AND stream_id = ?
-          AND json_extract(refs, '$.sessionId') = ?
-        LIMIT 1`,
-    )
-    .get(pair.jobId, pair.sessionId);
-  return session !== undefined && release !== undefined && terminal !== undefined;
-}
-
 export async function createRetentionWorkRetryPlan(
   db: Database,
   subject: RecoverySubject,
   signal: AbortSignal,
   quarantine: RecoveryQuarantinePort,
 ): Promise<RecoverySourceFactoryPlan<RawRetentionWorkItem, RecoverySessionRetentionWork>> {
-  const reactor = lifecycleReactorsByDatabase.get(db);
-  const policy = () => retryReactor(db).createRecoveryPolicies(quarantine, []).retentionWork;
-  const pair = retentionWorkPair(subject);
-  if (reactor === undefined) {
-    if (pair !== null && hasRetentionWorkInputs(db, pair)) {
-      throw new Error('Session retention retry policy is not initialized for an existing work item.');
-    }
-    return {
-      source: retentionWorkItemRecoverySource([], subject),
-      policy: deferredSessionRetryPolicy(policy),
-    };
+  if (!isLifecycleRetentionAdmitted(db)) {
+    throw new Error('Session retention recovery is not admitted.');
   }
+  const reactor = retryReactor(db);
+  const pair = retentionWorkPair(subject);
 
   if (pair === null) {
     return {
@@ -1524,6 +1575,10 @@ export async function createRetentionWorkRetryPlan(
     source: retentionWorkItemRecoverySource(receipts, subject),
     policy: policies.retentionWork,
   };
+}
+
+export function isLifecycleRetentionAdmitted(db: Database): boolean {
+  return lifecycleReactorsByDatabase.get(db)?.isRetentionAdmitted() === true;
 }
 
 export function createLifecycleReactor(options: LifecycleReactorOptions): LifecycleReactor {

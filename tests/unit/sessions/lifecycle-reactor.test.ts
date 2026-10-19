@@ -3,6 +3,15 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type * as SessionStartupRecoveryModule from '#src/sessions/startup-recovery.js';
 
+import { defineRecoverySource } from '#src/recovery/containment.js';
+import {
+  retentionWorkItemRecoverySource,
+  type RawRetentionWorkItem,
+} from '#src/sessions/retention-work-item-recovery-source.js';
+import { RecoveryQuarantineStore } from '#src/recovery/quarantine.js';
+import { createRecoveryQuarantineRetryService, createRecoverySourceRegistry } from '#src/recovery/source-registry.js';
+import type { RecoveryObservation } from '#src/recovery/phase-observation.js';
+
 import { JobStore } from '#src/jobs/store.js';
 import { appendJobTerminalRecorded } from '#src/jobs/terminal/recording.js';
 import { jobsRegistry } from '#src/jobs/events.js';
@@ -13,7 +22,11 @@ import { managed } from '#src/providers/capability.js';
 import { SessionManager } from '#src/sessions/shell.js';
 import { TEST_CODEX_BINDING } from '#tests/helpers/provider-credentials.js';
 import { fixtureProviderBindingCodec, type FixtureProviderAccess } from '#tests/helpers/provider-binding.js';
-import { createLifecycleReactor } from '#src/sessions/lifecycle-reactor.js';
+import {
+  createLifecycleReactor,
+  createRetentionWorkRetryPlan,
+  isLifecycleRetentionAdmitted,
+} from '#src/sessions/lifecycle-reactor.js';
 import { runSessionStartupRecovery } from '#src/sessions/startup-recovery.js';
 import type { ProviderSession } from '#src/sessions/entry.js';
 import { readProjectionProviderSession } from '#src/sessions/projections.js';
@@ -41,6 +54,11 @@ vi.mock('#src/sessions/startup-recovery.js', async (importOriginal) => {
   return { ...actual, runSessionStartupRecovery: vi.fn(actual.runSessionStartupRecovery) };
 });
 
+vi.mock('#src/sessions/retention-work-item-recovery-source.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('#src/sessions/retention-work-item-recovery-source.js')>();
+  return { ...actual, retentionWorkItemRecoverySource: vi.fn(actual.retentionWorkItemRecoverySource) };
+});
+
 const openDbs = new Set<Database>();
 
 afterEach(() => {
@@ -48,6 +66,7 @@ afterEach(() => {
     db.close();
   }
   openDbs.clear();
+  vi.restoreAllMocks();
 });
 
 type Harness = {
@@ -171,6 +190,11 @@ function createHarness(
     appendedBatches,
     logs,
   };
+}
+
+async function admitRetention(harness: Harness): Promise<void> {
+  harness.reactor.admitRetention();
+  await harness.reactor.waitForIdle();
 }
 
 async function openClaimedSession(
@@ -407,6 +431,7 @@ describe('LifecycleReactor retention enforcement', () => {
         return { kind: 'discarded' };
       },
     });
+    await admitRetention(harness);
     const jobId = 'job-archive-native-log';
     const nativeLog = '/tmp/provider/rollout-archive.jsonl';
     const content = '{"type":"session","message":"hello"}\n';
@@ -501,6 +526,7 @@ describe('LifecycleReactor retention enforcement', () => {
 
   it('does not discard stale-aborted session artifacts until the resumed job releases', async () => {
     const harness = createHarness();
+    await admitRetention(harness);
     const staleJobId = 'job-stale-abort';
     const resumedJobId = 'job-stale-resumed';
     const sessionId = await openClaimedSession(harness, staleJobId);
@@ -565,6 +591,7 @@ describe('LifecycleReactor retention enforcement', () => {
       },
       reconcileDiscard: async () => ({ kind: 'unknown' }),
     });
+    await admitRetention(harness);
     const jobId = 'job-discard-unknown';
     const handle = '/tmp/rollout-discard-unknown.jsonl';
     const sessionId = await openClaimedSession(harness, jobId);
@@ -627,6 +654,7 @@ describe('LifecycleReactor retention enforcement', () => {
         );
       },
     });
+    await admitRetention(harness);
     const jobId = 'job-predelete-protection';
     protectedSessionId = await openClaimedSession(harness, jobId);
     await recordArtifact(harness, protectedSessionId, jobId, '/tmp/rollout-predelete.jsonl');
@@ -649,6 +677,7 @@ describe('LifecycleReactor retention enforcement', () => {
 
   it('enforces once when terminal and release observations arrive out of order', async () => {
     const harness = createHarness({ autoObserveCoordinator: false });
+    await admitRetention(harness);
     const jobId = 'job-out-of-order';
     const sessionId = await openClaimedSession(harness, jobId);
     await recordArtifact(harness, sessionId, jobId, '/tmp/rollout-out-of-order.jsonl');
@@ -701,6 +730,8 @@ describe('LifecycleReactor retention enforcement', () => {
 
   it('reports one background recovery pair for a queue drain with per-source counters', async () => {
     const harness = createHarness({ autoObserveCoordinator: false });
+    await admitRetention(harness);
+    harness.logs.length = 0;
     const jobId = 'job-observed-drain';
     const sessionId = await openClaimedSession(harness, jobId);
     initRunningJob(harness, jobId, sessionId);
@@ -728,7 +759,7 @@ describe('LifecycleReactor retention enforcement', () => {
     await harness.reactor.dispose();
   });
 
-  it('startup scan backfills existing terminal and release pairs', async () => {
+  it('startup discovers existing terminal and release pairs and admission backfills them', async () => {
     const harness = createHarness({ autoObserveCoordinator: false });
     const jobId = 'job-startup-scan';
     const sessionId = await openClaimedSession(harness, jobId);
@@ -741,6 +772,8 @@ describe('LifecycleReactor retention enforcement', () => {
     expect(readRetentionEvents(harness, sessionId)).toEqual([]);
 
     await harness.reactor.scanStartup(harness.reactorLifetime.signal);
+    expect(readRetentionEvents(harness, sessionId)).toEqual([]);
+    await admitRetention(harness);
 
     await expectRetentionEvents(harness, sessionId, [
       { type: 'session.retention.discard.requested', attempt: 1, handles: [] },
@@ -757,6 +790,7 @@ describe('LifecycleReactor retention enforcement', () => {
     'preserves a claimed session version until release with a lease expiring in %s ms',
     async (expiresInMs) => {
       const harness = createHarness();
+      await admitRetention(harness);
       const jobId = 'job-live-lease';
       const sessionId = await openClaimedSession(harness, jobId);
       await recordArtifact(harness, sessionId, jobId, '/tmp/rollout-live-lease.jsonl');
@@ -808,6 +842,12 @@ describe('LifecycleReactor retention enforcement', () => {
     expect(harness.logs.filter((line) => line.startsWith('recovery-phase '))).toEqual([]);
 
     harness.runtime.time.tick(100);
+    await harness.reactor.waitForIdle();
+    expect(readProjectionProviderSession(harness.db, sessionId)?.continuationLease?.status).toBe('expired');
+    expect(readRetentionEvents(harness, sessionId)).toEqual([]);
+    expect(harness.discardCalls).toEqual([]);
+    harness.logs.length = 0;
+    await admitRetention(harness);
 
     await expectRetentionEvents(harness, sessionId, [
       { type: 'session.retention.discard.requested', attempt: 1, handles: ['/tmp/rollout-lease-timer.jsonl'] },
@@ -825,7 +865,7 @@ describe('LifecycleReactor retention enforcement', () => {
     expect(phases[1]).toMatch(/event=finish outcome=complete duration_ms=\d+\.\d{3}/);
     expect(JSON.parse(/ sources=(.*)\n$/.exec(phases[1])![1])).toEqual({
       'session-projection': { subjects: 1, reads: 1 },
-      'session-continuation-lease': { subjects: 1, reads: 1 },
+      'session-continuation-lease': { subjects: 0, reads: 0 },
       'terminal-retention-outcome': { subjects: 0, reads: 0 },
       'retention-release-pair': { subjects: 2, reads: 2 },
       'session-retention-work': { subjects: 1, reads: 0 },
@@ -834,3 +874,461 @@ describe('LifecycleReactor retention enforcement', () => {
   });
 });
 import { initTestJob } from '#tests/helpers/session.js';
+
+describe('LifecycleReactor retention admission and failure ownership', () => {
+  async function seedEligible(harness: Harness, jobId: string): Promise<string> {
+    const sessionId = await openClaimedSession(harness, jobId);
+    initRunningJob(harness, jobId, sessionId);
+    completeJobViaCoordinatorCommit(harness, jobId, sessionId);
+    harness.sessionManager.releaseJob(sessionId, jobId);
+    return sessionId;
+  }
+
+  it('discovers all startup work in component-scan time and settles only after idempotent admission', async () => {
+    const harness = createHarness({ autoObserveCoordinator: false });
+    const sessions = [];
+    for (let index = 0; index < 3; index += 1) sessions.push(await seedEligible(harness, `startup-${index}`));
+    const settle = vi.spyOn(harness.reactor, 'enforceRetention');
+    const record = vi.fn<RecoveryObservation['record']>();
+    const before = harness.runtime.time.now();
+
+    await harness.reactor.scanStartup(harness.reactorLifetime.signal, { record });
+
+    expect(harness.runtime.time.now()).toBe(before);
+    expect(record).toHaveBeenCalledWith('session-retention-work', { subjects: 3 });
+    expect(settle).not.toHaveBeenCalled();
+    expect(harness.discardCalls).toEqual([]);
+    expect(harness.db.prepare('SELECT * FROM recovery_quarantine').all()).toEqual([]);
+    for (const sessionId of sessions) expect(readRetentionEvents(harness, sessionId)).toEqual([]);
+    expect(isLifecycleRetentionAdmitted(harness.db)).toBe(false);
+
+    harness.reactor.admitRetention();
+    harness.reactor.admitRetention();
+    await harness.reactor.waitForIdle();
+
+    expect(isLifecycleRetentionAdmitted(harness.db)).toBe(true);
+    expect(settle).toHaveBeenCalledTimes(3);
+    for (const sessionId of sessions) {
+      expect(readRetentionEvents(harness, sessionId).map(({ type }) => type)).toEqual([
+        'session.retention.discard.requested',
+        'session.retention.discard.completed',
+      ]);
+    }
+    expect(harness.logs.filter((line) => line.includes('event=start'))).toHaveLength(1);
+    await harness.reactor.dispose();
+  });
+
+  it('releases deferred drain pairs and re-derives them on admission', async () => {
+    const harness = createHarness();
+    const sessionId = await seedEligible(harness, 'deferred-drain');
+    await harness.reactor.waitForIdle();
+    expect(readRetentionEvents(harness, sessionId)).toEqual([]);
+    expect(harness.discardCalls).toEqual([]);
+    const passes = vi.mocked(runSessionStartupRecovery).mock.calls.length;
+    await harness.reactor.waitForIdle();
+    expect(vi.mocked(runSessionStartupRecovery).mock.calls).toHaveLength(passes);
+    await admitRetention(harness);
+    expect(readRetentionEvents(harness, sessionId)).toHaveLength(2);
+    await harness.reactor.dispose();
+  });
+
+  it('recovers lease events and timers while deferred without retention effects', async () => {
+    const harness = createHarness();
+    const jobId = 'deferred-lease';
+    const sessionId = await seedEligible(harness, jobId);
+    await harness.reactor.waitForIdle();
+    recordContinuationLease(harness, sessionId, jobId, harness.runtime.time.now() + 100);
+    await harness.reactor.waitForIdle();
+    expect(readProjectionProviderSession(harness.db, sessionId)?.continuationLease?.status).toBe('pending');
+    harness.runtime.time.tick(100);
+    await harness.reactor.waitForIdle();
+    expect(readProjectionProviderSession(harness.db, sessionId)?.continuationLease?.status).toBe('expired');
+    expect(readRetentionEvents(harness, sessionId)).toEqual([]);
+    expect(harness.db.prepare('SELECT * FROM recovery_quarantine').all()).toEqual([]);
+    expect(harness.discardCalls).toEqual([]);
+    await admitRetention(harness);
+    expect(readRetentionEvents(harness, sessionId)).toHaveLength(2);
+    await harness.reactor.dispose();
+  });
+
+  it('refuses direct retry plans for deferred and missing reactors even for absent subjects', async () => {
+    const harness = createHarness({ autoObserveCoordinator: false });
+    const quarantine = new RecoveryQuarantineStore(harness.db, harness.runtime.time);
+    const subject = { key: 'absent\u0000job', revision: { kind: 'fingerprint' as const, value: 'revision' } };
+    expect(isLifecycleRetentionAdmitted(harness.db)).toBe(false);
+    await expect(
+      createRetentionWorkRetryPlan(harness.db, subject, harness.reactorLifetime.signal, quarantine),
+    ).rejects.toThrow('not admitted');
+    await harness.reactor.scanStartup(harness.reactorLifetime.signal);
+    await expect(
+      createRetentionWorkRetryPlan(harness.db, subject, harness.reactorLifetime.signal, quarantine),
+    ).rejects.toThrow('not admitted');
+    await admitRetention(harness);
+    const plan = await createRetentionWorkRetryPlan(harness.db, subject, harness.reactorLifetime.signal, quarantine);
+    expect(plan.source.boundary).toBe('session-retention-work');
+    await harness.reactor.dispose();
+  });
+
+  it('preserves an existing real retention quarantine until admission permits exact absence completion', async () => {
+    const harness = createHarness({ autoObserveCoordinator: false });
+    const quarantine = new RecoveryQuarantineStore(harness.db, harness.runtime.time);
+    const subject = { key: 'missing\u0000job', revision: { kind: 'fingerprint' as const, value: 'revision' } };
+    expect(
+      quarantine.upsert({
+        boundary: 'session-retention-work',
+        subject,
+        state: 'active',
+        stage: 'settle',
+        errorMessage: 'previous failure',
+        detail: 'retention retry retained',
+      }),
+    ).toBe(true);
+    const sources = createRecoverySourceRegistry();
+    sources.register('session-retention-work', (exact, signal, port) =>
+      createRetentionWorkRetryPlan(harness.db, exact, signal, port),
+    );
+    const ids = { uuid: vi.fn(() => 'retry-token') };
+    const claim = vi.spyOn(quarantine, 'claimRetry');
+    const reclaim = vi.spyOn(quarantine, 'reclaimRetry');
+    const retry = createRecoveryQuarantineRetryService({
+      instanceId: 'reactor-process',
+      ids,
+      quarantine,
+      sources,
+      isRetryAdmitted: () => isLifecycleRetentionAdmitted(harness.db),
+    });
+    const request = { boundary: 'session-retention-work', key: subject.key, revision: 'revision' };
+    const before = harness.db.prepare('SELECT * FROM recovery_quarantine').all();
+    await harness.reactor.scanStartup(harness.reactorLifetime.signal);
+    await expect(retry.clear(request)).rejects.toMatchObject({ code: 'retention-not-admitted' });
+    expect(harness.db.prepare('SELECT * FROM recovery_quarantine').all()).toEqual(before);
+    expect(ids.uuid).not.toHaveBeenCalled();
+    expect(claim).not.toHaveBeenCalled();
+    expect(reclaim).not.toHaveBeenCalled();
+    expect(harness.discardCalls).toEqual([]);
+    await admitRetention(harness);
+    await expect(retry.clear(request)).resolves.toEqual({ ...request, disposition: 'advanced' });
+    expect(claim).toHaveBeenCalledOnce();
+    expect(quarantine.read('session-retention-work', subject.key)).toBeNull();
+    await harness.reactor.dispose();
+  });
+
+  it.each(['failure', 'abort'] as const)(
+    'propagates discovery %s at startup without count evidence or a re-arm',
+    async (mode) => {
+      const harness = createHarness({ autoObserveCoordinator: false });
+      await seedEligible(harness, `startup-${mode}`);
+      const abort = new AbortController();
+      const failure = new Error('composition scan failed');
+      const record = vi.fn<RecoveryObservation['record']>();
+      const timers = vi.spyOn(harness.runtime.time, 'setTimeout');
+      vi.mocked(retentionWorkItemRecoverySource).mockImplementationOnce(() =>
+        defineRecoverySource<RawRetentionWorkItem>({
+          boundary: 'session-retention-work',
+          scanSubject: { key: 'composition', revision: { kind: 'until-cleared' } },
+          scan: async () => {
+            if (mode === 'abort') {
+              abort.abort();
+              abort.signal.throwIfAborted();
+            }
+            throw failure;
+          },
+          subject: (raw) => raw.subject,
+        }),
+      );
+      const scan = harness.reactor.scanStartup(abort.signal, { record });
+      if (mode === 'abort') await expect(scan).rejects.toMatchObject({ name: 'AbortError' });
+      else await expect(scan).rejects.toBe(failure);
+      expect(record.mock.calls.filter(([source]) => source === 'session-retention-work')).toEqual([]);
+      expect(timers).not.toHaveBeenCalled();
+      expect(harness.logs.filter((line) => line.includes('reactor failed:'))).toEqual([]);
+      await harness.reactor.dispose();
+    },
+  );
+
+  it('re-arms a rejected admission pass with an empty queue and later settles', async () => {
+    const harness = createHarness({ autoObserveCoordinator: false });
+    const sessionId = await seedEligible(harness, 'admission-retry');
+    const timers = vi.spyOn(harness.runtime.time, 'setTimeout');
+    const failure = new Error('temporary admission failure');
+    vi.mocked(runSessionStartupRecovery).mockRejectedValueOnce(failure);
+    harness.reactor.admitRetention();
+    await expect(harness.reactor.waitForIdle()).rejects.toBe(failure);
+    await harness.reactor.waitForIdle();
+    expect(timers.mock.calls.map(([, delay]) => delay)).toEqual([30_000]);
+    expect(harness.logs.filter((line) => line.includes('reactor failed:'))).toHaveLength(1);
+    expect(readRetentionEvents(harness, sessionId)).toEqual([]);
+    harness.runtime.time.tick(29_999);
+    await harness.reactor.waitForIdle();
+    expect(readRetentionEvents(harness, sessionId)).toEqual([]);
+    harness.runtime.time.tick(1);
+    await harness.reactor.waitForIdle();
+    expect(readRetentionEvents(harness, sessionId)).toHaveLength(2);
+    await harness.reactor.dispose();
+  });
+
+  it('uses the same owner for a live drain failure and coalesces events without consuming queued pairs', async () => {
+    const harness = createHarness({ autoObserveCoordinator: false });
+    await admitRetention(harness);
+    const sessionId = await seedEligible(harness, 'live-drain');
+    const observed = harness.appendedBatches.flat();
+    const timers = vi.spyOn(harness.runtime.time, 'setTimeout');
+    const failure = new Error('live drain failed');
+    vi.mocked(runSessionStartupRecovery).mockRejectedValueOnce(failure);
+    harness.reactor.observe(observed);
+    await expect(harness.reactor.waitForIdle()).rejects.toBe(failure);
+    await harness.reactor.waitForIdle();
+    const passes = vi.mocked(runSessionStartupRecovery).mock.calls.length;
+    harness.reactor.observe(observed);
+    harness.reactor.observe(observed);
+    await harness.reactor.waitForIdle();
+    expect(vi.mocked(runSessionStartupRecovery).mock.calls).toHaveLength(passes);
+    expect(timers.mock.calls.map(([, delay]) => delay)).toEqual([30_000]);
+    expect(harness.logs.filter((line) => line.includes('reactor failed:'))).toHaveLength(1);
+    expect(readRetentionEvents(harness, sessionId)).toEqual([]);
+    harness.runtime.time.tick(30_000);
+    await harness.reactor.waitForIdle();
+    expect(readRetentionEvents(harness, sessionId)).toHaveLength(2);
+    const settledPasses = vi.mocked(runSessionStartupRecovery).mock.calls.length;
+    harness.runtime.time.tick(300_000);
+    await harness.reactor.waitForIdle();
+    expect(vi.mocked(runSessionStartupRecovery).mock.calls).toHaveLength(settledPasses);
+    await harness.reactor.dispose();
+  });
+
+  it('logs and re-arms once when admission, lease events and drains join a rejected promise', async () => {
+    const harness = createHarness();
+    const jobId = 'joined-failure';
+    const sessionId = await openClaimedSession(harness, jobId);
+    let reject!: (reason: Error) => void;
+    vi.mocked(runSessionStartupRecovery).mockImplementationOnce(
+      () =>
+        new Promise<void>((_resolve, fail) => {
+          reject = fail;
+        }),
+    );
+    const timers = vi.spyOn(harness.runtime.time, 'setTimeout');
+    harness.reactor.admitRetention();
+    recordContinuationLease(harness, sessionId, jobId);
+    initRunningJob(harness, jobId, sessionId);
+    completeJob(harness, jobId, sessionId);
+    harness.sessionManager.releaseJob(sessionId, jobId);
+    const failure = new Error('shared failure');
+    const idle = expect(harness.reactor.waitForIdle()).rejects.toBe(failure);
+    reject(failure);
+    await idle;
+    await harness.reactor.waitForIdle();
+    expect(harness.logs.filter((line) => line.includes('reactor failed:'))).toHaveLength(1);
+    expect(timers.mock.calls.map(([, delay]) => delay)).toEqual([30_000]);
+    await harness.reactor.dispose();
+  });
+
+  it('exhausts three re-arms and only a successful fresh pass restores the budget', async () => {
+    const harness = createHarness({ autoObserveCoordinator: false });
+    const sessionId = await seedEligible(harness, 'exhausted');
+    const observed = harness.appendedBatches.flat();
+    const timers = vi.spyOn(harness.runtime.time, 'setTimeout');
+    const failure = new Error('persistent failure');
+    for (let index = 0; index < 5; index += 1) vi.mocked(runSessionStartupRecovery).mockRejectedValueOnce(failure);
+    harness.reactor.admitRetention();
+    await expect(harness.reactor.waitForIdle()).rejects.toBe(failure);
+    await harness.reactor.waitForIdle();
+    for (const delay of [30_000, 60_000, 120_000]) {
+      harness.runtime.time.tick(delay);
+      await expect(harness.reactor.waitForIdle()).rejects.toBe(failure);
+      await harness.reactor.waitForIdle();
+    }
+    const exhaustedPasses = vi.mocked(runSessionStartupRecovery).mock.calls.length;
+    harness.runtime.time.tick(1_000_000);
+    await harness.reactor.waitForIdle();
+    expect(vi.mocked(runSessionStartupRecovery).mock.calls).toHaveLength(exhaustedPasses);
+    harness.reactor.observe(observed);
+    await expect(harness.reactor.waitForIdle()).rejects.toBe(failure);
+    await harness.reactor.waitForIdle();
+    expect(timers.mock.calls.map(([, delay]) => delay)).toEqual([30_000, 60_000, 120_000]);
+    const afterFreshFailure = vi.mocked(runSessionStartupRecovery).mock.calls.length;
+    harness.runtime.time.tick(1_000_000);
+    await harness.reactor.waitForIdle();
+    expect(vi.mocked(runSessionStartupRecovery).mock.calls).toHaveLength(afterFreshFailure);
+    harness.reactor.observe(observed);
+    await harness.reactor.waitForIdle();
+    expect(readRetentionEvents(harness, sessionId)).toHaveLength(2);
+    vi.mocked(runSessionStartupRecovery).mockRejectedValueOnce(failure);
+    harness.reactor.observe(observed);
+    await expect(harness.reactor.waitForIdle()).rejects.toBe(failure);
+    await harness.reactor.waitForIdle();
+    expect(timers.mock.calls.map(([, delay]) => delay)).toEqual([30_000, 60_000, 120_000, 30_000]);
+    await harness.reactor.dispose();
+  });
+
+  it.each(['event', 'timer'] as const)('re-arms a lease %s failure even without pending pairs', async (trigger) => {
+    const harness = createHarness();
+    await admitRetention(harness);
+    const jobId = `lease-failure-${trigger}`;
+    const sessionId = await openClaimedSession(harness, jobId);
+    const failure = new Error('lease pass failed');
+    if (trigger === 'timer') {
+      recordContinuationLease(harness, sessionId, jobId, harness.runtime.time.now() + 100);
+      await harness.reactor.waitForIdle();
+      harness.sessionManager.releaseJob(sessionId, jobId);
+      await harness.reactor.waitForIdle();
+    }
+    const timers = vi.spyOn(harness.runtime.time, 'setTimeout');
+    vi.mocked(runSessionStartupRecovery).mockRejectedValueOnce(failure);
+    if (trigger === 'event') recordContinuationLease(harness, sessionId, jobId, harness.runtime.time.now() + 100);
+    else harness.runtime.time.tick(100);
+    await expect(harness.reactor.waitForIdle()).rejects.toBe(failure);
+    await harness.reactor.waitForIdle();
+    expect(timers.mock.calls.map(([, delay]) => delay)).toEqual([30_000]);
+    expect(harness.logs.filter((line) => line.includes('reactor failed:'))).toHaveLength(1);
+    harness.runtime.time.tick(30_000);
+    await harness.reactor.waitForIdle();
+    if (trigger === 'timer') {
+      expect(readProjectionProviderSession(harness.db, sessionId)?.continuationLease?.status).toBe('expired');
+    }
+    expect(harness.logs.some((line) => line.includes('event=finish outcome=complete'))).toBe(true);
+    await harness.reactor.dispose();
+  });
+
+  it('quarantines a contained subject fault without treating the pass as rejected', async () => {
+    const harness = createHarness({ autoObserveCoordinator: false });
+    const sessionId = await seedEligible(harness, 'contained-fault');
+    const timers = vi.spyOn(harness.runtime.time, 'setTimeout');
+    vi.spyOn(harness.reactor, 'enforceRetention').mockRejectedValueOnce(new Error('subject failed'));
+    harness.reactor.admitRetention();
+    await harness.reactor.waitForIdle();
+    expect(
+      harness.db
+        .prepare('SELECT state, stage FROM recovery_quarantine WHERE boundary_id = ?')
+        .get('session-retention-work'),
+    ).toEqual({ state: 'active', stage: 'settle' });
+    expect(readRetentionEvents(harness, sessionId)).toEqual([]);
+    expect(timers).not.toHaveBeenCalled();
+    expect(harness.logs.filter((line) => line.includes('reactor failed:'))).toEqual([]);
+    await harness.reactor.dispose();
+  });
+
+  it('keeps startup ownership when background callers join its rejected promise', async () => {
+    const harness = createHarness();
+    const sessionId = await openClaimedSession(harness, 'startup-owner');
+    let reject!: (reason: Error) => void;
+    vi.mocked(runSessionStartupRecovery).mockImplementationOnce(
+      () =>
+        new Promise<void>((_resolve, fail) => {
+          reject = fail;
+        }),
+    );
+    const timers = vi.spyOn(harness.runtime.time, 'setTimeout');
+    const failure = new Error('startup failed');
+    const startup = expect(harness.reactor.scanStartup(harness.reactorLifetime.signal)).rejects.toBe(failure);
+    harness.reactor.admitRetention();
+    recordContinuationLease(harness, sessionId, 'startup-owner');
+    reject(failure);
+    await startup;
+    expect(timers).not.toHaveBeenCalled();
+    expect(harness.logs.filter((line) => line.includes('reactor failed:'))).toEqual([]);
+    await harness.reactor.dispose();
+  });
+
+  it('cancels a re-arm and refuses an already queued callback after disposal', async () => {
+    const harness = createHarness({ autoObserveCoordinator: false });
+    const timers = vi.spyOn(harness.runtime.time, 'setTimeout');
+    const failure = new Error('schedule then dispose');
+    vi.mocked(runSessionStartupRecovery).mockRejectedValueOnce(failure);
+    harness.reactor.admitRetention();
+    await expect(harness.reactor.waitForIdle()).rejects.toBe(failure);
+    const callback = timers.mock.calls[0]?.[0];
+    expect(callback).toBeDefined();
+    const passes = vi.mocked(runSessionStartupRecovery).mock.calls.length;
+    await harness.reactor.dispose();
+    callback!();
+    harness.runtime.time.tick(1_000_000);
+    harness.reactor.admitRetention();
+    harness.reactor.observe([]);
+    await harness.reactor.waitForIdle();
+    expect(vi.mocked(runSessionStartupRecovery).mock.calls).toHaveLength(passes);
+  });
+
+  it('cancels a continuation lease timer and its already queued callback on disposal', async () => {
+    const harness = createHarness();
+    await admitRetention(harness);
+    const jobId = 'dispose-lease';
+    const sessionId = await openClaimedSession(harness, jobId);
+    recordContinuationLease(harness, sessionId, jobId, harness.runtime.time.now() + 100);
+    await harness.reactor.waitForIdle();
+    const timers = vi.spyOn(harness.runtime.time, 'setTimeout');
+    harness.sessionManager.releaseJob(sessionId, jobId);
+    await harness.reactor.waitForIdle();
+    const callback = timers.mock.calls.find(([, delay]) => delay === 100)?.[0];
+    expect(callback).toBeDefined();
+    const passes = vi.mocked(runSessionStartupRecovery).mock.calls.length;
+    await harness.reactor.dispose();
+    callback!();
+    harness.runtime.time.tick(1_000);
+    expect(vi.mocked(runSessionStartupRecovery).mock.calls).toHaveLength(passes);
+    expect(readProjectionProviderSession(harness.db, sessionId)?.continuationLease?.status).toBe('pending');
+  });
+
+  it('leaves later subjects untouched when disposal interrupts an admitted pass', async () => {
+    const harness = createHarness({ autoObserveCoordinator: false });
+    const first = await seedEligible(harness, 'dispose-first');
+    const second = await seedEligible(harness, 'dispose-second');
+    const original = harness.reactor.enforceRetention.bind(harness.reactor);
+    let disposal: Promise<void> | undefined;
+    const settle = vi.spyOn(harness.reactor, 'enforceRetention').mockImplementationOnce(async (work) => {
+      const result = await original(work);
+      disposal = harness.reactor.dispose();
+      return result;
+    });
+    harness.reactor.admitRetention();
+    await harness.reactor.waitForIdle().catch((error: unknown) => {
+      expect(error).toMatchObject({ name: 'AbortError' });
+    });
+    expect(disposal).toBeDefined();
+    await disposal;
+    expect(settle).toHaveBeenCalledOnce();
+    const settledSession = settle.mock.calls[0]?.[0].sessionId;
+    expect([first, second]).toContain(settledSession);
+    for (const sessionId of [first, second]) {
+      expect(readRetentionEvents(harness, sessionId)).toHaveLength(sessionId === settledSession ? 2 : 0);
+    }
+    expect(harness.logs.filter((line) => line.includes('reactor failed:'))).toEqual([]);
+  });
+
+  it('aborts inside provider discard, waits for recovery and appends no completion after disposal', async () => {
+    let release!: () => void;
+    let started!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const harness = createHarness({
+      autoObserveCoordinator: false,
+      discardArtifacts: async () => {
+        started();
+        await blocked;
+        return { kind: 'discarded' };
+      },
+    });
+    const jobId = 'dispose-in-discard';
+    const sessionId = await openClaimedSession(harness, jobId);
+    await recordArtifact(harness, sessionId, jobId, '/tmp/dispose-in-discard.jsonl');
+    initRunningJob(harness, jobId, sessionId);
+    completeJobViaCoordinatorCommit(harness, jobId, sessionId);
+    harness.sessionManager.releaseJob(sessionId, jobId);
+    harness.reactor.admitRetention();
+    await entered;
+    const events = readRetentionEvents(harness, sessionId);
+    expect(events.map(({ type }) => type)).toEqual(['session.retention.discard.requested']);
+    const disposal = harness.reactor.dispose();
+    release();
+    await disposal;
+    expect(readRetentionEvents(harness, sessionId)).toEqual(events);
+    expect(harness.logs.filter((line) => line.includes('reactor failed:'))).toEqual([]);
+    expect(
+      harness.db.prepare('SELECT state FROM recovery_quarantine WHERE boundary_id = ?').get('session-retention-work'),
+    ).toEqual({ state: 'continuation' });
+  });
+});

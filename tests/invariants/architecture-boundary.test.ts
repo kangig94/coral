@@ -17,7 +17,12 @@ import {
   toCanonicalSrcPath,
   type ParsedImportEdge,
 } from '#tests/helpers/ts-import-scanner.js';
-import { productionProgram } from '#tests/helpers/ts-production-program.js';
+import {
+  createProgramOver,
+  describeDiagnostic,
+  productionProgram,
+  sourceFileDiagnostics,
+} from '#tests/helpers/ts-production-program.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const REPO_ROOT = resolve(dirname(__filename), '..', '..');
@@ -2481,7 +2486,7 @@ function collectStartupSliceSyntaxViolations(
               node,
               recoverySourceSymbol ?? unresolvedAuthorityDescription(context, node, 'RecoverySource'),
               'startup-input-seal: opaque RecoverySource handles expose no scan authority',
-              'RecoveryContainment.each(source, policy)',
+              'RecoveryContainment.each(source, policy) or RecoveryContainment.count(source, { signal })',
             ),
           );
         }
@@ -2503,7 +2508,7 @@ function collectStartupSliceSyntaxViolations(
             node,
             recoverySourceSymbol ?? unresolvedAuthorityDescription(context, node, 'RecoverySource'),
             'startup-input-seal: opaque RecoverySource handles may not be destructured for scan authority',
-            'RecoveryContainment.each(source, policy)',
+            'RecoveryContainment.each(source, policy) or RecoveryContainment.count(source, { signal })',
           ),
         );
       }
@@ -2561,6 +2566,49 @@ const RECOVERY_PRODUCTION_CONTEXT = createRecoveryAnalysisContext(
 );
 
 describe('recovery authority boundary', () => {
+  it.each([
+    ['sealed count', 'return boundary.count(source, { signal: policy.signal });', null],
+    ['direct scan', 'return source.scan();', 'opaque RecoverySource handles expose no scan authority'],
+    [
+      'destructured scan',
+      'const { scan } = source; return scan();',
+      'opaque RecoverySource handles may not be destructured',
+    ],
+    [
+      'receipt inspection',
+      'const receipt = {} as RecoveryReceipt<number>; void receipt.payload; return Promise.resolve(0);',
+      'RecoveryReceipt inspection',
+    ],
+    [
+      'receipt forgery',
+      'const receipt = {} as RecoveryReceipt<number>; void receipt; return Promise.resolve(0);',
+      'forged RecoveryReceipt construction',
+    ],
+  ] as const)('keeps the startup input seal around %s', (_name, body, violation) => {
+    const path = 'src/sessions/startup-recovery.ts';
+    const source = `
+      import { RecoveryContainment, type RecoveryContainmentBoundary, type RecoverySource,
+        type RecoveryPolicy, type RecoveryReceipt } from '../recovery/containment.js';
+      const boundary: RecoveryContainmentBoundary = RecoveryContainment;
+      export function runSessionStartupRecovery(
+        source: RecoverySource<number>, policy: RecoveryPolicy<number, number>,
+      ): Promise<number> { ${body} }
+    `;
+    const program = createProgramOver([resolve(REPO_ROOT, path)], new Map([[path, source]]));
+    const context = createRecoveryAnalysisContext(program, REPO_ROOT);
+    const violations = analyzeRecoveryAuthorityBoundary(context, {
+      phase1: false,
+      rawAuthority: false,
+      startupInputSeal: true,
+    });
+    if (violation === null) {
+      expect(sourceFileDiagnostics(program, path).map(describeDiagnostic)).toEqual([]);
+      assertNoRecoveryViolations(violations);
+    } else {
+      expect(violations.some((entry) => entry.violatedRule.includes(violation))).toBe(true);
+    }
+  });
+
   it('enforces the complete recovery authority seal against production', () => {
     const violations = analyzeRecoveryAuthorityBoundary(RECOVERY_PRODUCTION_CONTEXT, {
       phase1: true,

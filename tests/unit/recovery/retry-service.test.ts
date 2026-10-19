@@ -124,6 +124,7 @@ describe('recovery quarantine retry service', () => {
     ids = createIds('retry-token'),
   ): RecoveryQuarantineRetryService {
     return createRecoveryQuarantineRetryService({
+      isRetryAdmitted: () => true,
       instanceId,
       ids,
       quarantine,
@@ -136,6 +137,111 @@ describe('recovery quarantine retry service', () => {
     key: 'subject-1',
     revision: 'revision-1',
   } as const;
+
+  it.each(['active', 'retrying'] as const)(
+    'refuses deferred retention %s retries before acquiring authority',
+    async (state) => {
+      const retentionBoundary = 'session-retention-work';
+      const retrySubject = subject();
+      expect(quarantine.upsert({ ...activeWrite(), boundary: retentionBoundary })).toBe(true);
+      if (state === 'retrying') {
+        expect(
+          quarantine.claimRetry({
+            boundary: retentionBoundary,
+            subject: retrySubject,
+            retry: { subject: retrySubject, owner: 'previous-process', token: 'previous-token' },
+          }),
+        ).toBe(true);
+      }
+      const before = db.prepare('SELECT * FROM recovery_quarantine WHERE boundary_id = ?').get(retentionBoundary);
+      const claim = vi.spyOn(quarantine, 'claimRetry');
+      const reclaim = vi.spyOn(quarantine, 'reclaimRetry');
+      const ids = createIds('admitted-token');
+      const settle = vi.fn(() => advanced());
+      const sources = createRecoverySourceRegistry();
+      sources.register<Envelope, string>(retentionBoundary, (exactSubject) => ({
+        source: defineRecoverySource({
+          boundary: retentionBoundary,
+          scanSubject: exactSubject,
+          scan: () => [{ subject: retrySubject, value: 'retention work' }],
+          subject: (item) => item.subject,
+        }),
+        policy: {
+          processLocalCleanup: { kind: 'not-required' },
+          hydrate: (item) => item.value,
+          requiredObligations: () => [],
+          settle,
+          onFault: ({ error }) => ({ kind: 'fatal', error }),
+        },
+      }));
+      let admitted = false;
+      const retry = createRecoveryQuarantineRetryService({
+        instanceId: 'current-process',
+        ids,
+        quarantine,
+        sources,
+        isRetryAdmitted: () => admitted,
+      });
+      const retentionRequest = { ...request, boundary: retentionBoundary };
+
+      await expect(retry.clear(retentionRequest)).rejects.toMatchObject({ code: 'retention-not-admitted' });
+
+      expect(ids.uuid).not.toHaveBeenCalled();
+      expect(claim).not.toHaveBeenCalled();
+      expect(reclaim).not.toHaveBeenCalled();
+      expect(settle).not.toHaveBeenCalled();
+      expect(db.prepare('SELECT * FROM recovery_quarantine WHERE boundary_id = ?').get(retentionBoundary)).toEqual(
+        before,
+      );
+
+      admitted = true;
+      await expect(retry.clear(retentionRequest)).resolves.toEqual({ ...retentionRequest, disposition: 'advanced' });
+      expect(ids.uuid).toHaveBeenCalledOnce();
+      expect(state === 'active' ? claim : reclaim).toHaveBeenCalledOnce();
+      expect(settle).toHaveBeenCalledOnce();
+      expect(quarantine.read(retentionBoundary, retrySubject.key)).toBeNull();
+    },
+  );
+
+  it('keeps genuine retention absence completion behind admission', async () => {
+    const retentionBoundary = 'session-retention-work';
+    expect(quarantine.upsert({ ...activeWrite(), boundary: retentionBoundary })).toBe(true);
+    const before = db.prepare('SELECT * FROM recovery_quarantine WHERE boundary_id = ?').get(retentionBoundary);
+    const ids = createIds('absence-token');
+    const sources = createRecoverySourceRegistry();
+    sources.register<Envelope, string>(retentionBoundary, (exactSubject) => ({
+      source: defineRecoverySource({
+        boundary: retentionBoundary,
+        scanSubject: exactSubject,
+        scan: () => [],
+        subject: (item) => item.subject,
+      }),
+      policy: {
+        processLocalCleanup: { kind: 'not-required' },
+        hydrate: (item) => item.value,
+        requiredObligations: () => [],
+        settle: () => advanced(),
+        onFault: ({ error }) => ({ kind: 'fatal', error }),
+      },
+    }));
+    let admitted = false;
+    const retry = createRecoveryQuarantineRetryService({
+      instanceId: 'current-process',
+      ids,
+      quarantine,
+      sources,
+      isRetryAdmitted: () => admitted,
+    });
+    const retentionRequest = { ...request, boundary: retentionBoundary };
+    await expect(retry.clear(retentionRequest)).rejects.toMatchObject({ code: 'retention-not-admitted' });
+    expect(db.prepare('SELECT * FROM recovery_quarantine WHERE boundary_id = ?').get(retentionBoundary)).toEqual(
+      before,
+    );
+    expect(ids.uuid).not.toHaveBeenCalled();
+    admitted = true;
+    await expect(retry.clear(retentionRequest)).resolves.toEqual({ ...retentionRequest, disposition: 'advanced' });
+    expect(quarantine.read(retentionBoundary, request.key)).toBeNull();
+  });
 
   it('bounds a recovery source that ignores cancellation', async () => {
     vi.useFakeTimers();
@@ -182,6 +288,7 @@ describe('recovery quarantine retry service', () => {
       reclaimRetry: quarantine.reclaimRetry.bind(quarantine),
     };
     const retry = createRecoveryQuarantineRetryService({
+      isRetryAdmitted: () => true,
       instanceId: 'coordinator-1',
       ids: createIds('settled-token'),
       quarantine: crashBeforeDelete,

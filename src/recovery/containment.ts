@@ -188,6 +188,7 @@ export interface RecoveryReport<Item> {
 
 export interface RecoveryContainmentBoundary {
   each<Raw, Item>(source: RecoverySource<Raw>, policy: RecoveryPolicy<Raw, Item>): Promise<RecoveryReport<Item>>;
+  count<Raw>(source: RecoverySource<Raw>, options: { readonly signal: AbortSignal }): Promise<number>;
 }
 
 type RegisteredSource<Raw> = {
@@ -372,17 +373,34 @@ async function settleAndReleaseSubject<Raw, Item>(
   }
 }
 
-async function scanPhase<Raw, Item>(
+async function scanCore<Raw, Fault>(
   definition: RegisteredSource<Raw>,
-  policy: RecoveryPolicy<Raw, Item>,
-): Promise<PhaseResult<readonly ScannedSubject<Raw>[]>> {
-  throwIfAborted(policy.signal);
+  signal: AbortSignal,
+  onScanFault: (error: unknown) => Promise<Fault>,
+): Promise<{ readonly kind: 'completed'; readonly value: readonly ScannedSubject<Raw>[] } | Fault> {
+  throwIfAborted(signal);
   let rawItems: readonly Raw[];
 
   try {
     rawItems = await definition.scan();
   } catch (error) {
-    rethrowIfAborted(policy.signal, error);
+    rethrowIfAborted(signal, error);
+    return onScanFault(error);
+  }
+
+  throwIfAborted(signal);
+  const scanned = rawItems.map((raw) => ({
+    raw,
+    subject: copySubject(definition.subject(raw)),
+  }));
+  return { kind: 'completed', value: scanned };
+}
+
+async function scanPhase<Raw, Item>(
+  definition: RegisteredSource<Raw>,
+  policy: RecoveryPolicy<Raw, Item>,
+): Promise<PhaseResult<readonly ScannedSubject<Raw>[]>> {
+  const result = await scanCore(definition, policy.signal, async (error) => {
     const disposition = await policy.onFault({
       boundary: definition.boundary,
       stage: 'scan',
@@ -391,19 +409,21 @@ async function scanPhase<Raw, Item>(
     });
     throwIfAborted(policy.signal);
     return {
-      kind: 'fault',
+      kind: 'fault' as const,
       disposition,
       error,
     };
-  }
+  });
+  if (result.kind === 'completed') assertExactRetryScan(definition, result.value, policy.retry);
+  return result;
+}
 
-  throwIfAborted(policy.signal);
-  const scanned = rawItems.map((raw) => ({
-    raw,
-    subject: copySubject(definition.subject(raw)),
-  }));
-  assertExactRetryScan(definition, scanned, policy.retry);
-  return { kind: 'completed', value: scanned };
+async function count<Raw>(source: RecoverySource<Raw>, options: { readonly signal: AbortSignal }): Promise<number> {
+  const result = await scanCore(readSource(source), options.signal, async (error) => {
+    throw error;
+  });
+  throwIfAborted(options.signal);
+  return result.value.length;
 }
 
 async function hydratePhase<Raw, Item>(
@@ -1008,5 +1028,6 @@ function finishReport<Item>(report: MutableReport<Item>): RecoveryReport<Item> {
 
 export const RecoveryContainment: RecoveryContainmentBoundary = Object.freeze({
   each,
+  count,
 });
 import type { RecoveryRecordRemedy } from './provider-operation-remedy.js';
