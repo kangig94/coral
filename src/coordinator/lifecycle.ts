@@ -1042,6 +1042,7 @@ export type LifecycleDeps = {
   ) => ValidatedHandoffTarget | null;
   readonly onRetiredEpochOpened?: (epoch: ResolvedStoreEpoch, disposition: RetirementDisposition) => void;
   readonly startStorageRetentionFn?: () => void;
+  readonly admitLifecycleRetention?: () => void;
   readonly stopStoreEpochSweepFn?: () => Promise<void>;
   readonly getDiscussStoreForSource: (source: string) => DiscussSessionStore;
   readonly knownDiscussSources: () => Set<string>;
@@ -1404,6 +1405,7 @@ async function settleFailedLifecycleStartup(
     state.started = true;
     runtimeState.setLaunchFenceActive(false);
     if (!legacyDiscoveryPublished) publishLegacyDiscovery?.();
+    deps.admitLifecycleRetention?.();
     return serverInfo();
   }
   const successionAttemptChild = currentSuccessionAttemptChild();
@@ -2574,6 +2576,7 @@ async function runStartupRecoveryAndServe(
       legacySupervisedChild,
     }),
   );
+  deps.admitLifecycleRetention?.();
   deps.startStorageRetentionFn?.();
   if (runtimeState.getLaunchFenceActive()) {
     runtimeState.setLaunchFenceActive(false);

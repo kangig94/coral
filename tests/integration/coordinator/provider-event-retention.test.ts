@@ -152,6 +152,7 @@ async function fixture() {
   await coordinator.start();
   const { core, options, reactor } = captured;
   if (core === undefined || options === undefined || reactor === undefined) throw new Error('Missing composition.');
+  expect(reactor.isRetentionAdmitted()).toBe(true);
   await reactor.waitForIdle();
   const { storeDb: db, progressStore } = core.storeServicesRef.get();
   const locations = options.jobLocationIndex;

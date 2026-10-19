@@ -937,6 +937,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions): Coor
       storeFormat,
       discardSessionArtifacts: (sessionId) => lifecycleReactor.discardSessionArtifacts(sessionId),
       disposeLifecycleReactor: shutdownLifecycleReactor,
+      admitLifecycleRetention: () => lifecycleReactor.admitRetention(),
       createStoreServicesFromDbFn,
       buildProviderEventHandler,
       operationRegistry,
