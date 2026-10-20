@@ -218,8 +218,11 @@ describe('export retention', () => {
     f.db
       .prepare('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)')
       .run('storage-retention.exports.admission.v1.admitted', String(RETENTION_CUTOFF));
-    if (kind === 'directory') writeFileSync(join(child, 'new-result.md'), 'fresh');
-    else writeFileSync(child, 'fresh');
+    if (kind === 'directory') {
+      const result = join(child, 'new-result.md');
+      writeFileSync(result, 'fresh');
+      utimesSync(result, new Date(RETENTION_NOW), new Date(RETENTION_NOW));
+    } else writeFileSync(child, 'fresh');
     utimesSync(child, new Date(RETENTION_NOW), new Date(RETENTION_NOW));
     await prune(f, {});
     expect(existsSync(child)).toBe(true);
