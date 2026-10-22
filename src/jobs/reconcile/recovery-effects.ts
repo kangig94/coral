@@ -51,7 +51,7 @@ function recoveryFaultOutcome<Scope>(
         stream: { kind: 'job', id: status.jobId },
         namespace: status.backendNamespace,
         project: status.projectRoot,
-        refs: buildJobEventRefs({ jobId: status.jobId, sessionId: status.sessionId }),
+        refs: buildJobEventRefs({ jobId: status.jobId, }),
         body: { ...fault, execution: status.execution },
       });
       return failedTerminalOutcome(cause);

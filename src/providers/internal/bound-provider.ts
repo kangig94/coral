@@ -33,8 +33,8 @@ import type { ProviderValueParseResult } from '../binding-parser-contract.js';
 import type {
   ProviderValidatedSessionContinuityMutation,
   SessionContinuityMutation,
-} from '../../sessions/continuity-mutation.js';
-import type { ProviderValidatedContinuityBlob } from '../../sessions/continuity.js';
+} from '../../jobs/conversation/continuity-mutation.js';
+import type { ProviderValidatedContinuityBlob } from '../../jobs/conversation/continuity.js';
 import type { ProviderExecutionPlan } from '../execution-plan.js';
 import type {
   BoundProvider,

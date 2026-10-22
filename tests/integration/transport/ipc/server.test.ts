@@ -302,7 +302,7 @@ describe('ipc server', () => {
         createStoreChildPrincipalCredentials(() => db),
         {
           namespace: 'test-namespace',
-          activeJobOrigin: () => 'test-namespace',
+          openJobExecution: () => ({ namespace: 'test-namespace', execution: 1 }),
         },
       );
     }
@@ -314,7 +314,7 @@ describe('ipc server', () => {
         childCaps: caps,
         namespace: 'test-namespace',
         parentJobId: 'job-a',
-        parentSessionId: 'session-a',
+        execution: 1,
         nowMs: 0,
       });
     }
@@ -325,7 +325,6 @@ describe('ipc server', () => {
         [CORAL_CHILD_CREDENTIAL_ID]: credential.credentialId,
         [CORAL_CHILD_CREDENTIAL_KEY]: credential.privateKey,
         CORAL_JOB_ID: credential.parentJobId,
-        CORAL_SESSION_ID: credential.parentSessionId,
       });
       if (auth === null || auth === undefined || typeof auth === 'function')
         throw new Error('Expected challenged auth');

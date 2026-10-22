@@ -1,5 +1,5 @@
 import { readSuccessionJobIdsByKind } from '../../../jobs/succession-coverage.js';
-import { listProjectionSessionEntries } from '../../../sessions/projections.js';
+import { listProjectionConversationEntries } from '../../../jobs/conversation/projections.js';
 import { knownDiscussSources } from '../../../discuss/shell/session-read-service.js';
 import type { SuccessionOwner } from '../../succession/obligations.js';
 import type { SuccessionOwnersInput } from './index.js';
@@ -85,7 +85,7 @@ export function createLocalAuthoritySuccessionOwners(input: SuccessionOwnersInpu
     {
       id: 'session-continuation',
       classify: async () => {
-        const sessions = listProjectionSessionEntries(getProgressStore().getDb());
+        const sessions = listProjectionConversationEntries(getProgressStore().getDb());
         const held = sessions.filter(
           (session) =>
             session.continuationLease?.status === 'pending' ||

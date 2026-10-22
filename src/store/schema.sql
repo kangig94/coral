@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS events (
   project        TEXT,
   correlation_id TEXT,
   causation_seq  INTEGER,                            -- FK to events(seq), loose
-  refs           TEXT,                               -- JSON: { jobId?, sessionId?, parentJobId?, ... } @persisted-codec store.events.refs
+  refs           TEXT,                               -- JSON: { jobId?, parentJobId?, ... } @persisted-codec store.events.refs
   body           BLOB    NOT NULL                    -- JSON payload @persisted-codec store.events.body
 );
 CREATE INDEX IF NOT EXISTS events_logical_stream ON events(type, stream_id, seq);

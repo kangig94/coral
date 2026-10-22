@@ -12,14 +12,7 @@ import {
   UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
   type RecoveryRetryQuarantinePort,
 } from '../../recovery/source-registry.js';
-import {
-  createRetentionReleasePairRetryPlan,
-  createRetentionWorkRetryPlan,
-  isLifecycleRetentionAdmitted,
-  createSessionContinuationLeaseRetryPlan,
-  createSessionProjectionRetryPlan,
-  createTerminalRetentionOutcomeRetryPlan,
-} from '../../sessions/lifecycle-reactor.js';
+import { createRetentionWorkRetryPlan, isLifecycleRetentionAdmitted } from '../../jobs/conversation/lifecycle-reactor.js';
 import type { HealthSnapshot } from '../../transport/server-ports.js';
 import { createWorkflowRecoveryRetryPlan } from '../../workflow/recover.js';
 import { createCrashedJobTerminalizationRetryPlan, createStaleJobCleanupRetryPlan } from '../lifecycle.js';
@@ -87,19 +80,7 @@ function registerRecoverySources(input: RecoveryAssemblyInput): void {
       quarantine,
     ),
   );
-  recoverySources.register('session-projection', (subject, _signal, quarantine) =>
-    createSessionProjectionRetryPlan(recoveryDb(), subject, quarantine),
-  );
-  recoverySources.register('session-continuation-lease', (subject, _signal, quarantine) =>
-    createSessionContinuationLeaseRetryPlan(recoveryDb(), subject, quarantine),
-  );
-  recoverySources.register('terminal-retention-outcome', (subject, _signal, quarantine) =>
-    createTerminalRetentionOutcomeRetryPlan(recoveryDb(), subject, quarantine),
-  );
-  recoverySources.register('retention-release-pair', (subject, _signal, quarantine) =>
-    createRetentionReleasePairRetryPlan(recoveryDb(), subject, quarantine),
-  );
-  recoverySources.register('session-retention-work', (subject, signal, quarantine) =>
+  recoverySources.register('job-conversation-retention', (subject, signal, quarantine) =>
     createRetentionWorkRetryPlan(recoveryDb(), subject, signal, quarantine),
   );
   recoverySources.register('workflow-recovery', (subject) => createWorkflowRecoveryRetryPlan(recoveryDb(), subject));
@@ -178,7 +159,7 @@ export function createRecoveryAssembly(input: RecoveryAssemblyInput) {
     ids: runtime.ids,
     quarantine: recoveryQuarantineStore,
     sources: recoverySources,
-    isRetryAdmitted: (boundary) => boundary !== 'session-retention-work' || isLifecycleRetentionAdmitted(recoveryDb()),
+    isRetryAdmitted: (boundary) => boundary !== 'job-conversation-retention' || isLifecycleRetentionAdmitted(recoveryDb()),
   });
   const recoveryQuarantine = createRecoveryQuarantinePorts({
     runtime,

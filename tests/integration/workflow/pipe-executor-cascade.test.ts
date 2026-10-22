@@ -22,10 +22,9 @@ import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
-import { createLifecycleReactor } from '#src/sessions/lifecycle-reactor.js';
+import { createLifecycleReactor } from '#src/jobs/conversation/lifecycle-reactor.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { jobsRegistry } from '#src/jobs/events.js';
-import { sessionsRegistry } from '#src/sessions/events.js';
 import { workflowRegistry } from '#src/workflow/events.js';
 import type { CommitEventsFn } from '#src/store/append.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
@@ -95,7 +94,7 @@ describe('pipe executor coral cascade invariant', () => {
       providerRegistry.register(toProviderDefinition(stubProvider)!);
 
       const eventBus = new TypedEventBus();
-      const reducers = composeReducers(jobsRegistry, sessionsRegistry, workflowRegistry);
+      const reducers = composeReducers(jobsRegistry, workflowRegistry);
       const bodyCodec = createEventBodyCodec();
       const db = openTestStoreDb(runtime, join(runtime.paths.coral.store.dbDir, 'store.db'));
       const reactorRef: { current?: ReturnType<typeof createLifecycleReactor> } = {};
@@ -239,7 +238,7 @@ describe('pipe executor coral cascade invariant', () => {
       providerRegistry.register(toProviderDefinition(stubProvider)!);
 
       const eventBus = new TypedEventBus();
-      const reducers = composeReducers(jobsRegistry, sessionsRegistry, workflowRegistry);
+      const reducers = composeReducers(jobsRegistry, workflowRegistry);
       const bodyCodec = createEventBodyCodec();
       const db = openTestStoreDb(runtime, join(runtime.paths.coral.store.dbDir, 'store.db'));
       const reactorRef: { current?: ReturnType<typeof createLifecycleReactor> } = {};

@@ -86,7 +86,7 @@ async function recoverProviderOperationJobOnceFor(
   const runningRecoverable: RunningRecoverableJob[] = [];
   const planActionOptions = {
     itemsByJobId: new Map([[item.jobId, item]]),
-    itemsBySessionId: new Map(item.claimedSession === null ? [] : ([[item.claimedSession.sessionId, item]] as const)),
+    itemsBySessionId: new Map(item.claimedSession === null ? [] : ([[item.claimedSession.jobId, item]] as const)),
     recoveryRegistry,
     queuedRecoverable,
     runningRecoverable,
@@ -190,7 +190,7 @@ export function createProviderOperationJobRecovery(
   ): Promise<void> => {
     const item =
       options.itemsByJobId.get(action.jobId) ??
-      (action.type === 'releaseSessionClaim' ? options.itemsBySessionId.get(action.sessionId) : undefined);
+      (action.type === 'releaseSessionClaim' ? options.itemsBySessionId.get(action.conversationJobId) : undefined);
     if (item === undefined) {
       throw new Error(`Recovery plan action '${action.type}' has no raw coordinator item for ${action.jobId}.`);
     }

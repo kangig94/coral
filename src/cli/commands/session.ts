@@ -305,9 +305,9 @@ function readJobSendLaunch(jobId: string): JobSendOutputContext['launch'] {
   try {
     const store = getSharedReadCoralStore(process.cwd(), { announceMissing: false });
     const status = store.jobs.detail(jobId)?.status;
-    if (status === undefined || status.jobKind !== 'provider' || status.sessionId === null) return null;
-    const session = store.sessions.readEntry(status.sessionId);
-    return { provider: session.binding.provider, agent: session.agentName ?? null };
+    if (status === undefined || status.jobKind !== 'provider') return null;
+    const session = store.jobs.conversation(jobId);
+    return { provider: session.binding.provider, agent: session.agent ?? null };
   } catch {
     // A failed metadata read cannot replace a decisive refusal with a generic retry error.
     return null;

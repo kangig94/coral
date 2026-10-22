@@ -17,7 +17,7 @@ import { createEventBodyCodec } from '../../store/event-body-codec.js';
 import { composeReducers } from '../../store/reducers.js';
 import type { CommitClosureResult, CommitContext } from '../../store/append.js';
 import type { ProviderBindingCatalog } from '../../providers/catalog.js';
-import type { JobLaunchRequest, JobResumeRequest, ProviderSessionLaunchDecision } from '../../jobs/launch.js';
+import type { JobLaunchRequest, JobResumeRequest, ProviderJobLaunchDecision } from '../../jobs/launch.js';
 
 type CreateDiscussRuntimeDeps = {
   world: {
@@ -43,8 +43,8 @@ type CreateDiscussRuntimeDeps = {
     commit(cb: <Scope>(c: CommitContext<Scope>) => CommitClosureResult): unknown;
   };
   getExecutionService: (ctx: InvocationContext) => {
-    start(provider: string, input: JobLaunchRequest, ctx: InvocationContext): Promise<ProviderSessionLaunchDecision>;
-    resume(provider: string, input: JobResumeRequest, ctx: InvocationContext): Promise<ProviderSessionLaunchDecision>;
+    start(provider: string, input: JobLaunchRequest, ctx: InvocationContext): Promise<ProviderJobLaunchDecision>;
+    resume(provider: string, input: JobResumeRequest, ctx: InvocationContext): Promise<ProviderJobLaunchDecision>;
     waitStreamOnce(jobId: string, timeoutMs?: number): Promise<DiscussWaitResult>;
   };
   discardSessionArtifacts?: (sessionId: string) => Promise<void>;

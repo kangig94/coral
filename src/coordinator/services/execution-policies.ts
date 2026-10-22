@@ -20,22 +20,22 @@ import {
   stripAgentMetadata,
   type AgentResolutionContext,
 } from '../../jobs/agent-resolution.js';
-import type { SessionAllocateOptions } from '../../sessions/contracts.js';
-import { describeSessionInterrupted, type SessionInterruptedFault } from '../../sessions/fault.js';
+import type { ConversationAllocateOptions } from '../../jobs/conversation/contracts.js';
+import { describeSessionInterrupted, type SessionInterruptedFault } from '../../jobs/conversation/fault.js';
 import { documentedCoralSetupError } from '../../runtime/errors.js';
 import { throwIfRequestAborted } from '../../runtime/request-lease-identity.js';
 import type { Runtime } from '../../runtime/ports.js';
-import { SESSION_CONTROLLER_PROFILE_FIELDS, type RetentionPolicy } from '../../sessions/entry.js';
+import { SESSION_CONTROLLER_PROFILE_FIELDS, type RetentionPolicy } from '../../jobs/conversation/entry.js';
 import { CONTEXT_ENV_KEY } from '../../transport/context-profile.js';
 
 export type CoralIntent = Omit<JobLaunchRequest, 'effort' | 'agent' | 'pool' | 'retention'> & {
-  sessionId?: string;
+  conversationJobId?: string;
   effort?: EffortLevel;
   retention?: RetentionPolicy;
 };
 
-export type CanonicalCoralIntent = Omit<CoralIntent, 'sessionId'> & {
-  sessionId?: string;
+export type CanonicalCoralIntent = Omit<CoralIntent, 'conversationJobId'> & {
+  conversationJobId?: string;
 };
 
 export type ResolvedAgentLaunchProfile = {
@@ -53,15 +53,15 @@ export type EffectiveContinuationProfile = {
   bypassPermissions: boolean;
   systemPrompt?: string;
   instruction?: ProviderInstruction;
-  controllerProfile?: SessionAllocateOptions['controllerProfile'];
+  controllerProfile?: ConversationAllocateOptions['controllerProfile'];
   coralEnv: Record<string, string>;
   agentName?: string;
 };
 
 export function buildSessionControllerProfile(
   coralEnv: Record<string, string>,
-): SessionAllocateOptions['controllerProfile'] | undefined {
-  const profile: Partial<NonNullable<SessionAllocateOptions['controllerProfile']>> = {};
+): ConversationAllocateOptions['controllerProfile'] | undefined {
+  const profile: Partial<NonNullable<ConversationAllocateOptions['controllerProfile']>> = {};
 
   for (const field of SESSION_CONTROLLER_PROFILE_FIELDS) {
     const value = coralEnv[CONTEXT_ENV_KEY[field]];
@@ -87,14 +87,14 @@ export function mapResolverError(err: unknown): RefusedLaunchDecision | null {
 }
 
 export function normalizeCoralIntent(input: CoralIntent): CanonicalCoralIntent | RefusedLaunchDecision {
-  const { sessionId, ...rest } = input;
-  if (sessionId === undefined) {
+  const { conversationJobId, ...rest } = input;
+  if (conversationJobId === undefined) {
     return rest;
   }
-  if (sessionId.length === 0) {
+  if (conversationJobId.length === 0) {
     return refuseLaunch('invalid_request', 'Session ID is required when provided.');
   }
-  return { ...rest, sessionId };
+  return { ...rest, conversationJobId };
 }
 
 /** The frontmatter range Claude Code's native agents also accept; `ultra` exists only on Codex. */
@@ -136,7 +136,7 @@ export function buildEffectiveCoralEnv(
   coralEnv: Record<string, string>,
   options: {
     effort?: string;
-    controllerProfile?: SessionAllocateOptions['controllerProfile'];
+    controllerProfile?: ConversationAllocateOptions['controllerProfile'];
   } = {},
 ): Record<string, string> {
   const merged = { ...coralEnv };

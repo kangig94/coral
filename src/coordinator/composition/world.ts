@@ -589,13 +589,13 @@ export function createCoordinatorWorld(
     createStoreChildPrincipalCredentials(() => storeServicesRef.get().progressStore.getDb()),
     {
       namespace,
-      activeJobOrigin: (jobId) => {
+      openJobExecution: (jobId) => {
         const services = storeServicesRef.tryGet();
         if (services === null) return null;
         const status = services.progressStore.readStatus(jobId);
-        return status === null || isTerminalPhase(status.phase)
-          ? null
-          : readJobLaunchOriginNamespace(services.progressStore.getDb(), jobId, createDefaultStoreReadContext());
+        if (status === null || typeof status.execution !== 'number' || isTerminalPhase(status.phase)) return null;
+        const origin = readJobLaunchOriginNamespace(services.progressStore.getDb(), jobId, createDefaultStoreReadContext());
+        return origin === null ? null : { namespace: origin, execution: status.execution };
       },
       log,
     },

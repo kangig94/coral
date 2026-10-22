@@ -14,23 +14,22 @@ import {
   ProviderArtifactProtocolInvariantError,
 } from '#src/providers/contract.js';
 import { defineProvider, ProviderRegistry } from '#src/providers/registry.js';
-import type { ProviderSession } from '#src/sessions/entry.js';
-import { createLifecycleReactor } from '#src/sessions/lifecycle-reactor.js';
+import type { JobConversation } from '#src/jobs/conversation/entry.js';
+import { createLifecycleReactor } from '#src/jobs/conversation/lifecycle-reactor.js';
 import {
   archiveProviderArtifactsForJob,
   deriveProviderArtifactActionDescriptor,
   ProviderArtifactArchiveInvariantError,
   type ProviderArtifactActionDescriptor,
-} from '#src/sessions/provider-artifact-archive.js';
-import { readProjectionProviderSession } from '#src/sessions/projections.js';
+} from '#src/jobs/conversation/provider-artifact-archive.js';
+import { readProjectionJobConversation } from '#src/jobs/conversation/projections.js';
 import {
   RETENTION_ATTEMPT_OBLIGATION,
   sessionRetentionWorkKey,
   type RecoverySessionRetentionWork,
   type RetentionDiscardContinuation,
-} from '#src/sessions/retention-work.js';
-import { sessionsRegistry } from '#src/sessions/events.js';
-import { SessionManager } from '#src/sessions/shell.js';
+} from '#src/jobs/conversation/retention-work.js';
+import { ConversationManager } from '#src/jobs/conversation/shell.js';
 import { commit, type CommitEventsFn } from '#src/store/append.js';
 import type { Database } from '#src/store/db.js';
 import { decodeEventBody } from '#src/store/body-codec.js';
@@ -69,7 +68,7 @@ type SettlementHarness = {
   readonly namespace: string;
   readonly projectRoot: string;
   readonly progressStore: JobStore;
-  readonly sessionManager: SessionManager;
+  readonly conversationManager: ConversationManager;
   readonly commitEvents: CommitEventsFn;
   readonly capabilityCalls: ArtifactActionCall[];
   readonly providerEffects: ArtifactActionOptions[];
@@ -133,7 +132,7 @@ function createSettlementHarness(
       .build(),
   );
 
-  const reducers = composeReducers(jobsRegistry, sessionsRegistry);
+  const reducers = composeReducers(jobsRegistry);
   const bodyCodec = createEventBodyCodec();
   const logs: string[] = [];
   const signal = new AbortController().signal;
@@ -166,7 +165,7 @@ function createSettlementHarness(
       reducers,
       providers: permissiveProviderLookupPort,
     }),
-    sessionManager: new SessionManager(projectRoot, runtime, commitEvents, undefined, db),
+    conversationManager: new ConversationManager(projectRoot, runtime, commitEvents, undefined, db),
     commitEvents,
     capabilityCalls,
     providerEffects,
@@ -189,12 +188,12 @@ async function seedRetentionWork(
     retention?: 'retain' | 'discard_provider_artifacts_on_terminal';
     nativeContent?: string;
   },
-): Promise<{ sessionId: string; entry: ProviderSession }> {
+): Promise<{ sessionId: string; entry: JobConversation }> {
   if (options.nativeContent !== undefined) {
     harness.runtime.storage.mkdirSync(join(options.handle, '..'), { recursive: true });
     harness.runtime.storage.writeFileSync(options.handle, options.nativeContent, { encoding: 'utf-8' });
   }
-  const allocated = harness.sessionManager.allocate({
+  const allocated = harness.conversationManager.allocate({
     binding: TEST_CODEX_BINDING,
     name: `session-${options.jobId}`,
     cwd: harness.projectRoot,
@@ -203,12 +202,12 @@ async function seedRetentionWork(
     retention: options.retention ?? 'discard_provider_artifacts_on_terminal',
   });
   await expect(
-    harness.sessionManager.claimForJobAtomic(allocated.sessionId, options.jobId, allocated.version),
+    harness.conversationManager.claimForJobAtomic(allocated.sessionId, options.jobId, allocated.version),
   ).resolves.toBe(true);
-  const claimed = harness.sessionManager.get('codex', allocated.sessionId);
+  const claimed = harness.conversationManager.get('codex', allocated.sessionId);
   if (claimed === null) throw new Error(`Expected claimed session ${allocated.sessionId}.`);
   await expect(
-    harness.sessionManager.recordArtifactHandleAtomic(allocated.sessionId, {
+    harness.conversationManager.recordArtifactHandleAtomic(allocated.sessionId, {
       expectedActiveJobId: options.jobId,
       expectedVersion: claimed.version,
       handle: options.handle,
@@ -230,8 +229,8 @@ async function seedRetentionWork(
     durationMs: 0,
     outcome: { kind: 'completed' },
   });
-  harness.sessionManager.releaseJob(allocated.sessionId, options.jobId);
-  const entry = readProjectionProviderSession(harness.db, allocated.sessionId);
+  harness.conversationManager.releaseJob(allocated.sessionId, options.jobId);
+  const entry = readProjectionJobConversation(harness.db, allocated.sessionId);
   if (entry === null) throw new Error(`Expected released session ${allocated.sessionId}.`);
   return { sessionId: allocated.sessionId, entry };
 }
@@ -313,7 +312,7 @@ function actionRecordPath(runtime: SimulationRuntime, actionId: string): string 
 }
 
 function recoveryWork(
-  entry: ProviderSession,
+  entry: JobConversation,
   jobId: string,
   sourceRevision: string,
   descriptor: ProviderArtifactActionDescriptor,

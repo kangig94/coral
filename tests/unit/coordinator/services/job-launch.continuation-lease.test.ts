@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { none } from '#src/providers/capability.js';
 import { defineProvider, ProviderRegistry } from '#src/providers/registry.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
-import type { ProviderSession } from '#src/sessions/entry.js';
+import type { JobConversation } from '#src/jobs/conversation/entry.js';
 import { JobLaunchService } from '#src/coordinator/services/job-launch.js';
 import { testChildPrincipalRegistry } from '#tests/helpers/child-principal-registry.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
@@ -21,7 +21,7 @@ const ctx: InvocationContext = {
   providerScope: TEST_CODEX_SCOPE,
 };
 
-function sessionEntry(overrides: Partial<ProviderSession> = {}): ProviderSession {
+function sessionEntry(overrides: Partial<JobConversation> = {}): JobConversation {
   return {
     sessionId: 'session-retention-lock',
     binding: TEST_CODEX_BINDING,
@@ -70,7 +70,7 @@ describe('JobLaunchService continuation lease admission', () => {
     const service = new JobLaunchService({
       runtime,
       childPrincipalRegistry: testChildPrincipalRegistry(runtime.ids),
-      sessionManager: {
+      conversationManager: {
         prepare: vi.fn(),
         appendPreparedClaim: vi.fn(),
         appendJobClaim: vi.fn(),

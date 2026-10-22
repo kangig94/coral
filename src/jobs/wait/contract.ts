@@ -1,6 +1,6 @@
 import type { SourceReadDisposition } from '../source-read.js';
 import type { JobTerminal } from '../records.js';
-import type { ContinuitySnapshot } from '../../sessions/continuity.js';
+import type { ContinuitySnapshot } from '../conversation/continuity.js';
 import type { JobProgressTiming } from '../event-bodies.js';
 import type { JobPhase } from '../phase.js';
 import type { ResultAvailability } from '../terminal/export.js';
@@ -85,7 +85,7 @@ export type WaitStreamEvent =
       message?: string;
     }
   | ProgressWaitEvent
-  | (QueuedWaitEventBase & { jobKind: 'provider'; sessionId: string })
+  | (QueuedWaitEventBase & { jobKind: 'provider'; conversationJobId: string })
   | (QueuedWaitEventBase & { jobKind: 'workflow'; workflowId: string })
   | (QueuedWaitEventBase & { jobKind: 'kb'; systemTaskId: string })
   // A terminal at or below the request's watermark carries no final fields: it is printed and ends nothing.

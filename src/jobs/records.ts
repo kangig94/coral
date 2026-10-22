@@ -1,7 +1,7 @@
 import type { ResultAvailability } from './terminal/export.js';
 import type { JobProgressFault, TerminalOutcome, TerminalOutcomeInput } from './outcome.js';
 import type { HostRef, UsageSummary, ProviderAction, ProviderInstruction } from '../providers/contract.js';
-import type { RetentionPolicy } from '../sessions/entry.js';
+import type { RetentionPolicy } from './conversation/entry.js';
 import type { DurableCliRuntimeRecord } from '../runtime/durable-runtime.js';
 import type { JobPhase } from './phase.js';
 import type { SourceImportReadiness } from './launch.js';
@@ -91,7 +91,6 @@ interface JobLaunchBase {
   jobId: string;
   execution: number;
   owner: ExecutionOwner;
-  sessionId: string | null;
   provider: string | null;
   projectRoot: string;
   backendNamespace: string;
@@ -124,7 +123,6 @@ interface ProviderLaunchRequestRecord {
 export interface ProviderJobLaunch extends JobLaunchBase {
   jobKind: 'provider';
   discussionRun?: DiscussionRunDescriptor;
-  sessionId: null;
   provider: string;
   providerAction: ProviderAction;
   operation?: never;
@@ -137,7 +135,6 @@ export interface ProviderJobLaunch extends JobLaunchBase {
 
 export interface WorkflowJobLaunch extends JobLaunchBase {
   jobKind: 'workflow';
-  sessionId: null;
   provider: null;
   discussionRun?: never;
   providerAction?: never;
@@ -151,7 +148,6 @@ export interface WorkflowJobLaunch extends JobLaunchBase {
 
 interface KbJobLaunchBase extends JobLaunchBase {
   jobKind: 'kb';
-  sessionId: null;
   provider: null;
   discussionRun?: never;
   providerAction?: never;

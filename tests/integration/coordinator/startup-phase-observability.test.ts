@@ -15,10 +15,9 @@ import { jobsRegistry } from '#src/jobs/events.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { createBuiltInProviderRegistry } from '#src/providers/bootstrap.js';
 import { providerLookupPortFromCatalog } from '#src/providers/catalog.js';
-import * as reactorModule from '#src/sessions/lifecycle-reactor.js';
+import * as reactorModule from '#src/jobs/conversation/lifecycle-reactor.js';
 import * as phaseObservation from '#src/recovery/phase-observation.js';
-import { SessionManager } from '#src/sessions/shell.js';
-import { sessionsRegistry } from '#src/sessions/events.js';
+import { ConversationManager } from '#src/jobs/conversation/shell.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { initTestJob } from '#tests/helpers/session.js';
@@ -126,10 +125,10 @@ function fixture(overrides: Partial<lifecycle.LifecycleDeps> = {}, backlog = 0) 
       const namespace = pluginRootNamespace(pluginRoot);
       const progressStore = new JobStore(namespace, runtime, createEventBodyCodec(), {
         db,
-        reducers: composeReducers(jobsRegistry, sessionsRegistry),
+        reducers: composeReducers(jobsRegistry),
         providers: providerLookupPortFromCatalog(createBuiltInProviderRegistry()),
       });
-      const sessions = SessionManager.forProduction(
+      const sessions = ConversationManager.forProduction(
         home,
         runtime,
         (cb) => progressStore.commit(cb),

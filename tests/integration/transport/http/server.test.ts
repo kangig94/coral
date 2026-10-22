@@ -24,7 +24,6 @@ import { composeReducers } from '#src/store/reducers.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { openSettledTestStoreDb, openTestStoreDb } from '#tests/helpers/store-db.js';
 import { resolveCurrentStore } from '#src/store/epoch/index.js';
-import { sessionsRegistry } from '#src/sessions/events.js';
 import { workflowRegistry } from '#src/workflow/events.js';
 import { jobsDir } from '#src/jobs/paths.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
@@ -96,7 +95,7 @@ function createProgressStore(
 ): JobStore {
   return new JobStore(namespace, runtimeArg, createEventBodyCodec(), {
     db: openTestStoreDb(runtimeArg, resolveCurrentStore(runtimeArg).path),
-    reducers: composeReducers(jobsRegistry, sessionsRegistry, discussStoreRegistry, workflowRegistry),
+    reducers: composeReducers(jobsRegistry, discussStoreRegistry, workflowRegistry),
     providers: permissiveProviderLookupPort,
   });
 }

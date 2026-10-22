@@ -2,7 +2,7 @@ import { decodeWaitCursor } from './cursor.js';
 import { z } from 'zod';
 
 import { isRecord } from '../../infra/json.js';
-import { continuitySnapshotSchema } from '../../sessions/continuity.js';
+import { continuitySnapshotSchema } from '../conversation/continuity.js';
 import { jobPhaseSchema } from '../phase.js';
 import { jobProgressTimingSchema } from '../event-bodies.js';
 import { jobTerminalSchema } from '../terminal/result.js';
@@ -64,7 +64,7 @@ const waitQueuedEventBaseSchema = z.object({
 });
 
 const waitQueuedEventSchema = z.discriminatedUnion('jobKind', [
-  waitQueuedEventBaseSchema.extend({ jobKind: z.literal('provider'), sessionId: z.string().min(1) }).strip(),
+  waitQueuedEventBaseSchema.extend({ jobKind: z.literal('provider'), conversationJobId: z.string().min(1) }).strip(),
   waitQueuedEventBaseSchema.extend({ jobKind: z.literal('workflow'), workflowId: z.string().min(1) }).strip(),
   waitQueuedEventBaseSchema.extend({ jobKind: z.literal('kb'), systemTaskId: z.string().min(1) }).strip(),
 ]);

@@ -2,7 +2,7 @@ import type { WaitAdmission, WaitSnapshot } from '../../jobs/wait/session.js';
 import type { WaitSnapshotRequest } from '../../jobs/wait/contract.js';
 import type { DiscussDetailResponse, DiscussSummaryDto, DiscussView } from '../../discuss/read-contract.js';
 import type { ExpansionRequestPort } from '../../expansion/rpc-contract.js';
-import type { JobLaunchRequest, ProviderSessionLaunchDecision, WorkflowLaunchDecision } from '../../jobs/launch.js';
+import type { JobLaunchRequest, ProviderJobLaunchDecision, WorkflowLaunchDecision } from '../../jobs/launch.js';
 import type { JobsReleaseResult } from '../../jobs/records.js';
 import type { JobStatus } from '../../jobs/records.js';
 import type { WaitStreamEvent, CanonicalWaitStreamRequest } from '../../jobs/wait/contract.js';
@@ -56,7 +56,7 @@ interface SessionRequestPort {
     input: SessionStartInput,
     ctx: InvocationContext,
     signal?: AbortSignal,
-  ): Promise<ProviderSessionLaunchDecision>;
+  ): Promise<ProviderJobLaunchDecision>;
 }
 
 interface JobsRequestPort {

@@ -1,11 +1,11 @@
 import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 
-import type { SessionManager } from '#src/sessions/shell.js';
-import { providerSessionSchema, type ProviderSession } from '#src/sessions/entry.js';
+import type { ConversationManager } from '#src/jobs/conversation/shell.js';
+import { jobConversationSchema, type JobConversation } from '#src/jobs/conversation/entry.js';
 import type { Database } from '#src/store/db.js';
-import { reduceSessionClaimed, reduceSessionOpened } from '#src/sessions/projections.js';
-import type { SessionClaimedBody, SessionOpenedBody } from '#src/sessions/event-bodies.js';
+import { reduceSessionClaimed, reduceSessionOpened } from '#src/jobs/conversation/projections.js';
+import type { SessionClaimedBody, SessionOpenedBody } from '#src/jobs/conversation/event-bodies.js';
 import type { CoralEvent } from '#src/store/envelope.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import type { InitJobOptions } from '#src/jobs/contracts/job-store.js';
@@ -15,11 +15,11 @@ import type {
   ProviderContinuityBlob,
   ProviderValidatedContinuityBlob,
   ProviderValidatedContinuitySnapshot,
-} from '#src/sessions/continuity.js';
+} from '#src/jobs/conversation/continuity.js';
 import type {
   ProviderValidatedSessionContinuityMutation,
   SessionContinuityMutation,
-} from '#src/sessions/continuity-mutation.js';
+} from '#src/jobs/conversation/continuity-mutation.js';
 
 import { TEST_CLAUDE_BINDING, TEST_CODEX_BINDING } from './provider-credentials.js';
 
@@ -46,7 +46,7 @@ export function validatedTestContinuityMutation(
 }
 
 export function allocateTestSession(
-  manager: Pick<SessionManager, 'allocate'>,
+  manager: Pick<ConversationManager, 'allocate'>,
   provider: string,
   name: string,
   model: string | undefined,
@@ -89,12 +89,12 @@ export function seedTestSessionProjection(
     backendNamespace?: string;
     activeJobId?: string;
   },
-): ProviderSession {
+): JobConversation {
   const existing = db
     .prepare<[string], { entry: string }>('SELECT entry FROM projection_sessions WHERE session_id = ?')
     .get(options.sessionId);
   if (existing !== undefined) {
-    const entry = providerSessionSchema.parse(JSON.parse(existing.entry));
+    const entry = jobConversationSchema.parse(JSON.parse(existing.entry));
     if (options.activeJobId !== undefined && entry.activeJobId !== options.activeJobId) {
       const claimed = { ...entry, activeJobId: options.activeJobId, version: entry.version + 1 };
       reduceSessionClaimed(db, {
@@ -118,7 +118,7 @@ export function seedTestSessionProjection(
     throw new Error(`Test provider session '${options.provider}' has no binding fixture.`);
   }
   const now = '2026-01-01T00:00:00.000Z';
-  const opened: ProviderSession = {
+  const opened: JobConversation = {
     sessionId: options.sessionId,
     binding,
     name: options.sessionId,
@@ -153,7 +153,7 @@ export function seedTestSessionProjection(
   if (options.activeJobId === undefined) {
     return opened;
   }
-  const claimed: ProviderSession = {
+  const claimed: JobConversation = {
     ...opened,
     activeJobId: options.activeJobId,
     version: opened.version + 1,

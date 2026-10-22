@@ -85,7 +85,7 @@ const sessionEnded = typedDescriber(discussSessionEndedBodySchema, (body) => {
 const sessionSynthesized = typedDescriber(discussSessionSynthesizedBodySchema, () => 'Discuss synthesis recorded.');
 const agentRunBound = typedDescriber(
   discussAgentRunBoundBodySchema,
-  (body) => `Discuss agent ${body.agent} bound to execution session ${body.executionSessionId}.`,
+  (body) => `Discuss agent ${body.agent} bound to execution session ${body.executionJobId}.`,
 );
 const agentJobStarted = typedDescriber(
   discussAgentJobStartedBodySchema,

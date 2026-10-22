@@ -1,19 +1,19 @@
-import type { ArtifactCleanupRuntime } from '../providers/contract.js';
-import type { BoundProvider } from '../providers/bound-provider-contract.js';
-import type { ProviderSession } from './entry.js';
+import type { ArtifactCleanupRuntime } from '../../providers/contract.js';
+import type { BoundProvider } from '../../providers/bound-provider-contract.js';
+import type { JobConversation } from './entry.js';
 
 /**
  * Returns handles only; invoking `discardArtifacts` is reserved for the
- * lifecycle reactor (see `tests/invariants/cleanup-discipline.test.ts`).
+ * lifecycle reactor (see `tests/invariants/architecture-boundary.test.ts`).
  */
 export function collectArtifactHandles(
-  entry: ProviderSession,
+  entry: JobConversation,
   bound: BoundProvider,
   runtime: ArtifactCleanupRuntime,
-  opts: { jobId?: string } = {},
+  opts: { execution?: number } = {},
 ): string[] {
   const handles = entry.artifactHandles
-    .filter((artifact) => opts.jobId === undefined || artifact.sourceJobId === opts.jobId)
+    .filter((artifact) => artifact.execution === (opts.execution ?? entry.execution))
     .map((artifact) => artifact.handle);
   if (
     handles.length === 0 &&

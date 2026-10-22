@@ -1,10 +1,10 @@
 import { z } from 'zod';
 
-import { coralEnvForwardSchema } from '../infra/env-sanitize.js';
-import { AGENT_IDENT_RE, identPattern, providerIdentPattern } from '../infra/identifiers.js';
-import { networkEnvSchema } from '../infra/network-env.js';
+import { coralEnvForwardSchema } from '../../infra/env-sanitize.js';
+import { AGENT_IDENT_RE, identPattern, providerIdentPattern } from '../../infra/identifiers.js';
+import { networkEnvSchema } from '../../infra/network-env.js';
 import { retentionPolicySchema } from './entry.js';
-import { callerProviderScopeSchema } from '../infra/provider-scope.js';
+import { callerProviderScopeSchema } from '../../infra/provider-scope.js';
 
 const modelNameSchema = z
   .string()

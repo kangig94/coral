@@ -115,7 +115,7 @@ export function terminalizeProviderOperation(
 ): ProviderOperationTerminalizationResult {
   const status = store.readStatus(record.operation.jobId);
   const launch = store.readLaunchProjection(record.operation.jobId);
-  if (status === null || status.sessionId === null || launch === null) {
+  if (status === null || status.conversationJobId === null || launch === null) {
     throw new ProviderOperationTerminalMetadataError(record.operation);
   }
   const durationMs = elapsedDurationMs(launch.createdAt, nowMs, `job ${record.operation.jobId}`);
@@ -154,7 +154,7 @@ export function terminalizeProviderOperation(
           stream: { kind: 'job', id: record.operation.jobId },
           namespace: status.backendNamespace,
           project: status.projectRoot,
-          refs: buildJobEventRefs({ jobId: record.operation.jobId, sessionId: status.sessionId }),
+          refs: buildJobEventRefs({ jobId: record.operation.jobId, }),
           body: {
             execution: status.execution,
             kind: 'domain',

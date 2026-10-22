@@ -10,7 +10,6 @@ declare const RESOLVABLE_INPUT_SCOPE: unique symbol;
 export const journalEventRefsSchema = z
   .object({
     jobId: z.string().optional(),
-    sessionId: z.string().optional(),
     parentJobId: z.string().optional(),
     workflowId: z.string().optional(),
     workflowSlotId: z.string().optional(),
@@ -25,7 +24,7 @@ export const journalEventEnvelopeSchema = z
     type: z.string(),
     stream: z
       .object({
-        kind: z.enum(['job', 'session', 'discuss', 'workflow']),
+        kind: z.enum(['job', 'discuss', 'workflow']),
         id: z.string().min(1),
       })
       .strict(),

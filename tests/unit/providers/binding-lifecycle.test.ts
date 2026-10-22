@@ -20,7 +20,7 @@ import { createDeferred } from '#tools/testing/deferred.js';
 import type { ProviderBindingRuntime } from '#src/providers/contracts/binding.js';
 import { createBuiltInProviderRegistry as createUnconnectedBuiltInProviderRegistry } from '#src/providers/bootstrap.js';
 import { providerLookupPortFromCatalog } from '#src/providers/catalog.js';
-import { SessionManager } from '#src/sessions/shell.js';
+import { ConversationManager } from '#src/jobs/conversation/shell.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 
@@ -259,7 +259,7 @@ describe('provider binding lifecycle', () => {
 
     const storeRuntime = new SimulationRuntime();
     const db = openTestStoreDb(storeRuntime, ':memory:');
-    new SessionManager(root, storeRuntime, undefined, undefined, db, providerLookupPortFromCatalog(registry)).allocate({
+    new ConversationManager(root, storeRuntime, undefined, undefined, db, providerLookupPortFromCatalog(registry)).allocate({
       binding: bound.value.envelope,
       name: 'durable-secret-boundary',
       cwd: root,

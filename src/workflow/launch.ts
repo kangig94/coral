@@ -171,7 +171,7 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
   return {
     slotId: slot.slotId,
     jobId: decision.jobId,
-    sessionId: decision.sessionId,
+    conversationJobId: decision.jobId,
     providerName: slot.provider,
     agent: slot.label,
     tagName: slot.tagName,

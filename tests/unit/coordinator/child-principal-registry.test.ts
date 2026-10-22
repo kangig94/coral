@@ -29,7 +29,7 @@ function register(
   parentPrincipal: Principal,
   options: {
     jobId?: string;
-    sessionId?: string;
+    execution?: number;
     nowMs?: number;
     ttlMs?: number;
     childCaps?: readonly Capability[];
@@ -40,7 +40,7 @@ function register(
     parentPrincipal,
     namespace: 'ns-a',
     parentJobId: options.jobId ?? 'job-a',
-    parentSessionId: options.sessionId ?? 'session-a',
+    execution: options.execution ?? 1,
     nowMs: options.nowMs ?? 1_000,
     ...(options.ttlMs === undefined ? {} : { ttlMs: options.ttlMs }),
     ...(options.childCaps === undefined ? {} : { childCaps: options.childCaps }),
@@ -54,13 +54,12 @@ function prove(
   credential: ChildPrincipalCredential,
   challenge: ChildAuthChallenge,
   request: ChildProvenRequest = REQUEST,
-  claim: { jobId?: string; sessionId?: string } = {},
+  claim: { jobId?: string; execution?: number } = {},
 ) {
   const auth = childPrincipalAuthFromEnv({
     CORAL_CHILD_CREDENTIAL_ID: credential.credentialId,
     CORAL_CHILD_CREDENTIAL_KEY: credential.privateKey,
     CORAL_JOB_ID: claim.jobId ?? credential.parentJobId,
-    CORAL_SESSION_ID: claim.sessionId ?? credential.parentSessionId,
   });
   if (auth === null || auth === undefined || typeof auth === 'function') throw new Error('Expected challenged auth.');
   const proof = auth.prove(challenge, request);
@@ -102,11 +101,11 @@ describe('ChildPrincipalRegistry', () => {
     const credential = register(incumbent, testPrincipal());
     const successor = testChildPrincipalRegistry(
       { randomBytes: (length) => Buffer.alloc(length, 99) },
-      { db, namespace: 'ns-successor', activeJobOrigin: () => 'ns-a' },
+      { db, namespace: 'ns-successor', openJobExecution: () => ({ namespace: 'ns-a', execution: 1 }) },
     );
     const foreignOrigin = testChildPrincipalRegistry(
       { randomBytes: (length) => Buffer.alloc(length, 98) },
-      { db, namespace: 'ns-successor', activeJobOrigin: () => 'ns-other' },
+      { db, namespace: 'ns-successor', openJobExecution: () => ({ namespace: 'ns-other', execution: 1 }) },
     );
 
     expect(authenticated(successor, credential)).not.toBeNull();
@@ -125,7 +124,7 @@ describe('ChildPrincipalRegistry', () => {
       namespace: 'ns-a',
       publicKey: expect.any(String),
       parentJobId: 'job-a',
-      parentSessionId: 'session-a',
+      execution: 1,
     });
     expect(row?.value).not.toContain(credential.privateKey);
     expect(row?.value).not.toContain('privateKey');
@@ -134,42 +133,72 @@ describe('ChildPrincipalRegistry', () => {
   it('denies a child after its parent job becomes terminal', () => {
     const db = childCredentialDatabase();
     let origin: string | null = 'ns-a';
-    const registry = testChildPrincipalRegistry(ids(), { db, activeJobOrigin: () => origin });
+    const registry = testChildPrincipalRegistry(ids(), { db, openJobExecution: () => origin === null ? null : { namespace: origin, execution: 1 } });
     const credential = register(registry, testPrincipal());
     expect(authenticated(registry, credential)).not.toBeNull();
     origin = null;
     expect(authenticated(registry, credential)).toBeNull();
   });
 
-  it('should refuse a proof that claims another job or session', () => {
+  it('should refuse a proof that claims another job', () => {
     const registry = testChildPrincipalRegistry(ids());
     const credential = register(registry, testPrincipal());
     const challenge = registry.issueChallenge();
 
-    for (const claim of [{ jobId: 'job-b' }, { sessionId: 'session-b' }]) {
+    for (const claim of [{ jobId: 'job-b' }]) {
       expect(registry.authenticate(prove(credential, challenge, REQUEST, claim), challenge, REQUEST, 1_001)).toEqual({
         kind: 'refused',
       });
     }
   });
 
-  it('should refuse an expired credential, a revoked job or session, and a job no longer active', () => {
+  it('should refuse an expired credential, a revoked job, and a job no longer active', () => {
     let active = true;
-    const registry = testChildPrincipalRegistry(ids(), { activeJobOrigin: () => (active ? 'ns-a' : null) });
+    const registry = testChildPrincipalRegistry(ids(), { openJobExecution: () => active ? { namespace: 'ns-a', execution: 1 } : null });
     const parent = testPrincipal();
     const expiring = register(registry, parent, { jobId: 'job-expiring', ttlMs: 10 });
     const revokedJob = register(registry, parent, { jobId: 'job-terminal' });
-    const revokedSession = register(registry, parent, { jobId: 'job-live', sessionId: 'session-terminal' });
     const settled = register(registry, parent, { jobId: 'job-settled' });
 
     expect(authenticated(registry, expiring, 1_010)).toBeNull();
     registry.revokeParentJob('job-terminal');
-    registry.revokeParentSession('session-terminal');
     expect(authenticated(registry, revokedJob)).toBeNull();
-    expect(authenticated(registry, revokedSession)).toBeNull();
     expect(authenticated(registry, settled)).not.toBeNull();
     active = false;
     expect(authenticated(registry, settled)).toBeNull();
+  });
+
+  it('refuses an old execution credential after the next execution opens even when revocation removes nothing', () => {
+    const db = childCredentialDatabase();
+    const durable = createStoreChildPrincipalCredentials(() => db);
+    let execution: number | null = 1;
+    const registry = new ChildPrincipalRegistry(ids(), {
+      ...durable,
+      deleteWhere: () => undefined,
+    }, {
+      namespace: 'ns-a',
+      openJobExecution: () => execution === null ? null : { namespace: 'ns-a', execution },
+    });
+    const oldChild = register(registry, testPrincipal(), { execution: 1 });
+    expect(authenticated(registry, oldChild)).not.toBeNull();
+    execution = null;
+    registry.revokeParentJob(oldChild.parentJobId);
+    expect(durable.read(oldChild.credentialId).kind).toBe('valid');
+    expect(authenticated(registry, oldChild)).toBeNull();
+
+    execution = 2;
+    const newChild = register(registry, testPrincipal(), { execution: 2 });
+    expect(authenticated(registry, oldChild)).toBeNull();
+    expect(authenticated(registry, newChild)).not.toBeNull();
+    expect(durable.read(oldChild.credentialId).kind).toBe('valid');
+
+    const successor = new ChildPrincipalRegistry({ randomBytes: length => Buffer.alloc(length, 73) }, durable, {
+      namespace: 'ns-successor',
+      openJobExecution: () => ({ namespace: 'ns-a', execution: 2 }),
+    });
+    expect(authenticated(successor, oldChild)).toBeNull();
+    expect(authenticated(successor, newChild)).not.toBeNull();
+    db.close();
   });
 
   it('should deny only the credential whose record is unreadable, and name it', () => {
@@ -187,7 +216,7 @@ describe('ChildPrincipalRegistry', () => {
     const booted = new ChildPrincipalRegistry(
       { randomBytes: (length) => Buffer.alloc(length, 42) },
       createStoreChildPrincipalCredentials(() => db),
-      { namespace: 'ns-a', activeJobOrigin: () => 'ns-a', log: (message) => logged.push(message) },
+      { namespace: 'ns-a', openJobExecution: () => ({ namespace: 'ns-a', execution: 1 }), log: (message) => logged.push(message) },
     );
     const challenge = booted.issueChallenge();
 

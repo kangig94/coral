@@ -22,12 +22,12 @@ import { publishJobEvents, subscribeJobEvents } from '#src/jobs/shell/event-subs
 import { WaitCoordinator } from '#src/jobs/shell/wait.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { aggregateWorkflowUsage } from '#src/jobs/workflow-usage.js';
-import type { SessionJobReadPort } from '#src/sessions/contracts.js';
+import type { ConversationReadPort } from '#src/jobs/conversation/contracts.js';
 const runtimes = new Set<ReturnType<typeof createRealRuntime>>();
 
-const missingSessionManager = {
+const missingConversationManager = {
   get: () => null,
-} satisfies SessionJobReadPort;
+} satisfies ConversationReadPort;
 
 const waitUsage = {
   inputTokens: 11,
@@ -180,7 +180,7 @@ describe('wait SSE reconnect', () => {
 
     const coordinator = new WaitCoordinator({
       visitProgress: progressVisitFromEvents((targetJobId) => readJobEvents(db, targetJobId, progressStore)),
-      sessionManager: missingSessionManager,
+      conversationManager: missingConversationManager,
       launchQueue: launchCoordinator,
       eventBus,
       time: runtime.time,
@@ -383,7 +383,7 @@ describe('wait SSE reconnect', () => {
         }
         return events;
       }),
-      sessionManager: missingSessionManager,
+      conversationManager: missingConversationManager,
       launchQueue: launchCoordinator,
       eventBus,
       time: runtime.time,

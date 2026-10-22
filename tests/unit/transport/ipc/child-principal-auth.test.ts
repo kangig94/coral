@@ -27,7 +27,6 @@ describe('isCoralChildEnvironment', () => {
       isCoralChildEnvironment({
         CORAL_CHILD: '0',
         CORAL_JOB_ID: '',
-        CORAL_SESSION_ID: '',
         [CORAL_CHILD_PRINCIPAL_HANDLE]: '',
       }),
     ).toBe(false);
@@ -41,7 +40,6 @@ describe('childPrincipalAuthFromEnv', () => {
       [CORAL_CHILD_CREDENTIAL_ID]: 'credential-a',
       [CORAL_CHILD_CREDENTIAL_KEY]: keys.privateKey,
       CORAL_JOB_ID: 'job-a',
-      CORAL_SESSION_ID: 'session-a',
     });
     if (auth === null || auth === undefined || typeof auth === 'function') throw new Error('Expected challenged auth.');
 
@@ -54,8 +52,8 @@ describe('childPrincipalAuthFromEnv', () => {
       kind: 'child-proof',
       credentialId: 'credential-a',
       jobId: 'job-a',
-      sessionId: 'session-a',
     });
+    expect(proof).not.toHaveProperty('sessionId');
     expect(JSON.stringify(proof)).not.toContain(keys.privateKey);
   });
 
@@ -66,7 +64,6 @@ describe('childPrincipalAuthFromEnv', () => {
       [CORAL_CHILD_CREDENTIAL_ID]: 'credential-a',
       [CORAL_CHILD_CREDENTIAL_KEY]: keys.privateKey,
       CORAL_JOB_ID: 'job-a',
-      CORAL_SESSION_ID: 'session-a',
     });
 
     expect(auth).toMatchObject({ kind: 'challenged' });
@@ -75,7 +72,6 @@ describe('childPrincipalAuthFromEnv', () => {
         [CORAL_CHILD_PRINCIPAL_HANDLE]: 'handle-a',
         [CORAL_CHILD_CREDENTIAL_ID]: 'credential-a',
         CORAL_JOB_ID: 'job-a',
-        CORAL_SESSION_ID: 'session-a',
       }),
     ).toBeNull();
   });
@@ -87,7 +83,6 @@ describe('childPrincipalAuthFromEnv', () => {
         CORAL_CHILD: '1',
         [CORAL_CHILD_PRINCIPAL_HANDLE]: 'handle-a',
         CORAL_JOB_ID: 'job-a',
-        CORAL_SESSION_ID: 'session-a',
       },
       () => `nonce-${++nonce}`,
     );
@@ -98,7 +93,6 @@ describe('childPrincipalAuthFromEnv', () => {
       handle: 'handle-a',
       token: 'nonce-1',
       jobId: 'job-a',
-      sessionId: 'session-a',
     });
     expect(auth()).toMatchObject({ token: 'nonce-2' });
   });
@@ -108,7 +102,6 @@ describe('childPrincipalAuthFromEnv', () => {
     expect(
       childPrincipalAuthFromEnv({
         [CORAL_CHILD_PRINCIPAL_HANDLE]: 'handle-a',
-        CORAL_JOB_ID: 'job-a',
       }),
     ).toBeNull();
   });

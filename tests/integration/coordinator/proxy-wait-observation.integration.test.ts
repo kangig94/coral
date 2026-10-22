@@ -32,7 +32,6 @@ import { defineFakeProvider } from '#tests/helpers/scripted-provider.js';
 import { testChildPrincipalRegistry } from '#tests/helpers/child-principal-registry.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
 import { TEST_CODEX_SCOPE } from '#tests/helpers/provider-credentials.js';
-import { sessionsRegistry } from '#src/sessions/events.js';
 import { streamProviderTerminal } from '#src/providers/stream.js';
 
 function progressRecorded(eventBus: TypedEventBus, message: string): Promise<void> {
@@ -56,7 +55,7 @@ it('observes a progressing local app-server placement through production assembl
     db,
     eventBus,
     providers: permissiveProviderLookupPort,
-    reducers: composeReducers(jobsRegistry, sessionsRegistry),
+    reducers: composeReducers(jobsRegistry),
   });
   const registry = new LocalOperationRegistry();
   const launchCoordinator = new LaunchCoordinator({ runtime });

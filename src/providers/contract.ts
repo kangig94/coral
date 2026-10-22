@@ -7,16 +7,16 @@ import type { ExecResult } from '../infra/port-types.js';
 import { canonicalWorkDirWireSchema, type CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
 import { jsonValueSchema, type JsonValue } from '../infra/json-value.js';
 import type { ProviderExecutionPlan } from './execution-plan.js';
-import type { ProviderContinuityBlob } from '../sessions/continuity.js';
+import type { ProviderContinuityBlob } from '../jobs/conversation/continuity.js';
 import {
   SESSION_ADAPTER_UNPARSEABLE_EVENT,
   SESSION_PROVIDER_FAILED_EVENT,
   type ProviderFailureCause,
 } from './fault.js';
-import type { SessionContinuityMutation } from '../sessions/continuity-mutation.js';
+import type { SessionContinuityMutation } from '../jobs/conversation/continuity-mutation.js';
 import type { AbortReason } from '../jobs/outcome.js';
 import { providerArtifactIdentitySchema, type ProviderArtifactIdentity } from './artifact-identity.js';
-import { sessionProviderFailureDiagnosticSchema } from '../sessions/fault.js';
+import { sessionProviderFailureDiagnosticSchema } from '../jobs/conversation/fault.js';
 import type {
   AppServerNotificationMessage,
   ProviderCliRequest,
@@ -91,7 +91,7 @@ export const usageSummarySchema = z
 
 export interface ProviderRequest {
   action: ProviderAction;
-  sessionId: string;
+  jobId: string;
   name?: string;
   conversationRef?: string;
   prompt: string;
@@ -116,7 +116,7 @@ export interface ProviderRequest {
 export const providerRequestSchema = z
   .object({
     action: z.enum(['exec', 'resume']),
-    sessionId: persistedNonEmptyStringSchema,
+    jobId: persistedNonEmptyStringSchema,
     name: z.string().optional(),
     conversationRef: persistedNonEmptyStringSchema.optional(),
     prompt: z.string(),

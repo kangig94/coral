@@ -18,7 +18,7 @@ import type { BidResult, PersonaSeedOutput, SpeechResult } from '../discuss/sess
 import type { WatchState } from '../discuss/watch.js';
 import type { AcceptedLaunchResponse } from '../jobs/launch.js';
 import type { JobDetailResponse, JobStatus, JobsListResponse, JobsReleaseResult } from '../jobs/records.js';
-import type { RetentionPolicy } from '../sessions/entry.js';
+import type { RetentionPolicy } from '../jobs/conversation/entry.js';
 import type {
   KbDiagnoseInput,
   KbDiagnoseResult,
@@ -453,13 +453,9 @@ function buildKbMutationTransportContextBody(
 ): Record<string, unknown> {
   const body = buildTransportContextBody(args, context);
   const jobId = context.coralEnv.CORAL_JOB_ID;
-  const sessionId = context.coralEnv.CORAL_SESSION_ID;
 
   if (body.jobId === undefined && typeof jobId === 'string' && jobId.length > 0) {
     body.jobId = jobId;
-  }
-  if (body.sessionId === undefined && typeof sessionId === 'string' && sessionId.length > 0) {
-    body.sessionId = sessionId;
   }
 
   return body;

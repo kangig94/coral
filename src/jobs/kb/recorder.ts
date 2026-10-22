@@ -77,7 +77,7 @@ export class KbJobRecorder {
     const common = {
       jobId,
       owner: { kind: 'system-task', id: `${params.operation}:${jobId}` },
-      sessionId: null,
+      conversationJobId: null,
       provider: null,
       projectRoot: params.projectRoot,
       backendNamespace: this.deps.backendNamespace,
@@ -162,7 +162,7 @@ export class KbJobRecorder {
   appendHostedKbOperationFailure(params: {
     jobId: string;
     execution: number;
-    sessionId: string;
+    conversationJobId: string;
     projectRoot: string;
     namespace: string;
     operation: string;
@@ -176,7 +176,7 @@ export class KbJobRecorder {
         stream: { kind: 'job', id: params.jobId },
         namespace: params.namespace,
         project: params.projectRoot,
-        refs: buildJobEventRefs({ jobId: params.jobId, sessionId: params.sessionId }),
+        refs: buildJobEventRefs({ jobId: params.jobId, }),
         body: {
           execution: params.execution,
           kind: 'domain',

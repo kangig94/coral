@@ -25,14 +25,13 @@ import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { commitJobTerminal } from '#tests/helpers/job-commits.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
 import { jobsRegistry } from '#src/jobs/events.js';
-import { sessionsRegistry } from '#src/sessions/events.js';
 import { composeReducers } from '#src/store/reducers.js';
-import type { ProviderSession } from '#src/sessions/entry.js';
-import { createProjectionSessionLookup } from '#src/sessions/lookup.js';
+import type { JobConversation } from '#src/jobs/conversation/entry.js';
+import { createProjectionSessionLookup } from '#src/jobs/conversation/lookup.js';
 import { createWorkflowRecoveryFinalizer } from '#src/coordinator/services/workflow-recovery-finalizer.js';
 import { createFailedWorkflowDescendantReleaser } from '#src/coordinator/services/workflow-recovery-descendants.js';
-import { releaseSessionJobClaim } from '#src/sessions/job-release.js';
-import { SessionManager } from '#src/sessions/shell.js';
+import { releaseSessionJobClaim } from '#src/jobs/conversation/job-release.js';
+import { ConversationManager } from '#src/jobs/conversation/shell.js';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { finalizeInterruptedDurableRecovery } from '#src/coordinator/services/recovery/interrupted-finalizer.js';
 import type { DurableInterruptedRecoveryPlan } from '#src/coordinator/services/recovery/interrupted-plan.js';
@@ -78,7 +77,7 @@ function createHarness(options: {
   const progressStore = new JobStore(BACKEND_NAMESPACE, runtime, createEventBodyCodec(), {
     db,
     providers: permissiveProviderLookupPort,
-    reducers: composeReducers(jobsRegistry, sessionsRegistry, workflowRegistry),
+    reducers: composeReducers(jobsRegistry, workflowRegistry),
   });
   const plan = createWorkflowPlan(options.expression, workflowId);
   const jobIdsBySlot = new Map<string, string>();
@@ -239,7 +238,7 @@ function recoveryOptions(harness: ReturnType<typeof createHarness>): RecoverAllO
     db: harness.db,
     progressStore: harness.progressStore,
     clearContinuationLease: (projectRoot, input) =>
-      SessionManager.forProduction(projectRoot, harness.runtime, coordinatorCommit, () => {}, {
+      ConversationManager.forProduction(projectRoot, harness.runtime, coordinatorCommit, () => {}, {
         db: harness.db,
       }).clearContinuationLease(input),
     finalizeWorkflow: createWorkflowRecoveryFinalizer({
@@ -296,8 +295,8 @@ function storeContinuation(
     workflowId: 'workflow-1',
     sourceRevision: 'earlier-build-revision',
     childIds,
-    providerSessions: sessions.map(({ entry }) => {
-      const session = JSON.parse(entry) as ProviderSession;
+    jobConversations: sessions.map(({ entry }) => {
+      const session = JSON.parse(entry) as JobConversation;
       return {
         sessionId: session.sessionId,
         projectRoot: PROJECT_ROOT,
@@ -326,7 +325,7 @@ function storeContinuation(
 
 function setPendingReplacement(harness: ReturnType<typeof createHarness>, expiresAt = '2099-01-01T00:00:00.000Z') {
   const sessionId = 'session-atom-1';
-  const entry = createProjectionSessionLookup(harness.db).readProviderSession(sessionId);
+  const entry = createProjectionSessionLookup(harness.db).readJobConversation(sessionId);
   if (entry === undefined) throw new Error('Expected workflow provider session.');
   harness.db.prepare('UPDATE projection_sessions SET entry = ? WHERE session_id = ?').run(
     JSON.stringify({
@@ -531,11 +530,11 @@ describe('workflow recovery without execution', () => {
           expect(JSON.parse(readContinuation(harness)?.continuation_key ?? 'null')).toEqual(stored);
         }
         expect(harness.progressStore.readStatus('workflow-1')?.phase).toBe('running');
-        expect(createProjectionSessionLookup(harness.db).readProviderSession('session-atom-1')?.activeJobId).toBe(
+        expect(createProjectionSessionLookup(harness.db).readJobConversation('session-atom-1')?.activeJobId).toBe(
           harness.jobIdForSlot(harness.plan.slots[0].slotId),
         );
         expect(
-          createProjectionSessionLookup(harness.db).readProviderSession('session-atom-1')?.continuationLease,
+          createProjectionSessionLookup(harness.db).readJobConversation('session-atom-1')?.continuationLease,
         ).toMatchObject({ status: 'pending' });
         expect(finalizeWorkflow).not.toHaveBeenCalled();
         expect(releaseFailedWorkflowDescendants).not.toHaveBeenCalled();
@@ -579,10 +578,10 @@ describe('workflow recovery without execution', () => {
         });
         expect(readContinuation(harness)).toBeUndefined();
         expect(
-          createProjectionSessionLookup(harness.db).readProviderSession('session-atom-1')?.activeJobId,
+          createProjectionSessionLookup(harness.db).readJobConversation('session-atom-1')?.activeJobId,
         ).toBeUndefined();
         expect(
-          createProjectionSessionLookup(harness.db).readProviderSession('session-atom-2')?.activeJobId,
+          createProjectionSessionLookup(harness.db).readJobConversation('session-atom-2')?.activeJobId,
         ).toBeUndefined();
       } finally {
         harness.db.close();
@@ -641,7 +640,7 @@ describe('workflow recovery without execution', () => {
         expect(await recover(harness, { finalizeWorkflow })).toEqual(['workflow-1']);
         expect(finalizeWorkflow).toHaveBeenCalledExactlyOnceWith(intent);
         expect(
-          createProjectionSessionLookup(harness.db).readProviderSession('session-atom-1')?.continuationLease,
+          createProjectionSessionLookup(harness.db).readJobConversation('session-atom-1')?.continuationLease,
         ).toMatchObject({ status: 'pending' });
         expect(readContinuation(harness)).toBeUndefined();
       } finally {
@@ -662,7 +661,7 @@ describe('workflow recovery without execution', () => {
       try {
         expect(await recover(harness)).toEqual(['workflow-1']);
         expect(
-          createProjectionSessionLookup(harness.db).readProviderSession('session-atom-1')?.continuationLease,
+          createProjectionSessionLookup(harness.db).readJobConversation('session-atom-1')?.continuationLease,
         ).toMatchObject({
           status: 'cleared',
           outcome: 'explicit_clear',
@@ -704,7 +703,7 @@ describe('workflow recovery without execution', () => {
         log: vi.fn(),
       });
       const lookup = createProjectionSessionLookup(harness.db);
-      const sessionManager = SessionManager.forProduction(
+      const conversationManager = ConversationManager.forProduction(
         PROJECT_ROOT,
         harness.runtime,
         (cb) => harness.progressStore.commit(cb),
@@ -712,7 +711,7 @@ describe('workflow recovery without execution', () => {
         { db: harness.db },
       );
       if (pendingLease) {
-        sessionManager.recordContinuationLease({
+        conversationManager.recordContinuationLease({
           sessionId: 'session-atom-1',
           jobId: childJobId,
           workflowId: 'workflow-1',
@@ -722,7 +721,7 @@ describe('workflow recovery without execution', () => {
           expiresAt: new Date(harness.runtime.time.now() + 100).toISOString(),
         });
       }
-      const session = lookup.readProviderSession('session-atom-1');
+      const session = lookup.readJobConversation('session-atom-1');
       const launch = harness.progressStore.readLaunchProjection(childJobId);
       const status = harness.progressStore.readStatus(childJobId);
       if (
@@ -753,11 +752,11 @@ describe('workflow recovery without execution', () => {
       try {
         expect(await recover(harness, options)).toEqual(['workflow-1']);
         expect(harness.progressStore.readStatus('workflow-1')?.phase).toBe('error');
-        expect(lookup.readProviderSession(session.sessionId)).toMatchObject({
+        expect(lookup.readJobConversation(session.sessionId)).toMatchObject({
           activeJobId: childJobId,
           version: session.version,
         });
-        expect(lookup.readProviderSession(session.sessionId)?.continuationLease).toEqual(session.continuationLease);
+        expect(lookup.readJobConversation(session.sessionId)?.continuationLease).toEqual(session.continuationLease);
         expect(harness.progressStore.readTerminalProjection(childJobId)).toBeNull();
         expect(harness.executionSvc.abort).not.toHaveBeenCalled();
         expect(releaseAdoptedJob).not.toHaveBeenCalled();
@@ -776,7 +775,7 @@ describe('workflow recovery without execution', () => {
           status,
           {
             runtime: harness.runtime,
-            sessionManager,
+            conversationManager,
             abortRegistry: new AbortRegistry(harness.runtime.ids),
             launchAdmission,
             launchPermit,
@@ -784,7 +783,7 @@ describe('workflow recovery without execution', () => {
           },
         );
         expect(harness.progressStore.readTerminalProjection(childJobId)).toMatchObject(completed);
-        expect(lookup.readProviderSession(session.sessionId)?.activeJobId).toBeUndefined();
+        expect(lookup.readJobConversation(session.sessionId)?.activeJobId).toBeUndefined();
         expect(launchAdmission.getActiveJobIds()).not.toContain(childJobId);
         expect(emitSessionReleased).toHaveBeenCalledWith({ sessionId: session.sessionId, jobId: childJobId });
       } finally {
@@ -901,7 +900,7 @@ describe('workflow recovery without execution', () => {
       try {
         expect(await recover(harness, { log })).toEqual(['workflow-1']);
         expect(harness.progressStore.readStatus('workflow-1')?.phase).toBe('error');
-        expect(createProjectionSessionLookup(harness.db).readProviderSession('session-atom-1')?.activeJobId).toBe(
+        expect(createProjectionSessionLookup(harness.db).readJobConversation('session-atom-1')?.activeJobId).toBe(
           disposition === 'already absent' ? undefined : 'unrelated-successor',
         );
         expect(harness.executionSvc.abort).toHaveBeenCalledWith([childJobId]);
@@ -926,10 +925,10 @@ describe('workflow recovery without execution', () => {
     try {
       expect(await recover(harness)).toEqual(['workflow-1']);
       expect(
-        createProjectionSessionLookup(harness.db).readProviderSession('session-atom-1')?.activeJobId,
+        createProjectionSessionLookup(harness.db).readJobConversation('session-atom-1')?.activeJobId,
       ).toBeUndefined();
       expect(
-        createProjectionSessionLookup(harness.db).readProviderSession('session-atom-1')?.continuationLease,
+        createProjectionSessionLookup(harness.db).readJobConversation('session-atom-1')?.continuationLease,
       ).toMatchObject({ status: 'cleared', outcome: 'explicit_clear' });
       expect(harness.executionSvc.abort).toHaveBeenCalledWith([childJobId]);
       expect(readContinuation(harness)).toBeUndefined();

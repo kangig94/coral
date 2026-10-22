@@ -222,13 +222,13 @@ function describeJobsMatch(filters: JobsListDisplayFilters): string {
 export function formatLaunch(result: AcceptedLaunchResponse): string {
   const launchState = result.launchState === 'running' ? 'launch accepted' : result.launchState;
   return result.kind === 'provider-session'
-    ? `Provider job ${result.jobId} ${launchState} (provider session ${result.sessionId})`
+    ? `Provider job ${result.jobId} ${launchState}`
     : `Workflow ${result.workflowId} ${launchState} (job ${result.jobId})`;
 }
 
 export function formatDetachedLaunchStatus(result: AcceptedLaunchResponse): string {
   return result.kind === 'provider-session'
-    ? `Provider job ${result.launchState} (provider session ${result.sessionId})`
+    ? `Provider job ${result.jobId} ${result.launchState}`
     : `Workflow ${result.workflowId} ${result.launchState} (job ${result.jobId})`;
 }
 
@@ -376,7 +376,6 @@ export function formatJobDetail(
     status.workflowSlotGeneration === undefined ? undefined : `Workflow generation: ${status.workflowSlotGeneration}`,
     status.replacesWorkflowJobId === undefined ? undefined : `Replaces workflow job: ${status.replacesWorkflowJobId}`,
     formatWorkflowChildren(workflowChildren),
-    status.sessionId === null ? undefined : `Provider session: ${status.sessionId}`,
     `Project: ${status.projectRoot}`,
     status.workDir === null ? undefined : `Work dir: ${status.workDir}`,
     `Updated: ${status.updatedAt}`,

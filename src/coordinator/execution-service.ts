@@ -10,7 +10,7 @@ import type {
 import type {
   JobLaunchRequest,
   JobResumeRequest,
-  ProviderSessionLaunchDecision,
+  ProviderJobLaunchDecision,
   WorkflowLaunchDecision,
 } from '../jobs/launch.js';
 import type { AppServerRuntime, JobLaunch, JobRuntime, LaunchReadiness } from '../jobs/records.js';
@@ -21,7 +21,7 @@ import type { CanonicalWorkflowCommand } from '../workflow/compile.js';
 import type { CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
 import type { AbortResult } from '../jobs/contracts/abort-registry.js';
 import { AbortRegistry } from '../jobs/shell/abort-registry.js';
-import { SessionManager } from '../sessions/shell.js';
+import { ConversationManager } from '../jobs/conversation/shell.js';
 import { LaunchOrchestrator } from '../jobs/shell/launch.js';
 import { WaitCoordinator } from '../jobs/shell/wait.js';
 import type { TypedEventBus } from './event-bus.js';
@@ -50,7 +50,7 @@ export interface HandoffQuiescePort {
 
 export class ExecutionService implements RecoveryCapableService, ProjectRequestPort, HandoffQuiescePort {
   private readonly runtime: ExecutionServiceDeps['runtime'];
-  private readonly sessionManager: SessionManager;
+  private readonly conversationManager: ConversationManager;
   private readonly abortRegistry: AbortRegistry;
   private readonly backendNamespace: string;
   private readonly bundleHash: string;
@@ -71,17 +71,8 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     this.runtime = deps.runtime;
     this.eventBus = deps.eventBus;
     const coordinatorCommit = deps.coordinatorCommit;
-    this.sessionManager = SessionManager.forProduction(
-      ctx.projectRoot,
-      deps.runtime,
-      coordinatorCommit,
-      (payload) => {
-        this.eventBus.emit('session:released', payload);
-      },
-      {
-        db: deps.progressStore.getDb(),
-        commitUnreadableJobStatusRecovery: (jobId, cb) => deps.progressStore.commitUnreadableStatusRecovery(jobId, cb),
-      },
+    this.conversationManager = new ConversationManager(
+      ctx.projectRoot, deps.runtime, coordinatorCommit, deps.progressStore.getDb(),
     );
     this.abortRegistry = new AbortRegistry(deps.runtime.ids);
     this.backendNamespace = deps.backendNamespace;
@@ -89,7 +80,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     this.progressStore = deps.progressStore;
 
     this.launchOrchestrator = new LaunchOrchestrator({
-      sessionManager: this.sessionManager,
+      conversationManager: this.conversationManager,
       abortRegistry: this.abortRegistry,
       progressStore: this.progressStore,
       launchAdmission: deps.launchCoordinator,
@@ -115,7 +106,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     });
     deps.providerOperationCleanup?.register(this.launchOrchestrator);
     const waitCoordinator = new WaitCoordinator({
-      sessionManager: this.sessionManager,
+      conversationManager: this.conversationManager,
       launchQueue: deps.launchCoordinator,
       eventBus: this.eventBus,
       time: this.runtime.time,
@@ -137,7 +128,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
 
     this.recoveryService = new RecoveryService({
       runtime: this.runtime,
-      sessionManager: this.sessionManager,
+      conversationManager: this.conversationManager,
       abortRegistry: this.abortRegistry,
       backendNamespace: this.backendNamespace,
       bundleHash: this.bundleHash,
@@ -152,7 +143,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     });
     this.launchService = new JobLaunchService({
       runtime: this.runtime,
-      sessionManager: this.sessionManager,
+      conversationManager: this.conversationManager,
       backendNamespace: this.backendNamespace,
       bundleHash: this.bundleHash,
       providerRegistry: deps.providerRegistry,
@@ -191,10 +182,10 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
           ),
         recordContinuationLease: (input) =>
           this.runWithInvocationScope(ctx, async () => {
-            this.sessionManager.recordContinuationLease(input);
+            this.conversationManager.recordContinuationLease(input);
           }),
         clearContinuationLease: (input) =>
-          this.runWithInvocationScope(ctx, () => this.sessionManager.clearContinuationLease(input)),
+          this.runWithInvocationScope(ctx, () => this.conversationManager.clearContinuationLease(input)),
         abort: (jobIds) => this.abortService.abort(jobIds),
         awaitLaunch: (jobId, timeoutMs) => this.waitService.awaitLaunch(jobId, timeoutMs),
         waitStream: (req) => this.waitService.waitStream(req),
@@ -230,7 +221,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     coralName: string,
     input: CoralIntent,
     ctx: InvocationContext,
-  ): Promise<ProviderSessionLaunchDecision> {
+  ): Promise<ProviderJobLaunchDecision> {
     const normalized = normalizeCoralIntent(input);
     if ('status' in normalized) return normalized;
     return this.launchService.coralDispatch(providerName, coralName, normalized, ctx);
@@ -241,7 +232,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     input: JobLaunchRequest,
     ctx: InvocationContext,
     signal?: AbortSignal,
-  ): Promise<ProviderSessionLaunchDecision> {
+  ): Promise<ProviderJobLaunchDecision> {
     return this.runWithInvocationScope(ctx, async () => this.launchService.start(providerName, input, ctx, signal));
   }
 
@@ -249,7 +240,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     providerName: string,
     input: JobResumeRequest,
     ctx: InvocationContext,
-  ): Promise<ProviderSessionLaunchDecision> {
+  ): Promise<ProviderJobLaunchDecision> {
     return this.runWithInvocationScope(ctx, async () => this.launchService.resume(providerName, input, ctx));
   }
 
@@ -258,7 +249,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     coralName: string,
     input: CoralIntent,
     ctx: InvocationContext,
-  ): Promise<ProviderSessionLaunchDecision> {
+  ): Promise<ProviderJobLaunchDecision> {
     return this.runWithInvocationScope(ctx, async () => this.dispatchCoralIntent(providerName, coralName, input, ctx));
   }
 

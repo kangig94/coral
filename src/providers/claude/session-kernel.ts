@@ -11,7 +11,7 @@ import type {
   ProviderSteeringPort,
 } from '../contract.js';
 import { providerRequestFailed, type ProviderFailureCause } from '../fault.js';
-import { sessionProviderFailureDiagnosticSchema, type SessionProviderFailureDiagnostic } from '../../sessions/fault.js';
+import { sessionProviderFailureDiagnosticSchema, type SessionProviderFailureDiagnostic } from '../../jobs/conversation/fault.js';
 import { buildProviderFailureMessage } from '../app-server.js';
 import { streamProviderEvents } from '../stream.js';
 import { buildJobDiagnostics, buildJobTerminal } from '../terminal.js';

@@ -51,7 +51,7 @@ describe('workflow wait epoch cursor', () => {
       visitProgress: progressVisitFromEvents(() => job.detail.events),
       time: runtime.time,
       eventBus: new TypedEventBus(),
-      sessionManager: { get: () => null } as never,
+      conversationManager: { get: () => null } as never,
       launchQueue: { reservationFor: () => null, getActiveJobIds: () => [] } as never,
       readJobLastSeq: () => null,
       loadJobWaitDetail: () => ({
@@ -201,7 +201,7 @@ it('a workflow child missing from the real reader fails its atom instead of wait
     visitProgress: progressVisitFromEvents(() => []),
     time: runtime.time,
     eventBus: new TypedEventBus(),
-    sessionManager: { get: () => null } as never,
+    conversationManager: { get: () => null } as never,
     launchQueue: { reservationFor: () => null, getActiveJobIds: () => [] } as never,
     readJobLastSeq: () => null,
     loadJobWaitDetail: load,

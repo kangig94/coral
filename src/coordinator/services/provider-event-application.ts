@@ -21,7 +21,7 @@ import type { ProviderBindingCatalog } from '../../providers/catalog.js';
 import type { ProviderInterruptionCause, ProviderStopCause } from '../../providers/contract.js';
 import { providerProxyRekeyRefusalEvent } from '../../providers/proxy-failure.js';
 import { isRecord } from '../../infra/json.js';
-import type { SessionContinuityState } from '../../sessions/fault.js';
+import type { SessionContinuityState } from '../../jobs/conversation/fault.js';
 import { decodeBody } from '../../store/body-codec.js';
 import { readJobOpened, readLatestExecutionRequest } from '../../jobs/execution-state.js';
 import { jobContinuityCheckpointedBodySchema } from '../../jobs/event-bodies.js';

@@ -8,13 +8,12 @@ import { jobsRegistry } from '#src/jobs/events.js';
 import type { ProviderRequest } from '#src/providers/contract.js';
 import { LaunchOrchestrator } from '#src/jobs/shell/launch.js';
 import { JobStore } from '#src/jobs/store.js';
-import { SessionManager } from '#src/sessions/shell.js';
+import { ConversationManager } from '#src/jobs/conversation/shell.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { commit } from '#src/store/append.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
-import { sessionsRegistry } from '#src/sessions/events.js';
 import { discussRegistry } from '#src/discuss/event-registry.js';
 import { workflowPlanDeclaredEvent, workflowRegistry } from '#src/workflow/events.js';
 import { buildWorkflowPlan } from '#src/workflow/plan.js';
@@ -36,7 +35,7 @@ describe('workflow replacement launch atomicity', () => {
     const db = newRawDatabase(':memory:');
     applyBundledStoreSchema(db, currentCoralStoreFormat());
     const runtime = new SimulationRuntime();
-    const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
+    const reducers = composeReducers(jobsRegistry, discussRegistry, workflowRegistry);
     const bodyCodec = createEventBodyCodec();
     const coordinatorCommit = (cb: Parameters<typeof commit>[1]) =>
       commit(db, cb, {
@@ -50,7 +49,7 @@ describe('workflow replacement launch atomicity', () => {
       reducers,
       providers: permissiveProviderLookupPort,
     });
-    const sessionManager = new SessionManager(PROJECT_ROOT, runtime, coordinatorCommit, undefined, db);
+    const conversationManager = new ConversationManager(PROJECT_ROOT, runtime, coordinatorCommit, undefined, db);
     const plan = buildWorkflowPlan(WORKFLOW_ID, parseExpression('architect@codex'));
     const slot = plan.slots[0];
     if (slot === undefined) throw new Error('expected workflow slot');
@@ -59,7 +58,7 @@ describe('workflow replacement launch atomicity', () => {
       c.append(workflowPlanDeclaredEvent(WORKFLOW_ID, plan, TEST_PROVIDER_SCOPE));
       return undefined;
     });
-    const session = sessionManager.allocate({
+    const session = conversationManager.allocate({
       binding: TEST_CODEX_BINDING,
       name: 'replacement-session',
       cwd: fixtureCanonicalWorkDir(PROJECT_ROOT),
@@ -67,7 +66,7 @@ describe('workflow replacement launch atomicity', () => {
       backendNamespace: 'test-ns',
       retention: 'retain',
     });
-    expect(sessionManager.claimForJobSync(session.sessionId, STALE_JOB_ID)).toBe(true);
+    expect(conversationManager.claimForJobSync(session.sessionId, STALE_JOB_ID)).toBe(true);
     progressStore.appendLaunchRequested(STALE_JOB_ID, {
       jobId: STALE_JOB_ID,
       owner: { kind: 'workflow', id: WORKFLOW_ID },
@@ -90,8 +89,8 @@ describe('workflow replacement launch atomicity', () => {
       outcome: { kind: 'aborted', reason: 'user_abort' },
       durationMs: 0,
     });
-    sessionManager.releaseJob(session.sessionId, STALE_JOB_ID);
-    sessionManager.recordContinuationLease({
+    conversationManager.releaseJob(session.sessionId, STALE_JOB_ID);
+    conversationManager.recordContinuationLease({
       sessionId: session.sessionId,
       jobId: STALE_JOB_ID,
       workflowId: WORKFLOW_ID,
@@ -100,7 +99,7 @@ describe('workflow replacement launch atomicity', () => {
       reason: 'stale_recovery',
       expiresAt: '2099-01-01T00:00:00.000Z',
     });
-    const pending = sessionManager.get('codex', session.sessionId);
+    const pending = conversationManager.get('codex', session.sessionId);
     if (pending === null) throw new Error('expected pending provider session');
     const eventCountBefore = (
       db.prepare<[], { count: number }>('SELECT COUNT(*) AS count FROM events').get() as { count: number }
@@ -130,7 +129,7 @@ describe('workflow replacement launch atomicity', () => {
     const orchestrator = new LaunchOrchestrator({
       abortRegistry: abortRegistry as never,
       progressStore,
-      sessionManager,
+      conversationManager,
       launchAdmission,
       providerOperationBinding: launchAdmission,
       durableSpawner: {} as never,
@@ -187,7 +186,7 @@ describe('workflow replacement launch atomicity', () => {
       });
       expect(launchAdmission.getActiveJobIds()).toEqual([]);
       expect(registeredJobs.size).toBe(0);
-      const rolledBack = sessionManager.get('codex', session.sessionId);
+      const rolledBack = conversationManager.get('codex', session.sessionId);
       expect(rolledBack).toMatchObject({
         version: pending.version,
         continuationLease: { status: 'pending', staleJobId: STALE_JOB_ID },
@@ -195,7 +194,7 @@ describe('workflow replacement launch atomicity', () => {
       expect(rolledBack?.activeJobId).toBeUndefined();
 
       db.exec('DROP TRIGGER fail_replacement_admission');
-      const retrySession = sessionManager.get('codex', session.sessionId);
+      const retrySession = conversationManager.get('codex', session.sessionId);
       if (retrySession === null) throw new Error('expected retryable provider session');
       const recovered = orchestrator.launchWorkflowReplacement(
         boundProvider,
@@ -210,7 +209,7 @@ describe('workflow replacement launch atomicity', () => {
         workflowSlotGeneration: 1,
         replacesWorkflowJobId: STALE_JOB_ID,
       });
-      expect(sessionManager.get('codex', session.sessionId)).toMatchObject({
+      expect(conversationManager.get('codex', session.sessionId)).toMatchObject({
         activeJobId: recovered.jobId,
         continuationLease: { status: 'claimed', resumedJobId: recovered.jobId },
       });

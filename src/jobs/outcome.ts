@@ -4,6 +4,7 @@ import { assertNever } from '../infra/error-format.js';
 import { ensureSentence } from '../infra/text.js';
 import {
   causeRefSchema,
+  durableCauseRefSchema,
   renderCauseRefFallback,
   type CauseRef,
   type ResolvableCauseRef,
@@ -67,7 +68,7 @@ export const terminalOutcomeSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('completed') }).strict(),
   z.object({ kind: z.literal('aborted'), reason: abortReasonSchema }).strict(),
   z.object({ kind: z.literal('provider_exit'), code: z.number(), note: z.string().optional() }).strict(),
-  z.object({ kind: z.literal('failed'), causeRef: causeRefSchema }).strict(),
+  z.object({ kind: z.literal('failed'), causeRef: durableCauseRefSchema }).strict(),
   z.object({ kind: z.literal('job_fault'), fault: jobLifecycleFaultSchema }).strict(),
 ]);
 export type TerminalOutcome = z.infer<typeof terminalOutcomeSchema>;

@@ -3,7 +3,7 @@ import { createStoreChildPrincipalCredentials } from '#src/coordinator/child-pri
 import type { IdPort } from '#src/runtime/ports.js';
 import type { Database } from '#src/store/db.js';
 
-import { newRawDatabase } from './test-db.js';
+import { newRawDatabase } from '#tests/helpers/test-db.js';
 
 /** A store.db stand-in carrying only the `meta` table child credentials live in. */
 export function childCredentialDatabase(): Database {
@@ -17,7 +17,7 @@ export function testChildPrincipalRegistry(
   options: Readonly<{
     db?: Database;
     namespace?: string;
-    activeJobOrigin?: (jobId: string) => string | null;
+    openJobExecution?: (jobId: string) => { namespace: string; execution: number } | null;
   }> = {},
 ): ChildPrincipalRegistry {
   const db = options.db ?? childCredentialDatabase();
@@ -26,7 +26,7 @@ export function testChildPrincipalRegistry(
     createStoreChildPrincipalCredentials(() => db),
     {
       namespace: options.namespace ?? 'ns-a',
-      activeJobOrigin: options.activeJobOrigin ?? (() => 'ns-a'),
+      openJobExecution: options.openJobExecution ?? (() => ({ namespace: 'ns-a', execution: 1 })),
     },
   );
 }

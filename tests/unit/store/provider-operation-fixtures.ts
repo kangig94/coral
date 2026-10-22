@@ -99,8 +99,8 @@ export function providerOperationRecord(
         phase,
         prepareSource: {
           jobLaunchEventSeq: 1,
-          sessionId: uuid(8),
-          sessionVersion: 2,
+
+          execution: 2,
           platform: 'linux',
           childAuthorization: {
             principalWire: {

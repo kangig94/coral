@@ -5,7 +5,7 @@ import {
   type ProviderAppServerRuntime,
   type ProviderContinuityUpdate,
 } from '../contract.js';
-import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
+import type { ProviderContinuityBlob } from '../../jobs/conversation/continuity.js';
 import {
   buildClaudeBootstrapSignature,
   readClaudePersistedContinuity,
@@ -44,7 +44,7 @@ const claude: ProviderAppServer<ClaudeExecutionPlan> = (request, runtime) => {
   if (persistedContinuity.bootstrapSignature) {
     const actual = buildClaudeBootstrapSignature(request, runtime.ids, {
       derivedSystemPrompt: prepared.systemPrompt,
-      conversationRef: request.conversationRef ?? (request.action === 'exec' ? request.sessionId : undefined),
+      conversationRef: request.conversationRef ?? (request.action === 'exec' ? request.jobId : undefined),
       resumeExisting: request.action === 'resume',
       projectsRoot: runtime.executionPlan.session.projectsRoot,
       model: prepared.model,

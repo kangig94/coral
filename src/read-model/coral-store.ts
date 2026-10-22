@@ -35,7 +35,7 @@ import {
   type DiscussReadRef,
 } from '../discuss/read-queries.js';
 import type { DiscussDomainEvent, PersistedDiscussSnapshot } from '../discuss/events.js';
-import { readProviderSessionById } from '../sessions/read-queries.js';
+import { readJobConversationById } from '../jobs/conversation/read-queries.js';
 import {
   listWorkflowProjections,
   readWorkflowProjection,
@@ -58,7 +58,7 @@ import type {
   KbWikiListResult,
 } from '../kb/entry-types.js';
 import type { CommunitySummaryInput, StaleCommunity } from '../kb/curate/community/summary-surface.js';
-import type { ProviderSession } from '../sessions/entry.js';
+import type { JobConversation } from '../jobs/conversation/entry.js';
 import type { DiscussDiscoveryData, DiscussSummaryIndexData } from '../discuss/persistence-types.js';
 
 export type CoralStoreRuntime = Pick<Runtime, 'env' | 'flavor' | 'ids' | 'paths' | 'process' | 'storage' | 'time'>;
@@ -86,6 +86,7 @@ export class CoralStore implements StoreReadContext {
   public readonly jobs: {
     list: (filters: JobsListFilters) => Array<{ jobId: string; status: JobDetail['status'] }>;
     detail: (jobId: string) => JobDetail | null;
+    conversation: (jobId: string) => JobConversation;
   };
   public readonly kb: {
     diagnose: () => KbDiagnoseResult;
@@ -104,9 +105,6 @@ export class CoralStore implements StoreReadContext {
     watch: (sessionId: string, cursor?: number) => WatchState;
     discovery: (source: string) => DiscussDiscoveryData | null;
     summaryIndex: (source: string) => DiscussSummaryIndexData | null;
-  };
-  public readonly sessions: {
-    readEntry: (sessionId: string) => ProviderSession;
   };
   public readonly workflows: {
     projection: (workflowId: string) => WorkflowProjectionRow | null;
@@ -127,6 +125,7 @@ export class CoralStore implements StoreReadContext {
     this.jobs = {
       list: (filters) => listJobs(this.db, filters, this),
       detail: (jobId) => loadJobDetail(this.db, jobId, this),
+      conversation: (jobId) => readJobConversationById(this.db, jobId),
     };
 
     this.kb = {
@@ -169,9 +168,6 @@ export class CoralStore implements StoreReadContext {
       summaryIndex: (source) => readDiscussSummaryIndex(this.db, source),
     };
 
-    this.sessions = {
-      readEntry: (sessionId) => readProviderSessionById(this.db, sessionId),
-    };
 
     this.workflows = {
       projection: (workflowId) => readWorkflowProjection(this.db, workflowId),

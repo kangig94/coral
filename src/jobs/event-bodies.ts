@@ -2,12 +2,12 @@ import { z } from 'zod';
 
 import { executionOrdinalSchema } from './launch.js';
 import { providerArtifactIdentityKey, providerArtifactIdentitySchema } from '../providers/artifact-identity.js';
-import { continuitySnapshotSchema } from '../sessions/continuity.js';
+import { continuitySnapshotSchema } from './conversation/continuity.js';
 import {
   sessionInterruptedFaultSchema,
   sessionProviderFailedFaultSchema,
   sessionAdapterUnparseableFaultSchema,
-} from '../sessions/fault.js';
+} from './conversation/fault.js';
 import { executionCauseRefSchema, externalErrorSchema, jobDomainProgressSchema } from './outcome.js';
 
 export const jobQueueQueuedBodySchema = z

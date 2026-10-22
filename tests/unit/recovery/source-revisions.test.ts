@@ -6,29 +6,29 @@ import {
   sessionProjectionRecoverySource,
   type RawSessionProjectionEnvelope,
   type SessionProjectionComponent,
-} from '#src/sessions/projection-recovery-source.js';
+} from '#src/jobs/conversation/projection-recovery-source.js';
 import {
   sessionContinuationLeaseRecoverySource,
   type RawPendingContinuationLeaseRow,
   type SessionContinuationLeaseComponent,
-} from '#src/sessions/continuation-lease-recovery-source.js';
+} from '#src/jobs/conversation/continuation-lease-recovery-source.js';
 import {
   terminalRetentionOutcomeRecoverySource,
   type RawTerminalRetentionOutcomeRow,
   type TerminalRetentionOutcomeComponent,
-} from '#src/sessions/terminal-retention-outcome-recovery-source.js';
+} from '#src/jobs/conversation/terminal-retention-outcome-recovery-source.js';
 import {
   retentionReleasePairComponentSource,
   type RawRetentionReleaseAndTerminalRow,
   type RetentionReleasePairComponent,
-} from '#src/sessions/retention-release-pair-recovery-source.js';
+} from '#src/jobs/conversation/retention-release-pair-recovery-source.js';
 import {
   retentionWorkItemRecoverySource,
   type P4RetentionComponent,
-} from '#src/sessions/retention-work-item-recovery-source.js';
+} from '#src/jobs/conversation/retention-work-item-recovery-source.js';
 import { staleJobCleanupSource } from '#src/jobs/stale-job-cleanup-recovery-source.js';
 import { coordinatorJobRecoverySource } from '#src/coordinator/services/recovery/coordinator-job-source.js';
-import type { ProviderSession } from '#src/sessions/entry.js';
+import type { JobConversation } from '#src/jobs/conversation/entry.js';
 import type { EventsRow } from '#src/store/schema.js';
 import { TEST_CODEX_BINDING } from '#tests/helpers/provider-credentials.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
@@ -38,7 +38,7 @@ const REVISION_TIME = { now: () => Date.parse('2026-08-03T00:00:00.000Z') };
 
 const P4_NOW = '2026-08-03T00:00:00.000Z';
 
-function p4Entry(overrides: Partial<ProviderSession> = {}): ProviderSession {
+function p4Entry(overrides: Partial<JobConversation> = {}): JobConversation {
   return {
     sessionId: 'p4-session',
     binding: TEST_CODEX_BINDING,
@@ -391,7 +391,7 @@ describe('P4 recovery source revisions', () => {
           (raw: RawSessionProjectionEnvelope): SessionProjectionComponent => ({
             kind: 'session',
             row: raw.row,
-            entry: JSON.parse(raw.row.entry) as ProviderSession,
+            entry: JSON.parse(raw.row.entry) as JobConversation,
             hasContinuationLeaseField: true,
             retentionContinuations: raw.retentionContinuations,
           }),
@@ -402,7 +402,7 @@ describe('P4 recovery source revisions', () => {
           (row: RawPendingContinuationLeaseRow): SessionContinuationLeaseComponent => ({
             kind: 'lease',
             row,
-            persistedEntry: JSON.parse(row.entry) as ProviderSession,
+            persistedEntry: JSON.parse(row.entry) as JobConversation,
             effectiveEntry: p4Entry(),
             protectsRetention: false,
             overdueLease: null,

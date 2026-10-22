@@ -31,8 +31,8 @@ export type RecoverySessionFacts = {
 export interface RecoveryProjectionSnapshot {
   readonly jobIds: readonly string[];
   readJob(jobId: string): RecoveryJobFacts;
-  listSessionRefs(): Array<{ sessionId: string; provider: string }>;
-  readSession(sessionId: string): RecoverySessionFacts | null;
+  listSessionRefs(): Array<{ conversationJobId: string; provider: string }>;
+  readSession(conversationJobId: string): RecoverySessionFacts | null;
   /**
    * Probes whether a durable pid is live. Dead provider runtimes still register
    * for BoundProvider recovery; dead non-provider runtimes use wrapper_lost.
@@ -52,7 +52,7 @@ export type RecoveryAction =
       launchRecord: JobLaunch;
       runtimeRecord: JobRuntime;
     }
-  | { type: 'releaseSessionClaim'; sessionId: string; jobId: string };
+  | { type: 'releaseSessionClaim'; conversationJobId: string; jobId: string };
 
 type RegisterAction = Extract<RecoveryAction, { type: 'registerRunning' | 'registerQueued' }>;
 type CleanupAction = Exclude<RecoveryAction, { type: 'registerRunning' | 'registerQueued' }>;
@@ -251,14 +251,14 @@ function planSessionClaimReleases(snapshot: RecoveryProjectionSnapshot, jobIds: 
   const actions: CleanupAction[] = [];
 
   for (const ref of readSessionRefs(snapshot)) {
-    const session = snapshot.readSession(ref.sessionId);
+    const session = snapshot.readSession(ref.conversationJobId);
     const activeJobId = session?.activeJobId;
     if (!activeJobId) continue;
 
     if (!knownJobIds.has(activeJobId)) {
       actions.push({
         type: 'releaseSessionClaim',
-        sessionId: ref.sessionId,
+        conversationJobId: ref.conversationJobId,
         jobId: activeJobId,
       });
       continue;
@@ -268,7 +268,7 @@ function planSessionClaimReleases(snapshot: RecoveryProjectionSnapshot, jobIds: 
     if (activeJob.status !== null && isTerminalPhase(activeJob.status.phase)) {
       actions.push({
         type: 'releaseSessionClaim',
-        sessionId: ref.sessionId,
+        conversationJobId: ref.conversationJobId,
         jobId: activeJobId,
       });
     }
@@ -282,12 +282,12 @@ function readJobIds(jobIds: readonly string[]): string[] {
   return jobIds.filter((jobId): jobId is string => typeof jobId === 'string');
 }
 
-function readSessionRefs(snapshot: RecoveryProjectionSnapshot): Array<{ sessionId: string; provider: string }> {
+function readSessionRefs(snapshot: RecoveryProjectionSnapshot): Array<{ conversationJobId: string; provider: string }> {
   const refs = snapshot.listSessionRefs();
   if (!Array.isArray(refs)) return [];
 
   return refs.filter(
-    (ref): ref is { sessionId: string; provider: string } =>
-      ref !== null && typeof ref === 'object' && typeof ref.sessionId === 'string' && typeof ref.provider === 'string',
+    (ref): ref is { conversationJobId: string; provider: string } =>
+      ref !== null && typeof ref === 'object' && typeof ref.conversationJobId === 'string' && typeof ref.provider === 'string',
   );
 }

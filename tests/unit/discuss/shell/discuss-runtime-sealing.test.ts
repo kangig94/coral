@@ -35,7 +35,6 @@ import { ProviderRegistry } from '#src/providers/registry.js';
 import { registerBuiltInProviders } from '#src/providers/bootstrap.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { jobsRegistry } from '#src/jobs/events.js';
-import { sessionsRegistry } from '#src/sessions/events.js';
 import { workflowRegistry } from '#src/workflow/events.js';
 import {
   cleanupDiscussHarnesses,
@@ -121,7 +120,7 @@ function createPersistedRecoveryHarness(): PersistedRecoveryHarness {
   const registry = createDiscussContextRegistry();
   const progressStore = new JobStore(resolveBackendNamespace(runtime, pluginRoot), runtime, createEventBodyCodec(), {
     db: openTestStoreDb(runtime, ':memory:'),
-    reducers: composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry),
+    reducers: composeReducers(jobsRegistry, discussRegistry, workflowRegistry),
     providers: permissiveProviderLookupPort,
   });
   const service = createExecutionServiceStub();

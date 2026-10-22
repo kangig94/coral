@@ -8,7 +8,7 @@ import type { ResultAvailability } from '../jobs/terminal/export.js';
 import type {
   JobLaunchRequest,
   JobResumeRequest,
-  ProviderSessionLaunchDecision,
+  ProviderJobLaunchDecision,
   WorkflowLaunchDecision,
 } from '../jobs/launch.js';
 import type { LaunchCoordinatorPort, SettlementRefusalRecorder } from '../jobs/contracts/admission.js';
@@ -27,7 +27,7 @@ import type { ProviderStopCause, UsageSummary } from '../providers/contract.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { AbortResult } from '../jobs/contracts/abort-registry.js';
 import type { Runtime } from '../runtime/ports.js';
-import type { ProviderSession } from '../sessions/entry.js';
+import type { JobConversation } from '../jobs/conversation/entry.js';
 import type { CommitEventsFn } from '../store/append.js';
 import type { ProviderBindingCatalog } from '../providers/catalog.js';
 import type { PipelineAST } from '../workflow/ast.js';
@@ -48,8 +48,8 @@ interface CoordinatorSessionOps {
     input: JobLaunchRequest,
     ctx: InvocationContext,
     signal?: AbortSignal,
-  ): Promise<ProviderSessionLaunchDecision>;
-  resume(providerName: string, input: JobResumeRequest, ctx: InvocationContext): Promise<ProviderSessionLaunchDecision>;
+  ): Promise<ProviderJobLaunchDecision>;
+  resume(providerName: string, input: JobResumeRequest, ctx: InvocationContext): Promise<ProviderJobLaunchDecision>;
 }
 
 interface CoordinatorJobOps {
@@ -79,7 +79,7 @@ interface CoordinatorWorkflowOps {
 export type ProjectRequestPort = CoordinatorSessionOps & CoordinatorJobOps & CoordinatorWorkflowOps;
 
 export interface ListResult {
-  sessions: ProviderSession[];
+  sessions: JobConversation[];
 }
 
 type CoordinatorLaunchCoordinator = LaunchCoordinatorPort &

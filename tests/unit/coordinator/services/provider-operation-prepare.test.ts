@@ -1,12 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ProviderJobLaunch } from '#src/jobs/records.js';
-import type { ProviderSession } from '#src/sessions/entry.js';
+import type { JobConversation } from '#src/jobs/conversation/entry.js';
 import {
   materializeProviderOperationPrepare,
   type ProviderOperationPrepareMaterializerDeps,
 } from '#src/coordinator/services/provider-operation-prepare.js';
 import type { ProviderOperationPrepareSource } from '#src/store/provider-operation-record.js';
-import { providerOperationRecord } from '../../store/provider-operation-fixtures.js';
+import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 
 const canonicalProjectRoot = process.cwd();
 
@@ -20,8 +20,8 @@ describe('materializeProviderOperationPrepare', () => {
     };
     const launch: ProviderJobLaunch = {
       jobId: record.operation.jobId,
-      owner: { kind: 'provider-session', id: source.sessionId },
-      sessionId: source.sessionId,
+      owner: { kind: 'provider-session', id: record.operation.jobId },
+      execution: source.execution,
       provider: 'codex',
       projectRoot: canonicalProjectRoot,
       backendNamespace: source.childAuthorization.namespace,
@@ -38,10 +38,10 @@ describe('materializeProviderOperationPrepare', () => {
       },
     };
     const session = {
-      sessionId: source.sessionId,
-      version: source.sessionVersion,
-      activeJobId: record.operation.jobId,
-    } as ProviderSession;
+      execution: source.execution,
+      jobId: record.operation.jobId,
+      open: true,
+    } as JobConversation;
     const registerPersistedAuthorization = vi.fn();
     const rehydrateBinding = vi.fn();
 
@@ -78,8 +78,8 @@ describe('materializeProviderOperationPrepare', () => {
     const binding = { provider: 'codex', kind: 'account', binding: { account: 'acct-1' } } as const;
     const launch: ProviderJobLaunch = {
       jobId: record.operation.jobId,
-      owner: { kind: 'provider-session', id: record.prepareSource.sessionId },
-      sessionId: record.prepareSource.sessionId,
+      owner: { kind: 'provider-session', id: record.operation.jobId },
+      execution: record.prepareSource.execution,
       provider: 'codex',
       projectRoot: canonicalProjectRoot,
       backendNamespace: record.prepareSource.childAuthorization.namespace,
@@ -96,13 +96,13 @@ describe('materializeProviderOperationPrepare', () => {
       },
     };
     const session = {
-      sessionId: record.prepareSource.sessionId,
-      version: record.prepareSource.sessionVersion,
-      activeJobId: record.operation.jobId,
+      execution: record.prepareSource.execution,
+      jobId: record.operation.jobId,
+      open: true,
       binding,
       conversationRef: 'durable-conversation',
       providerContinuity: { threadId: 'durable-thread' },
-    } as unknown as ProviderSession;
+    } as unknown as JobConversation;
     const registerPersistedAuthorization = vi.fn(() => ({
       credentialId: 'fresh-credential',
       privateKey: 'fresh-private-key',
@@ -155,7 +155,7 @@ describe('materializeProviderOperationPrepare', () => {
         provider: 'codex',
         binding,
         request: {
-          sessionId: record.prepareSource.sessionId,
+          execution: record.prepareSource.execution,
           prompt: 'durable prompt',
           conversationRef: 'durable-conversation',
         },
@@ -163,7 +163,6 @@ describe('materializeProviderOperationPrepare', () => {
         baseEnv: { CURRENT_ENV: 'yes' },
         protectedEnv: {
           CORAL_JOB_ID: record.operation.jobId,
-          CORAL_SESSION_ID: record.prepareSource.sessionId,
           CORAL_CHILD_CREDENTIAL_ID: 'fresh-credential',
           CORAL_CHILD_CREDENTIAL_KEY: 'fresh-private-key',
         },
@@ -174,7 +173,7 @@ describe('materializeProviderOperationPrepare', () => {
       issuer: 'provider-operation-reprepare',
       authorization: record.prepareSource.childAuthorization,
       parentJobId: record.operation.jobId,
-      parentSessionId: record.prepareSource.sessionId,
+      execution: record.prepareSource.execution,
       nowMs: 1_000,
     });
   });

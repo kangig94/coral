@@ -29,7 +29,6 @@ export function launchToHttp(
           decision.kind === 'provider-session'
             ? {
                 kind: decision.kind,
-                sessionId: decision.sessionId,
                 jobId: decision.jobId,
                 launchState: decision.status,
               }

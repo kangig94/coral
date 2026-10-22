@@ -20,7 +20,7 @@ import { TEST_CODEX_PLAN } from '../../../helpers/provider-credentials.js';
 function makeRequest(overrides: Partial<ProviderRequest> = {}): ProviderRequest {
   return {
     action: 'resume',
-    sessionId: 'job-codex-thread-kernel',
+    jobId: 'job-codex-thread-kernel',
     name: 'codex',
     conversationRef: 'request-thread',
     prompt: 'Resume and continue',

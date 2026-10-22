@@ -91,7 +91,7 @@ function fixture(options: { checkpointGate?: Promise<void>; releaseGate?: Promis
         artifact = true;
       },
     } as never,
-    sessionManager: {
+    conversationManager: {
       get: () => session,
       checkpointJobContinuityAtomic: async () => {
         checkpointStarted.resolve();

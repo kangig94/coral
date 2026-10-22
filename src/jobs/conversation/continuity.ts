@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
-import { readNonEmptyString } from '../infra/identifiers.js';
-import { persistedNonEmptyStringSchema } from '../infra/persisted-scalar-contracts.js';
+import { readNonEmptyString } from '../../infra/identifiers.js';
+import { persistedNonEmptyStringSchema } from '../../infra/persisted-scalar-contracts.js';
 
 export const continuityRefSchema = persistedNonEmptyStringSchema;
 

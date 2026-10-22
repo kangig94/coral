@@ -8,8 +8,8 @@ import type { WaitCursor, WaitStreamEvent, WaitStreamRequest } from '../jobs/wai
 import type { CauseRef } from '../causality/cause-ref.js';
 import type { TerminalOutcome } from '../jobs/outcome.js';
 import type { ExecutionOwner } from '../runtime/execution-owner.js';
-import type { ProviderSessionLaunchDecision } from '../jobs/launch.js';
-import type { ClearContinuationLeaseInput, RecordContinuationLeaseInput, RetentionPolicy } from '../sessions/entry.js';
+import type { ProviderJobLaunchDecision } from '../jobs/launch.js';
+import type { ClearContinuationLeaseInput, RecordContinuationLeaseInput, RetentionPolicy } from '../jobs/conversation/entry.js';
 import type { CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
 
 export type StepDetail = {
@@ -26,7 +26,7 @@ export type PipelineResult = {
 
 interface CoralDispatchInput {
   prompt: string;
-  sessionId?: string;
+  conversationJobId?: string;
   jobId?: string;
   workflowSlotId?: string;
   workflowSlotGeneration?: number;
@@ -41,7 +41,7 @@ interface CoralDispatchInput {
 }
 
 interface ResumeInput {
-  sessionId: string;
+  conversationJobId: string;
   prompt: string;
   jobId?: string;
   workflowSlotId?: string;
@@ -68,8 +68,8 @@ export interface WorkflowExecutionPort {
     coralName: string,
     input: CoralDispatchInput,
     ctx: InvocationContext,
-  ): Promise<ProviderSessionLaunchDecision>;
-  resume(providerName: string, input: ResumeInput, ctx: InvocationContext): Promise<ProviderSessionLaunchDecision>;
+  ): Promise<ProviderJobLaunchDecision>;
+  resume(providerName: string, input: ResumeInput, ctx: InvocationContext): Promise<ProviderJobLaunchDecision>;
   recordContinuationLease(input: RecordContinuationLeaseInput): Promise<void>;
   clearContinuationLease(input: ClearContinuationLeaseInput): Promise<boolean>;
   abort(jobIds: string[]): AbortResult;
@@ -81,7 +81,7 @@ export interface WorkflowExecutionPort {
 export type LaunchedAtom = {
   slotId: string;
   jobId: string;
-  sessionId: string;
+  conversationJobId: string;
   providerName: string;
   agent: string;
   tagName: string;

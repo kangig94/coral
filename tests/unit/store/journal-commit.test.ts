@@ -14,8 +14,7 @@ import { composeReducers } from '#src/store/reducers.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import type { JobLaunchRequestBody } from '#src/jobs/launch.js';
-import { sessionsRegistry } from '#src/sessions/events.js';
-import type { ProviderSession } from '#src/sessions/entry.js';
+import type { JobConversation } from '#src/jobs/conversation/entry.js';
 import { workflowRegistry } from '#src/workflow/events.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { seedTestSessionProjection } from '#tests/helpers/session.js';
@@ -32,7 +31,7 @@ function createDb(): Database {
 function ctx(): AppendContext {
   return {
     now: () => NOW,
-    reducers: composeReducers(jobsRegistry, sessionsRegistry, workflowRegistry),
+    reducers: composeReducers(jobsRegistry, workflowRegistry),
     bodyCodec: createEventBodyCodec(),
     providers: permissiveProviderLookupPort,
   };
@@ -80,7 +79,7 @@ function launchInput(jobId: string, sessionId = `session-${jobId}`): CoralEventI
   };
 }
 
-function sessionEntry(sessionId: string): ProviderSession {
+function sessionEntry(sessionId: string): JobConversation {
   return {
     sessionId,
     binding: TEST_CODEX_BINDING,

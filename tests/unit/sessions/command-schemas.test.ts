@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { sessionCreateSchema } from '#src/sessions/command-schemas.js';
+import { sessionCreateSchema } from '#src/jobs/conversation/command-schemas.js';
 
 describe('session wire schemas', () => {
   it('sessionCreateSchema accepts a known networkEnv map and rejects unknown keys', () => {

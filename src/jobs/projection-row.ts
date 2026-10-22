@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import { hashToken } from '../infra/hash.js';
-import { sessionControllerFromProfile } from '../sessions/entry.js';
+import { sessionControllerFromProfile } from './conversation/entry.js';
 
 import { executionOwnerSchema } from '../runtime/execution-owner.js';
 import type { ExecutionOwner } from '../runtime/execution-owner.js';

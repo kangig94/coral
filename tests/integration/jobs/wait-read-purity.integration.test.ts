@@ -50,7 +50,7 @@ function fixture(historical = false) {
   const owner = f.store.getResultExportOwner();
   const wait = new WaitCoordinator({
     visitProgress: progressVisitFromEvents((id) => f.store.readJobEvents(id)),
-    sessionManager: { get: () => null } as never,
+    conversationManager: { get: () => null } as never,
     launchQueue: { reservationFor: () => null, getActiveJobIds: () => [] } as never,
     eventBus: f.store.getEventBus(),
     time: f.runtime.time,

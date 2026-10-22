@@ -557,9 +557,9 @@ function releaseSessionClaim(
   const facts = settleClaim(action.jobId);
   const status = progressStore.readStatus(action.jobId);
   if (status && isTerminalPhase(status.phase)) {
-    log(`Terminal session claim ${action.sessionId} settled.\n`);
+    log(`Terminal session claim ${action.conversationJobId} settled.\n`);
   } else {
-    log(`Orphaned session claim ${action.sessionId} settled.\n`);
+    log(`Orphaned session claim ${action.conversationJobId} settled.\n`);
   }
   return completed(facts, 'session claim released');
 }
@@ -596,7 +596,7 @@ export function logRecoveryActionFailure(action: RecoveryAction, error: unknown,
       log(`Failed to register running recovery job ${action.jobId}: ${formatError(error)}\n`);
       return;
     case 'releaseSessionClaim':
-      log(`Failed to release session claim ${action.sessionId}: ${formatError(error)}\n`);
+      log(`Failed to release session claim ${action.conversationJobId}: ${formatError(error)}\n`);
       return;
   }
 }

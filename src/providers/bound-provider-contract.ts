@@ -31,8 +31,8 @@ import type {
   ProviderReadiness,
 } from './contracts/binding.js';
 import type { ProviderBindingEnvelope } from '../infra/provider-binding-envelope.js';
-import type { ProviderValidatedContinuityBlob } from '../sessions/continuity.js';
-import type { ProviderValidatedSessionContinuityMutation } from '../sessions/continuity-mutation.js';
+import type { ProviderValidatedContinuityBlob } from '../jobs/conversation/continuity.js';
+import type { ProviderValidatedSessionContinuityMutation } from '../jobs/conversation/continuity-mutation.js';
 
 export type BoundProviderRecovery = Omit<ProviderRecoveryContract, 'finalizeInterrupted' | 'finalizeFromArtifacts'> & {
   finalizeInterrupted(

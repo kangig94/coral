@@ -1,6 +1,6 @@
 import { decideSessionCreate } from '#src/discuss/state-machine.js';
 import { toJournalInput } from '#src/discuss/event-registry.js';
-import { sessionControllerFromProfile } from '#src/sessions/entry.js';
+import { sessionControllerFromProfile } from '#src/jobs/conversation/entry.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { pruneJobProgress } from '#src/jobs/progress-retention.js';
 import { getEventsSince } from '#src/store/event-queries.js';

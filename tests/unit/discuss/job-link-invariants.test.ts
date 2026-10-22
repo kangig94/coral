@@ -6,7 +6,6 @@ import { recoverPersistedSessionsFromStore } from '#src/discuss/shell/recovery.j
 import { readSessionEvents } from '#src/discuss/shell/persistence.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { jobsRegistry } from '#src/jobs/events.js';
-import { sessionsRegistry } from '#src/sessions/events.js';
 import { discussRegistry, toJournalInput } from '#src/discuss/event-registry.js';
 import { workflowRegistry } from '#src/workflow/events.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
@@ -205,7 +204,7 @@ describe('discussion-owned job linkage invariants', () => {
     expect(events.filter((event) => event.kind === 'agent.run.bound')).toHaveLength(1);
     expect(events.filter((event) => event.kind === 'agent.job.started')).toHaveLength(1);
 
-    const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
+    const reducers = composeReducers(jobsRegistry, discussRegistry, workflowRegistry);
     const before = harness.store.load('discussion-link-test');
     rebuildProjections({
       db: harness.progressStore.getDb(),

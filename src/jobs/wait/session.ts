@@ -3,7 +3,7 @@ import { sameEpoch } from '../../store/epoch/identity.js';
 import { isCodeDefect, sourceReadFailureDisposition, type SourceReadDisposition } from '../source-read.js';
 import type { JobDetailResponse, JobTerminal } from '../records.js';
 import type { JobProgressTiming } from '../event-bodies.js';
-import type { ContinuitySnapshot } from '../../sessions/continuity.js';
+import type { ContinuitySnapshot } from '../conversation/continuity.js';
 import type { ResultAvailability } from '../terminal/export.js';
 import {
   WAIT_PROGRESS_BYTES,

@@ -4,9 +4,9 @@ import { elapsedDurationMs } from '../../../jobs/duration.js';
 import type { JobStatus, JobTerminalInput } from '../../../jobs/records.js';
 import type { JobAbortRegistryPort } from '../../../jobs/contracts/abort-registry.js';
 import type { Runtime } from '../../../runtime/ports.js';
-import type { SessionRecoveryPort } from '../../../sessions/contracts.js';
-import type { SessionInterruptedFault } from '../../../sessions/fault.js';
-import type { ProviderValidatedSessionContinuityMutation } from '../../../sessions/continuity-mutation.js';
+import type { ConversationRecoveryPort } from '../../../jobs/conversation/contracts.js';
+import type { SessionInterruptedFault } from '../../../jobs/conversation/fault.js';
+import type { ProviderValidatedSessionContinuityMutation } from '../../../jobs/conversation/continuity-mutation.js';
 import type { CommitContext } from '../../../store/append.js';
 import { buildInterruptedAppServerReport } from '../execution-policies.js';
 import {
@@ -42,7 +42,7 @@ export class RecoveryOwnershipReleaseError extends Error {
 
 type InterruptedFinalizerDeps = Readonly<{
   runtime: Pick<Runtime, 'storage' | 'paths' | 'time'>;
-  sessionManager: Pick<SessionRecoveryPort, 'recordArtifactHandleAtomic' | 'finalizeJobContinuityAtomic'>;
+  conversationManager: Pick<ConversationRecoveryPort, 'recordArtifactHandleAtomic' | 'finalizeJobContinuityAtomic'>;
   abortRegistry: JobAbortRegistryPort;
   launchAdmission: Pick<JobAdmissionPort, 'releaseLaunch'>;
   launchPermit: LaunchPermit | null;
@@ -66,13 +66,13 @@ async function recordArtifactHandlesExact(
   plan: RecoveryCommitPlan,
   artifacts: readonly Readonly<{
     handle: string;
-    identity: Parameters<InterruptedFinalizerDeps['sessionManager']['recordArtifactHandleAtomic']>[1]['identity'];
+    identity: Parameters<InterruptedFinalizerDeps['conversationManager']['recordArtifactHandleAtomic']>[1]['identity'];
   }>[],
   deps: InterruptedFinalizerDeps,
 ): Promise<number> {
   let expectedVersion = plan.expectedSessionVersion;
   for (const artifact of artifacts) {
-    const recorded = await deps.sessionManager.recordArtifactHandleAtomic(plan.session.sessionId, {
+    const recorded = await deps.conversationManager.recordArtifactHandleAtomic(plan.session.jobId, {
       expectedActiveJobId: plan.launchRecord.jobId,
       expectedVersion,
       handle: artifact.handle,
@@ -94,7 +94,7 @@ async function finalizeSessionExact(
   appendBeforeRelease: TerminalAppender | undefined,
   deps: InterruptedFinalizerDeps,
 ): Promise<RecoveryCommitReceipt> {
-  const finalized = await deps.sessionManager.finalizeJobContinuityAtomic(plan.session.sessionId, {
+  const finalized = await deps.conversationManager.finalizeJobContinuityAtomic(plan.session.jobId, {
     expectedActiveJobId: plan.launchRecord.jobId,
     expectedVersion,
     mutation,

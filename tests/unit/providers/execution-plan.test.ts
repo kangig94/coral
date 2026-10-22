@@ -72,7 +72,7 @@ describe('provider execution plan', () => {
       access: TEST_CLAUDE_ACCESS,
       request: {
         action: 'exec',
-        sessionId: 'session-1',
+        jobId: 'session-1',
         name: 'claude',
         prompt: 'hello',
         cwd: fixtureCanonicalWorkDir('/workspace'),
@@ -100,10 +100,10 @@ describe('provider execution plan', () => {
       PATH: '/bin',
       CLAUDE_CONFIG_DIR: TEST_CLAUDE_ACCESS.configDir,
       CORAL_CHILD: '1',
-      CORAL_SESSION_ID: 'session-1',
       CORAL_JOB_ID: 'job-1',
       CORAL_CLAUDE_MODEL_CAP: 'sonnet',
     });
+    expect(controllerEnv).not.toHaveProperty('CORAL_SESSION_ID');
     expect(controllerEnv).not.toHaveProperty('CORAL_CODEX_EFFORT');
     expect(plan.session.projectsRoot).toBe(TEST_CLAUDE_ACCESS.projectsRoot);
     expect(plan.host.broker.environment.every((entry) => entry.lifetime === 'host')).toBe(true);
@@ -118,12 +118,12 @@ describe('provider execution plan', () => {
   });
 
   it('reuses a Codex host for one profile and splits hosts across profiles', () => {
-    const prepare = (home: string, sessionId: string, handle: string) =>
+    const prepare = (home: string, jobId: string, handle: string) =>
       buildCodexExecutionPlan({
         access: { home },
         request: {
           action: 'exec',
-          sessionId,
+          jobId,
           prompt: 'hello',
           cwd: fixtureCanonicalWorkDir('/workspace'),
           bypassPermissions: false,
@@ -143,12 +143,12 @@ describe('provider execution plan', () => {
     expect(hostKeyFromSpec(codexLaunch(first))).not.toBe(hostKeyFromSpec(codexLaunch(otherProfile)));
     expect(codexThreadEnvironment(first)).toMatchObject({
       CORAL_CHILD: '1',
-      CORAL_SESSION_ID: 'session-a',
+      CORAL_JOB_ID: 'session-a',
       CORAL_CHILD_PRINCIPAL_HANDLE: 'handle-a',
     });
     expect(codexThreadEnvironment(second)).toMatchObject({
       CORAL_CHILD: '1',
-      CORAL_SESSION_ID: 'session-b',
+      CORAL_JOB_ID: 'session-b',
       CORAL_CHILD_PRINCIPAL_HANDLE: 'handle-b',
     });
   });
@@ -158,7 +158,7 @@ describe('provider execution plan', () => {
       access: TEST_CLAUDE_ACCESS,
       request: {
         action: 'exec',
-        sessionId: 'session-1',
+        jobId: 'session-1',
         name: 'claude',
         prompt: 'hello',
         cwd: fixtureCanonicalWorkDir('/workspace'),
@@ -183,7 +183,7 @@ describe('provider execution plan', () => {
       access: TEST_CODEX_ACCESS,
       request: {
         action: 'exec',
-        sessionId: 'session-1',
+        jobId: 'session-1',
         name: 'codex',
         prompt: 'hello',
         cwd: fixtureCanonicalWorkDir('/workspace'),

@@ -12,14 +12,13 @@ import { loadJobDetail, loadJobWaitDetail } from '#src/jobs/read-queries.js';
 import { providerRequestFailed } from '#src/providers/fault.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { jobsRegistry } from '#src/jobs/events.js';
-import { sessionsRegistry } from '#src/sessions/events.js';
 import { discussRegistry } from '#src/discuss/event-registry.js';
 import { workflowRegistry } from '#src/workflow/events.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { allocateTestSession } from '#tests/helpers/session.js';
-import { SessionManager } from '#src/sessions/shell.js';
-import type { ProviderSession } from '#src/sessions/entry.js';
+import { ConversationManager } from '#src/jobs/conversation/shell.js';
+import type { JobConversation } from '#src/jobs/conversation/entry.js';
 import type { ProviderBindingCatalog } from '#src/providers/catalog.js';
 import type { BoundProvider } from '#src/providers/bound-provider-contract.js';
 import type { ProviderOperationEventIdentity } from '#src/jobs/provider-event.js';
@@ -53,12 +52,12 @@ const BACKEND_NAMESPACE = 'test-ns';
 
 let runtime: ReturnType<typeof createRealRuntime>;
 let progressStore: JobStore;
-let sessionManager: SessionManager;
+let conversationManager: ConversationManager;
 
 function testAppendContext() {
   return {
     now: () => new Date(runtime.time.now()),
-    reducers: composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry),
+    reducers: composeReducers(jobsRegistry, discussRegistry, workflowRegistry),
     bodyCodec: progressStore.bodyCodec,
     providers: permissiveProviderLookupPort,
   };
@@ -113,7 +112,7 @@ function testDeps(overrides: Partial<ProviderEventApplicationDeps> = {}): Provid
 function seedOperation(): { jobId: string; sessionId: string; identity: ProviderOperationEventIdentity } {
   const jobId = randomUUID();
   const session = allocateTestSession(
-    sessionManager,
+    conversationManager,
     'codex',
     'agent',
     undefined,
@@ -121,7 +120,7 @@ function seedOperation(): { jobId: string; sessionId: string; identity: Provider
     '/project',
     BACKEND_NAMESPACE,
   );
-  sessionManager.claimForJobSync(session.sessionId, jobId);
+  conversationManager.claimForJobSync(session.sessionId, jobId);
   progressStore.initJob({
     jobId,
     sessionId: session.sessionId,
@@ -141,8 +140,8 @@ function seedOperation(): { jobId: string; sessionId: string; identity: Provider
   return { jobId, sessionId: session.sessionId, identity };
 }
 
-function readSession(sessionId: string): ProviderSession | null {
-  return sessionManager.get('codex', sessionId);
+function readSession(sessionId: string): JobConversation | null {
+  return conversationManager.get('codex', sessionId);
 }
 
 /** `JobStore.readJobEvents` only ever returns `job.progress.emitted`/`job.terminal.recorded` (normalized to
@@ -165,9 +164,9 @@ beforeEach(() => {
     db: openTestStoreDb(runtime, ':memory:'),
     eventBus,
     providers: permissiveProviderLookupPort,
-    reducers: composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry),
+    reducers: composeReducers(jobsRegistry, discussRegistry, workflowRegistry),
   });
-  sessionManager = SessionManager.forProduction(
+  conversationManager = ConversationManager.forProduction(
     '/project',
     runtime,
     (cb) => progressStore.commit(cb),

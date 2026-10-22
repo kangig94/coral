@@ -21,8 +21,6 @@ function toJobEvent(event: AppendedEvent): JobEvent | null {
     return null;
   }
 
-  const sessionId = typeof event.refs?.sessionId === 'string' ? event.refs.sessionId : null;
-
   if (event.type === 'job.progress.emitted') {
     const body = event.body as { kind?: string; message: string; timing: JobProgressTiming };
     if (body.kind !== 'message') {
@@ -31,7 +29,7 @@ function toJobEvent(event: AppendedEvent): JobEvent | null {
 
     return {
       jobId: event.stream.id,
-      sessionId,
+      sessionId: null,
       seq: event.seq,
       type: 'progress',
       ts: event.ts,
@@ -52,7 +50,7 @@ function toJobEvent(event: AppendedEvent): JobEvent | null {
 
   return {
     jobId: event.stream.id,
-    sessionId,
+    sessionId: null,
     seq: event.seq,
     type: 'terminal',
     ts: event.ts,

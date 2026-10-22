@@ -120,7 +120,7 @@ export type CodexTurnState = {
   cwd: string;
   selection: CodexModelSelection | null;
   serviceTier: CodexServiceTier | undefined;
-  sessionId: string;
+  jobId: string;
   persistedThreadId: string | null;
   mailboxThreadCandidates: Set<string>;
   threadId: string | null;
@@ -199,7 +199,7 @@ function createState(request: ProviderRequest, runtime: CodexProviderRuntime): C
     cwd: persistedContinuity.cwd ?? request.cwd,
     selection: null,
     serviceTier: resolveCodexServiceTier(request, runtime),
-    sessionId: request.sessionId,
+    jobId: request.jobId,
     persistedThreadId,
     mailboxThreadCandidates,
     threadId: null,

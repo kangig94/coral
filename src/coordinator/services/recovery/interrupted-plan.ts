@@ -6,8 +6,8 @@ import type {
   ProviderRecoverySession,
 } from '../../../jobs/reconcile/contracts.js';
 import type { RecoveredAppServerFinalizationReason } from '../../../jobs/reconcile/interrupted-reason.js';
-import type { ProviderContinuityBlob } from '../../../sessions/continuity.js';
-import { readContinuityRef } from '../../../sessions/continuity.js';
+import type { ProviderContinuityBlob } from '../../../jobs/conversation/continuity.js';
+import { readContinuityRef } from '../../../jobs/conversation/continuity.js';
 import type { ProviderOperationRecord } from '../../../store/provider-operation-record.js';
 
 export type ProviderOperationCarrierRecord = Extract<

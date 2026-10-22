@@ -5,7 +5,6 @@ import { describe, expect, it } from 'vitest';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { jobsRegistry } from '#src/jobs/events.js';
-import { sessionsRegistry } from '#src/sessions/events.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { parseExpression } from '#src/workflow/parser.js';
@@ -14,13 +13,13 @@ import { buildWorkflowPlan, compileWorkflowPlan } from '#src/workflow/plan.js';
 import { readWorkflowView } from '#src/workflow/read-queries.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { TEST_CODEX_BINDING, TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
-import type { ProviderSession } from '#src/sessions/entry.js';
+import type { JobConversation } from '#src/jobs/conversation/entry.js';
 import type { CoralEventInput } from '#src/store/envelope.js';
 
 const NOW = new Date('2026-04-19T00:00:00.000Z');
 
-function providerSessionInputs(sessionId: string, jobId: string): CoralEventInput[] {
-  const opened: ProviderSession = {
+function jobConversationInputs(sessionId: string, jobId: string): CoralEventInput[] {
+  const opened: JobConversation = {
     sessionId,
     binding: TEST_CODEX_BINDING,
     name: sessionId,
@@ -36,7 +35,7 @@ function providerSessionInputs(sessionId: string, jobId: string): CoralEventInpu
     lastUsedAt: NOW.toISOString(),
     version: 1,
   };
-  const claimed: ProviderSession = { ...opened, activeJobId: jobId, version: 2 };
+  const claimed: JobConversation = { ...opened, activeJobId: jobId, version: 2 };
   return [
     {
       type: 'session.opened',
@@ -58,7 +57,7 @@ describe('workflow reducer equivalence', () => {
     const db = newRawDatabase(':memory:');
     try {
       applyBundledStoreSchema(db, currentCoralStoreFormat());
-      const reducers = composeReducers(jobsRegistry, sessionsRegistry, workflowRegistry);
+      const reducers = composeReducers(jobsRegistry, workflowRegistry);
       const bodyCodec = createEventBodyCodec();
       const plan = buildWorkflowPlan('workflow-1', parseExpression('architect -> resolver'), {
         defaultProvider: 'codex',
@@ -75,7 +74,7 @@ describe('workflow reducer equivalence', () => {
         [
           workflowPlanDeclaredEvent('workflow-1', plan, TEST_PROVIDER_SCOPE),
           ...plannedSlots.flatMap((slot) => [
-            ...providerSessionInputs(`session-${slot.jobId}`, slot.jobId),
+            ...jobConversationInputs(`session-${slot.jobId}`, slot.jobId),
             {
               type: 'job.launch.requested' as const,
               stream: { kind: 'job' as const, id: slot.jobId },

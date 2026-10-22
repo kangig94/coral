@@ -18,7 +18,7 @@ function setup() {
   const owner = f.store.getResultExportOwner();
   const wait = new WaitCoordinator({
     visitProgress: <T>(_epoch: string, read: (source: ProgressSource) => T) => f.store.visitProgress(read),
-    sessionManager: { get: () => null } as never,
+    conversationManager: { get: () => null } as never,
     launchQueue: { reservationFor: () => null, getActiveJobIds: () => [] } as never,
     eventBus: f.store.getEventBus(),
     time: f.runtime.time,

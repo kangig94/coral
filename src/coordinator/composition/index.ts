@@ -387,20 +387,13 @@ function subscribeChildPrincipalTerminalEvents(core: ReturnType<typeof createCoo
   const onChildPrincipalJobCompleted = (event: { jobId: string }): void => {
     world.childPrincipalRegistry.revokeParentJob(event.jobId);
   };
-  const onChildPrincipalDiscussUpdated = (event: { sessionId: string; status: string }): void => {
-    if (isTerminalDiscussStatus(event.status)) {
-      world.childPrincipalRegistry.revokeParentSession(event.sessionId);
-    }
-  };
   world.eventBus.on('job:phase_changed', onChildPrincipalJobPhaseChanged);
   world.eventBus.on('job:phase_changed', onLaunchReclamationJobPhaseChanged);
   world.eventBus.on('job:completed', onChildPrincipalJobCompleted);
-  world.eventBus.on('discuss:updated', onChildPrincipalDiscussUpdated);
   const disposeChildPrincipalTerminalListeners = (): void => {
     world.eventBus.off('job:phase_changed', onChildPrincipalJobPhaseChanged);
     world.eventBus.off('job:phase_changed', onLaunchReclamationJobPhaseChanged);
     world.eventBus.off('job:completed', onChildPrincipalJobCompleted);
-    world.eventBus.off('discuss:updated', onChildPrincipalDiscussUpdated);
   };
   return disposeChildPrincipalTerminalListeners;
 }
@@ -446,21 +439,19 @@ function createHostedKbAssembly(
     }
 
     const jobId = ctx.coralEnv.CORAL_JOB_ID;
-    const sessionId = ctx.coralEnv.CORAL_SESSION_ID;
-    if (typeof jobId !== 'string' || jobId.length === 0 || typeof sessionId !== 'string' || sessionId.length === 0) {
+    if (typeof jobId !== 'string' || jobId.length === 0) {
       return;
     }
 
     const progressStore = getProgressStore();
     const status = progressStore.readStatus(jobId);
-    if (!status || status.sessionId !== sessionId || !isLivePhase(status.phase)) {
+    if (!status || !isLivePhase(status.phase)) {
       return;
     }
 
     const detail = normalizeHostedKbFailureDetail(result.detail);
     getKbJobRecorder().appendHostedKbOperationFailure({
       jobId,
-      sessionId,
       projectRoot: status.projectRoot,
       namespace: status.backendNamespace,
       operation,

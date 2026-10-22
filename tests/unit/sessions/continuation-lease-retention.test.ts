@@ -5,9 +5,8 @@ import { jobTerminalRecordedBodySchema } from '#src/jobs/terminal/result.js';
 import { managed } from '#src/providers/capability.js';
 import { defineProvider } from '#src/providers/registry.js';
 import { ProviderRegistry } from '#src/providers/registry.js';
-import { sessionsRegistry } from '#src/sessions/events.js';
-import { createLifecycleReactor } from '#src/sessions/lifecycle-reactor.js';
-import { SessionManager } from '#src/sessions/shell.js';
+import { createLifecycleReactor } from '#src/jobs/conversation/lifecycle-reactor.js';
+import { ConversationManager } from '#src/jobs/conversation/shell.js';
 import { commit, type CommitEventsFn } from '#src/store/append.js';
 import { composeReducers, defineDomainEvent, type DomainEventRegistry } from '#src/store/reducers.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
@@ -89,7 +88,7 @@ function applyMinimalSchema(db: ReturnType<typeof newRawDatabase>): void {
 function createHarness(): {
   readonly runtime: SimulationRuntime;
   readonly db: ReturnType<typeof newRawDatabase>;
-  readonly sessionManager: SessionManager;
+  readonly conversationManager: ConversationManager;
   readonly reactor: ReturnType<typeof createLifecycleReactor>;
   readonly coordinatorCommit: CommitEventsFn;
   readonly discardCalls: Array<readonly string[]>;
@@ -117,7 +116,7 @@ function createHarness(): {
       )
       .build(),
   );
-  const reducers = composeReducers(terminalCodecRegistry, sessionsRegistry);
+  const reducers = composeReducers(terminalCodecRegistry);
   const bodyCodec = createEventBodyCodec();
   const reactorRef: { current?: ReturnType<typeof createLifecycleReactor> } = {};
   const coordinatorCommit: CommitEventsFn = (cb) => {
@@ -147,15 +146,15 @@ function createHarness(): {
     reactor,
     coordinatorCommit,
     discardCalls,
-    sessionManager: new SessionManager('/tmp/project', runtime, coordinatorCommit, undefined, db),
+    conversationManager: new ConversationManager('/tmp/project', runtime, coordinatorCommit, undefined, db),
   };
 }
 
 async function openClaimedSession(
-  sessionManager: SessionManager,
+  conversationManager: ConversationManager,
   jobId: string,
 ): Promise<{ readonly sessionId: string; readonly version: number }> {
-  const session = sessionManager.allocate({
+  const session = conversationManager.allocate({
     binding: TEST_CLAUDE_BINDING,
     name: 'claude-session',
     cwd: '/tmp/project',
@@ -163,17 +162,17 @@ async function openClaimedSession(
     backendNamespace: 'test-ns',
     retention: 'discard_provider_artifacts_on_terminal',
   });
-  await expect(sessionManager.claimForJobAtomic(session.sessionId, jobId, session.version)).resolves.toBe(true);
-  const claimed = sessionManager.get('claude', session.sessionId);
+  await expect(conversationManager.claimForJobAtomic(session.sessionId, jobId, session.version)).resolves.toBe(true);
+  const claimed = conversationManager.get('claude', session.sessionId);
   if (claimed === null) throw new Error('expected claimed session');
   return { sessionId: session.sessionId, version: claimed.version };
 }
 
-async function recordArtifact(sessionManager: SessionManager, sessionId: string, jobId: string): Promise<void> {
-  const claimed = sessionManager.get('claude', sessionId);
+async function recordArtifact(conversationManager: ConversationManager, sessionId: string, jobId: string): Promise<void> {
+  const claimed = conversationManager.get('claude', sessionId);
   if (claimed === null) throw new Error('expected claimed session');
   await expect(
-    sessionManager.recordArtifactHandleAtomic(sessionId, {
+    conversationManager.recordArtifactHandleAtomic(sessionId, {
       expectedActiveJobId: jobId,
       expectedVersion: claimed.version,
       handle: `/tmp/${jobId}.jsonl`,
@@ -198,12 +197,12 @@ function appendTerminal(commitEvents: CommitEventsFn, jobId: string, sessionId: 
 
 describe('continuation lease retention integration', () => {
   it('becomes discard eligible after a rejected resume clears the lease', async () => {
-    const { runtime, db, sessionManager, reactor, coordinatorCommit, discardCalls } = createHarness();
+    const { runtime, db, conversationManager, reactor, coordinatorCommit, discardCalls } = createHarness();
 
     try {
-      const session = await openClaimedSession(sessionManager, 'job-rejected-resume');
-      await recordArtifact(sessionManager, session.sessionId, 'job-rejected-resume');
-      sessionManager.recordContinuationLease({
+      const session = await openClaimedSession(conversationManager, 'job-rejected-resume');
+      await recordArtifact(conversationManager, session.sessionId, 'job-rejected-resume');
+      conversationManager.recordContinuationLease({
         sessionId: session.sessionId,
         jobId: 'job-rejected-resume',
         workflowId: 'workflow-1',
@@ -213,12 +212,12 @@ describe('continuation lease retention integration', () => {
         expiresAt: new Date(runtime.time.now() + 60_000).toISOString(),
       });
       appendTerminal(coordinatorCommit, 'job-rejected-resume', session.sessionId);
-      sessionManager.releaseJob(session.sessionId, 'job-rejected-resume');
+      conversationManager.releaseJob(session.sessionId, 'job-rejected-resume');
       await reactor.waitForIdle();
       expect(discardCalls).toEqual([]);
 
       await expect(
-        sessionManager.clearContinuationLease({
+        conversationManager.clearContinuationLease({
           sessionId: session.sessionId,
           jobId: 'job-rejected-resume',
           outcome: 'resume_rejected',

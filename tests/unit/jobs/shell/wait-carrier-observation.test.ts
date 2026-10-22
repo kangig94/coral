@@ -62,7 +62,7 @@ it('the stream deadline bounds a carrier observation that never answers', async 
     visitProgress: progressVisitFromEvents(() => []),
     time,
     eventBus: { on: () => {}, off: () => {} },
-    sessionManager: { get: () => null },
+    conversationManager: { get: () => null },
     launchQueue: { reservationFor: () => null, getActiveJobIds: () => [] },
     readJobLastSeq: () => null,
     loadJobWaitDetail: () => ({

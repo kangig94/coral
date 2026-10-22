@@ -43,13 +43,13 @@ async function finalizeSynthesizedSession(
   // it does not accumulate as noise. Best-effort: a failure must never break the
   // already-recorded discussion.
   for (const run of Object.values(snapshot.runtime.agentRuns)) {
-    if (run.executionSessionId === undefined) {
+    if (run.executionJobId === undefined) {
       continue;
     }
     try {
-      await ctx.discardSessionArtifacts?.(run.executionSessionId);
+      await ctx.discardSessionArtifacts?.(run.executionJobId);
     } catch (error) {
-      backendLog.warn(`Discuss artifact cleanup failed for session ${run.executionSessionId}: ${errorMessage(error)}`);
+      backendLog.warn(`Discuss artifact cleanup failed for session ${run.executionJobId}: ${errorMessage(error)}`);
     }
   }
   detachSession(ctx, sessionId);

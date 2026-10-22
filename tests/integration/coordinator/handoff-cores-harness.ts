@@ -30,7 +30,6 @@ import { JobStore } from '#src/jobs/store.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { jobsRegistry } from '#src/jobs/events.js';
-import { sessionsRegistry } from '#src/sessions/events.js';
 import { discussRegistry } from '#src/discuss/event-registry.js';
 import { workflowRegistry } from '#src/workflow/events.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
@@ -72,7 +71,7 @@ function createHarnessStoreServices(runtime: Runtime, db: Database, namespace: s
     storeDb: db,
     progressStore: new JobStore(namespace, runtime, createEventBodyCodec(), {
       db,
-      reducers: composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry),
+      reducers: composeReducers(jobsRegistry, discussRegistry, workflowRegistry),
       providers: permissiveProviderLookupPort,
     }),
     consumerDriver: null,

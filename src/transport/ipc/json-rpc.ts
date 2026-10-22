@@ -27,13 +27,11 @@ export type IpcAuthMetadata =
       readonly handle: string;
       readonly token: string;
       readonly jobId: string;
-      readonly sessionId: string;
     }
   | {
       readonly kind: 'child-proof';
       readonly credentialId: string;
       readonly jobId: string;
-      readonly sessionId: string;
       readonly proof: string;
     };
 
@@ -92,7 +90,6 @@ const ipcAuthMetadataSchema = z.discriminatedUnion('kind', [
       handle: z.string().min(1),
       token: z.string().min(1),
       jobId: z.string().min(1),
-      sessionId: z.string().min(1),
     })
     .strict(),
   z
@@ -100,7 +97,6 @@ const ipcAuthMetadataSchema = z.discriminatedUnion('kind', [
       kind: z.literal('child-proof'),
       credentialId: z.string().min(1),
       jobId: z.string().min(1),
-      sessionId: z.string().min(1),
       proof: z.string().min(1),
     })
     .strict(),

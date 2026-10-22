@@ -117,7 +117,7 @@ function settledRecoveryFacts(item: CoordinatorRecoveryItem, jobId: string) {
       obligation: COORDINATOR_CLAIM_RELEASE_OBLIGATION,
       outcome: item.claimedSession?.activeJobId === jobId ? ('done' as const) : ('not-applicable' as const),
       ...(item.claimedSession?.activeJobId === jobId
-        ? { authorityRef: `session:${item.claimedSession.sessionId}:claim:${jobId}` }
+        ? { authorityRef: `session:${item.claimedSession.jobId}:claim:${jobId}` }
         : {}),
     },
   ];
@@ -212,7 +212,7 @@ function createRecoveredProgress(
           progressStore.appendRuntimeStarted(jobId, nextRuntimeRecord);
           adoptedRuntimeRecord = nextRuntimeRecord;
         }
-        for (const message of messages) progressStore.appendProgress(jobId, launchRecord.sessionId, message);
+        for (const message of messages) progressStore.appendProgress(jobId, launchRecord.conversationJobId, message);
       } catch (error: unknown) {
         if (error instanceof SuccessionWriterParkedError) throw error;
         settlement.controls.report(`Failed to tail recovered progress for job ${jobId}: ${formatError(error)}\n`);
@@ -333,7 +333,7 @@ async function retryHeldCleanup(
   ) {
     progressStore.appendProgress(
       jobId,
-      authority.launchRecord.sessionId,
+      authority.launchRecord.conversationJobId,
       `Durable recovery cleanup remains held (${cleanup.reason}).`,
     );
   }
@@ -412,7 +412,7 @@ async function reconcileHeldContainmentStatus(
   const detail =
     `${cleanup.reason}. Identity-safe reaping continues every ${retryIntervalMs}ms until absence is confirmed. ` +
     'Operator abandonment remains available without proving process absence or sending another signal.';
-  progressStore.appendProgress(jobId, authority.launchRecord.sessionId, detail);
+  progressStore.appendProgress(jobId, authority.launchRecord.conversationJobId, detail);
   settlement.controls.report(`Held durable recovery cleanup: ${jobId}: ${cleanup.reason}\n`);
   return {
     kind: 'deferred',
@@ -437,7 +437,7 @@ async function settleDurableContainment(
     const reason = 'The durable containment status is corrupt.';
     progressStore.appendProgress(
       jobId,
-      launchRecord.sessionId,
+      launchRecord.conversationJobId,
       `${reason} Repair or remove the status row before retrying this recovery coordinate.`,
     );
     state.recoveryRegistry?.setAbortHandler(jobId, () => abandonHeldJob(jobId));
@@ -500,7 +500,7 @@ function holdUnobservableDurableRecovery(
     'Operator abandonment remains available without proving process absence or sending a signal.';
   progressStore.appendProgress(
     jobId,
-    launchRecord.sessionId,
+    launchRecord.conversationJobId,
     `Durable recovery containment pid=${runtimeRecord.pid} is held (${detail})`,
   );
   state.recoveryRegistry?.setAbortHandler(jobId, () => abandonHeldJob(jobId));

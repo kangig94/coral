@@ -78,8 +78,7 @@ export function createAppServerProxyRoute(deps: {
         phase: 'prepare-pending',
         prepareSource: {
           jobLaunchEventSeq: request.jobLaunchEventSeq,
-          sessionId: request.sessionId,
-          sessionVersion: request.sessionVersion,
+          execution: request.execution,
           platform: request.platform,
           childAuthorization: request.childAuthorization,
         },

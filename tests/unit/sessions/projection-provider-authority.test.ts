@@ -3,10 +3,9 @@ import { describe, expect, it } from 'vitest';
 
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import type { ProviderLookupPort } from '#src/providers/catalog.js';
-import { sessionsRegistry } from '#src/sessions/events.js';
-import type { ProviderSession } from '#src/sessions/entry.js';
-import { createProjectionSessionLookup } from '#src/sessions/lookup.js';
-import { listProjectionSessionEntries, readProjectionSession } from '#src/sessions/projections.js';
+import type { JobConversation } from '#src/jobs/conversation/entry.js';
+import { createProjectionSessionLookup } from '#src/jobs/conversation/lookup.js';
+import { listProjectionConversationEntries, readProjectionSession } from '#src/jobs/conversation/projections.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { commit } from '#src/store/append.js';
@@ -18,7 +17,7 @@ import { TEST_CLAUDE_BINDING, TEST_CODEX_BINDING } from '#tests/helpers/provider
 
 const NOW = '2026-07-22T00:00:00.000Z';
 
-function session(sessionId: string, binding: ProviderSession['binding']): ProviderSession {
+function session(sessionId: string, binding: JobConversation['binding']): JobConversation {
   return {
     sessionId,
     binding,
@@ -39,7 +38,7 @@ function session(sessionId: string, binding: ProviderSession['binding']): Provid
 
 function openSession(
   db: ReturnType<typeof newRawDatabase>,
-  entry: ProviderSession,
+  entry: JobConversation,
   providers: ProviderLookupPort,
 ): void {
   commitInputs(
@@ -54,7 +53,7 @@ function openSession(
     ],
     {
       now: () => new Date(NOW),
-      reducers: composeReducers(sessionsRegistry),
+      reducers: composeReducers(jobsRegistry),
       bodyCodec: createEventBodyCodec(),
       providers,
     },
@@ -74,7 +73,7 @@ function rawCommit(
     },
     {
       now: () => new Date(NOW),
-      reducers: composeReducers(sessionsRegistry),
+      reducers: composeReducers(jobsRegistry),
       bodyCodec: createEventBodyCodec(),
       providers,
     },
@@ -86,7 +85,7 @@ describe('projection session provider authority', () => {
     const db = newRawDatabase(':memory:');
     try {
       applyBundledStoreSchema(db, currentCoralStoreFormat());
-      const entry: ProviderSession = {
+      const entry: JobConversation = {
         ...session('claimed-at-open', TEST_CODEX_BINDING),
         activeJobId: 'injected-job',
       };
@@ -133,7 +132,7 @@ describe('projection session provider authority', () => {
         ]),
       ).toThrowError(expect.objectContaining({ code: 'provider_session_claim_transition_invalid' }));
 
-      const claimed: ProviderSession = { ...base, activeJobId: 'claimed-job', version: 2 };
+      const claimed: JobConversation = { ...base, activeJobId: 'claimed-job', version: 2 };
       rawCommit(db, [
         {
           type: 'session.claimed',
@@ -163,7 +162,7 @@ describe('projection session provider authority', () => {
 
   it('rejects corrupt claim snapshots atomically', () => {
     const base = session('claim-invariants', TEST_CODEX_BINDING);
-    const entry: ProviderSession = {
+    const entry: JobConversation = {
       ...base,
       activeJobId: 'other-job',
       lastUsedAt: '2026-07-22T00:00:01.000Z',
@@ -187,7 +186,7 @@ describe('projection session provider authority', () => {
           ],
           {
             now: () => new Date(NOW),
-            reducers: composeReducers(sessionsRegistry),
+            reducers: composeReducers(jobsRegistry),
             bodyCodec: createEventBodyCodec(),
             providers: permissiveProviderLookupPort,
           },
@@ -204,11 +203,11 @@ describe('projection session provider authority', () => {
     try {
       applyBundledStoreSchema(db, currentCoralStoreFormat());
       const base = session('release-invariants', TEST_CODEX_BINDING);
-      const claimed: ProviderSession = { ...base, activeJobId: 'job-1', version: 2 };
+      const claimed: JobConversation = { ...base, activeJobId: 'job-1', version: 2 };
       openSession(db, base, permissiveProviderLookupPort);
       const appendContext = {
         now: () => new Date(NOW),
-        reducers: composeReducers(sessionsRegistry),
+        reducers: composeReducers(jobsRegistry),
         bodyCodec: createEventBodyCodec(),
         providers: permissiveProviderLookupPort,
       };
@@ -225,7 +224,7 @@ describe('projection session provider authority', () => {
         appendContext,
       );
 
-      const corruptRelease: ProviderSession = {
+      const corruptRelease: JobConversation = {
         ...base,
         state: 'ready',
         version: 3,
@@ -298,7 +297,7 @@ describe('projection session provider authority', () => {
     }
   });
 
-  it('derives provider reads and filtering solely from ProviderSession.binding', () => {
+  it('derives provider reads and filtering solely from JobConversation.binding', () => {
     const db = newRawDatabase(':memory:');
     try {
       applyBundledStoreSchema(db, currentCoralStoreFormat());
@@ -312,8 +311,8 @@ describe('projection session provider authority', () => {
 
       expect(readProjectionSession(db, 'session-codex')?.provider).toBe('codex');
       expect(readProjectionSession(db, 'session-claude')?.provider).toBe('claude');
-      expect(listProjectionSessionEntries(db, 'codex').map((entry) => entry.sessionId)).toEqual(['session-codex']);
-      expect(listProjectionSessionEntries(db, 'claude').map((entry) => entry.sessionId)).toEqual(['session-claude']);
+      expect(listProjectionConversationEntries(db, 'codex').map((entry) => entry.sessionId)).toEqual(['session-codex']);
+      expect(listProjectionConversationEntries(db, 'claude').map((entry) => entry.sessionId)).toEqual(['session-claude']);
       expect(createProjectionSessionLookup(db).listSessionRefs()).toEqual([
         { sessionId: 'session-claude', provider: 'claude' },
         { sessionId: 'session-codex', provider: 'codex' },

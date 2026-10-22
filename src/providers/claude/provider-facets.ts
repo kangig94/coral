@@ -14,7 +14,7 @@ import type {
   ProviderRecoveryContract,
   ProviderSendOutcome,
 } from '../contract.js';
-import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
+import type { ProviderContinuityBlob } from '../../jobs/conversation/continuity.js';
 import { isRecord, readString } from '../../infra/json.js';
 import { mapInterruptParams } from './request-mapping.js';
 import {

@@ -1,6 +1,5 @@
 export type JobEventRefs = {
   jobId: string;
-  sessionId?: string;
   parentJobId?: string;
   workflowId?: string;
   workflowSlotId?: string;
@@ -8,7 +7,6 @@ export type JobEventRefs = {
 
 export type JobEventRefsInput = {
   jobId: string;
-  sessionId?: string | null;
   parentJobId?: string | null;
   workflowId?: string | null;
   workflowSlotId?: string | null;
@@ -29,14 +27,12 @@ function optionalJobRef(field: keyof JobEventRefs, value: string | null | undefi
 }
 
 export function buildJobEventRefs(input: JobEventRefsInput): JobEventRefs {
-  const sessionId = optionalJobRef('sessionId', input.sessionId);
   const parentJobId = optionalJobRef('parentJobId', input.parentJobId);
   const workflowId = optionalJobRef('workflowId', input.workflowId);
   const workflowSlotId = optionalJobRef('workflowSlotId', input.workflowSlotId);
 
   return {
     jobId: requireJobRef('jobId', input.jobId),
-    ...(sessionId === undefined ? {} : { sessionId }),
     ...(parentJobId === undefined ? {} : { parentJobId }),
     ...(workflowId === undefined ? {} : { workflowId }),
     ...(workflowSlotId === undefined ? {} : { workflowSlotId }),

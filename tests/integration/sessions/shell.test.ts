@@ -18,9 +18,8 @@ import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { discussRegistry } from '#src/discuss/event-registry.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { composeReducers } from '#src/store/reducers.js';
-import { sessionsRegistry } from '#src/sessions/events.js';
 import { workflowRegistry } from '#src/workflow/events.js';
-import { SessionManager } from '#src/sessions/shell.js';
+import { ConversationManager } from '#src/jobs/conversation/shell.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
 let runtime: ReturnType<typeof createRealRuntime>;
@@ -53,18 +52,18 @@ describe('sessions shell store', () => {
     rmSync(tmpHome, { recursive: true, force: true });
   });
 
-  function setup(projectName: string): { mgr: SessionManager; workDir: string } {
+  function setup(projectName: string): { mgr: ConversationManager; workDir: string } {
     const workDir = join(tmpHome, projectName);
     mkdirSync(workDir, { recursive: true });
     return {
-      mgr: new SessionManager(workDir, runtime, undefined, undefined, openSessionDb(), permissiveProviderLookupPort),
+      mgr: new ConversationManager(workDir, runtime, undefined, undefined, openSessionDb(), permissiveProviderLookupPort),
       workDir,
     };
   }
 
   function setupWithJournal(projectName: string): {
     db: ReturnType<typeof openTestStoreDatabase>;
-    mgr: SessionManager;
+    mgr: ConversationManager;
     workDir: string;
     coordinatorCommit: CommitEventsFn;
     appendedBatches: AppendedEvent[][];
@@ -73,7 +72,7 @@ describe('sessions shell store', () => {
     mkdirSync(workDir, { recursive: true });
 
     const db = openSessionDb();
-    const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
+    const reducers = composeReducers(jobsRegistry, discussRegistry, workflowRegistry);
     const bodyCodec = createEventBodyCodec();
     const appendedBatches: AppendedEvent[][] = [];
     const coordinatorCommit: CommitEventsFn = (cb) => {
@@ -89,7 +88,7 @@ describe('sessions shell store', () => {
 
     return {
       db,
-      mgr: new SessionManager(workDir, runtime, coordinatorCommit, undefined, db),
+      mgr: new ConversationManager(workDir, runtime, coordinatorCommit, undefined, db),
       workDir,
       coordinatorCommit,
       appendedBatches,
@@ -168,7 +167,7 @@ describe('sessions shell store', () => {
       storage: runtime.storage,
     });
     openDbs.push(dbA, dbB);
-    const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
+    const reducers = composeReducers(jobsRegistry, discussRegistry, workflowRegistry);
     const bodyCodec = createEventBodyCodec();
     const commitWith = (db: typeof dbA, cb: Parameters<CommitEventsFn>[0]) =>
       commit(db, cb, {
@@ -185,8 +184,8 @@ describe('sessions shell store', () => {
       return commitWith(dbA, cb);
     };
     const commitB: CommitEventsFn = (cb) => commitWith(dbB, cb);
-    const managerA = new SessionManager(workDir, runtime, commitA, undefined, dbA);
-    const managerB = new SessionManager(workDir, runtime, commitB, undefined, dbB);
+    const managerA = new ConversationManager(workDir, runtime, commitA, undefined, dbA);
+    const managerB = new ConversationManager(workDir, runtime, commitB, undefined, dbB);
     const entry = allocateTestSession(managerA, 'codex', 'alpha', 'gpt-5', workDir);
     managerA.claimForJobSync(entry.sessionId, 'job-1');
     const claimed = managerA.readById(entry.sessionId, { forceFresh: true });

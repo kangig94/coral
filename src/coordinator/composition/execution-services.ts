@@ -38,7 +38,7 @@ import type { ProviderOperationRecord } from '../../store/provider-operation-rec
 import type { ProviderOperationStartupOwnership } from '../../jobs/startup.js';
 import { ProviderOperationCleanupRouter } from '../../jobs/provider-operation-cleanup.js';
 import { readProviderOperationJobLaunch } from '../../jobs/provider-operation-state.js';
-import { readProjectionProviderSession } from '../../sessions/projections.js';
+import { readProjectionJobConversation } from '../../jobs/conversation/projections.js';
 import { materializeProviderOperationPrepare } from '../services/provider-operation-prepare.js';
 import { terminalizeProviderOperation } from '../../jobs/provider-operation-terminalization.js';
 import type { RecoveryCoordinator } from '../services/recovery/index.js';
@@ -467,7 +467,7 @@ function createExecutionOperationReconciler(input: {
           providerRegistry: world.providerRegistry,
           childPrincipalRegistry: world.childPrincipalRegistry,
           readJobLaunch: (jobId, eventSeq) => readProviderOperationJobLaunch(getProgressStore(), jobId, eventSeq),
-          readSession: (sessionId) => readProjectionProviderSession(getProgressStore().getDb(), sessionId),
+          readSession: (conversationJobId) => readProjectionJobConversation(getProgressStore().getDb(), conversationJobId),
         },
         record.operation,
         record.prepareSource,

@@ -657,7 +657,6 @@ export function readJobEvents(
 
   observation?.record('job-events', { reads: rows.length });
   const projection = readProjectionRow(db, jobId, observation);
-  const sessionId = null;
 
   const events: JobEvent[] = [];
   for (const row of rows) {
@@ -670,7 +669,7 @@ export function readJobEvents(
 
       events.push({
         jobId,
-        sessionId,
+        sessionId: null,
         seq: row.seq,
         type: 'progress',
         ts: row.ts,
@@ -697,7 +696,7 @@ export function readJobEvents(
 
     events.push({
       jobId,
-      sessionId,
+      sessionId: null,
       seq: row.seq,
       type: 'terminal',
       ts: row.ts,

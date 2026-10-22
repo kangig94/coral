@@ -26,7 +26,7 @@ function prepareBroker(options: {
     access: TEST_CLAUDE_ACCESS,
     request: {
       action: 'exec',
-      sessionId: 'session',
+      jobId: 'session',
       prompt: 'test',
       cwd: fixtureCanonicalWorkDir(options.cwd ?? '/workspace'),
       bypassPermissions: false,
@@ -62,7 +62,7 @@ describe('Claude appserver request mapping', () => {
     const ensureA = mapSessionEnsureParams(
       {
         action: 'exec',
-        sessionId: 'session-a',
+        jobId: 'session-a',
         cwd: fixtureCanonicalWorkDir('/workspace'),
         bypassPermissions: false,
         coralEnv: {},
@@ -76,7 +76,7 @@ describe('Claude appserver request mapping', () => {
     const ensureB = mapSessionEnsureParams(
       {
         action: 'exec',
-        sessionId: 'session-b',
+        jobId: 'session-b',
         cwd: fixtureCanonicalWorkDir('/workspace'),
         bypassPermissions: false,
         coralEnv: {},

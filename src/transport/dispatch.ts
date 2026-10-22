@@ -162,7 +162,6 @@ function stripTransportContextKeys<T extends Record<string, unknown>>(
   | 'claudeModelCap'
   | 'claudeTransport'
   | 'jobId'
-  | 'sessionId'
   | 'networkEnv'
   | 'coralEnv'
   | 'providerScope'
@@ -174,7 +173,6 @@ function stripTransportContextKeys<T extends Record<string, unknown>>(
     claudeModelCap: _claudeModelCap,
     claudeTransport: _claudeTransport,
     jobId: _jobId,
-    sessionId: _sessionId,
     networkEnv: _networkEnv,
     coralEnv: _coralEnv,
     providerScope: _providerScope,
@@ -186,7 +184,6 @@ function stripTransportContextKeys<T extends Record<string, unknown>>(
     claudeModelCap?: unknown;
     claudeTransport?: unknown;
     jobId?: unknown;
-    sessionId?: unknown;
     networkEnv?: unknown;
     coralEnv?: unknown;
     providerScope?: unknown;

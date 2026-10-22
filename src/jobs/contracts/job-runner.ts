@@ -1,9 +1,9 @@
 import type { ProviderRequest } from '../../providers/contract.js';
 import type { BoundProvider } from '../../providers/bound-provider-contract.js';
-import type { RetentionPolicy, ProviderSession } from '../../sessions/entry.js';
+import type { RetentionPolicy, JobConversation } from '../conversation/entry.js';
 import type { TerminalWriteOptions } from './job-store.js';
 import type { JobPhase } from '../phase.js';
-import type { ProviderSessionLaunchDecision } from '../launch.js';
+import type { ProviderJobLaunchDecision } from '../launch.js';
 import type { JobLaunch, JobTerminalInput } from '../records.js';
 import type { LaunchPool, QueuedHandle } from './admission.js';
 import type { ExecutionOwner } from '../../runtime/execution-owner.js';
@@ -11,65 +11,27 @@ import type { DiscussionRunDescriptor } from '../discussion-run.js';
 import type { ProviderOperationEnvironmentInput } from './provider-operation-lifecycle.js';
 
 export interface ProviderJobLaunchPort {
-  launchInitialProviderJob(
+  launchExecution(
     provider: BoundProvider,
-    preparedSession: ProviderSession,
+    conversation: JobConversation,
     request: ProviderRequest,
     opts: {
       owner: ExecutionOwner;
-      requestedJobId?: string;
       pool?: LaunchPool;
       parentWorkflowJobId?: string;
       workflowSlotId?: string;
-      workflowSlotGeneration?: number;
-      replacesWorkflowJobId?: string;
       retention?: RetentionPolicy;
       discussionRun?: DiscussionRunDescriptor;
-      mintProtectedEnv: (jobId: string) => ProviderOperationEnvironmentInput;
+      mintProtectedEnv: (jobId: string, execution: number) => ProviderOperationEnvironmentInput;
     },
-  ): ProviderSessionLaunchDecision;
-
-  launchResumedProviderJob(
-    provider: BoundProvider,
-    session: ProviderSession,
-    request: ProviderRequest,
-    opts: {
-      owner: ExecutionOwner;
-      expectedVersion: number;
-      sessionBusyMessage: string;
-      requestedJobId?: string;
-      pool?: LaunchPool;
-      parentWorkflowJobId?: string;
-      workflowSlotId?: string;
-      workflowSlotGeneration?: number;
-      replacesWorkflowJobId?: string;
-      retention?: RetentionPolicy;
-      discussionRun?: DiscussionRunDescriptor;
-      mintProtectedEnv: (jobId: string) => ProviderOperationEnvironmentInput;
-    },
-  ): ProviderSessionLaunchDecision;
-
-  launchWorkflowReplacement(
-    provider: BoundProvider,
-    session: ProviderSession,
-    request: ProviderRequest,
-    opts: {
-      owner: Extract<ExecutionOwner, { kind: 'workflow' }>;
-      parentWorkflowJobId: string;
-      workflowSlotId: string;
-      workflowSlotGeneration: number;
-      replacesWorkflowJobId: string;
-      pool?: LaunchPool;
-      mintProtectedEnv: (jobId: string) => ProviderOperationEnvironmentInput;
-    },
-  ): ProviderSessionLaunchDecision;
+  ): ProviderJobLaunchDecision;
 }
 
 export interface WorkflowJobLifecyclePort {
   markJobRunning(jobId: string): void;
   writeJobTerminal(
     jobId: string,
-    sessionId: string,
+    conversationJobId: string,
     result: JobTerminalInput,
     phase: JobPhase,
     options?: TerminalWriteOptions,
@@ -86,7 +48,7 @@ export interface RecoveredJobLifecyclePort {
   ): void;
   writeJobTerminal(
     jobId: string,
-    sessionId: string,
+    conversationJobId: string,
     result: JobTerminalInput,
     phase: JobPhase,
     options?: TerminalWriteOptions,

@@ -65,7 +65,7 @@ async function clearContinuationLeaseForStaleRecovery(
   outcome: 'resume_rejected' | 'launch_failed' | 'explicit_clear',
 ): Promise<void> {
   await executionSvc.clearContinuationLease({
-    sessionId: atom.sessionId,
+    conversationJobId: atom.conversationJobId,
     jobId,
     outcome,
   });
@@ -102,7 +102,7 @@ export async function recoverStaleAtom(
 
     try {
       await executionSvc.recordContinuationLease({
-        sessionId: atom.sessionId,
+        conversationJobId: atom.conversationJobId,
         jobId: atom.jobId,
         workflowId: workflowJobId,
         workflowSlotId: atom.slotId,
@@ -152,7 +152,7 @@ export async function recoverStaleAtom(
     const resumed = await executionSvc.resume(
       atom.providerName,
       {
-        sessionId: atom.sessionId,
+        conversationJobId: atom.conversationJobId,
         prompt: STALE_RESUME_PROMPT,
         cwd: options.workDir ?? ctx.projectRoot,
         parentWorkflowJobId: workflowJobId,
@@ -201,7 +201,7 @@ export async function recoverStaleAtom(
     state.pending.set(resumed.jobId, {
       ...atom,
       jobId: resumed.jobId,
-      sessionId: resumed.sessionId,
+      conversationJobId: resumed.jobId,
       generation: atom.generation + 1,
     });
     state.staleRetries.set(atom.atomKey, retries + 1);

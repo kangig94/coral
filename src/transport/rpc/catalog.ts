@@ -60,7 +60,7 @@ import {
   kbWikiRewriteRequestSchema,
   kbWikiUnlinkRequestSchema,
 } from '../../kb/tool-contracts.js';
-import { sessionCreateSchema } from '../../sessions/command-schemas.js';
+import { sessionCreateSchema } from '../../jobs/conversation/command-schemas.js';
 import type { RpcPorts } from './ports.js';
 import { workflowRequestSchema } from './workflow.js';
 import { hostRefSchema } from '../../providers/host-ref-schema.js';

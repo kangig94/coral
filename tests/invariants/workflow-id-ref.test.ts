@@ -15,13 +15,12 @@ import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { JobStore } from '#src/jobs/store.js';
 import type { JobLaunch, ProviderJobLaunch } from '#src/jobs/records.js';
 import { jobsRegistry } from '#src/jobs/events.js';
-import { sessionsRegistry } from '#src/sessions/events.js';
 import { workflowPlanDeclaredEvent, workflowRegistry } from '#src/workflow/events.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { TEST_CODEX_BINDING, TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
-import type { ProviderSession } from '#src/sessions/entry.js';
+import type { JobConversation } from '#src/jobs/conversation/entry.js';
 import type { CoralEventInput } from '#src/store/envelope.js';
 interface PersistedRefs {
   jobId?: string;
@@ -111,8 +110,8 @@ function makeWorkflowLaunch(jobId: string): JobLaunch {
   };
 }
 
-function providerSessionInputs(sessionId: string, jobId: string, projectRoot: string): CoralEventInput[] {
-  const opened: ProviderSession = {
+function jobConversationInputs(sessionId: string, jobId: string, projectRoot: string): CoralEventInput[] {
+  const opened: JobConversation = {
     sessionId,
     binding: TEST_CODEX_BINDING,
     name: sessionId,
@@ -128,7 +127,7 @@ function providerSessionInputs(sessionId: string, jobId: string, projectRoot: st
     lastUsedAt: '2026-04-29T00:00:00.000Z',
     version: 1,
   };
-  const claimed: ProviderSession = { ...opened, activeJobId: jobId, version: 2 };
+  const claimed: JobConversation = { ...opened, activeJobId: jobId, version: 2 };
   return [
     {
       type: 'session.opened',
@@ -149,7 +148,7 @@ describe('refs.workflowId producer invariant', () => {
   it('emits refs.workflowId on every launch.requested event whose lifetime belongs to a workflow', () => {
     const db = createDb();
     const runtime = new SimulationRuntime();
-    const reducers = composeReducers(jobsRegistry, sessionsRegistry, workflowRegistry);
+    const reducers = composeReducers(jobsRegistry, workflowRegistry);
     const bodyCodec = createEventBodyCodec();
     const store = new JobStore('test-ns', runtime, bodyCodec, {
       db,
@@ -159,8 +158,8 @@ describe('refs.workflowId producer invariant', () => {
     commitInputs(
       db,
       [
-        ...providerSessionInputs('session-a-1', 'a-1', '/workspace/a-1'),
-        ...providerSessionInputs('session-p-1', 'p-1', '/workspace/p-1'),
+        ...jobConversationInputs('session-a-1', 'a-1', '/workspace/a-1'),
+        ...jobConversationInputs('session-p-1', 'p-1', '/workspace/p-1'),
       ],
       {
         now: () => new Date('2026-04-29T00:00:00.000Z'),
@@ -232,14 +231,14 @@ describe('refs.workflowId producer invariant', () => {
   it('rejects a workflow child whose durable owner is not its workflow aggregate', () => {
     const db = createDb();
     const runtime = new SimulationRuntime();
-    const reducers = composeReducers(jobsRegistry, sessionsRegistry, workflowRegistry);
+    const reducers = composeReducers(jobsRegistry, workflowRegistry);
     const bodyCodec = createEventBodyCodec();
     const store = new JobStore('test-ns', runtime, bodyCodec, {
       db,
       reducers,
       providers: permissiveProviderLookupPort,
     });
-    commitInputs(db, providerSessionInputs('session-wrong-owner', 'wrong-owner-child', '/workspace/wrong-owner'), {
+    commitInputs(db, jobConversationInputs('session-wrong-owner', 'wrong-owner-child', '/workspace/wrong-owner'), {
       now: () => new Date('2026-04-29T00:00:00.000Z'),
       reducers,
       bodyCodec,

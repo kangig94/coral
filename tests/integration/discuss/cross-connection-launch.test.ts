@@ -9,8 +9,7 @@ import { decideSessionCreate } from '#src/discuss/state-machine.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import type { JobLaunch } from '#src/jobs/records.js';
 import { jobLaunchRequestedEvent, JobStore } from '#src/jobs/store.js';
-import { SessionManager } from '#src/sessions/shell.js';
-import { sessionsRegistry } from '#src/sessions/events.js';
+import { ConversationManager } from '#src/jobs/conversation/shell.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { composeReducers } from '#src/store/reducers.js';
@@ -30,7 +29,7 @@ describe('discussion launch serialization across store connections', () => {
     applyBundledStoreSchema(firstDb, currentCoralStoreFormat());
     const secondDb = newRawDatabase(dbPath);
     const runtime = new SimulationRuntime();
-    const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
+    const reducers = composeReducers(jobsRegistry, discussRegistry, workflowRegistry);
     const bodyCodec = createEventBodyCodec();
     const firstStore = new JobStore('discussion-test', runtime, bodyCodec, {
       db: firstDb,
@@ -44,9 +43,9 @@ describe('discussion launch serialization across store connections', () => {
     });
 
     try {
-      const firstSessions = new SessionManager(root, runtime, (cb) => firstStore.commit(cb), undefined, firstDb);
-      const secondSessions = new SessionManager(root, runtime, (cb) => secondStore.commit(cb), undefined, secondDb);
-      const prepareSession = (sessions: SessionManager, name: string) =>
+      const firstSessions = new ConversationManager(root, runtime, (cb) => firstStore.commit(cb), undefined, firstDb);
+      const secondSessions = new ConversationManager(root, runtime, (cb) => secondStore.commit(cb), undefined, secondDb);
+      const prepareSession = (sessions: ConversationManager, name: string) =>
         sessions.prepare({
           binding: TEST_CODEX_BINDING,
           name,

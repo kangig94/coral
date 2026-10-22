@@ -146,7 +146,7 @@ export class SemanticOperationShutdownError extends Error {
 
 // --- bound-provider reconstruction ----------------------------------------------------------------------
 
-/** `ProviderContinuityBlob` (`src/sessions/continuity.ts`) structurally, without importing it: `src/sessions/`
+/** `ProviderContinuityBlob` (`src/jobs/conversation/continuity.ts`) structurally, without importing it: `src/jobs/conversation/`
  *  is forbidden to `provider-proxy/` (`tests/invariants/architecture-layering.test.ts`'s `PROVIDER_PROXY_FORBIDDEN`),
  *  so this derives the identical type from a field this file already legitimately imports rather than naming
  *  the origin module — TypeScript's structural typing makes the two interchangeable at every call site below. */

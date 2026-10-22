@@ -2,11 +2,11 @@ import { createHash } from 'node:crypto';
 import { basename, join } from 'node:path';
 import { z } from 'zod';
 
-import { providerArtifactIdentitySchema, type ProviderArtifactIdentity } from '../providers/artifact-identity.js';
-import type { ArtifactCleanupRuntime } from '../providers/contract.js';
-import type { ProviderSession } from './entry.js';
-import { providerSessionProvider } from './entry.js';
-import type { EventsRow } from '../store/schema.js';
+import { providerArtifactIdentitySchema, type ProviderArtifactIdentity } from '../../providers/artifact-identity.js';
+import type { ArtifactCleanupRuntime } from '../../providers/contract.js';
+import type { JobConversation } from './entry.js';
+import { jobConversationProvider } from './entry.js';
+import type { EventsRow } from '../../store/schema.js';
 
 const ARCHIVE_SCHEMA_VERSION = 2;
 const ARTIFACT_DIR_NAME = 'provider-artifacts';
@@ -22,7 +22,7 @@ export type CanonicalProviderArtifactHandle = {
 
 export type ProviderArtifactActionDescriptor = {
   readonly operationId: string;
-  readonly sessionId: string;
+  readonly execution: number;
   readonly jobId: string;
   readonly provider: string;
   readonly sourceRevision: string;
@@ -66,7 +66,7 @@ const archiveManifestSchema = z
     sourceRevision: z.string().min(1),
     canonicalHandles: z.array(canonicalHandleSchema).readonly(),
     jobId: z.string().min(1),
-    sessionId: z.string().min(1),
+    execution: z.number().int().positive().safe(),
     provider: z.string().min(1),
     archivedAt: z.string().datetime({ offset: true }),
     artifacts: z.array(archiveArtifactRecordSchema),
@@ -103,7 +103,7 @@ function stableJson(value: unknown): string {
 }
 
 function canonicalHandles(
-  entry: ProviderSession,
+  entry: JobConversation,
   jobId: string,
   handles: readonly string[],
 ): readonly CanonicalProviderArtifactHandle[] {
@@ -122,18 +122,18 @@ function canonicalHandles(
 
 /** Derives stable archive/discard identities from the complete persisted action inputs. */
 export function deriveProviderArtifactActionDescriptor(options: {
-  readonly entry: ProviderSession;
+  readonly entry: JobConversation;
   readonly jobId: string;
   readonly handles: readonly string[];
   readonly sourceRevision: string;
   readonly archivedAt: string;
 }): ProviderArtifactActionDescriptor {
-  const provider = providerSessionProvider(options.entry);
+  const provider = jobConversationProvider(options.entry);
   const handles = canonicalHandles(options.entry, options.jobId, options.handles);
   const operationId = hash(
     stableJson({
       v: 1,
-      sessionId: options.entry.sessionId,
+      execution: options.entry.execution,
       jobId: options.jobId,
       provider,
       sourceRevision: options.sourceRevision,
@@ -144,7 +144,7 @@ export function deriveProviderArtifactActionDescriptor(options: {
   const discardActionId = `discard-${hash(`${operationId}\u0000session.retention.provider-discard`).slice('sha256:'.length)}`;
   return {
     operationId,
-    sessionId: options.entry.sessionId,
+    execution: options.entry.execution,
     jobId: options.jobId,
     provider,
     sourceRevision: options.sourceRevision,
@@ -159,32 +159,15 @@ export function deriveProviderArtifactActionDescriptor(options: {
   };
 }
 
-/** Hashes the immutable release/terminal envelopes shared by retention and on-demand cleanup. */
 export function deriveProviderArtifactSourceRevision(options: {
-  readonly sessionId: string;
   readonly jobId: string;
-  readonly release: EventsRow;
-  readonly terminal: EventsRow;
+  readonly execution: number;
+  readonly accepted: EventsRow;
 }): string {
-  if (
-    options.release.type !== 'session.claim.released' ||
-    options.release.stream_id !== options.sessionId ||
-    options.terminal.type !== 'job.terminal.recorded' ||
-    options.terminal.stream_id !== options.jobId
-  ) {
-    throw new ProviderArtifactArchiveInvariantError(
-      `Provider artifact source envelope contradicts ${options.sessionId}/${options.jobId}.`,
-    );
+  if (options.accepted.type !== 'job.execution.outcome.accepted' || options.accepted.stream_id !== options.jobId) {
+    throw new ProviderArtifactArchiveInvariantError(`Provider artifact source contradicts job ${options.jobId}.`);
   }
-  return hash(
-    stableJson({
-      v: 1,
-      sessionId: options.sessionId,
-      jobId: options.jobId,
-      release: options.release,
-      terminal: options.terminal,
-    }),
-  );
+  return hash(stableJson(options));
 }
 
 function providerActionsRoot(runtime: ArtifactCleanupRuntime, descriptor: ProviderArtifactActionDescriptor): string {
@@ -218,7 +201,7 @@ function assertManifestIdentity(manifest: ArchiveManifest, descriptor: ProviderA
     manifest.archivePayloadHash !== descriptor.archivePayloadHash ||
     manifest.sourceRevision !== descriptor.sourceRevision ||
     manifest.jobId !== descriptor.jobId ||
-    manifest.sessionId !== descriptor.sessionId ||
+    manifest.execution !== descriptor.execution ||
     manifest.provider !== descriptor.provider ||
     stableJson(manifest.canonicalHandles) !== stableJson(descriptor.handles)
   ) {
@@ -334,7 +317,7 @@ export async function archiveProviderArtifactsForJob(options: {
     sourceRevision: descriptor.sourceRevision,
     canonicalHandles: descriptor.handles,
     jobId: descriptor.jobId,
-    sessionId: descriptor.sessionId,
+    execution: descriptor.execution,
     provider: descriptor.provider,
     archivedAt: existing?.archivedAt ?? descriptor.archivedAt,
     artifacts,

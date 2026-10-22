@@ -64,7 +64,7 @@ describe('mapRecoveryContinuationTurnStartParams', () => {
 function makeRequest(overrides: Partial<ProviderRequest> = {}): ProviderRequest {
   return {
     action: 'exec',
-    sessionId: 's-1',
+    jobId: 's-1',
     prompt: 'test',
     cwd: fixtureCanonicalWorkDir('/tmp'),
     effort: 'medium',
@@ -113,7 +113,7 @@ function makeTierRuntime(
     access: { home: codexHome },
     request: {
       action: 'exec',
-      sessionId: 'tier-test',
+      jobId: 'tier-test',
       prompt: 'test',
       cwd: fixtureCanonicalWorkDir('/workspace'),
       bypassPermissions: false,
@@ -127,7 +127,7 @@ function makeTierRuntime(
     hostPlan: host,
     request: {
       action: 'exec',
-      sessionId: 'tier-test',
+      jobId: 'tier-test',
       prompt: 'test',
       cwd: fixtureCanonicalWorkDir('/workspace'),
       bypassPermissions: false,

@@ -4,7 +4,6 @@ import { describe, expect, it } from 'vitest';
 import { discussRegistry } from '#src/discuss/event-registry.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { loadJobProjectionDetail, loadJobProjectionDetails } from '#src/jobs/read-queries.js';
-import { sessionsRegistry } from '#src/sessions/events.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { composeReducers } from '#src/store/reducers.js';
@@ -112,7 +111,7 @@ describe('persisted projection authority codecs', () => {
         '2026-07-22T00:00:00.000Z',
       );
       db.prepare(`UPDATE projection_jobs SET ${column} = ? WHERE job_id = ?`).run(value, 'corrupted-scalar-job');
-      const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
+      const reducers = composeReducers(jobsRegistry, discussRegistry, workflowRegistry);
       const readCtx = {
         schemas: reducers.schemas,
         streamKinds: reducers.streamKinds,
@@ -158,7 +157,7 @@ describe('persisted projection authority codecs', () => {
         slotId,
         '2026-07-22T00:00:00.000Z',
       );
-      const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
+      const reducers = composeReducers(jobsRegistry, discussRegistry, workflowRegistry);
 
       expect(() =>
         readWorkflowView(db, workflowId, {

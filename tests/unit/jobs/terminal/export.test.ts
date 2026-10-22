@@ -1,7 +1,6 @@
 import { renderWorkflowReport } from '#src/workflow/result-report.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { jobsRegistry } from '#src/jobs/events.js';
-import { sessionsRegistry } from '#src/sessions/events.js';
 import { discussRegistry } from '#src/discuss/event-registry.js';
 import { workflowRegistry } from '#src/workflow/events.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
@@ -299,7 +298,7 @@ describe('canonical render across owner contexts', () => {
           return readFileSync(f.resultPath, 'utf8');
         };
         const full = {
-          ...composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry),
+          ...composeReducers(jobsRegistry, discussRegistry, workflowRegistry),
           bodyCodec: createEventBodyCodec(),
         };
         const jobsOnly = { ...composeReducers(jobsRegistry), bodyCodec: createEventBodyCodec() };

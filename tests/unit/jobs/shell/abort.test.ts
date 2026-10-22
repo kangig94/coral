@@ -7,8 +7,7 @@ import { JobStore } from '#src/jobs/store.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import type { QueuedHandle } from '#src/jobs/contracts/admission.js';
 import type { BoundProvider } from '#src/providers/bound-provider-contract.js';
-import { SessionManager } from '#src/sessions/shell.js';
-import { sessionsRegistry } from '#src/sessions/events.js';
+import { ConversationManager } from '#src/jobs/conversation/shell.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
@@ -29,11 +28,11 @@ describe('jobs abort command', () => {
       const store = new JobStore('test', runtime, createEventBodyCodec(), {
         db,
         providers: permissiveProviderLookupPort,
-        reducers: composeReducers(jobsRegistry, sessionsRegistry),
+        reducers: composeReducers(jobsRegistry),
       });
       const registry = new AbortRegistry(runtime.ids);
       const released = createDeferred<void>();
-      const sessions = new SessionManager(
+      const sessions = new ConversationManager(
         '/project',
         runtime,
         undefined,
@@ -61,7 +60,7 @@ describe('jobs abort command', () => {
       const orchestrator = new LaunchOrchestrator({
         runtime,
         progressStore: store,
-        sessionManager: sessions,
+        conversationManager: sessions,
         abortRegistry: registry,
         backendNamespace: 'test',
         bundleHash: 'test',

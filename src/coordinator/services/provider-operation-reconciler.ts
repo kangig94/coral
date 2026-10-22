@@ -2399,7 +2399,7 @@ export class ProviderOperationReconciler
     const progressStore = this.#deps.getProgressStore();
     const launch = readProviderOperationJobLaunch(progressStore, record.operation.jobId);
     const status = progressStore.readStatus(record.operation.jobId);
-    if (status === null || status.sessionId === null || status.sessionId !== launch.sessionId) {
+    if (status === null || status.conversationJobId === null || status.conversationJobId !== launch.conversationJobId) {
       throw new Error('Provider operation runtime publication lacks matching durable job metadata.');
     }
     if (launch.provider !== activationAck.hostRef.provider) {
@@ -2417,7 +2417,7 @@ export class ProviderOperationReconciler
         stream: { kind: 'job', id: record.operation.jobId },
         namespace: status.backendNamespace,
         project: status.projectRoot,
-        refs: buildJobEventRefs({ jobId: record.operation.jobId, sessionId: status.sessionId }),
+        refs: buildJobEventRefs({ jobId: record.operation.jobId, }),
         body: {
           transport: 'app-server',
           startedAt: activationAck.startedAt,

@@ -9,7 +9,7 @@ import type { DurableCliProvisionalProcessRuntimeMeta } from '../runtime-meta.js
 
 type InitJobBase = {
   jobId: string;
-  sessionId: string;
+  conversationJobId: string;
   provider: string;
   projectRoot: string;
   backendNamespace: string;
@@ -55,8 +55,8 @@ export interface JobProgressStore {
   rebindNamespace(jobId: string, newNamespace: string, newBundleHash?: string): void;
   listJobIds(): string[];
   liveJobCount(): number;
-  appendProgress(jobId: string, sessionId: string | null, message: string): number;
-  appendUnreadableStatusProgress(jobId: string, sessionId: string, message: string): number;
+  appendProgress(jobId: string, conversationJobId: string | null, message: string): number;
+  appendUnreadableStatusProgress(jobId: string, conversationJobId: string, message: string): number;
   commitUnreadableStatusRecovery(
     jobId: string,
     cb: <Scope>(commit: CommitContext<Scope>) => CommitClosureResult,
@@ -64,7 +64,7 @@ export interface JobProgressStore {
   appendUnreadableStatusProgressInCommit<Scope>(
     commit: CommitContext<Scope>,
     jobId: string,
-    sessionId: string,
+    conversationJobId: string,
     message: string,
   ): void;
 }

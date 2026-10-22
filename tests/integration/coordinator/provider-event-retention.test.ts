@@ -14,11 +14,11 @@ import type { JobLocationIndex } from '#src/jobs/location-index.js';
 import type { ProviderEventHandler } from '#src/provider-proxy/control-client.js';
 import { RecoveryQuarantineStore } from '#src/recovery/quarantine.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import type { ProviderSession } from '#src/sessions/entry.js';
-import * as lifecycle from '#src/sessions/lifecycle-reactor.js';
-import { readProjectionProviderSession } from '#src/sessions/projections.js';
-import { sessionRetentionWorkKey } from '#src/sessions/retention-work.js';
-import { SessionManager } from '#src/sessions/shell.js';
+import type { JobConversation } from '#src/jobs/conversation/entry.js';
+import * as lifecycle from '#src/jobs/conversation/lifecycle-reactor.js';
+import { readProjectionJobConversation } from '#src/jobs/conversation/projections.js';
+import { sessionRetentionWorkKey } from '#src/jobs/conversation/retention-work.js';
+import { ConversationManager } from '#src/jobs/conversation/shell.js';
 import type { AppendedEvent } from '#src/store/append.js';
 import type { Database } from '#src/store/db.js';
 import * as rebindableStore from '#src/store/rebindable-database.js';
@@ -224,14 +224,14 @@ async function fixture() {
   });
   const publishResult = vi.spyOn(progressStore, 'publishTerminalResult');
   const namespace = core.identity.namespace;
-  const sessions = SessionManager.forProduction(
+  const sessions = ConversationManager.forProduction(
     home,
     runtime,
     (cb) => progressStore.commit(cb),
     () => {},
     { db },
   );
-  function seedOperation(retention: ProviderSession['retention'] = 'retain') {
+  function seedOperation(retention: JobConversation['retention'] = 'retain') {
     const session = sessions.open({
       binding,
       name: 'provider event retention',
@@ -331,7 +331,7 @@ describe('provider events through coordinator composition', () => {
     ]);
     for (const stage of trace.stages.slice(1)) expect(stage.events).toEqual(events);
     expect(f.publishResult.mock.calls.filter(([jobId]) => jobId === tested.operation.jobId)).toHaveLength(1);
-    expect(readProjectionProviderSession(f.db, tested.sessionId)?.activeJobId).toBeUndefined();
+    expect(readProjectionJobConversation(f.db, tested.sessionId)?.activeJobId).toBeUndefined();
     expect(
       f.reader
         .prepare<

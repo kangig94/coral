@@ -93,7 +93,7 @@ const discussionResumeContinuationSchema = z
   .strict();
 
 type DiscussionResumeContinuation = z.infer<typeof discussionResumeContinuationSchema>;
-type DiscussionOwnedLaunch = Pick<JobLaunch, 'jobId' | 'sessionId' | 'discussionRun' | 'createdAt'>;
+type DiscussionOwnedLaunch = Pick<JobLaunch, 'jobId' | 'discussionRun' | 'createdAt'>;
 
 type DiscussionStartupRuntime = {
   readonly getDatabase: () => Database;
@@ -206,7 +206,7 @@ function ownedLaunchesFromRaw(envelope: RawDiscussionCandidateEnvelope): Discuss
     }
     launches.push({
       jobId: projection.job_id,
-      sessionId: launch.sessionId,
+      sessionId: launch.jobId,
       ...(launch.discussionRun === undefined ? {} : { discussionRun: launch.discussionRun }),
       createdAt: launch.createdAt,
     });
@@ -277,7 +277,7 @@ function buildOwnedJobReconciliationEvents(
   launch: DiscussionOwnedLaunch,
   ctx: DiscussContext,
 ): DiscussDomainEvent[] {
-  if (launch.sessionId === null || launch.discussionRun === undefined) {
+  if (launch.jobId === null || launch.discussionRun === undefined) {
     throw new Error(`Discussion-owned job '${launch.jobId}' has no durable run descriptor.`);
   }
   const { agent, purpose, attempt } = launch.discussionRun;
@@ -285,7 +285,7 @@ function buildOwnedJobReconciliationEvents(
   if (run === undefined) {
     throw new Error(`Discussion-owned job '${launch.jobId}' names unknown agent '${agent}'.`);
   }
-  if (run.executionSessionId !== undefined && run.executionSessionId !== launch.sessionId) {
+  if (run.executionJobId !== undefined && run.executionJobId !== launch.jobId) {
     throw new Error(`Discussion agent '${agent}' is already bound to another provider session.`);
   }
   if (run.currentJobId !== undefined && run.currentJobId !== launch.jobId) {
@@ -295,7 +295,7 @@ function buildOwnedJobReconciliationEvents(
 
   let seq = snapshot.lastAppliedSeq + 1;
   const events: DiscussDomainEvent[] = [];
-  if (run.executionSessionId === undefined) {
+  if (run.executionJobId === undefined) {
     events.push(
       makeEvent(
         snapshot.sessionId,
@@ -304,7 +304,7 @@ function buildOwnedJobReconciliationEvents(
         seq++,
         'agent.run.bound',
         nowIsoString(ctx.runtime.time),
-        { agent, executionSessionId: launch.sessionId },
+        { agent, executionJobId: launch.jobId },
       ),
     );
   }

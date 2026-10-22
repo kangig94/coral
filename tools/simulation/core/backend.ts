@@ -47,8 +47,7 @@ import { createHostAdmissionCollection } from '../../../src/providers/host-admis
 import { JobStore } from '../../../src/jobs/store.js';
 import { providerLookupPortFromCatalog } from '../../../src/providers/catalog.js';
 import { jobsRegistry } from '../../../src/jobs/events.js';
-import { sessionsRegistry } from '../../../src/sessions/events.js';
-import { SessionManager } from '../../../src/sessions/shell.js';
+import { ConversationManager } from '../../../src/jobs/conversation/shell.js';
 import { discussRegistry as discussStoreRegistry } from '../../../src/discuss/event-registry.js';
 import { workflowRegistry } from '../../../src/workflow/events.js';
 import type { StoragePort } from '../../../src/infra/port-types.js';
@@ -641,7 +640,7 @@ export function createSimulationBackend(
   const progressStore = new JobStore(namespace, runtime, createEventBodyCodec(), {
     eventBus,
     db: storeDb,
-    reducers: composeReducers(jobsRegistry, sessionsRegistry, discussStoreRegistry, workflowRegistry),
+    reducers: composeReducers(jobsRegistry, discussStoreRegistry, workflowRegistry),
     providers: providerLookupPortFromCatalog(providerRegistry),
   });
   const storeServices: CoordinatorStoreServices = {
@@ -861,7 +860,7 @@ export function createSimulationBackend(
         db: storeDb,
         progressStore: recoveryProgressStore,
         clearContinuationLease: (projectRoot, input) =>
-          SessionManager.forProduction(
+          ConversationManager.forProduction(
             projectRoot,
             runtime,
             (cb) => progressStore.commit(cb),

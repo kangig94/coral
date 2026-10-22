@@ -9,8 +9,8 @@ import type {
   ProviderRuntime,
 } from '../contract.js';
 import type { ProviderTransportClose } from '../protocol.js';
-import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
-import { providerSessionUnavailable } from '../fault.js';
+import type { ProviderContinuityBlob } from '../../jobs/conversation/continuity.js';
+import { jobConversationUnavailable } from '../fault.js';
 import { buildJobDiagnostics, buildJobTerminal } from '../terminal.js';
 import type { ProviderExecutionPlan } from '../execution-plan.js';
 import { attachContinuityCommit } from '../internal/continuity-commit.js';
@@ -64,7 +64,7 @@ export interface SessionContinuityContract<TState> {
 }
 
 function buildSessionUnavailableFailureCause(provider: string, reason: string) {
-  return providerSessionUnavailable({ provider, reason });
+  return jobConversationUnavailable({ provider, reason });
 }
 
 export function sessionContinuity<

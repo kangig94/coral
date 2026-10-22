@@ -44,7 +44,7 @@ function fixture() {
     visitProgress: progressVisitFromEvents(() => journal),
     time: runtime.time,
     eventBus,
-    sessionManager: { get: () => ({ activeJobId, state: 'pending', providerContinuity: null }) } as never,
+    conversationManager: { get: () => ({ activeJobId, state: 'pending', providerContinuity: null }) } as never,
     launchQueue: { reservationFor: () => null, getActiveJobIds: () => [] } as never,
     loadJobWaitDetail: () => {
       const terminal = journal.find((event): event is JobTerminalEvent => event.type === 'terminal');
@@ -136,7 +136,7 @@ describe('WaitCoordinator', () => {
     f.deps.getCurrentJournalSeq = () => detail.events.at(-1)?.seq ?? 0;
     const usage = { inputTokens: 123, outputTokens: 456 } as never;
     f.deps.aggregateWorkflowUsage = () => usage;
-    f.deps.sessionManager = {
+    f.deps.conversationManager = {
       get: () => ({
         state: 'ready',
         conversationRef: { provider: 'codex', sessionId: 'session-1' },

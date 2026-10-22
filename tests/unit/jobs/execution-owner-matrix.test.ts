@@ -6,8 +6,7 @@ import { jobsRegistry } from '#src/jobs/events.js';
 import type { JobLaunch } from '#src/jobs/records.js';
 import { jobLaunchRequestedEvent, JobStore } from '#src/jobs/store.js';
 import type { ExecutionOwner } from '#src/runtime/execution-owner.js';
-import { SessionManager } from '#src/sessions/shell.js';
-import { sessionsRegistry } from '#src/sessions/events.js';
+import { ConversationManager } from '#src/jobs/conversation/shell.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { composeReducers } from '#src/store/reducers.js';
@@ -23,13 +22,13 @@ function createHarness() {
   const db = newRawDatabase(':memory:');
   applyBundledStoreSchema(db, currentCoralStoreFormat());
   const runtime = new SimulationRuntime();
-  const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
+  const reducers = composeReducers(jobsRegistry, discussRegistry, workflowRegistry);
   const store = new JobStore('tests', runtime, createEventBodyCodec(), {
     db,
     reducers,
     providers: permissiveProviderLookupPort,
   });
-  const sessions = new SessionManager(PROJECT_ROOT, runtime, (cb) => store.commit(cb), undefined, db);
+  const sessions = new ConversationManager(PROJECT_ROOT, runtime, (cb) => store.commit(cb), undefined, db);
   return { db, store, sessions };
 }
 

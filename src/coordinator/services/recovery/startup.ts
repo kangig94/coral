@@ -83,7 +83,7 @@ function createRetryCoordinatorItem(
     const retryRunning: RunningRecoverableJob[] = [];
     const retryOptions: ProviderOperationRecoveryPlanActionOptions = {
       itemsByJobId: new Map([[item.jobId, item]]),
-      itemsBySessionId: new Map(item.claimedSession === null ? [] : ([[item.claimedSession.sessionId, item]] as const)),
+      itemsBySessionId: new Map(item.claimedSession === null ? [] : ([[item.claimedSession.jobId, item]] as const)),
       recoveryRegistry,
       queuedRecoverable: retryQueued,
       runningRecoverable: retryRunning,
@@ -195,7 +195,7 @@ function createHeldRecoveryAbandonment(
       try {
         progressStore.appendProgress(
           jobId,
-          jobStatus.sessionId,
+          jobStatus.conversationJobId,
           'Durable containment was abandoned without proof of process absence and without sending a signal.',
         );
       } catch (error: unknown) {
@@ -304,7 +304,7 @@ async function planCoordinatorStartupRecovery(
   const itemsByJobId = new Map(recoveryItems.map((item) => [item.jobId, item]));
   const itemsBySessionId = new Map(
     recoveryItems.flatMap((item) =>
-      item.claimedSession === null ? [] : [[item.claimedSession.sessionId, item] as const],
+      item.claimedSession === null ? [] : [[item.claimedSession.jobId, item] as const],
     ),
   );
 

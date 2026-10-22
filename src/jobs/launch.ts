@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 import { providerBindingEnvelopeSchema } from '../infra/provider-binding-envelope.js';
 import { providerInstructionSchema, type ProviderInstruction } from '../providers/contract.js';
-import { retentionPolicySchema, type RetentionPolicy } from '../sessions/entry.js';
+import { retentionPolicySchema, type RetentionPolicy } from './conversation/entry.js';
 import { LAUNCH_POOLS, type LaunchPool } from './contracts/admission.js';
 import { discussionRunDescriptorSchema, type DiscussionRunDescriptor } from './discussion-run.js';
 import { executionOwnerSchema, type ExecutionOwner } from '../runtime/execution-owner.js';
@@ -13,9 +13,9 @@ const sourceImportReadinessSchema = z.enum(sourceImportReadinessValues);
 export type SourceImportReadiness = z.infer<typeof sourceImportReadinessSchema>;
 export type KbJobOperation = 'kb.source_import' | 'kb.reindex' | 'kb.community_summary';
 
-export type AcceptedProviderSessionLaunchDecision =
-  | { kind: 'provider-session'; status: 'running'; jobId: string; sessionId: string }
-  | { kind: 'provider-session'; status: 'queued'; jobId: string; sessionId: string; message?: undefined };
+export type AcceptedProviderJobLaunchDecision =
+  | { kind: 'provider-session'; status: 'running'; jobId: string }
+  | { kind: 'provider-session'; status: 'queued'; jobId: string; message?: undefined };
 
 export type AcceptedWorkflowLaunchDecision =
   | { kind: 'workflow'; status: 'running'; jobId: string; workflowId: string }
@@ -33,12 +33,12 @@ export type UndeterminedLaunchDecision = {
   message: string;
 };
 
-export type ProviderSessionLaunchDecision =
-  | AcceptedProviderSessionLaunchDecision
+export type ProviderJobLaunchDecision =
+  | AcceptedProviderJobLaunchDecision
   | RefusedLaunchDecision
   | UndeterminedLaunchDecision;
 export type WorkflowLaunchDecision = AcceptedWorkflowLaunchDecision | RefusedLaunchDecision;
-export type LaunchDecision = ProviderSessionLaunchDecision | AcceptedWorkflowLaunchDecision;
+export type LaunchDecision = ProviderJobLaunchDecision | AcceptedWorkflowLaunchDecision;
 
 /**
  * Coordinator response shape when a launch request is accepted (running or queued).
@@ -47,7 +47,6 @@ export type LaunchDecision = ProviderSessionLaunchDecision | AcceptedWorkflowLau
 export type AcceptedLaunchResponse =
   | {
       kind: 'provider-session';
-      sessionId: string;
       jobId: string;
       launchState: 'running' | 'queued';
     }
@@ -102,7 +101,7 @@ export interface JobLaunchRequest {
 }
 
 export interface JobResumeRequest extends Omit<JobLaunchRequest, 'retention'> {
-  sessionId: string;
+  jobId: string;
   provider?: string;
 }
 

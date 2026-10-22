@@ -136,7 +136,7 @@ export type CoordinatorCoreOptions = {
    * ends. Wired from the coordinator's lifecycle reactor; omitted in lightweight
    * harnesses (simulation, unit tests), where end-of-discussion cleanup is a no-op.
    */
-  discardSessionArtifacts?: (sessionId: string) => Promise<void>;
+  discardSessionArtifacts?: (conversationJobId: string) => Promise<void>;
 };
 
 export type CoordinatorCoreResult = {

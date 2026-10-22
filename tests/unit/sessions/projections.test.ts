@@ -11,22 +11,21 @@ import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import type { AppendedEvent } from '#src/store/append.js';
 import type { CoralEventInput } from '#src/store/envelope.js';
 import { CoralSetupError } from '#src/runtime/errors.js';
-import type { ProviderSession } from '#src/sessions/entry.js';
-import { sessionsRegistry } from '#src/sessions/events.js';
+import type { JobConversation } from '#src/jobs/conversation/entry.js';
 import {
   TEST_CLAUDE_BINDING,
   TEST_CODEX_BINDING,
   withTestBindingLocation,
 } from '#tests/helpers/provider-credentials.js';
 import {
-  listProjectionSessionEntries,
+  listProjectionConversationEntries,
   readProjectionSession,
-  readProjectionProviderSession,
-} from '#src/sessions/projections.js';
+  readProjectionJobConversation,
+} from '#src/jobs/conversation/projections.js';
 
 const NOW = new Date('2026-06-11T00:00:00.000Z');
 
-function sessionEntry(overrides: Partial<ProviderSession> & Pick<ProviderSession, 'sessionId'>): ProviderSession {
+function sessionEntry(overrides: Partial<JobConversation> & Pick<JobConversation, 'sessionId'>): JobConversation {
   return {
     sessionId: overrides.sessionId,
     binding: overrides.binding ?? TEST_CODEX_BINDING,
@@ -57,7 +56,7 @@ type Harness = {
 function newHarness(): Harness {
   const db = newRawDatabase(':memory:');
   applyBundledStoreSchema(db, currentCoralStoreFormat());
-  const reducers = composeReducers(sessionsRegistry);
+  const reducers = composeReducers(jobsRegistry);
   const bodyCodec = createEventBodyCodec();
   return {
     db,
@@ -71,7 +70,7 @@ function sessionStream(sessionId: string): CoralEventInput['stream'] {
   return { kind: 'session', id: sessionId };
 }
 
-function openedInput(entry: ProviderSession, scopeKey: string): CoralEventInput {
+function openedInput(entry: JobConversation, scopeKey: string): CoralEventInput {
   return {
     type: 'session.opened',
     stream: sessionStream(entry.sessionId),
@@ -81,7 +80,7 @@ function openedInput(entry: ProviderSession, scopeKey: string): CoralEventInput 
 }
 
 function checkpointedInput(
-  entry: ProviderSession,
+  entry: JobConversation,
   snapshot: { conversationRef: string | null; resumable: boolean },
 ): CoralEventInput {
   return {
@@ -127,7 +126,7 @@ describe('sessions projections', () => {
       const entry = {
         ...sessionEntry({ sessionId: 'session-stale-transport' }),
         controllerProfile: { owner: 'team-a', claudeTransport: 'print' },
-      } as unknown as ProviderSession;
+      } as unknown as JobConversation;
 
       expect(() => h.commit([openedInput(entry, 'scope-stale-transport')])).toThrow();
       expect(readProjectionSession(h.db, 'session-stale-transport')).toBeNull();
@@ -154,7 +153,7 @@ describe('sessions projections', () => {
         () => h.commit([checkpointedInput(changed, { conversationRef: null, resumable: false })]),
         'provider_session_binding_mismatch',
       );
-      expect(readProjectionProviderSession(h.db, opened.sessionId)?.binding).toEqual(opened.binding);
+      expect(readProjectionJobConversation(h.db, opened.sessionId)?.binding).toEqual(opened.binding);
     } finally {
       h.close();
     }
@@ -214,7 +213,7 @@ describe('sessions projections', () => {
       h.commit([openedInput(entry, 'scope-discard')]);
       h.commit([discardEventInput('session.retention.discard.requested', 'session-discard', 1)]);
 
-      const afterFirstRequest = readProjectionProviderSession(h.db, 'session-discard');
+      const afterFirstRequest = readProjectionJobConversation(h.db, 'session-discard');
       expect(afterFirstRequest?.version).toBe(entry.version + 1);
       expect(afterFirstRequest?.retentionDiscard.attempts).toEqual([
         { attempt: 1, handles: ['/tmp/handle.jsonl'], status: 'requested' },
@@ -231,7 +230,7 @@ describe('sessions projections', () => {
         }),
       ]);
 
-      expect(readProjectionProviderSession(h.db, 'session-discard')?.retentionDiscard.attempts).toEqual([
+      expect(readProjectionJobConversation(h.db, 'session-discard')?.retentionDiscard.attempts).toEqual([
         { attempt: 1, handles: ['/tmp/handle.jsonl'], status: 'completed', outcome: 'discarded' },
         { attempt: 2, handles: ['/tmp/handle.jsonl'], status: 'failed', reason: 'provider unreachable', causeRef },
       ]);
@@ -291,7 +290,7 @@ describe('sessions projections', () => {
     }
   });
 
-  it('keeps the derived provider bound to ProviderSession.binding across fault events', () => {
+  it('keeps the derived provider bound to JobConversation.binding across fault events', () => {
     const h = newHarness();
     try {
       const entry = sessionEntry({ sessionId: 'session-fault' });
@@ -338,7 +337,7 @@ describe('sessions projections', () => {
         },
       ]);
 
-      expect(readProjectionProviderSession(h.db, 'session-interrupt')?.version).toBe(1);
+      expect(readProjectionJobConversation(h.db, 'session-interrupt')?.version).toBe(1);
     } finally {
       h.close();
     }
@@ -381,23 +380,23 @@ describe('sessions projections', () => {
         openedInput(sessionEntry({ sessionId: 'session-3' }), 'scope-y'),
       ]);
 
-      expect(listProjectionSessionEntries(h.db).map((entry) => entry.sessionId)).toEqual([
+      expect(listProjectionConversationEntries(h.db).map((entry) => entry.sessionId)).toEqual([
         'session-1',
         'session-2',
         'session-3',
       ]);
-      expect(listProjectionSessionEntries(h.db, 'codex').map((entry) => entry.sessionId)).toEqual([
+      expect(listProjectionConversationEntries(h.db, 'codex').map((entry) => entry.sessionId)).toEqual([
         'session-1',
         'session-3',
       ]);
-      expect(listProjectionSessionEntries(h.db, undefined, 'scope-x').map((entry) => entry.sessionId)).toEqual([
+      expect(listProjectionConversationEntries(h.db, undefined, 'scope-x').map((entry) => entry.sessionId)).toEqual([
         'session-1',
         'session-2',
       ]);
-      expect(listProjectionSessionEntries(h.db, 'codex', 'scope-y').map((entry) => entry.sessionId)).toEqual([
+      expect(listProjectionConversationEntries(h.db, 'codex', 'scope-y').map((entry) => entry.sessionId)).toEqual([
         'session-3',
       ]);
-      expect(listProjectionSessionEntries(h.db, 'gemini')).toEqual([]);
+      expect(listProjectionConversationEntries(h.db, 'gemini')).toEqual([]);
     } finally {
       h.close();
     }

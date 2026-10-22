@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { providerSessionSchema, type ProviderSession } from '#src/sessions/entry.js';
-import { sessionArtifactHandleRecordedBodySchema } from '#src/sessions/event-bodies.js';
+import { jobConversationSchema, type JobConversation } from '#src/jobs/conversation/entry.js';
+import { sessionArtifactHandleRecordedBodySchema } from '#src/jobs/conversation/event-bodies.js';
 import { providerArtifactIdentityKey } from '#src/providers/artifact-identity.js';
 import { TEST_CODEX_BINDING } from '#tests/helpers/provider-credentials.js';
 
 const NOW = new Date('2026-04-19T00:00:00.000Z');
 
-function sessionEntry(overrides: Partial<ProviderSession> & Pick<ProviderSession, 'sessionId'>): ProviderSession {
+function sessionEntry(overrides: Partial<JobConversation> & Pick<JobConversation, 'sessionId'>): JobConversation {
   return {
     sessionId: overrides.sessionId,
     binding: overrides.binding ?? TEST_CODEX_BINDING,
@@ -51,7 +51,7 @@ describe('sessions reducer equivalence', () => {
     });
 
     expect(() =>
-      providerSessionSchema.parse({
+      jobConversationSchema.parse({
         ...entry,
         artifactHandles: [{ ...entry.artifactHandles[0], identityKey: 'not-derived-from-binding' }],
       }),

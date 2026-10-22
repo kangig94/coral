@@ -171,8 +171,7 @@ const childAuthorizationSchema = z
 export const providerOperationPrepareSourceSchema = z
   .object({
     jobLaunchEventSeq: nonNegativeSafeIntegerSchema,
-    sessionId: canonicalUuidSchema,
-    sessionVersion: z.number().int().positive().safe(),
+    execution: z.number().int().positive().safe(),
     platform: z.string().min(1).max(64),
     childAuthorization: childAuthorizationSchema,
   })

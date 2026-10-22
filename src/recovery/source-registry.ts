@@ -22,11 +22,7 @@ export const repeatableRecoveryBoundaryIds = [
   COORDINATOR_JOB_RECOVERY_BOUNDARY,
   'discussion-source',
   'discussion-candidate',
-  'session-projection',
-  'session-continuation-lease',
-  'terminal-retention-outcome',
-  'retention-release-pair',
-  'session-retention-work',
+  'job-conversation-retention',
   'workflow-recovery',
   'stale-job-cleanup',
   'crashed-job-terminalization',
@@ -234,7 +230,7 @@ export function createRecoveryQuarantineRetryService(
         );
       }
 
-      if (request.boundary === 'session-retention-work' && !options.isRetryAdmitted(request.boundary)) {
+      if (request.boundary === 'job-conversation-retention' && !options.isRetryAdmitted(request.boundary)) {
         throw new RecoveryQuarantineClearError('retention-not-admitted', 'Session retention recovery is not admitted.');
       }
 

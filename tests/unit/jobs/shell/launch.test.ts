@@ -8,12 +8,11 @@ import type { AppServerProxyRoute } from '#src/jobs/contracts/app-server-proxy-r
 import { readDurableCliContainmentStatus } from '#src/jobs/runtime-meta-store.js';
 import { JobStore } from '#src/jobs/store.js';
 import { jobsRegistry } from '#src/jobs/events.js';
-import { sessionsRegistry } from '#src/sessions/events.js';
 import { composeReducers } from '#src/store/reducers.js';
 import type { BoundProvider, BoundProviderStandaloneExecutionRuntime } from '#src/providers/bound-provider-contract.js';
 import type { ProviderRequest } from '#src/providers/contract.js';
 import type { ProviderDurableSpawner } from '#src/providers/cli-runner.js';
-import { SessionManager } from '#src/sessions/shell.js';
+import { ConversationManager } from '#src/jobs/conversation/shell.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
@@ -40,9 +39,9 @@ function fixture(options: { route?: AppServerProxyRoute; durableSpawner?: Provid
   const store = new JobStore('test', runtime, createEventBodyCodec(), {
     db,
     providers: permissiveProviderLookupPort,
-    reducers: composeReducers(jobsRegistry, sessionsRegistry),
+    reducers: composeReducers(jobsRegistry),
   });
-  const sessions = new SessionManager('/project', runtime, undefined, undefined, db, permissiveProviderLookupPort);
+  const sessions = new ConversationManager('/project', runtime, undefined, undefined, db, permissiveProviderLookupPort);
   const session = sessions.prepare({
     binding: TEST_CODEX_BINDING,
     name: 'test',
@@ -72,7 +71,7 @@ function fixture(options: { route?: AppServerProxyRoute; durableSpawner?: Provid
   const orchestrator = new LaunchOrchestrator({
     runtime,
     progressStore: store,
-    sessionManager: sessions,
+    conversationManager: sessions,
     abortRegistry: registry,
     launchAdmission: admission,
     providerOperationBinding: admission,

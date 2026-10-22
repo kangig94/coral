@@ -15,12 +15,12 @@ import type {
   SessionAdapterUnparseableFault,
   SessionInterruptedFault,
   SessionProviderFailedFault,
-} from '../../sessions/fault.js';
+} from '../../jobs/conversation/fault.js';
 
 export interface RuntimeIngestOptions {
   readonly jobId: string;
   readonly execution: number;
-  readonly sessionId?: string | null;
+  readonly conversationJobId?: string | null;
   readonly namespace?: string;
   readonly project?: string;
   readonly correlationId?: string;
@@ -63,8 +63,7 @@ type JobRecoveryFault = JobLifecycleFault | JobProgressFault;
 function baseRefs(options: RuntimeIngestOptions): NonNullable<CoralEventInput['refs']> {
   return {
     jobId: options.jobId,
-    ...(options.sessionId === undefined || options.sessionId === null ? {} : { sessionId: options.sessionId }),
-    ...(options.parentJobId ? { parentJobId: options.parentJobId } : {}),
+        ...(options.parentJobId ? { parentJobId: options.parentJobId } : {}),
     ...(options.workflowId ? { workflowId: options.workflowId } : {}),
     ...(options.workflowSlotId ? { workflowSlotId: options.workflowSlotId } : {}),
   };

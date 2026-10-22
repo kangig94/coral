@@ -15,7 +15,7 @@ import { backendLog } from '../../infra/backend-log.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type { CanonicalWorkDir } from '../../runtime/canonical-work-dir.js';
 import { appendRuntimeEvents, loadAttachedOrPersistedSnapshot } from './persistence.js';
-import type { ContinuitySnapshot } from '../../sessions/continuity.js';
+import type { ContinuitySnapshot } from '../../jobs/conversation/continuity.js';
 import type { AgentConfig, DiscussContext, DiscussLaunchDecision } from './types.js';
 import { discussAgentExecution } from '../execution-policy.js';
 
@@ -369,11 +369,11 @@ export async function executeAgentAttempt(
     activeJobId = activeRun.currentJobPurpose === purpose ? activeRun.currentJobId : undefined;
   }
 
-  const executionSessionId = activeRun.executionSessionId;
+  const executionJobId = activeRun.executionJobId;
   const launch = await (async (): Promise<DiscussLaunchDecision> => {
     try {
       const pendingLaunch =
-        executionSessionId === undefined
+        executionJobId === undefined
           ? ctx.service.start(
               provider,
               {
@@ -394,7 +394,7 @@ export async function executeAgentAttempt(
           : ctx.service.resume(
               provider,
               {
-                sessionId: executionSessionId,
+                jobId: executionJobId,
                 prompt: `${instruction}\n\n---\n\n${prompt}`,
                 model,
                 pool: 'discuss',
@@ -430,13 +430,13 @@ export async function executeAgentAttempt(
     default:
       return assertNever(launch);
   }
-  const providerSessionId = launch.sessionId;
+  const jobConversationId = launch.jobId;
 
   try {
-    if (executionSessionId === undefined) {
+    if (executionJobId === undefined) {
       await appendRequiredRuntimeEvents(ctx, sessionId, 'agent run binding', (current) => {
         const latestRun = current.runtime.agentRuns[agentName];
-        if (latestRun?.executionSessionId === providerSessionId) {
+        if (latestRun?.executionJobId === jobConversationId) {
           return [];
         }
         return [
@@ -449,7 +449,7 @@ export async function executeAgentAttempt(
             nowIsoString(ctx.runtime.time),
             {
               agent: agentName,
-              executionSessionId: providerSessionId,
+              executionJobId: jobConversationId,
             },
           ),
         ];

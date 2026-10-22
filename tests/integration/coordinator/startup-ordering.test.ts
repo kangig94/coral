@@ -10,12 +10,12 @@ import type { JobsStartupContext } from '#src/jobs/startup.js';
 import { createCoordinatorServer } from '#src/coordinator/index.js';
 import { workflowRecover } from '#src/workflow/recover.js';
 import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-supervisor.js';
-import { sessionContinuationLeaseRecordedEvent } from '#src/sessions/continuation-lease-events.js';
-import { providerSessionSchema } from '#src/sessions/entry.js';
-import { appendRetentionDiscardRequested, appendRetentionDiscardCompleted } from '#src/sessions/retention-outbox.js';
+import { sessionContinuationLeaseRecordedEvent } from '#src/jobs/conversation/continuation-lease-events.js';
+import { jobConversationSchema } from '#src/jobs/conversation/entry.js';
+import { appendRetentionDiscardRequested, appendRetentionDiscardCompleted } from '#src/jobs/conversation/retention-outbox.js';
 import { TEST_CODEX_BINDING } from '#tests/helpers/provider-credentials.js';
 
-import { LifecycleReactor } from '#src/sessions/lifecycle-reactor.js';
+import { LifecycleReactor } from '#src/jobs/conversation/lifecycle-reactor.js';
 import { ExecutionService } from '#src/coordinator/execution-service.js';
 import { RecoveryService } from '#src/coordinator/services/recovery/service.js';
 import { LaunchOrchestrator } from '#src/jobs/shell/launch.js';
@@ -170,7 +170,7 @@ describe('coordinator pending workflow replacement recovery', () => {
           .getDb()
           .prepare<[string], { entry: string }>('SELECT entry FROM projection_sessions WHERE session_id = ?')
           .get(sessionId);
-        expect(providerSessionSchema.parse(JSON.parse(row?.entry ?? 'null')).activeJobId).toBe(
+        expect(jobConversationSchema.parse(JSON.parse(row?.entry ?? 'null')).activeJobId).toBe(
           transferred ? childId : undefined,
         );
         return result;
@@ -201,7 +201,7 @@ describe('coordinator pending workflow replacement recovery', () => {
         .getDb()
         .prepare<[string], { entry: string }>('SELECT entry FROM projection_sessions WHERE session_id = ?')
         .get(sessionId);
-      expect(providerSessionSchema.parse(JSON.parse(row?.entry ?? 'null')).activeJobId).toBe(
+      expect(jobConversationSchema.parse(JSON.parse(row?.entry ?? 'null')).activeJobId).toBe(
         transferred ? childId : undefined,
       );
       expect(restoreQueued).not.toHaveBeenCalled();
@@ -228,7 +228,7 @@ describe('coordinator pending workflow replacement recovery', () => {
 
     const runtime = createRealRuntime('prod', { baseDir: join(home, '.coral') });
     const runStartup = vi.fn(async (options: JobsStartupContext) => {
-      const opened = providerSessionSchema.parse({
+      const opened = jobConversationSchema.parse({
         sessionId: 'pending-replacement-session',
         binding: TEST_CODEX_BINDING,
         name: 'pending-replacement-session',
@@ -263,7 +263,7 @@ describe('coordinator pending workflow replacement recovery', () => {
         expiresAt: new Date(runtime.time.now() + 60_000).toISOString(),
         recordedAt: new Date(runtime.time.now()).toISOString(),
       };
-      const pending = providerSessionSchema.parse({
+      const pending = jobConversationSchema.parse({
         ...opened,
         continuationLease: lease,
         lastUsedAt: lease.recordedAt,
@@ -280,7 +280,7 @@ describe('coordinator pending workflow replacement recovery', () => {
       const row = options.db
         .prepare<[string], { entry: string }>('SELECT entry FROM projection_sessions WHERE session_id = ?')
         .get('pending-replacement-session');
-      const entry = providerSessionSchema.parse(JSON.parse(row?.entry ?? 'null'));
+      const entry = jobConversationSchema.parse(JSON.parse(row?.entry ?? 'null'));
       expect(entry.continuationLease).toMatchObject({
         status: 'pending',
         workflowId: 'workflow-pending',
@@ -416,7 +416,7 @@ describe('coordinator pending workflow replacement recovery', () => {
           .getDb()
           .prepare<[string], { entry: string }>('SELECT entry FROM projection_sessions WHERE session_id = ?')
           .get(sessionId);
-        const entry = providerSessionSchema.parse(JSON.parse(row?.entry ?? 'null'));
+        const entry = jobConversationSchema.parse(JSON.parse(row?.entry ?? 'null'));
         const lease = {
           status: 'pending' as const,
           staleJobId: childId,
@@ -481,7 +481,7 @@ describe('coordinator pending workflow replacement recovery', () => {
         .getDb()
         .prepare<[string], { entry: string }>('SELECT entry FROM projection_sessions WHERE session_id = ?')
         .get(sessionId);
-      const entry = providerSessionSchema.parse(JSON.parse(row?.entry ?? 'null'));
+      const entry = jobConversationSchema.parse(JSON.parse(row?.entry ?? 'null'));
       expect(entry.continuationLease).toMatchObject({ status: 'cleared', outcome: 'explicit_clear' });
       expect(startupOptions.progressStore.readStatus(workflowId)?.phase).toBe('error');
       appendRetentionDiscardRequested(startupOptions.coordinatorCommit, { sessionId, attempt: 1, handles: [] });
@@ -495,7 +495,7 @@ describe('coordinator pending workflow replacement recovery', () => {
       const current = db
         .prepare<[string], { entry: string }>('SELECT entry FROM projection_sessions WHERE session_id = ?')
         .get(sessionId);
-      const retained = providerSessionSchema.parse(JSON.parse(current?.entry ?? 'null'));
+      const retained = jobConversationSchema.parse(JSON.parse(current?.entry ?? 'null'));
       db.prepare<[string, string]>('UPDATE projection_sessions SET entry = ? WHERE session_id = ?').run(
         JSON.stringify({ ...retained, retention: 'discard_provider_artifacts_on_terminal' }),
         sessionId,

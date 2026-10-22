@@ -75,9 +75,7 @@ export function isAcceptedLaunchResponse(value: unknown): value is AcceptedLaunc
 
   if (value.kind === 'provider-session') {
     return (
-      typeof value.sessionId === 'string' &&
-      value.sessionId.length > 0 &&
-      Object.keys(value).every((key) => ['kind', 'launchState', 'jobId', 'sessionId'].includes(key))
+      Object.keys(value).every((key) => ['kind', 'launchState', 'jobId'].includes(key))
     );
   }
 

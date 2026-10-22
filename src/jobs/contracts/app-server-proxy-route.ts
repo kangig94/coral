@@ -1,6 +1,6 @@
 import type { ProviderRequest, ProviderServerSpec } from '../../providers/contract.js';
 import type { ProviderBindingEnvelope } from '../../infra/provider-binding-envelope.js';
-import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
+import type { ProviderContinuityBlob } from '../conversation/continuity.js';
 import type { ProviderOperationChildAuthorization } from './provider-operation-lifecycle.js';
 
 export type AppServerProxyPlacementResult =
@@ -22,8 +22,7 @@ export interface AppServerProxyRouteRequest {
   readonly jobId: string;
   readonly operationId: string;
   readonly jobLaunchEventSeq: number;
-  readonly sessionId: string;
-  readonly sessionVersion: number;
+  readonly execution: number;
   readonly childAuthorization: ProviderOperationChildAuthorization;
   /** The compiled stable host specification this execution would run against — the executable identity a
    *  live proxy set is keyed by. */

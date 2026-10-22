@@ -13,8 +13,8 @@ import type {
   ProviderSendOutcome,
   ProviderRecoveryContract,
 } from '../contract.js';
-import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
-import type { SessionContinuityMutation } from '../../sessions/continuity-mutation.js';
+import type { ProviderContinuityBlob } from '../../jobs/conversation/continuity.js';
+import type { SessionContinuityMutation } from '../../jobs/conversation/continuity-mutation.js';
 import {
   turnInterruptResponseSchema,
   turnSteerParamsSchema,

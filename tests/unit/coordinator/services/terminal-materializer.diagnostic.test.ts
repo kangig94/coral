@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import type { CauseRefToken } from '#src/causality/cause-ref.js';
 import { materializeProviderFailureCauseInCommit } from '#src/coordinator/services/terminal-materializer.js';
 import { providerProxyReplayFailed } from '#src/providers/proxy-failure.js';
-import { sessionProviderFailedBodySchema } from '#src/sessions/event-bodies.js';
-import { sessionsEventDescribers } from '#src/sessions/event-describers.js';
+import { sessionProviderFailedBodySchema } from '#src/jobs/conversation/event-bodies.js';
+import { sessionsEventDescribers } from '#src/jobs/conversation/event-describers.js';
 import type { CommitContext } from '#src/store/append.js';
 import type { CoralEvent, ResolvableCoralEventInput } from '#src/store/envelope.js';
 

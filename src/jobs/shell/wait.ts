@@ -22,13 +22,13 @@ import type { JobQueueReadPort } from '../contracts/admission.js';
 import type { JobEventBus } from '../event-bus.js';
 import { queuedProgressTiming } from '../progress-timing.js';
 import type { TimePort } from '../../infra/port-types.js';
-import type { SessionJobReadPort } from '../../sessions/contracts.js';
+import type { ConversationReadPort } from '../conversation/contracts.js';
 import type { JobWaitDetail } from '../read-queries.js';
 import { errorMessage } from '../../infra/error-format.js';
 import { backendLog } from '../../infra/backend-log.js';
 import type { ResultAvailability } from '../terminal/export.js';
 import type { HostRef, UsageSummary } from '../../providers/contract.js';
-import type { ContinuitySnapshot } from '../../sessions/continuity.js';
+import type { ContinuitySnapshot } from '../conversation/continuity.js';
 import {
   exactHostRefsMatch,
   providerHostUnserviceableMessage,
@@ -64,7 +64,7 @@ function surfaceProviderHostRecovery(event: JobTerminalEvent, detail: JobWaitDet
 }
 
 export interface WaitCoordinatorDeps {
-  sessionManager: SessionJobReadPort;
+  conversationManager: ConversationReadPort;
   launchQueue: JobQueueReadPort;
   eventBus: JobEventBus;
   time: TimePort;
@@ -163,10 +163,10 @@ export class WaitCoordinator {
   }
 
   private readQueryContinuity(jobId: string, status = this.readQueryStatus(jobId)): ContinuitySnapshot | null {
-    if (status?.provider === null || status?.provider === undefined || status.sessionId === null) {
+    if (status?.provider === null || status?.provider === undefined || status.conversationJobId === null) {
       return null;
     }
-    const session = this.deps.sessionManager.get(status.provider, status.sessionId);
+    const session = this.deps.conversationManager.get(status.provider, status.conversationJobId);
     if (session === null) {
       return null;
     }
@@ -245,7 +245,7 @@ export class WaitCoordinator {
       const recheck = (): void => {
         try {
           const status = this.readStatusOrThrow(jobId);
-          if (!this.isTerminalAndReleased(jobId, status.provider, status.sessionId, status)) {
+          if (!this.isTerminalAndReleased(jobId, status.provider, status.conversationJobId, status)) {
             if (!isTerminalPhase(status.phase)) {
               return;
             }
@@ -304,8 +304,8 @@ export class WaitCoordinator {
       timing: queuedProgressTiming(status, this.deps.time.now()),
     };
     if (status.jobKind === 'provider') {
-      if (status.sessionId === null) throw new Error(`Queued provider job '${jobId}' has no provider session.`);
-      return { ...queued, jobKind: 'provider', sessionId: status.sessionId };
+      if (status.conversationJobId === null) throw new Error(`Queued provider job '${jobId}' has no provider session.`);
+      return { ...queued, jobKind: 'provider', conversationJobId: status.conversationJobId };
     }
     if (status.jobKind === 'workflow') return { ...queued, jobKind: 'workflow', workflowId: status.owner.id };
     return { ...queued, jobKind: 'kb', systemTaskId: status.owner.id };
@@ -358,7 +358,7 @@ export class WaitCoordinator {
       ? {
           type: 'terminal',
           jobId,
-          sessionId: projected.status.sessionId,
+          conversationJobId: projected.status.conversationJobId,
           seq: projected.status.lastSeq ?? 0,
           ts: projected.exit.endTime ?? projected.status.updatedAt,
           result: projected.exit,
@@ -433,17 +433,17 @@ export class WaitCoordinator {
   private isTerminalAndReleased(
     jobId: string,
     providerName: string | null,
-    sessionId: string | null,
+    conversationJobId: string | null,
     status: JobStatus,
   ): boolean {
     if (!isTerminalPhase(status.phase)) {
       return false;
     }
-    if (providerName === null || sessionId === null) {
+    if (providerName === null || conversationJobId === null) {
       return true;
     }
 
-    const session = this.deps.sessionManager.get(providerName, sessionId);
+    const session = this.deps.conversationManager.get(providerName, conversationJobId);
     return session?.activeJobId !== jobId;
   }
 }

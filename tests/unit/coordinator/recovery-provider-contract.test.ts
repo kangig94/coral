@@ -25,7 +25,7 @@ import type {
   BoundProviderRecovery,
 } from '#src/providers/bound-provider-contract.js';
 import type { HostRef } from '#src/providers/contract.js';
-import type { ProviderSession } from '#src/sessions/entry.js';
+import type { JobConversation } from '#src/jobs/conversation/entry.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { bindingSuccess } from '#src/providers/contracts/binding.js';
 import { validatedTestContinuityBlob } from '#tests/helpers/session.js';
@@ -92,7 +92,7 @@ const session = {
   providerContinuity: { checkpoint: 'persisted' },
   artifactHandles: [],
   version: 1,
-} as unknown as ProviderSession;
+} as unknown as JobConversation;
 
 const providerOperationCarrier = providerOperationRecord('executing') as ProviderOperationCarrierRecord;
 
@@ -115,7 +115,7 @@ function serviceWithCapability(appServer: BoundProviderAppServerCapability, boun
     reapCarrier,
     decide: (
       runtimeRecord: AppServerRuntime,
-      nextSession: ProviderSession = session,
+      nextSession: JobConversation = session,
       providerOperation: ProviderOperationCarrierRecord | null = null,
     ) => {
       const authority = {
@@ -311,7 +311,7 @@ describe('interrupted provider recovery', () => {
       serviceWithCapability(appServer, boundRecovery).decide(waitingRuntime, {
         ...session,
         providerContinuity: null,
-      } as ProviderSession),
+      } as JobConversation),
     ).resolves.toMatchObject({ kind: 'resolved', mutation: { kind: 'clear_non_resumable' } });
     expect(appServer.openReplacement).not.toHaveBeenCalled();
     expect(boundRecovery.finalizeFromArtifacts).not.toHaveBeenCalled();
@@ -435,7 +435,7 @@ describe('interrupted recovery settlement ownership', () => {
       releaseLaunch,
       deps: {
         runtime,
-        sessionManager: { finalizeJobContinuityAtomic, recordArtifactHandleAtomic },
+        conversationManager: { finalizeJobContinuityAtomic, recordArtifactHandleAtomic },
         publishTerminalResult: vi.fn((jobId: string) => `/jobs/${jobId}/result.md`),
         abortRegistry,
         launchAdmission,

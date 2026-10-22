@@ -13,14 +13,12 @@ import {
 } from '../recovery/containment.js';
 import {
   EVENT_COLUMNS,
-  PROJECTION_SESSION_COLUMNS,
   continuationRevisionFields,
   eventRevisionFields,
   projectionJobRevisionFields,
-  projectionSessionRevisionFields,
   withConsistentRead,
 } from '../recovery/row-revision-fields.js';
-import type { RawSessionProjectionRow } from '../sessions/projection-recovery-source.js';
+import type { ConversationEvidence } from '../jobs/conversation/projections.js';
 import type { RawWorkflowProjectionRow } from './read-queries.js';
 
 const WORKFLOW_RECOVERY_BOUNDARY = 'workflow-recovery';
@@ -41,8 +39,7 @@ export type RawWorkflowRecoveryEnvelope = {
   readonly workflow: RawWorkflowProjectionRow | null;
   readonly workflowEvents: readonly EventsRow[];
   readonly children: readonly RawWorkflowRecoveryJob[];
-  readonly providerSessions: readonly RawSessionProjectionRow[];
-  readonly sessionEvents: readonly EventsRow[];
+  readonly jobConversations: readonly ConversationEvidence[];
   readonly continuation: RawWorkflowRecoveryContinuationRow | null;
   readonly sourceRevision: Extract<RecoverySubject['revision'], { kind: 'fingerprint' }>;
   readonly subject: RecoverySubject;
@@ -86,8 +83,6 @@ function envelopeRevisionFields(raw: Omit<RawWorkflowRecoveryEnvelope, 'sourceRe
     fields.push(...projectionJobRevisionFields(child.projection));
     for (const event of child.events) fields.push(...eventRevisionFields(event));
   }
-  for (const session of raw.providerSessions) fields.push(...projectionSessionRevisionFields(session));
-  for (const event of raw.sessionEvents) fields.push(...eventRevisionFields(event));
   return fields;
 }
 
@@ -120,26 +115,7 @@ function readWorkflowEnvelope(db: Database, projection: ProjectionJobStoredRow):
     projection: child,
     events: eventsByJob.get(child.job_id) ?? [],
   }));
-  const providerSessions = db
-    .prepare<[string, string], RawSessionProjectionRow>(
-      `SELECT ${PROJECTION_SESSION_COLUMNS}
-         FROM projection_sessions
-        WHERE session_id IN (SELECT session_id FROM projection_jobs WHERE parent_workflow_job_id = ?)
-           OR CASE WHEN json_valid(entry) THEN
-                json_extract(entry, '$.continuationLease.workflowId') = ?
-                AND json_extract(entry, '$.continuationLease.status') = 'pending'
-              ELSE 0 END
-        ORDER BY session_id ASC`,
-    )
-    .all(workflowId, workflowId);
-  const sessionIds = [
-    ...new Set(
-      [
-        ...childProjections.map((child) => child.session_id),
-        ...providerSessions.map((session) => session.session_id),
-      ].filter((sessionId): sessionId is string => typeof sessionId === 'string' && sessionId.length > 0),
-    ),
-  ].sort();
+  const jobConversations = children.filter(child => child.projection.job_kind === 'provider');
   const continuation =
     db
       .prepare<[string, string], RawWorkflowRecoveryContinuationRow>(
@@ -155,8 +131,7 @@ function readWorkflowEnvelope(db: Database, projection: ProjectionJobStoredRow):
     workflow,
     workflowEvents: readEvents(db, 'workflow', [workflowId]),
     children,
-    providerSessions,
-    sessionEvents: readEvents(db, 'session', sessionIds),
+    jobConversations,
     continuation,
   };
   const fields = envelopeRevisionFields(raw);

@@ -21,7 +21,7 @@ export function buildControllerEnv(
   // otherwise reach a spawned provider. Presence of the field (even an empty
   // map) is the authoritative signal. Daemon-owned identity/secret/lineage and
   // boot-fixed keys are kept from the snapshot (never taken from this untrusted
-  // map) and, for lineage, set from the validated jobId/sessionId fields below.
+  // map) and, for lineage, set from the validated jobId fields below.
   const forwardedCoralEnv = readForwardedCoralEnv(body.coralEnv);
   if (forwardedCoralEnv !== undefined) {
     for (const key of Object.keys(env)) {
@@ -60,9 +60,6 @@ export function buildControllerEnv(
   }
   if (typeof body.jobId === 'string' && body.jobId.length > 0) {
     env.CORAL_JOB_ID = body.jobId;
-  }
-  if (typeof body.sessionId === 'string' && body.sessionId.length > 0) {
-    env.CORAL_SESSION_ID = body.sessionId;
   }
   return env;
 }

@@ -1,5 +1,5 @@
 import { hydrateJobRecoveryProjection, type JobStore } from '../../../jobs/store.js';
-import { providerSessionProvider, type ProviderSession } from '../../../sessions/entry.js';
+import { jobConversationProvider, type JobConversation } from '../../../jobs/conversation/entry.js';
 import type { ProcessPort } from '../../../runtime/ports.js';
 import type {
   RecoveryJobFacts,
@@ -14,7 +14,7 @@ import { hydrateCoordinatorSessionAuthority } from './authority-snapshot.js';
 export type CoordinatorRecoveryItem = Readonly<{
   jobId: string;
   detail: (JobProjectionDetail & Readonly<{ status: JobStatus }>) | null;
-  claimedSession: ProviderSession | null;
+  claimedSession: JobConversation | null;
   claimedSessionLastSeq: number | null;
 }>;
 
@@ -67,19 +67,19 @@ export function buildRecoverySnapshot(
     });
   }
 
-  const sessionRefs: Array<{ sessionId: string; provider: string }> = [];
+  const sessionRefs: Array<{ conversationJobId: string; provider: string }> = [];
   const sessionsById = new Map<string, RecoverySessionFacts | null>();
 
   for (const { claimedSession } of items) {
-    if (claimedSession === null || sessionsById.has(claimedSession.sessionId)) continue;
+    if (claimedSession === null || sessionsById.has(claimedSession.jobId)) continue;
     const sessionFacts: RecoverySessionFacts = claimedSession.activeJobId
       ? { activeJobId: claimedSession.activeJobId }
       : {};
     sessionRefs.push({
-      sessionId: claimedSession.sessionId,
-      provider: providerSessionProvider(claimedSession),
+      conversationJobId: claimedSession.jobId,
+      provider: jobConversationProvider(claimedSession),
     });
-    sessionsById.set(claimedSession.sessionId, sessionFacts);
+    sessionsById.set(claimedSession.jobId, sessionFacts);
   }
 
   const snapshot: RecoveryProjectionSnapshot = {
@@ -94,8 +94,8 @@ export function buildRecoverySnapshot(
         launchRecord: null,
         runtimeRecord: null,
       },
-    listSessionRefs: (): Array<{ sessionId: string; provider: string }> => [...sessionRefs],
-    readSession: (sessionId: string): RecoverySessionFacts | null => sessionsById.get(sessionId) ?? null,
+    listSessionRefs: (): Array<{ conversationJobId: string; provider: string }> => [...sessionRefs],
+    readSession: (conversationJobId: string): RecoverySessionFacts | null => sessionsById.get(conversationJobId) ?? null,
     // Planning needs a boolean and only one of the three answers may mean "gone": "could not tell" must never
     // read as it, because that is the reading that destroys a live job's record. The per-item paths that follow
     // observe again and handle unknown on their own terms.

@@ -21,9 +21,9 @@ import type { BoundProvider } from '../../../providers/bound-provider-contract.j
 import type { Database } from '../../../store/db.js';
 import { deleteProviderOperation } from '../../../store/provider-operation-journal.js';
 import type { Runtime } from '../../../runtime/ports.js';
-import { readContinuityRef } from '../../../sessions/continuity.js';
-import type { ContinuitySnapshot } from '../../../sessions/continuity.js';
-import type { ProviderValidatedSessionContinuityMutation } from '../../../sessions/continuity-mutation.js';
+import { readContinuityRef } from '../../../jobs/conversation/continuity.js';
+import type { ContinuitySnapshot } from '../../../jobs/conversation/continuity.js';
+import type { ProviderValidatedSessionContinuityMutation } from '../../../jobs/conversation/continuity-mutation.js';
 import type {
   AppServerInterruptedRecoveryPlan,
   DurableInterruptedRecoveryPlan,

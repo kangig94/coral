@@ -22,7 +22,7 @@ import type { JobStatus } from '#src/jobs/records.js';
 import type { BoundProvider } from '#src/providers/bound-provider-contract.js';
 import { codexRecoveryLifecycle } from '#src/providers/codex/provider-facets.js';
 import { claudeRecoveryLifecycle } from '#src/providers/claude/provider-facets.js';
-import type { ProviderValidatedSessionContinuityMutation } from '#src/sessions/continuity-mutation.js';
+import type { ProviderValidatedSessionContinuityMutation } from '#src/jobs/conversation/continuity-mutation.js';
 import { validatedTestContinuityBlob } from '#tests/helpers/session.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 
@@ -162,7 +162,7 @@ function createHarness(
       runtime: {
         time: { now: () => Date.parse('2026-07-22T00:01:00.000Z') },
       },
-      sessionManager: { recordArtifactHandleAtomic, finalizeJobContinuityAtomic },
+      conversationManager: { recordArtifactHandleAtomic, finalizeJobContinuityAtomic },
       abortRegistry: { remove },
       launchAdmission: launchCoordinator,
       launchPermit,

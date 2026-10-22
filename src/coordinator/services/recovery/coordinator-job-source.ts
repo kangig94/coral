@@ -14,23 +14,13 @@ import {
 } from '../../../recovery/containment.js';
 import {
   EVENT_COLUMNS,
-  PROJECTION_SESSION_COLUMNS,
   eventRevisionFields,
   projectionJobRevisionFields,
-  projectionSessionRevisionFields,
   withConsistentRead,
 } from '../../../recovery/row-revision-fields.js';
 import { COORDINATOR_JOB_RECOVERY_BOUNDARY } from '../../../recovery/source-registry.js';
 
-export type RawCoordinatorSessionRow = {
-  readonly session_id: string;
-  readonly controller: string;
-  readonly resumable: number;
-  readonly conversation_ref: string | null;
-  readonly scope_key: string;
-  readonly entry: string;
-  readonly last_seq: number;
-};
+export type RawCoordinatorSessionRow = import('../../../jobs/conversation/projections.js').ConversationEvidence;
 
 /** One canonical provider-operation saga row from the generic `meta` keyspace. */
 type RawProviderOperationSagaRow = {
@@ -78,18 +68,7 @@ function scanCoordinatorJobRecoveryEnvelopes(
          FROM events
         WHERE stream_kind = 'job'
           AND stream_id = ?
-          AND type IN (
-            'job.launch.requested',
-            'job.launch.rejected',
-            'job.runtime.started',
-            'job.terminal.recorded'
-          )
         ORDER BY seq ASC`,
-    );
-    const readClaimedSession = db.prepare<[string], RawCoordinatorSessionRow>(
-      `SELECT ${PROJECTION_SESSION_COLUMNS}
-         FROM projection_sessions
-        WHERE session_id = ?`,
     );
     const readProviderOperations = db.prepare<[string], RawProviderOperationSagaRow>(
       `SELECT key, value
@@ -103,39 +82,15 @@ function scanCoordinatorJobRecoveryEnvelopes(
         jobId: projection.job_id,
         projection,
         statusEvents: readStatusEvents.all(projection.job_id),
-        claimedSession: projection.session_id === null ? null : (readClaimedSession.get(projection.session_id) ?? null),
+        claimedSession: projection.job_kind === 'provider' ? { projection, events: readStatusEvents.all(projection.job_id) } : null,
         providerOperations: readProviderOperations.all(`${providerOperationRecordKeyPrefix(projection.job_id)}%`),
       };
       return facts;
     });
-    const orphanedClaimRows = db
-      .prepare<[], RawCoordinatorSessionRow & { active_job_id: string }>(
-        `SELECT ${PROJECTION_SESSION_COLUMNS}, json_extract(entry, '$.activeJobId') AS active_job_id
-           FROM projection_sessions AS sessions
-          WHERE json_valid(entry)
-            AND typeof(json_extract(entry, '$.activeJobId')) = 'text'
-            AND length(json_extract(entry, '$.activeJobId')) > 0
-            AND NOT EXISTS (
-              SELECT 1
-                FROM projection_jobs AS jobs
-               WHERE jobs.job_id = json_extract(sessions.entry, '$.activeJobId')
-            )
-          ORDER BY active_job_id ASC`,
-      )
-      .all();
-    const orphanedClaims = orphanedClaimRows
-      .filter((row) => subjectKey === undefined || row.active_job_id === subjectKey)
-      .map(({ active_job_id: jobId, ...claimedSession }) => ({
-        jobId,
-        projection: null,
-        statusEvents: Object.freeze([]),
-        claimedSession,
-        providerOperations: readProviderOperations.all(`${providerOperationRecordKeyPrefix(jobId)}%`),
-      }));
     observation?.record(COORDINATOR_JOB_RECOVERY_BOUNDARY, {
-      subjects: jobEnvelopes.length + orphanedClaims.length,
+      subjects: jobEnvelopes.length,
     });
-    return [...jobEnvelopes, ...orphanedClaims].map((facts) => ({
+    return jobEnvelopes.map((facts) => ({
       ...facts,
       subject: coordinatorJobRecoverySubject(facts),
     }));
@@ -144,9 +99,9 @@ function scanCoordinatorJobRecoveryEnvelopes(
 
 function sessionRevisionFields(jobId: string, row: RawCoordinatorSessionRow | null): RecoveryRevisionField[] {
   if (row === null) {
-    return [{ table: 'projection_sessions', key: jobId, field: 'claimed_session', value: null }];
+    return [{ table: 'projection_jobs', key: jobId, field: 'conversation', value: null }];
   }
-  return projectionSessionRevisionFields(row);
+  return projectionJobRevisionFields(row.projection);
 }
 
 /** Folds each canonical saga row's key and a digest of its value into the revision, so a

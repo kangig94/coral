@@ -1,11 +1,11 @@
 import { z } from 'zod';
 
-import { assertNever } from '../infra/error-format.js';
+import { assertNever } from '../../infra/error-format.js';
 import {
   turnFailureDiagnosticPhaseSchema,
   turnFailureDiagnosticReasonSchema,
   turnFailureDiagnosticSchema,
-} from '../providers/turn-failure-diagnostic.js';
+} from '../../providers/turn-failure-diagnostic.js';
 
 const sessionInterruptTriggerSchema = z.enum(['restart', 'handoff']);
 

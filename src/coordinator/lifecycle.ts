@@ -539,7 +539,7 @@ function hydrateCrashedJob(raw: RawCrashedJobRow, progressStore: JobStore): Cras
     ) {
       throw new TypeError(`Crash terminalization launch for '${projection.job_id}' contradicts its projection.`);
     }
-    if (launch.jobKind === 'provider' && launch.sessionId !== projection.session_id) {
+    if (launch.jobKind === 'provider' && launch.conversationJobId !== projection.session_id) {
       throw new TypeError(`Crash terminalization launch for '${projection.job_id}' names another session.`);
     }
     launchCreatedAt = launch.createdAt;
@@ -548,7 +548,7 @@ function hydrateCrashedJob(raw: RawCrashedJobRow, progressStore: JobStore): Cras
     status: {
       jobId: projection.job_id,
       owner,
-      sessionId: projection.session_id,
+      conversationJobId: projection.session_id,
       provider: projection.provider,
       projectRoot: projection.project_root,
       workDir: projection.work_dir,

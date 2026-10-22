@@ -154,7 +154,7 @@ async function collectBidOutcome(
     mustAnswer,
   });
   const instruction =
-    run.executionSessionId === undefined
+    run.executionJobId === undefined
       ? buildFirstTurnInstruction({
           selfName: agentName,
           state: snapshot.state,

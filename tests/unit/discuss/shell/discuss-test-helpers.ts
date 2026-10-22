@@ -33,7 +33,6 @@ import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { jobsRegistry } from '#src/jobs/events.js';
-import { sessionsRegistry } from '#src/sessions/events.js';
 import { discussRegistry as discussStoreRegistry, toJournalInput } from '#src/discuss/event-registry.js';
 import { workflowRegistry } from '#src/workflow/events.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
@@ -232,7 +231,7 @@ export function createDiscussHarness(
   runtime.storage.mkdirSync(pluginRoot, { recursive: true });
   const progressStore = new JobStore(resolveBackendNamespace(runtime, pluginRoot), runtime, createEventBodyCodec(), {
     db: openTestStoreDb(runtime, ':memory:'),
-    reducers: composeReducers(jobsRegistry, sessionsRegistry, discussStoreRegistry, workflowRegistry),
+    reducers: composeReducers(jobsRegistry, discussStoreRegistry, workflowRegistry),
     providers: permissiveProviderLookupPort,
   });
   const source = resolvedOptions.source ?? runtime.paths.projectSource(projectRoot);

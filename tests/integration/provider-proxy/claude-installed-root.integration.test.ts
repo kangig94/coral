@@ -23,14 +23,13 @@ import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { TEST_CLAUDE_ACCESS } from '#tests/helpers/provider-credentials.js';
 import { JobStore } from '#src/jobs/store.js';
-import { SessionManager } from '#src/sessions/shell.js';
+import { ConversationManager } from '#src/jobs/conversation/shell.js';
 import { allocateTestSession } from '#tests/helpers/session.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { jobsRegistry } from '#src/jobs/events.js';
-import { sessionsRegistry } from '#src/sessions/events.js';
 import { discussRegistry } from '#src/discuss/event-registry.js';
 import { workflowRegistry } from '#src/workflow/events.js';
 import { readProviderOperation } from '#src/store/provider-operation-journal.js';
@@ -74,7 +73,7 @@ it.each(['plugin-cache-only', 'unused-old-copy'] as const)(
     const coordinatorSpec = compile(providerProxyPlacement().hostRoot);
     const fingerprint = hostFingerprintFromSpec(coordinatorSpec);
     let store!: JobStore;
-    let sessions!: SessionManager;
+    let sessions!: ConversationManager;
     const harness = createProviderOperationReconcilerHarness({
       providerName: 'claude',
       progressStore: (db, record) => {
@@ -82,9 +81,9 @@ it.each(['plugin-cache-only', 'unused-old-copy'] as const)(
           db,
           eventBus: new TypedEventBus(),
           providers: permissiveProviderLookupPort,
-          reducers: composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry),
+          reducers: composeReducers(jobsRegistry, discussRegistry, workflowRegistry),
         });
-        sessions = SessionManager.forProduction(
+        sessions = ConversationManager.forProduction(
           directory,
           runtime,
           (cb) => store.commit(cb),
@@ -179,7 +178,7 @@ it.each(['plugin-cache-only', 'unused-old-copy'] as const)(
       progressStore: store,
       appendContext: {
         now: () => new Date(100),
-        reducers: composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry),
+        reducers: composeReducers(jobsRegistry, discussRegistry, workflowRegistry),
         bodyCodec: store.bodyCodec,
         providers: permissiveProviderLookupPort,
       },

@@ -8,9 +8,8 @@ import type { ProviderRecoveryAuthority, RecoveryCapableService } from '#src/job
 import { writeDurableCliProcessRuntimeMeta } from '#src/jobs/runtime-meta-store.js';
 import { JobStore } from '#src/jobs/store.js';
 import { jobsRegistry } from '#src/jobs/events.js';
-import { sessionsRegistry } from '#src/sessions/events.js';
 import { composeReducers } from '#src/store/reducers.js';
-import { SessionManager } from '#src/sessions/shell.js';
+import { ConversationManager } from '#src/jobs/conversation/shell.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
@@ -37,9 +36,9 @@ function fixture(transport: 'app-server' | 'durable-cli' = 'app-server') {
     db,
     eventBus,
     providers: permissiveProviderLookupPort,
-    reducers: composeReducers(jobsRegistry, sessionsRegistry),
+    reducers: composeReducers(jobsRegistry),
   });
-  const sessions = new SessionManager('/project', runtime, undefined, undefined, db, permissiveProviderLookupPort);
+  const sessions = new ConversationManager('/project', runtime, undefined, undefined, db, permissiveProviderLookupPort);
   const launch: JobLaunch = {
     jobId: '00000000-0000-4000-8000-000000000001',
     owner: { kind: 'provider-session', id: 'session-1' },

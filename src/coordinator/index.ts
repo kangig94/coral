@@ -44,8 +44,6 @@ import { sealCoralStoreFormat } from '../store-format.js';
 import { publishJobEvents, subscribeJobEvents } from '../jobs/shell/event-subscription.js';
 import { observeTerminalResultExports, resultPathFor } from '../jobs/terminal/export.js';
 import { jobsRegistry } from '../jobs/events.js';
-import { sessionsRegistry } from '../sessions/events.js';
-import { SessionManager } from '../sessions/shell.js';
 import { discussRegistry } from '../discuss/event-registry.js';
 import { workflowRegistry } from '../workflow/events.js';
 import { workflowRecover } from '../workflow/recover.js';
@@ -64,7 +62,7 @@ import { encodeResolvedStoreEpoch, inspectCurrentStore, type ResolvedStoreEpoch 
 import { observeSuccessionWriterGeneration } from '../store/succession-writer-generation.js';
 import { createJobsStartupRunner } from '../jobs/startup.js';
 import { TypedEventBus } from './event-bus.js';
-import { createLifecycleReactor } from '../sessions/lifecycle-reactor.js';
+import { createLifecycleReactor } from '../jobs/conversation/lifecycle-reactor.js';
 import type { TextProjectionHealthState } from '../transport/server-ports.js';
 import {
   createDefaultKbDaemonSupervisor,
@@ -215,14 +213,6 @@ function createCoordinatorStartupRecoveryRunner({
         observation,
         db,
         progressStore: recoveryProgressStore,
-        clearContinuationLease: (projectRoot, input) =>
-          SessionManager.forProduction(
-            projectRoot,
-            runtime,
-            coordinatorCommit,
-            (payload) => eventBus.emit('session:released', payload),
-            { db },
-          ).clearContinuationLease(input),
         finalizeWorkflow: createWorkflowRecoveryFinalizer({
           runtime,
           progressStore,
@@ -236,7 +226,6 @@ function createCoordinatorStartupRecoveryRunner({
           getExecutionService,
           createInvocationContext,
           releaseAdoptedJob: recoveryCoordinator.releaseAdoptedJob,
-          emitSessionReleased: (payload) => eventBus.emit('session:released', payload),
           log: identity.log,
         }),
         signal,
@@ -617,7 +606,7 @@ function prepareCoordinatorServerRegistries(
   options: CoordinatorServerOptions,
   registerBuiltInProvidersFn: CoordinatorServerOptions['registerBuiltInProvidersFn'],
 ) {
-  const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
+  const reducers = composeReducers(jobsRegistry, discussRegistry, workflowRegistry);
 
   const operationRegistry = new LocalOperationRegistry();
   const providerRegistry = options.providerRegistry ?? new ProviderRegistry();
@@ -681,7 +670,6 @@ function createCoordinatorProviderEventHandler({
     },
     providerRegistry,
     runtime,
-    emitSessionReleased: (payload) => eventBus.emit('session:released', payload),
     // A terminal committed here must release its in-process holdings, including child principal handles.
     observeCommitted: (appended) => {
       observeCommitted(appended);
@@ -935,7 +923,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions): Coor
       eventBus,
       runtime,
       storeFormat,
-      discardSessionArtifacts: (sessionId) => lifecycleReactor.discardSessionArtifacts(sessionId),
+      discardSessionArtifacts: (conversationJobId) => lifecycleReactor.discardConversationArtifacts(conversationJobId),
       disposeLifecycleReactor: shutdownLifecycleReactor,
       admitLifecycleRetention: () => lifecycleReactor.admitRetention(),
       createStoreServicesFromDbFn,

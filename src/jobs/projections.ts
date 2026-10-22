@@ -1,5 +1,5 @@
 import { hashToken } from '../infra/hash.js';
-import { sessionControllerFromProfile } from '../sessions/entry.js';
+import { sessionControllerFromProfile } from './conversation/entry.js';
 import type { Database } from '../store/db.js';
 import { decodeEventBody } from '../store/body-codec.js';
 import type { CoralEvent } from '../store/envelope.js';

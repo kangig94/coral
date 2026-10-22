@@ -148,7 +148,6 @@ export function jobLaunchRequestedEvent(jobId: string, launch: JobLaunch) {
   const workflowId = launch.jobKind === 'workflow' ? jobId : launch.parentWorkflowJobId;
   const refs = buildJobEventRefs({
     jobId,
-    sessionId: launch.sessionId,
     parentJobId: launch.parentWorkflowJobId,
     workflowId,
     workflowSlotId: launch.workflowSlotId,
@@ -187,7 +186,7 @@ export function jobLaunchRequestedEvent(jobId: string, launch: JobLaunch) {
         : {
             owner: launch.owner,
             ...(launch.discussionRun === undefined ? {} : { discussionRun: launch.discussionRun }),
-            sessionId: launch.sessionId,
+            conversationJobId: launch.conversationJobId,
             provider: launch.provider,
             projectRoot: launch.projectRoot,
             backendNamespace: launch.backendNamespace,
@@ -550,8 +549,8 @@ export class JobStore implements JobProgressStore {
     const createdAt = nowIsoString(this.runtime.time);
     this.appendLaunchRequested(opts.jobId, {
       jobId: opts.jobId,
-      owner: { kind: 'provider-session', id: opts.sessionId },
-      sessionId: opts.sessionId,
+      owner: { kind: 'provider-session', id: opts.conversationJobId },
+      conversationJobId: opts.conversationJobId,
       provider: opts.provider,
       projectRoot: opts.projectRoot,
       backendNamespace: opts.backendNamespace,
@@ -576,7 +575,7 @@ export class JobStore implements JobProgressStore {
           stream: { kind: 'job', id: opts.jobId },
           namespace: opts.backendNamespace,
           project: opts.projectRoot,
-          refs: buildJobEventRefs({ jobId: opts.jobId, sessionId: opts.sessionId }),
+          refs: buildJobEventRefs({ jobId: opts.jobId, }),
           body: {
             queuePosition: 0,
             runningJobIds: [],
@@ -594,7 +593,7 @@ export class JobStore implements JobProgressStore {
           stream: { kind: 'job', id: opts.jobId },
           namespace: opts.backendNamespace,
           project: opts.projectRoot,
-          refs: buildJobEventRefs({ jobId: opts.jobId, sessionId: opts.sessionId }),
+          refs: buildJobEventRefs({ jobId: opts.jobId, }),
           body: {
             transport: 'app-server',
             startedAt: createdAt,
@@ -659,7 +658,7 @@ export class JobStore implements JobProgressStore {
         stream: { kind: 'job', id: jobId },
         namespace: status?.backendNamespace ?? this.namespace,
         project: status?.projectRoot,
-        refs: buildJobEventRefs({ jobId, sessionId: status?.sessionId ?? null }),
+        refs: buildJobEventRefs({ jobId, }),
         body: jobRuntimeStartedBody(runtime),
       });
       if (provisionalProcess !== undefined) {
@@ -717,7 +716,7 @@ export class JobStore implements JobProgressStore {
     return this.countProjectedLiveJobs() + this.countLiveOverrideJobs();
   }
 
-  appendProgress(jobId: string, sessionId: string | null, message: string): number {
+  appendProgress(jobId: string, conversationJobId: string | null, message: string): number {
     const nowMs = this.runtime.time.now();
     const detail = this.detail(jobId);
     const status = detail.status;
@@ -728,7 +727,7 @@ export class JobStore implements JobProgressStore {
         stream: { kind: 'job', id: jobId },
         namespace: status?.backendNamespace ?? this.namespace,
         project: status?.projectRoot,
-        refs: buildJobEventRefs({ jobId, sessionId }),
+        refs: buildJobEventRefs({ jobId, }),
         body: {
           kind: 'message',
           message,
@@ -740,9 +739,9 @@ export class JobStore implements JobProgressStore {
     return appended?.seq ?? 0;
   }
 
-  appendUnreadableStatusProgress(jobId: string, sessionId: string, message: string): number {
+  appendUnreadableStatusProgress(jobId: string, conversationJobId: string, message: string): number {
     const appended = this.commitUnreadableStatusRecovery(jobId, (commit) => {
-      this.appendUnreadableStatusProgressInCommit(commit, jobId, sessionId, message);
+      this.appendUnreadableStatusProgressInCommit(commit, jobId, conversationJobId, message);
       return undefined;
     });
     return appended[0]?.seq ?? 0;
@@ -766,7 +765,7 @@ export class JobStore implements JobProgressStore {
   appendUnreadableStatusProgressInCommit<Scope>(
     commit: CommitContext<Scope>,
     jobId: string,
-    sessionId: string,
+    conversationJobId: string,
     message: string,
   ): void {
     const emittedAt = nowIsoString(this.runtime.time);
@@ -774,7 +773,7 @@ export class JobStore implements JobProgressStore {
       type: 'job.progress.emitted',
       stream: { kind: 'job', id: jobId },
       namespace: this.namespace,
-      refs: buildJobEventRefs({ jobId, sessionId }),
+      refs: buildJobEventRefs({ jobId, }),
       body: {
         kind: 'message',
         message,

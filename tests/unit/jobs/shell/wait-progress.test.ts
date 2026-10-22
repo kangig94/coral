@@ -46,7 +46,7 @@ it('cursorless bounded wait: progress appended between polls beyond the tail win
     visitProgress: progressVisitFromEvents(readJobEvents),
     time: runtime.time,
     eventBus: new TypedEventBus(),
-    sessionManager: { get: () => null } as never,
+    conversationManager: { get: () => null } as never,
     launchQueue: { reservationFor: () => null, getActiveJobIds: () => [] } as never,
     readJobLastSeq: () => null,
     loadJobWaitDetail: () => {

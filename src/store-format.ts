@@ -24,7 +24,6 @@ import {
 } from './projection-consumers/persistence.js';
 import { executionOwnerSchema } from './runtime/execution-owner.js';
 import { jobConversationFacetSchema } from './jobs/launch.js';
-import { sessionsRegistry } from './sessions/events.js';
 import { createCurrentStoreFormat } from './store/current-format.js';
 import { journalEventEnvelopeSchema, journalEventRefsSchema } from './store/envelope.js';
 import type { StoreFormatDescription } from './store/format-fingerprint.js';
@@ -35,7 +34,7 @@ import { workflowPlanSchema } from './workflow/plan.js';
 
 export function describeCoralStoreFormat(providerRegistry: ProviderRegistry): StoreFormatDescription {
   const format = createCurrentStoreFormat(
-    composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry),
+    composeReducers(jobsRegistry, discussRegistry, workflowRegistry),
     {
       eventEnvelope: journalEventEnvelopeSchema,
       eventRefs: journalEventRefsSchema,
