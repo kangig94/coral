@@ -1,3 +1,4 @@
+import { UNSUPPORTED_JOB_SEND_BUILD_REASON } from '../../jobs/send.js';
 import type { ProcessIncarnation } from '../../infra/node-process.js';
 import type { z } from 'zod';
 
@@ -289,8 +290,7 @@ export async function sendProviderOperation(
       return {
         state: 'refused',
         code: 'unsupported_by_running_build',
-        reason:
-          'The running Coral build predates jobs send. Restart the session so the current Coral plugin loads; the coordinator follows the installed build.',
+        reason: UNSUPPORTED_JOB_SEND_BUILD_REASON,
       };
     }
     return { state: 'unknown', reason: providerOperationErrorReason(error) };

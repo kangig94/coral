@@ -170,6 +170,7 @@ function composeProductionStartup(
     launchCoordinator,
   } as never;
   const services = createExecutionServices({
+    jobLocations: { read: () => null },
     executionFinisher,
     world,
     runtime,

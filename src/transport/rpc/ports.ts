@@ -30,7 +30,8 @@ import type {
 import type { JobScopeRelation, ScopeCheckResult } from '../../jobs/scope.js';
 import type { JobsListFilters } from '../../jobs/read-queries.js';
 import type { JobDetailLookup } from '../../jobs/contracts/addressing.js';
-import type { JobSendTarget, JobSendResult } from '../../jobs/send.js';
+import type { JobSendResult } from '../../jobs/send.js';
+import type { JobSendTarget } from '../../jobs/send-target.js';
 
 type SessionStartInput = Pick<
   JobLaunchRequest,

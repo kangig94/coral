@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 import { ExecutionService } from '#src/coordinator/execution-service.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
+import { createRecoveryCoordinator } from '#src/coordinator/services/recovery/index.js';
 import { discussRegistry } from '#src/discuss/event-registry.js';
 import { ExecutionFinisher, readExecutionFinishingState } from '#src/jobs/finishing.js';
 import { JobStore } from '#src/jobs/store.js';
@@ -58,13 +59,19 @@ export function conversationIdentityFixture(
   runtime.storage.mkdirSync(projectRoot, { recursive: true });
   const journal = executionHarness(discussRegistry, workflowRegistry);
   const eventBus = new TypedEventBus();
+  let acceptanceBlocked = false;
   const store = new JobStore('identity-test', runtime, createEventBodyCodec(), {
     db: journal.db,
     reducers: journal.ctx.reducers,
     providers: permissiveProviderLookupPort,
     eventBus,
+    readAdmissionStatus: (jobId) => finisher.admissionStatus(jobId),
+    beforeAppend: (event) => {
+      if (acceptanceBlocked && event.type === 'job.execution.outcome.accepted')
+        throw new Error('Outcome acceptance storage unavailable');
+    },
   });
-  const admission = new LaunchCoordinator({ runtime });
+  let admission = new LaunchCoordinator({ runtime });
   const journalDeps = createTestJobJournalDeps(store, runtime);
   const providers = new ProviderRegistry();
   const retentionAbort = new AbortController();
@@ -78,7 +85,12 @@ export function conversationIdentityFixture(
     signal: retentionAbort.signal,
   });
   let loseRequestAcknowledgement = false;
+  let failCommit = false;
   const commit: CommitEventsFn = (write) => {
+    if (failCommit) {
+      failCommit = false;
+      throw new Error('Request commit failed before persistence');
+    }
     const appended = journalDeps.coordinatorCommit(write);
     finisher.observeCommitted(appended);
     reactor.observe(appended);
@@ -88,14 +100,17 @@ export function conversationIdentityFixture(
     }
     return appended;
   };
-  const finisher = new ExecutionFinisher({
-    time: runtime.time,
-    commit,
-    read: (address) => readExecutionFinishingState(journal.db, address, journal.readCtx),
-    quiesce: async ({ jobId }) => admission.reservationFor(jobId) === null,
-    retentionAction: (address) => reactor.retentionAction(address),
-    settleRetention: (address, action) => reactor.settleRetention(address, action),
-  });
+  const createFinisher = () =>
+    new ExecutionFinisher({
+      recovery: { db: () => journal.db, readCtx: journal.readCtx, time: runtime.time },
+      time: runtime.time,
+      commit,
+      read: (address) => readExecutionFinishingState(journal.db, address, journal.readCtx),
+      quiesce: async ({ jobId }) => admission.reservationFor(jobId) === null,
+      retentionAction: (address) => reactor.retentionAction(address),
+      settleRetention: (address, action) => reactor.settleRetention(address, action),
+    });
+  let finisher = createFinisher();
   const requests: ProviderRequest[] = [];
   const nativePath = (jobId: string, provider = 'codex') =>
     provider === 'claude'
@@ -260,6 +275,7 @@ export function conversationIdentityFixture(
       await drive(Promise.all(jobIds.map((jobId) => service.waitForJobTerminal(jobId, 10_000))));
     } finally {
       retentionAbort.abort();
+      await finisher.dispose();
       journal.db.close();
     }
   }
@@ -268,11 +284,59 @@ export function conversationIdentityFixture(
     ...journal,
     runtime,
     store,
-    admission,
+    get admission() {
+      return admission;
+    },
+    get finisher() {
+      return finisher;
+    },
     service,
     restartCoordinator: () => {
       service = createService();
       return service;
+    },
+    restartProcess: async () => {
+      await finisher.dispose();
+      admission = new LaunchCoordinator({ runtime });
+      finisher = createFinisher();
+      service = createService();
+      const log = () => undefined;
+      const recovery = createRecoveryCoordinator(
+        {
+          progressStore: store,
+          runtime,
+          runtimeState: { setLaunchFenceActive: () => undefined },
+          eventBus,
+          getRecoveryService: () => service,
+          createInvocationContext: () => ctx,
+          log,
+          startupOwnership: admission,
+        },
+        null,
+      );
+      try {
+        const result = await drive(
+          recovery.runStartupRecovery({
+            runtime,
+            progressStore: store,
+            getRecoveryService: () => service,
+            createInvocationContext: () => ctx,
+            signal: new AbortController().signal,
+            log,
+            coordinatorCommit: commit,
+          }),
+        );
+        expect(result.kind).toBe('complete');
+      } finally {
+        await recovery.teardown();
+      }
+      return service;
+    },
+    failNextCommit: () => {
+      failCommit = true;
+    },
+    blockAcceptance: (blocked: boolean) => {
+      acceptanceBlocked = blocked;
     },
     loseNextRequestCommitAcknowledgement: () => {
       loseRequestAcknowledgement = true;

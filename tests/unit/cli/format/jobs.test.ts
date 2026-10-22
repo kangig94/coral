@@ -114,19 +114,25 @@ describe('jobs list and detail formatting', () => {
   });
 });
 
-it('renders the durable finishing reason and a typed recovery inspection command', () => {
-  const f = fixture('queued');
-  const detail = f.store.loadJobDetailResponse(f.jobId)!;
-  detail.status.finishingStatus = {
-    stage: 'accept',
-    kind: 'blocked',
-    reason: 'disk unavailable',
-    successor: 'recovery-quarantine',
-  };
-  const text = formatJobDetail(detail);
-  expect(text).toContain('Finishing status: blocked; disk unavailable');
-  expect(text).toContain('command=coral-cli backend recovery-quarantine list');
-  expect(formatJobsList({ jobs: [{ jobId: f.jobId, status: detail.status }] })[0].phase).toContain(
-    'finishing blocked: disk unavailable',
-  );
-});
+it.each(['live-retry', 'recovery-quarantine'] as const)(
+  'renders the durable finishing reason and inspects quarantine only for %s',
+  (successor) => {
+    const f = fixture('queued');
+    const detail = f.store.loadJobDetailResponse(f.jobId)!;
+    detail.status.finishingStatus = {
+      stage: 'accept',
+      kind: 'blocked',
+      reason: 'disk unavailable',
+      successor,
+    };
+    const text = formatJobDetail(detail);
+    expect(text).toContain('Finishing status: blocked; disk unavailable');
+    expect(text.includes('command=coral-cli backend recovery-quarantine list')).toBe(
+      successor === 'recovery-quarantine',
+    );
+    expect(text).toContain(`successor=${successor}`);
+    expect(formatJobsList({ jobs: [{ jobId: f.jobId, status: detail.status }] })[0].phase).toContain(
+      'finishing blocked: disk unavailable',
+    );
+  },
+);

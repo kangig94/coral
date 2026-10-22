@@ -92,6 +92,9 @@ const TRANSPORT_ALLOWED = new Set([
   'src/jobs/contracts/abort-registry.ts',
   'src/jobs/contracts/event-stream.ts',
   'src/jobs/launch.ts',
+  // Transport may depend on the jobs.send wire contract, never its execution shell.
+  'src/jobs/send.ts',
+  'src/jobs/send-target.ts',
   'src/jobs/phase.ts',
   'src/jobs/read-queries.ts',
   'src/jobs/records.ts',

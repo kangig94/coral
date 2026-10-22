@@ -1,5 +1,6 @@
-import { jobSendOutcomeSchema } from '../../jobs/send.js';
 import { z, type ZodType } from 'zod';
+
+import { jobSendOutcomeSchema } from '../../jobs/send.js';
 import type { Capability } from '../../security/capability.js';
 import {
   equipExpansionRequestSchema,

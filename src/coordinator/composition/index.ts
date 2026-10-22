@@ -578,6 +578,7 @@ export function createCoordinatorCore(
   const internalWaitRequests = new WeakMap<object, WaitStreamRequest>();
   const preparedExecution = prepareCoordinatorExecutionAssembly(core, options);
   const services = createExecutionServices({
+    jobLocations: core.jobLocationIndex,
     executionFinisher: options.executionFinisher,
     world,
     runtime,

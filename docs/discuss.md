@@ -64,7 +64,7 @@ The discussion aggregate authorizes later executions while it remains open and t
 
 A discussion's `sessionId` still identifies the discussion aggregate and its `discuss/<session-id>` stream. It is unrelated to the removed provider-session identity; participant conversations are addressed by job id alone. `jobs list` shows the latest execution, while `jobs detail` preserves every turn's outcome and result.
 
-`jobs send` can steer a running participant execution when its transport supports sends. It cannot start the next execution of an ended discussion-owned job: continuation is reserved for the owning discussion and refuses as `owner_not_provider_session`, with `jobs detail <jobId>` to inspect ownership. A finishing execution refuses as `execution_finishing`; use `jobs wait <jobId>` before any new intentional send. The CLI's follow-by-default continuation mode applies only to `provider-session`-owned jobs, not discussion turn scheduling. See [send outcomes](./cli-errors.md#jobs-send-outcomes).
+`jobs send` can steer a running participant where supported; the discussion owner controls later executions. See the [send ownership refusals and remedies](./cli-errors.md#jobs-send-outcomes).
 
 ## `watch` Contract
 

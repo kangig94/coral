@@ -1,22 +1,25 @@
 import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
 import {
+  type CommittedExecutionRequest,
   committedExecutionRequest,
   committedProviderLaunchDecision,
   findCommittedExecutionRequest,
 } from '../../jobs/execution-journal.js';
 import { isTerminalPhase } from '../../jobs/phase.js';
 import { jobInCallerScope } from '../../jobs/scope.js';
-import {
-  jobSendAttemptSchema,
-  missingJobSendRefusal,
-  type JobSendTarget,
-  type JobSendResult,
-} from '../../jobs/send.js';
+import { jobSendAttemptSchema, missingJobSendRefusal, type JobSendResult } from '../../jobs/send.js';
+import { matchesContinuationEnvelope, matchesContinuationTarget, type JobSendTarget } from '../../jobs/send-target.js';
 import type { JobLocationView } from '../../jobs/location-index.js';
-import type { ProviderJobLaunchDecision } from '../../jobs/launch.js';
+import type {
+  LaunchRefusalCode,
+  ProviderJobLaunchDecision,
+  AcceptedProviderJobLaunchDecision,
+} from '../../jobs/launch.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type { CanonicalWorkDir } from '../../runtime/canonical-work-dir.js';
-import type { Database } from '../../store/db.js';
+import { sameEpoch } from '../../store/epoch/identity.js';
+import { assertNever } from '../../infra/error-format.js';
+import type { JobStatus } from '../../jobs/records.js';
 import { readProviderOperationForJob } from '../../store/provider-operation-journal.js';
 import {
   ProviderProxyOperationControlHeldError,
@@ -33,6 +36,7 @@ export interface JobSendRequest {
 }
 
 export interface JobSendServiceDeps {
+  attempts: Map<string, Promise<void>>;
   progressStore: Pick<JobProgressStore, 'readStatus' | 'getDb'>;
   jobLocations: Pick<JobLocationView, 'read'>;
   currentJobEpochKey(): string;
@@ -42,7 +46,6 @@ export interface JobSendServiceDeps {
   ): Pick<DurableProviderProxyOperationAuthority, 'sendOperation'> | null;
 }
 
-const attempts = new WeakMap<Database, Map<string, Promise<void>>>();
 const closedSteer = (): JobSendResult => ({
   state: 'unknown',
   reason:
@@ -57,25 +60,24 @@ export class JobSendService {
   }
 
   async send(request: JobSendRequest, ctx: InvocationContext): Promise<JobSendResult> {
-    if (
-      !jobSendAttemptSchema.safeParse({
-        jobId: request.jobId,
-        input: request.input,
-        clientMessageId: request.clientMessageId,
-        target: request.target,
-      }).success
-    )
+    const validation = jobSendAttemptSchema.safeParse({
+      jobId: request.jobId,
+      input: request.input,
+      clientMessageId: request.clientMessageId,
+      target: request.target,
+    });
+    if (!validation.success)
       return {
         state: 'refused',
         code: 'invalid_request',
-        reason: 'A valid input, message identity and execution target are required.',
+        reason: validation.error.issues.map((issue) => issue.message).join('; '),
+        invalidFields: [
+          ...new Set(
+            validation.error.issues.map((issue) => (typeof issue.path[0] === 'string' ? issue.path[0] : 'request')),
+          ),
+        ],
       };
-    const db = this.deps.progressStore.getDb();
-    let jobs = attempts.get(db);
-    if (jobs === undefined) {
-      jobs = new Map();
-      attempts.set(db, jobs);
-    }
+    const jobs = this.deps.attempts;
     const previous = jobs.get(request.jobId) ?? Promise.resolve();
     let release!: () => void;
     const turn = new Promise<void>((resolve) => {
@@ -93,10 +95,7 @@ export class JobSendService {
 
   private async sendBound(request: JobSendRequest, ctx: InvocationContext): Promise<JobSendResult> {
     const status = this.deps.progressStore.readStatus(request.jobId);
-    if (status === null)
-      return request.target.mode === 'steer'
-        ? closedSteer()
-        : missingJobSendRefusal(this.deps.jobLocations.read(request.jobId));
+    if (status === null) return missingJobSendRefusal(this.deps.jobLocations.read(request.jobId));
     if (!jobInCallerScope(status, request.projectRoot, 'contains'))
       return { state: 'refused', code: 'scope_mismatch', reason: 'The job belongs to another project.' };
     if (status.jobKind !== 'provider')
@@ -106,83 +105,102 @@ export class JobSendService {
         reason: 'The job has no provider turn to receive input.',
       };
 
+    const replay = findCommittedExecutionRequest(
+      this.deps.progressStore.getDb(),
+      request.jobId,
+      request.clientMessageId,
+    );
+    if (replay !== null) return this.replay(request, replay);
+    return request.target.mode === 'continue' ? this.continue(request, status, ctx) : this.steer(request, status);
+  }
+
+  private replay(request: JobSendRequest, replay: CommittedExecutionRequest): JobSendResult {
     const db = this.deps.progressStore.getDb();
     const epochKey = this.deps.currentJobEpochKey();
-    const replay = findCommittedExecutionRequest(db, request.jobId, request.clientMessageId);
-    if (replay !== null) {
-      if (
-        request.target.mode !== 'continue' ||
-        replay.request.execution !== request.target.execution + 1 ||
-        replay.request.input !== request.input ||
-        epochKey !== request.target.sourceEpoch ||
-        committedExecutionRequest(db, request.jobId, request.target.execution).requestedSeq !==
-          request.target.requestedSeq
-      )
-        return {
-          state: 'refused',
-          code: 'continuation_target_changed',
-          reason: 'This message identity belongs to a different continuation envelope.',
-        };
-      const original = committedProviderLaunchDecision(db, replay, epochKey);
+    if (!matchesContinuationEnvelope(db, request, replay, epochKey))
       return {
-        state: 'launched',
-        launch: {
-          kind: 'provider-session',
-          jobId: request.jobId,
-          requestedSeq: original.requestedSeq,
-          epochKey,
-          launchState: original.status,
-        },
+        state: 'refused',
+        code: 'continuation_target_changed',
+        reason: 'This message identity belongs to a different continuation envelope.',
       };
-    }
+    return this.launched(committedProviderLaunchDecision(db, replay, epochKey));
+  }
 
-    const target = request.target;
-    const latest = status.execution === null ? null : committedExecutionRequest(db, request.jobId, status.execution);
-    const matches =
-      status.execution === target.execution &&
-      latest?.requestedSeq === target.requestedSeq &&
-      epochKey === target.sourceEpoch;
-    const ended = isTerminalPhase(status.phase);
-    const admission = !matches || (target.mode === 'continue' && !ended) ? 'refused' : ended ? 'ended' : 'admitted';
-    if (target.mode === 'continue') {
-      if (admission !== 'ended')
-        return {
-          state: 'refused',
-          code: 'continuation_target_changed',
-          reason:
-            'The bound predecessor is no longer the latest ended execution. Read job detail before a new send attempt.',
-        };
-      if (status.owner.kind !== 'provider-session')
-        return {
-          state: 'refused',
-          code: 'owner_not_provider_session',
-          reason: 'Only provider-session owners accept a jobs send continuation.',
-        };
-      const decision = await this.deps.resume(request, ctx);
-      switch (decision.status) {
-        case 'running':
-        case 'queued':
-          return {
-            state: 'launched',
-            launch: {
-              kind: 'provider-session',
-              jobId: request.jobId,
-              requestedSeq: decision.requestedSeq,
-              epochKey: decision.epochKey,
-              launchState: decision.status,
-            },
-          };
-        case 'refused':
-          return {
-            state: 'refused',
-            code: continuationRefusalCode(decision.code),
-            reason: decision.message,
-          };
-        case 'undetermined':
-          return { state: 'unknown', reason: decision.message };
-      }
+  private launched(decision: AcceptedProviderJobLaunchDecision): JobSendResult {
+    return {
+      state: 'launched',
+      launch: {
+        kind: 'provider-session',
+        jobId: decision.jobId,
+        requestedSeq: decision.requestedSeq,
+        epochKey: decision.epochKey,
+        launchState: decision.status,
+      },
+    };
+  }
+
+  private async continue(request: JobSendRequest, status: JobStatus, ctx: InvocationContext): Promise<JobSendResult> {
+    const requestedSeq =
+      status.execution === null
+        ? null
+        : committedExecutionRequest(this.deps.progressStore.getDb(), request.jobId, status.execution).requestedSeq;
+    if (
+      !matchesContinuationTarget(request.target, {
+        execution: status.execution,
+        open: !isTerminalPhase(status.phase),
+        requestedSeq,
+        sourceEpoch: this.deps.currentJobEpochKey(),
+      })
+    )
+      return {
+        state: 'refused',
+        code: 'continuation_target_changed',
+        reason:
+          'The bound predecessor is no longer the latest ended execution. Read job detail before a new send attempt.',
+      };
+    if (status.owner.kind !== 'provider-session')
+      return {
+        state: 'refused',
+        code: 'owner_not_provider_session',
+        reason: 'Only provider-session owners accept a jobs send continuation.',
+      };
+    const decision = await this.deps.resume(request, ctx);
+    switch (decision.status) {
+      case 'running':
+      case 'queued':
+        return this.launched(decision);
+      case 'refused':
+        return { state: 'refused', code: continuationRefusalCodes[decision.code], reason: decision.message };
+      case 'undetermined':
+        switch (decision.code) {
+          case 'continuation_commit_uncertain':
+            return { state: 'unknown', reason: decision.message };
+          case 'work_directory_unobservable':
+          case 'provider_preflight_undetermined':
+            return { state: 'refused', code: decision.code, reason: decision.message };
+          case 'discuss_launch_undetermined':
+            return { state: 'refused', code: 'provider_rejected', reason: decision.message };
+          default:
+            return assertNever(decision);
+        }
     }
-    if (admission !== 'admitted') return closedSteer();
+  }
+
+  private async steer(request: JobSendRequest, status: JobStatus): Promise<JobSendResult> {
+    const db = this.deps.progressStore.getDb();
+    if (status.execution === null || request.target.execution > status.execution)
+      return { state: 'refused', code: 'execution_superseded', reason: 'The bound execution does not exist.' };
+    const targetRequest = committedExecutionRequest(db, request.jobId, request.target.execution);
+    if (
+      targetRequest.requestedSeq !== request.target.requestedSeq ||
+      !sameEpoch(this.deps.currentJobEpochKey(), request.target.sourceEpoch)
+    )
+      return {
+        state: 'refused',
+        code: 'execution_superseded',
+        reason: 'The bound execution address does not match this job.',
+      };
+    if (status.execution !== request.target.execution || isTerminalPhase(status.phase)) return closedSteer();
     if (status.finishing === true)
       return {
         state: 'refused',
@@ -216,24 +234,51 @@ export class JobSendService {
   }
 }
 
-function continuationRefusalCode(code: string): Extract<JobSendResult, { state: 'refused' }>['code'] {
-  switch (code) {
-    case 'execution_finishing':
-    case 'continuation_target_changed':
-    case 'archive_missing':
-    case 'archive_hash_mismatch':
-    case 'profile_mismatch':
-    case 'work_directory_missing':
-      return code;
-    case 'session_busy':
-      return 'continuation_target_changed';
-    case 'non_resumable':
-    case 'archive_stale':
-      return 'archive_missing';
-    case 'provider_binding_profile_mismatch':
-    case 'provider_binding_subject_mismatch':
-      return 'profile_mismatch';
-    default:
-      return 'provider_rejected';
-  }
-}
+const continuationRefusalCodes = {
+  execution_finishing: 'execution_finishing',
+  continuation_target_changed: 'continuation_target_changed',
+  archive_missing: 'archive_missing',
+  archive_hash_mismatch: 'archive_hash_mismatch',
+  profile_mismatch: 'profile_mismatch',
+  work_directory_missing: 'work_directory_missing',
+  busy: 'busy',
+  succession_admission_paused: 'succession_admission_paused',
+  session_busy: 'session_busy',
+  native_unobservable: 'native_unobservable',
+  archive_invalid: 'archive_invalid',
+  provider_preflight_failed: 'provider_preflight_failed',
+  session_not_found: 'session_not_found',
+  execution_superseded: 'execution_superseded',
+  transport_unsupported: 'transport_unsupported',
+  scope_mismatch: 'scope_mismatch',
+  invalid_request: 'invalid_request',
+  retention_discard_in_flight: 'execution_finishing',
+  execution_admission_in_flight: 'execution_finishing',
+  non_resumable: 'archive_missing',
+  archive_stale: 'archive_missing',
+  provider_binding_profile_mismatch: 'profile_mismatch',
+  provider_binding_subject_mismatch: 'profile_mismatch',
+  provider_mismatch: 'provider_rejected',
+  unknown_provider: 'provider_rejected',
+  invalid_agent: 'provider_rejected',
+  agent_not_found: 'provider_rejected',
+  agent_namespace_not_found: 'provider_rejected',
+  job_launch_duplicate: 'provider_rejected',
+  job_owner_mismatch: 'provider_rejected',
+  job_owner_missing: 'provider_rejected',
+  job_provider_session_missing: 'provider_rejected',
+  job_binding_owner_mismatch: 'provider_rejected',
+  discussion_job_launch_conflict: 'provider_rejected',
+  workflow_owner_terminal: 'provider_rejected',
+  workflow_slot_job_conflict: 'provider_rejected',
+  workflow_slot_job_mismatch: 'provider_rejected',
+  provider_scope_missing: 'provider_rejected',
+  provider_execution_environment_invalid: 'provider_rejected',
+  publication_failed: 'provider_rejected',
+  launch_failed: 'provider_rejected',
+  provider_binding_missing_profile: 'provider_rejected',
+  provider_binding_profile_unavailable: 'provider_rejected',
+  provider_binding_identity_unavailable: 'provider_rejected',
+  provider_binding_unsupported_selection: 'provider_rejected',
+  provider_binding_invalid_persisted_binding: 'provider_rejected',
+} satisfies Record<LaunchRefusalCode, Extract<JobSendResult, { state: 'refused' }>['code']>;

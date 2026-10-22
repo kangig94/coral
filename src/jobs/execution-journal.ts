@@ -22,23 +22,35 @@ export function readJobOpened(db: Database, jobId: string, ctx: StoreReadContext
   return row === undefined ? null : decodeBody(row, jobOpenedBodySchema, ctx);
 }
 
+function executionRequestRows(db: Database, jobId: string): EventsRow[] {
+  return db
+    .prepare<
+      [string],
+      EventsRow
+    >("SELECT * FROM events WHERE stream_kind = 'job' AND stream_id = ? AND type = 'job.execution.requested' ORDER BY seq")
+    .all(jobId);
+}
+
 export function findCommittedExecutionRequest(
   db: Database,
   jobId: string,
   clientMessageId: string,
-  ctx?: StoreReadContext,
 ): CommittedExecutionRequest | null {
-  const rows = db
-    .prepare<
-      [string],
-      { seq: number; type: string; stream_kind: 'job'; body: Uint8Array }
-    >("SELECT seq, type, stream_kind, body FROM events WHERE stream_kind = 'job' AND stream_id = ? AND type = 'job.execution.requested' ORDER BY seq")
-    .all(jobId);
-  for (const row of rows) {
-    const request =
-      ctx === undefined
-        ? jobExecutionRequestedBodySchema.parse(decodeEventBody(row.body))
-        : decodeBody(row, jobExecutionRequestedBodySchema, ctx);
+  for (const row of executionRequestRows(db, jobId)) {
+    const request = jobExecutionRequestedBodySchema.parse(decodeEventBody(row.body));
+    if (request.originatingClientMessageId === clientMessageId) return { jobId, requestedSeq: row.seq, request };
+  }
+  return null;
+}
+
+export function readCommittedExecutionRequest(
+  db: Database,
+  jobId: string,
+  clientMessageId: string,
+  ctx: StoreReadContext,
+): CommittedExecutionRequest | null {
+  for (const row of executionRequestRows(db, jobId)) {
+    const request = decodeBody(row, jobExecutionRequestedBodySchema, ctx);
     if (request.originatingClientMessageId === clientMessageId) return { jobId, requestedSeq: row.seq, request };
   }
   return null;

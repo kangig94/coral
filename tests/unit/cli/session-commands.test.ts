@@ -115,10 +115,12 @@ it('explains required send input resolution and ended-turn behavior in help', ()
     .helpInformation()
     .replace(/\s+/gu, ' ');
   expect(help).toContain('required');
+  expect(help).toContain('Canonical job UUID (required)');
   expect(help).toContain('tokens are joined with single spaces');
   expect(help).toContain('the whole input is read if it names an existing regular file');
   expect(help).toContain('stdin if exactly -');
-  expect(help).toContain('continue its ended conversation');
+  expect(help).toContain("continue an ended job's conversation");
+  expect(help).toContain('ignored for a steer');
   expect(help).toContain('--detach');
 });
 
@@ -288,7 +290,7 @@ it.each([
   [
     { state: 'unknown', reason: 'No answer.' },
     75,
-    "Unknown: message may have been delivered. Check the job's progress for evidence.\ncommand=coral-cli jobs wait job-1",
+    "Unknown: message may have been delivered. Check the job's progress for evidence.\ncommand=coral-cli jobs wait job-1\nDo not resend until the wait shows the outcome.",
   ],
 ] satisfies [JobSendOutcome, number, string][])('renders %j with exit %i', async (result, exitCode, expected) => {
   const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
@@ -425,7 +427,7 @@ it('executes the exact not-found list remedy under the current program', async (
 });
 
 it.each(['turn_not_started', 'control_unavailable', 'turn_ended'] as const)(
-  'does not print stdin-dependent commands for %s',
+  'prints a runnable stdin remedy and requires the original input for %s',
   async (code) => {
     vi.resetModules();
     stdin.text = 'stdin body';
@@ -437,8 +439,12 @@ it.each(['turn_not_started', 'control_unavailable', 'turn_ended'] as const)(
     await root.parseAsync(['jobs', 'send', 'job-1', '-i', '-'], { from: 'user' });
     expect(process.exitCode).toBe(1);
     const text = output.mock.calls.map(([chunk]) => String(chunk)).join('');
-    expect(printedCommands(text)).toEqual(code === 'turn_ended' ? [['jobs', 'wait', 'job-1']] : []);
-    expect(text).not.toMatch(/resume|jobs send|coral-cli codex/i);
+    expect(printedCommands(text)).toEqual([
+      ...(code === 'turn_ended' ? [['jobs', 'wait', 'job-1']] : []),
+      ['jobs', 'send', 'job-1', '-i', '-'],
+    ]);
+    expect(text).toContain('Pipe the same original input into the command you run.');
+    expect(text).not.toMatch(/resume|coral-cli codex/i);
     expect(readStore.jobs.detail).not.toHaveBeenCalled();
   },
 );
@@ -459,15 +465,6 @@ it('preserves the refusal and result remedy when launch metadata cannot be read'
     ['jobs', 'send', 'job-1', '-i', 'message'],
   ]);
   expect(readStore.jobs.detail).not.toHaveBeenCalled();
-});
-
-it('executes the exact other-project discovery remedy with terminal jobs included', async () => {
-  vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
-  const output = formatJobSendResult('job-1', { state: 'refused', code: 'scope_mismatch', reason: 'Other project.' });
-  const commands = printedCommands(output.text);
-  expect(commands).toEqual([['jobs', 'list', '--all']]);
-  await program().parseAsync(commands[0], { from: 'user' });
-  expect(client.listJobs).toHaveBeenCalledExactlyOnceWith({ allProjects: true, all: true });
 });
 
 it.each([

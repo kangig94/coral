@@ -1,4 +1,4 @@
-import type { JobSendTarget } from '../send.js';
+import type { JobSendTarget } from '../send-target.js';
 import type { ProviderRequest } from '../../providers/contract.js';
 import type { BoundProvider } from '../../providers/bound-provider-contract.js';
 import type { RetentionPolicy, JobConversation } from '../conversation/entry.js';

@@ -85,7 +85,23 @@ it.each([
         }),
       },
     } as never,
-    options: { getConsumerStuck: () => [] } as never,
+    options: {
+      getConsumerStuck: () => [],
+      executionFinisher: {
+        admissionStatuses: () => [
+          {
+            jobId: 'held-job',
+            execution: 2,
+            status: {
+              stage: 'accept',
+              kind: 'blocked',
+              reason: 'Request evidence unreadable',
+              successor: 'live-retry',
+            },
+          },
+        ],
+      },
+    } as never,
     runtimeState: {
       getLifecycle: () => 'running',
       getStartedAt: () => Date.now(),
@@ -104,6 +120,13 @@ it.each([
     providerOperationStartupStatus: () => startup,
   });
   const snapshot = read();
+  expect(snapshot.diagnostics?.executionFinishing).toEqual([
+    {
+      jobId: 'held-job',
+      execution: 2,
+      status: { stage: 'accept', kind: 'blocked', reason: 'Request evidence unreadable', successor: 'live-retry' },
+    },
+  ]);
   const frame = JSON.stringify({ kind: 'response', id: 1, result: snapshot }) + '\n';
   expect(snapshot.diagnostics?.providerOperationStartupReconciliation?.sets).toHaveLength(Math.min(setCount, 20));
   expect(snapshot.diagnostics?.providerOperationStartupReconciliation?.setCount).toBe(setCount);

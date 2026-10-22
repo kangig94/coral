@@ -71,9 +71,9 @@ Behavior:
    - Claude: system append channel + user prompt
    - Codex: single turn text ordered `systemPrompt` → `instruction` → `prompt` (order is presentation only)
 4. Detached provider launches print `Provider job <jobId> <launchState>`. Detached workflows identify both `workflowId` and `jobId`. `jobs wait --embed` prints the terminal line, any available usage diagnostics, and `Result path: <path>` for that execution's durable `executions/<n>/result.md`. Interrupted waits print a continuation carrying both cursor and execution selection; preserve it exactly.
-5. One provider conversation is one job. Workflow stale replacement and later discussion turns are sequential executions of that same job; `jobs detail` lists each execution. Workflow atoms and discuss workers use the same job shell and finishing/restore path.
+5. One provider conversation is one job. Workflow stale replacement, later discussion turns, and `jobs send` continuations are sequential executions of that same job; `jobs detail` lists each execution. Workflow atoms and discuss workers use the same job shell and finishing/restore path.
 
-For a CLI-launched agent job, `coral-cli jobs send <jobId> -i <text|file|->` steers a running execution or continues the ended conversation under the same job id and stored agent instruction. Continuations follow by default; `-d` prints `Provider job <jobId> <launchState>` and the execution-pinned wait command. Ctrl+C stops following with exit 75 without aborting. The CLI preserves the observed execution/mode target and message identity across retries; a committed continuation replay follows the original execution. Wait on `execution_finishing`, inspect detail on `continuation_target_changed`, and never turn an `unknown` delivery into a fresh send. Workflow/discussion-owned agent jobs accept later executions only from their owner. See [send outcomes and remedies](./cli-errors.md#jobs-send-outcomes).
+For a `provider-session`-owned provider job, `jobs send` uses the same conversation and stored agent instruction. Workflow/discussion owners control their own later executions. Continuations follow by default; `-d` detaches them and is ignored for a steer. See the [send envelope, follow behavior, and remedies](./cli-errors.md#jobs-send-outcomes).
 
 Unknown agent names fail through the normal provider/domain error path.
 

@@ -124,6 +124,7 @@ export interface ExecutionFinishingPorts {
 }
 
 export const EXECUTION_RETRY_MS = 500;
+const EXECUTION_REDRIVE_MS = 5000;
 
 export const EXECUTION_FINISHING_BOUNDARY = 'job-execution-finishing';
 const MAX_EXECUTION_RETRIES = 6;
@@ -209,6 +210,7 @@ export class ExecutionFinisher {
   readonly #finalizers = new Map<string, Promise<void>>();
   readonly #redriveResults = new Map<string, () => void>();
   readonly #redrives = new Map<string, () => void>();
+  readonly #admissions = new Map<string, { address: ExecutionAddress; completion: Promise<void> }>();
   readonly #statuses = new Map<string, ExecutionRetryStatus>();
 
   constructor(ports: ExecutionFinishingPorts) {
@@ -233,6 +235,17 @@ export class ExecutionFinisher {
     return this.#statuses.get(executionAddressKey(address)) ?? null;
   }
 
+  admissionStatuses(): Array<{ jobId: string; execution: number; status: ExecutionRetryStatus }> {
+    return [...this.#admissions.values()].flatMap(({ address }) => {
+      const status = this.status(address);
+      return status?.stage === 'accept' ? [{ ...address, status }] : [];
+    });
+  }
+
+  admissionStatus(jobId: string): ExecutionRetryStatus | null {
+    return this.admissionStatuses().find((entry) => entry.jobId === jobId)?.status ?? null;
+  }
+
   readonly observeCommitted: PostCommitObserver = (events) => {
     for (const event of events) {
       if (event.stream.kind !== 'job' || event.type !== 'job.execution.outcome.accepted') continue;
@@ -253,7 +266,35 @@ export class ExecutionFinisher {
 
   owns(address: ExecutionAddress): boolean {
     const key = executionAddressKey(address);
-    return this.#producers.has(key) || this.#finalizers.has(key);
+    return this.#producers.has(key) || this.#finalizers.has(key) || this.#admissions.has(key);
+  }
+
+  adoptAdmission(
+    address: ExecutionAddress,
+    reconcile: () => Promise<void>,
+  ): Readonly<{ kind: 'adopted'; completion: Promise<void> }> {
+    const key = executionAddressKey(address);
+    const existing = this.#admissions.get(key);
+    if (existing !== undefined) return { kind: 'adopted', completion: existing.completion };
+    const completion = Promise.resolve().then(async () => {
+      for (let attempt = 0; ; attempt++) {
+        this.signal.throwIfAborted();
+        try {
+          await reconcile();
+          if (this.#statuses.get(key)?.stage === 'accept') this.#clearStatus(address);
+          return;
+        } catch (error: unknown) {
+          await this.#retry(address, 'accept', error, attempt);
+          if (attempt >= MAX_EXECUTION_RETRIES) attempt = -1;
+        }
+      }
+    });
+    this.#admissions.set(key, { address, completion });
+    void completion.then(
+      () => this.#admissions.delete(key),
+      () => this.#admissions.delete(key),
+    );
+    return { kind: 'adopted', completion };
   }
 
   accept(address: ExecutionAddress, writeOriginalOutcome: Parameters<CommitEventsFn>[0]): Promise<CauseRef> {
@@ -287,7 +328,7 @@ export class ExecutionFinisher {
     const previous = this.#statuses.get(key);
     if (JSON.stringify(previous) === JSON.stringify(status)) return;
     const recovery = this.#ports.recovery;
-    if (recovery !== undefined) {
+    if (recovery !== undefined && !(status.stage === 'accept' && this.#admissions.has(key))) {
       const db = recovery.db();
       const persisted = new RecoveryQuarantineStore(db, recovery.time).upsert({
         boundary: EXECUTION_FINISHING_BOUNDARY,
@@ -312,6 +353,11 @@ export class ExecutionFinisher {
   }
 
   #clearStatus(address: ExecutionAddress): void {
+    const key = executionAddressKey(address);
+    if (this.#statuses.get(key)?.stage === 'accept' && this.#admissions.has(key)) {
+      this.#statuses.delete(key);
+      return;
+    }
     const recovery = this.#ports.recovery;
     if (recovery !== undefined) {
       const db = recovery.db();
@@ -328,8 +374,14 @@ export class ExecutionFinisher {
     const reblocked = new Promise<void>((resolve) => this.#redriveResults.set(key, resolve));
     this.#redrives.get(key)?.();
     const complete = async () => {
+      const admission = this.#admissions.get(key);
+      if (admission !== undefined) {
+        await admission.completion;
+        return;
+      }
       const producer = this.#producers.get(key);
       if (producer !== undefined) await producer;
+      if (this.state(address).kind === 'unaccepted') return;
       await this.finish(address);
     };
     try {
@@ -358,25 +410,33 @@ export class ExecutionFinisher {
         stage,
         kind: exhausted ? 'blocked' : 'retrying',
         reason: errorMessage(error),
-        successor: exhausted ? 'recovery-quarantine' : 'live-retry',
+        successor:
+          exhausted && !this.#admissions.has(executionAddressKey(address)) ? 'recovery-quarantine' : 'live-retry',
       });
     } catch (statusError: unknown) {
       if (statusError instanceof SuccessionWriterParkedError) await this.#await(statusError.unparked);
-      else await this.#await(this.#ports.time.sleep(5000, { signal: this.signal }));
+      else await this.#await(this.#ports.time.sleep(EXECUTION_REDRIVE_MS, { signal: this.signal }));
       return;
     }
     if (exhausted) {
       const key = executionAddressKey(address);
       this.#redriveResults.get(key)?.();
       try {
-        await this.#await(new Promise<void>((resolve) => this.#redrives.set(key, resolve)));
+        const redrive = new Promise<void>((resolve) => this.#redrives.set(key, resolve));
+        await this.#await(
+          this.#admissions.has(key)
+            ? Promise.race([redrive, this.#ports.time.sleep(EXECUTION_REDRIVE_MS, { signal: this.signal })])
+            : redrive,
+        );
       } finally {
         this.#redrives.delete(key);
       }
       return;
     }
     await raceWithSignal(
-      this.#ports.time.sleep(Math.min(5000, EXECUTION_RETRY_MS * 2 ** Math.min(attempts, 4)), { signal: this.signal }),
+      this.#ports.time.sleep(Math.min(EXECUTION_REDRIVE_MS, EXECUTION_RETRY_MS * 2 ** Math.min(attempts, 4)), {
+        signal: this.signal,
+      }),
       this.signal,
       () => {
         throw this.signal.reason;
@@ -543,7 +603,11 @@ export class ExecutionFinisher {
 
   async dispose(): Promise<void> {
     this.#lifetime.abort();
-    await Promise.allSettled([...this.#producers.values(), ...this.#finalizers.values()]);
+    await Promise.allSettled([
+      ...this.#producers.values(),
+      ...this.#finalizers.values(),
+      ...[...this.#admissions.values()].map(({ completion }) => completion),
+    ]);
     this.#statuses.clear();
   }
 }

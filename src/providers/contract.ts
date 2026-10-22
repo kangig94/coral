@@ -247,26 +247,29 @@ export const providerSendInputSchema = z
   .strict();
 export type ProviderSendInput = Readonly<z.infer<typeof providerSendInputSchema>>;
 
+export const providerSendDeliveredSchema = z.object({ state: z.literal('delivered') }).strict();
+export const providerSendRefusedSchema = z
+  .object({
+    state: z.literal('refused'),
+    code: z.enum([
+      'turn_not_started',
+      'turn_ended',
+      'job_not_running',
+      'control_unavailable',
+      'transport_unsupported',
+      'unsupported_by_running_build',
+      'scope_mismatch',
+      'not_found',
+      'provider_rejected',
+    ]),
+    reason: z.string(),
+  })
+  .strict();
+export const providerSendUnknownSchema = z.object({ state: z.literal('unknown'), reason: z.string() }).strict();
 export const providerSendOutcomeSchema = z.discriminatedUnion('state', [
-  z.object({ state: z.literal('delivered') }).strict(),
-  z
-    .object({
-      state: z.literal('refused'),
-      code: z.enum([
-        'turn_not_started',
-        'turn_ended',
-        'job_not_running',
-        'control_unavailable',
-        'transport_unsupported',
-        'unsupported_by_running_build',
-        'scope_mismatch',
-        'not_found',
-        'provider_rejected',
-      ]),
-      reason: z.string(),
-    })
-    .strict(),
-  z.object({ state: z.literal('unknown'), reason: z.string() }).strict(),
+  providerSendDeliveredSchema,
+  providerSendRefusedSchema,
+  providerSendUnknownSchema,
 ]);
 /** An unknown send outcome must never authorize replay. */
 export type ProviderSendOutcome = Readonly<z.infer<typeof providerSendOutcomeSchema>>;

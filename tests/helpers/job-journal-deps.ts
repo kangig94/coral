@@ -66,6 +66,8 @@ export function createTestJobJournalDeps(progressStore: JobStore, runtime: Pick<
   };
 
   return {
+    jobLocations: { read: () => null },
+    jobSendAttempts: new Map<string, Promise<void>>(),
     loadJobProjectionDetail: (jobId: string) => progressStore.loadJobProjectionDetail(jobId),
     loadJobWaitDetail: (jobId: string, requestedSeq?: number) => progressStore.loadJobWaitDetail(jobId, requestedSeq),
     readJobLastSeq: (jobId: string) => progressStore.readJobLastSeq(jobId),

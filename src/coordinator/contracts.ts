@@ -91,6 +91,8 @@ type CoordinatorLaunchCoordinator = LaunchCoordinatorPort &
 
 export type ExecutionServiceDeps = {
   readonly executionFinisher: ExecutionFinisher;
+  jobLocations: JobSendServiceDeps['jobLocations'];
+  jobSendAttempts: JobSendServiceDeps['attempts'];
   runningWorkflowJobs: Set<string>;
   runtime: Runtime;
   progressStore: JobProgressStore;

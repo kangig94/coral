@@ -1,15 +1,16 @@
+import { readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import type { Command } from 'commander';
 import { z } from 'zod';
-import { jobSendOutcomeSchema, missingJobSendRefusal, type JobSendOutcome } from '../jobs/send.js';
+
+import type { WaitExecutionSelection } from '../jobs/wait/execution-selection.js';
+import { UNSUPPORTED_JOB_SEND_BUILD_REASON, jobSendOutcomeSchema, type JobSendOutcome } from '../jobs/send.js';
 import { isTerminalPhase, jobPhaseSchema } from '../jobs/phase.js';
 import { isRecord } from '../infra/json.js';
 import type { WaitSnapshotRequest } from '../jobs/wait/contract.js';
 import type { WaitSnapshot } from '../jobs/wait/session.js';
 import { WaitBuildMismatchError } from '../coordinator/handoff-routing/wait-invocation.js';
 import { getWaitInvocation } from './wait-invocation.js';
-import type { Command } from 'commander';
-import { readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
-import { randomUUID } from 'node:crypto';
-
 import { resolvePluginRoot } from './plugin-root.js';
 
 import type { InvocationContext } from '../runtime/invocation-context.js';
@@ -72,7 +73,7 @@ import type { ProviderRegistry } from '../providers/registry.js';
 import { createBuiltInProviderRegistry } from '../providers/bootstrap.js';
 import { providerBindingFailureCode } from '../providers/contracts/binding.js';
 import { discussProviderNames } from '../discuss/execution-policy.js';
-import { getSharedReadCoralStore, readJobSendLocation } from './read-store.js';
+import { getSharedReadCoralStore } from './read-store.js';
 import { CONTEXT_ENV_KEY, TRANSPORT_CONTEXT_FIELDS } from '../transport/context-profile.js';
 import type { AbortResult } from '../jobs/contracts/abort-registry.js';
 import { TOOL_TIMEOUT_MS } from '../transport/http/sse.js';
@@ -99,6 +100,122 @@ import { classifyCommand, commandPath, type CommandClass } from './classify.js';
 import { ProviderSelectionError, UsageError } from './errors.js';
 import { parseExpression } from '../workflow/parser.js';
 import { normalizeAst, workflowProviderNames } from '../workflow/normalize.js';
+
+export type CliJobSendOutcome = JobSendOutcome &
+  Readonly<{
+    priorDeliveryUncertain?: true;
+    executionSelection?: WaitExecutionSelection;
+  }>;
+
+const jobSendDetailSchema = z
+  .object({
+    requestedSeq: z.number().int().positive().safe(),
+    epochKey: z.string().min(1),
+    status: z
+      .object({
+        execution: z.number().int().positive().safe(),
+        phase: jobPhaseSchema,
+        provider: z.string().min(1).nullable(),
+      })
+      .passthrough(),
+    events: z.array(z.object({ type: z.string(), seq: z.number().int().positive().safe() }).passthrough()),
+  })
+  .passthrough();
+
+type BoundJobSendTarget = Readonly<{
+  jobId: string;
+  detail: z.infer<typeof jobSendDetailSchema>;
+  target: z.infer<typeof jobSendSchema>['target'];
+  executionSelection: WaitExecutionSelection;
+}>;
+
+type JobSendBinding =
+  | Readonly<{ kind: 'bound'; binding: BoundJobSendTarget }>
+  | Readonly<{ kind: 'refused'; outcome: CliJobSendOutcome }>;
+
+function interpretJobSendOutcome(result: unknown, priorDeliveryUncertain: boolean): CliJobSendOutcome {
+  const parsed = jobSendOutcomeSchema.safeParse(result);
+  if (!parsed.success) return { state: 'unknown', reason: 'The coordinator returned no valid send outcome.' };
+  return parsed.data.state === 'refused' && priorDeliveryUncertain
+    ? { ...parsed.data, priorDeliveryUncertain: true }
+    : parsed.data;
+}
+
+function selectJobSendOutcome(binding: BoundJobSendTarget, outcome: CliJobSendOutcome): CliJobSendOutcome {
+  return outcome.state === 'unknown' || outcome.priorDeliveryUncertain === true
+    ? { ...outcome, executionSelection: binding.executionSelection }
+    : outcome;
+}
+
+function buildJobSendBinding(jobId: string, detail: z.infer<typeof jobSendDetailSchema>): BoundJobSendTarget {
+  const mode = isTerminalPhase(detail.status.phase) ? 'continue' : 'steer';
+  const terminal = [...detail.events].reverse().find((event) => event.type === 'terminal');
+  return {
+    jobId,
+    detail,
+    target: {
+      mode,
+      execution: detail.status.execution,
+      requestedSeq: detail.requestedSeq,
+      sourceEpoch: detail.epochKey,
+    },
+    executionSelection: {
+      jobId,
+      epochKey: detail.epochKey,
+      requestedSeq: detail.requestedSeq,
+      awaitingArtifact: false,
+      ...(mode === 'continue' && terminal !== undefined ? { deliveredEndSeq: terminal.seq } : {}),
+    },
+  };
+}
+
+function isUnrecognizedKeysRejection(error: unknown): boolean {
+  return (
+    error instanceof IpcRpcError &&
+    error.rpcCode === -32602 &&
+    (/unrecognized\s+key/i.test(error.message) ||
+      (isRecord(error.data) &&
+        ((typeof error.data.message === 'string' && /unrecognized\s+key/i.test(error.data.message)) ||
+          (Array.isArray(error.data.issues) &&
+            error.data.issues.some((issue) => isRecord(issue) && issue.code === 'unrecognized_keys')))))
+  );
+}
+
+function unsupportedJobSendBuild(): CliJobSendOutcome {
+  return {
+    state: 'refused',
+    code: 'unsupported_by_running_build',
+    reason: UNSUPPORTED_JOB_SEND_BUILD_REASON,
+  };
+}
+
+function jobSendDeliveryFailure(error: unknown): JobSendOutcome {
+  if (error instanceof IpcRpcError && (error.rpcCode === -32601 || isUnrecognizedKeysRejection(error)))
+    return unsupportedJobSendBuild();
+  if (error instanceof IpcRpcError && error.code === 'succession_admission_paused')
+    return { state: 'refused', code: 'succession_admission_paused', reason: error.message };
+  if (error instanceof IpcRpcError && error.rpcCode === -32602) {
+    const data = isRecord(error.data) ? error.data : null;
+    const invalidFields = Array.isArray(data?.issues)
+      ? [
+          ...new Set(
+            data.issues.map((issue: unknown) =>
+              isRecord(issue) && Array.isArray(issue.path) && typeof issue.path[0] === 'string'
+                ? issue.path[0]
+                : 'request',
+            ),
+          ),
+        ]
+      : [];
+    return {
+      state: 'refused',
+      code: 'invalid_request',
+      reason: typeof data?.message === 'string' ? data.message : error.message,
+      invalidFields,
+    };
+  }
+  return { state: 'unknown', reason: 'The coordinator did not return a decisive send response.' };
+}
 
 type SessionRequestOptions = {
   provider?: string;
@@ -145,7 +262,7 @@ type DiscussSeedArgs = {
 type CliCommandClient = {
   releaseJobs(jobIds: string[]): Promise<JobsReleaseResult>;
   abortJobs(jobIds: string[]): Promise<AbortResult>;
-  sendJob(jobId: string, input: string): Promise<JobSendOutcome>;
+  sendJob(jobId: string, input: string): Promise<CliJobSendOutcome>;
   createSession(
     provider: string,
     prompt: string,
@@ -888,84 +1005,103 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
 
   const reconcileKbBoot = createKbBootReconciler(path, ipcAuth);
 
-  const sendJob = async (jobId: string, input: string): Promise<JobSendOutcome> => {
-    const clientMessageId = randomUUID();
-    jobSendSchema.shape.input.parse(input);
-    const observed = getSharedReadCoralStore(canonicalProjectRoot).jobs.detail(jobId);
-    if (observed === null) return missingJobSendRefusal(readJobSendLocation(canonicalProjectRoot, jobId));
-    if (observed.status.jobKind !== 'provider')
-      return {
-        state: 'refused',
-        code: isTerminalPhase(observed.status.phase) ? 'non_provider_job' : 'transport_unsupported',
-        reason: 'The job has no provider turn to receive input.',
-      };
-    const detail = z
-      .object({
-        requestedSeq: z.number().int().positive().safe(),
-        epochKey: z.string().min(1),
-        status: z
-          .object({
-            execution: z.number().int().positive().safe(),
-            phase: jobPhaseSchema,
-            finishing: z.boolean().optional(),
-            provider: z.string().min(1).nullable(),
-          })
-          .passthrough(),
-      })
-      .passthrough()
-      .parse(observed);
-    const context = await buildProviderTransportContextBody(
-      {},
-      defaultContext,
-      providerRegistry,
-      detail.status.provider === null ? [] : [detail.status.provider],
-    );
-    const params = jobSendSchema.parse({
+  const bindJobSendTarget = async (jobId: string): Promise<JobSendBinding> => {
+    let observed: unknown;
+    try {
+      observed = await request<unknown>('jobs.detail', buildProjectScopedQuery({ jobId }, defaultContext));
+    } catch (error: unknown) {
+      if (!(error instanceof IpcRpcError)) throw error;
+      switch (error.code) {
+        case 'job_not_found':
+          return { kind: 'refused', outcome: { state: 'refused', code: 'not_found', reason: error.message } };
+        case 'job_pre_epoch_history':
+          return { kind: 'refused', outcome: { state: 'refused', code: 'pre_generation_job', reason: error.message } };
+        case 'scope_mismatch':
+          return { kind: 'refused', outcome: { state: 'refused', code: 'scope_mismatch', reason: error.message } };
+        default:
+          throw error;
+      }
+    }
+    if (isRecord(observed)) {
+      const refusal = jobSendOutcomeSchema.safeParse(observed.sendRefusal);
+      if (refusal.success && refusal.data.state === 'refused') return { kind: 'refused', outcome: refusal.data };
+    }
+    const parsedDetail = jobSendDetailSchema.safeParse(observed);
+    if (!parsedDetail.success) return { kind: 'refused', outcome: unsupportedJobSendBuild() };
+    return { kind: 'bound', binding: buildJobSendBinding(jobId, parsedDetail.data) };
+  };
+
+  const buildJobSendEnvelope = async (
+    binding: BoundJobSendTarget,
+    input: string,
+    clientMessageId: string,
+  ): Promise<z.infer<typeof jobSendSchema>> => {
+    const { jobId, detail, target } = binding;
+    const context =
+      target.mode === 'continue'
+        ? await buildProviderTransportContextBody(
+            {},
+            defaultContext,
+            providerRegistry,
+            detail.status.provider === null ? [] : [detail.status.provider],
+          )
+        : buildTransportContextBody({}, defaultContext);
+    return jobSendSchema.parse({
       projectRoot: canonicalProjectRoot,
       jobId,
       input,
       clientMessageId,
-      target: {
-        mode: isTerminalPhase(detail.status.phase) ? 'continue' : 'steer',
-        execution: detail.status.execution,
-        requestedSeq: detail.requestedSeq,
-        sourceEpoch: detail.epochKey,
-      },
+      target,
       providerScope: context.providerScope,
       coralEnv: context.coralEnv,
       networkEnv: context.networkEnv,
       owner: context.owner,
     });
+  };
+
+  const issueJobSend = (params: z.infer<typeof jobSendSchema>, delivery: { issued: boolean }): Promise<unknown> => {
     const authOptions = ipcAuthOptions();
-    await reconcileKbBoot();
-    let issued = false;
-    let priorDeliveryUncertain = false;
-    try {
-      const issue = () =>
+    return retrySuccessionPausedRequest(
+      (remainingMs) =>
         issueWithSuccessorAfterLifecycleRefusal<unknown>('jobs.send', resolvePluginRoot(), async (client) => {
-          issued = true;
+          delivery.issued = true;
           try {
-            return await client.request<unknown>('jobs.send', params, { timeoutMs: 20_000, ...authOptions });
+            const result = await client.request<unknown>('jobs.send', params, {
+              timeoutMs: remainingMs,
+              ...authOptions,
+            });
+            if (isRecord(result) && result.state === 'refused' && result.code === 'succession_admission_paused')
+              throw new IpcRpcError({
+                code: -32000,
+                message: typeof result.reason === 'string' ? result.reason : 'Admission paused',
+                data: { code: 'succession_admission_paused' },
+              });
+            return result;
           } catch (error) {
-            if (error instanceof IpcLifecycleRefusal) issued = false;
+            if (error instanceof IpcLifecycleRefusal) delivery.issued = false;
             throw error;
           }
-        });
+        }),
+      params.target.mode === 'steer' ? 20_000 : TOOL_TIMEOUT_MS,
+    );
+  };
+
+  const deliverJobSend = async (params: z.infer<typeof jobSendSchema>): Promise<CliJobSendOutcome> => {
+    await reconcileKbBoot();
+    const delivery = { issued: false };
+    let priorDeliveryUncertain = false;
+    try {
       let result: unknown;
       try {
-        result = await issue();
+        result = await issueJobSend(params, delivery);
       } catch (error: unknown) {
-        if (!issued || error instanceof IpcLifecycleRefusal || error instanceof IpcRpcError) throw error;
+        if (!delivery.issued || error instanceof IpcLifecycleRefusal || error instanceof IpcRpcError) throw error;
         priorDeliveryUncertain = true;
-        result = await issue();
+        result = await issueJobSend(params, delivery);
       }
-      const parsed = jobSendOutcomeSchema.safeParse(result);
-      if (!parsed.success) return { state: 'unknown', reason: 'The coordinator returned no valid send outcome.' };
-      return parsed.data.state === 'refused' && priorDeliveryUncertain
-        ? { ...parsed.data, priorDeliveryUncertain: true }
-        : parsed.data;
+      return interpretJobSendOutcome(result, priorDeliveryUncertain);
     } catch (error) {
-      if (!issued || error instanceof IpcLifecycleRefusal) {
+      if (!delivery.issued || error instanceof IpcLifecycleRefusal) {
         if (priorDeliveryUncertain)
           return {
             state: 'unknown',
@@ -974,32 +1110,18 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
           };
         throw error;
       }
-      const unrecognizedKeys =
-        error instanceof IpcRpcError &&
-        error.rpcCode === -32602 &&
-        (/unrecognized\s+key/i.test(error.message) ||
-          (isRecord(error.data) &&
-            ((typeof error.data.message === 'string' && /unrecognized\s+key/i.test(error.data.message)) ||
-              (Array.isArray(error.data.issues) &&
-                error.data.issues.some((issue) => isRecord(issue) && issue.code === 'unrecognized_keys')))));
-      if (error instanceof IpcRpcError && (error.rpcCode === -32601 || unrecognizedKeys)) {
-        return {
-          state: 'refused',
-          code: 'unsupported_by_running_build',
-          ...(priorDeliveryUncertain ? { priorDeliveryUncertain: true as const } : {}),
-          reason:
-            'The running Coral build predates jobs send. Restart the session so the current Coral plugin loads; the coordinator follows the installed build.',
-        };
-      }
-      if (error instanceof IpcRpcError && error.rpcCode === -32602)
-        return {
-          state: 'refused',
-          code: 'invalid_request',
-          reason: error.message,
-          ...(priorDeliveryUncertain ? { priorDeliveryUncertain: true as const } : {}),
-        };
-      return { state: 'unknown', reason: 'The coordinator did not return a decisive send response.' };
+      return interpretJobSendOutcome(jobSendDeliveryFailure(error), priorDeliveryUncertain);
     }
+  };
+
+  const sendJob = async (jobId: string, input: string): Promise<CliJobSendOutcome> => {
+    const clientMessageId = randomUUID();
+    jobSendSchema.shape.input.parse(input);
+    const target = await bindJobSendTarget(jobId);
+    if (target.kind === 'refused') return target.outcome;
+    const envelope = await buildJobSendEnvelope(target.binding, input, clientMessageId);
+    const outcome = await deliverJobSend(envelope);
+    return selectJobSendOutcome(target.binding, outcome);
   };
 
   const request = async <TResult>(method: string, params?: unknown): Promise<TResult> => {

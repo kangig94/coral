@@ -36,6 +36,24 @@ import { readHistoricalSource } from '#src/jobs/historical-reader.js';
 
 import type { WaitStreamEvent } from '#src/jobs/wait/contract.js';
 
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
+import { Command } from 'commander';
+import type * as IpcEnsureModule from '#src/transport/ipc/ensure.js';
+import { makeClient } from '#src/cli/dispatch.js';
+import { executeCatalogRequest } from '#src/transport/dispatch.js';
+import { rpcCatalog } from '#src/transport/rpc/catalog.js';
+import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
+import { testProjectPrincipal } from '#tests/helpers/principal.js';
+const sendClient = vi.hoisted(() => ({ request: vi.fn() }));
+vi.mock('#src/transport/ipc/ensure.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof IpcEnsureModule>()),
+  issueWithSuccessorAfterLifecycleRefusal: async (
+    _method: string,
+    _root: unknown,
+    issue: (client: unknown) => Promise<unknown>,
+  ) => issue(sendClient),
+}));
+
 const fingerprints = [
   'sha256:f14ec2988abbf0fe125a6b0c9b50cbece7104d8a82a96da149392e2f44e53f52',
   'sha256:9fd970cdcb803f517d77b133bba86ae83ef1ff662f77da8656604f32c8e67980',
@@ -331,6 +349,38 @@ describe('historical job readers', () => {
       () => ({ kind: 'failed', reason: 'the retained terminal does not match its source journal' }),
     );
     expect(addressing.detail('finished')).toMatchObject({ status: { phase: 'completed' } });
+    const projectRoot = fixtureCanonicalWorkDir(root);
+    const method = rpcCatalog.find((entry) => entry.name === 'jobs.detail');
+    if (method === undefined) throw new Error('Expected jobs.detail RPC');
+    const ports = {
+      identity: { pluginRoot: '/plugin' },
+      coralEnvSnapshot: {},
+      admin: { isLaunchFenceActive: () => false },
+      jobs: { scopeCheck: () => ({ mismatch: [], missing: [] }), detail: () => addressing.detail('finished') },
+    } as unknown as HttpHandlerPorts;
+    sendClient.request.mockImplementation(async (name: string, params: unknown) => {
+      if (name !== 'jobs.detail') throw new Error('Historical jobs must never receive jobs.send');
+      const response = await executeCatalogRequest(
+        method,
+        method.requestSchema.parse(params),
+        ports,
+        testProjectPrincipal(projectRoot),
+      );
+      if (response.kind !== 'unary') throw new Error('Expected detail response');
+      return response.body;
+    });
+    const command = new Command('coral-cli').command('jobs').command('send');
+    expect(await makeClient(projectRoot, command).sendJob('finished', 'another task')).toMatchObject({
+      state: 'refused',
+      code: 'pre_generation_job',
+    });
+    expect(sendClient.request).toHaveBeenCalledExactlyOnceWith(
+      'jobs.detail',
+      expect.objectContaining({ jobId: 'finished' }),
+      expect.anything(),
+    );
+    sendClient.request.mockReset();
+
     const stream = addressing.waitStream({ jobIds: ['finished'] });
     expect((await nextFinal(stream)).value).toMatchObject({ type: 'terminal', jobId: 'finished' });
     await stream.return(undefined);

@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import type { JobSendTarget } from './send.js';
+import type { ProviderBindingFailureCode } from '../providers/contracts/binding.js';
+import type { JobSendTarget } from './send-target.js';
 
 import { providerBindingEnvelopeSchema } from '../infra/provider-binding-envelope.js';
 import { providerInstructionSchema, type ProviderInstruction } from '../providers/contract.js';
@@ -28,15 +29,63 @@ export type AcceptedWorkflowLaunchDecision = CommittedExecutionRequest &
     | { kind: 'workflow'; status: 'queued'; jobId: string; workflowId: string; message?: undefined }
   );
 
+export type LaunchRefusalCode =
+  | ProviderBindingFailureCode
+  | 'unknown_provider'
+  | 'invalid_agent'
+  | 'agent_not_found'
+  | 'agent_namespace_not_found'
+  | 'invalid_request'
+  | 'job_launch_duplicate'
+  | 'job_owner_mismatch'
+  | 'job_owner_missing'
+  | 'job_provider_session_missing'
+  | 'job_binding_owner_mismatch'
+  | 'discussion_job_launch_conflict'
+  | 'workflow_owner_terminal'
+  | 'workflow_slot_job_conflict'
+  | 'workflow_slot_job_mismatch'
+  | 'provider_scope_missing'
+  | 'provider_execution_environment_invalid'
+  | 'provider_preflight_failed'
+  | 'session_not_found'
+  | 'non_resumable'
+  | 'session_busy'
+  | 'retention_discard_in_flight'
+  | 'work_directory_missing'
+  | 'continuation_target_changed'
+  | 'execution_admission_in_flight'
+  | 'execution_finishing'
+  | 'execution_superseded'
+  | 'profile_mismatch'
+  | 'native_unobservable'
+  | 'archive_missing'
+  | 'archive_stale'
+  | 'archive_invalid'
+  | 'archive_hash_mismatch'
+  | 'publication_failed'
+  | 'busy'
+  | 'succession_admission_paused'
+  | 'transport_unsupported'
+  | 'scope_mismatch'
+  | 'provider_mismatch'
+  | 'launch_failed';
+
+export type LaunchUndeterminedCode =
+  | 'work_directory_unobservable'
+  | 'provider_preflight_undetermined'
+  | 'discuss_launch_undetermined'
+  | 'continuation_commit_uncertain';
+
 export type RefusedLaunchDecision = {
   status: 'refused';
-  code: string;
+  code: LaunchRefusalCode;
   message: string;
 };
 
 export type UndeterminedLaunchDecision = {
   status: 'undetermined';
-  code: string;
+  code: LaunchUndeterminedCode;
   message: string;
 };
 
@@ -65,7 +114,7 @@ export const acceptedLaunchResponseSchema = z.discriminatedUnion('kind', [
 
 export type AcceptedLaunchResponse = z.infer<typeof acceptedLaunchResponseSchema>;
 
-export function refuseLaunch(code: string, message: string): RefusedLaunchDecision {
+export function refuseLaunch(code: LaunchRefusalCode, message: string): RefusedLaunchDecision {
   return {
     status: 'refused',
     code,
@@ -73,7 +122,7 @@ export function refuseLaunch(code: string, message: string): RefusedLaunchDecisi
   };
 }
 
-export function undeterminedLaunch(code: string, message: string): UndeterminedLaunchDecision {
+export function undeterminedLaunch(code: LaunchUndeterminedCode, message: string): UndeterminedLaunchDecision {
   return {
     status: 'undetermined',
     code,

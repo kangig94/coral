@@ -180,6 +180,7 @@ function readHealthDiagnostics(input: HealthDiagnosticInput) {
   } = { carriers: carrierDiagnostics };
   if (storeServices !== null) {
     const finishing = listExecutionRetryStatuses(storeServices.progressStore.getDb());
+    finishing.statuses.push(...options.executionFinisher.admissionStatuses());
     if (finishing.statuses.length > 0) diagnostics.executionFinishing = finishing.statuses;
     if (finishing.skipped > 0) diagnostics.skippedExecutionFinishingStatuses = finishing.skipped;
   }

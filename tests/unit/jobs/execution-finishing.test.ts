@@ -535,6 +535,44 @@ it('keeps a detached finalizer in durable quarantine with a serving retry exit',
   await f.owner.dispose();
 });
 
+it('gives an adopted admission a fresh bounded retry window after automatic redrive', async () => {
+  const h = harness(false);
+  const f = finisher(h, { log: vi.fn() });
+  let repaired = false;
+  let transientFailure = false;
+  const reconcile = vi.fn(async () => {
+    if (!repaired) throw new Error('admission evidence unavailable');
+    if (!transientFailure) {
+      transientFailure = true;
+      throw new Error('transient read failure after repair');
+    }
+    accept(h);
+    await f.owner.finish(address);
+  });
+  const admission = f.owner.adoptAdmission(address, reconcile);
+  for (let n = 0; n < 60 && f.owner.status(address)?.kind !== 'blocked'; n++) await vi.advanceTimersByTimeAsync(500);
+  expect(f.owner.status(address)).toMatchObject({ kind: 'blocked', successor: 'live-retry' });
+  expect(readExecutionRetryStatus(h.db, address)).toBeNull();
+  repaired = true;
+  for (let n = 0; n < 60 && f.owner.owns(address); n++) await vi.advanceTimersByTimeAsync(500);
+  await admission.completion;
+  expect(transientFailure).toBe(true);
+  assertClosed(h);
+  expect(readExecutionRetryStatus(h.db, address)).toBeNull();
+  expect(f.owner.status(address)).toBeNull();
+  expect(f.owner.owns(address)).toBe(false);
+  await f.owner.dispose();
+});
+
+it('leaves unaccepted execution redrive to interrupted startup recovery', async () => {
+  const h = harness(false);
+  const f = finisher(h);
+  await f.owner.redrive(address);
+  expect(f.owner.owns(address)).toBe(false);
+  expect(h.events().map((event) => event.type)).toEqual(['job.opened', 'job.execution.requested']);
+  await f.owner.dispose();
+});
+
 it.each(['accept', 'finish'] as const)(
   'waits for succession unpark during %s and preserves the original result',
   async (stage) => {

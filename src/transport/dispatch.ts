@@ -1186,6 +1186,15 @@ async function executeJobsDetailCatalogRequest({
       409,
     );
   }
+  if ('executionAddressing' in detail && detail.executionAddressing === 'lifetime')
+    return unary({
+      ...detail,
+      sendRefusal: {
+        state: 'refused',
+        code: 'pre_generation_job',
+        reason: 'The job predates the current store format generation and cannot be continued.',
+      },
+    });
   return unary(detail);
 }
 

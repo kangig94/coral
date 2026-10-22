@@ -2460,7 +2460,9 @@ function formatRunningStatus(health: RunningHealth, liveShutdownGuidance: readon
       ({ jobId, execution, status }) =>
         `  Execution finishing: ${jobId}#${execution} ${status.kind} (${status.stage}); ${status.reason}; successor=${status.successor}.`,
     ),
-    ...((health.diagnostics?.executionFinishing ?? []).some(({ status }) => status.kind === 'blocked')
+    ...((health.diagnostics?.executionFinishing ?? []).some(
+      ({ status }) => status.kind === 'blocked' && status.successor === 'recovery-quarantine',
+    )
       ? [formatRecoveryQuarantineCommand({ kind: 'list' })]
       : []),
     ...((health.diagnostics?.skippedExecutionFinishingStatuses ?? 0) === 0

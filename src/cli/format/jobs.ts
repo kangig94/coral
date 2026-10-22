@@ -11,6 +11,7 @@ import type { JobOperatorRemedy } from '../../jobs/contracts/operator-remedy.js'
 import type { JobDetailResponse, JobStatus, JobTerminal, JobsListResponse } from '../../jobs/records.js';
 import type { AcceptedLaunchResponse } from '../../jobs/launch.js';
 import type { JobSendOutcome } from '../../jobs/send.js';
+import type { CliJobSendOutcome } from '../dispatch.js';
 import { formatTable, joinLines } from './text.js';
 import { formatUsageSegment } from './usage.js';
 
@@ -58,7 +59,7 @@ export function formatUnknownLaunchOutcome(_outcome: UnknownLaunchOutcome): stri
 
 export function formatJobSendResult(
   jobId: string,
-  result: JobSendOutcome,
+  result: CliJobSendOutcome,
   context?: JobSendOutputContext,
 ): { text: string; exitCode: number } {
   switch (result.state) {
@@ -79,9 +80,14 @@ export function formatJobSendResult(
           ...(result.priorDeliveryUncertain === true
             ? [
                 'An earlier invocation may have delivered this message. This refusal does not resolve that uncertainty.',
-                formatJobsOperatorCommand({ kind: 'wait-job', jobId, grammar: 'current' }),
+                formatJobsOperatorCommand({
+                  kind: 'wait-job',
+                  jobId,
+                  grammar: 'current',
+                  executionSelection: result.executionSelection,
+                }),
               ]
-            : jobSendRefusalRemedy(jobId, result.code, context)),
+            : jobSendRefusalRemedy(jobId, result, context)),
         ].join('\n'),
         exitCode: 1,
       };
@@ -89,7 +95,13 @@ export function formatJobSendResult(
       return {
         text: [
           "Unknown: message may have been delivered. Check the job's progress for evidence.",
-          formatJobsOperatorCommand({ kind: 'wait-job', jobId, grammar: 'current' }),
+          formatJobsOperatorCommand({
+            kind: 'wait-job',
+            jobId,
+            grammar: 'current',
+            ...(result.executionSelection === undefined ? {} : { executionSelection: result.executionSelection }),
+          }),
+          'Do not resend until the wait shows the outcome.',
         ].join('\n'),
         exitCode: 75,
       };
@@ -98,39 +110,181 @@ export function formatJobSendResult(
 
 type JobSendRefusalCode = Extract<JobSendOutcome, { state: 'refused' }>['code'];
 
+type RemedyPolicy =
+  | Readonly<{ kind: 'invalid-request' | 'retry' | 'terminal' | 'target-changed' | 'uncertain' }>
+  | Readonly<{
+      kind: 'inspect';
+      message: string;
+      command: 'wait-job' | 'jobs-detail' | 'jobs-list' | 'backend-status';
+      all?: true;
+    }>
+  | Readonly<{ kind: 'unrestorable'; diagnosis: string }>
+  | Readonly<{ kind: 'fresh-provider'; diagnosis: readonly string[] }>;
+
+const jobSendRemedyPolicies = {
+  invalid_request: { kind: 'invalid-request' },
+  session_busy: { kind: 'uncertain' },
+  execution_finishing: { kind: 'uncertain' },
+  continuation_target_changed: { kind: 'target-changed' },
+  execution_superseded: { kind: 'target-changed' },
+  turn_not_started: { kind: 'retry' },
+  control_unavailable: { kind: 'retry' },
+  busy: { kind: 'retry' },
+  succession_admission_paused: { kind: 'retry' },
+  turn_ended: { kind: 'terminal' },
+  job_not_running: { kind: 'inspect', message: "Read the job's result.", command: 'wait-job' },
+  provider_rejected: { kind: 'inspect', message: "Read the job's result.", command: 'wait-job' },
+  transport_unsupported: { kind: 'inspect', message: "Read the job's result.", command: 'wait-job' },
+  not_found: { kind: 'inspect', message: 'List the available jobs.', command: 'jobs-list' },
+  scope_mismatch: {
+    kind: 'inspect',
+    message:
+      "The job belongs to a work directory outside this cwd. Nothing was written. Run the printed list command from the current directory; it lists all projects, including terminal jobs. Take the job's work directory from its output, then rerun the send from that directory or a directory that contains it.",
+    command: 'jobs-list',
+    all: true,
+  },
+  non_provider_job: {
+    kind: 'inspect',
+    message: 'This job has no provider conversation. Read its detail to find the owning operation.',
+    command: 'jobs-detail',
+  },
+  owner_not_provider_session: {
+    kind: 'inspect',
+    message:
+      'The owning workflow, discussion or system task controls further executions. Read its ownership in job detail.',
+    command: 'jobs-detail',
+  },
+  archive_missing: { kind: 'unrestorable', diagnosis: 'No retained conversation is available to continue.' },
+  archive_hash_mismatch: {
+    kind: 'unrestorable',
+    diagnosis:
+      'The archived conversation failed integrity verification; these bytes cannot be used for a continuation.',
+  },
+  archive_invalid: {
+    kind: 'unrestorable',
+    diagnosis: 'The archived conversation has invalid structure or identity and cannot be continued.',
+  },
+  profile_mismatch: {
+    kind: 'fresh-provider',
+    diagnosis: [
+      'Continuation is impossible from this environment with its selected profile. If the original profile is known, select it through CODEX_HOME (Codex) or CLAUDE_CONFIG_DIR (Claude) in an environment that can access it.',
+      'Alternatively, start a new conversation with a fresh provider job. This does not continue this conversation.',
+    ],
+  },
+  work_directory_missing: {
+    kind: 'inspect',
+    message: 'Read the recorded work directory in job detail. Restore that directory before a new send attempt.',
+    command: 'jobs-detail',
+  },
+  pre_generation_job: {
+    kind: 'fresh-provider',
+    diagnosis: ['This historical job is not continuable. Start a fresh provider job to continue the work.'],
+  },
+  native_unobservable: {
+    kind: 'inspect',
+    message: 'Read job detail before a new send attempt.',
+    command: 'jobs-detail',
+  },
+  provider_preflight_failed: {
+    kind: 'inspect',
+    message: 'Read job detail before a new send attempt.',
+    command: 'jobs-detail',
+  },
+  provider_preflight_undetermined: {
+    kind: 'inspect',
+    message: 'Read job detail before a new send attempt.',
+    command: 'jobs-detail',
+  },
+  work_directory_unobservable: {
+    kind: 'inspect',
+    message: 'Read job detail before a new send attempt.',
+    command: 'jobs-detail',
+  },
+  session_not_found: { kind: 'inspect', message: 'Read job detail before a new send attempt.', command: 'jobs-detail' },
+  unsupported_by_running_build: {
+    kind: 'inspect',
+    message:
+      'Inspect the pending upgrade and its next automatic action. A pending upgrade proceeds automatically when its recorded conditions clear. If none is pending, wait for the coordinator to retire idle, then the next CLI call starts the installed build. Idle retirement normally requires at least 6 hours without activity; each CLI reuse resets the timer. Retry the send after the installed build is serving.',
+    command: 'backend-status',
+  },
+} satisfies Record<JobSendRefusalCode, RemedyPolicy>;
+
 function jobSendRefusalRemedy(
   jobId: string,
-  code: JobSendRefusalCode,
+  result: Extract<CliJobSendOutcome, { state: 'refused' }>,
   context: JobSendOutputContext | undefined,
 ): readonly string[] {
-  switch (code) {
-    case 'execution_finishing':
-      return [
-        'This invocation wrote nothing; an earlier invocation with this message identity may have delivered it.',
-        formatJobsOperatorCommand({ kind: 'wait-job', jobId, grammar: 'current' }),
-        'After the wait, a new intentional send reads a fresh target and uses a new message ID.',
-      ];
-    case 'continuation_target_changed':
-      return [
-        'Read job detail before a new intentional send attempt.',
-        formatJobsOperatorCommand({ kind: 'jobs-detail', jobId }),
-        ...jobSendNewAttemptRemedy(jobId, context),
-      ];
-    case 'turn_not_started':
-    case 'control_unavailable':
+  const policy = jobSendRemedyPolicies[result.code];
+  switch (policy.kind) {
+    case 'invalid-request':
+      return jobSendInvalidRequestRemedy(jobId, result, context);
+    case 'uncertain':
+      return jobSendUncertainRemedy(jobId);
+    case 'target-changed':
+      return jobSendTargetChangedRemedy(jobId, context);
+    case 'retry':
       return jobSendRetryRemedy(jobId, context);
-    case 'turn_ended':
+    case 'terminal':
       return jobSendTerminalRemedy(jobId, context);
+    case 'inspect':
+      return jobSendInspectionRemedy(jobId, policy);
+    case 'unrestorable':
+      return jobSendUnrestorableRemedy(jobId, policy.diagnosis, context);
+    case 'fresh-provider':
+      return [...policy.diagnosis, ...jobSendFreshProviderRemedy(context)];
     default:
-      return jobSendReadOnlyRemedy(jobId, code);
+      return assertNever(policy);
   }
 }
 
+function jobSendInvalidRequestRemedy(
+  jobId: string,
+  result: Extract<CliJobSendOutcome, { state: 'refused' }>,
+  context: JobSendOutputContext | undefined,
+): readonly string[] {
+  return [
+    'This invocation was rejected before delivery. Nothing was delivered.',
+    ...(result.invalidFields?.length && result.invalidFields.every((field) => field === 'input')
+      ? ['Re-run with a corrected -i: supply non-whitespace input of at most 65,536 UTF-16 code units.']
+      : [
+          'Make a new send attempt; it reads a fresh execution target and uses a new message ID.',
+          ...jobSendStdinReminder(context),
+          ...(context === undefined
+            ? []
+            : [formatJobsOperatorCommand({ kind: 'send-job', jobId, inputTokens: context.inputTokens })]),
+        ]),
+  ];
+}
+
+function jobSendUncertainRemedy(jobId: string): readonly string[] {
+  return [
+    'This invocation wrote nothing; an earlier invocation with this message identity may have delivered it.',
+    formatJobsOperatorCommand({ kind: 'wait-job', jobId, grammar: 'current' }),
+    'Resend only if the result does not reflect the message. A new intentional send reads a fresh target and uses a new message ID.',
+  ];
+}
+
+function jobSendTargetChangedRemedy(jobId: string, context: JobSendOutputContext | undefined): readonly string[] {
+  return [
+    'Read job detail before a new intentional send attempt.',
+    formatJobsOperatorCommand({ kind: 'jobs-detail', jobId }),
+    ...jobSendNewAttemptRemedy(jobId, context),
+  ];
+}
+
+function jobSendInspectionRemedy(jobId: string, policy: Extract<RemedyPolicy, { kind: 'inspect' }>): readonly string[] {
+  return [
+    policy.message,
+    formatJobsOperatorCommand({ kind: policy.command, jobId, grammar: 'current', all: policy.all }),
+  ];
+}
+
 function jobSendRetryRemedy(jobId: string, context: JobSendOutputContext | undefined): readonly string[] {
-  return context === undefined || context.inputTokens.join(' ') === '-'
+  return context === undefined
     ? ['Nothing was written. Try again with the same message.']
     : [
         'Nothing was written. Run the same request again.',
+        ...jobSendStdinReminder(context),
         formatJobsOperatorCommand({ kind: 'send-job', jobId, inputTokens: context.inputTokens }),
       ];
 }
@@ -144,75 +298,43 @@ function jobSendTerminalRemedy(jobId: string, context: JobSendOutputContext | un
 }
 
 function jobSendNewAttemptRemedy(jobId: string, context: JobSendOutputContext | undefined): readonly string[] {
-  return context === undefined || context.inputTokens.join(' ') === '-'
+  return context === undefined
     ? ['Make a new intentional send attempt with the same message supplied again; it reads a fresh execution target.']
     : [
         'A new intentional send attempt reads a fresh execution target and uses a new message ID.',
+        ...jobSendStdinReminder(context),
         formatJobsOperatorCommand({ kind: 'send-job', jobId, inputTokens: context.inputTokens }),
       ];
 }
 
-function jobSendReadOnlyRemedy(
+function jobSendUnrestorableRemedy(
   jobId: string,
-  code: Exclude<
-    JobSendRefusalCode,
-    'turn_not_started' | 'control_unavailable' | 'turn_ended' | 'execution_finishing' | 'continuation_target_changed'
-  >,
+  diagnosis: string,
+  context: JobSendOutputContext | undefined,
 ): readonly string[] {
-  switch (code) {
-    case 'job_not_running':
-    case 'provider_rejected':
-    case 'transport_unsupported':
-      return ["Read the job's result.", formatJobsOperatorCommand({ kind: 'wait-job', jobId, grammar: 'current' })];
-    case 'invalid_request':
-      return ['This invocation was rejected before delivery. Check the request parameters.'];
-    case 'not_found':
-      return ['List the available jobs.', formatJobsOperatorCommand({ kind: 'jobs-list' })];
-    case 'scope_mismatch':
-      return [
-        'The job belongs to another project. Nothing was written. Locate its work directory in the job list, change to that project directory, then make a new send attempt.',
-        formatJobsOperatorCommand({ kind: 'jobs-list', all: true }),
-      ];
-    case 'non_provider_job':
-      return [
-        'This job has no provider conversation. Read its detail to find the owning operation.',
-        formatJobsOperatorCommand({ kind: 'jobs-detail', jobId }),
-      ];
-    case 'owner_not_provider_session':
-      return [
-        'The owning workflow, discussion or system task controls further executions. Read its ownership in job detail.',
-        formatJobsOperatorCommand({ kind: 'jobs-detail', jobId }),
-      ];
-    case 'archive_missing':
-      return [
-        'No retained conversation is available to continue. Read the execution result.',
-        formatJobsOperatorCommand({ kind: 'wait-job', jobId, grammar: 'current' }),
-      ];
-    case 'archive_hash_mismatch':
-      return [
-        'The archived conversation failed integrity verification. Read the execution result; these bytes cannot authorize a continuation.',
-        formatJobsOperatorCommand({ kind: 'wait-job', jobId, grammar: 'current' }),
-      ];
-    case 'profile_mismatch':
-      return [
-        'Read job detail, select the original provider account profile, then make a new send attempt.',
-        formatJobsOperatorCommand({ kind: 'jobs-detail', jobId }),
-      ];
-    case 'work_directory_missing':
-      return [
-        'Read the recorded work directory in job detail. Restore that directory before a new send attempt.',
-        formatJobsOperatorCommand({ kind: 'jobs-detail', jobId }),
-      ];
-    case 'pre_generation_job':
-      return [
-        'This historical job cannot accept another execution. Read its retained result.',
-        formatJobsOperatorCommand({ kind: 'wait-job', jobId, grammar: 'current' }),
-      ];
-    case 'unsupported_by_running_build':
-      return ['The running Coral build predates this feature; it becomes available after the session restarts.'];
-    default:
-      return assertNever(code);
-  }
+  return [
+    diagnosis,
+    'Read the execution result.',
+    formatJobsOperatorCommand({ kind: 'wait-job', jobId, grammar: 'current' }),
+    'Start a new conversation with a fresh provider job. This does not continue this conversation.',
+    ...jobSendFreshProviderRemedy(context),
+  ];
+}
+
+function jobSendFreshProviderRemedy(context: JobSendOutputContext | undefined): readonly string[] {
+  if (context === undefined) return [];
+  return [
+    ...jobSendStdinReminder(context),
+    ...(['codex', 'claude'] as const).map((provider) =>
+      formatJobsOperatorCommand({ kind: 'fresh-provider', provider, inputTokens: context.inputTokens }),
+    ),
+  ];
+}
+
+function jobSendStdinReminder(context: JobSendOutputContext | undefined): readonly string[] {
+  return context?.inputTokens.join(' ') === '-'
+    ? ['Coral does not retain stdin content. Pipe the same original input into the command you run.']
+    : [];
 }
 
 export function truncatePreview(text: string): string {
@@ -435,7 +557,9 @@ export function formatJobDetail(
     `Phase: ${status.phase}`,
     status.execution === null ? undefined : `Latest execution: #${status.execution}`,
     status.finishing === true ? 'Finishing: true' : undefined,
-    status.finishingStatus?.kind === 'blocked' ? formatRecoveryQuarantineCommand({ kind: 'list' }) : undefined,
+    status.finishingStatus?.kind === 'blocked' && status.finishingStatus.successor === 'recovery-quarantine'
+      ? formatRecoveryQuarantineCommand({ kind: 'list' })
+      : undefined,
     status.finishingStatus === undefined
       ? undefined
       : `Finishing status: ${status.finishingStatus.kind}; ${status.finishingStatus.reason}; successor=${status.finishingStatus.successor}`,
@@ -569,14 +693,20 @@ export function renderJobsList(rows: JobsListItem[], filters: JobsListDisplayFil
   return sections.join('\n\n');
 }
 export type JobsOperatorCommand =
+  | Readonly<{ kind: 'backend-status' }>
   | Readonly<{ kind: 'jobs-detail-full'; jobId: string }>
   | JobOperatorRemedy
   | Readonly<{ kind: 'wait-job'; jobId: string; grammar?: 'current'; executionSelection?: WaitExecutionSelection }>
   | Readonly<{ kind: 'send-job'; jobId: string; inputTokens: readonly string[] }>
-  | Readonly<{ kind: 'jobs-list'; all?: boolean }>;
+  | Readonly<{ kind: 'jobs-list'; all?: boolean }>
+  | Readonly<{ kind: 'fresh-provider'; provider: 'codex' | 'claude'; inputTokens: readonly string[] }>;
 
 export function renderJobsOperatorCommand(command: JobsOperatorCommand): string {
   switch (command.kind) {
+    case 'backend-status':
+      return 'coral-cli backend status';
+    case 'fresh-provider':
+      return `coral-cli ${command.provider} ${renderJobsInputTokens(command.inputTokens)}`;
     case 'abort-job':
       return `coral-cli jobs abort ${command.jobId}`;
     case 'jobs-detail-full':
@@ -593,6 +723,7 @@ export function renderJobsOperatorCommand(command: JobsOperatorCommand): string 
 }
 
 function renderJobsInputTokens(inputTokens: readonly string[]): string {
+  if (inputTokens.length === 1 && inputTokens[0] === '-') return '-i -';
   return inputTokens.some((token) => token.startsWith('-'))
     ? inputTokens.map((token) => `--input=${quoteJobsCommandArgument(token)}`).join(' ')
     : `-i ${inputTokens.map(quoteJobsCommandArgument).join(' ')}`;

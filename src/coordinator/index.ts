@@ -501,6 +501,7 @@ function createCoordinatorJournalAssembly({
       beforeAppend: beforeJobAppend,
       withCommitGuard: beforeJobAppend.withCommitGuard,
       withExecutionAdmission: beforeJobAppend.withExecutionAdmission,
+      readAdmissionStatus: (jobId) => getExecutionFinisher().admissionStatus(jobId),
     });
     const consumerDriver = new ConsumerDriver({
       db: storeDb,

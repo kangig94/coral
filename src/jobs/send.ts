@@ -1,22 +1,16 @@
 import { z } from 'zod';
 
-import { acceptedLaunchResponseSchema, executionOrdinalSchema } from './launch.js';
-import { providerSendOutcomeSchema } from '../providers/contract.js';
-import type { ProxyOperationSendResult } from '../provider-proxy/protocol.js';
+import { acceptedLaunchResponseSchema } from './launch.js';
+import {
+  providerSendDeliveredSchema,
+  providerSendRefusedSchema,
+  providerSendUnknownSchema,
+} from '../providers/contract.js';
+import { jobSendTargetSchema } from './send-target.js';
 import type { JobLocation } from './location-index.js';
 
-export const jobSendTargetSchema = z
-  .object({
-    mode: z.enum(['steer', 'continue']),
-    execution: executionOrdinalSchema,
-    requestedSeq: z.number().int().positive().safe(),
-    sourceEpoch: z.string().min(1),
-  })
-  .strict();
-
-export type JobSendTarget = Readonly<z.infer<typeof jobSendTargetSchema>>;
-
 export const JOB_SEND_MAX_INPUT_LENGTH = 65_536;
+export const UNSUPPORTED_JOB_SEND_BUILD_REASON = 'The running Coral build predates this jobs send contract.';
 
 export const jobSendAttemptSchema = z
   .object({
@@ -32,10 +26,11 @@ export const jobSendAttemptSchema = z
   .strict();
 
 export const jobSendOutcomeSchema = z.discriminatedUnion('state', [
-  providerSendOutcomeSchema.options[0],
-  providerSendOutcomeSchema.options[1].extend({
+  providerSendDeliveredSchema,
+  providerSendRefusedSchema.extend({
+    invalidFields: z.array(z.string()).optional(),
     code: z.enum([
-      ...providerSendOutcomeSchema.options[1].shape.code.options,
+      ...providerSendRefusedSchema.shape.code.options,
       'execution_finishing',
       'continuation_target_changed',
       'invalid_request',
@@ -46,15 +41,26 @@ export const jobSendOutcomeSchema = z.discriminatedUnion('state', [
       'profile_mismatch',
       'work_directory_missing',
       'pre_generation_job',
+      'busy',
+      'succession_admission_paused',
+      'session_busy',
+      'native_unobservable',
+      'archive_invalid',
+      'provider_preflight_failed',
+      'session_not_found',
+      'execution_superseded',
+      'work_directory_unobservable',
+      'provider_preflight_undetermined',
     ]),
-    priorDeliveryUncertain: z.literal(true).optional(),
   }),
-  providerSendOutcomeSchema.options[2],
+  providerSendUnknownSchema,
   z.object({ state: z.literal('launched'), launch: acceptedLaunchResponseSchema.options[0] }).strict(),
 ]);
 
 export type JobSendOutcome = Readonly<z.infer<typeof jobSendOutcomeSchema>>;
-export type JobSendResult = ProxyOperationSendResult | Exclude<JobSendOutcome, { state: 'delivered' }>;
+export type JobSendResult =
+  | (Extract<JobSendOutcome, { state: 'delivered' }> & { providerTurnId: string })
+  | Exclude<JobSendOutcome, { state: 'delivered' }>;
 
 export function missingJobSendRefusal(location: JobLocation | null): Extract<JobSendOutcome, { state: 'refused' }> {
   return location === null

@@ -130,6 +130,7 @@ it('observes a progressing local app-server placement through production assembl
   const observedPasses: CarrierWaitObservation[][] = [];
   let localService: ExecutionService | undefined;
   const services = createExecutionServices({
+    jobLocations: { read: () => null },
     executionFinisher: createTestExecutionFinisher(store, runtime),
     world,
     runtime,

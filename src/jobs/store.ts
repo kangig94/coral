@@ -56,6 +56,7 @@ import {
   type JobStatus,
   type JobTerminal,
   type JobDetailResponse,
+  type ExecutionRetryStatus,
 } from './records.js';
 import { progressTimingFromProjection } from './progress-timing.js';
 import { buildJobEventRefs } from './refs.js';
@@ -72,6 +73,7 @@ import { writeDurableCliProvisionalProcessRuntimeMeta } from './runtime-meta-sto
 import type { DurableCliProvisionalProcessRuntimeMeta } from './runtime-meta.js';
 
 export type JobStoreOptions = {
+  readAdmissionStatus?: (jobId: string) => ExecutionRetryStatus | null;
   eventBus?: JobEventBus;
   db: Database;
   reducers?: ComposedReducers;
@@ -187,6 +189,7 @@ export function jobLaunchRequestedEvent(jobId: string, launch: JobLaunch) {
 
 export class JobStore implements JobProgressStore {
   private readonly admissionGuard: JobStoreOptions['withExecutionAdmission'];
+  private readonly readAdmissionStatus: JobStoreOptions['readAdmissionStatus'];
   private readonly eventBus: JobEventBus;
   private readonly db: Database;
   private readonly commitEvents: CommitEventsFn;
@@ -213,6 +216,7 @@ export class JobStore implements JobProgressStore {
     const { eventBus = createNoopJobEventBus(), db, reducers = composeReducers(jobsRegistry) } = options;
 
     this.admissionGuard = options.withExecutionAdmission;
+    this.readAdmissionStatus = options.readAdmissionStatus;
     this.eventBus = eventBus;
     this.observer = options.observer;
     this.schemas = reducers.schemas;
@@ -285,7 +289,13 @@ export class JobStore implements JobProgressStore {
   }
 
   private detail(jobId: string, observation?: RecoveryObservation) {
-    return this.applyNamespaceOverride(loadJobProjectionDetail(this.db, jobId, this, observation), jobId);
+    const detail = this.applyNamespaceOverride(loadJobProjectionDetail(this.db, jobId, this, observation), jobId);
+    return detail.status === null ? detail : { ...detail, status: this.withAdmissionStatus(detail.status) };
+  }
+
+  private withAdmissionStatus(status: JobStatus): JobStatus {
+    const admissionStatus = this.readAdmissionStatus?.(status.jobId) ?? null;
+    return admissionStatus === null ? status : { ...status, finishingStatus: admissionStatus };
   }
 
   private applyNamespaceOverrideToStatus(jobId: string, status: JobStatus): JobStatus {
@@ -455,7 +465,7 @@ export class JobStore implements JobProgressStore {
       jobId,
       execution: status.execution,
       resultPath: status.execution === null ? null : this.resultPathFor(jobId, status.execution),
-      status: this.applyNamespaceOverrideToStatus(jobId, status),
+      status: this.withAdmissionStatus(this.applyNamespaceOverrideToStatus(jobId, status)),
     }));
   }
 

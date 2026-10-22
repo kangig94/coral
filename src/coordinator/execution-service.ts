@@ -30,8 +30,8 @@ import { JobLaunchService } from './services/job-launch.js';
 import { WorkflowExecutionService } from './services/workflow-execution.js';
 import { JobAbortService } from './services/job-abort.js';
 import { JobSendService, type JobSendRequest } from './services/job-send.js';
+import { refuseLaunch } from '../jobs/launch.js';
 import type { JobSendResult } from '../jobs/send.js';
-import { JobLocationIndex } from '../jobs/location-index.js';
 import { JobWaitService } from './services/job-wait.js';
 import { RecoveryService } from './services/recovery/service.js';
 import { recordProviderTerminal } from './services/terminal-materializer.js';
@@ -199,29 +199,28 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     });
     this.sendService = new JobSendService({
       progressStore: this.progressStore,
-      jobLocations: new JobLocationIndex(deps.runtime, deps.runtime.paths.coral.generation.dataRoot),
-      currentJobEpochKey: () => deps.currentJobEpochKey?.() ?? ':memory:',
-      resume: (request, requestCtx) => {
-        const status = this.progressStore.readStatus(request.jobId);
-        if (status?.provider === null || status?.provider === undefined)
-          return Promise.resolve({
-            status: 'refused' as const,
-            code: 'transport_unsupported',
-            message: 'The job has no provider.',
-          });
-        return this.launchService.resume(
-          status.provider,
-          {
-            jobId: request.jobId,
-            prompt: request.input,
-            originatingClientMessageId: request.clientMessageId,
-            continuationTarget: request.target,
-          },
-          requestCtx,
-        );
-      },
+      jobLocations: deps.jobLocations,
+      attempts: deps.jobSendAttempts,
+      currentJobEpochKey: () => this.launchOrchestrator.currentJobEpochKey(),
+      resume: (request, requestCtx) => this.resumeContinuation(request, requestCtx),
       authorityFor: (identity) => deps.providerProxyAuthorityFor?.(identity) ?? null,
     });
+  }
+
+  private resumeContinuation(request: JobSendRequest, ctx: InvocationContext): Promise<ProviderJobLaunchDecision> {
+    const status = this.progressStore.readStatus(request.jobId);
+    if (status?.provider === null || status?.provider === undefined)
+      return Promise.resolve(refuseLaunch('transport_unsupported', 'The job has no provider.'));
+    return this.launchService.resume(
+      status.provider,
+      {
+        jobId: request.jobId,
+        prompt: request.input,
+        originatingClientMessageId: request.clientMessageId,
+        continuationTarget: request.target,
+      },
+      ctx,
+    );
   }
 
   holdsLocalAppServerExecution(jobId: string, execution: number): boolean {

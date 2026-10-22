@@ -90,6 +90,7 @@ import {
 
 type CreateExecutionServicesDeps = {
   executionFinisher: ExecutionServiceDeps['executionFinisher'];
+  jobLocations: ExecutionServiceDeps['jobLocations'];
   world: CoordinatorWorld;
   runtime: Runtime;
   getActiveEpochPath?: () => string | null;
@@ -130,6 +131,7 @@ function createExecutionServiceRegistry(input: {
   const { services, getProgressStore, providerOperationReconciler, providerOperationCleanup } = input;
   const { world, runtime, bundleHash, backendNamespace, settlementRefusalRecorder, createExecutionService } =
     input.deps;
+  const jobSendAttempts = new Map<string, Promise<void>>();
   function getExecutionService(ctx: InvocationContext): ProjectRequestPort {
     const key = ctx.projectRoot;
     const existing = services.get(key);
@@ -142,6 +144,8 @@ function createExecutionServiceRegistry(input: {
       ).get()?.seq ?? 0;
     const created = createExecutionService(ctx, {
       executionFinisher: input.deps.executionFinisher,
+      jobLocations: input.deps.jobLocations,
+      jobSendAttempts,
       jobAttention: input.jobAttention,
       runningWorkflowJobs: world.runningWorkflowJobs,
       runtime,
@@ -158,7 +162,8 @@ function createExecutionServiceRegistry(input: {
       loadJobProjectionDetail: (jobId) => getProgressStore().loadJobProjectionDetail(jobId),
       loadJobWaitDetail: (jobId, requestedSeq, jobIds) =>
         getProgressStore().loadJobWaitDetail(jobId, requestedSeq, jobIds),
-      readExecutionFinishingStatus: (address) => readExecutionRetryStatus(getProgressStore().getDb(), address),
+      readExecutionFinishingStatus: (address) =>
+        input.deps.executionFinisher.status(address) ?? readExecutionRetryStatus(getProgressStore().getDb(), address),
       readJobLastSeq: (jobId) => getProgressStore().readJobLastSeq(jobId),
 
       visitProgress: (_epoch, read) => getProgressStore().visitProgress(read),

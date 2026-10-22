@@ -11,7 +11,8 @@ import { providerProxySetIdentityFromRecord } from '#src/coordinator/services/pr
 import { findCommittedExecutionRequest } from '#src/jobs/execution-journal.js';
 import { loadJobProjectionDetail } from '#src/jobs/read-queries.js';
 import { appendJobExecutionOutcomeAccepted } from '#src/jobs/terminal/recording.js';
-import type { JobSendResult, JobSendTarget } from '#src/jobs/send.js';
+import { UNSUPPORTED_JOB_SEND_BUILD_REASON, type JobSendResult } from '#src/jobs/send.js';
+import type { JobSendTarget } from '#src/jobs/send-target.js';
 import type { JobStatus } from '#src/jobs/records.js';
 import type { JobLocation } from '#src/jobs/location-index.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
@@ -97,6 +98,7 @@ function harness({
     };
   });
   const deps: JobSendServiceDeps = {
+    attempts: new Map(),
     progressStore: { getDb: () => journal.db, readStatus },
     jobLocations: { read: vi.fn(() => null) },
     currentJobEpochKey: () => 'epoch',
@@ -137,15 +139,29 @@ function harness({
 }
 
 describe('JobSendService bound admission', () => {
+  it.each(['', '   ', 'x'.repeat(65_537)])('refuses invalid input before reading or delivering', async (input) => {
+    const h = harness();
+    expect(await h.service().send({ ...h.request(), input }, ctx)).toMatchObject({
+      state: 'refused',
+      code: 'invalid_request',
+      invalidFields: ['input'],
+    });
+    expect(h.readStatus).not.toHaveBeenCalled();
+    expect(h.sendOperation).not.toHaveBeenCalled();
+    expect(h.resume).not.toHaveBeenCalled();
+  });
+
   it.each([
     ['missing job', null, 'not_found'],
     ['another project', { workDir: fixtureCanonicalWorkDir('/other') }, 'scope_mismatch'],
     ['non-provider job', { jobKind: 'kb' }, 'transport_unsupported'],
   ] as const)('refuses %s before replay or effects', async (_label, patch, code) => {
-    const h = harness();
+    const h = harness({ ended: true, record: null });
     const status = h.readStatus();
     h.readStatus.mockReturnValue(patch === null ? null : { ...status!, ...patch });
-    expect(await h.service().send(h.request(patch === null ? 'continue' : 'steer'), ctx)).toMatchObject({
+    expect(
+      await h.service().send(h.request(patch !== null && 'jobKind' in patch ? 'steer' : 'continue'), ctx),
+    ).toMatchObject({
       state: 'refused',
       code,
     });
@@ -163,6 +179,7 @@ describe('JobSendService bound admission', () => {
     expect(await h.service().send({ ...h.request(), target } as JobSendRequest, ctx)).toMatchObject({
       state: 'refused',
       code: 'invalid_request',
+      invalidFields: ['target'],
     });
     expect(h.readStatus).not.toHaveBeenCalled();
     expect(h.sendOperation).not.toHaveBeenCalled();
@@ -314,27 +331,42 @@ describe('JobSendService bound admission', () => {
     },
   );
 
-  it('serializes identical IDs to one launch and one selection', async () => {
-    const h = harness({ ended: true, record: null });
-    const request = h.request();
-    const [first, second] = await Promise.all([h.service().send(request, ctx), h.service().send(request, ctx)]);
-    expect(second).toEqual(first);
-    expect(h.resume).toHaveBeenCalledTimes(1);
-    expect(h.sendOperation).not.toHaveBeenCalled();
-  });
-
-  it('serializes distinct IDs bound to one predecessor without steering the winner', async () => {
-    const h = harness({ ended: true, record: null });
-    const request = h.request();
-    const [winner, loser] = await Promise.all([
-      h.service().send(request, ctx),
-      h.service().send({ ...request, clientMessageId: '44444444-4444-4444-8444-444444444444' }, ctx),
-    ]);
-    expect(winner.state).toBe('launched');
-    expect(loser).toMatchObject({ state: 'refused', code: 'continuation_target_changed' });
-    expect(h.resume).toHaveBeenCalledTimes(1);
-    expect(h.sendOperation).not.toHaveBeenCalled();
-  });
+  it.each([true, false])(
+    'serializes a pending continuation before persistence, identical message=%s',
+    async (identical) => {
+      const h = harness({ ended: true, record: null });
+      const resume = h.resume.getMockImplementation()!;
+      let admit!: () => void;
+      const pendingAdmission = new Promise<void>((resolve) => {
+        admit = resolve;
+      });
+      h.resume.mockImplementation(async (...args) => {
+        await pendingAdmission;
+        return resume(...args);
+      });
+      const request = h.request();
+      const first = h.service().send(request, ctx);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(h.resume).toHaveBeenCalledTimes(1);
+      const second = h
+        .service()
+        .send(
+          { ...request, clientMessageId: identical ? request.clientMessageId : '44444444-4444-4444-8444-444444444444' },
+          ctx,
+        );
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(h.resume).toHaveBeenCalledTimes(1);
+      admit();
+      const winner = await first;
+      expect(winner.state).toBe('launched');
+      if (identical) expect(await second).toEqual(winner);
+      else expect(await second).toMatchObject({ state: 'refused', code: 'continuation_target_changed' });
+      expect(h.resume).toHaveBeenCalledTimes(1);
+      expect(h.sendOperation).not.toHaveBeenCalled();
+    },
+  );
 
   it.each([false, true])(
     'closes a lost steer after end, successor=%s, across coordinator reconstruction',
@@ -356,20 +388,6 @@ describe('JobSendService bound admission', () => {
       expect(h.events()).toEqual(before);
     },
   );
-
-  it.each([false, true])('does not change mode after the detail read when a successor exists=%s', async (successor) => {
-    const h = harness();
-    const request = h.request();
-    deleteProviderOperation(h.db, h.record!);
-    h.complete();
-    if (successor)
-      h.append(requestedExecution(2), executionInput('job.execution.admitted', { execution: 2, queuePosition: 0 }));
-    expect(await h.service().send(request, ctx)).toMatchObject({ state: 'unknown' });
-    expect(h.sendOperation).not.toHaveBeenCalled();
-    expect(h.resume).not.toHaveBeenCalled();
-    expect(h.restore).not.toHaveBeenCalled();
-    expect(h.activate).not.toHaveBeenCalled();
-  });
 
   it.each([{ requestedSeq: 999 }, { sourceEpoch: 'other' }, { execution: 2 }])(
     'refuses a changed continuation boundary %j',
@@ -394,15 +412,37 @@ describe('JobSendService bound admission', () => {
     },
   );
 
-  it('refuses an altered envelope that reuses a committed message ID', async () => {
-    const h = harness({ ended: true, record: null });
-    const request = h.request();
-    await h.service().send(request, ctx);
-    expect(await h.service().send({ ...request, input: 'different' }, ctx)).toMatchObject({
-      code: 'continuation_target_changed',
-    });
-    expect(h.resume).toHaveBeenCalledTimes(1);
-  });
+  it.each(['input', 'execution', 'requestedSeq', 'sourceEpoch', 'mode'] as const)(
+    'refuses an altered %s that reuses a committed message ID',
+    async (field) => {
+      const h = harness({ ended: true, record: null });
+      const request = h.request();
+      await h.service().send(request, ctx);
+      const altered = { ...request, target: { ...request.target } };
+      switch (field) {
+        case 'input':
+          altered.input = 'different';
+          break;
+        case 'execution':
+          altered.target.execution = 99;
+          break;
+        case 'requestedSeq':
+          altered.target.requestedSeq = 99;
+          break;
+        case 'sourceEpoch':
+          altered.target.sourceEpoch = 'other-epoch';
+          break;
+        case 'mode':
+          altered.target.mode = 'steer';
+          break;
+      }
+      expect(await h.service().send(altered, ctx)).toMatchObject({
+        code: 'continuation_target_changed',
+      });
+      expect(h.resume).toHaveBeenCalledTimes(1);
+      expect(h.sendOperation).not.toHaveBeenCalled();
+    },
+  );
 
   it('renders a changed predecessor with job detail and a new send attempt', async () => {
     const h = harness({ ended: true, record: null });
@@ -456,14 +496,32 @@ describe('jobs send typed continuation refusals', () => {
     ['provider_binding_profile_mismatch', 'profile_mismatch'],
     ['provider_binding_subject_mismatch', 'profile_mismatch'],
     ['work_directory_missing', 'work_directory_missing'],
-    ['session_busy', 'continuation_target_changed'],
+    ['session_busy', 'session_busy'],
+    ['busy', 'busy'],
+    ['succession_admission_paused', 'succession_admission_paused'],
+    ['retention_discard_in_flight', 'execution_finishing'],
+    ['execution_admission_in_flight', 'execution_finishing'],
+    ['native_unobservable', 'native_unobservable'],
+    ['archive_invalid', 'archive_invalid'],
+    ['provider_preflight_failed', 'provider_preflight_failed'],
+    ['session_not_found', 'session_not_found'],
+    ['execution_superseded', 'execution_superseded'],
+    ['transport_unsupported', 'transport_unsupported'],
+    ['provider_execution_environment_invalid', 'provider_rejected'],
   ] as const)('preserves the continuation refusal %s as %s', async (launchCode, code) => {
     const h = harness({ ended: true, record: null });
     const before = h.events();
     h.resume.mockResolvedValue({ status: 'refused', code: launchCode, message: 'Decisive admission refusal.' });
     const result = await h.service().send(h.request(), ctx);
     expect(result).toEqual({ state: 'refused', code, reason: 'Decisive admission refusal.' });
-    expect(formatJobSendResult(EXECUTION_JOB_ID, result).text).toMatch(/^command=coral-cli /m);
+    if (code === 'profile_mismatch')
+      expect(formatJobSendResult(EXECUTION_JOB_ID, result).text).toContain(
+        'Continuation is impossible from this environment',
+      );
+    else
+      expect(formatJobSendResult(EXECUTION_JOB_ID, result, { inputTokens: ['next input'] }).text).toMatch(
+        /^command=coral-cli /m,
+      );
     expect(h.events()).toEqual(before);
     expect(h.sendOperation).not.toHaveBeenCalled();
     expect(h.restore).not.toHaveBeenCalled();
@@ -471,55 +529,26 @@ describe('jobs send typed continuation refusals', () => {
   });
 });
 
-it('reuses operation-scoped message deduplication for an identical active steer', async () => {
-  const h = harness();
-  const request = h.request();
-  const delivered = new Set<string>();
-  let inputs = 0;
-  h.sendOperation.mockImplementation(async (operation, message) => {
-    const key = `${operation.operationId}:${message.clientMessageId}`;
-    if (!delivered.has(key)) {
-      delivered.add(key);
-      inputs++;
-    }
-    return { state: 'delivered', providerTurnId: 'turn-1' };
-  });
-  await h.service().send(request, ctx);
-  expect(await h.service().send(request, ctx)).toEqual({ state: 'delivered', providerTurnId: 'turn-1' });
-  expect(inputs).toBe(1);
-  expect(h.resume).not.toHaveBeenCalled();
-});
-
 it.each([
   { status: 'refused', code: 'execution_finishing', message: 'Previous cleanup is pending.' },
   { status: 'refused', code: 'archive_missing', message: 'The archive is missing.' },
   { status: 'undetermined', code: 'provider_preflight_undetermined', message: 'Provider readiness is unknown.' },
+  { status: 'undetermined', code: 'work_directory_unobservable', message: 'Work directory cannot be observed.' },
 ] as const)('consumes the continuation decision %j', async (decision) => {
   const h = harness({ ended: true, record: null });
   h.resume.mockResolvedValueOnce(decision);
   const result = await h.service().send(h.request(), ctx);
-  expect(result.state).toBe(decision.status === 'undetermined' ? 'unknown' : 'refused');
-  if (decision.code === 'execution_finishing') expect(result).toMatchObject({ code: 'execution_finishing' });
+  expect(result).toMatchObject({ state: 'refused', code: decision.code });
   expect(h.restore).not.toHaveBeenCalled();
   expect(h.activate).not.toHaveBeenCalled();
 });
 
-it('preserves uncertainty when the bound steer target disappears before replay', async () => {
+it('refuses a missing steer job before provider contact', async () => {
   const h = harness();
-  const request = h.request();
-  await h.service().send(request, ctx);
   h.readStatus.mockReturnValue(null);
-  const result = await h.service().send(request, ctx);
-  expect(result).toMatchObject({
-    state: 'unknown',
-    reason: expect.stringContaining('may have been delivered'),
-  });
-  const rendered = formatJobSendResult(EXECUTION_JOB_ID, result);
-  expect(rendered.exitCode).toBe(75);
-  expect(rendered.text).toContain('may have been delivered');
-  expect(rendered.text).not.toMatch(/nothing was written|not delivered|jobs send/i);
+  expect(await h.service().send(h.request(), ctx)).toMatchObject({ state: 'refused', code: 'not_found' });
+  expect(h.sendOperation).not.toHaveBeenCalled();
   expect(h.resume).not.toHaveBeenCalled();
-  expect(h.sendOperation).toHaveBeenCalledTimes(1);
 });
 
 it('cannot authorize delivery while committed-request replay evidence is unavailable', async () => {
@@ -609,16 +638,17 @@ describe('JobSendService operation guards', () => {
       expect(outcome).toEqual({
         state: 'refused',
         code: 'unsupported_by_running_build',
-        reason:
-          'The running Coral build predates jobs send. Restart the session so the current Coral plugin loads; the coordinator follows the installed build.',
+        reason: UNSUPPORTED_JOB_SEND_BUILD_REASON,
       });
 
       const output = formatJobSendResult(EXECUTION_JOB_ID, outcome);
       expect(output.exitCode).toBe(1);
       expect(output.text).toContain('unsupported_by_running_build');
-      expect(output.text).toContain('The running Coral build predates jobs send.');
-      expect(output.text).toContain('Restart the session so the current Coral plugin loads');
-      expect(output.text).not.toMatch(/retry|resend|command=|may have been delivered/i);
+      expect(output.text).toContain(UNSUPPORTED_JOB_SEND_BUILD_REASON);
+      expect(output.text).not.toMatch(/restart|shutdown|backend start|command=coral-cli jobs send/iu);
+      expect(output.text).toContain('Retry the send after the installed build is serving');
+      expect(output.text).toContain('command=coral-cli backend status');
+      expect(output.text).not.toMatch(/may have been delivered/i);
       expect(exchange).toHaveBeenCalledTimes(1);
       expect(totalChanges(h.db)).toBe(before);
       expect(readProviderOperationForJob(h.db, EXECUTION_JOB_ID)).toEqual(h.record);
@@ -659,3 +689,30 @@ describe('JobSendService operation guards', () => {
     expect(h.sendOperation).toHaveBeenCalledTimes(1);
   });
 });
+
+it.each(['steer', 'continue'] as const)('accepts equivalent epoch encodings for %s and its replay', async (mode) => {
+  const h = harness({ ended: mode === 'continue', record: mode === 'continue' ? null : undefined });
+  const request = h.request(mode);
+  const envelope = {
+    ...request,
+    target: { ...request.target, sourceEpoch: JSON.stringify({ epoch: 'epoch-1', lineageKey: 'epoch' }) },
+  };
+  const result = await h.service().send(envelope, ctx);
+  expect(result.state).toBe(mode === 'continue' ? 'launched' : 'delivered');
+  expect(await h.service().send(envelope, ctx)).toEqual(result);
+  expect(h.resume).toHaveBeenCalledTimes(mode === 'continue' ? 1 : 0);
+});
+
+it.each([{ execution: 99 }, { requestedSeq: 99 }, { sourceEpoch: 'retired-epoch' }])(
+  'refuses a stale steer address without provider contact: %j',
+  async (target) => {
+    const h = harness();
+    const request = h.request();
+    expect(await h.service().send({ ...request, target: { ...request.target, ...target } }, ctx)).toMatchObject({
+      state: 'refused',
+      code: 'execution_superseded',
+    });
+    expect(h.authorityFor).not.toHaveBeenCalled();
+    expect(h.resume).not.toHaveBeenCalled();
+  },
+);

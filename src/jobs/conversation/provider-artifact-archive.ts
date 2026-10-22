@@ -87,14 +87,12 @@ export type ProviderArtifactArchiveResult = {
   readonly artifacts: readonly ArchiveArtifactRecord[];
 };
 
-/** Fail-closed contradiction in an action identity, payload, or verified archive hash. */
-export class ProviderArtifactArchiveInvariantError extends Error {
-  readonly code: 'archive_invalid' | 'archive_missing' | 'archive_hash_mismatch';
+type ArchiveInvariantCode = 'archive_invalid' | 'archive_missing' | 'archive_hash_mismatch';
 
-  constructor(
-    message: string,
-    code: 'archive_invalid' | 'archive_missing' | 'archive_hash_mismatch' = 'archive_invalid',
-  ) {
+export class ProviderArtifactArchiveInvariantError extends Error {
+  readonly code: ArchiveInvariantCode;
+
+  constructor(message: string, code: ArchiveInvariantCode = 'archive_invalid') {
     super(message);
     this.name = 'ProviderArtifactArchiveInvariantError';
     this.code = code;

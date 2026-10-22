@@ -13,7 +13,7 @@ import {
   jobExecutionEndedBodySchema,
   jobTerminalSchema,
 } from '#src/jobs/terminal/result.js';
-import { findCommittedExecutionRequest } from '#src/jobs/execution-journal.js';
+import { readCommittedExecutionRequest } from '#src/jobs/execution-journal.js';
 import { refuseLaunch } from '#src/jobs/launch.js';
 import { jobsEventDescribers } from '#src/jobs/event-describers.js';
 import type { CoralEventInput } from '#src/store/envelope.js';
@@ -341,7 +341,7 @@ describe('jobs:execution-order', () => {
 
   it('creates no execution for a refusal before requested commits', () => {
     const h = harness();
-    expect(refuseLaunch('unrestorable', 'archive unavailable').status).toBe('refused');
+    expect(refuseLaunch('archive_missing', 'archive unavailable').status).toBe('refused');
     expect(h.events()).toEqual([]);
   });
 
@@ -350,7 +350,7 @@ describe('jobs:execution-order', () => {
     h.append(openedJob(), requestedExecution());
     h.complete();
     h.append(requestedExecution(2, { input: 'durable input', originatingClientMessageId: 'same-message' }));
-    const request = findCommittedExecutionRequest(h.db, jobId, 'same-message', h.readCtx);
+    const request = readCommittedExecutionRequest(h.db, jobId, 'same-message', h.readCtx);
     expect(request).toEqual({
       jobId,
       requestedSeq: 5,
@@ -362,8 +362,8 @@ describe('jobs:execution-order', () => {
     });
     h.complete(2);
     expectOrderFailure(() => h.append(requestedExecution(3, { originatingClientMessageId: 'same-message' })));
-    expect(findCommittedExecutionRequest(h.db, jobId, 'same-message', h.readCtx)).toEqual(request);
-    expect(findCommittedExecutionRequest(h.db, otherJobId, 'same-message', h.readCtx)).toBeNull();
+    expect(readCommittedExecutionRequest(h.db, jobId, 'same-message', h.readCtx)).toEqual(request);
+    expect(readCommittedExecutionRequest(h.db, otherJobId, 'same-message', h.readCtx)).toBeNull();
   });
 
   it('preserves durable historical session causes while refusing fresh acceptance with one', () => {

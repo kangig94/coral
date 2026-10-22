@@ -282,8 +282,10 @@ function registerJobsSendCommand(jobsCommand: Command): void {
   const sendCommand = jobsCommand.command('send');
   const inputUsage = 'Input is required. Use -i <text>, -i <file>, or -i - (stdin).';
   sendCommand
-    .description('Steer a running provider turn or continue its ended conversation.')
-    .argument('<jobId>', 'Job ID')
+    .description(
+      "Steer a running provider turn, or continue an ended job's conversation (follows to completion; -d returns after launch, ignored for a steer)",
+    )
+    .argument('<jobId>', 'Canonical job UUID (required)')
     .option(
       '-i, --input <text-or-file...>',
       'Message input (required; tokens are joined with single spaces; the whole input is read if it names an existing regular file, or stdin if exactly -; otherwise literal text)',
@@ -295,8 +297,8 @@ function registerJobsSendCommand(jobsCommand: Command): void {
         const input = resolveInput(opts.input);
         if (input.trim().length === 0) throw new UsageError(inputUsage);
         const result = await makeClient(process.cwd(), sendCommand).sendJob(jobId, input);
-        if (result.state === 'launched') {
-          await handleLaunchResult(result.launch, opts.detach);
+        if (result.state === 'launched' && opts.detach !== true) {
+          await handleLaunchResult(result.launch, false);
           return;
         }
         const output = formatJobSendResult(jobId, result, { inputTokens: opts.input });

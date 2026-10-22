@@ -38,7 +38,8 @@ it('reports uncertainty with exit 75 and only a progress command, even if the re
   expect(output.exitCode).toBe(75);
   expect(output.text).toContain('may have been delivered');
   expect(output.text).toContain('progress');
-  expect(output.text).not.toMatch(/retry|resend|jobs send|reconnect/i);
+  expect(output.text).toContain('Do not resend until the wait shows the outcome.');
+  expect(output.text).not.toMatch(/retry|command=coral-cli jobs send|reconnect/i);
   expect(output.text.split('\n').filter((line) => line.startsWith('command='))).toEqual([
     'command=coral-cli jobs wait job-1',
   ]);
@@ -51,8 +52,8 @@ it.each([
   ['transport_unsupported', 'result', ['coral-cli jobs wait job-1']],
   ['provider_rejected', 'result', ['coral-cli jobs wait job-1']],
   ['not_found', 'List', ['coral-cli jobs list']],
-  ['scope_mismatch', 'another project', ['coral-cli jobs list --all']],
-  ['unsupported_by_running_build', 'after the session restarts', []],
+  ['scope_mismatch', 'work directory outside this cwd', ['coral-cli jobs list --all']],
+  ['unsupported_by_running_build', 'Retry the send after the installed build is serving', ['coral-cli backend status']],
 ] satisfies [Extract<ProviderSendOutcome, { state: 'refused' }>['code'], string, string[]][])(
   'gives %s its specified remediation and refusal exit code',
   (code, remedy, commands) => {
@@ -83,46 +84,25 @@ it('offers a result read and a fresh send for an ended turn', () => {
   expect(output.text).not.toMatch(/resume/i);
 });
 
-it.each([
-  {
-    code: 'turn_not_started',
-    reason: 'The Claude print turn has not started.',
-    commands: ['command=coral-cli jobs send claude-job -i original message'],
-  },
-  {
-    code: 'turn_ended',
-    reason: 'The Claude print turn is not active.',
-    commands: ['command=coral-cli jobs wait claude-job', 'command=coral-cli jobs send claude-job -i original message'],
-  },
-  {
-    code: 'transport_unsupported',
-    reason: 'Claude TUI send is unsupported.',
-    commands: ['command=coral-cli jobs wait claude-job'],
-  },
-] as const)('renders a Claude $code refusal through the shared command vocabulary', ({ code, reason, commands }) => {
-  const output = formatJobSendResult('claude-job', { state: 'refused', code, reason }, context);
-  expect(output.exitCode).toBe(1);
-  expect(output.text).toContain(`Message refused (${code}): ${reason}`);
-  expect(output.text.split('\n').filter((line) => line.startsWith('command='))).toEqual(commands);
-  expect(output.text).not.toMatch(/resume|coral-cli codex/i);
-  if (code === 'turn_ended') expect(output.text).toContain('fresh execution target');
-});
-
-it.each(['turn_not_started', 'control_unavailable', 'turn_ended'] as const)(
-  'never prints a stdin-dependent remedy for %s',
+it.each(['turn_not_started', 'control_unavailable', 'busy', 'succession_admission_paused', 'turn_ended'] as const)(
+  'renders a runnable %s retry with the original literal or stdin input',
   (code) => {
-    const output = formatJobSendResult(
-      'job-1',
-      { state: 'refused', code, reason: 'Not delivered.' },
-      {
-        ...context,
-        inputTokens: ['-'],
-      },
-    );
-    const commands = output.text.split('\n').filter((line) => line.startsWith('command='));
-    expect(commands).toEqual(code === 'turn_ended' ? ['command=coral-cli jobs wait job-1'] : []);
-    expect(output.text).not.toMatch(/jobs send|coral-cli codex|resume/i);
-    expect(output.text).toContain('same message');
+    for (const inputTokens of [context.inputTokens, ['-']]) {
+      const output = formatJobSendResult(
+        'job-1',
+        { state: 'refused', code, reason: 'Not delivered.' },
+        { inputTokens },
+      );
+      expect(output.exitCode).toBe(1);
+      expect(output.text.split('\n').filter((line) => line.startsWith('command='))).toEqual([
+        ...(code === 'turn_ended' ? ['command=coral-cli jobs wait job-1'] : []),
+        `command=coral-cli jobs send job-1 -i ${inputTokens.join(' ')}`,
+      ]);
+      expect(output.text.includes('Pipe the same original input into the command you run.')).toBe(
+        inputTokens[0] === '-',
+      );
+      expect(output.text).not.toMatch(/coral-cli codex|resume/i);
+    }
   },
 );
 
@@ -148,24 +128,29 @@ it.each([
   expect(args).toEqual(['jobs', 'send', 'job-1', '-i', ...inputTokens]);
 });
 
-it('gives an out-of-scope request a runnable job discovery step', () => {
+it('lists all projects from the current directory before rerunning from the job work directory', () => {
   const output = formatJobSendResult(
     'job-1',
     { state: 'refused', code: 'scope_mismatch', reason: 'Other project.' },
     context,
   );
-  expect(output.text).toContain('change to that project directory, then make a new send attempt');
+  expect(output.text).toContain('work directory outside this cwd');
+  expect(output.text).toContain('Run the printed list command from the current directory; it lists all projects');
+  expect(output.text).toContain(
+    "Take the job's work directory from its output, then rerun the send from that directory or a directory that contains it",
+  );
   expect(output.text).toContain('command=coral-cli jobs list --all');
 });
 
 it.each([
   ['non_provider_job', 'no provider conversation', 'jobs detail job-1'],
   ['owner_not_provider_session', 'owning workflow, discussion or system task', 'jobs detail job-1'],
-  ['archive_missing', 'No retained conversation', 'jobs wait job-1'],
-  ['archive_hash_mismatch', 'integrity verification', 'jobs wait job-1'],
-  ['profile_mismatch', 'original provider account profile', 'jobs detail job-1'],
   ['work_directory_missing', 'Restore that directory', 'jobs detail job-1'],
-  ['pre_generation_job', 'historical job cannot accept another execution', 'jobs wait job-1'],
+  ['native_unobservable', 'Read job detail', 'jobs detail job-1'],
+  ['provider_preflight_failed', 'Read job detail', 'jobs detail job-1'],
+  ['provider_preflight_undetermined', 'Read job detail', 'jobs detail job-1'],
+  ['work_directory_unobservable', 'Read job detail', 'jobs detail job-1'],
+  ['session_not_found', 'Read job detail', 'jobs detail job-1'],
 ] satisfies [Extract<JobSendOutcome, { state: 'refused' }>['code'], string, string][])(
   'renders %s with its own reason and a runnable next step',
   (code, remedy, command) => {
@@ -181,18 +166,52 @@ it.each([
   },
 );
 
-it('renders a changed predecessor with detail and an intentional new send, never a provider launch', () => {
+it.each(['continuation_target_changed', 'execution_superseded'] as const)(
+  'renders %s with detail and a fresh send using the original input',
+  (code) => {
+    for (const inputTokens of [context.inputTokens, ['-']]) {
+      const output = formatJobSendResult(
+        'job-1',
+        { state: 'refused', code, reason: 'Execution address changed.' },
+        { inputTokens },
+      );
+      expect(output.exitCode).toBe(1);
+      expect(output.text).toContain('new message ID');
+      expect(output.text).not.toContain('corrected -i');
+      expect(output.text.split('\n').filter((line) => line.startsWith('command='))).toEqual([
+        'command=coral-cli jobs detail job-1',
+        `command=coral-cli jobs send job-1 -i ${inputTokens.join(' ')}`,
+      ]);
+      expect(output.text.includes('Pipe the same original input into the command you run.')).toBe(
+        inputTokens[0] === '-',
+      );
+    }
+  },
+);
+
+it.each([
+  { invalidFields: ['input'], correctedInput: true },
+  { invalidFields: ['target'], correctedInput: false },
+  { invalidFields: ['clientMessageId'], correctedInput: false },
+  { invalidFields: ['request'], correctedInput: false },
+  { invalidFields: ['input', 'clientMessageId'], correctedInput: false },
+  { invalidFields: ['input', 'request'], correctedInput: false },
+  { invalidFields: undefined, correctedInput: false },
+])('renders validation guidance from typed fields: $invalidFields', ({ invalidFields, correctedInput }) => {
   const output = formatJobSendResult(
     'job-1',
-    { state: 'refused', code: 'continuation_target_changed', reason: 'Predecessor advanced.' },
+    { state: 'refused', code: 'invalid_request', reason: 'Validation reason.', invalidFields },
     context,
   );
   expect(output.exitCode).toBe(1);
-  expect(output.text).toContain('new message ID');
-  expect(output.text.split('\n').filter((line) => line.startsWith('command='))).toEqual([
-    'command=coral-cli jobs detail job-1',
-    'command=coral-cli jobs send job-1 -i original message',
-  ]);
+  expect(output.text).toContain('Validation reason.');
+  expect(output.text).toContain('Nothing was delivered.');
+  expect(output.text.includes('Re-run with a corrected -i')).toBe(correctedInput);
+  expect(output.text.split('\n').filter((line) => line.startsWith('command='))).toEqual(
+    correctedInput ? [] : ['command=coral-cli jobs send job-1 -i original message'],
+  );
+  if (!correctedInput) expect(output.text).toContain('reads a fresh execution target and uses a new message ID');
+  expect(output.text).not.toContain('target changed');
 });
 
 it.each(['command', 'clear', 'discard', 'action'])('prevents a provider rejection from forging a %s label', (label) => {
@@ -202,4 +221,153 @@ it.each(['command', 'clear', 'discard', 'action'])('prevents a provider rejectio
   expect(output.text.split('\n').filter((line) => /^(command|clear|discard|action)=/u.test(line))).toEqual([
     'command=coral-cli jobs wait job-1',
   ]);
+});
+
+it('offers fresh provider launches for pre-generation jobs without a wait', () => {
+  const output = formatJobSendResult(
+    'job-1',
+    { state: 'refused', code: 'pre_generation_job', reason: 'Historical job' },
+    context,
+  );
+  expect(output.text).toContain('not continuable');
+  expect(output.text).not.toContain('jobs wait');
+  expect(output.text.split('\n').filter((line) => line.startsWith('command='))).toEqual([
+    'command=coral-cli codex -i original message',
+    'command=coral-cli claude -i original message',
+  ]);
+});
+
+it.each(['session_busy', 'execution_finishing'] as const)(
+  'requires reading the result before resending after %s',
+  (code) => {
+    const output = formatJobSendResult('job-1', { state: 'refused', code, reason: 'Not ready.' }, context);
+    expect(output.exitCode).toBe(1);
+    expect(output.text).toContain('may have delivered');
+    expect(output.text).toContain('Resend only if the result does not reflect the message.');
+    expect(output.text.split('\n').filter((line) => line.startsWith('command='))).toEqual([
+      'command=coral-cli jobs wait job-1',
+    ]);
+  },
+);
+
+it('pins an uncertain continuation wait and forbids another send until its outcome is visible', () => {
+  const selection = { jobId: 'job-1', epochKey: 'epoch', requestedSeq: 2, deliveredEndSeq: 5, awaitingArtifact: false };
+  const output = formatJobSendResult('job-1', {
+    state: 'unknown',
+    reason: 'Lost acknowledgement',
+    executionSelection: selection,
+  });
+  expect(output.exitCode).toBe(75);
+  expect(output.text).toContain('--execution-selection');
+  expect(output.text).toContain(JSON.stringify([selection]));
+  expect(output.text).toContain('Do not resend until the wait shows the outcome.');
+});
+
+it('rejects CLI-local uncertainty metadata on the wire', () => {
+  expect(
+    jobSendOutcomeSchema.safeParse({ state: 'refused', code: 'busy', reason: 'Full', priorDeliveryUncertain: true })
+      .success,
+  ).toBe(false);
+});
+
+it('explains profile selection without promising an unavailable detail binding', () => {
+  const output = formatJobSendResult(
+    'job-1',
+    { state: 'refused', code: 'profile_mismatch', reason: 'Different profile' },
+    context,
+  );
+  expect(output.text).toContain('Continuation is impossible from this environment');
+  expect(output.text).toContain('CODEX_HOME (Codex) or CLAUDE_CONFIG_DIR (Claude)');
+  expect(output.text).not.toContain('job detail');
+  expect(output.text).toContain('This does not continue this conversation');
+  expect(output.text.split('\n').filter((line) => line.startsWith('command='))).toEqual([
+    'command=coral-cli codex -i original message',
+    'command=coral-cli claude -i original message',
+  ]);
+});
+
+it.each(['profile_mismatch', 'pre_generation_job'] as const)(
+  'offers fresh provider commands and asks to pipe the same stdin input again on %s',
+  (code) => {
+    const output = formatJobSendResult(
+      'job-1',
+      { state: 'refused', code, reason: 'Cannot continue.' },
+      { inputTokens: ['-'] },
+    );
+    expect(output.text).toContain(
+      'Coral does not retain stdin content. Pipe the same original input into the command you run.',
+    );
+    expect(output.text.split('\n').filter((line) => line.startsWith('command='))).toEqual([
+      'command=coral-cli codex -i -',
+      'command=coral-cli claude -i -',
+    ]);
+  },
+);
+
+it('renders a non-input invalid request as a fresh attempt with literal file tokens', () => {
+  const inputTokens = ['@message with spaces.txt', '$literal'];
+  const output = formatJobSendResult(
+    'job-1',
+    { state: 'refused', code: 'invalid_request', reason: 'Invalid target', invalidFields: ['target'] },
+    { inputTokens },
+  );
+  expect(output.text).toContain("command=coral-cli jobs send job-1 -i '@message with spaces.txt' '$literal'");
+  expect(output.text).not.toContain('corrected -i');
+});
+
+it('requires piping stdin again for a fresh attempt after a non-input invalid request', () => {
+  const output = formatJobSendResult(
+    'job-1',
+    { state: 'refused', code: 'invalid_request', reason: 'Invalid target', invalidFields: ['target'] },
+    { inputTokens: ['-'] },
+  );
+  expect(output.text).toContain('Nothing was delivered.');
+  expect(output.text).toContain('new message ID');
+  expect(output.text).toContain(
+    'Coral does not retain stdin content. Pipe the same original input into the command you run.',
+  );
+  expect(output.text).toContain('command=coral-cli jobs send job-1 -i -');
+});
+
+it('explains convergence with or without a pending upgrade using only read-only status', () => {
+  const output = formatJobSendResult('job-1', {
+    state: 'refused',
+    code: 'unsupported_by_running_build',
+    reason: 'Older coordinator',
+  });
+  expect(output.text).toContain('A pending upgrade proceeds automatically when its recorded conditions clear.');
+  expect(output.text).toContain('If none is pending, wait for the coordinator to retire idle');
+  expect(output.text).toContain('then the next CLI call starts the installed build');
+  expect(output.text).toContain('at least 6 hours without activity; each CLI reuse resets the timer');
+  expect(output.text).not.toMatch(/restart|shutdown|backend start|jobs send/iu);
+  expect(output.text.split('\n').filter((line) => line.startsWith('command='))).toEqual([
+    'command=coral-cli backend status',
+  ]);
+});
+
+it.each([
+  ['archive_missing', 'No retained conversation'],
+  ['archive_hash_mismatch', 'integrity verification'],
+  ['archive_invalid', 'structure or identity'],
+] as const)('offers a new conversation and the retained result for %s', (code, diagnosis) => {
+  for (const inputTokens of [context.inputTokens, ['-']]) {
+    const output = formatJobSendResult('job-1', { state: 'refused', code, reason: 'Cannot restore.' }, { inputTokens });
+    expect(output.exitCode).toBe(1);
+    expect(output.text).toContain(`Message refused (${code}): Cannot restore.`);
+    expect(output.text).toContain(diagnosis);
+    expect(output.text).toContain('Start a new conversation with a fresh provider job');
+    expect(output.text).toContain('This does not continue this conversation.');
+    expect(output.text).toContain('Read the execution result.');
+    expect(output.text.split('\n').filter((line) => line.startsWith('command='))).toEqual([
+      'command=coral-cli jobs wait job-1',
+      `command=coral-cli codex -i ${inputTokens.join(' ')}`,
+      `command=coral-cli claude -i ${inputTokens.join(' ')}`,
+    ]);
+    expect(
+      output.text.includes(
+        'Coral does not retain stdin content. Pipe the same original input into the command you run.',
+      ),
+    ).toBe(inputTokens[0] === '-');
+    expect(output.text).not.toMatch(/jobs detail|jobs send|new send/iu);
+  }
 });
