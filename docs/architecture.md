@@ -189,7 +189,7 @@ Direct does not mean ambient. CLI/bootstrap adapters choose the active plugin ro
 2. The coordinator resolves agent intent and the provider binding, then commits `job.opened` and execution `#1`'s `job.execution.requested` before provider activation.
 3. The jobs shell admits or queues that execution, activates provider work, and records progress and continuity on the same job stream.
 4. An accepted outcome enters finishing; settlement and any conversation retention complete before the execution ends. Startup recovery atomically closes a workflow root with its descendant releases once no root executor remains.
-5. Workflow stale replacements and later discussion turns request the next execution of the same job, restoring the native file before activation when needed.
+5. `jobs send` on an ended CLI-launched provider job, workflow stale replacements, and later discussion turns request the next execution of the same job, restoring the native file before activation when needed.
 6. Journal appends publish projection freshness through the live `ConsumerDriver`; `projection_jobs` carries the conversation facet and latest execution.
 
 ### Job stream model
@@ -204,7 +204,7 @@ A job's state is its latest execution's state; there is no separate job-level en
 
 ### Finishing and continuation handoff
 
-Provider completion first journals `job.execution.outcome.accepted`, preserving the observed outcome and its originating cause references. An accepted outcome without `job.execution.ended` is `finishing`. List, detail, and wait expose it. While the accepted outcome is still being finalized, `jobs send` returns `refused` with code `turn_ended` without writing input; `jobs abort` leaves that outcome intact and returns a refusal stating the execution is finishing with a runnable `jobs wait <jobId>` remedy.
+Provider completion first journals `job.execution.outcome.accepted`, preserving the observed outcome and its originating cause references. An accepted outcome without `job.execution.ended` is `finishing`. List, detail, and wait expose it. While the accepted outcome is still being finalized, a send bound to that execution returns `refused` with code `execution_finishing` without writing input; `jobs abort` leaves that outcome intact and returns a refusal stating the execution is finishing with a runnable `jobs wait <jobId>` remedy. The send refusal establishes only that this invocation wrote nothing; an earlier invocation with the same message identity may have delivered input.
 
 The finalizer establishes provider settlement or authoritative containment/release proof, removes the old operation record, and releases its launch reservation before retention begins. For discard jobs, every committed execution journals a retention request, durably publishes its conversation archive, and then attempts native-file discard. Retention closes truthfully as completed or failed before `ended`; unknown removal evidence never becomes a claim that the file was removed or kept. A retention failure remains diagnostic evidence and does not replace the accepted provider outcome. Retain jobs end after settlement without archive/discard work.
 
@@ -438,7 +438,7 @@ Availability observation is read-only and may post an in-memory repair or hydrat
 
 Result publication is atomic, revalidates authorization, and preserves available files during repair.
 
-Each execution exports `executions/<n>/result.md` beneath the job's export directory. Discard jobs also retain one `conversation/` archive for workflow replacement or discussion continuation. Durable immutable bytes precede an atomic `conversation/manifest.json` commit. Readers see a complete committed archive; an uncertain commit never authorizes native discard, and a failed newer archive cannot make an older one current again.
+Each execution exports `executions/<n>/result.md` beneath the job's export directory. Discard jobs also retain one `conversation/` archive for `jobs send` continuation, workflow replacement, or discussion continuation. Durable immutable bytes precede an atomic `conversation/manifest.json` commit. Readers see a complete committed archive; an uncertain commit never authorizes native discard, and a failed newer archive cannot make an older one current again.
 
 Restore targets the original native path inside the job's bound provider profile and uses no-replace publication. An existing file, including one created concurrently, returns `present` and is never overwritten. Verified newly published bytes return `restored`; unsupported, failed, or unknown publication returns typed `unrestorable`. Provider residue is outside the archive.
 
@@ -476,13 +476,23 @@ An interrupted execution backed by a detached provider-operation carrier still r
 2. `coral-cli jobs detail <jobId>` lists every execution, its outcome, diagnostics (including usage), and result path
 3. `coral-cli jobs abort <id...>` dispatches `jobs.abort` over IPC for local calls
 4. `coral-cli jobs abort --all` or `coral-cli jobs abort --phase <phase> [--provider <name>]` (or `--provider <name>` alone) resolves matching live jobs in the current work directory, including shared KB jobs, through the same read surface, then aborts the resulting job IDs
-5. `coral-cli jobs send <jobId> -i <text|file|->` delivers additional input to the current provider execution through `jobs.send` IPC
+5. `coral-cli jobs send <jobId> -i <text|file|-> [-d]` steers a running provider execution or starts the next execution of an ended `provider-session`-owned job through `jobs.send` IPC
+
+#### Send admission and continuation
+
+Before its first effectful RPC, the CLI reads job detail and binds one attempt to `{ mode: 'steer' | 'continue', execution, requestedSeq, sourceEpoch }`. A non-ended execution selects `steer`, including a finishing execution that will refuse; an ended predecessor selects `continue`. The target, resolved input, `clientMessageId`, and caller launch context (`providerScope`, `coralEnv`, `networkEnv`, `owner`) remain unchanged through transport retries, coordinator restart, and successor handoff. A failed detail read cannot authorize an unbound send.
+
+After validation and caller/project authorization, `JobSendService` serializes admission per job and checks committed requests for `(jobId, clientMessageId)` before current-state or restore checks. A matching continuation returns its original launch selection even if that execution is queued, running, finishing, ended, or followed by another execution. It does not deliver input, restore, or launch again. The request's `originatingClientMessageId` is the durable replay evidence; steers keep operation-scoped deduplication without a new Journal event or execution id.
+
+A new continuation must still name the latest ended predecessor when its request commits. It uses `launchExecution` with provider action `resume`, the recorded `conversationRef`, and the job's stored cwd, model/effort, instruction, agent, and permissions. The common finishing/restore boundary applies. Distinct attempts bound to the same predecessor cannot both launch: the loser receives `continuation_target_changed` and must inspect `jobs detail <jobId>` before a new intentional send. A stale steer never becomes continuation input or reaches a successor; if its original result is unavailable, it returns `unknown` with prior delivery uncertainty preserved.
+
+A launched continuation follows by default, like `coral-cli codex|claude`. Its committed `requestedSeq` and source epoch seed the follower before subscription, so it collects that execution even if a later execution starts first. `-d` returns immediately with `Provider job <jobId> <launchState>` and the pinned wait command. Ctrl+C stops following with exit 75 and a continuation command; it never aborts the execution. Steering returns immediately. See [CLI outcomes and remedies](./cli-errors.md#jobs-send-outcomes) for typed refusals and older-build handling.
 
 #### Sending to a running turn
 
 `jobs send -i` resolves input like provider `-i` and workflow `-s`/`-c`: tokens are joined with single spaces first. The whole input reads stdin if exactly `-`, or file contents if it names an existing regular file (following symlinks); otherwise it stays literal text, including directories and embedded `-` or file paths. Only one input per command may read stdin.
 
-The CLI supplies the caller's project root, resolved input, and one `clientMessageId`. The `jobs.send` route canonicalizes the root and requires `jobs:control`. `JobSendService` gates job existence, caller scope, provider-job kind, turn lifecycle, run intent, and usable proxy authority before contacting the provider proxy. It records no durable control intent. An answered lifecycle refusal is pre-effect and permits re-issue to a successor; response loss after issuance becomes `unknown`, with no resend. [CLI outcomes and remedies](./cli-errors.md#jobs-send-outcomes) distinguish receipt from consumption and from following the instruction.
+The `jobs.send` route canonicalizes the caller's project root and requires `jobs:control`. After replay and bound-target validation, `JobSendService` gates turn lifecycle, run intent, and usable proxy authority before contacting the provider proxy. A finishing execution refuses immediately as `execution_finishing`, naming `jobs wait`; it does not wait inside the RPC. Steering records no durable control intent. An answered lifecycle refusal permits re-issue to a successor with the same envelope; a lost response can retry only that bound attempt, never a newly selected execution. An unavailable original outcome remains `unknown`.
 
 The coordinator calls `operation.send.v1` under the mutation policy `indeterminate: 'caller-reported'`. Send uncertainty returns to the caller without authorizing replay, fencing, settlement, or containment. A closed control channel still reports its independent channel incident. The proxy method uses the caller's deadline; the runner bounds the provider attempt and releases its temporary attachment when that attempt expires, without interrupting execution.
 
