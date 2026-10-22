@@ -1,3 +1,5 @@
+import { WaitSessionError } from './wait/session.js';
+import type { WaitExecutionSelection } from './wait/execution-selection.js';
 import type { ProgressVisit } from './wait/contract.js';
 import { epochIdentity, epochToken, sameEpoch } from '../store/epoch/identity.js';
 import { isCodeDefect, sourceReadFailureDisposition, type SourceReadDisposition } from './source-read.js';
@@ -105,8 +107,8 @@ export class JobAddressing {
   private readonly activeEpochs = new WeakMap<object, string>();
   private readonly locations: JobLocationView;
   private readonly readHistorical: HistoricalSourceReader;
-  private readonly observeResultAvailability: (jobId: string) => ResultAvailability;
-  private readonly hintRepair?: (jobId: string) => void;
+  private readonly observeResultAvailability: (jobId: string, execution?: number) => ResultAvailability;
+  private readonly hintRepair?: (jobId: string, execution?: number) => void;
   private readonly active: ActiveJobAccess;
   private readonly preEpochHistoryExists: PreEpochHistoryProbe;
   private readonly historicalClosure: HistoricalClosureProbe;
@@ -122,8 +124,8 @@ export class JobAddressing {
         disposition: 'transient-unknown',
         reason: 'Source observation is unavailable; retry when its owner becomes reachable',
       },
-    observeResultAvailability: (jobId: string) => ResultAvailability,
-    hintRepair?: (jobId: string) => void,
+    observeResultAvailability: (jobId: string, execution?: number) => ResultAvailability,
+    hintRepair?: (jobId: string, execution?: number) => void,
   ) {
     this.locations = locations;
     this.active = active;
@@ -253,12 +255,43 @@ export class JobAddressing {
     if (!historical && latest.disposition === 'unresolved') {
       return { kind: 'unresolved', jobId, epochKey: latest.epochKey };
     }
-    if (latest.detail.kind === 'recorded')
+    if (latest.detail.kind === 'recorded') {
+      const detail = latest.detail.value;
+      const executions = latest.executions?.map(({ execution, requestedSeq, resultPath, detail: entry }) => ({
+        status: entry.status,
+        events: entry.events,
+        readiness: entry.readiness,
+        exit: entry.exit,
+        execution,
+        requestedSeq,
+        resultPath,
+      }));
+      if (
+        executions !== undefined &&
+        detail.exit === null &&
+        detail.status.execution !== null &&
+        detail.requestedSeq !== undefined &&
+        detail.resultPath !== undefined
+      ) {
+        executions.push({
+          status: detail.status,
+          events: detail.events,
+          readiness: detail.readiness,
+          exit: null,
+          execution: detail.status.execution,
+          requestedSeq: detail.requestedSeq,
+          resultPath: detail.resultPath,
+        });
+      }
+      const selected = executions?.find((entry) => entry.execution === detail.status.execution);
       return {
-        ...latest.detail.value,
+        ...detail,
+        ...(executions === undefined ? {} : { executions }),
+        ...(selected === undefined ? {} : { requestedSeq: selected.requestedSeq, resultPath: selected.resultPath }),
         epochKey: latest.epochKey,
-        ...(latest.detail.value.exit === null ? {} : { availability: this.availability(jobId) }),
+        ...(detail.exit === null ? {} : { availability: this.availability(jobId) }),
       };
+    }
     return latest.detail.kind === 'unreadable'
       ? { kind: 'detail-unreadable', jobId, epochKey: latest.epochKey }
       : { kind: 'unresolved', jobId, epochKey: latest.epochKey };
@@ -352,9 +385,9 @@ export class JobAddressing {
     };
   }
 
-  private availability(jobId: string): ResultAvailability {
-    const availability = this.observeResultAvailability(jobId);
-    if (availability.kind === 'pending') this.hintRepair?.(jobId);
+  private availability(jobId: string, execution?: number): ResultAvailability {
+    const availability = this.observeResultAvailability(jobId, execution);
+    if (availability.kind === 'pending') this.hintRepair?.(jobId, execution);
     return availability;
   }
 
@@ -365,6 +398,7 @@ export class JobAddressing {
     return epoch;
   }
 
+  private readonly selectedAdmissions = new WeakMap<object, Map<string, WaitExecutionSelection>>();
   private readonly liveJobs = new WeakMap<object, Set<string>>();
   private readonly readOffsets = new WeakMap<object, number>();
   admitWait(request: WaitStreamRequest, budgeted = this.liveJobs.has(request)): WaitAdmission[] {
@@ -375,12 +409,22 @@ export class JobAddressing {
         : observe();
     const live = this.liveJobs.get(request) ?? new Set<string>();
     for (const job of admissions) {
-      if (job.disposition !== 'admitted') continue;
+      if (job.disposition !== 'admitted' || job.observationDeferred) continue;
+      if (job.selection) {
+        const selections = this.selectedAdmissions.get(request) ?? new Map<string, WaitExecutionSelection>();
+        selections.set(job.jobId, job.selection);
+        this.selectedAdmissions.set(request, selections);
+      }
       if (job.detail?.exit) live.delete(job.jobId);
       else live.add(job.jobId);
     }
     this.liveJobs.set(request, live);
-    return admissions;
+    for (const admission of admissions) {
+      if (request.jobIds.includes(admission.jobId)) continue;
+      if (admission.disposition !== 'admitted')
+        throw new WaitSessionError('wait_selection_unavailable', 'Retained delivery evidence could not be validated in the caller scope; no execution was reselected.');
+    }
+    return admissions.filter((admission) => request.jobIds.includes(admission.jobId));
   }
 
   private readAdmissions(request: WaitStreamRequest, budgeted: boolean): WaitAdmission[] {
@@ -388,7 +432,8 @@ export class JobAddressing {
     const failures = new Map<string, WaitAdmission>();
     const offset = budgeted ? (this.readOffsets.get(request) ?? 0) : 0;
     if (budgeted) this.readOffsets.set(request, (offset + 32) % Math.max(1, request.jobIds.length));
-    const ordered = [...request.jobIds.slice(offset), ...request.jobIds.slice(0, offset)];
+    const members = [...new Set([...request.jobIds, ...(request.executionSelections ?? []).map((selection) => selection.jobId)])];
+    const ordered = [...members.slice(offset), ...members.slice(0, offset)];
     const locations = new Map(
       ordered.map((jobId) => {
         try {
@@ -437,7 +482,7 @@ export class JobAddressing {
     const historical = new Map(
       historicalEpochs.map(({ epochKey, jobIds }) => [
         epochIdentity(epochKey),
-        this.readHistorical(epochKey, jobIds, request),
+        this.readHistorical(epochKey, jobIds, request, true),
       ]),
     );
     for (const jobId of unknownIds) {
@@ -458,11 +503,13 @@ export class JobAddressing {
         ) ?? []
       ).map((job) => [job.jobId, job]),
     );
-    return request.jobIds.map((jobId): WaitAdmission => {
+    return members.map((jobId): WaitAdmission => {
       const failure = failures.get(jobId);
       if (failure) return failure;
       const location = locations.get(jobId) ?? null;
       if (location === null) {
+        const selected = this.selectedAdmissions.get(request)?.get(jobId) ?? request.executionSelections?.find((selection) => selection.jobId === jobId);
+        if (selected) return { jobId, disposition: 'unknown', epochKey: selected.epochKey, message: 'The selected execution location is unavailable; no other execution was selected.' };
         const unresolvedHolds = holds.filter((hold) => {
           if (!hold.retryScheduled || hold.epochKey === undefined) return true;
           const source = historical.get(epochIdentity(hold.epochKey));
@@ -495,6 +542,9 @@ export class JobAddressing {
           disposition: 'scope-mismatch',
           message: 'Change cwd to the job work directory; coral-cli jobs list --all includes terminal jobs.',
         };
+      const selected = this.selectedAdmissions.get(request)?.get(jobId) ?? request.executionSelections?.find((selection) => selection.jobId === jobId);
+      if (selected && !sameEpoch(selected.epochKey, location.epochKey))
+        return { jobId, disposition: 'unknown', epochKey: selected.epochKey, message: 'The selected epoch is unavailable; no other execution was selected.' };
       if (sameEpoch(location.epochKey, activeEpochKey)) {
         try {
           return this.activeAdmission(jobId, location.epochKey, activeAdmissions.get(jobId), request);
@@ -502,13 +552,34 @@ export class JobAddressing {
           return activeJournalReadFailure(jobId, location.epochKey, error);
         }
       }
-      return historicalAdmission(
-        jobId,
-        location,
-        closures.get(epochIdentity(location.epochKey)),
-        historical.get(epochIdentity(location.epochKey)),
-        (id) => this.availability(id),
-      );
+      const source = historical.get(epochIdentity(location.epochKey));
+      const retained = source?.kind === 'read' ? source.locations.get(jobId) ?? location : location;
+      const entries = retained.executions;
+      if (!entries?.length && (retained.latestExecution !== undefined || (retained.detail.kind === 'recorded' && retained.detail.value.status.execution != null)))
+        return { jobId, disposition: 'unknown', epochKey: location.epochKey, message: 'Complete execution admission evidence is unavailable; no execution was selected.' };
+      if (selected || entries?.length) {
+        if (!selected && request.cursor !== undefined && entries && entries.length > 1)
+          throw new WaitSessionError('wait_admission_required', 'A seq cursor cannot identify the admitted execution. Start a fresh wait without a cursor.');
+        let entry = selected ? entries?.find((entry) => entry.requestedSeq === selected.requestedSeq) : entries?.at(-1);
+        if (selected?.deliveredEndSeq !== undefined && entry && selected.deliveredEndSeq !== entry.seq)
+          throw new WaitSessionError('wait_selection_invalid', 'Delivered-end evidence does not match the retained execution.');
+        if (request.jobIds.includes(jobId) && !this.selectedAdmissions.get(request)?.has(jobId) && selected?.deliveredEndSeq !== undefined && !selected.awaitingArtifact) {
+          const next = entries?.find((entry) => entry.requestedSeq > selected.deliveredEndSeq!);
+          if (next === undefined && entry && (retained.latestExecution ?? entry.execution) > entry.execution)
+            return { jobId, disposition: 'unknown', epochKey: location.epochKey, message: 'The next execution request is not readable; delivered-end evidence is preserved.' };
+          entry = next ?? entry;
+        }
+        if (!entry || (!selected && (retained.openExecution !== undefined || retained.pendingAdmission !== undefined)))
+          return { jobId, disposition: 'unknown', epochKey: location.epochKey, message: 'The selected execution evidence is unavailable; no other execution was selected.' };
+        return {
+          jobId, disposition: 'admitted', historical: true, epochKey: location.epochKey,
+          selection: { jobId, epochKey: location.epochKey, requestedSeq: entry.requestedSeq,
+            ...(entry.requestedSeq === selected?.requestedSeq ? { deliveredEndSeq: selected.deliveredEndSeq, awaitingArtifact: selected.awaitingArtifact } : { awaitingArtifact: false }) },
+          detail: { ...waitDetail(entry.detail), terminalSeq: entry.seq },
+          availability: this.availability(jobId, entry.execution),
+        };
+      }
+      return historicalAdmission(jobId, location, closures.get(epochIdentity(location.epochKey)), source, (id) => this.availability(id));
     });
   }
 
@@ -520,6 +591,31 @@ export class JobAddressing {
   ): WaitAdmission {
     const admission = read ?? this.active.readWaitAdmission?.(jobId, epochKey, request);
     const detail = admission?.detail ?? this.active.detail(jobId);
+    if (admission === undefined || admission === null) {
+      const selected = this.selectedAdmissions.get(request)?.get(jobId) ?? request.executionSelections?.find((selection) => selection.jobId === jobId);
+      const executions = detail && 'executions' in detail ? detail.executions : undefined;
+      if (selected || executions?.length) {
+        if (!selected && request.cursor !== undefined && executions && executions.length > 1)
+          throw new WaitSessionError('wait_admission_required', 'A seq cursor cannot identify the admitted execution. Start a fresh wait without a cursor.');
+        let execution = selected ? executions?.find((execution) => execution.requestedSeq === selected.requestedSeq) : executions?.at(-1);
+        if (selected && !sameEpoch(selected.epochKey, epochKey)) execution = undefined;
+        const end = execution?.events.find((event) => event.type === 'terminal')?.seq;
+        if (execution && selected?.deliveredEndSeq !== undefined && selected.deliveredEndSeq !== end)
+          throw new WaitSessionError('wait_selection_invalid', 'Delivered-end evidence does not match the selected execution.');
+        if (request.jobIds.includes(jobId) && !this.selectedAdmissions.get(request)?.has(jobId) && selected?.deliveredEndSeq !== undefined && !selected.awaitingArtifact)
+          execution = executions?.find((execution) => execution.requestedSeq > selected.deliveredEndSeq!) ?? execution;
+        if (!execution) return { jobId, disposition: 'unknown', epochKey, message: 'The selected request is unavailable; no other execution was selected.' };
+        return {
+          jobId, disposition: 'admitted', epochKey,
+          selection: { jobId, epochKey, requestedSeq: execution.requestedSeq,
+            ...(selected?.requestedSeq === execution.requestedSeq ? { deliveredEndSeq: selected.deliveredEndSeq, awaitingArtifact: selected.awaitingArtifact } : { awaitingArtifact: false }) },
+          detail: waitDetail(execution),
+          ...(execution.exit ? { availability: this.availability(jobId, execution.execution) } : {}),
+        };
+      }
+      if (detail?.status.execution != null)
+        return { jobId, disposition: 'unknown', epochKey, message: 'Execution request evidence is unavailable; no execution was selected.' };
+    }
     if (admission && admission.disposition !== 'admitted') return admission;
     if (!detail && !admission?.queued)
       return {
@@ -545,7 +641,7 @@ export class JobAddressing {
       : { kind: 'unreadable', disposition: 'transient-unknown' };
 
   snapshot(request: WaitSnapshotRequest): WaitSnapshot {
-    const session = new WaitSession(request.jobIds, request.cursor, this.waitEpoch(request));
+    const session = new WaitSession(request.jobIds, request.cursor, this.waitEpoch(request), false, request.executionSelections);
     session.reconcile(this.admitWait(request, false));
     return selectWaitSnapshot(session, request.lines ?? 20, this.visitProgress);
   }
@@ -586,6 +682,7 @@ function waitDetail(
     status: detail.status,
     exit: detail.exit,
     readiness: detail.readiness,
+    ...('finishing' in detail ? { finishing: detail.finishing } : {}),
     terminalSeq:
       'events' in detail
         ? (detail.events.find((event) => event.type === 'terminal')?.seq ?? detail.status.lastSeq)

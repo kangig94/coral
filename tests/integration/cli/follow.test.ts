@@ -106,7 +106,8 @@ function makeOptions(overrides: Partial<TestLaunchAndFollowOptions> = {}): TestL
       kind: 'provider-session',
       launchState: 'running',
       jobId: 'job-1',
-      sessionId: 'session-1',
+      requestedSeq: 1,
+      epochKey: 'epoch',
     } satisfies AcceptedLaunchResponse,
     pluginRoot: '/plugin/root',
     projectRoot: '/project/root',
@@ -246,7 +247,7 @@ describe('cli follow', () => {
 
     await expect(launchAndFollow(makeOptions())).resolves.toBe(70);
 
-    expect(stdout).toBe('Provider job job-1 launch accepted (provider session session-1)\n');
+    expect(stdout).toBe('Provider job job-1 launch accepted\n');
     expect(stderr).toBe('fatal wait failure\n');
     expect(process.exitCode).toBe(70);
     expect(mockState.ensure).toHaveBeenCalledTimes(1);
@@ -283,7 +284,7 @@ it('launch-and-follow returns a failed terminal code and offers a continuation f
     const code = await followJobs({
       start: {
         kind: 'launch',
-        launchResult: { kind: 'provider-session', jobId: 'a', sessionId: 's', launchState: 'running' },
+        launchResult: { kind: 'provider-session', jobId: 'a', requestedSeq: 1, epochKey: 'active-epoch', launchState: 'running' },
       },
       reconnectPolicy: 'until-terminal',
       projectRoot: '/tmp',

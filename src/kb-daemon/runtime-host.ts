@@ -26,7 +26,6 @@ import type { KbDaemonKbReadHealth } from './protocol.js';
 import type { AppendedEvent } from '../store/append.js';
 import { JobStore } from '../jobs/store.js';
 import { JobLocationIndex } from '../jobs/location-index.js';
-import { deriveLaunchReadiness } from '../jobs/launch-readiness.js';
 import { observeTerminalResultExports } from '../jobs/terminal/export.js';
 import { noProviderLookupPort } from '../providers/catalog.js';
 import { createEventBodyCodec } from '../store/event-body-codec.js';
@@ -429,14 +428,9 @@ function createKbDaemonProgressStore({
         for (const event of appended) {
           if (event.stream.kind !== 'job' || event.type !== 'job.execution.progress') continue;
           try {
-            const detail = progressStore.loadJobProjectionDetail(event.stream.id);
-            if (detail.status === null) continue;
-            jobLocations.recordObserved(event.stream.id, {
-              status: detail.status,
-              events: progressStore.readJobEvents(event.stream.id),
-              readiness: deriveLaunchReadiness(detail),
-              exit: detail.exit,
-            });
+            const detail = progressStore.loadJobDetailResponse(event.stream.id);
+            if (detail === null) continue;
+            jobLocations.recordObserved(event.stream.id, detail);
           } catch (error: unknown) {
             backendLog.warn(`Writing job progress address failed for ${event.stream.id}: ${errorMessage(error)}`);
           }

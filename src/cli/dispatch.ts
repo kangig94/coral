@@ -1019,6 +1019,7 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
         jobIds: fields.jobIds,
         projectRoot,
         ...(fields.cursor === undefined ? {} : { cursor: fields.cursor }),
+        ...(fields.executionSelections === undefined ? {} : { executionSelections: fields.executionSelections }),
         ...(fields.lines === undefined ? {} : { lines: fields.lines }),
       };
       try {

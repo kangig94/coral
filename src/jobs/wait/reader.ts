@@ -32,6 +32,7 @@ type DeliveryState = {
   queuedReported: Set<string>;
   notices: Set<string>;
   absentReported: Set<string>;
+  admissionState?: string;
 };
 
 type FinalPayload =
@@ -39,7 +40,7 @@ type FinalPayload =
   | { type: 'waiting'; waitingJobIds: string[]; carrierUnknownJobIds?: string[]; endedBy: WaitEndedBy };
 
 function finalWaitEvent(session: WaitSession, payload: FinalPayload): WaitStreamEvent {
-  return { ...payload, cursor: session.cursor(), exitCode: session.exitCode() };
+  return { ...payload, cursor: session.cursor(), exitCode: session.exitCode(), executionSelections: session.executionSelections() };
 }
 
 function waitingEvent(session: WaitSession, endedBy: WaitEndedBy): WaitStreamEvent {
@@ -61,7 +62,7 @@ function resumableCut(session: WaitSession, cut: 'deadline' | 'progress-budget')
 export async function* readWaitSession(input: WaitReadInput): AsyncGenerator<WaitStreamEvent> {
   const { request, time, read } = input;
   const internal = input.internal === true;
-  const session = new WaitSession(request.jobIds, request.cursor, input.activeEpochKey, internal);
+  const session = new WaitSession(request.jobIds, request.cursor, input.activeEpochKey, internal, request.executionSelections);
   const deadline = Number(time.monotonicNow()) + (request.timeoutSeconds ?? 600) * 1000;
   const controller = new AbortController();
   const signal = request.abortSignal ? AbortSignal.any([controller.signal, request.abortSignal]) : controller.signal;
@@ -181,10 +182,16 @@ function* cursorFrame(session: WaitSession, state: DeliveryState): Generator<Wai
   const cursor = session.cursor();
   if (cursor === null || cursor === state.cursor) return;
   state.cursor = cursor;
-  yield { type: 'cursor', cursor };
+  yield { type: 'cursor', cursor, executionSelections: session.executionSelections() };
 }
 
 function* admissionEvents(session: WaitSession, state: DeliveryState): Generator<WaitStreamEvent> {
+  const selections = session.executionSelections();
+  const admissionState = JSON.stringify(selections);
+  if (selections.length > 0 && session.admissions.some((job) => job.disposition === 'admitted' && job.selection && !job.observationDeferred) && state.admissionState !== admissionState) {
+    state.admissionState = admissionState;
+    yield { type: 'admission', executionSelections: selections };
+  }
   for (const job of session.admissions) {
     if (job.disposition === 'admitted' || state.dispositions.get(job.jobId) === job.disposition) continue;
     state.dispositions.set(job.jobId, job.disposition);
@@ -224,6 +231,7 @@ function terminalEvent(
   const { content, outcome, durationMs } = result;
   const block = {
     type: 'terminal' as const,
+    cursor: session.cursor(),
     jobId: job.jobId,
     seq: job.detail?.terminalSeq ?? job.detail?.status.lastSeq ?? 0,
     result: { content, outcome, durationMs },
@@ -232,6 +240,7 @@ function terminalEvent(
     availability,
     epochKey: job.epochKey,
     remainingJobIds: session.remaining(),
+    executionSelections: session.executionSelections(),
     ...(availability.kind === 'available' ? { resultPath: availability.resultPath } : {}),
   };
   return final ? finalWaitEvent(session, block) : block;

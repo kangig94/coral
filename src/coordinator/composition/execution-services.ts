@@ -153,7 +153,7 @@ function createExecutionServiceRegistry(input: {
       pluginRegistry: world.pluginRegistry,
       coordinatorCommit: (cb) => getProgressStore().commit(cb),
       loadJobProjectionDetail: (jobId) => getProgressStore().loadJobProjectionDetail(jobId),
-      loadJobWaitDetail: (jobId) => getProgressStore().loadJobWaitDetail(jobId),
+      loadJobWaitDetail: (jobId, requestedSeq) => getProgressStore().loadJobWaitDetail(jobId, requestedSeq),
       readJobLastSeq: (jobId) => getProgressStore().readJobLastSeq(jobId),
 
       visitProgress: (_epoch, read) => getProgressStore().visitProgress(read),
@@ -163,8 +163,8 @@ function createExecutionServiceRegistry(input: {
       currentJobEpochKey: input.deps.currentJobEpochKey,
       internalWait: input.deps.internalWait,
       observeJobAbsence: input.deps.observeJobAbsence,
-      observeResultAvailability: (jobId) => getProgressStore().getResultExportOwner().observeResultAvailability(jobId),
-      hintResultRepair: (jobId) => getProgressStore().getResultExportOwner().hintRepair(jobId),
+      observeResultAvailability: (jobId, execution) => getProgressStore().getResultExportOwner().observeResultAvailability(jobId, undefined, execution),
+      hintResultRepair: (jobId, execution) => getProgressStore().getResultExportOwner().hintRepair(jobId, execution),
       appServerProxyRoute: createAppServerProxyRoute({
         hostManager: world.providerHostManager,
         reconciler: providerOperationReconciler,

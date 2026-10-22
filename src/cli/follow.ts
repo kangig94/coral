@@ -1,3 +1,4 @@
+import type { WaitExecutionSelection } from '../jobs/wait/execution-selection.js';
 import { waitCommandPaths } from '../coordinator/handoff-routing/wait-command.js';
 import { performance } from 'node:perf_hooks';
 import { WaitInvocation, WaitInvocationEnded } from './wait-invocation.js';
@@ -64,7 +65,7 @@ type ReconnectPolicy = 'bounded' | 'unbounded' | 'until-terminal';
 
 type FollowStart =
   | Readonly<{ kind: 'launch'; launchResult: AcceptedLaunchResponse }>
-  | Readonly<{ kind: 'jobs'; jobIds: readonly string[]; serializedCursor?: string }>;
+  | Readonly<{ kind: 'jobs'; jobIds: readonly string[]; serializedCursor?: string; executionSelections?: WaitExecutionSelection[] }>;
 
 // `unknown`, not `WaitStreamEvent`: the wire carries whatever the coordinator's build emits, which can be
 // a type this build predates. `followJobs` validates each item through `parseWaitStreamEventValue` before
@@ -81,6 +82,7 @@ type FollowConnection =
 type FollowConnectionRequest = Readonly<{
   jobIds: readonly string[];
   cursor?: WaitCursor;
+  executionSelections: WaitExecutionSelection[];
   timeoutSeconds: number;
   drainProgress: boolean;
   signal: AbortSignal;
@@ -120,6 +122,10 @@ function writeStdout(text: string): void {
 
 function jobIdsFromStart(start: FollowStart): readonly string[] {
   return start.kind === 'launch' ? [start.launchResult.jobId] : start.jobIds;
+}
+
+function initialExecutionSelections(start: FollowStart): WaitExecutionSelection[] {
+  return start.kind === 'jobs' ? start.executionSelections ?? [] : [{ jobId: start.launchResult.jobId, epochKey: start.launchResult.epochKey, requestedSeq: start.launchResult.requestedSeq, awaitingArtifact: false }];
 }
 
 function initialSerializedCursor(start: FollowStart): string | undefined {
@@ -186,6 +192,9 @@ function formatFollowWaitEvent(
 ): string {
   let line!: string;
   switch (event.type) {
+    case 'admission':
+    case 'cursor':
+      return '';
     case 'notice':
       line = event.message;
       break;
@@ -313,7 +322,7 @@ function withWaitRecovery(error: unknown, state: FollowSessionState): unknown {
   const message = body !== null && typeof body.message === 'string' ? body.message : (error as Error).message;
   return new BackendUnreachableError(
     `${message} Run \`coral-cli backend status\` and follow its recovery guidance, then rerun ` +
-      `\`${waitContinuationCommand(state.remainingJobIds, state.currentCursor ?? null, state.continuationMode)}\`` +
+      `\`${waitContinuationCommand(state.remainingJobIds, state.currentCursor ?? null, state.continuationMode, state.executionSelections)}\`` +
       `${waitContinuationShell(state.continuationMode)} to continue waiting.`,
   );
 }
@@ -321,6 +330,7 @@ function withWaitRecovery(error: unknown, state: FollowSessionState): unknown {
 type FollowSessionState = {
   readonly continuationMode: WaitContinuationMode;
   readonly carrierAbsentJobIds: Set<string>;
+  executionSelections: WaitExecutionSelection[];
   currentCursor?: WaitCursor;
   openedCursor?: WaitCursor;
   lastExitCode?: number;
@@ -367,6 +377,7 @@ function finishDelegatedFollow(
       state.remainingJobIds,
       state.currentCursor,
       state.continuationMode,
+      state.executionSelections,
     ),
   );
   return { kind: 'exit', code: errorCodeToExit('transient') };
@@ -394,7 +405,7 @@ function eventRemainingJobs(event: WaitStreamEvent, current: readonly string[]):
 function followOriginalCommand(options: FollowJobsOptions): string {
   if (options.invocation) return options.invocation.originalCommand;
   const cursor = initialSerializedCursor(options.start);
-  return `${waitContinuationCommand(jobIdsFromStart(options.start), cursor ?? null, continuationModeFor(options.reconnectPolicy))}${options.render.embed ? ' --embed' : ''}${options.render.verbose ? ' --verbose' : ''}`;
+  return `${waitContinuationCommand(jobIdsFromStart(options.start), cursor ?? null, continuationModeFor(options.reconnectPolicy), initialExecutionSelections(options.start))}${options.render.embed ? ' --embed' : ''}${options.render.verbose ? ' --verbose' : ''}`;
 }
 
 function deliveredFollowExitCode(event: WaitStreamEvent, context: FollowContext): number | undefined {
@@ -432,6 +443,7 @@ function foldedContinuation(state: FollowSessionState): string {
       {
         type: 'waiting',
         waitingJobIds: remaining,
+        executionSelections: state.executionSelections,
         ...(unknown.length === 0 ? {} : { carrierUnknownJobIds: unknown }),
       },
       state.currentCursor ?? null,
@@ -454,7 +466,7 @@ async function deliverFollowEvent(event: WaitStreamEvent, context: FollowContext
   state.remainingJobIds = eventRemainingJobs(event, state.remainingJobIds);
   const remaining = state.remainingJobIds;
   const savedContinuation = foldedContinuation(state);
-  const renderedEvent = event;
+  const renderedEvent = event.type === 'waiting' || event.type === 'terminal' ? { ...event, executionSelections: state.executionSelections } : event;
   const delivery = emitWaitEvent(
     renderedEvent,
     cursor,
@@ -513,6 +525,7 @@ async function applyFollowStreamEvent(
     state.carrierUnknownJobIds = state.carrierUnknownJobIds.filter((id) => id !== event.jobId);
     state.carrierAbsentJobIds.add(event.jobId);
   } else if (event.type === 'waiting') state.carrierUnknownJobIds = [...(event.carrierUnknownJobIds ?? [])];
+  if ('executionSelections' in event && event.executionSelections !== undefined) state.executionSelections = event.executionSelections;
   if ('exitCode' in event && event.exitCode !== undefined) state.lastExitCode = event.exitCode;
   const decision = advanceWaitRenderCursor(state.currentCursor, event);
   state.currentCursor = decision.cursor;
@@ -571,7 +584,7 @@ async function followReadFailure(error: unknown, context: FollowContext): Promis
   }
   if (state.retriesLeft === 0) {
     options.emitError(
-      new WaitResumeError(handledError.message, state.remainingJobIds, state.currentCursor, state.continuationMode),
+      new WaitResumeError(handledError.message, state.remainingJobIds, state.currentCursor, state.continuationMode, state.executionSelections),
     );
     return { kind: 'exit', code: errorCodeToExit('transient') };
   }
@@ -608,6 +621,7 @@ async function consumeFollowSubscription(
       state.remainingJobIds,
       state.currentCursor,
       state.continuationMode,
+      state.executionSelections,
     ),
   );
   return { kind: 'exit', code: errorCodeToExit('transient') };
@@ -626,6 +640,7 @@ function prepareFollowOptions(options: FollowJobsOptions) {
           ...waitCommandPaths.current.split(' '),
           ...allJobIds,
           ...(rawCursor === undefined ? [] : ['--cursor', rawCursor]),
+          ...(options.start.kind === 'jobs' && options.start.executionSelections ? ['--execution-selection', JSON.stringify(options.start.executionSelections)] : []),
           ...(options.render.embed ? ['--embed'] : []),
           ...(options.render.verbose ? ['--verbose'] : []),
         ])
@@ -675,6 +690,7 @@ function createFollowContext(prepared: ReturnType<typeof prepareFollowOptions>):
       continuationMode: continuationModeFor(options.reconnectPolicy),
       carrierAbsentJobIds: new Set(),
       currentCursor: parsedCursor,
+      executionSelections: initialExecutionSelections(options.start),
       remainingJobIds: allJobIds,
       sendCursor: parsedCursor !== undefined,
       retriesLeft: TRANSIENT_RETRY_LIMIT,
@@ -704,7 +720,7 @@ async function monitorFollowJobs(context: FollowContext): Promise<number> {
     if (connection.kind === 'subscription' && options.reconnectPolicy === 'bounded') {
       options.invocation?.saveContinuation(
         formatWaitWaiting(
-          { type: 'waiting', waitingJobIds: state.remainingJobIds, carrierUnknownJobIds: state.carrierUnknownJobIds },
+          { type: 'waiting', waitingJobIds: state.remainingJobIds, carrierUnknownJobIds: state.carrierUnknownJobIds, executionSelections: state.executionSelections },
           state.currentCursor ?? null,
         ) + '\n',
       );
@@ -769,7 +785,7 @@ export async function launchAndFollow(options: FollowOptions): Promise<number> {
       embed: false,
       verbose: false,
     },
-    connect: async ({ jobIds, cursor, timeoutSeconds, signal, drainProgress, onDelegatedChild }) => {
+    connect: async ({ jobIds, cursor, executionSelections, timeoutSeconds, signal, drainProgress, onDelegatedChild }) => {
       const probeStarted = performance.now();
       let backend;
       try {
@@ -780,6 +796,7 @@ export async function launchAndFollow(options: FollowOptions): Promise<number> {
           {
             kind: 'wait-jobs',
             jobId: options.launchResult.jobId,
+            serializedExecutionSelections: JSON.stringify(executionSelections),
             ...(cursor === undefined ? {} : { serializedCursor: cursor }),
           },
           {
@@ -812,6 +829,7 @@ export async function launchAndFollow(options: FollowOptions): Promise<number> {
           'jobs.wait',
           jobsWaitRequest({
             jobIds,
+            executionSelections,
             timeoutSeconds,
             drainProgress,
             projectRoot: options.projectRoot,
@@ -846,6 +864,7 @@ async function openFollowConnection(
     .connect({
       drainProgress: options.reconnectPolicy === 'until-terminal',
       jobIds: state.remainingJobIds,
+      executionSelections: state.executionSelections,
       ...(cursor === undefined ? {} : { cursor }),
       timeoutSeconds:
         options.reconnectPolicy === 'bounded' ? boundedTimeoutSeconds(deadlineMs) : FOLLOW_TIMEOUT_SECONDS,
@@ -898,7 +917,7 @@ async function recoverFollowConnection(
       handledError instanceof IpcRequestTimeout
     ) {
       options.emitError(
-        new WaitResumeError(handledError.message, state.remainingJobIds, state.currentCursor, state.continuationMode),
+        new WaitResumeError(handledError.message, state.remainingJobIds, state.currentCursor, state.continuationMode, state.executionSelections),
       );
       return { kind: 'exit', code: errorCodeToExit('transient') };
     }

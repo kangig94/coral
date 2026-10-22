@@ -1,3 +1,4 @@
+import { waitExecutionSelectionsSchema, type WaitExecutionSelection } from '../../jobs/wait/execution-selection.js';
 import { decodeWaitCursor, WAIT_CURSOR_REPLAY_NOTICE } from '../../jobs/wait/cursor.js';
 import type { WaitCursor } from '../../jobs/wait/contract.js';
 import { parseWaitSnapshot } from '../../jobs/wait/snapshot.js';
@@ -61,6 +62,7 @@ type WaitJobsOptions = {
   unbounded?: boolean;
   lines?: string;
   cursor?: string;
+  executionSelection?: string;
   embed?: boolean;
   verbose?: boolean;
 };
@@ -388,7 +390,8 @@ function configureWaitJobsCommand(command: Command): Command {
       'Monitor jobs until the first terminal or ~590 s, then return a continuation; --snapshot returns immediately; --unbounded drops the ~590 s bound',
     )
     .argument('<jobIds...>', 'Job IDs')
-    .option('--cursor <cursor>', 'Opaque resume cursor (from previous wait output)')
+    .option('--cursor <cursor>', 'Progress seq cursor (from previous wait output)')
+    .option('--execution-selection <JSON>', 'Execution admission and delivery state from a continuation')
     .option(
       '--snapshot',
       'Read an immediate snapshot; continuations keep --snapshot; drop it explicitly to switch to a blocking wait',
@@ -429,6 +432,7 @@ async function runWaitSnapshot(
   lines: number | undefined,
 ): Promise<void> {
   const invocation = getWaitInvocation();
+  const executionSelections = parseExecutionSelections(opts.executionSelection);
   let cursor: WaitCursor | undefined;
   if (opts.cursor !== undefined) {
     if (decodeWaitCursor(opts.cursor).kind === 'decoded') cursor = opts.cursor;
@@ -443,6 +447,7 @@ async function runWaitSnapshot(
       jobIds,
       projectRoot,
       ...(cursor === undefined ? {} : { cursor }),
+      ...(executionSelections === undefined ? {} : { executionSelections }),
       ...(lines === undefined ? {} : { lines }),
     });
   let response;
@@ -456,7 +461,7 @@ async function runWaitSnapshot(
       !isRecord(mapped.body) ||
       !SOFT_CURSOR_REFUSALS.includes(String(mapped.body.code))
     )
-      throw error;
+      throw mapped;
     reset();
     response = await read();
   }
@@ -467,11 +472,11 @@ async function runWaitSnapshot(
   } catch {
     throw new WaitSnapshotResponseError(
       invocation?.originalCommand ??
-        `${waitCommandPrefix()} ${jobIds.join(' ')} --snapshot${opts.cursor === undefined ? '' : ` --cursor ${opts.cursor}`}${opts.lines === undefined ? '' : ` --lines ${opts.lines}`}`,
+        `${waitCommandPrefix()} ${jobIds.join(' ')} --snapshot${opts.cursor === undefined ? '' : ` --cursor ${opts.cursor}`}${opts.lines === undefined ? '' : ` --lines ${opts.lines}`}${opts.executionSelection === undefined ? '' : ` --execution-selection '${opts.executionSelection.replaceAll("'", "'\\''")}'`}`,
     );
   }
   const output = formatWaitSnapshot(snapshot) + '\n';
-  const continuation = formatWaitContinuation(snapshot.remainingJobIds, snapshot.cursor, 'snapshot') + '\n';
+  const continuation = formatWaitContinuation(snapshot.remainingJobIds, snapshot.cursor, 'snapshot', snapshot.executionSelections) + '\n';
   const write = () =>
     new Promise<void>((resolve, reject) =>
       process.stdout.write(output, (error) => (error ? reject(error) : resolve())),
@@ -483,7 +488,7 @@ async function runWaitSnapshot(
     throw new WaitOutputError(
       error,
       invocation?.originalCommand ??
-        `${waitCommandPrefix()} ${jobIds.join(' ')} --snapshot${opts.cursor === undefined ? '' : ` --cursor ${opts.cursor}`}${opts.lines === undefined ? '' : ` --lines ${opts.lines}`}`,
+        `${waitCommandPrefix()} ${jobIds.join(' ')} --snapshot${opts.cursor === undefined ? '' : ` --cursor ${opts.cursor}`}${opts.lines === undefined ? '' : ` --lines ${opts.lines}`}${opts.executionSelection === undefined ? '' : ` --execution-selection '${opts.executionSelection.replaceAll("'", "'\\''")}'`}`,
     );
   }
 
@@ -497,7 +502,7 @@ async function runStreamingWaitJobs(
   opts: WaitJobsOptions,
 ): Promise<void> {
   process.exitCode = await followJobs({
-    start: { kind: 'jobs', jobIds, ...(opts.cursor === undefined ? {} : { serializedCursor: opts.cursor }) },
+    start: { kind: 'jobs', jobIds, executionSelections: parseExecutionSelections(opts.executionSelection), ...(opts.cursor === undefined ? {} : { serializedCursor: opts.cursor }) },
     reconnectPolicy: opts.unbounded === true ? 'unbounded' : 'bounded',
     invocation: getWaitInvocation(),
     projectRoot,
@@ -507,12 +512,21 @@ async function runStreamingWaitJobs(
       embed: opts.embed === true,
       verbose: opts.verbose === true,
     },
-    connect: async ({ jobIds: activeJobIds, cursor, timeoutSeconds, signal, drainProgress }) => ({
+    connect: async ({ jobIds: activeJobIds, cursor, executionSelections, timeoutSeconds, signal, drainProgress }) => ({
       kind: 'subscription',
       subscription: await client.subscribeJobsWait(
-        { jobIds: activeJobIds, timeoutSeconds, projectRoot, drainProgress, ...(cursor ? { cursor } : {}) },
+        { jobIds: activeJobIds, timeoutSeconds, projectRoot, drainProgress, executionSelections, ...(cursor ? { cursor } : {}) },
         { signal },
       ),
     }),
   });
+}
+
+function parseExecutionSelections(value: string | undefined): WaitExecutionSelection[] | undefined {
+  if (value === undefined) return undefined;
+  try {
+    return waitExecutionSelectionsSchema.parse(JSON.parse(value));
+  } catch {
+    throw new UsageError('--execution-selection must be the complete JSON state from a wait continuation.');
+  }
 }

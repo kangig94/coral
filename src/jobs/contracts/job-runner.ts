@@ -24,7 +24,7 @@ export interface ProviderJobLaunchPort {
       discussionRun?: DiscussionRunDescriptor;
       mintProtectedEnv: (jobId: string, execution: number) => ProviderOperationEnvironmentInput;
     },
-  ): ProviderJobLaunchDecision;
+  ): Promise<ProviderJobLaunchDecision>;
 }
 
 export interface WorkflowJobLifecyclePort {

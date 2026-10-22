@@ -34,6 +34,7 @@ function seedStore(
       CREATE TABLE projection_jobs (
         job_id TEXT PRIMARY KEY,
         phase TEXT NOT NULL,
+        execution INTEGER,
         project_root TEXT NOT NULL,
         work_dir TEXT,
         job_kind TEXT NOT NULL,
@@ -43,7 +44,7 @@ function seedStore(
     `);
     db.prepare('INSERT INTO meta (key, value) VALUES (?, ?)').run('store_format_fingerprint', fingerprint);
     db.prepare(
-      "INSERT INTO projection_jobs (job_id, phase, project_root, work_dir, job_kind, last_seq) VALUES (?, ?, ?, ?, 'provider', ?)",
+      "INSERT INTO projection_jobs (job_id, phase, project_root, work_dir, job_kind, last_seq, execution) VALUES (?, ?, ?, ?, 'provider', ?, 1)",
     ).run(jobId, 'running', projectRoot, projectRoot, 1);
   } finally {
     db.close();
@@ -83,6 +84,51 @@ function seedPluginManifest(pluginRoot: string, fingerprint: string): string {
 }
 
 describe('pre-compact.mjs', () => {
+  it('recovers the ended second execution through both actual compaction hooks', () => {
+    const fixture = createFixture();
+    const fingerprint = `sha256:${'7'.repeat(64)}`;
+    const hook = seedPluginManifest(fixture.pluginRoot, fingerprint);
+    seedStore(fixture.root, fixture.projectRoot, fingerprint, 'job-continued');
+    const db = newRawDatabase(join(fixture.root, '.coral', 'gen2', 'data', 'store', 'epoch-1', 'store.db'));
+    try {
+      db.prepare("UPDATE projection_jobs SET execution = 2, phase = 'completed' WHERE job_id = ?").run('job-continued');
+    } finally {
+      db.close();
+    }
+    const jobRoot = join(fixture.root, '.coral', 'exports', 'jobs', 'job-continued');
+    const resultPath = join(jobRoot, 'executions', '2', 'result.md');
+    mkdirSync(join(jobRoot, 'executions', '1'), { recursive: true });
+    mkdirSync(join(jobRoot, 'executions', '2'), { recursive: true });
+    writeFileSync(join(jobRoot, 'executions', '1', 'result.md'), 'first execution');
+    writeFileSync(resultPath, 'second execution');
+    const env = { HOME: fixture.root, CLAUDE_PROJECT_DIR: fixture.projectRoot, TMPDIR: fixture.tmpRoot };
+    expect(runHook(hook, { cwd: fixture.projectRoot }, env).status).toBe(0);
+    const snapshots = join(fixture.snapshotDir, 'hooks');
+    const snapshot = JSON.parse(readFileSync(join(snapshots, readdirSync(snapshots)[0]), 'utf8'));
+    expect(snapshot.jobs).toEqual([
+      {
+        jobId: 'job-continued',
+        execution: 2,
+        phase: 'completed',
+        resultPath,
+        hasResult: true,
+      },
+    ]);
+    const recovered = runHook(join(fixture.pluginRoot, 'hooks', 'post-compact.mjs'), { cwd: fixture.projectRoot }, env);
+    expect(recovered.status).toBe(0);
+    const context = JSON.parse(recovered.stdout).hookSpecificOutput.additionalContext;
+    expect(context).toContain(`- job-continued: ${resultPath}`);
+    expect(context).not.toContain(join(jobRoot, 'executions', '1', 'result.md'));
+    expect(context).not.toContain(join(jobRoot, 'result.md'));
+
+    rmSync(resultPath);
+    writeFileSync(join(jobRoot, 'result.md'), 'obsolete job-level result');
+    const missingSecond = runHook(hook, { cwd: fixture.projectRoot }, env);
+    expect(missingSecond.status).toBe(0);
+    expect(JSON.parse(missingSecond.stderr.trim())).toMatchObject({ message: 'no relevant jobs to snapshot' });
+    expect(readdirSync(snapshots)).toEqual([]);
+  });
+
   it('does not call a vanished symlinked store root an empty store', () => {
     const fixture = createFixture();
     const hook = seedPluginManifest(

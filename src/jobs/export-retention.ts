@@ -16,6 +16,7 @@ import { decodeBody, type StoreReadContext } from '../store/body-codec.js';
 import type { EventsRow } from '../store/schema.js';
 import { jobExecutionEndedBodySchema } from './terminal/result.js';
 import { readJobTerminalAge } from './terminal-age.js';
+import { withJobArtifactGuard } from './conversation/artifact-guard.js';
 import type { JobLocation } from './location-index.js';
 import { retainedTerminal } from './terminal/identity.js';
 import { readAcceptedTerminal } from './terminal/source.js';
@@ -372,6 +373,7 @@ export async function pruneJobExports(input: {
   const pending = createRetentionPendingSet(input.db, 'storage-retention.exports.pending.v1', mutate, budget.record);
   const attempted = new Set<string>();
   const process = async (id: string, deletionBudget: RetentionRunBudget): Promise<boolean> => {
+    if (id === '.provider-artifact-discard') return true;
     attempted.add(id);
     if (!isRetentionChildName(id)) {
       pending.remove(id);
@@ -392,6 +394,7 @@ export async function pruneJobExports(input: {
       budget.record({ kind: 'kept', subject: path, reason: 'export-retirement-kept' });
       return true;
     }
+    return withJobArtifactGuard(runtime, jobId, async () => {
     let outcome: RetentionOutcome;
     let deleting = false;
     const admissionKey = `storage-retention.exports.admission.v1.${id}`;
@@ -639,6 +642,7 @@ export async function pruneJobExports(input: {
     } else if (outcome.kind === 'deleted' || outcome.pending === false) pending.remove(workId);
     budget.record(outcome);
     return true;
+    });
   };
   const afterId = pending.restarted ? '' : input.afterId;
   let cursor = afterId;

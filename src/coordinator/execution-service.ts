@@ -89,6 +89,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
       providerRegistry: deps.providerRegistry,
       runtime: this.runtime,
       coordinatorCommit,
+      currentJobEpochKey: deps.currentJobEpochKey,
       backendNamespace: this.backendNamespace,
       bundleHash: this.bundleHash,
       settlementRefusalRecorder: deps.settlementRefusalRecorder,
@@ -161,6 +162,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
       getCurrentJournalSeq: deps.getCurrentJournalSeq,
     });
     this.workflowService = new WorkflowExecutionService({
+      currentJobEpochKey: deps.currentJobEpochKey,
       runningJobs: deps.runningWorkflowJobs,
       runtime: this.runtime,
       abortRegistry: this.abortRegistry,

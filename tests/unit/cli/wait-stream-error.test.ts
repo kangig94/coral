@@ -80,3 +80,15 @@ describe('mapWaitSubscriptionError', () => {
     expect(mapWaitSubscriptionError(refused)).toBeInstanceOf(WaitBuildMismatchError);
   });
 });
+
+it('renders a typed fresh-wait remedy through the final CLI error envelope', async () => {
+  const { buildErrorEnvelope } = await import('#src/cli/errors.js');
+  const error = mapWaitSubscriptionError(new Error('wire', { cause: {
+    code: 'wait_admission_required', message: 'Execution admission evidence is required.',
+    remedy: { kind: 'fresh-wait', jobIds: ['a', 'b'] },
+  } }));
+  expect(buildErrorEnvelope(error)).toMatchObject({
+    envelope: { code: 'wait_admission_required', remediation: 'Run coral-cli jobs wait a b to admit a fresh wait.' },
+    exitCode: 1,
+  });
+});

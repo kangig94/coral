@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { TEST_CLAUDE_ACCESS } from '../../../helpers/provider-credentials.js';
+import { TEST_CLAUDE_ACCESS } from '#tests/helpers/provider-credentials.js';
 import { claudeAppServerLifecycle, claudePreflight } from '#src/providers/claude/provider-facets.js';
 import { claudeArtifactCapability } from '#src/providers/claude/artifacts.js';
 import type { AppServerTransport, ArtifactCleanupRuntime, ProviderPreflightRuntime } from '#src/providers/contract.js';
@@ -97,14 +97,15 @@ describe('claudeArtifactCapability', () => {
     runtime.storage.mkdirSync('/tmp', { recursive: true });
     runtime.storage.writeFileSync(handle, '{}\n', { encoding: 'utf-8' });
     const unlink = vi.spyOn(runtime.storage, 'unlinkSync');
-    const writeAtomicSync = runtime.storage.writeAtomicSync.bind(runtime.storage);
+    const writeAtomicDurableSync = runtime.storage.writeAtomicDurableSync.bind(runtime.storage);
     let actionWrites = 0;
-    vi.spyOn(runtime.storage, 'writeAtomicSync').mockImplementation((...args) => {
+    vi.spyOn(runtime.storage, 'writeAtomicDurableSync').mockImplementation((...args) => {
       if (args[0].includes('.provider-artifact-discard') && ++actionWrites === 2) return false;
-      return writeAtomicSync(...args);
+      return writeAtomicDurableSync(...args);
     });
     const cleanupRuntime: ArtifactCleanupRuntime = {
       storage: runtime.storage,
+      process: runtime.process,
       env: runtime.env,
       paths: runtime.paths,
       time: { sleep: async () => {} } as unknown as ArtifactCleanupRuntime['time'],
@@ -121,7 +122,7 @@ describe('claudeArtifactCapability', () => {
       'Failed to persist provider artifact action',
     );
     const reconciled = await claudeArtifactCapability.reconcileDiscard(action);
-    expect(reconciled).toEqual({ kind: 'applied', outcome: { kind: 'discarded' } });
+    expect(reconciled).toMatchObject({ kind: 'applied', outcome: { kind: 'discarded' } });
     if (reconciled.kind !== 'applied') await claudeArtifactCapability.discardArtifacts(action);
     expect(unlink).toHaveBeenCalledTimes(1);
   });

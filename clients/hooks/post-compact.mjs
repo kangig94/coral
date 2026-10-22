@@ -7,14 +7,13 @@ import {
   exitIfChildProcess,
   exitIfWrongFlavor,
   failOpen,
-  buildFlavor,
   logHookLine,
   readStdin,
   sweepStale,
   writeHookOutput,
 } from './lib/hook-utils.mjs';
 import { isLivePhase, SNAPSHOT_PREFIX, SNAPSHOT_SUFFIX, SNAPSHOT_TTL_MS } from './lib/jobs-state.mjs';
-import { exportsJobsDir, projectDirFromInput, projectTmpDir } from './lib/plugin-paths.mjs';
+import { projectDirFromInput, projectTmpDir } from './lib/plugin-paths.mjs';
 
 exitIfChildProcess();
 exitIfWrongFlavor();
@@ -42,7 +41,8 @@ function isSnapshotJob(value) {
     typeof value.jobId === 'string' &&
     /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(value.jobId) &&
     typeof value.phase === 'string' &&
-    typeof value.hasResult === 'boolean'
+    typeof value.hasResult === 'boolean' &&
+    (value.resultPath === null || (typeof value.resultPath === 'string' && value.resultPath.startsWith('/')))
   );
 }
 
@@ -79,11 +79,7 @@ await failOpen(async () => {
   const liveJobs = jobs.filter((job) => isLivePhase(job.phase));
   const terminalJobs = jobs
     .filter((job) => !isLivePhase(job.phase) && job.hasResult)
-    .map((job) => ({
-      ...job,
-      resultPath: join(exportsJobsDir(buildFlavor()), job.jobId, 'result.md'),
-    }))
-    .filter((job) => existsSync(job.resultPath));
+    .filter((job) => typeof job.resultPath === 'string' && existsSync(job.resultPath));
 
   if (liveJobs.length === 0 && terminalJobs.length === 0) {
     logHookLine('post-compact', 'snapshot contained no recoverable jobs', { snapshotPath });

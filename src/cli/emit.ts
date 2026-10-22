@@ -3,14 +3,13 @@ import type { Command } from 'commander';
 
 import { HandoffRunError } from '../coordinator/handoff-routing/runner.js';
 import { BackendToolHttpError } from '../transport/http/errors.js';
-import type { AcceptedLaunchResponse } from '../jobs/launch.js';
+import { acceptedLaunchResponseSchema, type AcceptedLaunchResponse } from '../jobs/launch.js';
 import { getWaitInvocation } from './wait-invocation.js';
 import { WaitResumeError, buildErrorEnvelope } from './errors.js';
 import { formatErrorEnvelope } from './format/error.js';
 import { formatDetachedLaunchStatus, formatLaunchWaitHint } from './format/jobs.js';
 import { launchAndFollow } from './follow.js';
 import { renderHandoffPublicationIncidents } from './handoff-notice.js';
-import { isJsonObject } from './parse.js';
 import { clearPendingReadStoreNote, flushPendingReadStoreNote } from './read-store.js';
 import { getPluginRoot } from './dispatch.js';
 
@@ -61,30 +60,7 @@ export function emitError(error: unknown): void {
 }
 
 export function isAcceptedLaunchResponse(value: unknown): value is AcceptedLaunchResponse {
-  if (!isJsonObject(value) || typeof value.launchState !== 'string') {
-    return false;
-  }
-
-  if (
-    (value.launchState !== 'running' && value.launchState !== 'queued') ||
-    typeof value.jobId !== 'string' ||
-    value.jobId.length === 0
-  ) {
-    return false;
-  }
-
-  if (value.kind === 'provider-session') {
-    return (
-      Object.keys(value).every((key) => ['kind', 'launchState', 'jobId'].includes(key))
-    );
-  }
-
-  return (
-    value.kind === 'workflow' &&
-    typeof value.workflowId === 'string' &&
-    value.workflowId.length > 0 &&
-    Object.keys(value).every((key) => ['kind', 'launchState', 'jobId', 'workflowId'].includes(key))
-  );
+  return acceptedLaunchResponseSchema.safeParse(value).success;
 }
 
 function emitAcceptedLaunchResponse(decision: AcceptedLaunchResponse): void {

@@ -29,11 +29,11 @@ export function progressVisitFromEvents(read: (jobId: string) => readonly JobEve
       kind: 'read',
       value: visit({
         frontier: () => Math.max(0, ...[...seen].flatMap((id) => read(id).map((event) => event.seq))),
-        after: (id, after, limit) =>
+        after: (id, after, limit, through = Infinity) =>
           rows(id)
-            .filter((row) => row.seq > after)
+            .filter((row) => row.seq > after && row.seq <= through)
             .slice(0, limit),
-        newest: (id, limit) => rows(id).slice(-limit),
+        newest: (id, limit, after = 0, through = Infinity) => rows(id).filter((row) => row.seq > after && row.seq <= through).slice(-limit),
       }),
     };
   };

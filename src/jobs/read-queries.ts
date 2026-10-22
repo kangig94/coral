@@ -513,7 +513,7 @@ export function loadJobExecutionDetails(
   db: Database,
   jobId: string,
   ctx: StoreReadContext,
-): Array<{ execution: number; requestedSeq: number; detail: JobDetailResponse }> {
+): Array<{ execution: number; requestedSeq: number; runtime: JobRuntime | null; detail: JobDetailResponse }> {
   const projection = readProjectionRow(db, jobId);
   if (projection === null) return [];
   const rows = db
@@ -568,6 +568,8 @@ export function loadJobExecutionDetails(
     const selected = {
       ...projection,
       execution: requested.execution,
+      backend_namespace: requested.backendNamespace,
+      bundle_hash: requested.bundleHash ?? null,
       phase,
       finishing: finishing ? (1 as const) : (0 as const),
       diagnostics: JSON.stringify(diagnostics),
@@ -585,7 +587,9 @@ export function loadJobExecutionDetails(
     return {
       execution: requested.execution,
       requestedSeq: request.seq,
+      runtime: hydrated.runtime,
       detail: {
+        requestedSeq: request.seq,
         status: hydrated.status,
         readiness: deriveLaunchReadiness(hydrated),
         events: rendered.filter((event) => event.seq >= request.seq && event.seq < boundary),
@@ -818,21 +822,21 @@ export function visitJobProgress<T>(
     kind: 'read',
     value: read({
       frontier: () => frontier,
-      after: (jobId, afterSeq, rows) =>
+      after: (jobId, afterSeq, rows, throughSeq = frontier) =>
         progressRows(
           prepareCached<[string, number, number, number], EventsRow>(
             db,
             "SELECT * FROM events WHERE type = 'job.execution.progress' AND stream_id = ? AND seq > ? AND seq <= ? ORDER BY seq LIMIT ?",
-          ).all(jobId, afterSeq, frontier, rows),
+          ).all(jobId, afterSeq, Math.min(frontier, throughSeq), rows),
           ctx,
         ),
-      newest: (jobId, rows) =>
+      newest: (jobId, rows, afterSeq = 0, throughSeq = frontier) =>
         progressRows(
-          prepareCached<[string, number, number], EventsRow>(
+          prepareCached<[string, number, number, number], EventsRow>(
             db,
-            "SELECT * FROM events WHERE type = 'job.execution.progress' AND stream_id = ? AND seq <= ? ORDER BY seq DESC LIMIT ?",
+            "SELECT * FROM events WHERE type = 'job.execution.progress' AND stream_id = ? AND seq > ? AND seq <= ? ORDER BY seq DESC LIMIT ?",
           )
-            .all(jobId, frontier, rows)
+            .all(jobId, afterSeq, Math.min(frontier, throughSeq), rows)
             .reverse(),
           ctx,
         ),

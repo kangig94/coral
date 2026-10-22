@@ -1,3 +1,4 @@
+import type { ExecutionWaitDetail } from '../jobs/wait/execution-detail.js';
 import type { ExecutionFinisher } from '../jobs/finishing.js';
 import type { JobAttention } from './services/job-attention.js';
 import type { JobSendRequest, JobSendServiceDeps } from './services/job-send.js';
@@ -14,7 +15,7 @@ import type {
 import type { LaunchCoordinatorPort, SettlementRefusalRecorder } from '../jobs/contracts/admission.js';
 import type { ProviderDurableSpawner } from '../providers/cli-runner.js';
 import type { JobProgressStore } from '../jobs/contracts/job-store.js';
-import type { JobProjectionDetail, JobWaitDetail } from '../jobs/read-queries.js';
+import type { JobProjectionDetail } from '../jobs/read-queries.js';
 import type { JobEvent, LaunchReadiness } from '../jobs/records.js';
 import type { JobPhase } from '../jobs/phase.js';
 import type {
@@ -105,7 +106,7 @@ export type ExecutionServiceDeps = {
   coordinatorCommit: CommitEventsFn;
   jobAttention?: JobAttention;
   loadJobProjectionDetail: (jobId: string) => JobProjectionDetail;
-  loadJobWaitDetail: (jobId: string) => JobWaitDetail;
+  loadJobWaitDetail: (jobId: string, requestedSeq?: number) => ExecutionWaitDetail;
   readJobLastSeq: (jobId: string) => number | null;
   visitProgress: ProgressVisit;
 
@@ -123,8 +124,8 @@ export type ExecutionServiceDeps = {
     visitProgress: ProgressVisit;
   }>;
   observeJobAbsence?: (jobId: string) => boolean;
-  observeResultAvailability: (jobId: string) => ResultAvailability;
-  hintResultRepair?: (jobId: string) => void;
+  observeResultAvailability: (jobId: string, execution?: number) => ResultAvailability;
+  hintResultRepair?: (jobId: string, execution?: number) => void;
   /** Tries to route an app-server operation through a live provider proxy set (W2.3). Optional because most
    *  compositions (every test, and any coordinator with no live set) never wire it — `LaunchOrchestrator`
    *  falls back to in-process execution when absent, identically to the port returning `null`. */

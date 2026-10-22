@@ -172,7 +172,8 @@ export const claudeAppServerLifecycle: ProviderAppServerCapability<ClaudeExecuti
       baseEnv: input.baseEnv,
       platform: input.platform,
       hostRoot: input.hostRoot,
-      transportMode: input.purpose === 'curation' ? 'print' : resolveClaudeTransportMode(input.request.coralEnv),
+      transportMode: input.purpose === 'curation' ? 'print'
+        : input.request.action === 'resume' ? 'tui' : resolveClaudeTransportMode(input.request.coralEnv),
     }),
   compileStableHost: (host) =>
     buildClaudeProviderServerSpec(compileClaudeBrokerHost({ platform: host.platform, broker: host.broker })),

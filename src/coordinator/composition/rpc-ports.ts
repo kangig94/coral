@@ -117,7 +117,11 @@ function createCoordinatorJobLister(
         }
       }
       if (filters.unwaited === true && !attention.isUnwaited(entry.jobId, entry.status.execution ?? 0)) continue;
-      jobs.push({ ...entry, ...(attention.isReleased(entry.jobId, entry.status.execution ?? 0) ? { released: true } : {}) });
+      jobs.push({
+        ...entry,
+        execution: entry.status.execution,
+        ...(attention.isReleased(entry.jobId, entry.status.execution ?? 0) ? { released: true } : {}),
+      });
     }
 
     return jobs;

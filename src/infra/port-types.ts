@@ -88,6 +88,7 @@ export type DirectoryTraversability = 'traversable' | 'denied' | 'unobserved';
 export interface StorageWholeFilePort {
   readFile(path: string, encoding: 'utf-8'): Promise<string>;
   readFileSync(path: StoragePath, encoding: 'utf-8'): string;
+  readFileBytesSync(path: StoragePath): Uint8Array;
 }
 
 export interface StorageMutationPort {
@@ -98,6 +99,10 @@ export interface StorageMutationPort {
   ): void;
   renameSync(oldPath: StoragePath, newPath: StoragePath): void;
   linkSync(existingPath: string, newPath: string): void;
+  publishFileNoReplaceSync(stage: string, destination: string):
+    | { readonly kind: 'published' }
+    | { readonly kind: 'exists' }
+    | { readonly kind: 'failed'; readonly reason: string; readonly linked: boolean };
   mkdirSync(path: string, options?: { recursive?: boolean; mode?: number }): void;
   rmSync(path: string, options?: { recursive?: boolean; force?: boolean }): void;
   writeSync(fd: number, buffer: Buffer, offset: number, length: number, position: number | null): number;

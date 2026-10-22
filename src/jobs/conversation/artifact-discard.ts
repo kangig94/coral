@@ -12,11 +12,15 @@ export function collectArtifactHandles(
   runtime: ArtifactCleanupRuntime,
   opts: { execution?: number } = {},
 ): string[] {
-  const handles = entry.artifactHandles
+  let handles = entry.artifactHandles
     .filter((artifact) => artifact.execution === (opts.execution ?? entry.execution))
     .map((artifact) => artifact.handle);
+  if (handles.length === 0) {
+    const latestArtifactExecution = entry.artifactHandles.reduce((latest, artifact) => Math.max(latest, artifact.execution), 0);
+    handles = entry.artifactHandles.filter(artifact => artifact.execution === latestArtifactExecution).map(artifact => artifact.handle);
+  }
+  if (handles.length === 0) handles = [...(entry.retentionDiscard.attempts.at(-1)?.handles ?? [])];
   if (
-    handles.length === 0 &&
     entry.conversationRef !== undefined &&
     bound.artifacts.kind === 'managed' &&
     bound.artifacts.locateArtifact !== undefined
@@ -26,8 +30,8 @@ export function collectArtifactHandles(
       runtime,
     });
     if (located !== null) {
-      return [located];
+      handles.push(located);
     }
   }
-  return handles;
+  return [...new Set(handles)];
 }

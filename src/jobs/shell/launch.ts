@@ -1,3 +1,4 @@
+import { committedExecutionRequest } from '../wait/execution-detail.js';
 import { localProviderHostRoot } from '../../infra/bundle-manifest.js';
 import {
   bindProviderRunner,
@@ -59,7 +60,15 @@ import { backendLog } from '../../infra/backend-log.js';
 import { type ProviderJobLaunchDecision, refuseLaunch } from '../launch.js';
 import { isTerminalPhase, type JobPhase } from '../phase.js';
 import type { JobLaunch, JobTerminalInput } from '../records.js';
-import type { RetentionPolicy, JobConversation } from '../conversation/entry.js';
+import { hasUnterminalRetentionDiscardRequest, type RetentionPolicy, type JobConversation } from '../conversation/entry.js';
+import { collectArtifactHandles } from '../conversation/artifact-discard.js';
+import { publishConversationRestore, verifyConversationRestore, type ConversationRestoreVerification } from '../conversation/provider-artifact-archive.js';
+import { withJobArtifactGuard } from '../conversation/artifact-guard.js';
+import { hasProviderOperationForJob } from '../../store/provider-operation-journal.js';
+import { decodeEventBody } from '../../store/body-codec.js';
+import { jobExecutionEndedBodySchema } from '../terminal/result.js';
+import type { EventsRow } from '../../store/schema.js';
+import { jobArtifactRecordedBodySchema, jobRuntimeStartedBodySchema } from '../event-bodies.js';
 import { type AbortReason, type JobAbortedBody, type JobLaunchRejected } from '../outcome.js';
 import type { JobQueueAdmittedBody, JobQueueQueuedBody } from '../event-bodies.js';
 import { type AbortRegistry } from './abort-registry.js';
@@ -70,6 +79,7 @@ import {
   type AcceptedAdmission,
   type AdmissionResult,
   type JobAdmissionPort,
+  type JobQueueReadPort,
   type LaunchPermit,
   type LaunchPool,
   type QueuedHandle,
@@ -190,12 +200,13 @@ export interface LaunchOrchestratorDeps {
   executionFinisher: ExecutionFinisher;
   progressStore: JobProgressStore;
   conversationManager: ConversationContinuityPort & ConversationInitialLaunchPort;
-  launchAdmission: JobAdmissionPort;
+  launchAdmission: JobAdmissionPort & Pick<JobQueueReadPort, 'reservationFor'>;
   providerOperationBinding: ProviderOperationBindingPort;
   durableSpawner: ProviderDurableSpawner;
   providerRegistry: ProviderBindingCatalog;
-  runtime: Pick<Runtime, 'time' | 'ids' | 'storage' | 'env' | 'paths'>;
+  runtime: Pick<Runtime, 'time' | 'ids' | 'storage' | 'env' | 'paths' | 'process'>;
   coordinatorCommit: CommitEventsFn;
+  currentJobEpochKey?: () => string | null;
   backendNamespace: string;
   bundleHash: string;
   settlementRefusalRecorder: SettlementRefusalRecorder;
@@ -245,6 +256,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
   // preparation boundary. Quiesce-for-handoff acts on this set; CLI/durable
   // jobs not in the set keep the existing handoff preservation behavior.
   private readonly runTasks = new Set<string>();
+  private readonly launching = new Set<string>();
   private readonly appServerJobs = new Set<string>();
   private readonly localAppServerExecutions = new Set<string>();
   // Once handoff quiesces a job, the dying generation must perform no
@@ -441,7 +453,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
     });
   }
 
-  launchExecution(
+  async launchExecution(
     provider: BoundProvider,
     conversation: JobConversation,
     request: ProviderRequest,
@@ -449,11 +461,59 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
       owner: ExecutionOwner;
       mintProtectedEnv: (jobId: string, execution: number) => ProviderOperationEnvironmentInput;
     },
-  ): ProviderJobLaunchDecision {
+  ): Promise<ProviderJobLaunchDecision> {
+    if (this.launching.has(conversation.jobId)) return refuseLaunch('execution_finishing', 'Another execution admission is in progress. Wait for it to finish.');
+    this.launching.add(conversation.jobId);
+    try { return await this.launchVerifiedExecution(provider, conversation, request, opts); }
+    finally { this.launching.delete(conversation.jobId); }
+  }
+
+  private async launchVerifiedExecution(
+    provider: BoundProvider,
+    conversation: JobConversation,
+    request: ProviderRequest,
+    opts: ProviderLaunchOptions & {
+      owner: ExecutionOwner;
+      mintProtectedEnv: (jobId: string, execution: number) => ProviderOperationEnvironmentInput;
+    },
+  ): Promise<ProviderJobLaunchDecision> {
     const jobId = conversation.jobId;
     const execution = conversation.execution + 1;
     if (this.runTasks.has(executionKey(jobId, conversation.execution)))
       return refuseLaunch('execution_finishing', `Execution #${conversation.execution} of ${jobId} is still completing cleanup. Wait for it to finish.`);
+    let verification: ConversationRestoreVerification | null = null;
+    if (conversation.execution > 0) {
+      const end = this.deps.progressStore.getDb().prepare<[string], EventsRow>(
+        "SELECT * FROM events WHERE stream_kind = 'job' AND stream_id = ? AND type = 'job.execution.ended' ORDER BY seq DESC LIMIT 1",
+      ).get(jobId);
+      if (conversation.open || hasUnterminalRetentionDiscardRequest(conversation) ||
+          this.deps.launchAdmission.reservationFor(jobId) !== null ||
+          hasProviderOperationForJob(this.deps.progressStore.getDb(), jobId) ||
+          end === undefined || jobExecutionEndedBodySchema.parse(decodeEventBody(end.body)).execution !== conversation.execution) {
+        return refuseLaunch('execution_finishing', `Execution #${conversation.execution} of ${jobId} has not completed finishing. Wait for it to finish.`);
+      }
+      const identity = provider.compareIdentity(conversation.binding);
+      if (!identity.ok) return refuseLaunch('profile_mismatch', 'Continue with the conversation\'s original provider profile.');
+      if (provider.artifacts.kind === 'managed') {
+        try {
+          const handles = collectArtifactHandles(conversation, provider, this.deps.runtime);
+          const runs = this.deps.progressStore.getDb().prepare<[string], EventsRow>(
+            `SELECT * FROM events WHERE stream_kind = 'job' AND stream_id = ?
+              AND type IN ('job.execution.started', 'job.artifact.recorded') ORDER BY seq`,
+          ).all(jobId);
+          const minimumExecution = runs.reduce((latest, row) => {
+            const body = decodeEventBody(row.body);
+            return Math.max(latest, (row.type === 'job.execution.started'
+              ? jobRuntimeStartedBodySchema.parse(body) : jobArtifactRecordedBodySchema.parse(body)).execution);
+          }, 1);
+          verification = await verifyConversationRestore({ runtime: this.deps.runtime, conversation,
+            nativeHandle: handles.at(-1) ?? null, minimumExecution });
+        } catch (error: unknown) {
+          return refuseLaunch('native_unobservable', `Cannot verify native conversation: ${errorMessage(error)}`);
+        }
+        if (verification.kind === 'unrestorable') return refuseLaunch(verification.reason, verification.message);
+      }
+    }
     const pool = opts.pool ?? 'default';
     const admission = this.reserveAdmission(jobId, provider.name, opts.owner, pool,
       opts.owner.kind === 'workflow' || opts.owner.kind === 'discussion');
@@ -461,6 +521,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
     if (admission instanceof SuccessionAdmissionPausedError) {
       return refuseLaunch('succession_admission_paused', admission.message);
     }
+    let committed = false;
     try {
       const metadata = this.resolveEventMetadata(jobId, conversation.projectRoot);
       const hostedRequest = {
@@ -468,7 +529,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
         jobId,
         coralEnv: { ...request.coralEnv, CORAL_JOB_ID: jobId },
       };
-      this.deps.progressStore.withExecutionAdmission(jobId, execution, {
+      await withJobArtifactGuard(this.deps.runtime, jobId, () => this.deps.progressStore.withExecutionAdmission(jobId, execution, {
         projectRoot: conversation.projectRoot, workDir: conversation.cwd, jobKind: 'provider',
       }, () => {
       this.deps.coordinatorCommit(commit => {
@@ -511,14 +572,24 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
         });
         return undefined;
       });
-      });
+      }));
+      committed = true;
+      if (verification !== null) {
+        const restored = await publishConversationRestore({ runtime: this.deps.runtime, jobId, execution, verification });
+        if (restored.kind === 'unrestorable') {
+          const error = new Error(`Committed conversation restore failed: ${restored.message}`);
+          await this.finalizeCommittedLaunchSetupFailure(jobId, jobId, admission, error);
+          return refuseLaunch(restored.reason, error.message);
+        }
+      }
       this.activateCommittedProviderLaunch({ provider, conversationJobId: jobId, jobId,
         execution, request: hostedRequest, admission, pool, mintProtectedEnv: opts.mintProtectedEnv });
     } catch (error) {
-      this.releaseAdmissionReservation(admission);
+      if (!committed) this.releaseAdmissionReservation(admission);
       throw error;
     }
-    return { kind: 'provider-session', status: admission.type === 'queued' ? 'queued' : 'running', jobId };
+    return { kind: 'provider-session', status: admission.type === 'queued' ? 'queued' : 'running', jobId,
+      ...committedExecutionRequest(this.deps.progressStore.getDb(), jobId, execution, this.deps.currentJobEpochKey?.() ?? ':memory:') };
   }
 
   private reserveAdmission(

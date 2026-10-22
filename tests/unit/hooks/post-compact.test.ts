@@ -26,6 +26,8 @@ describe('post-compact.mjs', () => {
       buildFlavor() === 'dev' ? 'exports-dev' : 'exports',
       'jobs',
       'job-done',
+      'executions',
+      '2',
     );
     mkdirSync(hooksDir, { recursive: true });
     mkdirSync(resultDir, { recursive: true });
@@ -37,9 +39,9 @@ describe('post-compact.mjs', () => {
         projectDir: fixture.projectRoot,
         capturedAtMs: Date.now(),
         jobs: [
-          { jobId: 'job-live', phase: 'running', hasResult: false },
-          { jobId: 'job-queued', phase: 'queued', hasResult: false },
-          { jobId: 'job-done', phase: 'completed', hasResult: true },
+          { jobId: 'job-live', phase: 'running', hasResult: false, resultPath: null },
+          { jobId: 'job-queued', phase: 'queued', hasResult: false, resultPath: null },
+          { jobId: 'job-done', phase: 'completed', hasResult: true, resultPath: join(resultDir, 'result.md') },
         ],
       }),
       'utf8',
@@ -76,7 +78,7 @@ describe('post-compact.mjs', () => {
         version: 1,
         projectDir: '/different/project',
         capturedAtMs: Date.now(),
-        jobs: [{ jobId: 'job-safe', phase: 'running', hasResult: false }],
+        jobs: [{ jobId: 'job-safe', phase: 'running', hasResult: false, resultPath: null }],
       }),
       'utf8',
     );

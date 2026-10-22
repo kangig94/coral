@@ -735,7 +735,7 @@ export type ProviderPreflightInput<Access extends ProviderAccess = ProviderAcces
   requestEnv: Readonly<Record<string, string>>;
   platform: string;
 };
-export type ArtifactCleanupRuntime = Pick<Runtime, 'storage' | 'env' | 'paths' | 'time'>;
+export type ArtifactCleanupRuntime = Pick<Runtime, 'storage' | 'env' | 'paths' | 'time' | 'process'>;
 
 export type ProviderArtifactHandle = string;
 

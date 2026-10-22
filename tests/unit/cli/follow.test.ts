@@ -171,7 +171,7 @@ import { BackendUnreachableError } from '#src/infra/http-errors.js';
     const code = await followJobs({
       start: {
         kind: 'launch',
-        launchResult: { kind: 'accepted', jobId: 'job-1', sessionId: 's', provider: 'codex' } as never,
+        launchResult: { kind: 'provider-session', launchState: 'running', jobId: 'job-1', requestedSeq: 1, epochKey: 'epoch' },
       },
       reconnectPolicy: 'until-terminal',
       projectRoot: '/project',
@@ -234,7 +234,7 @@ import { BackendUnreachableError } from '#src/infra/http-errors.js';
     const code = await followJobs({
       start: {
         kind: 'launch',
-        launchResult: { kind: 'accepted', jobId: 'job-w', sessionId: 's', provider: 'codex' } as never,
+        launchResult: { kind: 'workflow', launchState: 'running', jobId: 'job-w', workflowId: 'job-w', requestedSeq: 1, epochKey: 'epoch' },
       },
       reconnectPolicy: 'until-terminal',
       projectRoot: '/project',
@@ -486,7 +486,7 @@ it('leaves a stop that is still in progress on a second SIGINT with exit 75, its
     const code = followJobs({
       start: {
         kind: 'launch',
-        launchResult: { kind: 'provider-session', launchState: 'running', jobId: 'job-1', sessionId: 's' },
+        launchResult: { kind: 'provider-session', launchState: 'running', jobId: 'job-1', requestedSeq: 1, epochKey: 'epoch' },
       },
       reconnectPolicy: 'until-terminal',
       projectRoot: '/project',

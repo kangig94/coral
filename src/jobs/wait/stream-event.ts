@@ -1,3 +1,4 @@
+import { waitExecutionSelectionsSchema } from './execution-selection.js';
 import { decodeWaitCursor } from './cursor.js';
 import { z } from 'zod';
 
@@ -18,6 +19,7 @@ const KNOWN_WAIT_STREAM_EVENT_TYPES = new Set<string>([
   'notice',
   'disposition',
   'cursor',
+  'admission',
 ]);
 const waitCursorSchema = z.custom<WaitCursor>((value) => decodeWaitCursor(value).kind === 'decoded');
 
@@ -30,12 +32,14 @@ export type WaitRenderDecision = Readonly<{
 
 /** The client's cursor is the last one a frame or final event named; a cursor frame is never rendered. */
 export function advanceWaitRenderCursor(cursor: WaitCursor | undefined, event: WaitStreamEvent): WaitRenderDecision {
+  if (event.type === 'admission') return { cursor, shouldRender: false };
   if (event.type === 'cursor') return { cursor: event.cursor, shouldRender: false };
-  return { cursor: isFinalWaitEvent(event) ? (event.cursor ?? undefined) : cursor, shouldRender: true };
+  return { cursor: isFinalWaitEvent(event) || (event.type === 'terminal' && event.cursor !== undefined) ? (event.cursor ?? undefined) : cursor, shouldRender: true };
 }
 
 const finalFields = {
   cursor: waitCursorSchema.nullable(),
+  executionSelections: waitExecutionSelectionsSchema.optional(),
   exitCode: z.number().int().min(0).max(255),
 };
 const nonFinalFields = {
@@ -78,6 +82,7 @@ export const resultAvailabilitySchema = z.discriminatedUnion('kind', [
 
 const waitTerminalBlockSchema = z.object({
   type: z.literal('terminal'),
+  executionSelections: waitExecutionSelectionsSchema.optional(),
   jobId: z.string(),
   seq: z.number().int().nonnegative(),
   remainingJobIds: z.array(z.string()).max(MAX_WAIT_JOB_IDS),
@@ -130,6 +135,7 @@ const waitNoticeSchema = z
 const waitCursorFrameSchema = z
   .object({
     type: z.literal('cursor'),
+    executionSelections: waitExecutionSelectionsSchema.optional(),
     cursor: waitCursorSchema,
     exitCode: z.never().optional(),
   })
@@ -145,9 +151,10 @@ const waitDispositionSchema = z
   .strip();
 const waitStreamEventSchema = z
   .union([
+    z.object({ type: z.literal('admission'), executionSelections: waitExecutionSelectionsSchema }).strict(),
     waitProgressEventSchema,
     waitTerminalBlockSchema.extend(finalFields).strip(),
-    waitTerminalBlockSchema.extend(nonFinalFields).strip(),
+    waitTerminalBlockSchema.extend({ ...nonFinalFields, cursor: waitCursorSchema.nullable().optional() }).strip(),
     waitWaitingEventSchema,
     waitCarrierInterruptedEventSchema,
     waitNoticeSchema,

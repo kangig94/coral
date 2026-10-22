@@ -81,9 +81,9 @@ export class JobLaunchService {
     }
   }
 
-  private launchOrRefuse(run: () => ProviderJobLaunchDecision): ProviderJobLaunchDecision {
+  private async launchOrRefuse(run: () => Promise<ProviderJobLaunchDecision>): Promise<ProviderJobLaunchDecision> {
     try {
-      return run();
+      return await run();
     } catch (error: unknown) {
       const refusal = this.refuseLaunchConflict(error);
       if (refusal !== null) return refusal;

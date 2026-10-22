@@ -113,11 +113,15 @@ await failOpen(async () => {
     let rows;
     try {
       rows = storeHandle.all(
-        `SELECT job_id AS jobId, phase
+        `SELECT job_id AS jobId, execution, phase,
+                CASE WHEN execution IS NULL THEN NULL
+                     ELSE ? || '/' || job_id || '/executions/' || execution || '/result.md'
+                END AS resultPath
              FROM projection_jobs
             WHERE project_root = ?
             ORDER BY last_seq DESC
             LIMIT 20`,
+        exportsJobsDir(buildFlavor()),
         projectDir,
       );
     } catch (error) {
@@ -129,7 +133,12 @@ await failOpen(async () => {
     }
 
     const jobs = rows.flatMap((row) => {
-      if (typeof row.jobId !== 'string' || !SAFE_JOB_ID.test(row.jobId) || typeof row.phase !== 'string') {
+      if (
+        typeof row.jobId !== 'string' ||
+        !SAFE_JOB_ID.test(row.jobId) ||
+        typeof row.phase !== 'string' ||
+        (row.execution !== null && (!Number.isSafeInteger(row.execution) || row.execution < 1))
+      ) {
         logSnapshotSkipped(
           projectDir,
           'projection_jobs contains an unsafe job identifier',
@@ -138,8 +147,8 @@ await failOpen(async () => {
         return [];
       }
 
-      const resultPath = join(exportsJobsDir(buildFlavor()), row.jobId, 'result.md');
-      const hasArtifact = existsSync(resultPath);
+      const resultPath = row.resultPath;
+      const hasArtifact = typeof resultPath === 'string' && existsSync(resultPath);
       if (!isLivePhase(row.phase) && !hasArtifact) {
         return [];
       }
@@ -147,7 +156,9 @@ await failOpen(async () => {
       return [
         {
           jobId: row.jobId,
+          execution: row.execution,
           phase: row.phase,
+          resultPath,
           hasResult: hasArtifact,
         },
       ];

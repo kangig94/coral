@@ -1,3 +1,4 @@
+import type { WaitExecutionSelection } from '../../jobs/wait/execution-selection.js';
 import { waitCommandPrefix } from '../../coordinator/handoff-routing/wait-command.js';
 import { formatResultAvailability } from './result-availability.js';
 import type { CauseRef } from '../../causality/cause-ref.js';
@@ -14,6 +15,7 @@ import { formatUsageSegment } from './usage.js';
 
 export type JobsListItem = {
   jobId: string;
+  execution: string;
   phase: string;
   provider: string;
   cwd: string;
@@ -232,10 +234,10 @@ export function formatDetachedLaunchStatus(result: AcceptedLaunchResponse): stri
     : `Workflow ${result.workflowId} ${result.launchState} (job ${result.jobId})`;
 }
 
-export function formatLaunchWaitHint(result: Pick<AcceptedLaunchResponse, 'jobId'>): string {
+export function formatLaunchWaitHint(result: Pick<AcceptedLaunchResponse, 'jobId' | 'requestedSeq' | 'epochKey'>): string {
   return [
     'Wait for completion with the command below.',
-    formatJobsOperatorCommand({ ...result, kind: 'wait-job' }),
+    formatJobsOperatorCommand({ jobId: result.jobId, kind: 'wait-job', executionSelection: { jobId: result.jobId, epochKey: result.epochKey, requestedSeq: result.requestedSeq, awaitingArtifact: false } }),
   ].join('\n');
 }
 
@@ -299,7 +301,8 @@ export function formatWorkflowSlot(
 export function formatJobsList(data: JobsListResponse, now = Date.now()): JobsListItem[] {
   return data.jobs.map(({ jobId, status, released }) => ({
     jobId,
-    phase: released === true ? `${status.phase} (released)` : status.phase,
+    execution: status.execution === null ? '-' : `#${status.execution}`,
+    phase: `${status.phase}${status.finishing === true ? ' (finishing)' : ''}${released === true ? ' (released)' : ''}`,
     provider: status.provider ?? status.jobKind,
     cwd: status.workDir ?? status.projectRoot,
     jobKind: status.jobKind,
@@ -359,14 +362,11 @@ export function formatJobDetail(
   full = false,
 ): string {
   const status = response.status;
-  const usage = formatUsageSegment(response.exit?.diagnostics.usage, {
-    verbose: true,
-    cacheReadAnnotation: 'full',
-  });
-
   const lines = [
     `Job ${status.jobId}`,
     `Phase: ${status.phase}`,
+    status.execution === null ? undefined : `Latest execution: #${status.execution}`,
+    status.finishing === true ? 'Finishing: true' : undefined,
     `Readiness: ${response.readiness}`,
     status.provider === null ? undefined : `Provider: ${status.provider}`,
     `Kind: ${status.jobKind}`,
@@ -380,26 +380,51 @@ export function formatJobDetail(
     status.workDir === null ? undefined : `Work dir: ${status.workDir}`,
     `Updated: ${status.updatedAt}`,
     status.lastSeq === undefined ? undefined : `Last seq: ${status.lastSeq}`,
-    response.exit === null ? undefined : `Exit: ${terminalOutcomeText(response.exit, describeCauseRef)}`,
-    response.exit?.endTime === undefined ? undefined : `Ended: ${response.exit.endTime}`,
-    full && response.exit ? `Diagnostics:\n${JSON.stringify(response.exit.diagnostics, null, 2)}` : undefined,
     response.availability === undefined ? undefined : formatResultAvailability(response.availability),
-    usage === undefined ? undefined : `Usage:\n  ${usage}`,
-    response.exit === null
-      ? [
-          'Follow it with the command below.',
-          formatJobsOperatorCommand({ kind: 'wait-job', jobId: status.jobId }),
-        ].join('\n')
-      : `Result:\n${full ? (response.exit.content.length > 0 ? response.exit.content : pickTerminalPreviewSource(response.exit, describeCauseRef)) : truncatePreview(pickTerminalPreviewSource(response.exit, describeCauseRef))}`,
+    ...(response.executions === undefined
+      ? [formatExecutionResult(response, describeCauseRef, full)]
+      : response.executions.map((execution) =>
+          joinLines([
+            `Execution #${execution.execution}`,
+            `Phase: ${execution.status.phase}`,
+            execution.status.finishing === true ? 'Finishing: true' : undefined,
+            `Readiness: ${execution.readiness}`,
+            `Requested seq: ${execution.requestedSeq}`,
+            `Result path: ${execution.resultPath}`,
+            formatExecutionResult(execution, describeCauseRef, full),
+          ]),
+        )),
   ];
 
   return joinLines(lines);
 }
 
+function formatExecutionResult(
+  response: Pick<JobDetailResponse, 'status' | 'exit'>,
+  describeCauseRef: CauseRefDescriber | undefined,
+  full: boolean,
+): string {
+  const exit = response.exit;
+  if (exit === null) {
+    return joinLines([
+      'Follow it with the command below.',
+      formatJobsOperatorCommand({ kind: 'wait-job', jobId: response.status.jobId }),
+    ]);
+  }
+  const usage = formatUsageSegment(exit.diagnostics.usage, { verbose: true, cacheReadAnnotation: 'full' });
+  return joinLines([
+    `Exit: ${terminalOutcomeText(exit, describeCauseRef)}`,
+    `Ended: ${exit.endTime}`,
+    full ? `Diagnostics:\n${JSON.stringify(exit.diagnostics, null, 2)}` : undefined,
+    usage === undefined ? undefined : `Usage:\n  ${usage}`,
+    `Result:\n${full ? (exit.content.length > 0 ? exit.content : pickTerminalPreviewSource(exit, describeCauseRef)) : truncatePreview(pickTerminalPreviewSource(exit, describeCauseRef))}`,
+  ]);
+}
+
 /** What `workflowSlot` carries when a job occupies no workflow slot, so the column can be dropped entirely. */
 const JOBS_TABLE_NO_SLOT = '-';
-const JOBS_TABLE_HEADERS = ['JOB ID', 'PHASE', 'PROVIDER', 'AGE'];
-const JOBS_TABLE_HEADERS_WITH_SLOT = ['JOB ID', 'SLOT', 'PHASE', 'PROVIDER', 'AGE'];
+const JOBS_TABLE_HEADERS = ['JOB ID', 'EXECUTION', 'PHASE', 'PROVIDER', 'AGE'];
+const JOBS_TABLE_HEADERS_WITH_SLOT = ['JOB ID', 'SLOT', 'EXECUTION', 'PHASE', 'PROVIDER', 'AGE'];
 
 /**
  * A workflow child's job id is a UUID that says nothing about which atom it ran, so the slot has to be
@@ -411,11 +436,11 @@ function jobsTable(rows: JobsListItem[]): string {
   return hasSlot
     ? formatTable(
         JOBS_TABLE_HEADERS_WITH_SLOT,
-        rows.map((row) => [row.jobId, row.workflowSlot, row.phase, row.provider, row.age]),
+        rows.map((row) => [row.jobId, row.workflowSlot, row.execution, row.phase, row.provider, row.age]),
       )
     : formatTable(
         JOBS_TABLE_HEADERS,
-        rows.map((row) => [row.jobId, row.phase, row.provider, row.age]),
+        rows.map((row) => [row.jobId, row.execution, row.phase, row.provider, row.age]),
       );
 }
 
@@ -462,7 +487,7 @@ export function renderJobsList(rows: JobsListItem[], filters: JobsListDisplayFil
 export type JobsOperatorCommand =
   | Readonly<{ kind: 'jobs-detail-full'; jobId: string }>
   | JobOperatorRemedy
-  | Readonly<{ kind: 'wait-job'; jobId: string; grammar?: 'current' }>
+  | Readonly<{ kind: 'wait-job'; jobId: string; grammar?: 'current'; executionSelection?: WaitExecutionSelection }>
   | Readonly<{ kind: 'send-job'; jobId: string; inputTokens: readonly string[] }>
   | Readonly<{ kind: 'launch-provider-job'; provider: string; agent: string | null; inputTokens: readonly string[] }>
   | Readonly<{ kind: 'jobs-list' }>;
@@ -476,7 +501,7 @@ export function renderJobsOperatorCommand(command: JobsOperatorCommand): string 
     case 'jobs-detail':
       return `coral-cli jobs detail ${command.jobId}`;
     case 'wait-job':
-      return `${command.grammar === 'current' ? 'coral-cli jobs wait' : waitCommandPrefix()} ${quoteJobsCommandArgument(command.jobId)}`;
+      return `${command.grammar === 'current' ? 'coral-cli jobs wait' : waitCommandPrefix()} ${quoteJobsCommandArgument(command.jobId)}${command.executionSelection === undefined ? '' : ` --execution-selection ${quoteJobsCommandArgument(JSON.stringify([command.executionSelection]))}`}`;
     case 'send-job':
       return `coral-cli jobs send ${quoteJobsCommandArgument(command.jobId)} ${renderJobsInputTokens(command.inputTokens)}`;
     case 'launch-provider-job':

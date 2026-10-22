@@ -78,7 +78,7 @@ export function createTestJobJournalDeps(progressStore: JobStore, runtime: Pick<
 
   return {
     loadJobProjectionDetail: (jobId: string) => progressStore.loadJobProjectionDetail(jobId),
-    loadJobWaitDetail: (jobId: string) => progressStore.loadJobWaitDetail(jobId),
+    loadJobWaitDetail: (jobId: string, requestedSeq?: number) => progressStore.loadJobWaitDetail(jobId, requestedSeq),
     readJobLastSeq: (jobId: string) => progressStore.readJobLastSeq(jobId),
 
     visitProgress: <T>(_epoch: string, read: (source: ProgressSource) => T) => progressStore.visitProgress(read),

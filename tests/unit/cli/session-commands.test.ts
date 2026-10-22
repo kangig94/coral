@@ -26,8 +26,9 @@ const client = vi.hoisted(() => ({
   sendJob: vi.fn<() => Promise<ProviderSendOutcome>>(async () => ({ state: 'delivered' })),
   createSession: vi.fn(async () => ({
     kind: 'provider-session',
-    sessionId: 's',
     jobId: 'p',
+    requestedSeq: 1,
+    epochKey: 'epoch',
     launchState: 'running',
   })),
 }));
@@ -509,4 +510,26 @@ it.each(
   expect(process.exitCode).toBe(2);
   expect(client.listJobs).not.toHaveBeenCalled();
   expect(client.abortJobs).not.toHaveBeenCalled();
+});
+
+it('passes the complete execution selection from a continuation into streaming follow', async () => {
+  const selections = [{ jobId: 'a', epochKey: 'epoch', requestedSeq: 1000, awaitingArtifact: false }, { jobId: 'b', epochKey: 'epoch', requestedSeq: 2, deliveredEndSeq: 950, awaitingArtifact: false }];
+  await program().parseAsync(['node', 'coral-cli', 'jobs', 'wait', 'a', '--cursor', '279', '--execution-selection', JSON.stringify(selections)]);
+  expect(followJobs).toHaveBeenCalledWith(expect.objectContaining({ start: { kind: 'jobs', jobIds: ['a'], serializedCursor: '279', executionSelections: selections } }));
+});
+
+it('passes execution selection through snapshot requests and rendered continuations', async () => {
+  const selections = [{ jobId: 'a', epochKey: 'epoch', requestedSeq: 1000, awaitingArtifact: false }];
+  client.snapshotJobsWait.mockResolvedValueOnce({
+    jobs: [{ jobId: 'a', disposition: 'admitted', phase: 'running', progress: [] }],
+    notices: [], cursor: '1000', remainingJobIds: ['a'], exitCode: 75, executionSelections: selections,
+  });
+  let output = '';
+  vi.spyOn(process.stdout, 'write').mockImplementation(((text: unknown, callback?: () => void) => {
+    output += String(text); callback?.(); return true;
+  }) as typeof process.stdout.write);
+  await program().parseAsync(['node', 'coral-cli', 'jobs', 'wait', 'a', '--snapshot', '--cursor', '279', '--execution-selection', JSON.stringify(selections)]);
+  expect(client.snapshotJobsWait).toHaveBeenCalledWith(expect.objectContaining({ cursor: '279', executionSelections: selections }));
+  expect(output).toContain(`--execution-selection '${JSON.stringify(selections)}'`);
+  expect(output).toContain('--snapshot --cursor 1000');
 });

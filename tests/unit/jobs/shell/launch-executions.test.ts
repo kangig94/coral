@@ -39,7 +39,7 @@ it('keeps #2 local execution and handoff state when #1 cleanup is delivered late
   const secondTerminal = createDeferred<void>();
   let turns = 0;
   const provider = {
-    name: 'codex', envelope: TEST_CODEX_BINDING, appServer: {},
+    name: 'codex', envelope: TEST_CODEX_BINDING, appServer: {}, artifacts: { kind: 'none', reason: 'fixture' },
     compareIdentity: () => ({ ok: true }), decodeContinuity: () => ({ ok: true, value: undefined }),
     readiness: async () => ({ ok: true }),
     prepareExecution: () => ({ kind: 'app-server', hostSpec: {}, execute: async function* () {
@@ -57,13 +57,13 @@ it('keeps #2 local execution and handoff state when #1 cleanup is delivered late
     providerRegistry: {} as never, backendNamespace: 'tests', bundleHash: 'tests', coordinatorCommit: cb => store.commit(cb),
     settlementRefusalRecorder: { record: () => true }, terminalMaterializer: { recordProviderTerminal }, executionFinisher: finisher });
   try {
-    expect(orchestrator.launchExecution(provider, first, { action: 'exec', jobId, prompt: 'first', cwd: '/project',
+    expect(await orchestrator.launchExecution(provider, first, { action: 'exec', jobId, prompt: 'first', cwd: '/project',
       coralEnv: {}, bypassPermissions: false }, { owner: { kind: 'workflow', id: 'workflow-owner' }, parentWorkflowJobId: 'workflow-owner',
         workflowSlotId: 'slot', mintProtectedEnv: () => ({}) }))
       .toMatchObject({ status: 'running', jobId });
     await Promise.all([ended[0].promise, released[0].promise]);
     const predecessor = conversations.readById(jobId)!;
-    expect(orchestrator.launchExecution(provider, predecessor, { action: 'resume', jobId, prompt: 'second', cwd: '/project',
+    expect(await orchestrator.launchExecution(provider, predecessor, { action: 'resume', jobId, prompt: 'second', cwd: '/project',
       coralEnv: {}, bypassPermissions: false }, { owner: { kind: 'workflow', id: 'workflow-owner' }, parentWorkflowJobId: 'workflow-owner',
         workflowSlotId: 'slot', mintProtectedEnv: () => ({}) }))
       .toMatchObject({ status: 'running', jobId });

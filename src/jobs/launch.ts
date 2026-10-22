@@ -13,13 +13,15 @@ const sourceImportReadinessSchema = z.enum(sourceImportReadinessValues);
 export type SourceImportReadiness = z.infer<typeof sourceImportReadinessSchema>;
 export type KbJobOperation = 'kb.source_import' | 'kb.reindex' | 'kb.community_summary';
 
-export type AcceptedProviderJobLaunchDecision =
-  | { kind: 'provider-session'; status: 'running'; jobId: string }
-  | { kind: 'provider-session'; status: 'queued'; jobId: string; message?: undefined };
+export type CommittedExecutionRequest = { requestedSeq: number; epochKey: string };
 
-export type AcceptedWorkflowLaunchDecision =
+export type AcceptedProviderJobLaunchDecision = CommittedExecutionRequest & (
+  | { kind: 'provider-session'; status: 'running'; jobId: string }
+  | { kind: 'provider-session'; status: 'queued'; jobId: string; message?: undefined });
+
+export type AcceptedWorkflowLaunchDecision = CommittedExecutionRequest & (
   | { kind: 'workflow'; status: 'running'; jobId: string; workflowId: string }
-  | { kind: 'workflow'; status: 'queued'; jobId: string; workflowId: string; message?: undefined };
+  | { kind: 'workflow'; status: 'queued'; jobId: string; workflowId: string; message?: undefined });
 
 export type RefusedLaunchDecision = {
   status: 'refused';
@@ -44,18 +46,19 @@ export type LaunchDecision = ProviderJobLaunchDecision | AcceptedWorkflowLaunchD
  * Coordinator response shape when a launch request is accepted (running or queued).
  * Returned over IPC and HTTP for sessions.create / workflow.run.
  */
-export type AcceptedLaunchResponse =
-  | {
-      kind: 'provider-session';
-      jobId: string;
-      launchState: 'running' | 'queued';
-    }
-  | {
-      kind: 'workflow';
-      workflowId: string;
-      jobId: string;
-      launchState: 'running' | 'queued';
-    };
+const acceptedLaunchFields = {
+  jobId: z.string().min(1),
+  requestedSeq: z.number().int().positive().safe(),
+  epochKey: z.string().min(1),
+  launchState: z.enum(['running', 'queued']),
+};
+
+export const acceptedLaunchResponseSchema = z.discriminatedUnion('kind', [
+  z.object({ ...acceptedLaunchFields, kind: z.literal('provider-session') }).strict(),
+  z.object({ ...acceptedLaunchFields, kind: z.literal('workflow'), workflowId: z.string().min(1) }).strict(),
+]);
+
+export type AcceptedLaunchResponse = z.infer<typeof acceptedLaunchResponseSchema>;
 
 export function refuseLaunch(code: string, message: string): RefusedLaunchDecision {
   return {

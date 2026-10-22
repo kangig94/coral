@@ -1,3 +1,5 @@
+import { WaitSessionError } from '../jobs/wait/session.js';
+import { waitExecutionSelectionsSchema } from '../jobs/wait/execution-selection.js';
 import type { WaitCursor, WaitSnapshotRequest, CanonicalWaitStreamRequest } from '../jobs/wait/contract.js';
 import { raceWithSignal } from '../infra/promise-signal.js';
 import { randomUUID } from 'node:crypto';
@@ -1197,16 +1199,25 @@ async function executeJobsWaitCatalogRequest({
   if (waitRequestFromAnotherBuild(parsed)) return unary(WAIT_BUILD_MISMATCH, 409);
   const decoded = parsed.cursor === null ? undefined : decodeWaitCursor(parsed.cursor);
   if (decoded?.kind === 'rejected') return unary(decoded.error, 400);
+  const selections = waitExecutionSelectionsSchema.optional().safeParse(parsed.executionSelections);
+  if (!selections.success) return unary({ code: 'wait_selection_invalid', message: 'Execution selection state is malformed; use the complete state from a continuation.', remedy: { kind: 'fresh-wait', jobIds: parsed.jobIds } }, 400);
   const waitRequest: CanonicalWaitStreamRequest = {
     jobIds: parsed.jobIds,
     projectRoot: parsed.projectRoot,
     ...(parsed.timeoutSeconds === undefined ? {} : { timeoutSeconds: parsed.timeoutSeconds }),
     ...(decoded === undefined ? {} : { cursor: parsed.cursor as WaitCursor }),
     drainProgress: parsed.drainProgress === true,
+    ...(selections.data === undefined ? {} : { executionSelections: selections.data }),
   };
   const callerRoot = canonicalRequest.projectRoot;
   if (callerRoot === undefined) return unaryHttp(domainResultToHttp(invalidRequestResult()));
-  const admissions = rpcPorts.jobs.admitWait(waitRequest);
+  let admissions;
+  try {
+    admissions = rpcPorts.jobs.admitWait(waitRequest);
+  } catch (error) {
+    if (!(error instanceof WaitSessionError)) throw error;
+    return unary({ code: error.code, message: error.message, remedy: { kind: 'fresh-wait', jobIds: waitRequest.jobIds } }, 400);
+  }
   const admittedRequest: CanonicalWaitStreamRequest = Object.assign(waitRequest, { admissions });
   return {
     kind: 'subscription',
@@ -1217,9 +1228,11 @@ async function executeJobsWaitCatalogRequest({
   };
 }
 
-function snapshotRequest(request: unknown): WaitSnapshotRequest | WaitCursorRejection {
+function snapshotRequest(request: unknown): WaitSnapshotRequest | WaitCursorRejection | { code: string; message: string } {
   const parsed = request as WaitSnapshotRequest & { cursor?: unknown };
-  if (parsed.cursor === undefined) return parsed;
+  const selections = waitExecutionSelectionsSchema.optional().safeParse(parsed.executionSelections);
+  if (!selections.success) return { code: 'wait_selection_invalid', message: 'Execution selection state is malformed; use the complete state from a continuation.' };
+  if (parsed.cursor === undefined) return { ...parsed, executionSelections: selections.data };
   const decoded = decodeWaitCursor(parsed.cursor);
   return decoded.kind === 'rejected' ? decoded.error : parsed;
 }
@@ -1248,7 +1261,12 @@ async function executeJobsCatalogRequest(context: AuthorizedCatalogRequest): Pro
     case 'jobs.wait.snapshot': {
       const snapshot = snapshotRequest(context.request);
       if ('code' in snapshot) return Promise.resolve(unary(snapshot, 400));
-      return Promise.resolve(unary(context.rpcPorts.jobs.snapshot(withAbortSignal(snapshot, context.abortSignal))));
+      try {
+        return Promise.resolve(unary(context.rpcPorts.jobs.snapshot(withAbortSignal(snapshot, context.abortSignal))));
+      } catch (error) {
+        if (!(error instanceof WaitSessionError)) throw error;
+        return unary({ code: error.code, message: error.message, remedy: { kind: 'fresh-wait', jobIds: snapshot.jobIds } }, 400);
+      }
     }
     case 'jobs.wait':
       return executeJobsWaitCatalogRequest(context);

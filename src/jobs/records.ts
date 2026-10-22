@@ -250,26 +250,31 @@ export type JobsReleaseResult = {
 
 /** Response shape for jobs.list. */
 export type JobsListResponse = {
-  jobs: Array<{ jobId: string; status: JobStatus; released?: boolean }>;
+  jobs: Array<{
+    jobId: string;
+    execution?: number | null;
+    resultPath?: string | null;
+    status: JobStatus;
+    released?: boolean;
+  }>;
 };
 
-/** Response shape for jobs.detail. Includes:
- *
- * - `status`: stable launch identity + lifecycle summary (phase, lastSeq, etc.)
- * - `events`: progress + terminal events for chain-walk rendering
- * - `readiness`: derived 4-way launch-readiness view (`'pending' | 'queued'
- *   | 'ready' | 'error'`) so callers can see whether a job has settled past
- *   its launch boundary without re-deriving from `phase` + `runtime`
- * - `exit`: the terminal record + per-job diagnostics (byteCounts, warnings,
- *   usage, processExit, progressFaults) when the job has terminated. `null`
- *   while the job is still live.
- */
+/** Summary fields name the latest execution; durable single-execution details omit history. */
 export type JobDetailResponse = {
   availability?: ResultAvailability;
   epochKey?: string;
+  requestedSeq?: number;
+  resultPath?: string;
+  executions?: JobExecutionDetail[];
   status: JobStatus;
   events: JobEvent[];
   readiness: LaunchReadiness;
   exit: JobExit | null;
 };
-import { z } from 'zod';
+
+/** An execution is addressed by its job and ordinal, with its own request and result. */
+export type JobExecutionDetail = Pick<JobDetailResponse, 'status' | 'events' | 'readiness' | 'exit'> & {
+  execution: number;
+  requestedSeq: number;
+  resultPath: string;
+};

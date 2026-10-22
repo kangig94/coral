@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { isAbsolute } from 'node:path';
 
 import type { Database } from '../../store/db.js';
 import { decodeStoredBody, type StoreReadContext } from '../../store/body-codec.js';
@@ -7,6 +8,8 @@ import type { CommitEventsFn, PostCommitObserver } from '../../store/append.js';
 import type { TimePort } from '../../infra/port-types.js';
 import { errorMessage } from '../../infra/error-format.js';
 import type { ArtifactCleanupRuntime } from '../../providers/contract.js';
+import { providerArtifactDiscardWasIssued, reconcileProviderArtifactDiscard, sealProviderArtifactDiscard } from '../../providers/capability.js';
+import { withJobArtifactGuard } from './artifact-guard.js';
 import type { ProviderBindingCatalog } from '../../providers/catalog.js';
 import type { BoundProvider } from '../../providers/bound-provider-contract.js';
 import type { JobConversation } from './entry.js';
@@ -27,6 +30,7 @@ import { readProjectionJobConversation, listProjectionConversationEntries } from
 import { collectArtifactHandles } from './artifact-discard.js';
 import {
   archiveProviderArtifactsForJob,
+  cleanupConversationRestoreStages,
   deriveProviderArtifactActionDescriptor,
   deriveProviderArtifactSourceRevision,
 } from './provider-artifact-archive.js';
@@ -50,6 +54,7 @@ const observedSettlementSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('completed'), outcome: z.enum(['discarded', 'skipped_no_handles', 'provider_declares_none']) }).strict(),
   z.object({ kind: z.literal('failed'), reason: z.string() }).strict(),
 ]);
+const observationProgressSchema = z.object({ kind: z.literal('observing'), attempts: z.number().int().min(0).max(6) }).strict();
 
 function readAccepted(options: LifecycleReactorOptions, address: ExecutionAddress): EventsRow {
   const row = options.db().prepare<[string], EventsRow>(
@@ -64,6 +69,7 @@ function readAccepted(options: LifecycleReactorOptions, address: ExecutionAddres
 export class LifecycleReactor {
   private admitted = false;
   private readonly inFlight = new Map<string, Promise<RetentionSettlement>>();
+  private readonly observed = new Map<string, Exclude<RetentionSettlement, { kind: 'pending' }>>();
   private readonly abort = new AbortController();
 
   constructor(private readonly options: LifecycleReactorOptions) {
@@ -106,6 +112,7 @@ export class LifecycleReactor {
       const accepted = readAccepted(this.options, { jobId: event.stream.id, execution });
       for (const attempt of entry.retentionDiscard.attempts) {
         if (attempt.execution !== execution) continue;
+        this.observed.delete(`${event.stream.id}:${execution}:${attempt.attempt}`);
         const removed = quarantine.delete({ boundary: BOUNDARY, subject: {
           key: `${event.stream.id}:${execution}:${attempt.attempt}`,
           revision: canonicalRecoveryRevision(eventRevisionFields(accepted)),
@@ -125,9 +132,12 @@ export class LifecycleReactor {
     if (entry === null || entry.execution !== address.execution || !entry.finishing) {
       throw new Error(`Job ${address.jobId} execution #${address.execution} is not finishing.`);
     }
-    const bound = this.options.providers.rehydrateBinding(entry.binding);
     let handles = entry.artifactHandles.filter(handle => handle.execution === address.execution).map(handle => handle.handle);
-    if (bound.ok) handles = collectArtifactHandles(entry, bound.value, this.options.runtime, { execution: address.execution });
+    if (handles.length === 0) handles = [...(entry.retentionDiscard.attempts.at(-1)?.handles ?? [])];
+    try {
+      const bound = this.options.providers.rehydrateBinding(entry.binding);
+      if (bound.ok) handles = collectArtifactHandles(entry, bound.value, this.options.runtime, { execution: address.execution });
+    } catch { /* Discovery failure closes after its request is committed. */ }
     const attempt = entry.retentionDiscard.attempts.filter(item => item.execution === address.execution)
       .reduce((maximum, item) => Math.max(maximum, item.attempt), 0) + 1;
     return { attempt, handles };
@@ -147,9 +157,16 @@ export class LifecycleReactor {
     this.options.signal.throwIfAborted();
     this.abort.signal.throwIfAborted();
     const entry = readProjectionJobConversation(this.options.db(), address.jobId);
-    if (entry === null || !entry.finishing || entry.execution !== address.execution || action.execution !== address.execution) {
+    if (action.execution !== address.execution) {
       throw new Error(`Retention does not own job ${address.jobId} execution #${address.execution}.`);
     }
+    if (entry === null || !entry.finishing || entry.execution !== address.execution) {
+      return { kind: 'completed', outcome: 'skipped_no_handles' };
+    }
+    const closed = entry.retentionDiscard.attempts.find(attempt => attempt.execution === address.execution &&
+      attempt.attempt === action.attempt && attempt.status !== 'requested');
+    if (closed !== undefined) return closed.status === 'failed'
+      ? { kind: 'failed', reason: closed.reason! } : { kind: 'completed', outcome: closed.outcome! };
     const accepted = readAccepted(this.options, address);
     const subject: RecoverySubject = {
       key: `${address.jobId}:${address.execution}:${action.attempt}`,
@@ -159,10 +176,11 @@ export class LifecycleReactor {
     const previous = this.options.db().prepare<[string, string], { continuation_key: string | null }>(
       'SELECT continuation_key FROM recovery_quarantine WHERE boundary_id = ? AND subject_key = ?',
     ).get(BOUNDARY, subject.key);
-    if (previous?.continuation_key !== null && previous?.continuation_key !== undefined) {
-      return observedSettlementSchema.parse(JSON.parse(previous.continuation_key));
-    }
+    const continuation = previous?.continuation_key == null ? null : JSON.parse(previous.continuation_key) as unknown;
+    const progress = observationProgressSchema.safeParse(continuation);
+    if (continuation !== null && !progress.success) return observedSettlementSchema.parse(continuation);
     const remember = (settlement: Exclude<RetentionSettlement, { kind: 'pending' }>): RetentionSettlement => {
+      this.observed.set(subject.key, settlement);
       const persisted = quarantine.upsert({
         boundary: BOUNDARY, subject, state: 'continuation', stage: 'settle',
         errorMessage: 'Retention outcome awaits its journal commit.',
@@ -171,42 +189,98 @@ export class LifecycleReactor {
       if (!persisted) throw new Error(`Retention outcome lost authority for ${subject.key}.`);
       return settlement;
     };
-    const bound = this.options.providers.rehydrateBinding(entry.binding);
-    if (!bound.ok) return remember({ kind: 'failed', reason: `Provider binding unavailable: ${bound.failure.reason}; native artifacts kept.` });
-    const ready = await bound.value.readiness('recovery', this.options.runtime.storage);
-    if (!ready.ok) return remember({ kind: 'failed', reason: `Provider cleanup unavailable: ${ready.failure.reason}; native artifacts kept.` });
-    if (bound.value.artifacts.kind === 'none') return remember({ kind: 'completed', outcome: 'provider_declares_none' });
-    const complete = async (outcome: 'discarded' | 'skipped_no_handles'): Promise<RetentionSettlement> => {
-      await this.discardResidue(bound.value, entry);
-      return remember({ kind: 'completed', outcome });
-    };
-    if (action.handles.length === 0) return complete('skipped_no_handles');
+    const observed = this.observed.get(subject.key);
+    if (observed !== undefined) return remember(observed);
+    if (!entry.retentionDiscard.attempts.some(attempt => attempt.execution === address.execution &&
+        attempt.attempt === action.attempt && attempt.status === 'requested' &&
+        JSON.stringify(attempt.handles) === JSON.stringify(action.handles))) {
+      throw new Error('Retention requires its committed request before any effect.');
+    }
+    if (!z.array(z.string().refine(isAbsolute)).safeParse(action.handles).success) {
+      return remember({ kind: 'failed', reason: 'Native artifact handles must be absolute; native artifacts kept.' });
+    }
     const descriptor = deriveProviderArtifactActionDescriptor({
       entry, jobId: address.jobId, handles: action.handles,
       sourceRevision: deriveProviderArtifactSourceRevision({ ...address, accepted }), archivedAt: accepted.ts,
     });
+    const discardOptions = { handles: action.handles, actionId: descriptor.discardActionId,
+      payloadHash: descriptor.discardPayloadHash, runtime: this.options.runtime };
+    const issued = providerArtifactDiscardWasIssued(discardOptions);
+    const failBeforeDiscard = async (reason: string): Promise<RetentionSettlement> => {
+      const detail = `${reason}; ${issued ? 'the original discard may already have applied' : 'native artifacts kept'}.`;
+      if (issued) await sealProviderArtifactDiscard(discardOptions, detail);
+      return remember({ kind: 'failed', reason: detail });
+    };
     try {
-      await archiveProviderArtifactsForJob({ runtime: this.options.runtime, descriptor });
-    } catch (error) {
-      return remember({ kind: 'failed', reason: `Archive failed; native artifacts kept: ${errorMessage(error)}` });
+      await cleanupConversationRestoreStages(this.options.runtime, address.jobId, address.execution, action.handles);
+    } catch (error: unknown) {
+      return failBeforeDiscard(`Restore stage cleanup failed: ${errorMessage(error)}`);
     }
-    const artifacts = bound.value.artifacts;
-    const reconcile = () => artifacts.reconcileDiscard({ handles: action.handles, actionId: descriptor.discardActionId,
-      payloadHash: descriptor.discardPayloadHash, runtime: this.options.runtime });
-    const prior = await reconcile();
-    if (prior.kind === 'applied') return complete('discarded');
-    if (prior.kind === 'definitive-failure') return remember({ kind: 'failed', reason: prior.reason });
-    if (prior.kind === 'unknown') return { kind: 'pending' };
+    let provider: BoundProvider | null = null;
     try {
-      await artifacts.discardArtifacts({ handles: action.handles, actionId: descriptor.discardActionId,
-        payloadHash: descriptor.discardPayloadHash, runtime: this.options.runtime });
-    } catch (error) {
-      this.options.log?.(`Retention discard observation failed: ${errorMessage(error)}\n`);
+      const bound = this.options.providers.rehydrateBinding(entry.binding);
+      if (!bound.ok) {
+        if (!issued) return failBeforeDiscard(`Provider binding unavailable: ${bound.failure.reason}`);
+      } else {
+        provider = bound.value;
+        if (!issued) {
+          const ready = await provider.readiness('recovery', this.options.runtime.storage);
+          if (!ready.ok) return failBeforeDiscard(`Provider cleanup unavailable: ${ready.failure.reason}`);
+          collectArtifactHandles(entry, provider, this.options.runtime, { execution: address.execution });
+        }
+      }
+    } catch (error: unknown) {
+      if (!issued) return failBeforeDiscard(`Provider cleanup unavailable: ${errorMessage(error)}`);
     }
-    const outcome = await reconcile();
-    if (outcome.kind === 'applied') return complete('discarded');
-    if (outcome.kind === 'definitive-failure') return remember({ kind: 'failed', reason: outcome.reason });
-    return { kind: 'pending' };
+    if (!issued && provider?.artifacts.kind === 'none') return remember({ kind: 'completed', outcome: 'provider_declares_none' });
+    const complete = async (outcome: 'discarded' | 'skipped_no_handles'): Promise<RetentionSettlement> => {
+      if (provider !== null) await this.discardResidue(provider, entry);
+      return remember({ kind: 'completed', outcome });
+    };
+    if (action.handles.length === 0) return complete('skipped_no_handles');
+    try {
+      const archive = await archiveProviderArtifactsForJob({ runtime: this.options.runtime, descriptor });
+      if (archive.artifacts.every(artifact => artifact.status === 'missing')) return complete('skipped_no_handles');
+    } catch (error: unknown) {
+      return failBeforeDiscard(`Archive failed: ${errorMessage(error)}`);
+    }
+    const artifacts = provider?.artifacts.kind === 'managed' ? provider.artifacts : null;
+    return withJobArtifactGuard<RetentionSettlement>(this.options.runtime, address.jobId, async () => {
+      const current = readProjectionJobConversation(this.options.db(), address.jobId);
+      if (current === null || current.execution !== address.execution || !current.finishing) {
+        return { kind: 'completed', outcome: 'skipped_no_handles' };
+      }
+      const reconcile = async () => {
+        try { return issued ? await reconcileProviderArtifactDiscard(discardOptions) : await artifacts!.reconcileDiscard(discardOptions); }
+        catch { return { kind: 'unknown' } as const; }
+      };
+      let attempts = progress.success ? progress.data.attempts : 0;
+      const observe = async () => {
+        if (attempts >= 6) return { kind: 'unknown' } as const;
+        attempts++;
+        const persisted = quarantine.upsert({ boundary: BOUNDARY, subject, state: 'continuation', stage: 'settle',
+          errorMessage: 'Discard removal evidence is being observed.',
+          continuation: { kind: 'job-retention-outcome.v1', key: JSON.stringify({ kind: 'observing', attempts }) } });
+        if (!persisted) throw new Error(`Retention observation lost authority for ${subject.key}.`);
+        return reconcile();
+      };
+      let outcome = await observe();
+      if (outcome.kind === 'not-applied' && !issued && !progress.success) {
+        try { await artifacts!.discardArtifacts(discardOptions); }
+        catch (error: unknown) { this.options.log?.(`Retention discard observation failed: ${errorMessage(error)}\n`); }
+        outcome = await observe();
+      }
+      while (outcome.kind === 'unknown' && attempts < 6) {
+        await this.options.runtime.time.sleep(500);
+        outcome = await observe();
+      }
+      if (outcome.kind === 'applied') return complete(outcome.outcome.kind === 'skipped_no_handles' ? 'skipped_no_handles' : 'discarded');
+      const reason = outcome.kind === 'definitive-failure' ? outcome.reason
+        : outcome.kind === 'unknown' ? 'Discard removal evidence is unknown after six observations; native absence or kept bytes cannot be asserted.'
+        : 'Native removal was not applied; surviving native artifacts remain.';
+      await sealProviderArtifactDiscard(discardOptions, reason);
+      return remember({ kind: 'failed', reason });
+    });
   }
 
   private async discardResidue(bound: BoundProvider, entry: JobConversation): Promise<void> {
@@ -224,8 +298,9 @@ export class LifecycleReactor {
     const entry = readProjectionJobConversation(this.options.db(), jobId);
     if (entry === null || !entry.finishing) return;
     const address = { jobId, execution: entry.execution };
-    const action = await this.retentionAction(address);
-    const result = await this.settleRetention(address, { ...action, execution: address.execution });
+    const action = entry.retentionDiscard.attempts.find(attempt => attempt.execution === address.execution && attempt.status === 'requested');
+    if (action === undefined) return;
+    const result = await this.settleRetention(address, { execution: address.execution, attempt: action.attempt, handles: action.handles });
     if (result.kind === 'failed') this.options.log?.(`${result.reason}\n`);
   }
 

@@ -4,7 +4,7 @@ import { isFinalWaitEvent, type WaitStreamEvent } from '#src/jobs/wait/contract.
 export async function nextDelivered(stream: AsyncIterator<WaitStreamEvent>): Promise<IteratorResult<WaitStreamEvent>> {
   for (;;) {
     const next = await stream.next();
-    if (next.done || next.value.type !== 'cursor') return next;
+    if (next.done || (next.value.type !== 'cursor' && next.value.type !== 'admission')) return next;
   }
 }
 

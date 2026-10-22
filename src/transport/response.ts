@@ -31,12 +31,16 @@ export function launchToHttp(
                 kind: decision.kind,
                 jobId: decision.jobId,
                 launchState: decision.status,
+                requestedSeq: decision.requestedSeq,
+                epochKey: decision.epochKey,
               }
             : {
                 kind: decision.kind,
                 workflowId: decision.workflowId,
                 jobId: decision.jobId,
                 launchState: decision.status,
+                requestedSeq: decision.requestedSeq,
+                epochKey: decision.epochKey,
               },
       };
     case 'undetermined':

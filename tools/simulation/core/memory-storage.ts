@@ -338,6 +338,13 @@ export class InMemoryStorage implements StoragePort {
     return file.content.toString(encoding);
   }
 
+  readFileBytesSync(path: StoragePath): Uint8Array {
+    const normalized = normalizePathForStorage(path);
+    const file = this.fileNode(normalized);
+    if (!file) throw createErrnoError(this.directories.has(normalized) ? 'EISDIR' : 'ENOENT', normalized);
+    return Buffer.from(file.content);
+  }
+
   writeFileSync(
     path: string,
     data: StorageData,
@@ -486,6 +493,27 @@ export class InMemoryStorage implements StoragePort {
     this.files.set(linked, { ...identity });
     this.registerChild(linked);
     this.touchAncestors(parentPath(linked));
+  }
+
+  publishFileNoReplaceSync(stage: string, destination: string): ReturnType<StoragePort['publishFileNoReplaceSync']> {
+    let linked = false;
+    try {
+      try {
+        this.linkSync(stage, destination);
+        linked = true;
+      } catch (error: unknown) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+        try { this.unlinkSync(stage); } catch { /* Finishing owns the deterministic stage. */ }
+        return { kind: 'exists' };
+      }
+      if (!this.syncDirectoryDurableSync(parentPath(normalizePathForStorage(destination)))) {
+        return { kind: 'failed', reason: 'Native directory durability is unknown.', linked };
+      }
+      this.unlinkSync(stage);
+      return { kind: 'published' };
+    } catch (error: unknown) {
+      return { kind: 'failed', reason: error instanceof Error ? error.message : String(error), linked };
+    }
   }
 
   mkdirSync(path: string, options?: { recursive?: boolean; mode?: number }): void {

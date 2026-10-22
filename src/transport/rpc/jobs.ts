@@ -1,3 +1,4 @@
+import { type WaitExecutionSelection } from '../../jobs/wait/execution-selection.js';
 import { z } from 'zod';
 
 import { parseBooleanQuery } from '../../infra/json.js';
@@ -23,6 +24,7 @@ const jobWaitFieldsSchema = z.object({
   // Decoded by the wait owner, so an undecodable cursor is a soft typed refusal rather than invalid params.
   cursor: z.unknown(),
   drainProgress: z.boolean().optional(),
+  executionSelections: z.unknown().optional(),
 });
 
 const uniqueJobIds = (value: { jobIds: readonly string[] }, ctx: z.RefinementCtx): void => {
@@ -47,7 +49,7 @@ export const jobWaitSnapshotSchema = jobWaitFieldsSchema
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: '--lines cannot be used with --cursor' });
   });
 
-const WAIT_REQUEST_FIELDS = new Set(['jobIds', 'projectRoot', 'timeoutSeconds', 'cursor', 'drainProgress']);
+const WAIT_REQUEST_FIELDS = new Set(['jobIds', 'projectRoot', 'timeoutSeconds', 'cursor', 'drainProgress', 'executionSelections']);
 
 export const WAIT_BUILD_MISMATCH_REASON =
   'This Coral CLI and the running coordinator are different builds, and wait does not bridge builds.';
@@ -76,6 +78,7 @@ export type JobsWaitFields = Readonly<{
   timeoutSeconds?: number;
   drainProgress?: boolean;
   cursor?: WaitCursor;
+  executionSelections?: readonly WaitExecutionSelection[];
 }>;
 
 export function jobsWaitRequest(fields: JobsWaitFields): Record<string, unknown> {
@@ -85,6 +88,7 @@ export function jobsWaitRequest(fields: JobsWaitFields): Record<string, unknown>
     ...(fields.timeoutSeconds === undefined ? {} : { timeoutSeconds: fields.timeoutSeconds }),
     ...(fields.drainProgress === true ? { drainProgress: true } : {}),
     cursor: fields.cursor ?? null,
+    ...(fields.executionSelections === undefined ? {} : { executionSelections: fields.executionSelections }),
   };
 }
 

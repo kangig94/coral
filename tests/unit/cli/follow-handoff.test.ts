@@ -38,7 +38,8 @@ const launchResult = {
   kind: 'provider-session',
   launchState: 'running',
   jobId: 'job-1',
-  sessionId: 'session-1',
+  epochKey: 'epoch',
+  requestedSeq: 1,
 } satisfies AcceptedLaunchResponse;
 
 const waitTiming = {
@@ -169,7 +170,7 @@ describe('cli follow handoff', () => {
       .mockImplementationOnce(async (operation) => {
         secondRunStarted.resolve();
         expect(progressAcknowledged).toBe(false);
-        expect(operation).toEqual({ kind: 'wait-jobs', jobId: 'job-1', serializedCursor: savedCursor(4) });
+        expect(operation).toEqual({ kind: 'wait-jobs', jobId: 'job-1', serializedCursor: savedCursor(4), serializedExecutionSelections: JSON.stringify([{ jobId: 'job-1', epochKey: 'epoch', requestedSeq: 1, awaitingArtifact: false }]) });
         return recorded({
           kind: 'delegated',
           version: '2.0.0',
@@ -322,7 +323,7 @@ describe('cli follow handoff', () => {
     const options = makeOptions();
     const follow = launchAndFollow(options);
     await runStarted.promise;
-    expect(mockState.runHandoff.mock.calls[0][0]).toEqual({ kind: 'wait-jobs', jobId: 'job-1' });
+    expect(mockState.runHandoff.mock.calls[0][0]).toEqual({ kind: 'wait-jobs', jobId: 'job-1', serializedExecutionSelections: JSON.stringify([{ jobId: 'job-1', epochKey: 'epoch', requestedSeq: 1, awaitingArtifact: false }]) });
 
     sigintHandler?.();
     handoff.resolve(recorded({ kind: 'delegated', version: '2.0.0', outcome: { kind: 'handoff-exit', exitCode: 75 } }));

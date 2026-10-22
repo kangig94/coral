@@ -1,3 +1,7 @@
+import { decodeWaitCursor } from '../wait/cursor.js';
+import type { ExecutionWaitDetail } from '../wait/execution-detail.js';
+import { WaitSessionError } from '../wait/session.js';
+import type { WaitExecutionSelection } from '../wait/execution-selection.js';
 import type { ProgressVisit } from '../wait/contract.js';
 import { sameEpoch } from '../../store/epoch/identity.js';
 import { readWaitSession } from '../wait/reader.js';
@@ -68,7 +72,7 @@ export interface WaitCoordinatorDeps {
   launchQueue: JobQueueReadPort;
   eventBus: JobEventBus;
   time: TimePort;
-  loadJobWaitDetail: (jobId: string) => JobWaitDetail;
+  loadJobWaitDetail: (jobId: string, requestedSeq?: number) => ExecutionWaitDetail;
   /** The job's own projection sequence, which moves with every event of that job and with nothing else. */
   readJobLastSeq: (jobId: string) => number | null;
   visitProgress: ProgressVisit;
@@ -87,8 +91,8 @@ export interface WaitCoordinatorDeps {
   }>;
   observeJobAbsence?: (jobId: string) => boolean;
   resultJobsRoot: string;
-  observeResultAvailability: (jobId: string) => ResultAvailability;
-  hintResultRepair?: (jobId: string) => void;
+  observeResultAvailability: (jobId: string, execution?: number) => ResultAvailability;
+  hintResultRepair?: (jobId: string, execution?: number) => void;
   /**
    * Reports what is carrying each still-pending job. Optional because a wait works without it — the journal
    * is what ends a job either way — and a build that cannot answer must keep waiting silently rather than
@@ -163,19 +167,19 @@ export class WaitCoordinator {
   }
 
   private readQueryContinuity(jobId: string, status = this.readQueryStatus(jobId)): ContinuitySnapshot | null {
-    if (status?.provider === null || status?.provider === undefined || status.conversationJobId === null) {
+    if (status?.provider === null || status?.provider === undefined) {
       return null;
     }
-    const session = this.deps.conversationManager.get(status.provider, status.conversationJobId);
+    const session = this.deps.conversationManager.get(status.provider, jobId);
     if (session === null) {
       return null;
     }
-    if (session.state === 'pending' && session.conversationRef === undefined && session.providerContinuity === null) {
+    if (session.conversationRef === undefined && session.providerContinuity === null) {
       return null;
     }
     return {
       conversationRef: session.conversationRef ?? null,
-      resumable: session.state === 'ready',
+      resumable: session.conversationRef !== undefined,
       providerContinuity: session.providerContinuity,
     };
   }
@@ -293,8 +297,7 @@ export class WaitCoordinator {
       timing: queuedProgressTiming(status, this.deps.time.now()),
     };
     if (status.jobKind === 'provider') {
-      if (status.conversationJobId === null) throw new Error(`Queued provider job '${jobId}' has no provider session.`);
-      return { ...queued, jobKind: 'provider', conversationJobId: status.conversationJobId };
+      return { ...queued, jobKind: 'provider', conversationJobId: jobId };
     }
     if (status.jobKind === 'workflow') return { ...queued, jobKind: 'workflow', workflowId: status.owner.id };
     return { ...queued, jobKind: 'kb', systemTaskId: status.owner.id };
@@ -329,11 +332,27 @@ export class WaitCoordinator {
     if (cached?.detail && !cached.detail.exit && cached.detail.status.lastSeq === this.deps.readJobLastSeq(jobId))
       return cached.queued ? { ...cached, queued: this.queuedWaitEvent(cached.detail.status) } : cached;
     if (cached?.detail?.exit) {
-      const availability = this.deps.observeResultAvailability(jobId);
-      if (availability.kind === 'pending') this.deps.hintResultRepair?.(jobId);
+      const availability = this.deps.observeResultAvailability(jobId, cached.detail.status.execution ?? undefined);
+      if (availability.kind === 'pending') this.deps.hintResultRepair?.(jobId, cached.detail.status.execution ?? undefined);
       return { ...cached, availability };
     }
-    const projected = this.deps.loadJobWaitDetail(jobId);
+    const supplied = (session as WaitStreamRequest | undefined)?.executionSelections?.find((selection) => selection.jobId === jobId);
+    const selected = cached?.selection ?? supplied;
+    if (selected && !sameEpoch(selected.epochKey, epochKey))
+      return { jobId, disposition: 'unknown', epochKey: selected.epochKey, message: 'The selected request belongs to another epoch; its evidence must be reopened there.' };
+    let projected = this.deps.loadJobWaitDetail(jobId, selected?.requestedSeq);
+    if (selected && (projected.requestedSeq !== selected.requestedSeq || !projected.status))
+      return { jobId, disposition: 'unknown', epochKey, message: 'The selected request is not readable; no other execution was selected.' };
+    if (!cached && supplied?.deliveredEndSeq !== undefined) {
+      if (projected.terminalSeq !== supplied.deliveredEndSeq)
+        throw new WaitSessionError('wait_selection_invalid', 'Delivered-end evidence does not match the selected execution.');
+      if (!supplied.awaitingArtifact && (session as WaitStreamRequest | undefined)?.jobIds?.includes(jobId) !== false) {
+        const next = projected.requestSeqs?.find((seq) => seq > supplied.deliveredEndSeq!);
+        if (next !== undefined) projected = this.deps.loadJobWaitDetail(jobId, next);
+      }
+    }
+    if (!selected && (session as WaitStreamRequest | undefined)?.cursor !== undefined && (projected.requestSeqs?.length ?? 0) > 1)
+      throw new WaitSessionError('wait_admission_required', 'A seq cursor cannot identify the admitted execution. Start a fresh wait without a cursor.');
     if (!projected.status)
       return this.deps.observeJobAbsence?.(jobId) === true
         ? { jobId, disposition: 'missing' }
@@ -347,8 +366,8 @@ export class WaitCoordinator {
       ? {
           type: 'terminal',
           jobId,
-          conversationJobId: projected.status.conversationJobId,
-          seq: projected.status.lastSeq ?? 0,
+          sessionId: null,
+          seq: projected.terminalSeq ?? projected.status.lastSeq ?? 0,
           ts: projected.exit.endTime ?? projected.status.updatedAt,
           result: projected.exit,
           usage: projected.exit.diagnostics.usage,
@@ -362,13 +381,20 @@ export class WaitCoordinator {
             diagnostics: { ...projected.exit.diagnostics, usage: this.readTerminalUsage(terminal, projected.status) },
           }
         : null;
-    const availability = exit ? this.deps.observeResultAvailability(jobId) : undefined;
-    if (availability?.kind === 'pending') this.deps.hintResultRepair?.(jobId);
+    const availability = exit ? this.deps.observeResultAvailability(jobId, projected.status.execution ?? undefined) : undefined;
+    if (availability?.kind === 'pending') this.deps.hintResultRepair?.(jobId, projected.status.execution ?? undefined);
+    const cursor = (session as WaitStreamRequest | undefined)?.cursor;
+    const decoded = cursor === undefined ? undefined : decodeWaitCursor(cursor);
+    const previouslyDelivered = selected === undefined && decoded?.kind === 'decoded' && projected.terminalSeq !== undefined && projected.terminalSeq <= decoded.watermark;
     const admission: WaitAdmission = {
       jobId,
       disposition: 'admitted',
       epochKey,
-      detail: { status: projected.status, terminalSeq: projected.status.lastSeq, readiness: 'ready', exit },
+      ...(projected.requestedSeq === undefined ? {} : { selection: {
+        jobId, epochKey, requestedSeq: projected.requestedSeq,
+        ...(selected?.requestedSeq === projected.requestedSeq ? { deliveredEndSeq: selected.deliveredEndSeq, awaitingArtifact: selected.awaitingArtifact } : previouslyDelivered ? { deliveredEndSeq: projected.terminalSeq, awaitingArtifact: availability?.kind === 'pending' } : { awaitingArtifact: false }),
+      } satisfies WaitExecutionSelection }),
+      detail: { status: projected.status, terminalSeq: projected.terminalSeq, readiness: 'ready', exit },
       availability,
       continuity: this.readQueryContinuity(jobId, projected.status),
       ...(projected.status.phase === 'queued' && !exit ? { queued: this.queuedWaitEvent(projected.status) } : {}),

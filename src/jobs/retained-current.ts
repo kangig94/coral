@@ -80,7 +80,14 @@ export function loadRetainedCurrentJob(
     latestExecution: latest.execution,
     executions,
     ...(terminal === undefined ? {} : { terminalSeq: terminal.seq, resultPath: terminal.resultPath }),
-    detail: { kind: 'recorded', value: { ...latest.detail, epochKey } },
+    detail: {
+      kind: 'recorded',
+      value: {
+        ...latest.detail,
+        epochKey,
+        resultPath: join(jobsRoot, jobId, 'executions', String(latest.execution), 'result.md'),
+      },
+    },
   };
 }
 

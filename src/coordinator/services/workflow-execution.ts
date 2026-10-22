@@ -1,3 +1,4 @@
+import { committedExecutionRequest } from '../../jobs/wait/execution-detail.js';
 import { backendLog } from '../../infra/backend-log.js';
 import { errorMessage } from '../../infra/error-format.js';
 import { nowIsoString } from '../../infra/time.js';
@@ -41,6 +42,7 @@ export interface WorkflowExecutionServiceDeps {
   progressStore: JobProgressStore;
   providerRegistry: ProviderBindingCatalog;
   coordinatorCommit: CommitEventsFn;
+  currentJobEpochKey?: () => string | null;
   launchOrchestrator: WorkflowJobLifecyclePort;
   executionPort: WorkflowExecutionPort;
   admitTopLevelLaunch?: () => boolean;
@@ -139,7 +141,8 @@ export class WorkflowExecutionService {
     this.deps.launchOrchestrator.markJobRunning(jobId);
 
     this.runWorkflowAsync(jobId, providerName, ast, input, boundCtx, plan, workDir);
-    return { kind: 'workflow', status: 'running', jobId, workflowId: jobId };
+    return { kind: 'workflow', status: 'running', jobId, workflowId: jobId,
+      ...committedExecutionRequest(this.deps.progressStore.getDb(), jobId, 1, this.deps.currentJobEpochKey?.() ?? ':memory:') };
   }
 
   private commitWorkflowJobTerminal(jobId: string, intent: WorkflowFinalizationIntent): void {
