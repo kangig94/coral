@@ -23,8 +23,7 @@ import {
   journalConsumerCursorSchema,
 } from './projection-consumers/persistence.js';
 import { executionOwnerSchema } from './runtime/execution-owner.js';
-import { providerSessionSchema } from './sessions/entry.js';
-import { projectionSessionDecoderContract, projectionSessionStoredRowSchema } from './sessions/projections.js';
+import { jobConversationFacetSchema } from './jobs/launch.js';
 import { sessionsRegistry } from './sessions/events.js';
 import { createCurrentStoreFormat } from './store/current-format.js';
 import { journalEventEnvelopeSchema, journalEventRefsSchema } from './store/envelope.js';
@@ -46,8 +45,7 @@ export function describeCoralStoreFormat(providerRegistry: ProviderRegistry): St
       jobTerminal: jobTerminalSchema,
       jobDiagnostics: jobDiagnosticsSchema,
       executionOwner: executionOwnerSchema,
-      providerSession: providerSessionSchema,
-      projectionSessionRow: projectionSessionStoredRowSchema,
+      jobConversationFacet: jobConversationFacetSchema,
       discussState: persistedDiscussSnapshotSchema,
       workflowPlan: workflowPlanSchema,
       providerScope: providerScopeSchema,
@@ -71,7 +69,6 @@ export function describeCoralStoreFormat(providerRegistry: ProviderRegistry): St
         contract: { path: '<store.db>.format', encoding: 'utf-8', content: '<store-format-fingerprint>\\n' },
       },
       { name: 'store.projection_jobs.decoder-semantics', contract: projectionJobDecoderContract },
-      { name: 'store.projection_sessions.decoder-semantics', contract: projectionSessionDecoderContract },
       { name: 'store.kb_curate_scheduler.decoder-semantics', contract: schedulerDecoderContract },
       ...providerRegistry.sealPersistedCodecComponents(),
     ],

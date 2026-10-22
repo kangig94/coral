@@ -67,13 +67,14 @@ export interface JobExit extends JobTerminal {
 
 export interface JobStatus {
   jobId: string;
-  execution: number;
+  execution: number | null;
+  finishing?: boolean;
   owner: ExecutionOwner;
   sessionId: string | null;
   provider: string | null;
   projectRoot: string;
   workDir: CanonicalWorkDir | null;
-  backendNamespace: string;
+  backendNamespace: string | null;
   bundleHash?: string;
   jobKind: JobKind;
   parentWorkflowJobId?: string;
@@ -88,6 +89,7 @@ export interface JobStatus {
 
 interface JobLaunchBase {
   jobId: string;
+  execution: number;
   owner: ExecutionOwner;
   sessionId: string | null;
   provider: string | null;
@@ -122,7 +124,7 @@ interface ProviderLaunchRequestRecord {
 export interface ProviderJobLaunch extends JobLaunchBase {
   jobKind: 'provider';
   discussionRun?: DiscussionRunDescriptor;
-  sessionId: string;
+  sessionId: null;
   provider: string;
   providerAction: ProviderAction;
   operation?: never;

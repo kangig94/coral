@@ -19,8 +19,7 @@ export type CurrentStoreCodecSchemas = Readonly<{
   jobTerminal: z.ZodTypeAny;
   jobDiagnostics: z.ZodTypeAny;
   executionOwner: z.ZodTypeAny;
-  providerSession: z.ZodTypeAny;
-  projectionSessionRow: z.ZodTypeAny;
+  jobConversationFacet: z.ZodTypeAny;
   discussState: z.ZodTypeAny;
   workflowPlan: z.ZodTypeAny;
   providerScope: z.ZodTypeAny;
@@ -92,8 +91,7 @@ export function createCurrentStoreFormat(
   codecs.registerZod('store.projection_jobs.terminal', schemas.jobTerminal);
   codecs.registerZod('store.projection_jobs.diagnostics', schemas.jobDiagnostics);
   codecs.registerZod('store.projection_jobs.execution_owner', schemas.executionOwner);
-  codecs.registerZod('store.projection_sessions.entry', schemas.providerSession);
-  codecs.registerZodComponent('store.projection_sessions.row', schemas.projectionSessionRow);
+  codecs.registerZod('store.projection_jobs.facet', schemas.jobConversationFacet);
   codecs.registerZod('store.projection_discuss.state', schemas.discussState);
   codecs.registerZod('store.projection_workflows.plan', schemas.workflowPlan);
   codecs.registerZod('store.projection_workflows.provider_scope', schemas.providerScope);

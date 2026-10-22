@@ -34,6 +34,19 @@ import { jobAbortedBodySchema } from './outcome.js';
 import { jobExecutionOutcomeAcceptedBodySchema, jobExecutionEndedBodySchema } from './terminal/result.js';
 import { readJobOpened } from './execution-state.js';
 
+import {
+  reduceJobOpened,
+  reduceJobExecutionRequested,
+  reduceJobQueueQueued,
+  reduceJobQueueAdmitted,
+  reduceJobRuntimeStarted,
+  reduceJobProgress,
+  reduceJobOutcomeAccepted,
+  reduceJobExecutionEnded,
+  reduceJobContinuityCheckpointed,
+  reduceJobObservation,
+} from './projections.js';
+
 interface ExecutionOrderState {
   opened: JobOpenedBody | null;
   execution: number;
@@ -220,23 +233,108 @@ export const validateJobExecutionOrder: DomainAppendValidator = (ctx, inputs) =>
 export const jobsRegistry: DomainEventRegistry = {
   streamKind: 'job',
   entries: [
-    defineDomainEvent({ type: 'job.opened', schema: jobOpenedBodySchema }),
-    defineDomainEvent({ type: 'job.execution.requested', schema: jobExecutionRequestedBodySchema }),
-    defineDomainEvent({ type: 'job.execution.queued', schema: jobQueueQueuedBodySchema }),
-    defineDomainEvent({ type: 'job.execution.admitted', schema: jobQueueAdmittedBodySchema }),
-    defineDomainEvent({ type: 'job.execution.started', schema: jobRuntimeStartedBodySchema }),
-    defineDomainEvent({ type: 'job.execution.progress', schema: jobProgressBodySchema }),
-    defineDomainEvent({ type: 'job.execution.aborted', schema: jobAbortedBodySchema }),
-    defineDomainEvent({ type: 'job.execution.outcome.accepted', schema: jobExecutionOutcomeAcceptedBodySchema }),
-    defineDomainEvent({ type: 'job.execution.ended', schema: jobExecutionEndedBodySchema }),
-    defineDomainEvent({ type: 'job.continuity.checkpointed', schema: jobContinuityCheckpointedBodySchema }),
-    defineDomainEvent({ type: 'job.artifact.recorded', schema: jobArtifactRecordedBodySchema }),
-    defineDomainEvent({ type: 'job.retention.discard.requested', schema: jobRetentionDiscardRequestedBodySchema }),
-    defineDomainEvent({ type: 'job.retention.discard.completed', schema: jobRetentionDiscardCompletedBodySchema }),
-    defineDomainEvent({ type: 'job.retention.discard.failed', schema: jobRetentionDiscardFailedBodySchema }),
-    defineDomainEvent({ type: 'job.interrupted', schema: jobInterruptedBodySchema }),
-    defineDomainEvent({ type: 'job.provider_failed', schema: jobProviderFailedBodySchema }),
-    defineDomainEvent({ type: 'job.adapter_unparseable', schema: jobAdapterUnparseableBodySchema }),
+    defineDomainEvent({
+      type: 'job.opened',
+      schema: jobOpenedBodySchema,
+      reducer: reduceJobOpened,
+      materializerContract: 'projection_jobs:job.opened',
+    }),
+    defineDomainEvent({
+      type: 'job.execution.requested',
+      schema: jobExecutionRequestedBodySchema,
+      reducer: reduceJobExecutionRequested,
+      materializerContract: 'projection_jobs:job.execution.requested',
+    }),
+    defineDomainEvent({
+      type: 'job.execution.queued',
+      schema: jobQueueQueuedBodySchema,
+      reducer: reduceJobQueueQueued,
+      materializerContract: 'projection_jobs:job.execution.queued',
+    }),
+    defineDomainEvent({
+      type: 'job.execution.admitted',
+      schema: jobQueueAdmittedBodySchema,
+      reducer: reduceJobQueueAdmitted,
+      materializerContract: 'projection_jobs:job.execution.admitted',
+    }),
+    defineDomainEvent({
+      type: 'job.execution.started',
+      schema: jobRuntimeStartedBodySchema,
+      reducer: reduceJobRuntimeStarted,
+      materializerContract: 'projection_jobs:job.execution.started',
+    }),
+    defineDomainEvent({
+      type: 'job.execution.progress',
+      schema: jobProgressBodySchema,
+      reducer: reduceJobProgress,
+      materializerContract: 'projection_jobs:job.execution.progress',
+    }),
+    defineDomainEvent({
+      type: 'job.execution.aborted',
+      schema: jobAbortedBodySchema,
+      reducer: reduceJobObservation,
+      materializerContract: 'projection_jobs:job.execution.aborted',
+    }),
+    defineDomainEvent({
+      type: 'job.execution.outcome.accepted',
+      schema: jobExecutionOutcomeAcceptedBodySchema,
+      reducer: reduceJobOutcomeAccepted,
+      materializerContract: 'projection_jobs:job.execution.outcome.accepted',
+    }),
+    defineDomainEvent({
+      type: 'job.execution.ended',
+      schema: jobExecutionEndedBodySchema,
+      reducer: reduceJobExecutionEnded,
+      materializerContract: 'projection_jobs:job.execution.ended',
+    }),
+    defineDomainEvent({
+      type: 'job.continuity.checkpointed',
+      schema: jobContinuityCheckpointedBodySchema,
+      reducer: reduceJobContinuityCheckpointed,
+      materializerContract: 'projection_jobs:job.continuity.checkpointed',
+    }),
+    defineDomainEvent({
+      type: 'job.artifact.recorded',
+      schema: jobArtifactRecordedBodySchema,
+      reducer: reduceJobObservation,
+      materializerContract: 'projection_jobs:job.artifact.recorded',
+    }),
+    defineDomainEvent({
+      type: 'job.retention.discard.requested',
+      schema: jobRetentionDiscardRequestedBodySchema,
+      reducer: reduceJobObservation,
+      materializerContract: 'projection_jobs:job.retention.discard.requested',
+    }),
+    defineDomainEvent({
+      type: 'job.retention.discard.completed',
+      schema: jobRetentionDiscardCompletedBodySchema,
+      reducer: reduceJobObservation,
+      materializerContract: 'projection_jobs:job.retention.discard.completed',
+    }),
+    defineDomainEvent({
+      type: 'job.retention.discard.failed',
+      schema: jobRetentionDiscardFailedBodySchema,
+      reducer: reduceJobObservation,
+      materializerContract: 'projection_jobs:job.retention.discard.failed',
+    }),
+    defineDomainEvent({
+      type: 'job.interrupted',
+      schema: jobInterruptedBodySchema,
+      reducer: reduceJobObservation,
+      materializerContract: 'projection_jobs:job.interrupted',
+    }),
+    defineDomainEvent({
+      type: 'job.provider_failed',
+      schema: jobProviderFailedBodySchema,
+      reducer: reduceJobObservation,
+      materializerContract: 'projection_jobs:job.provider_failed',
+    }),
+    defineDomainEvent({
+      type: 'job.adapter_unparseable',
+      schema: jobAdapterUnparseableBodySchema,
+      reducer: reduceJobObservation,
+      materializerContract: 'projection_jobs:job.adapter_unparseable',
+    }),
   ],
   appendValidators: [{ contract: 'jobs:execution-order', validate: validateJobExecutionOrder }],
 };

@@ -1,4 +1,4 @@
-import { withImmediate, type Database } from '../../src/store/db.js';
+import { withImmediate, type Database } from '#src/store/db.js';
 
 import { decodeStoredBody } from '#src/store/body-codec.js';
 import { type ComposedReducers, applyReducer } from '#src/store/reducers.js';
@@ -15,12 +15,7 @@ export interface RebuildOptions {
   readonly batchSize?: number; // default 1000
 }
 
-const JOURNAL_PROJECTION_TABLES = [
-  'projection_jobs',
-  'projection_sessions',
-  'projection_discuss',
-  'projection_workflows',
-] as const;
+const JOURNAL_PROJECTION_TABLES = ['projection_jobs', 'projection_discuss', 'projection_workflows'] as const;
 
 export function rebuildProjections(opts: RebuildOptions): void {
   const tables = [...JOURNAL_PROJECTION_TABLES, ...(opts.extraProjectionTables ?? [])];

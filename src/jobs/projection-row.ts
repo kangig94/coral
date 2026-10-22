@@ -1,9 +1,13 @@
 import { z } from 'zod';
 
+import { hashToken } from '../infra/hash.js';
+import { sessionControllerFromProfile } from '../sessions/entry.js';
+
 import { executionOwnerSchema } from '../runtime/execution-owner.js';
 import type { ExecutionOwner } from '../runtime/execution-owner.js';
 import { canonicalWorkDirWireSchema } from '../runtime/canonical-work-dir.js';
 import type { Database } from '../store/db.js';
+import { executionOrdinalSchema, jobConversationFacetSchema } from './launch.js';
 import { jobPhaseSchema } from './phase.js';
 import { jobKindSchema } from './records.js';
 import { jobDiagnosticsSchema, jobTerminalSchema } from './terminal/result.js';
@@ -15,17 +19,21 @@ export const projectionJobStoredRowSchema = z
     phase: jobPhaseSchema,
     terminal: z.string().nullable(),
     diagnostics: z.string(),
-    session_id: z.string().min(1).nullable(),
+    execution: executionOrdinalSchema.nullable(),
+    finishing: z.union([z.literal(0), z.literal(1)]),
+    controller: z.string().min(1).nullable(),
+    resumable: z.union([z.literal(0), z.literal(1)]).nullable(),
+    conversation_ref: z.string().min(1).nullable(),
+    scope_key: z.string().min(1).nullable(),
+    facet: z.string().nullable(),
     provider: z.string().min(1).nullable(),
     project_root: z.string(),
     work_dir: canonicalWorkDirWireSchema.nullable(),
-    backend_namespace: z.string().min(1),
+    backend_namespace: z.string().min(1).nullable(),
     bundle_hash: z.string().min(1).nullable(),
     job_kind: jobKindSchema,
     parent_workflow_job_id: z.string().min(1).nullable(),
     workflow_slot: z.string().min(1).nullable(),
-    workflow_slot_generation: z.number().int().nonnegative().nullable(),
-    replaces_workflow_job_id: z.string().min(1).nullable(),
     created_at: z.string().datetime(),
     last_seq: z.number().int().nonnegative(),
   })
@@ -40,56 +48,43 @@ export const projectionJobStoredRowSchema = z
       });
     }
 
+    if (row.finishing === 1 && (terminalPhase || row.execution === null)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['finishing'],
+        message: 'Only an open execution can be finishing.',
+      });
+    }
+    if ((row.execution === null) !== (row.backend_namespace === null)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['execution'],
+        message: 'Execution and launch namespace must be present together.',
+      });
+    }
     const workflowChild = row.parent_workflow_job_id !== null;
-    if (workflowChild !== (row.workflow_slot !== null) || workflowChild !== (row.workflow_slot_generation !== null)) {
+    if (workflowChild !== (row.workflow_slot !== null)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        path: ['parent_workflow_job_id'],
-        message: 'Workflow parent, slot, and generation must be present or absent together.',
+        path: ['workflow_slot'],
+        message: 'Workflow parent and slot must be present together.',
       });
     }
-    if (row.workflow_slot_generation === 0 && row.replaces_workflow_job_id !== null) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['replaces_workflow_job_id'],
-        message: 'Workflow generation zero cannot replace another job.',
-      });
-    }
-    if (
-      row.workflow_slot_generation !== null &&
-      row.workflow_slot_generation > 0 &&
-      row.replaces_workflow_job_id === null
-    ) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['replaces_workflow_job_id'],
-        message: 'A later workflow generation must name the job it replaces.',
-      });
-    }
-
+    const conversationColumns = [row.provider, row.controller, row.resumable, row.scope_key, row.facet];
     if (row.job_kind === 'provider') {
-      if (row.session_id === null || row.provider === null) {
+      if (conversationColumns.some((value) => value === null)) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          path: ['session_id'],
-          message: 'Provider jobs must retain both their session and provider identity.',
+          path: ['facet'],
+          message: 'Provider jobs require a complete conversation facet.',
         });
       }
-    } else {
-      if (row.session_id !== null || row.provider !== null) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ['session_id'],
-          message: 'Workflow and KB jobs cannot retain provider-session identity.',
-        });
-      }
-      if (workflowChild || row.replaces_workflow_job_id !== null) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ['parent_workflow_job_id'],
-          message: 'Only provider jobs can occupy or replace workflow slots.',
-        });
-      }
+    } else if (conversationColumns.some((value) => value !== null) || row.conversation_ref !== null || workflowChild) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['facet'],
+        message: 'Only provider jobs can carry conversation or workflow-slot identity.',
+      });
     }
   })
   .describe('validate-projection-job-authority-relationships');
@@ -101,21 +96,23 @@ export const projectionJobDecoderContract = {
     execution_owner: 'ExecutionOwner',
     terminal: 'JobTerminal|null',
     diagnostics: 'JobDiagnostics',
+    facet: 'JobConversationFacet|null',
   },
   authority: [
-    'provider-session owner id equals provider session_id',
+    'provider-session owner id equals job_id',
     'workflow child owner id equals parent_workflow_job_id',
     'workflow root owner id equals job_id',
     'kb job owner kind is system-task',
     'standalone provider job owner kind is provider-session or discussion',
-    'workflow and kb rows cannot retain provider session identity',
-    'workflow parent slot generation replacement relationships are atomic',
+    'workflow and kb rows cannot retain a conversation facet',
+    'workflow parent and slot are present together',
+    'finishing requires an open execution',
     'terminal payload is present only in a terminal phase',
   ],
 } as const;
 
 export const PROJECTION_JOB_COLUMNS =
-  'job_id, execution_owner, phase, terminal, diagnostics, session_id, provider, project_root, work_dir, backend_namespace, bundle_hash, job_kind, parent_workflow_job_id, workflow_slot, workflow_slot_generation, replaces_workflow_job_id, created_at, last_seq';
+  'job_id, execution_owner, phase, terminal, diagnostics, execution, finishing, controller, resumable, conversation_ref, scope_key, facet, provider, project_root, work_dir, backend_namespace, bundle_hash, job_kind, parent_workflow_job_id, workflow_slot, created_at, last_seq';
 
 function parseJson(raw: string, column: string, jobId: string): unknown {
   try {
@@ -130,6 +127,17 @@ export function decodeProjectionJobStoredRow(raw: unknown): ProjectionJobStoredR
   const owner = executionOwnerSchema.parse(parseJson(row.execution_owner, 'execution_owner', row.job_id));
   if (row.terminal !== null) jobTerminalSchema.parse(parseJson(row.terminal, 'terminal', row.job_id));
   jobDiagnosticsSchema.parse(parseJson(row.diagnostics, 'diagnostics', row.job_id));
+  if (row.facet !== null) {
+    const facet = jobConversationFacetSchema.parse(parseJson(row.facet, 'facet', row.job_id));
+    if (
+      facet.provider !== row.provider ||
+      facet.cwd !== row.work_dir ||
+      sessionControllerFromProfile(facet.controllerProfile) !== row.controller ||
+      hashToken(row.project_root, 12) !== row.scope_key
+    ) {
+      throw new TypeError(`projection_jobs conversation facet for '${row.job_id}' contradicts its columns.`);
+    }
+  }
   if (row.job_kind === 'workflow' && (owner.kind !== 'workflow' || owner.id !== row.job_id)) {
     throw new TypeError(`projection_jobs execution owner for '${row.job_id}' contradicts its workflow authority.`);
   }
@@ -141,7 +149,7 @@ export function decodeProjectionJobStoredRow(raw: unknown): ProjectionJobStoredR
       if (owner.kind !== 'workflow' || owner.id !== row.parent_workflow_job_id) {
         throw new TypeError(`projection_jobs execution owner for '${row.job_id}' contradicts its workflow authority.`);
       }
-    } else if (!((owner.kind === 'provider-session' && owner.id === row.session_id) || owner.kind === 'discussion')) {
+    } else if (!((owner.kind === 'provider-session' && owner.id === row.job_id) || owner.kind === 'discussion')) {
       throw new TypeError(`projection_jobs execution owner for '${row.job_id}' contradicts its provider authority.`);
     }
   }

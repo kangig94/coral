@@ -1,289 +1,159 @@
-// Job projection writers + DB-side reducers. Body type imports come from
-// per-concept companion files (queue/runtime/progress/outcome/result/launch),
-// keeping `events.ts` (registry assembly) cleanly above this file with no
-// cycle in either direction.
-
+import { hashToken } from '../infra/hash.js';
+import { sessionControllerFromProfile } from '../sessions/entry.js';
 import type { Database } from '../store/db.js';
-
-import { CoralSetupError } from '../runtime/errors.js';
+import { decodeEventBody } from '../store/body-codec.js';
 import type { CoralEvent } from '../store/envelope.js';
 import { upsertProjection } from '../store/projection-upsert.js';
 import type { Reducer } from '../store/reducers.js';
-import type { JobLaunchRequestBody } from './launch.js';
-import type { ExecutionOwner } from '../runtime/execution-owner.js';
-import type { CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
-import type { JobPhase } from './phase.js';
-import { phaseForOutcome, type JobAbortedBody, type JobLaunchRejected, type JobProgressFault } from './outcome.js';
-import { jobDiagnosticsSchema, normalizeJobTerminal, type JobTerminaledBody } from './terminal/result.js';
-import { emptyJobDiagnostics, type JobDiagnostics, type JobTerminal, type JobTerminalDiagnostics } from './records.js';
+import { phaseForOutcome } from './outcome.js';
+import type { JobOpenedBody, JobExecutionRequestedBody } from './launch.js';
+import {
+  jobDiagnosticsSchema,
+  jobExecutionOutcomeAcceptedBodySchema,
+  normalizeJobTerminal,
+  type JobExecutionOutcomeAcceptedBody,
+  type JobExecutionEndedBody,
+} from './terminal/result.js';
+import { emptyJobDiagnostics, type JobDiagnostics, type JobTerminalDiagnostics } from './records.js';
 import type {
+  JobContinuityCheckpointedBody,
   JobProgressBody,
   JobQueueAdmittedBody,
   JobQueueQueuedBody,
   JobRuntimeStartedBody,
 } from './event-bodies.js';
-import {
-  decodeProjectionJobExecutionOwner,
-  decodeProjectionJobStoredRow,
-  decodeProjectionJobTerminal,
-  readProjectionJobRow,
-} from './projection-row.js';
+import { decodeProjectionJobStoredRow, readProjectionJobRow, type ProjectionJobStoredRow } from './projection-row.js';
 
-type ProjectedJobState = {
-  owner: ExecutionOwner;
-  phase: JobPhase;
-  terminal: JobTerminal | null;
-  diagnostics: JobDiagnostics;
-  sessionId: string | null;
-  provider: string | null;
-  projectRoot: string;
-  workDir: CanonicalWorkDir | null;
-  backendNamespace: string;
-  bundleHash: string | null;
-  jobKind: 'provider' | 'workflow' | 'kb';
-  parentWorkflowJobId: string | null;
-  workflowSlot: string | null;
-  workflowSlotGeneration: number | null;
-  replacesWorkflowJobId: string | null;
-  createdAt: string;
-};
+type JobProjectionPatch = Partial<Omit<ProjectionJobStoredRow, 'job_id' | 'last_seq'>>;
 
-function terminalDiagnosticsFromBody(body: JobTerminaledBody): JobTerminalDiagnostics {
-  return body.diagnostics ?? {};
-}
-
-function mergeDiagnostics(current: JobDiagnostics | undefined, patch: JobTerminalDiagnostics): JobDiagnostics {
-  const processExit = patch.processExit ?? current?.processExit;
-  const byteCounts = patch.byteCounts ?? current?.byteCounts;
-  return {
-    progressFaults: [...(current?.progressFaults ?? [])],
-    ...(patch.warnings === undefined ? {} : { warnings: [...patch.warnings] }),
-    ...(patch.usage === undefined ? {} : { usage: { ...patch.usage } }),
-    ...(processExit === undefined ? {} : { processExit: { ...processExit } }),
-    ...(byteCounts === undefined ? {} : { byteCounts: { ...byteCounts } }),
-  };
-}
-
-function prematureProjectionJobEvent(event: CoralEvent): CoralSetupError {
-  return new CoralSetupError({
-    code: 'projection_jobs_premature_event',
-    userMessage: `Job projection received '${event.type}' for '${event.stream.id}' before job.launch.requested.`,
-    remediation:
-      'Append job.launch.requested before any queued, runtime, progress, terminal, or aborted events for a job stream.',
-    context: {
-      jobId: event.stream.id,
-      type: event.type,
-      seq: event.seq,
-    },
-  });
-}
-
-function createInitialProjectionJobState(event: CoralEvent, patch: Partial<ProjectedJobState>): ProjectedJobState {
-  if (
-    patch.projectRoot === undefined ||
-    patch.workDir === undefined ||
-    patch.backendNamespace === undefined ||
-    patch.jobKind === undefined ||
-    patch.createdAt === undefined ||
-    patch.owner === undefined
-  ) {
-    throw prematureProjectionJobEvent(event);
+function writeProjectionJob(db: Database, event: CoralEvent, patch: JobProjectionPatch): void {
+  const previous = readProjectionJobRow(db, event.stream.id);
+  if (previous === null && event.type !== 'job.opened') {
+    throw new TypeError(`Job '${event.stream.id}' must be opened before '${event.type}'.`);
   }
-
-  return {
-    owner: patch.owner,
-    phase: patch.phase ?? 'launching',
-    terminal: patch.terminal ?? null,
-    diagnostics: patch.diagnostics ?? emptyJobDiagnostics(),
-    sessionId: patch.sessionId ?? null,
-    provider: patch.provider ?? null,
-    projectRoot: patch.projectRoot,
-    workDir: patch.workDir,
-    backendNamespace: patch.backendNamespace,
-    bundleHash: patch.bundleHash ?? null,
-    jobKind: patch.jobKind,
-    parentWorkflowJobId: patch.parentWorkflowJobId ?? event.refs?.parentJobId ?? null,
-    workflowSlot: patch.workflowSlot ?? event.refs?.workflowSlotId ?? null,
-    workflowSlotGeneration: patch.workflowSlotGeneration ?? null,
-    replacesWorkflowJobId: patch.replacesWorkflowJobId ?? null,
-    createdAt: patch.createdAt,
-  };
-}
-
-function readProjectionJob(db: Database, jobId: string): ProjectedJobState | null {
-  const row = readProjectionJobRow(db, jobId);
-  if (row === null) {
-    return null;
+  if (previous !== null && event.type === 'job.opened') {
+    throw new TypeError(`Job '${event.stream.id}' is already opened.`);
   }
-
-  return {
-    owner: decodeProjectionJobExecutionOwner(row),
-    phase: row.phase,
-    terminal: decodeProjectionJobTerminal(row),
-    diagnostics: jobDiagnosticsSchema.parse(JSON.parse(row.diagnostics)),
-    sessionId: row.session_id,
-    provider: row.provider,
-    projectRoot: row.project_root,
-    workDir: row.work_dir,
-    backendNamespace: row.backend_namespace,
-    bundleHash: row.bundle_hash,
-    jobKind: row.job_kind,
-    parentWorkflowJobId: row.parent_workflow_job_id,
-    workflowSlot: row.workflow_slot,
-    workflowSlotGeneration: row.workflow_slot_generation,
-    replacesWorkflowJobId: row.replaces_workflow_job_id,
-    createdAt: row.created_at,
-  };
-}
-
-function upsertProjectionJob(db: Database, event: CoralEvent, patch: Partial<ProjectedJobState>): void {
-  const previous = readProjectionJob(db, event.stream.id);
-  if (!previous && event.type !== 'job.launch.requested') {
-    throw prematureProjectionJobEvent(event);
-  }
-  if (previous && event.type === 'job.launch.requested') {
-    throw new CoralSetupError({
-      code: 'job_launch_duplicate',
-      userMessage: `Job '${event.stream.id}' already has a launch declaration.`,
-      remediation: 'A job stream must contain exactly one job.launch.requested event.',
-    });
-  }
-
-  const base = previous ?? createInitialProjectionJobState(event, patch);
-  const next: ProjectedJobState = {
-    owner: patch.owner ?? base.owner,
-    phase: patch.phase ?? base.phase,
-    terminal: patch.terminal ?? base.terminal,
-    diagnostics: patch.diagnostics ?? base.diagnostics,
-    sessionId: patch.sessionId === undefined ? base.sessionId : patch.sessionId,
-    provider: patch.provider === undefined ? base.provider : patch.provider,
-    projectRoot: patch.projectRoot ?? base.projectRoot,
-    workDir: patch.workDir === undefined ? base.workDir : patch.workDir,
-    backendNamespace: patch.backendNamespace ?? base.backendNamespace,
-    bundleHash: patch.bundleHash ?? base.bundleHash,
-    jobKind: patch.jobKind ?? base.jobKind,
-    parentWorkflowJobId: patch.parentWorkflowJobId ?? base.parentWorkflowJobId,
-    workflowSlot: patch.workflowSlot ?? base.workflowSlot,
-    workflowSlotGeneration: patch.workflowSlotGeneration ?? base.workflowSlotGeneration,
-    replacesWorkflowJobId: patch.replacesWorkflowJobId ?? base.replacesWorkflowJobId,
-    createdAt: patch.createdAt ?? base.createdAt,
-  };
-
-  decodeProjectionJobStoredRow({
+  const { job_id, last_seq, ...columns } = decodeProjectionJobStoredRow({
+    ...previous,
+    ...patch,
     job_id: event.stream.id,
-    execution_owner: JSON.stringify(next.owner),
-    phase: next.phase,
-    terminal: next.terminal === null ? null : JSON.stringify(next.terminal),
-    diagnostics: JSON.stringify(next.diagnostics),
-    session_id: next.sessionId,
-    provider: next.provider,
-    project_root: next.projectRoot,
-    work_dir: next.workDir,
-    backend_namespace: next.backendNamespace,
-    bundle_hash: next.bundleHash,
-    job_kind: next.jobKind,
-    parent_workflow_job_id: next.parentWorkflowJobId,
-    workflow_slot: next.workflowSlot,
-    workflow_slot_generation: next.workflowSlotGeneration,
-    replaces_workflow_job_id: next.replacesWorkflowJobId,
-    created_at: next.createdAt,
     last_seq: event.seq,
   });
-
   upsertProjection(db, {
     table: 'projection_jobs',
     pkColumn: 'job_id',
-    pkValue: event.stream.id,
-    columns: {
-      execution_owner: JSON.stringify(next.owner),
-      phase: next.phase,
-      terminal: next.terminal === null ? null : JSON.stringify(next.terminal),
-      diagnostics: JSON.stringify(next.diagnostics),
-      session_id: next.sessionId,
-      provider: next.provider,
-      project_root: next.projectRoot,
-      work_dir: next.workDir,
-      backend_namespace: next.backendNamespace,
-      bundle_hash: next.bundleHash,
-      job_kind: next.jobKind,
-      parent_workflow_job_id: next.parentWorkflowJobId,
-      workflow_slot: next.workflowSlot,
-      workflow_slot_generation: next.workflowSlotGeneration,
-      replaces_workflow_job_id: next.replacesWorkflowJobId,
-      created_at: next.createdAt,
-    },
-    lastSeq: event.seq,
+    pkValue: job_id,
+    columns,
+    lastSeq: last_seq,
   });
 }
 
-export const reduceJobLaunchRequested: Reducer<JobLaunchRequestBody> = (db, event) => {
-  const sessionId = event.body.jobKind === 'provider' ? event.body.sessionId : null;
-  const provider = event.body.jobKind === 'provider' ? event.body.provider : null;
-  const workDir = event.body.jobKind === 'kb' ? null : event.body.request.cwd;
-  upsertProjectionJob(db, event, {
-    owner: event.body.owner,
+function mergeDiagnostics(current: JobDiagnostics, patch: JobTerminalDiagnostics): JobDiagnostics {
+  return jobDiagnosticsSchema.parse({ ...current, ...patch });
+}
+
+export const reduceJobOpened: Reducer<JobOpenedBody> = (db, event) => {
+  const body = event.body;
+  const facet = body.jobKind === 'provider' ? body.conversation : null;
+  writeProjectionJob(db, event, {
+    execution_owner: JSON.stringify(body.owner),
+    execution: null,
+    finishing: 0,
     phase: 'launching',
-    sessionId,
-    provider,
-    projectRoot: event.body.projectRoot,
-    workDir,
-    backendNamespace: event.body.backendNamespace,
-    bundleHash: event.body.bundleHash ?? null,
-    jobKind: event.body.jobKind,
-    parentWorkflowJobId: event.refs?.parentJobId ?? null,
-    workflowSlot: event.refs?.workflowSlotId ?? null,
-    workflowSlotGeneration: event.body.jobKind === 'provider' ? (event.body.workflowSlotGeneration ?? null) : null,
-    replacesWorkflowJobId: event.body.jobKind === 'provider' ? (event.body.replacesWorkflowJobId ?? null) : null,
-    createdAt: event.body.createdAt,
+    terminal: null,
+    diagnostics: JSON.stringify(emptyJobDiagnostics()),
+    provider: facet?.provider ?? null,
+    controller: facet === null ? null : sessionControllerFromProfile(facet.controllerProfile),
+    resumable: facet === null ? null : 0,
+    conversation_ref: null,
+    scope_key: facet === null ? null : hashToken(body.projectRoot, 12),
+    facet: facet === null ? null : JSON.stringify(facet),
+    project_root: body.projectRoot,
+    work_dir: facet?.cwd ?? (body.jobKind === 'workflow' ? body.cwd : null),
+    backend_namespace: null,
+    bundle_hash: null,
+    job_kind: body.jobKind,
+    parent_workflow_job_id: body.owner.kind === 'workflow' && body.jobKind === 'provider' ? body.owner.id : null,
+    workflow_slot: body.jobKind === 'provider' ? (body.workflowSlotId ?? null) : null,
+    created_at: body.createdAt,
   });
 };
 
-export const reduceJobLaunchRejected: Reducer<JobLaunchRejected> = (db, event) => {
-  upsertProjectionJob(db, event, { phase: 'error' });
+export const reduceJobExecutionRequested: Reducer<JobExecutionRequestedBody> = (db, event) => {
+  writeProjectionJob(db, event, {
+    execution: event.body.execution,
+    phase: 'launching',
+    terminal: null,
+    diagnostics: JSON.stringify(emptyJobDiagnostics()),
+    finishing: 0,
+    backend_namespace: event.body.backendNamespace,
+    bundle_hash: event.body.bundleHash ?? null,
+  });
 };
 
 export const reduceJobQueueQueued: Reducer<JobQueueQueuedBody> = (db, event) => {
-  upsertProjectionJob(db, event, { phase: 'queued' });
+  writeProjectionJob(db, event, { phase: 'queued' });
 };
 
 export const reduceJobQueueAdmitted: Reducer<JobQueueAdmittedBody> = (db, event) => {
-  upsertProjectionJob(db, event, { phase: 'launching' });
+  writeProjectionJob(db, event, { phase: 'launching' });
 };
 
 export const reduceJobRuntimeStarted: Reducer<JobRuntimeStartedBody> = (db, event) => {
-  upsertProjectionJob(db, event, { phase: 'running' });
+  writeProjectionJob(db, event, { phase: 'running' });
 };
 
 export const reduceJobProgress: Reducer<JobProgressBody> = (db, event) => {
-  const previous = readProjectionJob(db, event.stream.id);
-  if (event.body.kind === 'message' || event.body.kind === 'domain') {
-    upsertProjectionJob(db, event, {});
-    return;
-  }
-
-  const previousDiagnostics = previous?.diagnostics;
-  const diagnostics: JobDiagnostics = {
-    progressFaults: [...(previousDiagnostics?.progressFaults ?? []), event.body as JobProgressFault],
-    ...(previousDiagnostics?.warnings === undefined ? {} : { warnings: [...previousDiagnostics.warnings] }),
-    ...(previousDiagnostics?.usage === undefined ? {} : { usage: { ...previousDiagnostics.usage } }),
-    ...(previousDiagnostics?.processExit === undefined ? {} : { processExit: { ...previousDiagnostics.processExit } }),
-    ...(previousDiagnostics?.byteCounts === undefined ? {} : { byteCounts: { ...previousDiagnostics.byteCounts } }),
-  };
-
-  upsertProjectionJob(db, event, { diagnostics });
+  const previous = readProjectionJobRow(db, event.stream.id);
+  if (previous === null) throw new TypeError(`Job '${event.stream.id}' is not opened.`);
+  const diagnostics = jobDiagnosticsSchema.parse(JSON.parse(previous.diagnostics));
+  const { execution: _execution, ...progress } = event.body;
+  if (progress.kind !== 'message' && progress.kind !== 'domain') diagnostics.progressFaults.push(progress);
+  writeProjectionJob(db, event, { diagnostics: JSON.stringify(diagnostics) });
 };
 
-export const reduceJobTerminal: Reducer<JobTerminaledBody> = (db, event) => {
-  const previous = readProjectionJob(db, event.stream.id);
-  const terminal = normalizeJobTerminal(event.body.terminal);
-  const diagnostics = mergeDiagnostics(previous?.diagnostics, terminalDiagnosticsFromBody(event.body));
-  upsertProjectionJob(db, event, {
-    phase: phaseForOutcome(event.body.terminal.outcome),
-    terminal,
-    diagnostics,
+export const reduceJobOutcomeAccepted: Reducer<JobExecutionOutcomeAcceptedBody> = (db, event) => {
+  const previous = readProjectionJobRow(db, event.stream.id);
+  if (previous === null) throw new TypeError(`Job '${event.stream.id}' is not opened.`);
+  writeProjectionJob(db, event, {
+    finishing: 1,
+    diagnostics: JSON.stringify(
+      mergeDiagnostics(jobDiagnosticsSchema.parse(JSON.parse(previous.diagnostics)), event.body.diagnostics ?? {}),
+    ),
   });
 };
 
-export const reduceJobAborted: Reducer<JobAbortedBody> = (db, event) => {
-  upsertProjectionJob(db, event, { phase: 'aborted' });
+export const reduceJobExecutionEnded: Reducer<JobExecutionEndedBody> = (db, event) => {
+  const row = db
+    .prepare<
+      [number, string],
+      { body: Uint8Array }
+    >("SELECT body FROM events WHERE seq = ? AND stream_kind = 'job' AND stream_id = ? AND type = 'job.execution.outcome.accepted'")
+    .get(event.body.causeRef.seq, event.stream.id);
+  if (
+    row === undefined ||
+    event.body.causeRef.stream.kind !== 'job' ||
+    event.body.causeRef.stream.id !== event.stream.id
+  ) {
+    throw new TypeError(`Execution end '${event.seq}' has no accepted outcome on its job.`);
+  }
+  const accepted = jobExecutionOutcomeAcceptedBodySchema.parse(decodeEventBody(row.body));
+  if (accepted.execution !== event.body.execution) throw new TypeError('Execution end cites another execution.');
+  writeProjectionJob(db, event, {
+    phase: phaseForOutcome(accepted.terminal.outcome),
+    terminal: JSON.stringify(normalizeJobTerminal(accepted.terminal)),
+    finishing: 0,
+  });
+};
+
+export const reduceJobContinuityCheckpointed: Reducer<JobContinuityCheckpointedBody> = (db, event) => {
+  writeProjectionJob(db, event, {
+    resumable: event.body.snapshot.resumable ? 1 : 0,
+    conversation_ref: event.body.snapshot.conversationRef,
+  });
+};
+
+export const reduceJobObservation: Reducer = (db, event) => {
+  writeProjectionJob(db, event, {});
 };
