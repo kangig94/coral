@@ -1,11 +1,11 @@
 import type { RecoveryObservation } from '../../recovery/phase-observation.js';
 import { observeDatabaseReads } from '../../recovery/read-observation.js';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 
 import type { Database } from '../../store/db.js';
 import type { AppendedEvent, PostCommitObserver } from '../../store/append.js';
 
-import type { StoragePort } from '../../infra/port-types.js';
+import { writeResultArtifact, type DecodedResultArtifact } from './artifact.js';
 import { type StoreReadContext } from '../../store/body-codec.js';
 
 import type { EventsRow } from '../../store/schema.js';
@@ -21,6 +21,7 @@ import type { Runtime } from '../../runtime/ports.js';
 import type { JobTerminal } from '../records.js';
 import type { JobLocation } from '../location-index.js';
 import { hasReadableTerminalDetail, retainedTerminal, sameTerminal } from './identity.js';
+import { sourceReadFailureDisposition } from '../source-read.js';
 import { readAcceptedTerminal } from './source.js';
 import {
   jobRetentionCutoff,
@@ -192,6 +193,7 @@ export class TerminalResultExportOwner {
     repairQueueLimit?: number;
     prepareTerminal?(jobId: string, db: Database): void;
     hydrationRetry?(jobId: string): boolean | undefined;
+    readTerminalInput?(db: Database, jobId: string): DecodedResultArtifact | null | undefined;
   }>;
 
   constructor(input: TerminalResultExportOwner['input']) {
@@ -216,11 +218,46 @@ export class TerminalResultExportOwner {
         );
   }
 
+  private readTerminal(jobId: string, db: Database): DecodedResultArtifact | null {
+    const retained = this.input.readTerminalInput?.(db, jobId);
+    if (retained !== undefined) return retained;
+    const accepted = readAcceptedTerminal(db, jobId);
+    if (accepted === null) return null;
+    const body = jobTerminalRecordedBodySchema.parse(JSON.parse(Buffer.from(accepted.body).toString('utf8')));
+    return { accepted, terminal: body.terminal, markdown: null, age: 'unknown' };
+  }
+
   private eligibility(
     jobId: string,
     location = this.input.location(jobId),
     observation?: RecoveryObservation,
   ): TerminalEligibility {
+    if (this.input.readTerminalInput !== undefined) {
+      let observed: DecodedResultArtifact | null | undefined;
+      try {
+        observed = this.withSource(jobId, (db) => this.input.readTerminalInput?.(db, jobId), observation);
+      } catch (error) {
+        return {
+          source: sourceReadFailureDisposition(error) === 'transient-unknown' ? 'transient' : 'unusable',
+          age: 'unknown',
+        };
+      }
+      if (observed !== undefined) {
+        if (observed === null) return { source: 'absent', age: 'unknown' };
+        const terminal = location === null ? null : retainedTerminal(location);
+        if (terminal === null || terminal.seq !== observed.accepted.seq || terminal.ts !== observed.accepted.ts)
+          return { source: 'unusable', age: 'unknown' };
+        return {
+          source: 'readable',
+          age:
+            typeof observed.age !== 'number'
+              ? 'unknown'
+              : observed.age < jobRetentionCutoff(this.input.runtime)
+                ? 'expired'
+                : 'inside',
+        };
+      }
+    }
     return terminalEligibility(
       this.input.runtime,
       location,
@@ -246,11 +283,10 @@ export class TerminalResultExportOwner {
   ): T | null {
     if (!hasReadableTerminalDetail(location)) return null;
     return this.withSource(jobId, (db, ctx) => {
-      const accepted = this.publicationTerminal?.accepted ?? readAcceptedTerminal(db, jobId);
-      if (!accepted || accepted.seq !== location.terminalSeq) return null;
-      const body = this.publicationTerminal
-        ? { terminal: this.publicationTerminal.terminal }
-        : jobTerminalRecordedBodySchema.parse(JSON.parse(Buffer.from(accepted.body).toString('utf8')));
+      const source = this.publicationTerminal ?? this.readTerminal(jobId, db);
+      if (source === null || source.accepted.seq !== location.terminalSeq) return null;
+      const accepted = source.accepted;
+      const body = { terminal: source.terminal };
       if (
         location.detail.kind !== 'recorded' ||
         !location.detail.value.exit ||
@@ -263,6 +299,8 @@ export class TerminalResultExportOwner {
 
   private render(jobId: string, location: JobLocation): string | null {
     return this.withAgreedTerminal(jobId, location, (db, ctx, accepted, terminal) => {
+      const supplied = this.input.readTerminalInput?.(db, jobId);
+      if (supplied !== undefined) return supplied?.markdown ?? null;
       if (location.subject.jobKind === 'workflow')
         return this.input.workflowReport?.({ db, epochKey: location.epochKey, jobId, accepted, terminal }) ?? null;
       const identity = workflowIdentityMarkdown(db, jobId);
@@ -354,14 +392,14 @@ export class TerminalResultExportOwner {
       this.failures.delete(jobId);
       return targetPath;
     }
-    const accepted = readAcceptedTerminal(db, jobId);
-    if (!accepted) return targetPath;
+    const source = this.readTerminal(jobId, db);
+    if (source === null) return targetPath;
+    const accepted = source.accepted;
     if (!location || !hasReadableTerminalDetail(location)) {
       this.uncaptured.add(jobId);
       return targetPath;
     }
-    const body = jobTerminalRecordedBodySchema.parse(JSON.parse(Buffer.from(accepted.body).toString('utf8')));
-    this.publicationTerminal = { accepted, terminal: body.terminal };
+    this.publicationTerminal = { accepted, terminal: source.terminal };
     // An expired terminal is retained away: no write owner recreates its file.
     const eligibility = this.eligibility(jobId, location);
     if (eligibility.source !== 'readable' || eligibility.age === 'expired') {
@@ -377,7 +415,7 @@ export class TerminalResultExportOwner {
       const current = this.eligibility(jobId, location);
       return current.source === 'readable' && current.age !== 'expired';
     };
-    writeResultArtifact(this.input.runtime.storage, targetPath, markdown, authorized);
+    writeResultArtifact(this.input.runtime.storage, targetPath, markdown, authorized, this.input.jobsRoot);
     if (this.readableFile(targetPath)) {
       this.failures.delete(jobId);
       this.unrenderable.delete(jobId);
@@ -446,28 +484,6 @@ export class TerminalResultExportOwner {
     }
     await setImmediate();
   }
-}
-
-function writeResultArtifact(
-  storage: Pick<StoragePort, 'mkdirSync' | 'writeAtomicDurableSync' | 'syncDirectoryDurableSync'>,
-  targetPath: string,
-  markdown: string,
-  beforeRename: () => boolean,
-): void {
-  if (!markdown || !beforeRename()) return;
-  const jobsRoot = dirname(dirname(targetPath));
-  storage.mkdirSync(dirname(targetPath), { recursive: true });
-  let refused = false;
-  const decideRename = (): boolean => {
-    refused = !beforeRename();
-    return !refused;
-  };
-  if (!storage.writeAtomicDurableSync(targetPath, markdown, { encoding: 'utf-8', beforeRename: decideRename })) {
-    if (refused) return;
-    throw new Error(`Failed to write result artifact: ${targetPath}`);
-  }
-  if (!storage.syncDirectoryDurableSync(jobsRoot) || !storage.syncDirectoryDurableSync(dirname(jobsRoot)))
-    throw new Error(`Failed to sync result artifact: ${targetPath}`);
 }
 
 export function observeTerminalResultExports(

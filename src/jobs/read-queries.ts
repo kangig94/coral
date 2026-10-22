@@ -24,6 +24,9 @@ import {
   type JobTerminal,
   type JobTerminalDiagnostics,
 } from './records.js';
+import { phaseForOutcome } from './outcome.js';
+import { deriveLaunchReadiness } from './launch-readiness.js';
+import type { JobDetailResponse } from './records.js';
 import { jobInCallerScope } from './scope.js';
 import type { CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
 import {
@@ -503,6 +506,90 @@ export function hydrateJobProjectionDetailFromEvents(
   const requested = events.get('job.execution.requested') ?? null;
   const detail = hydrateJobWaitDetail(projection, events, requested?.ts ?? null, ctx, workflowUsage);
   return { ...detail, launch: decodeLaunch(projection.job_id, events.get('job.opened') ?? null, requested, ctx) };
+}
+
+/** Retained current epochs use the same codecs and execution hydrator as live reads. */
+export function loadJobExecutionDetails(
+  db: Database,
+  jobId: string,
+  ctx: StoreReadContext,
+): Array<{ execution: number; requestedSeq: number; detail: JobDetailResponse }> {
+  const projection = readProjectionRow(db, jobId);
+  if (projection === null) return [];
+  const rows = db
+    .prepare<[string], EventsRow>("SELECT * FROM events WHERE stream_kind = 'job' AND stream_id = ? ORDER BY seq ASC")
+    .all(jobId);
+  const requests = rows.filter((row) => row.type === 'job.execution.requested');
+  const latestRequest = requests.at(-1);
+  if (
+    latestRequest === undefined
+      ? projection.execution !== null
+      : decodeBody(latestRequest, jobExecutionRequestedBodySchema, ctx).execution !== projection.execution
+  )
+    throw new TypeError('Execution requests disagree with the latest projection.');
+  const rendered = readJobEvents(db, jobId, ctx);
+  return requests.map((request, index) => {
+    const requested = decodeBody(request, jobExecutionRequestedBodySchema, ctx);
+    if (requested.execution !== index + 1) throw new TypeError('Execution request history has a gap.');
+    const boundary = requests[index + 1]?.seq ?? Infinity;
+    const executionRows = rows.filter((row) => row.seq >= request.seq && row.seq < boundary);
+    let phase: JobPhase = 'launching';
+    let finishing = false;
+    let diagnostics: JobDiagnostics = emptyJobDiagnostics();
+    for (const row of executionRows) {
+      rowToCoralEvent(row, null);
+      const body = decodeStoredBody(row, ctx) as { execution?: unknown };
+      if (executionOrdinalSchema.parse(body.execution) !== requested.execution)
+        throw new TypeError('Execution evidence crosses its request boundary.');
+      if (row.type === 'job.execution.queued') phase = 'queued';
+      if (row.type === 'job.execution.admitted') phase = 'launching';
+      if (row.type === 'job.execution.started') phase = 'running';
+      if (row.type === 'job.execution.progress') {
+        const progress = decodeBody(row, jobProgressBodySchema, ctx);
+        if (progress.kind !== 'message' && progress.kind !== 'domain') diagnostics.progressFaults.push(progress);
+      }
+      if (row.type === 'job.execution.outcome.accepted') {
+        const accepted = decodeBody(row, jobExecutionOutcomeAcceptedBodySchema, ctx);
+        diagnostics = { ...diagnostics, ...accepted.diagnostics };
+        finishing = true;
+      }
+      if (row.type === 'job.execution.ended') {
+        const end = decodeBody(row, jobExecutionEndedBodySchema, ctx);
+        const accepted = executionRows.find((candidate) => candidate.seq === end.causeRef.seq) ?? null;
+        const terminal = decodeTerminalRecord(row, accepted, jobId, ctx);
+        if (terminal === null) throw new TypeError('Execution end has no accepted outcome.');
+        phase = phaseForOutcome(terminal.record.outcome);
+        finishing = false;
+      }
+    }
+    const selected = {
+      ...projection,
+      execution: requested.execution,
+      phase,
+      finishing: finishing ? (1 as const) : (0 as const),
+      diagnostics: JSON.stringify(diagnostics),
+      last_seq: executionRows.at(-1)?.seq ?? request.seq,
+    };
+    const hydrated = hydrateJobProjectionDetailFromEvents(
+      selected,
+      [...rows.filter((row) => row.type === 'job.opened'), ...executionRows],
+      ctx,
+      projection.job_kind === 'workflow' ? aggregateWorkflowUsage(db, jobId) : undefined,
+    );
+    if (hydrated.status === null) throw new TypeError('Execution detail has no status.');
+    if (index < requests.length - 1 && hydrated.exit === null)
+      throw new TypeError('A continuation has no ended predecessor.');
+    return {
+      execution: requested.execution,
+      requestedSeq: request.seq,
+      detail: {
+        status: hydrated.status,
+        readiness: deriveLaunchReadiness(hydrated),
+        events: rendered.filter((event) => event.seq >= request.seq && event.seq < boundary),
+        exit: hydrated.exit,
+      },
+    };
+  });
 }
 
 export function loadJobProjectionDetail(

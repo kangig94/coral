@@ -14,6 +14,7 @@ import {
   sourceReadStamp,
   type SourceReadDisposition,
 } from './source-read.js';
+import { isDeepStrictEqual } from 'node:util';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
 
@@ -37,8 +38,13 @@ import {
   type JobLocationView,
   type JobLocation,
 } from './location-index.js';
-import { phaseForOutcome, jobProgressFaultSchema } from './outcome.js';
-import { aggregateWorkflowUsage } from './workflow-usage.js';
+import { ensureSentence } from '../infra/text.js';
+import { phaseForOutcome } from './outcome.js';
+import { type UsageSummary } from '../providers/contract.js';
+import { writeResultArtifact, type DecodedResultArtifact } from './terminal/artifact.js';
+import { jobRetentionCutoff } from './export-retention.js';
+import { currentCoralStoreFormat } from '../store-format.js';
+import { currentResultInput, loadRetainedCurrentJob, retainCurrentJob } from './retained-current.js';
 import type { Database } from '../store/db.js';
 import { observeStorePath } from '../store/path-observation.js';
 import {
@@ -48,13 +54,88 @@ import {
   type JobEvent,
   type JobStatus,
 } from './records.js';
-import { jobPhaseSchema, isTerminalPhase } from './phase.js';
-import { jobDiagnosticsSchema, jobTerminalSchema } from './terminal/result.js';
-import { resultPathFor } from './terminal/export.js';
+import { isTerminalPhase } from './phase.js';
 
 const FINGERPRINT_0100 = 'sha256:f14ec2988abbf0fe125a6b0c9b50cbece7104d8a82a96da149392e2f44e53f52';
 const FINGERPRINT_0105 = 'sha256:9fd970cdcb803f517d77b133bba86ae83ef1ff662f77da8656604f32c8e67980';
 const FINGERPRINT_0110 = 'sha256:ca97b533a127b1475b45a487793ab7183ae70620894d1ca36e193431065b2521';
+
+// These three released formats predate execution ordinals and retain session causes.
+const historicalPhaseSchema = z.enum(['queued', 'launching', 'running', 'completed', 'error', 'aborted']);
+const historicalCauseSchema = z
+  .object({
+    stream: z.object({ kind: z.enum(['job', 'session', 'discuss', 'workflow']), id: z.string().min(1) }).strict(),
+    seq: z.number().int().positive(),
+  })
+  .strict();
+const historicalErrorSchema = z.object({ message: z.string(), stack: z.string().optional() }).strict();
+const historicalUsageSchema = z
+  .object({
+    inputTokens: z.number().int().nonnegative().optional(),
+    cacheReadTokens: z.number().int().nonnegative().optional(),
+    cacheWriteTokens: z.number().int().nonnegative().optional(),
+    outputTokens: z.number().int().nonnegative().optional(),
+    costUsd: z.number().optional(),
+    jobsWithoutCostData: z.number().int().nonnegative().optional(),
+  })
+  .strict();
+const historicalProgressFaultSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('missing_launch_record') }).strict(),
+  z.object({ kind: z.literal('recovery_parse_failed'), cause: historicalErrorSchema }).strict(),
+]);
+const historicalDiagnosticsSchema = z
+  .object({
+    progressFaults: z.array(historicalProgressFaultSchema),
+    warnings: z.array(z.string()).optional(),
+    usage: historicalUsageSchema.optional(),
+    processExit: z.object({ exitCode: z.number().nullable(), signal: z.string().nullable() }).strict().optional(),
+    byteCounts: z.object({ stdout: z.number(), stderr: z.number() }).strict().optional(),
+  })
+  .strict();
+const historicalTerminalSchema = z
+  .object({
+    content: z.string(),
+    durationMs: z.number().nonnegative(),
+    outcome: z.discriminatedUnion('kind', [
+      z.object({ kind: z.literal('completed') }).strict(),
+      z
+        .object({ kind: z.literal('aborted'), reason: z.enum(['signal_abort', 'user_abort', 'queue_shutdown']) })
+        .strict(),
+      z.object({ kind: z.literal('provider_exit'), code: z.number(), note: z.string().optional() }).strict(),
+      z.object({ kind: z.literal('failed'), causeRef: historicalCauseSchema }).strict(),
+      z
+        .object({
+          kind: z.literal('job_fault'),
+          fault: z.discriminatedUnion('kind', [
+            z.object({ kind: z.literal('ghost_launch') }).strict(),
+            z.object({ kind: z.literal('wrapper_lost') }).strict(),
+            z.object({ kind: z.literal('wrapper_crashed'), cause: historicalErrorSchema }).strict(),
+            z
+              .object({
+                kind: z.literal('provider_binding'),
+                provider: z.string(),
+                reason: z.enum([
+                  'missing-profile',
+                  'profile-unavailable',
+                  'identity-unavailable',
+                  'profile-mismatch',
+                  'subject-mismatch',
+                  'unsupported-selection',
+                  'invalid-persisted-binding',
+                ]),
+                message: z.string(),
+              })
+              .strict(),
+          ]),
+        })
+        .strict(),
+    ]),
+  })
+  .strict();
+
+function historicalResultPath(jobsRoot: string, jobId: string): string {
+  return join(jobsRoot, jobId, 'result.md');
+}
 
 const olderProjectionSchema = z
   .object({
@@ -83,9 +164,18 @@ const eventSchema = z.object({
   type: z.string(),
   body: z.instanceof(Uint8Array),
 });
+const historicalEnvelopeSchema = eventSchema.extend({
+  stream_kind: z.enum(['job', 'session', 'discuss', 'workflow']),
+  stream_id: z.string().min(1),
+  namespace: z.string().nullable().optional().default(null),
+  project: z.string().nullable().optional().default(null),
+  correlation_id: z.string().nullable().optional().default(null),
+  causation_seq: z.number().nullable().optional().default(null),
+  refs: z.string().nullable().optional().default(null),
+});
 const terminalBodySchema = z
   .object({
-    terminal: jobTerminalSchema,
+    terminal: historicalTerminalSchema,
     diagnostics: z.object({}).passthrough().optional(),
   })
   .passthrough();
@@ -306,6 +396,11 @@ const readers: Readonly<Record<string, HistoricalReader>> = {
   [FINGERPRINT_0110]: read0110,
 };
 
+function retainedSourceFormat(fingerprint: string): 'current' | 'historical' | undefined {
+  if (fingerprint === currentCoralStoreFormat().fingerprint) return 'current';
+  return Object.hasOwn(readers, fingerprint) ? 'historical' : undefined;
+}
+
 function readEvents(db: SqliteDatabasePort, jobId: string, afterSeq = 0): z.infer<typeof eventSchema>[] {
   return db
     .prepare(
@@ -329,13 +424,13 @@ function parseBody(body: Uint8Array): unknown {
 }
 
 function diagnosticsFrom(raw: string): JobDiagnostics {
-  return jobDiagnosticsSchema.parse(JSON.parse(raw) as unknown);
+  return historicalDiagnosticsSchema.parse(JSON.parse(raw) as unknown);
 }
 
 function historicalProgressFaults(row: Projection, events: readonly z.infer<typeof eventSchema>[]) {
   const recorded = events
     .filter((event) => event.type === 'job.progress.emitted')
-    .map((event) => jobProgressFaultSchema.safeParse(parseBody(event.body)))
+    .map((event) => historicalProgressFaultSchema.safeParse(parseBody(event.body)))
     .flatMap((fault) => (fault.success ? [fault.data] : []));
   const retained = [...diagnosticsFrom(row.diagnostics).progressFaults];
   const unmatched = [...retained];
@@ -371,11 +466,12 @@ function historicalDetail(
   const terminalEvent = [...events].reverse().find((event) => event.type === 'job.terminal.recorded');
   const terminalBody = terminalEvent === undefined ? null : terminalBodySchema.parse(parseBody(terminalEvent.body));
   const phase =
-    terminalBody === null ? jobPhaseSchema.parse(row.phase) : phaseForOutcome(terminalBody.terminal.outcome);
+    terminalBody === null ? historicalPhaseSchema.parse(row.phase) : phaseForOutcome(terminalBody.terminal.outcome);
   const status: JobStatus = {
     jobId: row.job_id,
     owner: executionOwnerSchema.parse(JSON.parse(row.execution_owner) as unknown),
     sessionId: row.session_id,
+    execution: null,
     provider: row.provider,
     projectRoot: row.project_root,
     workDir,
@@ -396,10 +492,10 @@ function historicalDetail(
       ? diagnosticsFrom(row.diagnostics)
       : {
           progressFaults: historicalProgressFaults(row, events),
-          ...jobDiagnosticsSchema.omit({ progressFaults: true }).parse(terminalBody.diagnostics ?? {}),
+          ...historicalDiagnosticsSchema.omit({ progressFaults: true }).parse(terminalBody.diagnostics ?? {}),
         };
   if (jobKind === 'workflow') {
-    const usage = aggregateWorkflowUsage(db as Database, row.job_id);
+    const usage = historicalWorkflowUsage(db, row.job_id);
     if (usage !== undefined) diagnostics.usage = usage;
   }
   const renderedEvents: JobEvent[] = [];
@@ -449,6 +545,343 @@ function historicalDetail(
             endTime: terminalEvent.ts,
           },
   };
+}
+
+function historicalWorkflowUsage(db: SqliteDatabasePort, workflowJobId: string): UsageSummary | undefined {
+  const rows = db
+    .prepare('SELECT diagnostics FROM projection_jobs WHERE parent_workflow_job_id = ? ORDER BY job_id ASC')
+    .all(workflowJobId);
+  const fields = ['inputTokens', 'cacheReadTokens', 'cacheWriteTokens', 'outputTokens'] as const;
+  const result: UsageSummary = {};
+  let sawUsage = false;
+  let sawCost = false;
+  let missing = 0;
+  for (const raw of rows) {
+    const row = z.object({ diagnostics: z.string() }).parse(raw);
+    const usage = diagnosticsFrom(row.diagnostics).usage;
+    if (usage === undefined || (!fields.some((field) => usage[field] !== undefined) && usage.costUsd === undefined))
+      continue;
+    sawUsage = true;
+    for (const field of fields) if (usage[field] !== undefined) result[field] = (result[field] ?? 0) + usage[field];
+    if (usage.costUsd === undefined) missing++;
+    else {
+      result.costUsd = (result.costUsd ?? 0) + usage.costUsd;
+      sawCost = true;
+    }
+  }
+  if (!sawUsage) return undefined;
+  if (!sawCost) delete result.costUsd;
+  if (missing > 0) result.jobsWithoutCostData = missing;
+  return result;
+}
+
+function historicalTerminalDescription(terminal: z.infer<typeof historicalTerminalSchema>): string {
+  const outcome = terminal.outcome;
+  switch (outcome.kind) {
+    case 'completed':
+      return 'Completed.';
+    case 'aborted':
+      return `Aborted: ${outcome.reason}.`;
+    case 'provider_exit':
+      return outcome.note === undefined
+        ? `Provider exited ${outcome.code}.`
+        : `Provider exited ${outcome.code}: ${ensureSentence(outcome.note)}`;
+    case 'failed':
+      return `Failed: ${outcome.causeRef.stream.kind}/${outcome.causeRef.stream.id}#${outcome.causeRef.seq}`;
+    case 'job_fault': {
+      const fault = outcome.fault;
+      switch (fault.kind) {
+        case 'ghost_launch':
+          return 'Launch recorded but no provider process was observed.';
+        case 'wrapper_lost':
+          return 'Provider wrapper exited without reporting an outcome.';
+        case 'wrapper_crashed':
+          return `Provider wrapper crashed: ${fault.cause.message}.${fault.cause.stack ? `\n${fault.cause.stack}` : ''}`;
+        case 'provider_binding':
+          return `Provider binding ${fault.reason}: ${ensureSentence(fault.message)}`;
+      }
+    }
+  }
+}
+
+function historicalCauseDescription(
+  db: SqliteDatabasePort,
+  ref: z.infer<typeof historicalCauseSchema>,
+  visited = new Set<number>(),
+): string | null {
+  if (visited.has(ref.seq)) return null;
+  visited.add(ref.seq);
+  const raw = db
+    .prepare('SELECT * FROM events WHERE seq = ? AND stream_kind = ? AND stream_id = ?')
+    .get(ref.seq, ref.stream.kind, ref.stream.id);
+  if (raw === undefined) return null;
+  const event = historicalEnvelopeSchema.parse(raw);
+  const body = z.object({}).passthrough().parse(parseBody(event.body));
+  let local = event.type;
+  if (event.type === 'workflow.completed' && typeof body.outcome === 'string') local = `Workflow ${body.outcome}.`;
+  if (event.type === 'workflow.lifecycle_fault' && typeof body.kind === 'string' && typeof body.message === 'string')
+    local = `Workflow lifecycle fault (${body.kind}): ${body.message}.`;
+  if (event.type === 'job.terminal.recorded') {
+    const terminal = terminalBodySchema.safeParse(body);
+    if (terminal.success) local = historicalTerminalDescription(terminal.data.terminal);
+  }
+  const nested = z.object({ kind: z.literal('failed'), causeRef: historicalCauseSchema });
+  const direct = historicalCauseSchema.safeParse(body.causeRef);
+  const reason = nested.safeParse(body.reason);
+  const terminal = z.object({ outcome: nested }).safeParse(body.terminal);
+  const next = direct.success
+    ? direct.data
+    : reason.success
+      ? reason.data.causeRef
+      : terminal.success
+        ? terminal.data.outcome.causeRef
+        : undefined;
+  if (next === undefined) return local;
+  const description = historicalCauseDescription(db, next, visited);
+  return description === null ? null : `${local} Caused by: ${description}`;
+}
+
+function historicalWorkflowMarkdown(
+  db: SqliteDatabasePort,
+  jobId: string,
+  accepted: z.infer<typeof historicalEnvelopeSchema>,
+  terminal: z.infer<typeof historicalTerminalSchema>,
+): string | null {
+  const completed = db
+    .prepare(
+      "SELECT * FROM events WHERE stream_kind = 'workflow' AND stream_id = ? AND type = 'workflow.completed' AND seq < ? ORDER BY seq DESC LIMIT 1",
+    )
+    .get(jobId, accepted.seq);
+  if (completed === undefined) return `${historicalTerminalDescription(terminal)}\n`;
+  const steps = z.array(
+    z
+      .object({
+        stepIndex: z.number().int().nonnegative(),
+        atomIndex: z.number().int().nonnegative(),
+        label: z.string(),
+        output: z.string(),
+      })
+      .strict(),
+  );
+  const parsed = z
+    .discriminatedUnion('outcome', [
+      z.object({ outcome: z.literal('completed'), stepDetails: steps }).strict(),
+      z.object({ outcome: z.literal('aborted'), stepDetails: steps }).strict(),
+      z
+        .object({
+          outcome: z.literal('failed'),
+          stepDetails: steps,
+          causeRef: historicalCauseSchema,
+          failureLocation: z
+            .object({
+              slotId: z.string().optional(),
+              stepIndex: z.number().int().nonnegative().optional(),
+              atomLabel: z.string().optional(),
+              jobId: z.string().optional(),
+            })
+            .strict()
+            .optional(),
+        })
+        .strict(),
+    ])
+    .safeParse(parseBody(historicalEnvelopeSchema.parse(completed).body));
+  if (!parsed.success || parsed.data.outcome !== terminal.outcome.kind) return null;
+  if (
+    terminal.outcome.kind === 'failed' &&
+    (terminal.outcome.causeRef.stream.kind !== 'workflow' ||
+      terminal.outcome.causeRef.stream.id !== jobId ||
+      terminal.outcome.causeRef.seq !== historicalEnvelopeSchema.parse(completed).seq)
+  )
+    return null;
+  const markdown = parsed.data.stepDetails
+    .flatMap((step) => [
+      `# Step ${step.stepIndex}.${step.atomIndex}: ${step.label}`,
+      '',
+      ...step.output.split('\n'),
+      '',
+    ])
+    .join('\n');
+  return markdown.trim().length > 0 ? markdown : `${historicalTerminalDescription(terminal)}\n`;
+}
+
+function historicalResultInput(db: SqliteDatabasePort, jobId: string): DecodedResultArtifact | null {
+  const raw = db
+    .prepare(
+      "SELECT * FROM events WHERE stream_kind = 'job' AND stream_id = ? AND type = 'job.terminal.recorded' ORDER BY seq DESC LIMIT 1",
+    )
+    .get(jobId);
+  if (raw === undefined) return null;
+  const accepted = historicalEnvelopeSchema.parse(raw);
+  const body = terminalBodySchema.parse(parseBody(accepted.body));
+  const preceding = z
+    .object({ ts: z.string() })
+    .optional()
+    .parse(
+      db
+        .prepare(
+          "SELECT ts FROM events WHERE stream_kind = 'job' AND stream_id = ? AND seq < ? ORDER BY ts DESC LIMIT 1",
+        )
+        .get(jobId, accepted.seq),
+    );
+  const at = Date.parse(accepted.ts);
+  const before = preceding === undefined ? at : Date.parse(preceding.ts);
+  const age = !Number.isFinite(at) || !Number.isFinite(before) ? 'unknown' : at < before ? 'regression' : at;
+  const outcome = body.terminal.outcome;
+  const fallback =
+    outcome.kind === 'failed'
+      ? `Failed: ${historicalCauseDescription(db, outcome.causeRef) ?? `${outcome.causeRef.stream.kind}/${outcome.causeRef.stream.id}#${outcome.causeRef.seq}`}`
+      : historicalTerminalDescription(body.terminal);
+  const launch = db
+    .prepare(
+      "SELECT * FROM events WHERE stream_kind = 'job' AND stream_id = ? AND type = 'job.launch.requested' ORDER BY seq LIMIT 1",
+    )
+    .get(jobId);
+  let identity = '';
+  if (launch !== undefined) {
+    const event = historicalEnvelopeSchema.parse(launch);
+    const refs = z
+      .object({ parentJobId: z.string(), workflowSlotId: z.string().optional() })
+      .passthrough()
+      .safeParse(event.refs === null ? null : JSON.parse(event.refs));
+    const launchBody = launchBodySchema.parse(parseBody(event.body));
+    if (launchBody.jobKind === 'workflow')
+      return {
+        accepted,
+        terminal: body.terminal,
+        age,
+        markdown: historicalWorkflowMarkdown(db, jobId, accepted, body.terminal),
+      };
+    const metadata = z
+      .object({ workflowSlotGeneration: z.number().optional(), replacesWorkflowJobId: z.string().optional() })
+      .passthrough()
+      .parse(parseBody(event.body));
+    if (refs.success) {
+      const lines = [
+        `> Parent workflow: ${refs.data.parentJobId}`,
+        `> Workflow slot: ${refs.data.workflowSlotId}`,
+        `> Workflow generation: ${metadata.workflowSlotGeneration}`,
+      ];
+      if (metadata.replacesWorkflowJobId !== undefined)
+        lines.push(`> Replaces workflow job: ${metadata.replacesWorkflowJobId}`);
+      identity = `${lines.join('\n')}\n\n`;
+    }
+  }
+  return {
+    accepted,
+    terminal: body.terminal,
+    age,
+    markdown: `${identity}${body.terminal.content.trimEnd() || fallback}\n`,
+  };
+}
+
+/** Unknown retained formats cannot fall through to the live terminal decoder. */
+export function retainedResultInput(
+  index: JobLocationIndex,
+  epochKey: string,
+  db: Database,
+  jobId: string,
+  jobsRoot: string,
+): DecodedResultArtifact | null {
+  const source = historicalSources.get(index)?.get(epochIdentity(epochKey));
+  const fingerprint =
+    source?.fingerprint ??
+    z
+      .object({ value: z.string() })
+      .optional()
+      .parse(db.prepare("SELECT value FROM meta WHERE key = 'store_format_fingerprint'").get())?.value;
+  if (fingerprint === undefined) throw new HistoricalDecodeError('Retained source has no readable format fingerprint');
+  switch (retainedSourceFormat(fingerprint)) {
+    case 'current':
+      return currentResultInput(db, epochKey, jobId, source?.jobsRoot ?? jobsRoot);
+    case 'historical':
+      return historicalResultInput(db, jobId);
+    default:
+      throw new HistoricalDecodeError('Retained source format is unknown');
+  }
+}
+
+export function prepareRetainedJob(
+  index: JobLocationIndex,
+  db: Database,
+  epochKey: string,
+  jobId: string,
+  jobsRoot: string,
+  runtime: Runtime,
+): void {
+  const source = historicalSources.get(index)?.get(epochIdentity(epochKey));
+  const fingerprint =
+    source?.fingerprint ??
+    z
+      .object({ value: z.string() })
+      .optional()
+      .parse(db.prepare("SELECT value FROM meta WHERE key = 'store_format_fingerprint'").get())?.value;
+  if (fingerprint === undefined) return;
+  if (retainedSourceFormat(fingerprint) === 'current') {
+    retainCurrentJob(index, db, epochKey, jobId, jobsRoot, runtime, () => {
+      if (!sameEpoch(index.read(jobId)?.epochKey, epochKey)) throw new Error('Retained job changed source');
+    });
+    return;
+  }
+  if (source === undefined || retainedSourceFormat(fingerprint) !== 'historical') return;
+  const detail = readHistoricalJobDetail(db, jobId);
+  const terminal = detail?.events.find((event) => event.type === 'terminal');
+  if (detail?.exit === null || detail === null || terminal === undefined) return;
+  index.recordTerminal(jobId, detail, historicalResultPath(source.jobsRoot, jobId), terminal.seq);
+}
+
+function repairHistoricalResult(
+  index: JobLocationIndex,
+  source: HistoricalEpochSource,
+  db: SqliteDatabasePort,
+  jobId: string,
+): void {
+  const location = index.read(jobId);
+  if (!location || !sameEpoch(location.epochKey, source.epochKey) || !hasReadableTerminalDetail(location)) return;
+  const input = historicalResultInput(db, jobId);
+  if (
+    input === null ||
+    input.markdown === null ||
+    location.terminalSeq !== input.accepted.seq ||
+    location.detail.kind !== 'recorded' ||
+    !isDeepStrictEqual(location.detail.value.status.result, input.terminal)
+  )
+    return;
+  const target = historicalResultPath(source.jobsRoot, jobId);
+  try {
+    const stat = source.storage.lstatSync(target, { bigint: true });
+    if (stat.isFile() && stat.size > 0n) return;
+  } catch {
+    /* Missing exports can be repaired only from this guarded source. */
+  }
+  const authorized = (): boolean => {
+    verifyHistoricalIdentity(source, source.epochKey, resolveHistoricalAddress(source, source.epochKey));
+    if (!sameEpoch(index.read(jobId)?.epochKey, source.epochKey)) return false;
+    return (
+      typeof input.age !== 'number' || input.age >= jobRetentionCutoff({ time: index.time, env: source.runtime.env })
+    );
+  };
+  writeResultArtifact(source.storage, target, input.markdown, authorized, source.jobsRoot);
+}
+
+function repairRetainedResult(
+  index: JobLocationIndex,
+  source: HistoricalEpochSource,
+  db: SqliteDatabasePort,
+  jobId: string,
+): void {
+  if (retainedSourceFormat(source.fingerprint) === 'current') {
+    retainCurrentJob(
+      index,
+      db as Database,
+      source.epochKey,
+      jobId,
+      source.jobsRoot,
+      { ...source.runtime, time: index.time },
+      () => {
+        verifyHistoricalIdentity(source, source.epochKey, resolveHistoricalAddress(source, source.epochKey));
+      },
+    );
+  } else repairHistoricalResult(index, source, db, jobId);
 }
 
 function resolveHistoricalAddress(source: HistoricalEpochSource, epochKey: string): ResolvedStoreEpoch {
@@ -635,7 +1068,7 @@ export function seedHistoricalEpoch(
       reason: 'protected-epoch-address-unreadable',
     };
   }
-  const reader = readers[fingerprint];
+  const reader = retainedSourceFormat(fingerprint);
   const dbPath = addressedEpoch.path;
   let releaseLock: (() => void) | null = null;
   let db: SqliteDatabasePort | null = null;
@@ -674,7 +1107,7 @@ export function seedHistoricalEpoch(
     seed.frontier ??= (db.prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get() as { seq: number }).seq;
     const observed = new Set<string>();
 
-    const { subjects: sourceSubjects, launchSeqs, members } = historicalSeedSubjects(seed, db);
+    const { subjects: sourceSubjects, launchSeqs, members } = historicalSeedSubjects(seed, db, fingerprint);
     const pending = (): HistoricalSeedResult => {
       source.attempts = 0;
       index.holdUnknownLocations(
@@ -701,9 +1134,12 @@ export function seedHistoricalEpoch(
       }
       const retained = retainedRead.location;
       if (retained && sameEpoch(retained.epochKey, epochKey) && hasReadableTerminalDetail(retained)) {
-        if (!storage.existsSync(resultPathFor(jobsRoot, jobId))) {
+        if (
+          retainedSourceFormat(fingerprint) === 'current' ||
+          !storage.existsSync(historicalResultPath(jobsRoot, jobId))
+        ) {
           try {
-            index.resultExportOwnerForSource(db as Database, epochKey, jobsRoot).ensureResultMarkdownArtifact(jobId);
+            repairRetainedResult(index, source, db, jobId);
           } catch {
             /* Publication failure cannot hide the retained outcome. */
           }
@@ -809,7 +1245,7 @@ export function readHistoricalSource(
     return unregisteredHistoricalRead(view, epochKey);
   }
   if (source.retired) return { kind: 'unreadable', disposition: 'retired', retired: true };
-  if (readers[source.fingerprint] === undefined)
+  if (retainedSourceFormat(source.fingerprint) === undefined)
     return {
       kind: 'unreadable',
       disposition: 'settled-unreadable',
@@ -936,7 +1372,7 @@ export function refreshHistoricalEpoch(
   } catch (error) {
     return { kind: 'unreadable', reason: error instanceof Error ? error.message : 'Source address cannot be observed' };
   }
-  const reader = readers[source.fingerprint];
+  const reader = retainedSourceFormat(source.fingerprint);
   const dbPath = addressedEpoch.path;
   if (reader === undefined || observeStorePath(source.storage, dbPath) !== 'present')
     return { kind: 'unreadable', reason: 'Source is absent or its fingerprint is unsupported' };
@@ -994,7 +1430,9 @@ export function refreshHistoricalEpoch(
       if (
         location !== null &&
         (!sameEpoch(location.epochKey, epochKey) ||
-          (location.disposition === 'terminal' && hasReadableTerminalDetail(location)))
+          (retainedSourceFormat(source.fingerprint) === 'historical' &&
+            location.disposition === 'terminal' &&
+            hasReadableTerminalDetail(location)))
       ) {
         requested.delete(jobId);
         continue;
@@ -1037,14 +1475,19 @@ function registerKnownHistoricalJobs(
   }
 }
 
-function historicalSeedSubjects(seed: NonNullable<HistoricalEpochSource['seed']>, db: SqliteDatabasePort) {
+function historicalSeedSubjects(
+  seed: NonNullable<HistoricalEpochSource['seed']>,
+  db: SqliteDatabasePort,
+  fingerprint: string,
+) {
   if (seed.subjects === undefined || seed.launchSeqs === undefined || seed.members === undefined) {
     const rows = db.prepare('SELECT job_id FROM projection_jobs ORDER BY job_id ASC').all() as { job_id: string }[];
     const launches = db
-      .prepare(
-        "SELECT stream_id, seq FROM events WHERE stream_kind = 'job' AND type = 'job.launch.requested' ORDER BY seq ASC",
-      )
-      .all() as { stream_id: string; seq: number }[];
+      .prepare("SELECT stream_id, seq FROM events WHERE stream_kind = 'job' AND type = ? ORDER BY seq ASC")
+      .all(retainedSourceFormat(fingerprint) === 'current' ? 'job.opened' : 'job.launch.requested') as {
+      stream_id: string;
+      seq: number;
+    }[];
     seed.subjects = [...new Set([...launches.map((launch) => launch.stream_id), ...rows.map((row) => row.job_id)])];
     seed.launchSeqs = new Map(launches.map((launch) => [launch.stream_id, launch.seq]));
     seed.members = new Set(seed.subjects);
@@ -1063,6 +1506,15 @@ function hydrateHistoricalSeedJob(
   jobsRoot: string,
   observed: Set<string>,
 ): void {
+  const source = historicalSources.get(index)?.get(epochIdentity(epochKey));
+  if (source === undefined) throw new Error('Retained source is unregistered');
+  if (retainedSourceFormat(fingerprint) === 'current') {
+    retainCurrentJob(index, db as Database, epochKey, jobId, jobsRoot, { ...source.runtime, time: index.time }, () => {
+      verifyHistoricalIdentity(source, epochKey, resolveHistoricalAddress(source, epochKey));
+    });
+    observed.add(jobId);
+    return;
+  }
   let registered = false;
   if (launchSeq !== undefined) {
     const row = z
@@ -1104,9 +1556,9 @@ function hydrateHistoricalSeedJob(
     index.markUnresolved(jobId);
     return;
   }
-  index.recordTerminal(jobId, detail, resultPathFor(jobsRoot, jobId), terminal.seq);
+  index.recordTerminal(jobId, detail, historicalResultPath(jobsRoot, jobId), terminal.seq);
   try {
-    index.resultExportOwnerForSource(db as Database, epochKey, jobsRoot).ensureResultMarkdownArtifact(jobId);
+    repairRetainedResult(index, source, db, jobId);
   } catch {
     /* Publication failure cannot hide the retained outcome. */
   }
@@ -1200,7 +1652,10 @@ function readHistoricalLocations(
         continue;
       }
       const cached = fullHistory ? undefined : readCache.jobs.get(jobId);
-      if (cached?.frontier === frontier || cached?.location?.disposition === 'terminal') {
+      if (
+        cached?.frontier === frontier ||
+        (retainedSourceFormat(source.fingerprint) === 'historical' && cached?.location?.disposition === 'terminal')
+      ) {
         locations.set(jobId, cached.location);
         if (cached.absent) absentJobs.add(jobId);
         continue;
@@ -1211,6 +1666,14 @@ function readHistoricalLocations(
       if (cached?.jobSeq !== undefined && cached.jobSeq === jobSeq) {
         readCache.jobs.set(jobId, { ...cached, frontier });
         locations.set(jobId, cached.location);
+        continue;
+      }
+      if (retainedSourceFormat(source.fingerprint) === 'current') {
+        const location = loadRetainedCurrentJob(db as Database, epochKey, jobId, source.jobsRoot);
+        locations.set(jobId, location);
+        if (location === null) absentJobs.add(jobId);
+        if (!fullHistory)
+          readCache.jobs.set(jobId, { frontier, location, jobSeq: typeof jobSeq === 'number' ? jobSeq : undefined });
         continue;
       }
       const events = fullHistory ? readEvents(db, jobId) : readMetadata(db, jobId);
@@ -1237,7 +1700,7 @@ function readHistoricalLocations(
         disposition: terminal === undefined ? 'unresolved' : 'terminal',
         ...(terminal === undefined
           ? {}
-          : { terminalSeq: terminal.seq, resultPath: resultPathFor(source.jobsRoot, jobId) }),
+          : { terminalSeq: terminal.seq, resultPath: historicalResultPath(source.jobsRoot, jobId) }),
         detail: { kind: 'recorded', value: { ...detail, epochKey } },
       };
       if (terminal !== undefined && !hasReadableTerminalDetail(location))
@@ -1272,6 +1735,20 @@ function refreshHistoricalJob(
   raw: unknown,
   requested: Set<string>,
 ): boolean {
+  if (retainedSourceFormat(source.fingerprint) === 'current') {
+    retainCurrentJob(
+      index,
+      db as Database,
+      epochKey,
+      jobId,
+      source.jobsRoot,
+      { ...source.runtime, time: index.time },
+      () => {
+        verifyHistoricalIdentity(source, epochKey, resolveHistoricalAddress(source, epochKey));
+      },
+    );
+    return false;
+  }
   const row = (source.fingerprint === FINGERPRINT_0110 ? newerProjectionSchema : olderProjectionSchema).parse(raw);
   const appended = readEvents(db, row.job_id, source.sweep?.frontier ?? 0);
   if (source.sweep && appended.length === 0 && !isTerminalPhase(row.phase)) return false;
@@ -1303,7 +1780,7 @@ function refreshHistoricalJob(
     return false;
   }
   let failed = false;
-  const resultPath = resultPathFor(source.jobsRoot, row.job_id);
+  const resultPath = historicalResultPath(source.jobsRoot, row.job_id);
   try {
     index.recordTerminal(row.job_id, detail, resultPath, terminal.seq);
   } catch {
@@ -1312,9 +1789,7 @@ function refreshHistoricalJob(
     index.resultRepairFailures.add(row.job_id);
   }
   try {
-    index
-      .resultExportOwnerForSource(db as Database, epochKey, source.jobsRoot)
-      .ensureResultMarkdownArtifact(row.job_id);
+    repairHistoricalResult(index, source, db, row.job_id);
   } catch {
     /* Failed publication must not hide a retained terminal. */
   }
@@ -1332,7 +1807,10 @@ function completeHistoricalRefresh(
 ): { kind: 'read' } | { kind: 'unreadable'; reason: string } {
   if (failed) return { kind: 'unreadable', reason: 'Historical source could not be decoded or retained' };
   for (const jobId of requested) {
-    if (readEvents(db, jobId).some((event) => event.type === 'job.terminal.recorded'))
+    if (
+      retainedSourceFormat(source.fingerprint) === 'current' ||
+      readEvents(db, jobId).some((event) => event.type === 'job.terminal.recorded')
+    )
       return { kind: 'unreadable', reason: 'Historical source could not be decoded or retained' };
   }
   const highWaterSeq = z

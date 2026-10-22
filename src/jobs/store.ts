@@ -1,3 +1,4 @@
+import { retainedResultInput } from './historical-reader.js';
 import type { RecoveryObservation } from '../recovery/phase-observation.js';
 import type { ProgressSource, ProgressVisitResult } from './wait/contract.js';
 import { visitJobProgress } from './read-queries.js';
@@ -403,6 +404,13 @@ export class JobStore implements JobProgressStore {
       runtime: this.runtime,
       jobsRoot: this.runtime.paths.coral.exports.jobsRoot,
       workflowReport: this.workflowReport,
+      readTerminalInput: (db, jobId) => {
+        const index = this.exportLocations;
+        const location = index?.read(jobId);
+        return index && location
+          ? retainedResultInput(index, location.epochKey, db, jobId, this.runtime.paths.coral.exports.jobsRoot)
+          : undefined;
+      },
       failures: this.exportLocations?.resultRepairFailures,
       repairScope: this.exportLocations ?? undefined,
       hydrationRetry: (jobId) => {
@@ -575,7 +583,7 @@ export class JobStore implements JobProgressStore {
           stream: { kind: 'job', id: opts.jobId },
           namespace: opts.backendNamespace,
           project: opts.projectRoot,
-          refs: buildJobEventRefs({ jobId: opts.jobId, }),
+          refs: buildJobEventRefs({ jobId: opts.jobId }),
           body: {
             queuePosition: 0,
             runningJobIds: [],
@@ -593,7 +601,7 @@ export class JobStore implements JobProgressStore {
           stream: { kind: 'job', id: opts.jobId },
           namespace: opts.backendNamespace,
           project: opts.projectRoot,
-          refs: buildJobEventRefs({ jobId: opts.jobId, }),
+          refs: buildJobEventRefs({ jobId: opts.jobId }),
           body: {
             transport: 'app-server',
             startedAt: createdAt,
@@ -658,7 +666,7 @@ export class JobStore implements JobProgressStore {
         stream: { kind: 'job', id: jobId },
         namespace: status?.backendNamespace ?? this.namespace,
         project: status?.projectRoot,
-        refs: buildJobEventRefs({ jobId, }),
+        refs: buildJobEventRefs({ jobId }),
         body: jobRuntimeStartedBody(runtime),
       });
       if (provisionalProcess !== undefined) {
@@ -727,7 +735,7 @@ export class JobStore implements JobProgressStore {
         stream: { kind: 'job', id: jobId },
         namespace: status?.backendNamespace ?? this.namespace,
         project: status?.projectRoot,
-        refs: buildJobEventRefs({ jobId, }),
+        refs: buildJobEventRefs({ jobId }),
         body: {
           kind: 'message',
           message,
@@ -773,7 +781,7 @@ export class JobStore implements JobProgressStore {
       type: 'job.progress.emitted',
       stream: { kind: 'job', id: jobId },
       namespace: this.namespace,
-      refs: buildJobEventRefs({ jobId, }),
+      refs: buildJobEventRefs({ jobId }),
       body: {
         kind: 'message',
         message,

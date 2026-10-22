@@ -1458,3 +1458,219 @@ describe('per-job failures stay per-job (F4)', () => {
     }
   });
 });
+
+import * as liveTerminalSource from '#src/jobs/terminal/source.js';
+import * as liveTerminalExport from '#src/jobs/terminal/export.js';
+import { initializeCustodyLedger } from '#src/store/custody-ledger.js';
+import { recordEpochCustodyCoverage } from '#src/store/epoch/closure.js';
+import { settleSupersededEpochClosures } from '#src/coordinator/services/recovery/epoch-closure.js';
+
+describe('frozen released-format readers', () => {
+  it.each(fingerprints)(
+    'repairs a session-caused failure at its original path and closes retirement: %s',
+    async (fingerprint) => {
+      const { root, epochDir, db } = fixture(fingerprint);
+      const selector = vi.spyOn(liveTerminalSource, 'readAcceptedTerminal').mockImplementation(() => {
+        throw new Error('Historical repair called the live terminal selector');
+      });
+      const pathHelper = vi.spyOn(liveTerminalExport, 'resultPathFor').mockImplementation(() => {
+        throw new Error('Historical repair called the live result path');
+      });
+      try {
+        const ts = '2026-09-25T00:00:00.000Z';
+        const insert = db.prepare('INSERT INTO events VALUES (?, ?, ?, ?, ?, ?)');
+        insert.run(1, ts, 'session.opened', 'session', 'old-session', Buffer.from('{}'));
+        insert.run(
+          2,
+          ts,
+          'session.provider_failed',
+          'session',
+          'old-session',
+          Buffer.from(JSON.stringify({ provider: 'codex', reason: 'request_failed', message: 'old provider failure' })),
+        );
+        insert.run(
+          3,
+          ts,
+          'job.launch.requested',
+          'job',
+          'failed',
+          Buffer.from(
+            JSON.stringify({ projectRoot: '/workspace', jobKind: 'provider', request: { cwd: '/workspace' } }),
+          ),
+        );
+        const terminal = {
+          content: '',
+          outcome: { kind: 'failed', causeRef: { stream: { kind: 'session', id: 'old-session' }, seq: 2 } },
+          durationMs: 10,
+        };
+        insert.run(
+          4,
+          ts,
+          'job.terminal.recorded',
+          'job',
+          'failed',
+          Buffer.from(JSON.stringify({ terminal, diagnostics: { usage: { inputTokens: 17 } } })),
+        );
+        db.prepare(
+          `INSERT INTO projection_jobs (job_id, execution_owner, phase, diagnostics, session_id, provider, project_root, backend_namespace, bundle_hash, job_kind, parent_workflow_job_id, workflow_slot, workflow_slot_generation, replaces_workflow_job_id, created_at, last_seq${fingerprint === fingerprints[2] ? ', work_dir' : ''}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?${fingerprint === fingerprints[2] ? ', ?' : ''})`,
+        ).run(
+          'failed',
+          JSON.stringify({ kind: 'provider-session', id: 'old-session' }),
+          'error',
+          JSON.stringify({ progressFaults: [] }),
+          'old-session',
+          'codex',
+          '/workspace',
+          'old',
+          null,
+          'provider',
+          null,
+          null,
+          null,
+          null,
+          ts,
+          4,
+          ...(fingerprint === fingerprints[2] ? ['/workspace'] : []),
+        );
+        db.close();
+        const real = createRealRuntime('prod', { baseDir: root });
+        const local = {
+          ...real,
+          time: runtime.time,
+          paths: {
+            ...real.paths,
+            coral: { ...real.paths.coral, store: { ...real.paths.coral.store, dbDir: join(root, 'db') } },
+          },
+        };
+        const epoch = { storeRoot: join(root, 'db'), epoch: '7', path: join(epochDir, 'store.db') };
+        const epochKey = encodeResolvedStoreEpoch(local, epoch);
+        const lineage = readOrCreateEpochKey(local, epoch);
+        recordEpochCustodyCoverage(
+          local,
+          epochDir,
+          initializeCustodyLedger(local, local.paths.coral.coordinator.runDir),
+        );
+        const index = new JobLocationIndex(local, local.paths.coral.generation.dataRoot);
+        expect(
+          seedHistoricalEpoch(local, index, epoch, epochKey, fingerprint, join(root, 'results'), storage, [], true),
+        ).toMatchObject({ kind: 'complete', jobIds: ['failed'] });
+        expect(index.read('failed')?.detail).toMatchObject({
+          kind: 'recorded',
+          value: {
+            status: { sessionId: 'old-session' },
+            exit: { outcome: terminal.outcome, diagnostics: { usage: { inputTokens: 17 } } },
+          },
+        });
+        const path = join(root, 'results', 'failed', 'result.md');
+        expect(readFileSync(path, 'utf8')).toBe('Failed: session.provider_failed\n');
+        rmSync(path);
+        // A second seed repairs from the same frozen format rather than the live execution selector.
+        expect(
+          seedHistoricalEpoch(local, index, epoch, epochKey, fingerprint, join(root, 'results'), storage, [], true)
+            .kind,
+        ).toBe('complete');
+        expect(readFileSync(path, 'utf8')).toBe('Failed: session.provider_failed\n');
+        expect(index.resultsReleased(epochKey)).toBe(true);
+        protectStoreEpoch(local, epoch);
+        const closures = await settleSupersededEpochClosures(local, index, undefined, lineage);
+        expect(closures).toContainEqual(
+          expect.objectContaining({
+            epochKey: lineage,
+            disposition: 'closed',
+            dataOutcome: 'retained',
+            executionDischarge: 'certified',
+          }),
+        );
+        expect(selector).not.toHaveBeenCalled();
+        expect(pathHelper).not.toHaveBeenCalled();
+      } finally {
+        selector.mockRestore();
+        pathHelper.mockRestore();
+      }
+    },
+  );
+
+  it.each(fingerprints)(
+    'preserves direct-child workflow costs and missing-cost data without aggregate terminal usage: %s',
+    (fingerprint) => {
+      const { root, epochDir, db } = fixture(fingerprint);
+      const ts = '2026-09-25T00:00:00.000Z';
+      for (const [jobId, parent, usage] of [
+        ['workflow', null, undefined],
+        ['paid', 'workflow', { inputTokens: 10, costUsd: 0.5 }],
+        ['missing-cost', 'workflow', { outputTokens: 20 }],
+        ['no-usage', 'workflow', undefined],
+        ['nested', 'workflow', { inputTokens: 30, costUsd: 1.5, jobsWithoutCostData: 7 }],
+        ['grandchild', 'nested', { inputTokens: 1000, costUsd: 100 }],
+      ] as const) {
+        db.prepare(
+          `INSERT INTO projection_jobs (job_id, execution_owner, phase, diagnostics, session_id, provider, project_root, backend_namespace, bundle_hash, job_kind, parent_workflow_job_id, workflow_slot, workflow_slot_generation, replaces_workflow_job_id, created_at, last_seq${fingerprint === fingerprints[2] ? ', work_dir' : ''}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?${fingerprint === fingerprints[2] ? ', ?' : ''})`,
+        ).run(
+          jobId,
+          JSON.stringify({ kind: 'workflow', id: 'workflow' }),
+          'completed',
+          JSON.stringify({ progressFaults: [], ...(usage === undefined ? {} : { usage }) }),
+          null,
+          null,
+          '/workspace',
+          'old',
+          null,
+          jobId === 'workflow' || jobId === 'nested' ? 'workflow' : 'provider',
+          parent,
+          null,
+          null,
+          null,
+          ts,
+          3,
+          ...(fingerprint === fingerprints[2] ? ['/workspace'] : []),
+        );
+      }
+      const insert = db.prepare('INSERT INTO events VALUES (?, ?, ?, ?, ?, ?)');
+      insert.run(
+        1,
+        ts,
+        'job.launch.requested',
+        'job',
+        'workflow',
+        Buffer.from(JSON.stringify({ jobKind: 'workflow', projectRoot: '/workspace', request: { cwd: '/workspace' } })),
+      );
+      insert.run(
+        2,
+        ts,
+        'workflow.completed',
+        'workflow',
+        'workflow',
+        Buffer.from(
+          JSON.stringify({
+            outcome: 'completed',
+            stepDetails: [{ stepIndex: 0, atomIndex: 0, label: 'nested worker', output: 'step output' }],
+          }),
+        ),
+      );
+      insert.run(
+        3,
+        ts,
+        'job.terminal.recorded',
+        'job',
+        'workflow',
+        Buffer.from(
+          JSON.stringify({ terminal: { content: 'workflow done', outcome: { kind: 'completed' }, durationMs: 1 } }),
+        ),
+      );
+      db.close();
+      const epoch = { storeRoot: join(root, 'db'), epoch: '7', path: join(epochDir, 'store.db') };
+      const index = new JobLocationIndex(runtime, root);
+      const epochKey = encodeResolvedStoreEpoch(runtime, epoch);
+      seedHistoricalEpoch(runtime, index, epoch, epochKey, fingerprint, join(root, 'results'), storage);
+      expect(readFileSync(join(root, 'results', 'workflow', 'result.md'), 'utf8')).toBe(
+        '# Step 0.0: nested worker\n\nstep output\n',
+      );
+      expect(index.read('workflow')?.detail).toMatchObject({
+        kind: 'recorded',
+        value: {
+          exit: { diagnostics: { usage: { inputTokens: 40, outputTokens: 20, costUsd: 2, jobsWithoutCostData: 1 } } },
+        },
+      });
+    },
+  );
+});
