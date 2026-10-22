@@ -65,19 +65,19 @@ cd "<path>" && coral-cli jobs wait <job-id...> --embed
 
 Behavior:
 
-1. `ExecutionService.coralDispatch()` / `JobLaunchService` resolves `clients/agents/<name>.md` into a system-channel `instruction` (frontmatter stripped; `model:` and `effort:` set the agent's defaults — a request `model`/`effort` overrides them, and a frontmatter `effort` overrides the `CORAL_*_EFFORT` env vars; a workflow replacement resumes at the effort its replaced job was launched with).
+1. `ExecutionService.coralDispatch()` / `JobLaunchService` resolves `clients/agents/<name>.md` into a system-channel `instruction` (frontmatter stripped; `model:` and `effort:` set the agent's defaults — a request `model`/`effort` overrides them, and a frontmatter `effort` overrides the `CORAL_*_EFFORT` env vars; a workflow replacement resumes at the effort stored in the child job's conversation facet).
 2. `jobs/shell/launch.ts` `executeJob` applies the provider-agnostic inject bundle via `applyInjectBundle` (pre-merged into `systemPrompt`; never overwrites an existing caller systemPrompt — prepend/merge). Hooks do not run (`CORAL_CHILD=1`).
 3. The provider adapter consumes `instruction` + `systemPrompt` + `prompt`:
    - Claude: system append channel + user prompt
    - Codex: single turn text ordered `systemPrompt` → `instruction` → `prompt` (order is presentation only)
-4. Detached provider launches print `Provider job <jobId> <launchState> (provider session <sessionId>)`. Detached workflows identify both `workflowId` and `jobId`. `jobs wait --embed` prints the terminal line, any available usage diagnostics, and `Result path: <path>` for durable artifact recovery.
-5. The job is persisted like any other provider execution. Workflow atoms and discuss workers use the same job shell path.
+4. Detached provider launches print `Provider job <jobId> <launchState>`. Detached workflows identify both `workflowId` and `jobId`. `jobs wait --embed` prints the terminal line, any available usage diagnostics, and `Result path: <path>` for that execution's durable `executions/<n>/result.md`. Interrupted waits print a continuation carrying both cursor and execution selection; preserve it exactly.
+5. One provider conversation is one job. Workflow stale replacement and later discussion turns are sequential executions of that same job; `jobs detail` lists each execution. Workflow atoms and discuss workers use the same job shell and finishing/restore path.
 
 Unknown agent names fail through the normal provider/domain error path.
 
 ## Discuss Agents
 
-Discuss participants run through coordinator-managed provider conversations (`ProviderSession`), while the discussion aggregate—not the provider session—owns each participant job. They are not Agent Teams or protocol clients. The normal entrypoints are:
+Discuss participants run through coordinator-managed provider jobs, each holding one conversation facet and all its turn executions. The discussion aggregate owns and authorizes each participant job. They are not Agent Teams or protocol clients. The normal entrypoints are:
 
 - `coral-cli discuss seed`
 - `coral-cli discuss start`

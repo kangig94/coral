@@ -44,7 +44,7 @@ Domain events and their strict Journal body schemas are defined in `src/discuss/
 | Follow-up         | `must_answer.carry_forward.set`, `follow_up.queue.set`, `follow_up.answered`   |
 | Recovery          | `agent.run.bound`, `agent.job.started`, `agent.job.finished`                   |
 
-`agent.job.finished` is the discuss-owned operational outcome event for provider/facilitator attempts. Outcomes include `completed`, `non_resumable`, `execution_error`, `recovery_failed`, `recovery_missing`, and `retryable_parse_error`; cause-ref rendering uses `src/discuss/event-describers.ts` through the read-model describer composition.
+`agent.job.started` and `agent.job.finished` identify each provider/facilitator execution by `jobId` and `execution` ordinal alongside its discussion attempt. `agent.job.finished` is the discuss-owned operational outcome event for that execution. Outcomes include `completed`, `non_resumable`, `execution_error`, `recovery_failed`, `recovery_missing`, and `retryable_parse_error`; cause-ref rendering uses `src/discuss/event-describers.ts` through the read-model describer composition.
 
 Runtime flow:
 
@@ -55,6 +55,14 @@ Runtime flow:
 5. `coral-cli discuss abort` / `DELETE /discuss/sessions/:id` appends a durable terminal event and detaches the live session.
 
 Persisted control phases are `idle`, `observer_wait`, `evaluate_epoch`, `collect_follow_up`, and `synthesize`.
+
+## Participant executions
+
+Each automatic participant or facilitator owns one provider job for its conversation. Its first turn is execution `#1`; later turns resume the same `jobId` as `#2`, `#3`, and so on. The job's conversation facet holds the provider binding and native `conversationRef`. Runtime bookkeeping and recovery match `(jobId, execution)`, so a delayed earlier end cannot finish a later turn. A discussion attempt and a job execution ordinal are separate coordinates.
+
+The discussion aggregate authorizes later executions while it remains open and the participant's run binding still names that job. Every execution uses the common finishing boundary before another is admitted. Discussion participants retain native files by default, so continuation normally observes `present`; if restore is required it follows the same verified, no-replace path used by workflow children. Claude continuations use the TUI broker with `--resume <conversationRef>`, regardless of print-valued or unset transport env.
+
+A discussion's `sessionId` still identifies the discussion aggregate and its `discuss/<session-id>` stream. It is unrelated to the removed provider-session identity; participant conversations are addressed by job id alone. `jobs list` shows the latest execution, while `jobs detail` preserves every turn's outcome and result.
 
 ## `watch` Contract
 
@@ -87,7 +95,7 @@ Discuss storage is Journal-scoped. Events live in `events` on the `discuss/<sess
 
 Hydration reads the projected snapshot plus the persisted event tail. On coordinator startup, Coral reconciles discussion-owned jobs and reattaches non-terminal sessions without resuming the discussion loop or launching provider work. Successful settlement retains the attachment and clears the recovery continuation; settlement failures retain the existing cleanup, quarantine, and retry behavior.
 
-Stored `discussion-resume.v1` continuations remain readable. Their `discussion.resume` obligation settles as `not-applicable` without execution, whether it was pending or already recorded as completed. Restart recovery does not judge provider-session resumability.
+Stored `discussion-resume.v1` continuations remain readable. Their `discussion.resume` obligation settles as `not-applicable` without execution, whether it was pending or already recorded as completed. Restart recovery does not probe provider-conversation resumability or launch a later execution. Accepted outcomes complete through job finalization; unaccepted interrupted work remains subject to evidence-based recovery.
 
 ### Completed-discussion record
 

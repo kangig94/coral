@@ -10,7 +10,7 @@ Coral has **two distinct truths**, not one. Forcing a single substrate on both w
 
 ### 1.1 Why a Journal for process-like domains
 
-Jobs, sessions, discussions, and workflows are **temporal**: they have a beginning, unfold in ordered steps, and terminate. The ordered event history _is_ the story; replay reconstructs any projection at any past `seq`. Causal references (`causeRef = { stream, seq }`) and cross-stream atomicity fall out naturally from a single global ordering.
+Jobs, discussions, and workflows are **temporal**: their executions and control phases unfold in ordered steps and end. Provider conversation continuity is part of the job stream. The ordered event history _is_ the story; replay reconstructs any projection at any past `seq`. Causal references (`causeRef = { stream, seq }`) and cross-stream atomicity fall out naturally from a single global ordering.
 
 Global ordering is cheap: SQLite ROWID is monotonic per database, so every event has a universally comparable `seq`. Cross-log ordering would be expensive — one journal avoids that cost.
 
@@ -84,9 +84,9 @@ const claudeSessionProvider = compose(
 
 For provider-server-backed providers, `sessionContinuity` is the **outermost** middleware so that a single continuity authority observes the full downstream stream — including transport-close events from `appServerSession` via `runtime.continuityBridge`. `appServerSession` surfaces typed close-state through the bridge but never emits `continuity` itself and never rewrites downstream terminal outcome.
 
-Claude is one of these provider-server-backed providers. The broker helper supports two transports under the same broker RPC surface. The default `print` transport starts `claude -p` with stream-json input/output and drives turns over JSONL. The opt-in `tui` transport starts interactive `claude`, waits for terminal readiness before writing the first turn, and reads Claude JSONL transcripts for completion. `CORAL_CLAUDE_TRANSPORT` is part of provider-server identity, so the two transports never reuse the same broker process.
+Claude is one of these provider-server-backed providers. The broker helper supports two transports under the same broker RPC surface. The default `print` transport starts `claude -p` with stream-json input/output and drives turns over JSONL. The `tui` transport, selected for resume requests regardless of the transport env and optional for first launches, starts interactive `claude`, waits for terminal readiness before writing the first turn, and reads Claude JSONL transcripts for completion. Effective transport is part of provider-server/controller reuse identity, so a print host cannot service a TUI continuation. Claude continuation uses the broker's `--resume <conversationRef>` path.
 
-The same provider boundary is the usage boundary. Raw provider counters are normalized once to the additive `UsageSummary` buckets before jobs see them, then stored on the terminal record under `diagnostics.usage`. Coral does not invent missing cost: Claude print contributes provider-reported cost, Claude TUI contributes tokens only, and Codex contributes tokens only after subtracting cached input from fresh input. Token totals are render-time derivations, and workflow totals are read-time sums over child job diagnostics rather than facts written onto `workflow.completed`.
+The same provider boundary is the usage boundary. Raw provider counters are normalized once to the additive `UsageSummary` buckets before jobs see them, then stored on the terminal record under `diagnostics.usage`. Coral does not invent missing cost: Claude print contributes provider-reported cost, Claude TUI contributes tokens only, and Codex contributes tokens only after subtracting cached input from fresh input. Token totals are render-time derivations, and workflow totals are read-time sums over every relevant ended child execution's diagnostics rather than facts written onto `workflow.completed`.
 
 Adding a new provider is declaring its middleware stack, but managed artifact ownership also carries a hard registration gate: `ProviderRegistry.register` rejects a managed definition unless it declares the versioned `provider-artifact-discard.v1` protocol with both `discardArtifacts` and `reconcileDiscard`. Reconciliation is closed over `applied | not-applied | definitive-failure | unknown`, so an unknown discard cannot be silently treated as success. Provider implementations stay pure: they emit bodies only. The coordinator wraps each body in an envelope (`seq`, `ts`, `stream`, `refs`) and appends to the Journal. Providers never touch envelopes, seqs, or the Journal directly.
 
@@ -110,16 +110,22 @@ discharge a started sibling's settlement obligation. No operator action is neede
 
 ### 3.2 Why workflow slot identity is not job identity
 
-A workflow slot is stable semantic lineage; a child job is one runtime execution of that slot. Each newly launched child therefore receives a separately minted canonical UUID job id, while durable child rows carry the slot identity separately. Cold-boot recovery uses the durable child rows to interpret recorded results and close interrupted workflows without launching missing slots or replacement generations. Operator surfaces preserve the same distinction by carrying and displaying slot identity separately, and a proxy launch rejection identifies the operation-identity component it rejected.
+A workflow slot is stable semantic lineage. A child job is the slot's conversation; its executions are the slot's generations. The slot's initial child receives one canonical UUID job id, and stale replacement resumes that same job as execution `#n+1` after finishing and native-file restore. Slot identity stays separate from runtime job identity, and executions have no id beyond the job and ordinal. Cold-boot recovery interprets recorded results and closes interrupted workflows without launching missing slots or replacement executions.
 
-The rejected alternative was to widen the provider-proxy operation-identity schema to accept slot-shaped values as job ids. During a hot upgrade, a new coordinator and previous-build proxies coexist; the coordinator could then send the widened value to a proxy whose strict UUID schema rejects it before the provider starts. Keeping the proxy wire job identity canonical-UUID-shaped across generations avoids that mixed-version failure instead of making slot identity double as job identity.
+The rejected alternative was to widen the provider-proxy operation-identity schema to accept slot-shaped values as job ids. During a hot upgrade, a new coordinator and previous-build proxies coexist; the coordinator could then send the widened value to a proxy whose strict UUID schema rejects it before the provider starts. Keeping the proxy wire job identity canonical-UUID-shaped across executions avoids that mixed-version failure instead of making slot identity double as job identity.
+
+### 3.3 Why one conversation is one job
+
+A provider conversation is linear: Coral has no fork, and only one execution can be open at a time. Giving each turn a new job id would make callers follow a chain just to observe or address the same conversation. Giving the conversation a second Coral id would duplicate binding, continuity, ownership, and exclusivity state. Instead, `job.opened` owns the conversation facet and every turn is the next ordinal on that job's stream. The native `conversationRef` is provider vocabulary, not another Coral identity. `jobs:execution-order` enforces exclusivity without a session claim or continuation lease.
+
+An accepted outcome and an execution end are separate facts. `job.execution.outcome.accepted` preserves the result once in the Journal; the finalizer settles provider ownership and retention before `job.execution.ended` cites it. This makes finishing observable and prevents a continuation from racing an old archive or discard. Per-execution result files preserve each turn, while one atomically committed conversation archive supplies the latest native bytes. Restore never overwrites an existing native file, since that file may contain newer provider truth.
 
 ## 4. Two Consumer Interfaces
 
 Journal and Corpus consumers are deliberately split:
 
 - **Journal consumers** advance against a single `events.seq` axis. Two flavors:
-  - _Cursor-only_ base projections (jobs/sessions/discuss/workflows): rows are written by the commit-time reducer inside the same `BEGIN IMMEDIATE` that appends the events; the driver only advances the durable cursor on `notify`.
+  - _Cursor-only_ base projections (jobs/discuss/workflows): rows are written by the commit-time reducer inside the same `BEGIN IMMEDIATE` that appends the events; the driver only advances the durable cursor on `notify`.
   - _Apply-kind_ expansion-tier consumers: range-based replay through `apply({ upToSeq, signal })`.
 - **Corpus consumers** advance against `(contentSeq, metadataSeq)` pairs. Snapshot-based content-hash diff through `apply({ snapshot, journalReader, corpusStateReader, projectionInput, signal })`.
 
@@ -155,7 +161,7 @@ Coral's daemon is an appserver-shaped process: one canonical coordinator, journa
 
 The binding is explicit and durable, but its guarantee is provider-specific. Codex owns an account binding to its provider-managed workspace routing subject. Claude owns a profile binding because its supported CLI surface exposes no stable non-secret account identity. Calling both of these "verified accounts" would overstate the Claude guarantee.
 
-Implementation status is **through B09**. A `ProviderSession` is exclusively one provider conversation and owns one strict provider binding. Workflow and discussion aggregate roots own their complete provider scopes and lifecycle; they create real provider-session children only when a provider conversation begins. Every job separately declares an `ExecutionOwner`. A system one-shot binds the configured named system scope at each use. Descriptions of the pre-refactor baseline elsewhere in this document are historical motivation only, not live routing, a supported alternate layout, or a compatibility contract.
+A provider job owns one conversation and its strict binding in the conversation facet. Workflow and discussion aggregate roots own their complete provider scopes and lifecycle; they create a provider job only when a conversation begins. Every job declares an `ExecutionOwner` independently of continuity. A system one-shot binds the configured named system scope at each use.
 
 Every launch decodes the complete available scope and binds the selected profile before allocation. Resume, restart recovery, one-shot provider work, and artifact discovery rehydrate stored bindings rather than reading ambient process env. Execution env is closed over a small inherited base, validated request config, binding-derived routing, and server-minted child authority. Credential overrides and unrelated inherited variables are rejected or removed. Claude's broker is account-neutral: an explicit selector emits the bound `CLAUDE_CONFIG_DIR`, while the caller-local default emits the exact bound `HOME` and no daemon-inherited Claude selector. Codex hosts are keyed by the bound home. Unsupported alternate selectors fail closed because they are outside those binding models.
 
@@ -166,7 +172,7 @@ The design is organized by authority role, not by a prescribed per-file layout:
 | Caller selection capture             | Local CLI invocation                  | Capture only profiles the operation can launch; never derive them from daemon boot env            |
 | Provider vocabulary and dispatch     | Provider registry/contracts           | Decode complete scopes, choose the registered provider codec, and render typed failures           |
 | Profile canonicalization and binding | Provider-owned codec                  | Codex proves a workspace account subject; Claude proves only canonical profile continuity         |
-| Durable provider continuity          | `ProviderSession`                     | Persist the strict binding before allocation and reuse it for resume/recovery                     |
+| Durable provider continuity          | Provider job's conversation facet      | Persist the strict binding before allocation and reuse it for resume/recovery                     |
 | Generic work ownership               | Job `ExecutionOwner`                  | Name provider-session, workflow, discussion, or system-task ownership independently of continuity |
 | Multi-provider request authority     | Workflow or discussion aggregate root | Persist the complete caller scope used for future child binding                                   |
 | Daemon-internal authority            | Named system scope                    | Bind the configured profile at each use; never fall back to daemon credentials                    |
@@ -178,7 +184,7 @@ Historical addressing starts at the epoch layout. Jobs kept in the flat stores w
 
 A private `.mint-<uuid>` directory and its contained `.lock` publish the complete successor atomically. Before publication, old positive epochs are protected outside shipped sweep selectors; a full lineage key distinguishes a later numeric reuse. The store's post-ready sweep requires owner-certified execution closure and `JobLocationIndex.resultsReleased` for the same key. This is why keeping two numeric epochs cannot be a retention rule: the number of newer epochs says nothing about unsettled custody or readable results. The closure and result evidence live outside the directory they authorize deleting. An undecidable epoch stays `unrecoverable-retained` while another epoch serves.
 
-Fresh SQL authority means the new database starts with schema defaults for its journal, projections, corpus, and recovery tables. `JobLocationIndex` in `src/jobs/location-index.ts` and retained historical readers keep job identity and terminal results outside that authority; they do not upcast old rows. The exported result tree has no pruning owner yet, as recorded in [`export-lifetime.md`](todo/export-lifetime.md). Data migration itself remains in [`no-store-migration-path.md`](todo/no-store-migration-path.md).
+Fresh SQL authority means the new database starts with schema defaults for its journal, projections, corpus, and recovery tables. `JobLocationIndex` in `src/jobs/location-index.ts` and retained historical readers keep job identity and terminal results outside that authority; they do not upcast old rows. Export retention prunes a job directory after the latest execution's end, subject to result-release evidence; this also bounds archive-backed continuation. Data migration itself remains in [`no-store-migration-path.md`](todo/no-store-migration-path.md).
 
 ## 6. Curiosity-Driven Expansion (Zelda Metaphor)
 
@@ -325,8 +331,8 @@ Counts: 3 files = borderline (subdivide only if cohesion is unmistakable and the
 
 - `infra/` is the canonical low-level dump by design; subdividing into `infra/paths/`, `infra/errors/`, etc. creates competing canonical homes inside a layer that should stay flat.
   - **Exception**: `infra/path/` is permitted as a cohesive path-composition component (7 files: `coordinator`, `engine`, `index`, `kb-runtime`, `provider-proxy`, `root`, `store`). The exception applies to components where the directory name names a clear internal concept and the file count justifies a subdir; it does NOT permit `infra/utils/`, `infra/helpers/`, or other content-blank groupings.
-- The 4 Journal-stream domains (`jobs`, `sessions`, `discuss`, `workflow`) share a _minimum_ shape — `events.ts` and `read-queries.ts` at the domain root, plus `event-describers.ts` for cause-ref rendering. Beyond that minimum, each domain adds files to fit its own complexity, not a forced template:
-  - `projections.ts` exists when the domain projects events to SQL tables (sessions/discuss/workflow).
+- The three Journal-stream domains (`jobs`, `discuss`, `workflow`) share a _minimum_ shape — `events.ts` and `read-queries.ts` at the domain root, plus `event-describers.ts` for cause-ref rendering. Beyond that minimum, each domain adds files to fit its own complexity, not a forced template:
+  - `projections.ts` exists when the domain projects events to SQL tables (jobs/discuss/workflow).
   - `reducer.ts` exists only when the domain reconstructs in-memory state from events (currently only `discuss/`). Domains that project directly to SQL don't need a separate pure reducer.
   - `paths.ts` exists when the domain owns filesystem paths.
     Don't manufacture files just to mirror discuss's shape across domains that don't have the same concerns.
@@ -395,10 +401,10 @@ State records describe the durable fact. Patch/update records describe caller in
 For state, absence is just absence:
 
 ```ts
-type ProviderSession = {
-  sessionId: string;
+type ConversationState = {
+  jobId: JobId;
   binding: ProviderBindingEnvelope;
-  activeJobId?: JobId;
+  conversationRef: ConversationRef | null;
 };
 ```
 
@@ -559,11 +565,11 @@ A pending upgrade must progress after the session-start contender exits, includi
 
 ### 13.3 Why closure and result retention are separate proofs
 
-Process absence does not prove a completed result is dispensable; unreadable bytes do not prove a process is absent. `settleSupersededEpochClosures` in `src/coordinator/services/recovery/epoch-closure.ts` composes owner custody and execution discharge, while `JobLocationIndex.resultsReleased` in `src/jobs/location-index.ts` proves a separately readable result exists for every certified terminal job. Both receipts live outside the epoch directory and use its full lineage key, so deletion cannot erase its own proof and numeric epoch reuse cannot borrow another epoch's proof. Unknown custody receives `unrecoverable-retained` and remains visible while another epoch serves. The store performs the gated sweep; it does not enumerate domain work or infer a loss from an open failure.
+Process absence does not prove a completed result is dispensable; unreadable bytes do not prove a process is absent. `settleSupersededEpochClosures` in `src/coordinator/services/recovery/epoch-closure.ts` composes owner custody and execution discharge, while `JobLocationIndex.resultsReleased` in `src/jobs/location-index.ts` proves a separately readable result exists for every ended execution of each certified job, with no pending or open admission. Both receipts live outside the epoch directory and use its full lineage key, so deletion cannot erase its own proof and numeric epoch reuse cannot borrow another epoch's proof. Unknown custody receives `unrecoverable-retained` and remains visible while another epoch serves. The store performs the gated sweep; it does not enumerate domain work or infer a loss from an open failure.
 
 ### 13.4 Why historical jobs keep their original address
 
-Copying old rows into a new schema would change event ownership and still would not carry their processes. `JobLocationIndex` in `src/jobs/location-index.ts` binds observed ids to the originating epoch before a mint, and retained readers recover terminal records and artifacts from their original format. A mixed wait uses one sequence per full epoch key because journal sequence numbers from different epochs have no shared order. These records preserve a known job's identity even when its execution controller cannot be recovered.
+Copying old rows into a new schema would change event ownership and still would not carry their processes. The multi-execution format changes the store fingerprint and opens a new epoch, leaving pre-change jobs historical. `JobLocationIndex` binds ids to their originating epoch and retains complete results per execution outside it. Current-format retained sources use current execution hydration; frozen fingerprint-specific readers alone decode pre-change single-terminal streams and old result paths. Unknown fingerprints remain unreadable. External `JobTerminal` and location records stay additive-only so a shipped older build can preserve evidence it cannot interpret from the new Journal. Admission invalidates old result certificates before a later request commits, preventing an older latest-terminal view from releasing active work. Wait selections carry exact epoch/request-sequence evidence beside the progress cursor; sequences from different epochs have no shared order.
 
 ### 13.5 Why a provider host changes controller but never build
 
