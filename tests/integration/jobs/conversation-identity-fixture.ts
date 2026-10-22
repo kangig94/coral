@@ -1,4 +1,5 @@
 import { expect } from 'vitest';
+import { dirname } from 'node:path';
 
 import { ExecutionService } from '#src/coordinator/execution-service.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
@@ -6,6 +7,8 @@ import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { discussRegistry } from '#src/discuss/event-registry.js';
 import { ExecutionFinisher, readExecutionFinishingState } from '#src/jobs/finishing.js';
 import { JobStore } from '#src/jobs/store.js';
+import { LifecycleReactor } from '#src/jobs/conversation/lifecycle-reactor.js';
+import { managed } from '#src/providers/capability.js';
 import type { ProviderEventBody, ProviderRequest } from '#src/providers/contract.js';
 import { ProviderRegistry } from '#src/providers/registry.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
@@ -24,7 +27,7 @@ import { toProviderDefinition, type StandaloneTestProvider } from '#tests/helper
 import { flushMicrotasks } from '#tools/simulation/core/virtual-time.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 
-export function conversationIdentityFixture(options: { stall?: boolean } = {}) {
+export function conversationIdentityFixture(options: { stall?: boolean; managedArtifacts?: boolean; failOnResume?: boolean } = {}) {
   const runtime = new SimulationRuntime();
   const projectRoot = fixtureCanonicalWorkDir('/workspace');
   runtime.storage.mkdirSync(projectRoot, { recursive: true });
@@ -38,9 +41,16 @@ export function conversationIdentityFixture(options: { stall?: boolean } = {}) {
   });
   const admission = new LaunchCoordinator({ runtime });
   const journalDeps = createTestJobJournalDeps(store, runtime);
+  const providers = new ProviderRegistry();
+  const retentionAbort = new AbortController();
+  const reactor = new LifecycleReactor({
+    db: () => journal.db, readCtx: journal.readCtx, providers, runtime, time: runtime.time,
+    commitEvents: (write) => commit(write), signal: retentionAbort.signal,
+  });
   const commit: CommitEventsFn = (write) => {
     const appended = journalDeps.coordinatorCommit(write);
     finisher.observeCommitted(appended);
+    reactor.observe(appended);
     return appended;
   };
   const finisher = new ExecutionFinisher({
@@ -48,14 +58,26 @@ export function conversationIdentityFixture(options: { stall?: boolean } = {}) {
     commit,
     read: (address) => readExecutionFinishingState(journal.db, address, journal.readCtx),
     quiesce: async ({ jobId }) => admission.reservationFor(jobId) === null,
-    retentionAction: async () => ({ attempt: 0, handles: [] }),
-    settleRetention: async () => ({ kind: 'completed', outcome: 'provider_declares_none' }),
+    retentionAction: (address) => reactor.retentionAction(address),
+    settleRetention: (address, action) => reactor.settleRetention(address, action),
   });
   const requests: ProviderRequest[] = [];
-  const providers = new ProviderRegistry();
+  const nativePath = (jobId: string) => `/native/rollout-thread-${jobId}.jsonl`;
+  const restored: string[] = [];
+  const discarded: string[][] = [];
+  const completions = new Map<string, () => void>();
+  const finishRequested = new Set<string>();
   for (const name of ['codex', 'claude']) {
     const provider: StandaloneTestProvider = {
       name,
+      ...(options.managedArtifacts ? { artifactCapability: managed({
+        discardArtifacts: async ({ handles }) => {
+          discarded.push([...handles]);
+          for (const handle of handles) runtime.storage.unlinkSync(handle);
+          return { kind: 'discarded' };
+        },
+        locateArtifact: ({ conversationRef }) => nativePath(conversationRef.slice('thread-'.length)),
+      }) } : {}),
       execute: async function* (request, providerRuntime): AsyncIterable<ProviderEventBody> {
         requests.push({ ...request, coralEnv: { ...request.coralEnv } });
         yield {
@@ -64,12 +86,22 @@ export function conversationIdentityFixture(options: { stall?: boolean } = {}) {
           resumable: true,
           providerContinuity: null,
         };
+        if (options.managedArtifacts) {
+          const path = nativePath(request.jobId);
+          const previous = request.action === 'resume' ? runtime.storage.readFileSync(path, 'utf-8') : '';
+          if (request.action === 'resume') restored.push(previous);
+          runtime.storage.mkdirSync(dirname(path), { recursive: true });
+          runtime.storage.writeFileSync(path, `${previous}${request.prompt}\n`);
+          yield { kind: 'artifact_handle', handle: path, identity: { kind: 'fixture-conversation', jobId: request.jobId } };
+        }
         await providerRuntime.runCli({ command: 'identity-fixture', args: [] });
         if (options.stall) {
           await new Promise<void>((resolve) => {
-            if (providerRuntime.signal.aborted) resolve();
+            completions.set(request.jobId, resolve);
+            if (providerRuntime.signal.aborted || finishRequested.delete(request.jobId)) resolve();
             else providerRuntime.signal.addEventListener('abort', () => resolve(), { once: true });
           });
+          completions.delete(request.jobId);
         }
         yield {
           kind: 'terminal',
@@ -78,9 +110,11 @@ export function conversationIdentityFixture(options: { stall?: boolean } = {}) {
             durationMs: 1,
             outcome: providerRuntime.signal.aborted
               ? { kind: 'aborted', reason: 'signal_abort' }
-              : { kind: 'completed' },
+              : options.failOnResume && request.action === 'resume'
+                ? { kind: 'provider_exit', code: 7, note: 'replacement failed' }
+                : { kind: 'completed' },
           },
-          diagnostics: {},
+          diagnostics: options.managedArtifacts ? { usage: { inputTokens: 10, outputTokens: 5, costUsd: 0.25 } } : {},
         };
       },
     };
@@ -172,6 +206,7 @@ export function conversationIdentityFixture(options: { stall?: boolean } = {}) {
     try {
       await drive(Promise.all(jobIds.map((jobId) => service.waitForJobTerminal(jobId, 10_000))));
     } finally {
+      retentionAbort.abort();
       journal.db.close();
     }
   }
@@ -180,11 +215,20 @@ export function conversationIdentityFixture(options: { stall?: boolean } = {}) {
     ...journal,
     runtime,
     store,
+    admission,
     service,
     providers,
     ctx,
     commit,
     requests,
+    nativePath,
+    restored,
+    discarded,
+    finish: (jobId: string) => {
+      const complete = completions.get(jobId);
+      if (complete === undefined) finishRequested.add(jobId);
+      else complete();
+    },
     drive,
     events,
     assertIdentity,

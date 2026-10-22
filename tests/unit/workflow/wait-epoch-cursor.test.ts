@@ -1,30 +1,31 @@
 import { progressVisitFromEvents, progressVisitFromDetails } from '#tests/helpers/wait-progress.js';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { InvocationContext } from '../../../src/runtime/invocation-context.js';
-import type { LaunchedAtom, WorkflowExecutionPort } from '../../../src/workflow/execution-contract.js';
+import type { InvocationContext } from '#src/runtime/invocation-context.js';
+import type { LaunchedAtom, WorkflowExecutionPort } from '#src/workflow/execution-contract.js';
 import { admitted, savedCursor } from '#tests/helpers/wait-session.js';
 import { JobAddressing } from '#src/jobs/addressing.js';
 import { WaitCoordinator } from '#src/jobs/shell/wait.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
-import { waitForAtoms } from '../../../src/workflow/wait.js';
-import type { ProgressVisit, WaitStreamEvent, WaitStreamRequest } from '../../../src/jobs/wait/contract.js';
+import { waitForAtoms } from '#src/workflow/wait.js';
+import type { ProgressVisit, WaitStreamEvent, WaitStreamRequest } from '#src/jobs/wait/contract.js';
 import { readWaitSession } from '#src/jobs/wait/reader.js';
 
-function atom(jobId: string, atomIndex: number): LaunchedAtom {
+function atom(jobId: string, atomIndex: number, epochKey = ':memory:', requestedSeq = 1): LaunchedAtom {
   return {
     slotId: `workflow:0:${atomIndex}`,
     jobId,
-    sessionId: `session-${atomIndex}`,
     providerName: 'claude',
     agent: 'worker',
     tagName: 'worker',
     stepIndex: 0,
     atomIndex,
     atomKey: `0:${atomIndex}`,
-    generation: 0,
+    execution: 1,
+    requestedSeq,
+    epochKey,
   };
 }
 
@@ -34,6 +35,7 @@ function terminal(jobId: string, seq: number, epochKey: string, remainingJobIds:
     jobId,
     seq,
     epochKey,
+    executionSelections: [{ jobId, epochKey, requestedSeq: 1, deliveredEndSeq: seq, awaitingArtifact: false }],
     remainingJobIds,
     resultPath: `/tmp/${jobId}.md`,
     availability: { kind: 'available', resultPath: `/tmp/${jobId}.md` },
@@ -55,7 +57,10 @@ describe('workflow wait epoch cursor', () => {
       launchQueue: { reservationFor: () => null, getActiveJobIds: () => [] } as never,
       readJobLastSeq: () => null,
       loadJobWaitDetail: () => ({
-        status: job.detail.status,
+        status: { ...job.detail.status, execution: 1 },
+        requestedSeq: 1,
+        terminalSeq: 1000,
+        requestSeqs: [1],
         runtime: null,
         exit: { ...job.detail.exit!, endTime: '' },
       }),
@@ -92,7 +97,7 @@ describe('workflow wait epoch cursor', () => {
         yield terminal('old', 4, 'lineage-old:7', []);
       });
     const results = await waitForAtoms(
-      [atom('old', 0), atom('newer', 1)],
+      [atom('old', 0, 'lineage-old:7'), atom('newer', 1, 'lineage-new:8')],
       { waitStream } as unknown as WorkflowExecutionPort,
       {} as InvocationContext,
       {
@@ -129,6 +134,7 @@ it('resumes recovery through ExecutionService and the real WaitCoordinator using
   const f = createTerminalExportFixture();
   try {
     const seq = f.complete();
+    const request = f.db.prepare<[string], { seq: number }>("SELECT seq FROM events WHERE stream_id = ? AND type = 'job.execution.requested' ORDER BY seq DESC LIMIT 1").get(f.jobId)!;
     const addressing = new JobAddressing(
       f.index.readOnlyView(),
       {
@@ -171,7 +177,7 @@ it('resumes recovery through ExecutionService and the real WaitCoordinator using
     } as unknown as ExecutionServiceDeps);
     const progress: string[] = [];
     const results = await waitForAtoms(
-      [atom(f.jobId, 0)],
+      [atom(f.jobId, 0, f.epochKey, request.seq)],
       { waitStream: (req) => service.waitStream(req), abort: (ids) => service.abort(ids) } as WorkflowExecutionPort,
       ctx,
       {
@@ -219,7 +225,7 @@ it('a workflow child missing from the real reader fails its atom instead of wait
   });
   await expect(
     waitForAtoms(
-      [atom('missing-child', 0)],
+      [atom('missing-child', 0, 'real-epoch')],
       {
         waitStream: (request: Parameters<WorkflowExecutionPort['waitStream']>[0]) => wait.waitForOutcomes(request),
         abort: vi.fn(() => ({ aborted: [], notFound: ['missing-child'] })),

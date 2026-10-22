@@ -74,7 +74,8 @@ export class JobLaunchService {
       case 'job_binding_owner_mismatch':
       case 'discussion_job_launch_conflict':
       case 'workflow_owner_terminal':
-      case 'workflow_slot_chain_invalid':
+      case 'workflow_slot_job_conflict':
+      case 'workflow_slot_job_mismatch':
         return refuseLaunch(error.code, error.userMessage);
       default:
         return null;
@@ -266,15 +267,14 @@ export class JobLaunchService {
     const forcedIdent = coralName.startsWith('coral:') ? coralName : `coral:${coralName}`;
     const bypassPermissions = input.bypassPermissions ?? true;
 
-    if (input.jobId !== undefined) {
+    if (input.conversationJobId !== undefined) {
       return this.resume(
         providerName,
         {
-          jobId: input.jobId,
+          jobId: input.conversationJobId,
           prompt: input.prompt,
-          jobId: input.jobId,
           workflowSlotId: input.workflowSlotId,
-              agent: forcedIdent,
+          agent: forcedIdent,
           cwd: input.cwd,
           effort: input.effort,
           bypassPermissions,

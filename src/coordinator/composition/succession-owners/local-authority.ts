@@ -83,18 +83,16 @@ export function createLocalAuthoritySuccessionOwners(input: SuccessionOwnersInpu
       },
     },
     {
-      id: 'session-continuation',
+      id: 'conversation-retention',
       classify: async () => {
         const sessions = listProjectionConversationEntries(getProgressStore().getDb());
         const held = sessions.filter(
           (session) =>
-            session.continuationLease?.status === 'pending' ||
-            session.continuationLease?.status === 'claimed' ||
-            session.retentionDiscard.attempts.some((attempt) => attempt.status !== 'completed'),
+            session.retentionDiscard.attempts.some((attempt) => attempt.status === 'requested'),
         );
         return held.length === 0
-          ? { kind: 'completed', reason: 'no continuation lease or retention hold' }
-          : { kind: 'blocking', reason: 'session continuation or retention work needs an accepted receipt' };
+          ? { kind: 'completed', reason: 'no conversation retention hold' }
+          : { kind: 'blocking', reason: 'conversation retention work needs an accepted receipt' };
       },
     },
   ];

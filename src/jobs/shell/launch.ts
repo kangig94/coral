@@ -37,7 +37,6 @@ type PreparedProviderLaunchContext = Readonly<{
     childAuthorization?: ProviderOperationChildAuthorization;
   }>;
   execution: number;
-  forceLocalAppServerPlacement: boolean;
 }>;
 
 type PreparedProviderExecutionResult =
@@ -176,16 +175,6 @@ function providerOperationEnvironment(input?: ProviderOperationEnvironmentInput)
   return { env: (input ?? {}) as Readonly<Record<string, string>> };
 }
 
-function isRecoveredLegacyWorkflowSlotJob(launch: JobLaunch): boolean {
-  return (
-    launch.jobKind === 'provider' &&
-    launch.owner.kind === 'workflow' &&
-    launch.parentWorkflowJobId === launch.owner.id &&
-    launch.workflowSlotId !== undefined &&
-    launch.jobId === launch.workflowSlotId
-  );
-}
-
 function missingContinuityMiddleware(method: keyof NonNullable<ProviderRuntime['continuityBridge']>): never {
   throw new Error(`runtime.continuityBridge.${method}() called without sessionContinuity() middleware.`);
 }
@@ -241,8 +230,6 @@ type ProviderLaunchOptions = {
   pool?: LaunchPool;
   parentWorkflowJobId?: string;
   workflowSlotId?: string;
-  workflowSlotGeneration?: number;
-  replacesWorkflowJobId?: string;
   retention?: RetentionPolicy;
   protectedEnv?: Record<string, string>;
   owner?: ExecutionOwner;
@@ -767,7 +754,6 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
     const { abortRegistry, launchAdmission } = this.deps;
     const jobId = launchRecord.jobId;
     const conversationJobId = launchRecord.jobId;
-    const forceLocalAppServerPlacement = isRecoveredLegacyWorkflowSlotJob(launchRecord);
     if (conversationJobId === null) {
       throw new Error(`Recovered queued job ${jobId} requires a provider session id.`);
     }
@@ -803,9 +789,6 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
         }
         this.appendJobEvent(jobId, conversationJobId, 'job.execution.admitted', {});
         this.appendProgressEvent(jobId, conversationJobId, 'dequeued, launching');
-        if (forceLocalAppServerPlacement) {
-          this.appendProgressEvent(jobId, conversationJobId, 'pre-upgrade workflow child recovered with local placement');
-        }
         if (permit.pool !== pool) {
           throw new Error(`Recovered launch permit for ${jobId} does not match its admitted pool.`);
         }
@@ -823,7 +806,6 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
           executionSignal,
           permit,
           protectedEnv,
-          { forceLocalAppServerPlacement },
         );
       } catch (error: unknown) {
         if (error instanceof TerminalWriteError) {
@@ -923,7 +905,6 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
     signal: AbortSignal,
     permit: LaunchPermit,
     protectedEnv?: ProviderOperationEnvironmentInput,
-    options: { forceLocalAppServerPlacement?: boolean } = {},
   ): Promise<JobExecutionDisposition> {
     const session = this.deps.conversationManager.get(provider.name, conversationJobId);
     if (!session) {
@@ -964,10 +945,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
         : {}),
     });
     const operationEnvironment = providerOperationEnvironment(protectedEnv);
-    const hostRoot =
-      options.forceLocalAppServerPlacement === true
-        ? localProviderHostRoot()
-        : (this.deps.appServerProxyRoute?.hostRoot() ?? localProviderHostRoot());
+    const hostRoot = this.deps.appServerProxyRoute?.hostRoot() ?? localProviderHostRoot();
     const prepared = provider.prepareExecution({
       hostRoot,
       request: requestWithInject,
@@ -997,7 +975,6 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
         persistedContinuity: continuity.value,
         operationEnvironment,
         execution: execution,
-        forceLocalAppServerPlacement: options.forceLocalAppServerPlacement === true,
       });
       if (providerStream.kind === 'cancelled') {
         signal.throwIfAborted();
@@ -1287,9 +1264,8 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
       persistedContinuity,
       operationEnvironment,
       execution,
-      forceLocalAppServerPlacement,
     } = launch;
-    const route = forceLocalAppServerPlacement ? undefined : this.deps.appServerProxyRoute;
+    const route = this.deps.appServerProxyRoute;
     if (route === undefined) return undefined;
     if (operationEnvironment.childAuthorization === undefined) {
       throw new Error('Provider operation child authorization is unavailable for durable publication.');

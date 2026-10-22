@@ -1,3 +1,4 @@
+import { executionOrdinalSchema } from '../jobs/launch.js';
 import type { Database } from '../store/db.js';
 
 import type { CauseRef } from '../causality/cause-ref.js';
@@ -33,6 +34,7 @@ type WorkflowOutcome = 'running' | 'completed' | 'failed' | 'aborted';
 
 type WorkflowSlotOutcome = {
   jobId: string | null;
+  execution: number | null;
   phase: JobPhase | null;
   causeRef: CauseRef | null;
   lastSeq: number | null;
@@ -111,6 +113,7 @@ export function readWorkflowView(db: Database, workflowId: string, ctx: StoreRea
     if (!child) {
       slotOutcomes[slot.slotId] = {
         jobId: null,
+        execution: null,
         phase: null,
         causeRef: null,
         lastSeq: null,
@@ -123,6 +126,7 @@ export function readWorkflowView(db: Database, workflowId: string, ctx: StoreRea
     const causeRef = terminal?.outcome.kind === 'failed' ? terminal.outcome.causeRef : null;
     slotOutcomes[slot.slotId] = {
       jobId: child.job_id,
+      execution: child.execution,
       phase: child.phase,
       causeRef,
       lastSeq: child.last_seq,
@@ -160,11 +164,7 @@ function readWorkflowChildJobRows(db: Database, workflowId: string): WorkflowChi
     .filter(
       (row): row is WorkflowChildJobRow => row.parent_workflow_job_id === workflowId && row.workflow_slot !== null,
     )
-    .sort(
-      (left, right) =>
-        left.workflow_slot.localeCompare(right.workflow_slot) ||
-        (left.workflow_slot_generation ?? 0) - (right.workflow_slot_generation ?? 0),
-    );
+    .sort((left, right) => left.workflow_slot.localeCompare(right.workflow_slot));
 }
 
 function selectChildRowsBySlot(
@@ -176,25 +176,13 @@ function selectChildRowsBySlot(
     slotIds.add(slot.slotId);
   }
   const selected = new Map<string, WorkflowChildJobRow>();
-  const expectedGeneration = new Map<string, number>();
-  const previousJobId = new Map<string, string>();
-  const nonterminalSlots = new Set<string>();
-
   for (const row of rows) {
     if (!slotIds.has(row.workflow_slot)) continue;
-    const expected = expectedGeneration.get(row.workflow_slot) ?? 0;
-    const predecessor = previousJobId.get(row.workflow_slot);
-    if (
-      row.workflow_slot_generation !== expected ||
-      (expected === 0 ? row.replaces_workflow_job_id !== null : row.replaces_workflow_job_id !== predecessor) ||
-      nonterminalSlots.has(row.workflow_slot)
-    ) {
-      throw new Error(`Workflow view rejected invalid child chain for slot '${row.workflow_slot}'.`);
+    executionOrdinalSchema.parse(row.execution);
+    if (selected.has(row.workflow_slot)) {
+      throw new Error(`Workflow view rejected duplicate jobs for slot '${row.workflow_slot}'.`);
     }
-    if (row.terminal === null) nonterminalSlots.add(row.workflow_slot);
     selected.set(row.workflow_slot, row);
-    previousJobId.set(row.workflow_slot, row.job_id);
-    expectedGeneration.set(row.workflow_slot, expected + 1);
   }
 
   return selected;

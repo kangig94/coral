@@ -9,7 +9,8 @@ import type { CauseRef } from '../causality/cause-ref.js';
 import type { TerminalOutcome } from '../jobs/outcome.js';
 import type { ExecutionOwner } from '../runtime/execution-owner.js';
 import type { ProviderJobLaunchDecision } from '../jobs/launch.js';
-import type { ClearContinuationLeaseInput, RecordContinuationLeaseInput, RetentionPolicy } from '../jobs/conversation/entry.js';
+import type { RetentionPolicy } from '../jobs/conversation/entry.js';
+import type { WaitExecutionSelection } from '../jobs/wait/execution-selection.js';
 import type { CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
 
 export type StepDetail = {
@@ -26,11 +27,8 @@ export type PipelineResult = {
 
 interface CoralDispatchInput {
   prompt: string;
-  conversationJobId?: string;
   jobId?: string;
   workflowSlotId?: string;
-  workflowSlotGeneration?: number;
-  replacesWorkflowJobId?: string;
   cwd?: CanonicalWorkDir;
   effort?: string;
   bypassPermissions?: boolean;
@@ -41,12 +39,9 @@ interface CoralDispatchInput {
 }
 
 interface ResumeInput {
-  conversationJobId: string;
+  jobId: string;
   prompt: string;
-  jobId?: string;
   workflowSlotId?: string;
-  workflowSlotGeneration?: number;
-  replacesWorkflowJobId?: string;
   name?: string;
   model?: string;
   pool?: string;
@@ -70,25 +65,26 @@ export interface WorkflowExecutionPort {
     ctx: InvocationContext,
   ): Promise<ProviderJobLaunchDecision>;
   resume(providerName: string, input: ResumeInput, ctx: InvocationContext): Promise<ProviderJobLaunchDecision>;
-  recordContinuationLease(input: RecordContinuationLeaseInput): Promise<void>;
-  clearContinuationLease(input: ClearContinuationLeaseInput): Promise<boolean>;
   abort(jobIds: string[]): AbortResult;
   awaitLaunch(jobId: string, timeoutMs: number): Promise<LaunchReadiness>;
   waitStream(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent>;
-  waitForJobTerminal(jobId: string, timeoutMs?: number): Promise<void>;
 }
 
-export type LaunchedAtom = {
+export type AtomExecution = {
+  execution: number;
+  requestedSeq: number;
+  epochKey: string;
+};
+
+export type LaunchedAtom = AtomExecution & {
   slotId: string;
   jobId: string;
-  conversationJobId: string;
   providerName: string;
   agent: string;
   tagName: string;
   stepIndex: number;
   atomIndex: number;
   atomKey: string;
-  generation: number;
 };
 
 export type WaitFailure = {
@@ -108,7 +104,8 @@ export type WaitInternalState = {
   cursor: WaitCursor | undefined;
   lastActivityAt: Map<string, number>;
   staleRetries: Map<string, number>;
-  expectedStaleAborts: Set<string>;
+  expectedStaleAborts: Map<string, AtomExecution>;
+  executionSelections: WaitExecutionSelection[];
   failureDrain?: {
     firstFailure: WaitFailure;
     abortRequested: boolean;
@@ -152,7 +149,10 @@ export class WorkflowExecutionError extends Error {
   }
 }
 
-export function buildStepDetailsForAtoms(atoms: LaunchedAtom[], results: Map<string, string>): StepDetail[] {
+export function buildStepDetailsForAtoms(
+  atoms: readonly Pick<LaunchedAtom, 'atomKey' | 'stepIndex' | 'atomIndex' | 'agent'>[],
+  results: Map<string, string>,
+): StepDetail[] {
   const stepDetails: StepDetail[] = [];
 
   for (const atom of atoms) {

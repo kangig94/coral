@@ -859,14 +859,6 @@ export function createSimulationBackend(
       await workflowRecover.recoverAll({
         db: storeDb,
         progressStore: recoveryProgressStore,
-        clearContinuationLease: (projectRoot, input) =>
-          ConversationManager.forProduction(
-            projectRoot,
-            runtime,
-            (cb) => progressStore.commit(cb),
-            (payload) => eventBus.emit('session:released', payload),
-            { db: storeDb },
-          ).clearContinuationLease(input),
         finalizeWorkflow: createWorkflowRecoveryFinalizer({
           runtime,
           progressStore,

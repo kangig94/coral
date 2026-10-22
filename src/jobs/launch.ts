@@ -83,8 +83,6 @@ export interface JobLaunchRequest {
   cwd?: CanonicalWorkDir;
   jobId?: string;
   workflowSlotId?: string;
-  workflowSlotGeneration?: number;
-  replacesWorkflowJobId?: string;
   effort?: string;
   bypassPermissions?: boolean;
   systemPrompt?: string;

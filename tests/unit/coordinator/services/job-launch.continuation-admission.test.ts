@@ -23,38 +23,42 @@ const ctx: InvocationContext = {
 
 function sessionEntry(overrides: Partial<JobConversation> = {}): JobConversation {
   return {
-    sessionId: 'session-retention-lock',
+    jobId: '10000000-0000-4000-8000-000000000001',
+    provider: 'codex',
+    execution: 1,
+    open: false,
+    finishing: false,
+    bypassPermissions: false,
     binding: TEST_CODEX_BINDING,
     name: 'session-retention-lock',
-    state: 'ready',
     retention: 'discard_provider_artifacts_on_terminal',
     artifactHandles: [],
     retentionDiscard: {
       attempts: [
         {
+          execution: 1,
           attempt: 1,
           handles: [],
           status: 'requested',
         },
       ],
     },
-    cwd: '/tmp/coral-project',
+    cwd: fixtureCanonicalWorkDir('/tmp/coral-project'),
     projectRoot: '/tmp/coral-project',
     backendNamespace: 'test-ns',
     providerContinuity: null,
     conversationRef: 'thread-1',
     createdAt: '2026-06-23T00:00:00.000Z',
     lastUsedAt: '2026-06-23T00:00:00.000Z',
-    version: 1,
     ...overrides,
   };
 }
 
-describe('JobLaunchService continuation lease admission', () => {
+describe('JobLaunchService continuation retention admission', () => {
   it('rejects resume when retention discard request is in flight', async () => {
     const runtime = new SimulationRuntime();
     const launchOrchestrator = {
-      launchResumedProviderJob: vi.fn(),
+      launchExecution: vi.fn(),
     };
     const provider = defineProvider({
       name: 'codex',
@@ -72,16 +76,9 @@ describe('JobLaunchService continuation lease admission', () => {
       childPrincipalRegistry: testChildPrincipalRegistry(runtime.ids),
       conversationManager: {
         prepare: vi.fn(),
-        appendPreparedClaim: vi.fn(),
-        appendJobClaim: vi.fn(),
-        appendContinuationReplacementClaim: vi.fn(),
-        observeCommittedEntry: vi.fn(),
-        allocate: vi.fn(),
+        readById: vi.fn(),
         get: vi.fn(() => sessionEntry()),
         list: vi.fn(() => []),
-        releaseJob: vi.fn(),
-        recordContinuationLease: vi.fn(),
-        clearContinuationLease: vi.fn(),
       },
       backendNamespace: 'test-ns',
       bundleHash: 'test-bundle',
@@ -92,11 +89,11 @@ describe('JobLaunchService continuation lease admission', () => {
     });
 
     await expect(
-      service.resume('codex', { sessionId: 'session-retention-lock', prompt: 'continue' }, ctx),
+      service.resume('codex', { jobId: '10000000-0000-4000-8000-000000000001', prompt: 'continue' }, ctx),
     ).resolves.toMatchObject({
       status: 'refused',
       code: 'retention_discard_in_flight',
     });
-    expect(launchOrchestrator.launchResumedProviderJob).not.toHaveBeenCalled();
+    expect(launchOrchestrator.launchExecution).not.toHaveBeenCalled();
   });
 });

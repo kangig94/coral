@@ -22,7 +22,6 @@ try {
     process.exit(0);
   }
   const projectDir = projectDirFromInput(input);
-  if (jobGuardAlreadyBlocked(projectDir, input.session_id)) process.exit(0);
 
   const bridgeDir = join(dirname(dirname(fileURLToPath(import.meta.url))), 'bridge');
   const jobs = JSON.parse(execFileSync(join(bridgeDir, 'coral-cli'), ['jobs', 'list', '--mine', '--unwaited', '--json'], {
@@ -33,7 +32,9 @@ try {
   }));
   if (!Array.isArray(jobs) || jobs.length === 0 ||
       jobs.some((job) => typeof job?.jobId !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(job.jobId) ||
+        !Number.isSafeInteger(job.execution) || job.execution < 1 ||
         (job.status?.jobKind !== 'kb' && typeof job.status?.workDir !== 'string'))) process.exit(0);
+  if (jobGuardAlreadyBlocked(projectDir, input.session_id, jobs)) process.exit(0);
 
   const waitScope = realpathSync(input.cwd ?? projectDir);
   const inScopeIds = [];
@@ -55,7 +56,7 @@ try {
     ? `Run each command below separately to wait for them:\n${commands.join('\n')}`
     : `Run ${commands[0]} to wait for them.`;
 
-  recordJobGuardBlock(projectDir, input.session_id);
+  recordJobGuardBlock(projectDir, input.session_id, jobs);
   writeHookOutput({
     decision: 'block',
     reason: `${jobs.length} Coral job(s) launched in this session are still running with no wait attached. ${waitInstruction}`,

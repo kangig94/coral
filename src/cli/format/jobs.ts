@@ -337,19 +337,18 @@ function formatWorkflowChildren(children: ReadonlyArray<WorkflowChildJob>): stri
   const ordered = [...children].sort(
     (left, right) =>
       (formatWorkflowSlotId(left.status) ?? '').localeCompare(formatWorkflowSlotId(right.status) ?? '') ||
-      (left.status.workflowSlotGeneration ?? 0) - (right.status.workflowSlotGeneration ?? 0) ||
+      (left.status.execution ?? 0) - (right.status.execution ?? 0) ||
       left.jobId.localeCompare(right.jobId),
   );
 
   return joinLines([
     'Workflow children:',
     formatTable(
-      ['SLOT', 'GEN', 'CHILD JOB ID', 'REPLACES'],
+      ['SLOT', 'EXECUTION', 'CHILD JOB ID'],
       ordered.map(({ jobId, status }) => [
         formatWorkflowSlotId(status) ?? '-',
-        status.workflowSlotGeneration?.toString() ?? '-',
+        status.execution?.toString() ?? '-',
         jobId,
-        status.replacesWorkflowJobId ?? '-',
       ]),
     ),
   ]);
@@ -373,8 +372,6 @@ export function formatJobDetail(
     `Owner: ${status.owner.kind} ${status.owner.id}`,
     status.parentWorkflowJobId === undefined ? undefined : `Parent workflow: ${status.parentWorkflowJobId}`,
     status.workflowSlotId === undefined ? undefined : `Workflow slot: ${status.workflowSlotId}`,
-    status.workflowSlotGeneration === undefined ? undefined : `Workflow generation: ${status.workflowSlotGeneration}`,
-    status.replacesWorkflowJobId === undefined ? undefined : `Replaces workflow job: ${status.replacesWorkflowJobId}`,
     formatWorkflowChildren(workflowChildren),
     `Project: ${status.projectRoot}`,
     status.workDir === null ? undefined : `Work dir: ${status.workDir}`,

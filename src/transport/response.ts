@@ -75,7 +75,8 @@ export function launchToHttp(
         case 'job_binding_owner_mismatch':
         case 'discussion_job_launch_conflict':
         case 'workflow_owner_terminal':
-        case 'workflow_slot_chain_invalid':
+        case 'workflow_slot_job_conflict':
+        case 'workflow_slot_job_mismatch':
           statusCode = 409;
           break;
       }

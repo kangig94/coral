@@ -104,8 +104,6 @@ interface JobLaunchBase {
   operation?: 'kb.source_import' | 'kb.reindex' | 'kb.community_summary';
   parentWorkflowJobId?: string;
   workflowSlotId?: string;
-  workflowSlotGeneration?: number;
-  replacesWorkflowJobId?: string;
 }
 
 interface ProviderLaunchRequestRecord {
@@ -130,8 +128,6 @@ export interface ProviderJobLaunch extends JobLaunchBase {
   request: ProviderLaunchRequestRecord;
   parentWorkflowJobId?: string;
   workflowSlotId?: string;
-  workflowSlotGeneration?: number;
-  replacesWorkflowJobId?: string;
 }
 
 export interface WorkflowJobLaunch extends JobLaunchBase {
@@ -142,8 +138,6 @@ export interface WorkflowJobLaunch extends JobLaunchBase {
   operation?: never;
   parentWorkflowJobId?: never;
   workflowSlotId?: never;
-  workflowSlotGeneration?: never;
-  replacesWorkflowJobId?: never;
   request: Pick<ProviderLaunchRequestRecord, 'prompt' | 'cwd' | 'bypassPermissions' | 'coralEnv'>;
 }
 
@@ -154,8 +148,6 @@ interface KbJobLaunchBase extends JobLaunchBase {
   providerAction?: never;
   parentWorkflowJobId?: never;
   workflowSlotId?: never;
-  workflowSlotGeneration?: never;
-  replacesWorkflowJobId?: never;
 }
 
 export interface KbSourceImportJobLaunch extends KbJobLaunchBase {

@@ -22,12 +22,12 @@ type FailedWorkflowDescendantReleaserDeps = {
 export function createFailedWorkflowDescendantReleaser(
   deps: FailedWorkflowDescendantReleaserDeps,
 ): AtomicFailedWorkflowDescendantReleaser {
-  const hasNonterminalChild = (jobId: string): boolean => {
+  const hasEndedChildExecution = ({ jobId, execution }: WorkflowRecoveryDescendant): boolean => {
     const child = deps.progressStore
       .getDb()
-      .prepare<[string], { terminal: string | null }>('SELECT terminal FROM projection_jobs WHERE job_id = ?')
+      .prepare<[string], { execution: number | null; terminal: string | null }>('SELECT execution, terminal FROM projection_jobs WHERE job_id = ?')
       .get(jobId);
-    return child !== undefined && child.terminal === null;
+    return child?.execution === execution && child.terminal !== null;
   };
   const release = (() => []) as unknown as AtomicFailedWorkflowDescendantReleaser;
 
@@ -37,10 +37,10 @@ export function createFailedWorkflowDescendantReleaser(
   ): readonly WorkflowRecoveryDescendantRelease[] => {
     const releases: WorkflowRecoveryDescendantRelease[] = [];
     for (const descendant of descendants) {
-      if (hasNonterminalChild(descendant.jobId)) continue;
+      if (!hasEndedChildExecution(descendant)) continue;
       releases.push({
         jobId: descendant.jobId,
-        conversationJobId: descendant.conversationJobId,
+        execution: descendant.execution,
       });
     }
     return releases;
@@ -48,10 +48,9 @@ export function createFailedWorkflowDescendantReleaser(
 
   release.cleanup = (descendants) => {
     for (const descendant of descendants) {
-      if (hasNonterminalChild(descendant.jobId)) continue;
+      if (!hasEndedChildExecution(descendant)) continue;
       deps.getExecutionService(deps.createInvocationContext(descendant.projectRoot)).abort([descendant.jobId]);
       deps.releaseAdoptedJob(descendant.jobId);
-
     }
   };
 

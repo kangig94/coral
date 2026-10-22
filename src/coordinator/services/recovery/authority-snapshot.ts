@@ -39,8 +39,6 @@ function snapshotRecoveryLaunch(launchRecord: ProviderRecoveryLaunch): ProviderR
   const discussionRun = readOptionalOwnDataProperty(launchRecord, 'discussionRun', label);
   const parentWorkflowJobId = readOptionalOwnDataProperty(launchRecord, 'parentWorkflowJobId', label);
   const workflowSlotId = readOptionalOwnDataProperty(launchRecord, 'workflowSlotId', label);
-  const workflowSlotGeneration = readOptionalOwnDataProperty(launchRecord, 'workflowSlotGeneration', label);
-  const replacesWorkflowJobId = readOptionalOwnDataProperty(launchRecord, 'replacesWorkflowJobId', label);
   const name = readOptionalOwnDataProperty(requestSource, 'name', requestLabel);
   const model = readOptionalOwnDataProperty(requestSource, 'model', requestLabel);
   const effort = readOptionalOwnDataProperty(requestSource, 'effort', requestLabel);
@@ -65,8 +63,6 @@ function snapshotRecoveryLaunch(launchRecord: ProviderRecoveryLaunch): ProviderR
       providerAction: readOwnDataProperty(launchRecord, 'providerAction', label),
       ...(parentWorkflowJobId === undefined ? {} : { parentWorkflowJobId }),
       ...(workflowSlotId === undefined ? {} : { workflowSlotId }),
-      ...(workflowSlotGeneration === undefined ? {} : { workflowSlotGeneration }),
-      ...(replacesWorkflowJobId === undefined ? {} : { replacesWorkflowJobId }),
       request: {
         prompt: readOwnDataProperty(requestSource, 'prompt', requestLabel),
         cwd: readOwnDataProperty(requestSource, 'cwd', requestLabel),
