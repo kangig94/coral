@@ -45,7 +45,6 @@ const MAX_INLINE = 10_000;
 /** Remediation must preserve the caller's input tokens rather than substitute resolved file or stdin content. */
 export type JobSendOutputContext = Readonly<{
   inputTokens: readonly string[];
-  launch: Readonly<{ provider: string; agent: string | null }> | null;
 }>;
 
 export type UnknownLaunchOutcome = Readonly<{ kind: 'launch-outcome-unknown' }>;
@@ -115,6 +114,7 @@ function jobSendRefusalRemedy(
       return [
         'Read job detail before a new intentional send attempt.',
         formatJobsOperatorCommand({ kind: 'jobs-detail', jobId }),
+        ...jobSendNewAttemptRemedy(jobId, context),
       ];
     case 'turn_not_started':
     case 'control_unavailable':
@@ -136,21 +136,20 @@ function jobSendRetryRemedy(jobId: string, context: JobSendOutputContext | undef
 }
 
 function jobSendTerminalRemedy(jobId: string, context: JobSendOutputContext | undefined): readonly string[] {
-  const lines = ["Read the job's result.", formatJobsOperatorCommand({ kind: 'wait-job', jobId, grammar: 'current' })];
-  if (context === undefined || context.inputTokens.join(' ') === '-') {
-    return [...lines, 'Start a new job with the same message; that is a new conversation.'];
-  }
-  if (context.launch === null) {
-    return [
-      ...lines,
-      'Original launch details are unavailable. Start a new job with the same message; that is a new conversation.',
-    ];
-  }
   return [
-    ...lines,
-    'Start a new job with the same message; this starts a new conversation. The original -w, -m and -b options are not reproduced.',
-    formatJobsOperatorCommand({ kind: 'launch-provider-job', ...context.launch, inputTokens: context.inputTokens }),
+    "Read the job's result before requesting another execution of its conversation.",
+    formatJobsOperatorCommand({ kind: 'wait-job', jobId, grammar: 'current' }),
+    ...jobSendNewAttemptRemedy(jobId, context),
   ];
+}
+
+function jobSendNewAttemptRemedy(jobId: string, context: JobSendOutputContext | undefined): readonly string[] {
+  return context === undefined || context.inputTokens.join(' ') === '-'
+    ? ['Make a new intentional send attempt with the same message supplied again; it reads a fresh execution target.']
+    : [
+        'A new intentional send attempt reads a fresh execution target and uses a new message ID.',
+        formatJobsOperatorCommand({ kind: 'send-job', jobId, inputTokens: context.inputTokens }),
+      ];
 }
 
 function jobSendReadOnlyRemedy(
@@ -171,7 +170,43 @@ function jobSendReadOnlyRemedy(
       return ['List the available jobs.', formatJobsOperatorCommand({ kind: 'jobs-list' })];
     case 'scope_mismatch':
       return [
-        "The job belongs to another project. Nothing was written. Run this from the job's project directory, then run the same request again.",
+        'The job belongs to another project. Nothing was written. Locate its work directory in the job list, change to that project directory, then make a new send attempt.',
+        formatJobsOperatorCommand({ kind: 'jobs-list', all: true }),
+      ];
+    case 'non_provider_job':
+      return [
+        'This job has no provider conversation. Read its detail to find the owning operation.',
+        formatJobsOperatorCommand({ kind: 'jobs-detail', jobId }),
+      ];
+    case 'owner_not_provider_session':
+      return [
+        'The owning workflow, discussion or system task controls further executions. Read its ownership in job detail.',
+        formatJobsOperatorCommand({ kind: 'jobs-detail', jobId }),
+      ];
+    case 'archive_missing':
+      return [
+        'No retained conversation is available to continue. Read the execution result.',
+        formatJobsOperatorCommand({ kind: 'wait-job', jobId, grammar: 'current' }),
+      ];
+    case 'archive_hash_mismatch':
+      return [
+        'The archived conversation failed integrity verification. Read the execution result; these bytes cannot authorize a continuation.',
+        formatJobsOperatorCommand({ kind: 'wait-job', jobId, grammar: 'current' }),
+      ];
+    case 'profile_mismatch':
+      return [
+        'Read job detail, select the original provider account profile, then make a new send attempt.',
+        formatJobsOperatorCommand({ kind: 'jobs-detail', jobId }),
+      ];
+    case 'work_directory_missing':
+      return [
+        'Read the recorded work directory in job detail. Restore that directory before a new send attempt.',
+        formatJobsOperatorCommand({ kind: 'jobs-detail', jobId }),
+      ];
+    case 'pre_generation_job':
+      return [
+        'This historical job cannot accept another execution. Read its retained result.',
+        formatJobsOperatorCommand({ kind: 'wait-job', jobId, grammar: 'current' }),
       ];
     case 'unsupported_by_running_build':
       return ['The running Coral build predates this feature; it becomes available after the session restarts.'];
@@ -538,8 +573,7 @@ export type JobsOperatorCommand =
   | JobOperatorRemedy
   | Readonly<{ kind: 'wait-job'; jobId: string; grammar?: 'current'; executionSelection?: WaitExecutionSelection }>
   | Readonly<{ kind: 'send-job'; jobId: string; inputTokens: readonly string[] }>
-  | Readonly<{ kind: 'launch-provider-job'; provider: string; agent: string | null; inputTokens: readonly string[] }>
-  | Readonly<{ kind: 'jobs-list' }>;
+  | Readonly<{ kind: 'jobs-list'; all?: boolean }>;
 
 export function renderJobsOperatorCommand(command: JobsOperatorCommand): string {
   switch (command.kind) {
@@ -553,15 +587,8 @@ export function renderJobsOperatorCommand(command: JobsOperatorCommand): string 
       return `${command.grammar === 'current' ? 'coral-cli jobs wait' : waitCommandPrefix()} ${quoteJobsCommandArgument(command.jobId)}${command.executionSelection === undefined ? '' : ` --execution-selection ${quoteJobsCommandArgument(JSON.stringify([command.executionSelection]))}`}`;
     case 'send-job':
       return `coral-cli jobs send ${quoteJobsCommandArgument(command.jobId)} ${renderJobsInputTokens(command.inputTokens)}`;
-    case 'launch-provider-job':
-      return [
-        'coral-cli',
-        quoteJobsCommandArgument(command.provider),
-        ...(command.agent === null ? [] : [quoteJobsCommandArgument(command.agent)]),
-        renderJobsInputTokens(command.inputTokens),
-      ].join(' ');
     case 'jobs-list':
-      return 'coral-cli jobs list';
+      return `coral-cli jobs list${command.all === true ? ' --all' : ''}`;
   }
 }
 

@@ -65,7 +65,13 @@ interface JobsRequestPort {
   scopeCheck(jobIds: string[], callerRoot: CanonicalWorkDir, relation: JobScopeRelation): ScopeCheckResult;
   abort(jobIds: string[]): AbortDecision;
   send(
-    request: Readonly<{ projectRoot: CanonicalWorkDir; jobId: string; input: string; clientMessageId: string; target: JobSendTarget }>,
+    request: Readonly<{
+      projectRoot: CanonicalWorkDir;
+      jobId: string;
+      input: string;
+      clientMessageId: string;
+      target: JobSendTarget;
+    }>,
     ctx: InvocationContext,
   ): Promise<JobSendResult>;
   release(jobIds: string[]): JobsReleaseResult;

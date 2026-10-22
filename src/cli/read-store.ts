@@ -8,6 +8,7 @@ import { openReadOnlyStoreDatabase } from '../store/read-port.js';
 import { createDefaultStoreReadContext } from '../read-model/read-context.js';
 import { resolvePluginRoot } from './plugin-root.js';
 import { currentCoralStoreFormat } from '../store-format.js';
+import { JobLocationIndex, type JobLocation } from '../jobs/location-index.js';
 
 export type ReadCoralStoreHandle = {
   store: CoralStore;
@@ -92,6 +93,11 @@ function readStoreCacheKey(projectRoot: string): string {
 
 export function getSharedReadCoralStore(projectRoot: string, options: SharedReadStoreOptions = {}): CoralStore {
   return defaultRegistry.getShared(projectRoot, options);
+}
+
+export function readJobSendLocation(projectRoot: string, jobId: string): JobLocation | null {
+  const runtime = createRealRuntime(readBuildFlavor(resolvePluginRoot() ?? projectRoot));
+  return new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot).read(jobId);
 }
 
 export function clearPendingReadStoreNote(): void {

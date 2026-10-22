@@ -1,5 +1,6 @@
 import type * as BackendDiscoveryMod from '#src/infra/backend-discovery.js';
 import type * as IpcClientMod from '#src/transport/ipc/client.js';
+import type { JobLocation } from '#src/jobs/location-index.js';
 import { Command } from 'commander';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
@@ -13,6 +14,7 @@ const mockState = vi.hoisted(() => ({
   request: vi.fn(),
   subscribe: vi.fn(),
   health: vi.fn(async () => ({ components: [] as Array<Record<string, unknown>> })),
+  readJobSendLocation: vi.fn((): JobLocation | null => null),
   readStore: {
     jobs: { detail: vi.fn() },
     kb: { listMemos: vi.fn(() => []) },
@@ -60,6 +62,7 @@ vi.mock('#src/transport/ipc/client.js', async (importOriginal) => ({
 
 vi.mock('#src/cli/read-store.js', () => ({
   getSharedReadCoralStore: vi.fn(() => mockState.readStore),
+  readJobSendLocation: mockState.readJobSendLocation,
 }));
 
 import { ensure, issueWithSuccessorAfterLifecycleRefusal } from '#src/transport/ipc/ensure.js';
@@ -143,7 +146,7 @@ describe('command client routing', () => {
     mockState.readStore.jobs.detail.mockReturnValue({
       requestedSeq: 2,
       epochKey: 'epoch',
-      status: { execution: 1, phase: 'running', finishing: false, provider: 'claude' },
+      status: { jobKind: 'provider', execution: 1, phase: 'running', finishing: false, provider: 'claude' },
     });
     stubNonChildInvocationEnv();
     mockState.discovery.mockReturnValue({ kind: 'missing' });
@@ -481,6 +484,7 @@ describe('jobs send immutable attempt envelope', () => {
   beforeEach(() => {
     mockState.request.mockReset();
     mockState.readStore.jobs.detail.mockReset();
+    mockState.readJobSendLocation.mockReset().mockReturnValue(null);
     mockState.discovery.mockReturnValue({ kind: 'missing' });
     stubNonChildInvocationEnv();
     projectRoot = makeTempDir();
@@ -499,6 +503,7 @@ describe('jobs send immutable attempt envelope', () => {
         requestedSeq: 20,
         epochKey: 'epoch-original',
         status: {
+          jobKind: 'provider',
           provider: 'claude',
           execution: 2,
           phase: mode === 'continue' ? 'completed' : 'running',
@@ -564,7 +569,7 @@ describe('jobs send immutable attempt envelope', () => {
     },
   );
 
-  it.each([null, {}, { requestedSeq: 2, status: { execution: 1, phase: 'running' } }])(
+  it.each([{}, { requestedSeq: 2, status: { jobKind: 'provider', execution: 1, phase: 'running' } }])(
     'does not send when detail cannot bind the attempt: %j',
     async (detail) => {
       mockState.readStore.jobs.detail.mockReturnValue(detail);
@@ -574,6 +579,48 @@ describe('jobs send immutable attempt envelope', () => {
       expect(mockState.request).not.toHaveBeenCalled();
     },
   );
+
+  it('returns and renders not_found before RPC when detail and location are absent', async () => {
+    mockState.readStore.jobs.detail.mockReturnValue(null);
+    const result = await makeClient(projectRoot, findCommand(buildProgram(), 'jobs', 'send')).sendJob('job-1', 'input');
+    expect(result).toMatchObject({ state: 'refused', code: 'not_found' });
+    expect(mockState.readJobSendLocation).toHaveBeenCalledExactlyOnceWith(projectRoot, 'job-1');
+    expect(mockState.request).not.toHaveBeenCalled();
+    expect(formatJobSendResult('job-1', result)).toEqual({
+      text: expect.stringContaining('command=coral-cli jobs list'),
+      exitCode: 1,
+    });
+  });
+
+  it('returns and renders a pre-generation refusal from location evidence before binding a target or RPC', async () => {
+    mockState.readStore.jobs.detail.mockReturnValue(null);
+    mockState.readJobSendLocation.mockReturnValue({
+      version: 'v1',
+      jobId: 'job-1',
+      epochKey: 'historical-epoch',
+      disposition: 'terminal',
+      subject: { projectRoot, workDir: projectRoot, jobKind: 'provider' },
+      detail: { kind: 'unreadable' },
+    });
+    const result = await makeClient(projectRoot, findCommand(buildProgram(), 'jobs', 'send')).sendJob('job-1', 'input');
+    expect(result).toMatchObject({ state: 'refused', code: 'pre_generation_job' });
+    expect(mockState.readJobSendLocation).toHaveBeenCalledExactlyOnceWith(projectRoot, 'job-1');
+    expect(mockState.request).not.toHaveBeenCalled();
+    expect(formatJobSendResult('job-1', result)).toEqual({
+      text: expect.stringContaining('command=coral-cli jobs wait job-1'),
+      exitCode: 1,
+    });
+  });
+
+  it('renders a non-provider refusal without needing provider execution metadata', async () => {
+    mockState.readStore.jobs.detail.mockReturnValue({
+      status: { jobKind: 'kb', execution: 1, phase: 'completed', provider: null },
+    });
+    const result = await makeClient(projectRoot, findCommand(buildProgram(), 'jobs', 'send')).sendJob('job-1', 'input');
+    expect(result).toMatchObject({ state: 'refused', code: 'non_provider_job' });
+    expect(formatJobSendResult('job-1', result).text).toContain('command=coral-cli jobs detail job-1');
+    expect(mockState.request).not.toHaveBeenCalled();
+  });
 
   it('does not send after a detail read failure', async () => {
     mockState.readStore.jobs.detail.mockImplementation(() => {
@@ -592,7 +639,7 @@ describe('jobs send immutable attempt envelope', () => {
     mockState.readStore.jobs.detail.mockReturnValue({
       requestedSeq: 2,
       epochKey: 'epoch',
-      status: { execution: 1, phase: 'running', provider: 'claude' },
+      status: { jobKind: 'provider', execution: 1, phase: 'running', provider: 'claude' },
     });
     mockState.request.mockRejectedValueOnce(new IpcRpcError({ code: -32602, message }));
     const result = await makeClient(projectRoot, findCommand(buildProgram(), 'jobs', 'send')).sendJob('job-1', 'input');
@@ -604,7 +651,7 @@ describe('jobs send immutable attempt envelope', () => {
     mockState.readStore.jobs.detail.mockReturnValue({
       requestedSeq: 2,
       epochKey: 'epoch',
-      status: { execution: 1, phase: 'running', provider: 'claude' },
+      status: { jobKind: 'provider', execution: 1, phase: 'running', provider: 'claude' },
     });
     mockState.request.mockRejectedValueOnce(
       new IpcRpcError({
@@ -633,7 +680,7 @@ describe('jobs send immutable attempt envelope', () => {
     mockState.readStore.jobs.detail.mockReturnValue({
       requestedSeq: 2,
       epochKey: 'epoch',
-      status: { execution: 1, phase: 'running', provider: 'claude' },
+      status: { jobKind: 'provider', execution: 1, phase: 'running', provider: 'claude' },
     });
     mockState.request
       .mockRejectedValueOnce(new Error('response lost'))

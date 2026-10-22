@@ -13,6 +13,7 @@ import { loadJobProjectionDetail } from '#src/jobs/read-queries.js';
 import { appendJobExecutionOutcomeAccepted } from '#src/jobs/terminal/recording.js';
 import type { JobSendResult, JobSendTarget } from '#src/jobs/send.js';
 import type { JobStatus } from '#src/jobs/records.js';
+import type { JobLocation } from '#src/jobs/location-index.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import {
   ControlClientError,
@@ -97,6 +98,7 @@ function harness({
   });
   const deps: JobSendServiceDeps = {
     progressStore: { getDb: () => journal.db, readStatus },
+    jobLocations: { read: vi.fn(() => null) },
     currentJobEpochKey: () => 'epoch',
     resume,
     authorityFor,
@@ -381,12 +383,16 @@ describe('JobSendService bound admission', () => {
     },
   );
 
-  it('does not continue a workflow-owned provider job', async () => {
-    const h = harness({ ended: true, record: null });
-    h.readStatus.mockReturnValue({ ...h.readStatus()!, owner: { kind: 'workflow', id: 'workflow' } });
-    expect(await h.service().send(h.request(), ctx)).toMatchObject({ code: 'transport_unsupported' });
-    expect(h.resume).not.toHaveBeenCalled();
-  });
+  it.each(['workflow', 'discussion', 'system-task'] as const)(
+    'does not continue a %s-owned provider job',
+    async (kind) => {
+      const h = harness({ ended: true, record: null });
+      h.readStatus.mockReturnValue({ ...h.readStatus()!, owner: { kind, id: 'owner' } });
+      expect(await h.service().send(h.request(), ctx)).toMatchObject({ code: 'owner_not_provider_session' });
+      expect(h.resume).not.toHaveBeenCalled();
+      expect(h.sendOperation).not.toHaveBeenCalled();
+    },
+  );
 
   it('refuses an altered envelope that reuses a committed message ID', async () => {
     const h = harness({ ended: true, record: null });
@@ -404,7 +410,64 @@ describe('JobSendService bound admission', () => {
     await h.service().send(request, ctx);
     const result = await h.service().send({ ...request, clientMessageId: '55555555-5555-4555-8555-555555555555' }, ctx);
     if (result.state !== 'refused') throw new Error('expected refusal');
-    expect(formatJobSendResult(EXECUTION_JOB_ID, result).text).toContain(`jobs detail ${EXECUTION_JOB_ID}`);
+    const rendered = formatJobSendResult(EXECUTION_JOB_ID, result, { inputTokens: ['next input'] });
+    expect(rendered.exitCode).toBe(1);
+    expect(rendered.text).toContain(`jobs detail ${EXECUTION_JOB_ID}`);
+    expect(rendered.text).toContain(`jobs send ${EXECUTION_JOB_ID}`);
+    expect(rendered.text).toContain('new message ID');
+  });
+});
+
+describe('jobs send typed continuation refusals', () => {
+  it('distinguishes a pre-generation location from a job never recorded', async () => {
+    const h = harness({ ended: true, record: null });
+    const request = h.request();
+    h.readStatus.mockReturnValue(null);
+    const read = vi.fn((): JobLocation | null => ({
+      version: 'v1',
+      jobId: EXECUTION_JOB_ID,
+      epochKey: 'historical-epoch',
+      subject: { projectRoot: root, workDir: root, jobKind: 'provider' },
+      disposition: 'terminal',
+      detail: { kind: 'unreadable' },
+    }));
+    h.deps.jobLocations = { read };
+    expect(await h.service().send(request, ctx)).toMatchObject({ state: 'refused', code: 'pre_generation_job' });
+    expect(read).toHaveBeenCalledExactlyOnceWith(EXECUTION_JOB_ID);
+    read.mockReturnValue(null);
+    expect(await h.service().send(request, ctx)).toMatchObject({ state: 'refused', code: 'not_found' });
+    expect(h.resume).not.toHaveBeenCalled();
+    expect(h.sendOperation).not.toHaveBeenCalled();
+  });
+
+  it('gives a non-provider continuation its own refusal without changing steering codes', async () => {
+    const h = harness({ ended: true, record: null });
+    h.readStatus.mockReturnValue({ ...h.readStatus()!, jobKind: 'kb' });
+    expect(await h.service().send(h.request(), ctx)).toMatchObject({ state: 'refused', code: 'non_provider_job' });
+    expect(h.resume).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['archive_missing', 'archive_missing'],
+    ['non_resumable', 'archive_missing'],
+    ['archive_stale', 'archive_missing'],
+    ['archive_hash_mismatch', 'archive_hash_mismatch'],
+    ['profile_mismatch', 'profile_mismatch'],
+    ['provider_binding_profile_mismatch', 'profile_mismatch'],
+    ['provider_binding_subject_mismatch', 'profile_mismatch'],
+    ['work_directory_missing', 'work_directory_missing'],
+    ['session_busy', 'continuation_target_changed'],
+  ] as const)('preserves the continuation refusal %s as %s', async (launchCode, code) => {
+    const h = harness({ ended: true, record: null });
+    const before = h.events();
+    h.resume.mockResolvedValue({ status: 'refused', code: launchCode, message: 'Decisive admission refusal.' });
+    const result = await h.service().send(h.request(), ctx);
+    expect(result).toEqual({ state: 'refused', code, reason: 'Decisive admission refusal.' });
+    expect(formatJobSendResult(EXECUTION_JOB_ID, result).text).toMatch(/^command=coral-cli /m);
+    expect(h.events()).toEqual(before);
+    expect(h.sendOperation).not.toHaveBeenCalled();
+    expect(h.restore).not.toHaveBeenCalled();
+    expect(h.activate).not.toHaveBeenCalled();
   });
 });
 
@@ -446,10 +509,15 @@ it('preserves uncertainty when the bound steer target disappears before replay',
   const request = h.request();
   await h.service().send(request, ctx);
   h.readStatus.mockReturnValue(null);
-  expect(await h.service().send(request, ctx)).toMatchObject({
+  const result = await h.service().send(request, ctx);
+  expect(result).toMatchObject({
     state: 'unknown',
     reason: expect.stringContaining('may have been delivered'),
   });
+  const rendered = formatJobSendResult(EXECUTION_JOB_ID, result);
+  expect(rendered.exitCode).toBe(75);
+  expect(rendered.text).toContain('may have been delivered');
+  expect(rendered.text).not.toMatch(/nothing was written|not delivered|jobs send/i);
   expect(h.resume).not.toHaveBeenCalled();
   expect(h.sendOperation).toHaveBeenCalledTimes(1);
 });

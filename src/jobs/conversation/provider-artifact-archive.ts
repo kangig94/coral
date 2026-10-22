@@ -89,9 +89,15 @@ export type ProviderArtifactArchiveResult = {
 
 /** Fail-closed contradiction in an action identity, payload, or verified archive hash. */
 export class ProviderArtifactArchiveInvariantError extends Error {
-  constructor(message: string) {
+  readonly code: 'archive_invalid' | 'archive_missing' | 'archive_hash_mismatch';
+
+  constructor(
+    message: string,
+    code: 'archive_invalid' | 'archive_missing' | 'archive_hash_mismatch' = 'archive_invalid',
+  ) {
     super(message);
     this.name = 'ProviderArtifactArchiveInvariantError';
+    this.code = code;
   }
 }
 
@@ -188,6 +194,7 @@ function readManifest(runtime: ArtifactCleanupRuntime, path: string): ArchiveMan
     return manifest;
   } catch (error: unknown) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    if (error instanceof ProviderArtifactArchiveInvariantError) throw error;
     throw new ProviderArtifactArchiveInvariantError(`Invalid conversation manifest '${path}': ${String(error)}`);
   }
 }
@@ -210,10 +217,12 @@ function assertManifestContents(manifest: ArchiveManifest): void {
       (record.archivePath !== `.${manifest.archiveActionId}-${index}.bytes` ||
         record.bytes === undefined ||
         record.sourceSha256 === undefined ||
-        record.archiveSha256 !== record.sourceSha256)
+        record.archiveSha256 === undefined)
     ) {
       throw new Error('Archive bytes do not match their publication record.');
     }
+    if (record.status === 'archived' && record.archiveSha256 !== record.sourceSha256)
+      throw new ProviderArtifactArchiveInvariantError('Conversation archive hashes disagree.', 'archive_hash_mismatch');
   }
 }
 
@@ -227,13 +236,27 @@ function verifiedBytes(runtime: ArtifactCleanupRuntime, directory: string, recor
     record.archivePath === undefined ||
     record.bytes === undefined ||
     record.sourceSha256 === undefined ||
-    record.archiveSha256 !== record.sourceSha256
+    record.archiveSha256 === undefined
   ) {
     throw new ProviderArtifactArchiveInvariantError(`Incomplete archive for '${record.sourceHandle}'.`);
   }
-  const bytes = runtime.storage.readFileBytesSync(join(directory, record.archivePath));
-  if (bytes.length !== record.bytes || bytesHash(bytes) !== record.sourceSha256) {
-    throw new ProviderArtifactArchiveInvariantError(`Conversation archive hash mismatch for '${record.sourceHandle}'.`);
+  let bytes: Uint8Array;
+  try {
+    bytes = runtime.storage.readFileBytesSync(join(directory, record.archivePath));
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT')
+      throw new ProviderArtifactArchiveInvariantError('The archived native bytes are missing.', 'archive_missing');
+    throw error;
+  }
+  if (
+    record.archiveSha256 !== record.sourceSha256 ||
+    bytes.length !== record.bytes ||
+    bytesHash(bytes) !== record.sourceSha256
+  ) {
+    throw new ProviderArtifactArchiveInvariantError(
+      `Conversation archive hash mismatch for '${record.sourceHandle}'.`,
+      'archive_hash_mismatch',
+    );
   }
   return bytes;
 }
@@ -432,6 +455,7 @@ export type ConversationRestoreResult =
         | 'archive_missing'
         | 'archive_stale'
         | 'archive_invalid'
+        | 'archive_hash_mismatch'
         | 'profile_mismatch'
         | 'native_unobservable'
         | 'publication_failed';
@@ -520,7 +544,7 @@ export async function verifyConversationRestore(options: {
     } catch (error: unknown) {
       return {
         kind: 'unrestorable',
-        reason: error instanceof ProviderArtifactArchiveInvariantError ? 'archive_invalid' : 'native_unobservable',
+        reason: error instanceof ProviderArtifactArchiveInvariantError ? error.code : 'native_unobservable',
         message: error instanceof Error ? error.message : String(error),
       };
     }

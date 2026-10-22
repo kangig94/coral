@@ -281,9 +281,9 @@ it.each([
     { state: 'refused', code: 'turn_ended', reason: 'The turn ended.' },
     1,
     'Message refused (turn_ended): The turn ended.\n' +
-      "Read the job's result.\ncommand=coral-cli jobs wait job-1\n" +
-      'Start a new job with the same message; this starts a new conversation. The original -w, -m and -b options are not reproduced.\n' +
-      'command=coral-cli codex coral:architect -i message',
+      "Read the job's result before requesting another execution of its conversation.\ncommand=coral-cli jobs wait job-1\n" +
+      'A new intentional send attempt reads a fresh execution target and uses a new message ID.\n' +
+      'command=coral-cli jobs send job-1 -i message',
   ],
   [
     { state: 'unknown', reason: 'No answer.' },
@@ -339,47 +339,34 @@ it.each(['turn_not_started', 'control_unavailable'] as const)(
   },
 );
 
-it.each([
-  ['codex', 'coral:architect'],
-  ['claude', undefined],
-] as const)(
-  'executes an ended-turn result remedy and parses a new %s conversation unchanged',
-  async (provider, agent) => {
-    const output = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
-    readStore.jobs.conversation.mockReturnValueOnce({
-      binding: { provider },
-      ...(agent === undefined ? {} : { agent }),
-    });
-    client.sendJob.mockResolvedValueOnce({ state: 'refused', code: 'turn_ended', reason: 'Ended.' });
-    const inputTokens = ['a message', '-', '$HOME', "don't expand"];
-    await program().parseAsync(['jobs', 'send', 'job-1', '-i', ...inputTokens], { from: 'user' });
-    expect(client.sendJob).toHaveBeenLastCalledWith('job-1', inputTokens.join(' '));
-    expect(process.exitCode).toBe(1);
-    const commands = printedCommands(output.mock.calls.map(([text]) => String(text)).join(''));
-    expect(commands).toEqual([
-      ['jobs', 'wait', 'job-1'],
-      [provider, ...(agent === undefined ? [] : [agent]), ...inputTokens.map((token) => `--input=${token}`)],
-    ]);
-    const root = program();
-    registerProviderCommands(root, createBuiltInProviderRegistry());
-    const launch = root.commands.find((command) => command.name() === provider)!;
-    const launchAction = vi.fn();
-    launch.action(launchAction);
-    await root.parseAsync(commands[1], { from: 'user' });
-    expect(launchAction).toHaveBeenCalledOnce();
-    expect(launchAction.mock.calls[0]?.[0]).toBe(agent);
-    expect(launch.opts()).toEqual({ input: inputTokens });
-    await root.parseAsync(commands[0], { from: 'user' });
-    expect(followJobs).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({
-        start: { kind: 'jobs', jobIds: ['job-1'] },
-        projectRoot: process.cwd(),
-      }),
-    );
-    expect(process.exitCode).toBe(0);
-  },
-);
+it('executes an ended-turn result remedy and sends the original input unchanged on a new attempt', async () => {
+  const output = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+  vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+  client.sendJob.mockResolvedValueOnce({ state: 'refused', code: 'turn_ended', reason: 'Ended.' });
+  const inputTokens = ['a message', '-', '$HOME', "don't expand"];
+  await program().parseAsync(['jobs', 'send', 'job-1', '-i', ...inputTokens], { from: 'user' });
+  expect(client.sendJob).toHaveBeenLastCalledWith('job-1', inputTokens.join(' '));
+  expect(process.exitCode).toBe(1);
+  const commands = printedCommands(output.mock.calls.map(([text]) => String(text)).join(''));
+  expect(commands).toEqual([
+    ['jobs', 'wait', 'job-1'],
+    ['jobs', 'send', 'job-1', ...inputTokens.map((token) => `--input=${token}`)],
+  ]);
+  const root = program();
+  await root.parseAsync(commands[1], { from: 'user' });
+  expect(client.sendJob).toHaveBeenCalledTimes(2);
+  expect(client.sendJob.mock.calls[1]).toEqual(client.sendJob.mock.calls[0]);
+  expect(readStore.jobs.detail).not.toHaveBeenCalled();
+  expect(readStore.jobs.conversation).not.toHaveBeenCalled();
+  await root.parseAsync(commands[0], { from: 'user' });
+  expect(followJobs).toHaveBeenCalledExactlyOnceWith(
+    expect.objectContaining({
+      start: { kind: 'jobs', jobIds: ['job-1'] },
+      projectRoot: process.cwd(),
+    }),
+  );
+  expect(process.exitCode).toBe(0);
+});
 it.each([false, true])('follows a launched continuation by default and detaches=%s', async (detach) => {
   const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
   vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
@@ -420,7 +407,7 @@ it('keeps option-looking input tokens as message text in the runnable retry comm
       code: 'turn_not_started',
       reason: 'Not ready.',
     },
-    { inputTokens: ['-w', 'literal', '--model=example'], launch: null },
+    { inputTokens: ['-w', 'literal', '--model=example'] },
   );
   const commands = printedCommands(output.text);
   await program().parseAsync(commands[0], { from: 'user' });
@@ -465,8 +452,22 @@ it('preserves the refusal and result remedy when launch metadata cannot be read'
   await program().parseAsync(['jobs', 'send', 'job-1', '-i', 'message'], { from: 'user' });
   expect(process.exitCode).toBe(1);
   const text = output.mock.calls.map(([chunk]) => String(chunk)).join('');
-  expect(text).toContain('launch details are unavailable');
-  expect(printedCommands(text)).toEqual([['jobs', 'wait', 'job-1']]);
+  expect(text).toContain('fresh execution target');
+  expect(text).not.toMatch(/start a new job|new conversation/i);
+  expect(printedCommands(text)).toEqual([
+    ['jobs', 'wait', 'job-1'],
+    ['jobs', 'send', 'job-1', '-i', 'message'],
+  ]);
+  expect(readStore.jobs.detail).not.toHaveBeenCalled();
+});
+
+it('executes the exact other-project discovery remedy with terminal jobs included', async () => {
+  vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+  const output = formatJobSendResult('job-1', { state: 'refused', code: 'scope_mismatch', reason: 'Other project.' });
+  const commands = printedCommands(output.text);
+  expect(commands).toEqual([['jobs', 'list', '--all']]);
+  await program().parseAsync(commands[0], { from: 'user' });
+  expect(client.listJobs).toHaveBeenCalledExactlyOnceWith({ allProjects: true, all: true });
 });
 
 it.each([

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { jobSendOutcomeSchema, type JobSendOutcome } from '../jobs/send.js';
+import { jobSendOutcomeSchema, missingJobSendRefusal, type JobSendOutcome } from '../jobs/send.js';
 import { isTerminalPhase, jobPhaseSchema } from '../jobs/phase.js';
 import { isRecord } from '../infra/json.js';
 import type { WaitSnapshotRequest } from '../jobs/wait/contract.js';
@@ -72,7 +72,7 @@ import type { ProviderRegistry } from '../providers/registry.js';
 import { createBuiltInProviderRegistry } from '../providers/bootstrap.js';
 import { providerBindingFailureCode } from '../providers/contracts/binding.js';
 import { discussProviderNames } from '../discuss/execution-policy.js';
-import { getSharedReadCoralStore } from './read-store.js';
+import { getSharedReadCoralStore, readJobSendLocation } from './read-store.js';
 import { CONTEXT_ENV_KEY, TRANSPORT_CONTEXT_FIELDS } from '../transport/context-profile.js';
 import type { AbortResult } from '../jobs/contracts/abort-registry.js';
 import { TOOL_TIMEOUT_MS } from '../transport/http/sse.js';
@@ -891,6 +891,14 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
   const sendJob = async (jobId: string, input: string): Promise<JobSendOutcome> => {
     const clientMessageId = randomUUID();
     jobSendSchema.shape.input.parse(input);
+    const observed = getSharedReadCoralStore(canonicalProjectRoot).jobs.detail(jobId);
+    if (observed === null) return missingJobSendRefusal(readJobSendLocation(canonicalProjectRoot, jobId));
+    if (observed.status.jobKind !== 'provider')
+      return {
+        state: 'refused',
+        code: isTerminalPhase(observed.status.phase) ? 'non_provider_job' : 'transport_unsupported',
+        reason: 'The job has no provider turn to receive input.',
+      };
     const detail = z
       .object({
         requestedSeq: z.number().int().positive().safe(),
@@ -905,7 +913,7 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
           .passthrough(),
       })
       .passthrough()
-      .parse(getSharedReadCoralStore(canonicalProjectRoot).jobs.detail(jobId));
+      .parse(observed);
     const context = await buildProviderTransportContextBody(
       {},
       defaultContext,

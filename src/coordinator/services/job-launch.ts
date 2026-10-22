@@ -11,7 +11,7 @@ import type { BoundProvider } from '../../providers/bound-provider-contract.js';
 import type { ProviderBindingCatalog } from '../../providers/catalog.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { CoralSetupError } from '../../runtime/errors.js';
-import { assertNever } from '../../infra/error-format.js';
+import { assertNever, thrownErrnoCode } from '../../infra/error-format.js';
 import { throwIfRequestAborted } from '../../runtime/request-lease-identity.js';
 import type { ConversationExecutionPort } from '../../jobs/conversation/contracts.js';
 import type { ProviderJobLaunchPort } from '../../jobs/contracts/job-runner.js';
@@ -342,7 +342,7 @@ export class JobLaunchService {
     if (session.conversationRef === undefined) {
       return refuseLaunch(
         'non_resumable',
-        `Conversation job ${input.jobId} is non-resumable. Use exec to open a new conversation job.`,
+        `No provider conversation reference was recorded for job ${input.jobId}; its conversation cannot be continued.`,
       );
     }
     if (session.open && !session.finishing) {
@@ -357,6 +357,18 @@ export class JobLaunchService {
     const pool = input.pool ?? 'default';
 
     const continuation = this.buildContinuationProfile(input, session, ctx);
+    try {
+      if (!this.deps.runtime.storage.statSync(continuation.cwd).isDirectory())
+        return refuseLaunch('work_directory_missing', 'The conversation work directory is no longer a directory.');
+    } catch (error: unknown) {
+      const code = thrownErrnoCode(error);
+      if (code === 'ENOENT' || code === 'ENOTDIR')
+        return refuseLaunch('work_directory_missing', 'The conversation work directory is missing.');
+      return undeterminedLaunch(
+        'work_directory_unobservable',
+        'The conversation work directory could not be observed.',
+      );
+    }
     let preflightRuntime;
     try {
       preflightRuntime = toPreflightRuntime(this.deps.runtime, continuation.cwd, continuation.coralEnv);

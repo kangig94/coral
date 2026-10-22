@@ -6,7 +6,13 @@ import {
 } from '../../jobs/execution-journal.js';
 import { isTerminalPhase } from '../../jobs/phase.js';
 import { jobInCallerScope } from '../../jobs/scope.js';
-import { jobSendAttemptSchema, type JobSendTarget, type JobSendResult } from '../../jobs/send.js';
+import {
+  jobSendAttemptSchema,
+  missingJobSendRefusal,
+  type JobSendTarget,
+  type JobSendResult,
+} from '../../jobs/send.js';
+import type { JobLocationView } from '../../jobs/location-index.js';
 import type { ProviderJobLaunchDecision } from '../../jobs/launch.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type { CanonicalWorkDir } from '../../runtime/canonical-work-dir.js';
@@ -28,6 +34,7 @@ export interface JobSendRequest {
 
 export interface JobSendServiceDeps {
   progressStore: Pick<JobProgressStore, 'readStatus' | 'getDb'>;
+  jobLocations: Pick<JobLocationView, 'read'>;
   currentJobEpochKey(): string;
   resume(request: JobSendRequest, ctx: InvocationContext): Promise<ProviderJobLaunchDecision>;
   authorityFor(
@@ -89,13 +96,13 @@ export class JobSendService {
     if (status === null)
       return request.target.mode === 'steer'
         ? closedSteer()
-        : { state: 'refused', code: 'not_found', reason: 'The job was not found.' };
+        : missingJobSendRefusal(this.deps.jobLocations.read(request.jobId));
     if (!jobInCallerScope(status, request.projectRoot, 'contains'))
       return { state: 'refused', code: 'scope_mismatch', reason: 'The job belongs to another project.' };
     if (status.jobKind !== 'provider')
       return {
         state: 'refused',
-        code: 'transport_unsupported',
+        code: request.target.mode === 'continue' ? 'non_provider_job' : 'transport_unsupported',
         reason: 'The job has no provider turn to receive input.',
       };
 
@@ -148,7 +155,7 @@ export class JobSendService {
       if (status.owner.kind !== 'provider-session')
         return {
           state: 'refused',
-          code: 'transport_unsupported',
+          code: 'owner_not_provider_session',
           reason: 'Only provider-session owners accept a jobs send continuation.',
         };
       const decision = await this.deps.resume(request, ctx);
@@ -168,10 +175,7 @@ export class JobSendService {
         case 'refused':
           return {
             state: 'refused',
-            code:
-              decision.code === 'continuation_target_changed' || decision.code === 'execution_finishing'
-                ? decision.code
-                : 'provider_rejected',
+            code: continuationRefusalCode(decision.code),
             reason: decision.message,
           };
         case 'undetermined':
@@ -209,5 +213,27 @@ export class JobSendService {
         return { state: 'refused', code: 'control_unavailable', reason: error.message };
       throw error;
     }
+  }
+}
+
+function continuationRefusalCode(code: string): Extract<JobSendResult, { state: 'refused' }>['code'] {
+  switch (code) {
+    case 'execution_finishing':
+    case 'continuation_target_changed':
+    case 'archive_missing':
+    case 'archive_hash_mismatch':
+    case 'profile_mismatch':
+    case 'work_directory_missing':
+      return code;
+    case 'session_busy':
+      return 'continuation_target_changed';
+    case 'non_resumable':
+    case 'archive_stale':
+      return 'archive_missing';
+    case 'provider_binding_profile_mismatch':
+    case 'provider_binding_subject_mismatch':
+      return 'profile_mismatch';
+    default:
+      return 'provider_rejected';
   }
 }

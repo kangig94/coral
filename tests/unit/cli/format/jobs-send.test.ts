@@ -3,9 +3,10 @@ import { afterEach, expect, it, vi } from 'vitest';
 
 import { formatJobSendResult, renderJobsOperatorCommand } from '#src/cli/format/jobs.js';
 import type { ProviderSendOutcome } from '#src/providers/contract.js';
+import { jobSendOutcomeSchema, type JobSendOutcome } from '#src/jobs/send.js';
 import { CLI_HANDOFF_GUARD_ENV } from '#src/coordinator/handoff-routing/wait-invocation.js';
 
-const context = { inputTokens: ['original', 'message'], launch: { provider: 'codex', agent: 'coral:architect' } };
+const context = { inputTokens: ['original', 'message'] };
 
 afterEach(() => vi.unstubAllEnvs());
 
@@ -50,7 +51,7 @@ it.each([
   ['transport_unsupported', 'result', ['coral-cli jobs wait job-1']],
   ['provider_rejected', 'result', ['coral-cli jobs wait job-1']],
   ['not_found', 'List', ['coral-cli jobs list']],
-  ['scope_mismatch', 'another project', []],
+  ['scope_mismatch', 'another project', ['coral-cli jobs list --all']],
   ['unsupported_by_running_build', 'after the session restarts', []],
 ] satisfies [Extract<ProviderSendOutcome, { state: 'refused' }>['code'], string, string[]][])(
   'gives %s its specified remediation and refusal exit code',
@@ -70,15 +71,14 @@ it.each([
   },
 );
 
-it('offers only a result read and a new conversation for an ended turn', () => {
+it('offers a result read and a fresh send for an ended turn', () => {
   const output = formatJobSendResult('job-1', { state: 'refused', code: 'turn_ended', reason: 'Turn ended.' }, context);
   expect(output.exitCode).toBe(1);
-  expect(output.text).toContain('new conversation');
-  for (const flag of ['-w', '-m', '-b']) expect(output.text).toContain(flag);
-  expect(output.text).toContain('not reproduced');
+  expect(output.text).toContain('fresh execution target');
+  expect(output.text).not.toMatch(/start a new job|new conversation/i);
   expect(output.text.split('\n').filter((line) => line.startsWith('command='))).toEqual([
     'command=coral-cli jobs wait job-1',
-    'command=coral-cli codex coral:architect -i original message',
+    'command=coral-cli jobs send job-1 -i original message',
   ]);
   expect(output.text).not.toMatch(/resume/i);
 });
@@ -92,10 +92,7 @@ it.each([
   {
     code: 'turn_ended',
     reason: 'The Claude print turn is not active.',
-    commands: [
-      'command=coral-cli jobs wait claude-job',
-      'command=coral-cli claude coral:architect -i original message',
-    ],
+    commands: ['command=coral-cli jobs wait claude-job', 'command=coral-cli jobs send claude-job -i original message'],
   },
   {
     code: 'transport_unsupported',
@@ -103,16 +100,12 @@ it.each([
     commands: ['command=coral-cli jobs wait claude-job'],
   },
 ] as const)('renders a Claude $code refusal through the shared command vocabulary', ({ code, reason, commands }) => {
-  const output = formatJobSendResult(
-    'claude-job',
-    { state: 'refused', code, reason },
-    { ...context, launch: { provider: 'claude', agent: 'coral:architect' } },
-  );
+  const output = formatJobSendResult('claude-job', { state: 'refused', code, reason }, context);
   expect(output.exitCode).toBe(1);
   expect(output.text).toContain(`Message refused (${code}): ${reason}`);
   expect(output.text.split('\n').filter((line) => line.startsWith('command='))).toEqual(commands);
   expect(output.text).not.toMatch(/resume|coral-cli codex/i);
-  if (code === 'turn_ended') expect(output.text).toContain('new conversation');
+  if (code === 'turn_ended') expect(output.text).toContain('fresh execution target');
 });
 
 it.each(['turn_not_started', 'control_unavailable', 'turn_ended'] as const)(
@@ -133,18 +126,10 @@ it.each(['turn_not_started', 'control_unavailable', 'turn_ended'] as const)(
   },
 );
 
-it('does not invent a provider or agent when original launch details are unavailable', () => {
-  const output = formatJobSendResult(
-    'job-1',
-    { state: 'refused', code: 'turn_ended', reason: 'Turn ended.' },
-    {
-      ...context,
-      launch: null,
-    },
-  );
+it('can render an ended turn without input context', () => {
+  const output = formatJobSendResult('job-1', { state: 'refused', code: 'turn_ended', reason: 'Turn ended.' });
   expect(output.exitCode).toBe(1);
-  expect(output.text).toContain('launch details are unavailable');
-  expect(output.text).toContain('new conversation');
+  expect(output.text).not.toMatch(/start a new job|new conversation|coral-cli codex/i);
   expect(output.text.split('\n').filter((line) => line.startsWith('command='))).toEqual([
     'command=coral-cli jobs wait job-1',
   ]);
@@ -163,16 +148,51 @@ it.each([
   expect(args).toEqual(['jobs', 'send', 'job-1', '-i', ...inputTokens]);
 });
 
-it('gives an out-of-scope request a concrete prose-only retry remedy', () => {
+it('gives an out-of-scope request a runnable job discovery step', () => {
   const output = formatJobSendResult(
     'job-1',
     { state: 'refused', code: 'scope_mismatch', reason: 'Other project.' },
     context,
   );
-  expect(output.text).toContain(
-    "Nothing was written. Run this from the job's project directory, then run the same request again.",
+  expect(output.text).toContain('change to that project directory, then make a new send attempt');
+  expect(output.text).toContain('command=coral-cli jobs list --all');
+});
+
+it.each([
+  ['non_provider_job', 'no provider conversation', 'jobs detail job-1'],
+  ['owner_not_provider_session', 'owning workflow, discussion or system task', 'jobs detail job-1'],
+  ['archive_missing', 'No retained conversation', 'jobs wait job-1'],
+  ['archive_hash_mismatch', 'integrity verification', 'jobs wait job-1'],
+  ['profile_mismatch', 'original provider account profile', 'jobs detail job-1'],
+  ['work_directory_missing', 'Restore that directory', 'jobs detail job-1'],
+  ['pre_generation_job', 'historical job cannot accept another execution', 'jobs wait job-1'],
+] satisfies [Extract<JobSendOutcome, { state: 'refused' }>['code'], string, string][])(
+  'renders %s with its own reason and a runnable next step',
+  (code, remedy, command) => {
+    const result = jobSendOutcomeSchema.parse({ state: 'refused', code, reason: 'Admission refused.' });
+    const output = formatJobSendResult('job-1', result, context);
+    expect(output.exitCode).toBe(1);
+    expect(output.text).toContain(`Message refused (${code})`);
+    expect(output.text).toContain(remedy);
+    expect(output.text.split('\n').filter((line) => line.startsWith('command='))).toEqual([
+      `command=coral-cli ${command}`,
+    ]);
+    expect(output.text).not.toMatch(/start a new job/i);
+  },
+);
+
+it('renders a changed predecessor with detail and an intentional new send, never a provider launch', () => {
+  const output = formatJobSendResult(
+    'job-1',
+    { state: 'refused', code: 'continuation_target_changed', reason: 'Predecessor advanced.' },
+    context,
   );
-  expect(output.text).not.toContain('coral-cli');
+  expect(output.exitCode).toBe(1);
+  expect(output.text).toContain('new message ID');
+  expect(output.text.split('\n').filter((line) => line.startsWith('command='))).toEqual([
+    'command=coral-cli jobs detail job-1',
+    'command=coral-cli jobs send job-1 -i original message',
+  ]);
 });
 
 it.each(['command', 'clear', 'discard', 'action'])('prevents a provider rejection from forging a %s label', (label) => {

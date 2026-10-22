@@ -186,6 +186,42 @@ describe('one committed conversation archive', () => {
 });
 
 describe('read-only verification and no-replace restore', () => {
+  it('reports archive_missing when no archive remains', async () => {
+    const f = fixture();
+    f.runtime.storage.unlinkSync(native);
+    expect(await f.verify()).toMatchObject({ kind: 'unrestorable', reason: 'archive_missing' });
+    expect(f.runtime.storage.existsSync(native)).toBe(false);
+  });
+
+  it('reports archive_missing when the manifest remains but its native bytes are gone', async () => {
+    const f = fixture();
+    await f.archive();
+    f.runtime.storage.unlinkSync(native);
+    f.runtime.storage.unlinkSync(join(f.directory, f.manifest().artifacts[0].archivePath));
+    expect(await f.verify()).toMatchObject({ kind: 'unrestorable', reason: 'archive_missing' });
+    expect(f.runtime.storage.existsSync(native)).toBe(false);
+  });
+
+  it('reports archive_hash_mismatch for altered native bytes before any restore', async () => {
+    const f = fixture();
+    await f.archive();
+    f.runtime.storage.unlinkSync(native);
+    f.runtime.storage.writeFileSync(join(f.directory, f.manifest().artifacts[0].archivePath), 'corrupt');
+    expect(await f.verify()).toMatchObject({ kind: 'unrestorable', reason: 'archive_hash_mismatch' });
+    expect(f.runtime.storage.existsSync(native)).toBe(false);
+  });
+
+  it('reports archive_hash_mismatch when the manifest hashes disagree', async () => {
+    const f = fixture();
+    await f.archive();
+    f.runtime.storage.unlinkSync(native);
+    const manifest = f.manifest();
+    manifest.artifacts[0].archiveSha256 = '0'.repeat(64);
+    f.runtime.storage.writeFileSync(f.manifestPath, JSON.stringify(manifest));
+    expect(await f.verify()).toMatchObject({ kind: 'unrestorable', reason: 'archive_hash_mismatch' });
+    expect(f.runtime.storage.existsSync(native)).toBe(false);
+  });
+
   it('verifies without creating the destination, then publishes complete exact bytes', async () => {
     const f = fixture();
     await f.archive();
@@ -289,7 +325,7 @@ describe('read-only verification and no-replace restore', () => {
     f.runtime.storage.unlinkSync(native);
     const manifest = f.manifest();
     f.runtime.storage.writeFileSync(join(f.directory, manifest.artifacts[0].archivePath), 'corrupt');
-    expect(await f.verify()).toMatchObject({ kind: 'unrestorable', reason: 'archive_invalid' });
+    expect(await f.verify()).toMatchObject({ kind: 'unrestorable', reason: 'archive_hash_mismatch' });
     manifest.artifacts[0].sourceHandle = '/outside/native.jsonl';
     manifest.canonicalHandles[0].handle = '/outside/native.jsonl';
     f.runtime.storage.writeFileSync(f.manifestPath, JSON.stringify(manifest));

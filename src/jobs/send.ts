@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { acceptedLaunchResponseSchema, executionOrdinalSchema } from './launch.js';
 import { providerSendOutcomeSchema } from '../providers/contract.js';
 import type { ProxyOperationSendResult } from '../provider-proxy/protocol.js';
+import type { JobLocation } from './location-index.js';
 
 export const jobSendTargetSchema = z
   .object({
@@ -38,6 +39,13 @@ export const jobSendOutcomeSchema = z.discriminatedUnion('state', [
       'execution_finishing',
       'continuation_target_changed',
       'invalid_request',
+      'non_provider_job',
+      'owner_not_provider_session',
+      'archive_missing',
+      'archive_hash_mismatch',
+      'profile_mismatch',
+      'work_directory_missing',
+      'pre_generation_job',
     ]),
     priorDeliveryUncertain: z.literal(true).optional(),
   }),
@@ -47,3 +55,13 @@ export const jobSendOutcomeSchema = z.discriminatedUnion('state', [
 
 export type JobSendOutcome = Readonly<z.infer<typeof jobSendOutcomeSchema>>;
 export type JobSendResult = ProxyOperationSendResult | Exclude<JobSendOutcome, { state: 'delivered' }>;
+
+export function missingJobSendRefusal(location: JobLocation | null): Extract<JobSendOutcome, { state: 'refused' }> {
+  return location === null
+    ? { state: 'refused', code: 'not_found', reason: 'The job was not found.' }
+    : {
+        state: 'refused',
+        code: 'pre_generation_job',
+        reason: 'The job predates the current store format generation and cannot be continued.',
+      };
+}

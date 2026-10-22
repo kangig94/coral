@@ -31,6 +31,7 @@ import { WorkflowExecutionService } from './services/workflow-execution.js';
 import { JobAbortService } from './services/job-abort.js';
 import { JobSendService, type JobSendRequest } from './services/job-send.js';
 import type { JobSendResult } from '../jobs/send.js';
+import { JobLocationIndex } from '../jobs/location-index.js';
 import { JobWaitService } from './services/job-wait.js';
 import { RecoveryService } from './services/recovery/service.js';
 import { recordProviderTerminal } from './services/terminal-materializer.js';
@@ -198,6 +199,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     });
     this.sendService = new JobSendService({
       progressStore: this.progressStore,
+      jobLocations: new JobLocationIndex(deps.runtime, deps.runtime.paths.coral.generation.dataRoot),
       currentJobEpochKey: () => deps.currentJobEpochKey?.() ?? ':memory:',
       resume: (request, requestCtx) => {
         const status = this.progressStore.readStatus(request.jobId);
