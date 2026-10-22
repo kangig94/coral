@@ -64,7 +64,7 @@ type ProviderOperationStartupOwnershipFor<
 /** Reconciliation may drive an operation only after this phase-specific ownership disposition authorizes it. */
 export type ProviderOperationStartupRecordOwnership =
   | ProviderOperationStartupOwnershipFor<ProviderOperationPreparationPhase, ProviderOperationPreparationDisposition>
-  | ProviderOperationStartupOwnershipFor<'settlement-pending', ProviderOperationSettlementDisposition>
+  | ProviderOperationStartupOwnershipFor<'settlement-pending', ProviderOperationSettlementDisposition | ProviderOperationPreparationDisposition>
   | ProviderOperationStartupOwnershipFor<
       'local-recovery-pending',
       | ProviderOperationStartupBindingRefusal

@@ -16,7 +16,6 @@ type FailedWorkflowDescendantReleaserDeps = {
   getExecutionService: (ctx: InvocationContext) => Pick<ProjectRequestPort, 'abort'>;
   createInvocationContext: (projectRoot: string) => InvocationContext;
   releaseAdoptedJob: (jobId: string) => void;
-  emitSessionReleased: (payload: { conversationJobId: string; jobId: string }) => void;
   log: (message: string) => void;
 };
 
@@ -38,7 +37,6 @@ export function createFailedWorkflowDescendantReleaser(
   ): readonly WorkflowRecoveryDescendantRelease[] => {
     const releases: WorkflowRecoveryDescendantRelease[] = [];
     for (const descendant of descendants) {
-      // Non-terminal children retain their claim and adoption until their own recovery finalizes.
       if (hasNonterminalChild(descendant.jobId)) continue;
       releases.push({
         jobId: descendant.jobId,

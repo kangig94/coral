@@ -154,7 +154,7 @@ async function collectBidOutcome(
     mustAnswer,
   });
   const instruction =
-    run.executionJobId === undefined
+    run.jobId === undefined
       ? buildFirstTurnInstruction({
           selfName: agentName,
           state: snapshot.state,
@@ -202,6 +202,7 @@ async function collectBidOutcome(
         agentName,
         purpose: PURPOSE_BID,
         jobId: attempt.jobId,
+        execution: attempt.execution,
         attempt: attempt.attempt,
         outcome: 'non_resumable',
       });
@@ -218,6 +219,7 @@ async function collectBidOutcome(
         agentName,
         purpose: PURPOSE_BID,
         jobId: attempt.jobId,
+        execution: attempt.execution,
         attempt: attempt.attempt,
         outcome: 'completed',
       });
@@ -235,6 +237,7 @@ async function collectBidOutcome(
         agentName,
         purpose: PURPOSE_BID,
         jobId: attempt.jobId,
+        execution: attempt.execution,
         attempt: attempt.attempt,
         outcome: 'retryable_parse_error',
       });

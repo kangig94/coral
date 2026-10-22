@@ -15,7 +15,7 @@ import { executionOwnerSchema } from '../runtime/execution-owner.js';
 import { canonicalWorkDirWireSchema } from '../runtime/canonical-work-dir.js';
 import { usageSummarySchema } from '../providers/contract.js';
 import { jobProgressTimingSchema } from './event-bodies.js';
-import { jobLaunchRequestBodySchema } from './launch.js';
+import { jobExecutionRequestedBodySchema } from './launch.js';
 import { executionOrdinalSchema } from './launch.js';
 import { currentResultsDurable } from './retained-current.js';
 import { jobKindSchema, type JobDetailResponse, type JobKind } from './records.js';
@@ -158,6 +158,11 @@ const locationSchema = locationIdentitySchema
     detail: z.unknown().optional(),
     executions: z.array(storedExecutionSchema).optional(),
     latestExecution: executionOrdinalSchema.optional(),
+    openExecution: executionOrdinalSchema.optional(),
+    pendingAdmission: z.object({
+      execution: executionOrdinalSchema,
+      priorTerminalSeq: z.number().int().positive().safe().optional(),
+    }).passthrough().optional(),
   })
   .passthrough();
 export type JobExecutionLocation = z.infer<typeof storedExecutionSchema>;
@@ -194,7 +199,8 @@ export type JobLocation = z.infer<typeof locationIdentitySchema> & {
   detail: JobLocationDetail;
   executions?: JobExecutionLocation[];
   latestExecution?: number;
-  pendingAdmission?: unknown;
+  openExecution?: number;
+  pendingAdmission?: StoredJobLocation['pendingAdmission'];
 };
 
 export type UnknownLocationHold = Readonly<
@@ -212,7 +218,7 @@ export interface JobLocationView {
   readonly time: TimePort;
   read(jobId: string): JobLocation | null;
   observePoll?<T>(read: () => T, liveJobIds?: ReadonlySet<string>): T;
-  resultPathFor(jobId: string): string;
+  resultPathFor(jobId: string, execution: number): string;
   unknownLocationHolds(): UnknownLocationHold[];
 }
 
@@ -225,7 +231,7 @@ function viewLocation(stored: StoredJobLocation): JobLocation {
         entry.requestedSeq >= entry.seq ||
         (index > 0 && entries[index - 1].seq >= entry.requestedSeq) ||
         entry.detail.status.execution !== entry.execution ||
-        validatedTerminal(entry.detail, stored.jobId, stored.epochKey, entry.seq) === null,
+        validatedTerminal(entry.detail, stored.jobId, stored.epochKey, entry.seq, entry) === null,
     )
   )
     return { ...identity, detail: { kind: 'unreadable' } };
@@ -238,7 +244,8 @@ function viewLocation(stored: StoredJobLocation): JobLocation {
     parsed.data.exit !== null ||
     parsed.data.status.result !== undefined ||
     parsed.data.events.some((event) => event.type === 'terminal');
-  return terminalPresent && !hasReadableTerminalDetail(location)
+  return terminalPresent && (stored.terminalSeq === undefined ||
+    validatedTerminal(parsed.data, stored.jobId, stored.epochKey, stored.terminalSeq) === null)
     ? { ...identity, detail: { kind: 'unreadable' } }
     : location;
 }
@@ -333,6 +340,8 @@ export class JobLocationIndex {
   private readonly runtime: Runtime;
   private strayEpochEntryReported = false;
 
+  get jobsRoot(): string { return this.runtime.paths.coral.exports.jobsRoot; }
+
   readonly workflowReport?: WorkflowReportPort;
 
   constructor(runtime: Runtime, stateRoot: string, workflowReport?: WorkflowReportPort) {
@@ -407,7 +416,10 @@ export class JobLocationIndex {
    * Equivalent addresses of one epoch share its identity lock, under which the epoch's directory is resolved and, when
    * new, created already naming its epoch; a released writer, which knows only the directory lock, still shares that.
    */
+  private heldEpoch: string | null = null;
+
   private withRevisionLock<T>(epochKey: string, action: () => T): T {
+    if (this.heldEpoch !== null && sameEpoch(this.heldEpoch, epochKey)) return action();
     const identityLock = join(
       this.root,
       'revision-locks',
@@ -418,7 +430,11 @@ export class JobLocationIndex {
       const revisionPath = this.epochPath(epochKey, 'revision.v1.json');
       if (!this.runtime.storage.existsSync(dirname(revisionPath)))
         atomicJson(this.runtime, revisionPath, { version: 'v1', epochKey, revision: 0 });
-      return this.withDirectoryLock(this.epochPath(epochKey, 'revision.lock'), action);
+      return this.withDirectoryLock(this.epochPath(epochKey, 'revision.lock'), () => {
+        const previous = this.heldEpoch;
+        this.heldEpoch = epochKey;
+        try { return action(); } finally { this.heldEpoch = previous; }
+      });
     });
   }
 
@@ -501,7 +517,7 @@ export class JobLocationIndex {
       time: this.time,
       read: (jobId) => this.read(jobId),
       observePoll: (read, liveJobIds) => this.observePoll(read, liveJobIds),
-      resultPathFor: (jobId) => this.resultPathFor(jobId),
+      resultPathFor: (jobId, execution) => this.resultPathFor(jobId, execution),
       unknownLocationHolds: () => this.unknownLocationHolds(),
       readHistorical: (epochKey, jobIds, session, fullHistory) =>
         this.readHistorical(epochKey, jobIds, session, fullHistory),
@@ -536,27 +552,77 @@ export class JobLocationIndex {
     });
   }
 
+  withAdmissionGuard<T>(epochKey: string, db: Database, action: () => T): T {
+    if (this.heldEpoch !== null && sameEpoch(this.heldEpoch, epochKey)) return action();
+    return this.withRevisionLock(epochKey, () => {
+      const previous = this.heldEpoch;
+      this.heldEpoch = epochKey;
+      try {
+        this.reconcileAdmissions(epochKey, db);
+        try {
+          return action();
+        } finally {
+          this.reconcileAdmissions(epochKey, db);
+        }
+      } finally {
+        this.heldEpoch = previous;
+      }
+    });
+  }
+
+  reconcileAdmissions(epochKey: string, db: Database): void {
+    this.withRevisionLock(epochKey, () => {
+      for (const location of this.locationsFor(epochKey)) {
+        const current = this.readStored(location.jobId);
+        const pending = current?.pendingAdmission;
+        if (current === null || pending === undefined) continue;
+        const request = db.prepare<[string, number], { seq: number }>(
+          "SELECT seq FROM events WHERE stream_kind = 'job' AND stream_id = ? AND type = 'job.execution.requested' AND json_extract(CAST(body AS TEXT), '$.execution') = ?",
+        ).get(current.jobId, pending.execution);
+        const { pendingAdmission: _pending, openExecution: _open, ...identity } = current;
+        this.advanceRevision(epochKey);
+        atomicJson(this.runtime, this.jobPath(current.jobId), {
+          ...identity,
+          ...(request === undefined
+            ? { disposition: pending.priorTerminalSeq === undefined ? 'active-owner' : 'terminal' }
+            : { disposition: 'active-owner', latestExecution: pending.execution, openExecution: pending.execution }),
+        });
+      }
+    });
+  }
+
+  prepareAdmission(
+    jobId: string, execution: number, epochKey: string, subject: JobLocationSubject,
+    controller?: JobLocationController,
+  ): void {
+    if (this.heldEpoch === null || !sameEpoch(this.heldEpoch, epochKey))
+      throw new Error('Job admission requires the location guard before the journal transaction.');
+    this.register(jobId, epochKey, subject, controller);
+    const current = this.readStored(jobId);
+    if (current === null) throw new Error('Job admission has no location.');
+    this.advanceRevision(epochKey);
+    atomicJson(this.runtime, this.jobPath(jobId), {
+      ...current,
+      disposition: 'active-owner',
+      pendingAdmission: {
+        execution,
+        ...(current.terminalSeq === undefined ? {} : { priorTerminalSeq: current.terminalSeq }),
+      },
+    });
+  }
+
   beforeAppend(
     input: ResolvableCoralEventInput<unknown, unknown>,
     epochKey: string,
-    controller?: JobLocationController,
+    _controller?: JobLocationController,
   ): void {
-    if (input.stream.kind !== 'job') return;
-    if (input.type === 'job.launch.requested') {
-      const launch = jobLaunchRequestBodySchema.parse(input.body);
-      this.register(
-        input.stream.id,
-        epochKey,
-        {
-          projectRoot: launch.projectRoot,
-          workDir: launch.jobKind === 'kb' ? null : launch.request.cwd,
-          jobKind: launch.jobKind,
-        },
-        controller,
-      );
-    } else if (input.type === 'job.terminal.recorded') {
-      this.invalidateTerminalCertificate(epochKey);
-    }
+    if (input.stream.kind !== 'job' || (input.type !== 'job.opened' && input.type !== 'job.execution.requested')) return;
+    if (this.heldEpoch === null || !sameEpoch(this.heldEpoch, epochKey))
+      throw new Error('Job admission requires the location guard before the journal transaction.');
+    const current = this.readStored(input.stream.id);
+    const execution = input.type === 'job.opened' ? 1 : jobExecutionRequestedBodySchema.parse(input.body).execution;
+    if (current === null || !sameEpoch(current.epochKey, epochKey) || current.pendingAdmission?.execution !== execution)
+      throw new Error('Job admission was not durably prepared before the journal transaction.');
   }
 
   invalidateTerminalCertificate(epochKey: string): void {
@@ -606,33 +672,48 @@ export class JobLocationIndex {
     entries: readonly JobExecutionLocation[],
     latest: JobDetailResponse,
   ): JobLocation {
+    const parsedEntries = entries.map(entry => storedExecutionSchema.parse(entry));
+    latest = storedJobDetailSchema.parse(latest);
     const existing = this.readStored(jobId);
     if (existing === null) throw new Error(`Execution has no durable job location: ${jobId}`);
-    for (const entry of entries) {
+    for (const entry of parsedEntries) {
       if (
         entry.detail.status.execution !== entry.execution ||
         entry.requestedSeq >= entry.seq ||
-        validatedTerminal(entry.detail, jobId, existing.epochKey, entry.seq) === null
+        validatedTerminal(entry.detail, jobId, existing.epochKey, entry.seq, entry) === null
       )
         throw new Error(`Execution detail disagrees: ${jobId}#${entry.execution}`);
     }
     return this.withRevisionLock(existing.epochKey, () => {
       const current = this.readStored(jobId);
       if (current === null) throw new Error(`Execution has no durable job location: ${jobId}`);
-      const executions = entries.map((entry) => {
-        const previous = current.executions?.find((known) => known.execution === entry.execution);
-        return { ...previous, ...entry, detail: preserveStoredDetail(previous?.detail, entry.detail) };
-      });
-      const terminal = latest.events.find((event) => event.type === 'terminal');
-      const ended = terminal !== undefined && latest.exit !== null;
-      const { terminalSeq: _terminalSeq, resultPath: _resultPath, ...identity } = current;
+      const byExecution = new Map((current.executions ?? []).map((entry) => [entry.execution, entry]));
+      for (const entry of parsedEntries) {
+        const previous = byExecution.get(entry.execution);
+        if (previous !== undefined && (previous.seq !== entry.seq || previous.requestedSeq !== entry.requestedSeq))
+          throw new Error(`Execution boundary changed: ${jobId}#${entry.execution}`);
+        byExecution.set(entry.execution, { ...previous, ...entry, detail: preserveStoredDetail(previous?.detail, entry.detail) });
+      }
+      const executions = [...byExecution.values()].sort((a, b) => a.execution - b.execution);
+      if (executions.some((entry, index) => entry.execution !== index + 1 ||
+        (index > 0 && executions[index - 1].seq >= entry.requestedSeq)))
+        throw new Error(`Execution boundaries disagree: ${jobId}`);
+      const terminal = executions.at(-1);
+      const latestExecution = Math.max(current.latestExecution ?? 0, latest.status.execution ?? 0);
+      const ended = terminal !== undefined && terminal.execution === latestExecution;
+      const { openExecution: _open, ...identity } = current;
       const location: StoredJobLocation = {
         ...identity,
-        disposition: ended ? 'terminal' : 'unresolved',
+        disposition: ended && current.pendingAdmission === undefined ? 'terminal' : 'active-owner',
         executions,
-        ...(latest.status.execution === null ? {} : { latestExecution: latest.status.execution }),
-        ...(ended ? { terminalSeq: terminal.seq, resultPath: executions.at(-1)?.resultPath } : {}),
-        detail: preserveStoredDetail(current.detail, { ...latest, events: terminal === undefined ? [] : [terminal] }),
+        ...(latestExecution === 0 ? {} : { latestExecution }),
+        ...(!ended && latestExecution > 0 ? { openExecution: latestExecution } : {}),
+        ...(terminal === undefined ? {} : {
+          terminalSeq: terminal.seq,
+          resultPath: terminal.resultPath,
+          detail: preserveStoredDetail(current.terminalSeq === terminal.seq ? current.detail : undefined, { ...terminal.detail,
+            events: terminal.detail.events.filter(event => event.type === 'terminal') }),
+        }),
       };
       if (!isDeepStrictEqual(current, location)) {
         atomicJson(this.runtime, this.jobPath(jobId), location);
@@ -647,28 +728,23 @@ export class JobLocationIndex {
   }
 
   recordObserved(jobId: string, detail: JobDetailResponse, observation?: RecoveryObservation): void {
-    const existing = this.read(jobId, observation);
-    if (existing === null || existing.disposition === 'terminal') return;
+    const existing = this.readStored(jobId, observation);
+    if (existing === null) return;
     this.withRevisionLock(existing.epochKey, () => {
       const current = this.readStored(jobId, observation);
-      if (current === null || current.disposition === 'terminal') return;
-      const retained = viewLocation(current);
-      const location = {
-        ...current,
-        detail: preserveStoredDetail(current.detail, {
-          ...detail,
-          events: [
-            ...new Map(
-              [...(retained.detail.kind === 'recorded' ? retained.detail.value.events : []), ...detail.events].map(
-                (event) => [`${event.seq}:${event.type}`, event],
-              ),
-            ).values(),
-          ].sort((a, b) => a.seq - b.seq),
-        }),
-      };
-      if (!isDeepStrictEqual(current, location)) {
-        atomicJson(this.runtime, this.jobPath(jobId), location);
+      if (current === null) return;
+      const entry = detail.status.execution === null ? undefined : current.executions?.find(
+        entry => entry.execution === detail.status.execution,
+      );
+      if (entry !== undefined) {
+        const selected = { ...detail, events: detail.events.filter(event =>
+          event.seq > entry.requestedSeq && event.seq <= entry.seq) };
+        this.recordExecutionDetails(jobId, [{ ...entry, detail: selected }], selected);
+        return;
       }
+      if (current.terminalSeq !== undefined) return;
+      const next = { ...current, detail: preserveStoredDetail(current.detail, detail) };
+      if (!isDeepStrictEqual(current, next)) atomicJson(this.runtime, this.jobPath(jobId), next);
     });
   }
 
@@ -926,6 +1002,7 @@ export class JobLocationIndex {
           (location) =>
             !hasReadableTerminalDetail(location) ||
             location.pendingAdmission !== undefined ||
+            location.openExecution !== undefined ||
             (location.executions !== undefined && location.executions.length !== location.latestExecution),
         )
       ) {
@@ -968,6 +1045,7 @@ export class JobLocationIndex {
   /** A record that cannot be read proves nothing, so release then stays unproven rather than failing its caller. */
   resultsReleased(epochKey: string, closedSource?: ResolvedStoreEpoch): boolean {
     try {
+      return this.withRevisionLock(epochKey, () => {
       const certificate = this.certificate(epochKey);
       if (certificate === null) return false;
       try {
@@ -982,6 +1060,7 @@ export class JobLocationIndex {
       } catch {
         return certificate.jobIds.every((jobId) => this.resultDurable(jobId, null));
       }
+      });
     } catch (error) {
       if (isCodeDefect(error)) throw error;
       return false;
@@ -994,7 +1073,8 @@ export class JobLocationIndex {
    */
   resultDurable(jobId: string, source?: Database | null): boolean {
     const location = this.read(jobId);
-    if (location === null || location.pendingAdmission !== undefined || !hasReadableTerminalDetail(location)) {
+    if (location === null || location.pendingAdmission !== undefined ||
+            location.openExecution !== undefined || !hasReadableTerminalDetail(location)) {
       return false;
     }
     if (location.executions !== undefined) {
@@ -1033,8 +1113,8 @@ export class JobLocationIndex {
     }
   }
 
-  resultPathFor(jobId: string): string {
-    return resultPathFor(this.runtime.paths.coral.exports.jobsRoot, jobId);
+  resultPathFor(jobId: string, execution: number): string {
+    return resultPathFor(this.runtime.paths.coral.exports.jobsRoot, jobId, execution);
   }
 
   resultExportOwnerForSource(db: Database, epochKey: string, jobsRoot: string): TerminalResultExportOwner {
@@ -1047,7 +1127,7 @@ export class JobLocationIndex {
       repairScope: this,
       hydrationRetry: () =>
         this.unknownLocationHolds().find((hold) => sameEpoch(hold.epochKey, epochKey))?.retryScheduled,
-      readTerminalInput: (source, jobId) => retainedResultInput(this, epochKey, source, jobId, jobsRoot),
+      readTerminalInput: (source, jobId, execution) => retainedResultInput(this, epochKey, source, jobId, jobsRoot, execution),
       prepareTerminal: (jobId, source) => this.prepareTerminal(jobId, source, epochKey, jobsRoot),
       location: (jobId) => this.read(jobId),
       withSource: (jobId, read, location) => {

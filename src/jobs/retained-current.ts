@@ -10,6 +10,7 @@ import type { JobExecutionLocation, JobLocation, JobLocationIndex } from './loca
 import { hasReadableTerminalDetail } from './terminal/identity.js';
 import { writeResultArtifact, type DecodedResultArtifact } from './terminal/artifact.js';
 import { describeTerminalOutcome } from './outcome.js';
+import { readJobTerminalAge } from './terminal-age.js';
 import { jobRetentionCutoff } from './export-retention.js';
 import { sameEpoch } from '../store/epoch/identity.js';
 import { dirname, join } from 'node:path';
@@ -83,33 +84,17 @@ export function loadRetainedCurrentJob(
   };
 }
 
-function executionAge(
-  db: Database,
-  jobId: string,
-  requestedSeq: number,
-  seq: number,
-  ts: string,
-): DecodedResultArtifact['age'] {
-  const preceding = db
-    .prepare<
-      [string, number, number],
-      { ts: string }
-    >("SELECT ts FROM events WHERE stream_kind = 'job' AND stream_id = ? AND seq >= ? AND seq < ? ORDER BY ts DESC LIMIT 1")
-    .get(jobId, requestedSeq, seq);
-  const at = Date.parse(ts);
-  const before = Date.parse(preceding?.ts ?? '');
-  return !Number.isFinite(at) || !Number.isFinite(before) ? 'unknown' : at < before ? 'regression' : at;
-}
-
 export function currentResultInput(
   db: Database,
   epochKey: string,
   jobId: string,
   jobsRoot: string,
+  execution?: number,
 ): DecodedResultArtifact | null {
   const location = loadRetainedCurrentJob(db, epochKey, jobId, jobsRoot);
-  if (location === null || !hasReadableTerminalDetail(location)) return null;
-  const entry = location.executions?.at(-1);
+  if (location === null) return null;
+  const selectedExecution = execution ?? location.latestExecution;
+  const entry = location.executions?.find(entry => entry.execution === selectedExecution);
   if (entry === undefined || entry.detail.exit === null) return null;
   const accepted = db.prepare<[number], EventsRow>('SELECT * FROM events WHERE seq = ?').get(entry.seq);
   if (accepted === undefined) return null;
@@ -118,7 +103,7 @@ export function currentResultInput(
     accepted,
     terminal: { content: exit.content, outcome: exit.outcome, durationMs: exit.durationMs },
     markdown: `${exit.content.trimEnd() || describeTerminalOutcome(exit.outcome)}\n`,
-    age: executionAge(db, jobId, entry.requestedSeq, entry.seq, accepted.ts),
+    age: readJobTerminalAge(db, accepted),
   };
 }
 
@@ -136,6 +121,7 @@ export function retainCurrentJob(
   index.register(jobId, epochKey, location.subject);
   index.recordExecutionDetails(jobId, location.executions ?? [], location.detail.value);
   for (const entry of location.executions ?? []) {
+    const end = db.prepare<[number], EventsRow>('SELECT * FROM events WHERE seq = ?').get(entry.seq);
     repairRetainedExecution(
       runtime,
       entry,
@@ -148,7 +134,7 @@ export function retainCurrentJob(
           current.executions?.some((known) => known.execution === entry.execution && known.seq === entry.seq) === true
         );
       },
-      executionAge(db, jobId, entry.requestedSeq, entry.seq, entry.detail.exit?.endTime ?? ''),
+      end === undefined ? 'unknown' : readJobTerminalAge(db, end),
     );
   }
 }
@@ -193,7 +179,7 @@ export function currentResultsDurable(
     executions.length !== location.latestExecution
   )
     return false;
-  if (location.pendingAdmission !== undefined) return false;
+  if (location.pendingAdmission !== undefined || location.openExecution !== undefined) return false;
   if (source !== null) {
     const requests = source
       .prepare<
@@ -211,14 +197,18 @@ export function currentResultsDurable(
   }
   return executions.every((entry) => {
     if (source !== null) {
+      const request = source.prepare<[number, string, number], { seq: number }>(
+        "SELECT seq FROM events WHERE seq = ? AND stream_kind = 'job' AND stream_id = ? AND type = 'job.execution.requested' AND json_extract(CAST(body AS TEXT), '$.execution') = ?",
+      ).get(entry.requestedSeq, location.jobId, entry.execution);
+      if (request === undefined) return false;
       const end = source
         .prepare<
-          [number, string],
-          { ts: string }
-        >("SELECT ts FROM events WHERE seq = ? AND stream_kind = 'job' AND stream_id = ? AND type = 'job.execution.ended'")
-        .get(entry.seq, location.jobId);
-      const age =
-        end === undefined ? 'unknown' : executionAge(source, location.jobId, entry.requestedSeq, entry.seq, end.ts);
+          [number, string, number],
+          EventsRow
+        >("SELECT * FROM events WHERE seq = ? AND stream_kind = 'job' AND stream_id = ? AND type = 'job.execution.ended' AND json_extract(CAST(body AS TEXT), '$.execution') = ?")
+        .get(entry.seq, location.jobId, entry.execution);
+      if (end === undefined || end.ts !== entry.detail.exit?.endTime) return false;
+      const age = readJobTerminalAge(source, end);
       if (end?.ts === entry.detail.exit?.endTime && typeof age === 'number' && age < jobRetentionCutoff(runtime))
         return true;
     }
@@ -227,11 +217,12 @@ export function currentResultsDurable(
       const file = runtime.storage.fstatSync(fd, { bigint: true });
       if (!file.isFile() || file.size === 0n) return false;
       runtime.storage.fdatasyncSync(fd);
-      const directory = dirname(entry.resultPath);
-      return (
-        runtime.storage.syncDirectoryDurableSync(directory) &&
-        runtime.storage.syncDirectoryDurableSync(dirname(directory))
-      );
+      let directory = dirname(entry.resultPath);
+      for (let depth = 0; depth < 4; depth++) {
+        if (!runtime.storage.syncDirectoryDurableSync(directory)) return false;
+        directory = dirname(directory);
+      }
+      return true;
     } finally {
       runtime.storage.closeSync(fd);
     }

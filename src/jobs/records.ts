@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import type { ResultAvailability } from './terminal/export.js';
 import type { JobProgressFault, TerminalOutcome, TerminalOutcomeInput } from './outcome.js';
 import type { HostRef, UsageSummary, ProviderAction, ProviderInstruction } from '../providers/contract.js';

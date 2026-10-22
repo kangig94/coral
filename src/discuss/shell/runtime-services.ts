@@ -4,7 +4,13 @@ import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type { Principal } from '../../security/principal.js';
 import { canonicalizeWorkDir } from '../../runtime/canonical-work-dir.js';
 import type { JobExit, JobLaunch, JobStatus } from '../../jobs/records.js';
-import type { DiscussContext, DiscussLaunchDecision, DiscussService, DiscussWaitResult } from './types.js';
+import type {
+  DiscussContext,
+  DiscussJobStatusReader,
+  DiscussLaunchDecision,
+  DiscussService,
+  DiscussWaitResult,
+} from './types.js';
 import { clearAllDiscuss, getOrCreate as getOrCreateDiscussContext, hasRunningSessions } from './live-registry.js';
 import * as discussRecovery from './recovery.js';
 import { knownDiscussSources, type DiscussReadHelpersDeps } from './session-read-service.js';
@@ -13,11 +19,16 @@ import { discussRegistry, toJournalInput } from '../event-registry.js';
 import { listProjectionDiscussSnapshots, readProjectionDiscuss } from '../projections.js';
 import { readDiscussEventLog } from '../read-queries.js';
 import type { StoreReadContext } from '../../store/body-codec.js';
+import { decodeBody } from '../../store/body-codec.js';
+import type { EventsRow } from '../../store/schema.js';
+import { jobsRegistry } from '../../jobs/events.js';
+import { loadJobExecutionDetails } from '../../jobs/read-queries.js';
 import { createEventBodyCodec } from '../../store/event-body-codec.js';
 import { composeReducers } from '../../store/reducers.js';
 import type { CommitClosureResult, CommitContext } from '../../store/append.js';
 import type { ProviderBindingCatalog } from '../../providers/catalog.js';
 import type { JobLaunchRequest, JobResumeRequest, ProviderJobLaunchDecision } from '../../jobs/launch.js';
+import { jobExecutionRequestedBodySchema } from '../../jobs/launch.js';
 
 type CreateDiscussRuntimeDeps = {
   world: {
@@ -67,7 +78,7 @@ export function createDiscussRuntime({
   discussStores: Map<string, DiscussSessionStore>;
 } {
   const discussStores = new Map<string, DiscussSessionStore>();
-  const discussReducers = composeReducers(discussRegistry);
+  const discussReducers = composeReducers(jobsRegistry, discussRegistry);
   const readCtx: StoreReadContext = {
     schemas: discussReducers.schemas,
     streamKinds: discussReducers.streamKinds,
@@ -144,15 +155,40 @@ export function createDiscussRuntime({
       const resolved = await decision;
       return resolved;
     };
-    const jobStatusReader = {
-      read: (jobId: string) => getProgressStore().readStatus(jobId),
-      readExit: (jobId: string) => getProgressStore().loadJobProjectionDetail(jobId).exit,
+    const selectedDetail = (jobId: string, execution: number) =>
+      loadJobExecutionDetails(getProgressStore().getDb(), jobId, readCtx).find((entry) => entry.execution === execution)
+        ?.detail;
+    const jobStatusReader: DiscussJobStatusReader = {
+      read: (jobId, execution) =>
+        execution === undefined
+          ? getProgressStore().readStatus(jobId)
+          : (selectedDetail(jobId, execution)?.status ?? null),
+      readExit: (jobId, execution) =>
+        execution === undefined
+          ? getProgressStore().loadJobProjectionDetail(jobId).exit
+          : (selectedDetail(jobId, execution)?.exit ?? null),
       listOwned: (discussionId: string) => {
-        const owned: Array<{ launch: JobLaunch; status: JobStatus }> = [];
+        const owned: ReturnType<DiscussJobStatusReader['listOwned']> = [];
         for (const { jobId, status } of getProgressStore().listJobProjections()) {
           if (status.owner.kind !== 'discussion' || status.owner.id !== discussionId) continue;
-          const launch = getProgressStore().loadJobProjectionDetail(jobId).launch;
-          if (launch !== null) owned.push({ launch, status });
+          const requests = getProgressStore()
+            .getDb()
+            .prepare<
+              [string],
+              EventsRow
+            >("SELECT * FROM events WHERE stream_kind = 'job' AND stream_id = ? AND type = 'job.execution.requested' ORDER BY seq")
+            .all(jobId);
+          for (const row of requests) {
+            const request = decodeBody(row, jobExecutionRequestedBodySchema, readCtx);
+            owned.push({
+              launch: {
+                jobId,
+                execution: request.execution,
+                discussionRun: request.discussionRun,
+                createdAt: request.createdAt,
+              },
+            });
+          }
         }
         return owned;
       },

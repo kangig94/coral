@@ -205,7 +205,7 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
 
   constructor(options: { runtime: Runtime }) {
     this.runtime = options.runtime;
-    this.internalAbortRegistry = new AbortRegistry(options.runtime.ids);
+    this.internalAbortRegistry = new AbortRegistry();
   }
 
   bindActiveEpochPath(path: string, epochKey: string | null = null): void {

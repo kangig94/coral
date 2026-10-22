@@ -208,9 +208,10 @@ export class WaitCoordinator {
 
   async waitForJobTerminal(jobId: string, timeoutMs = WAIT_FOR_JOB_TERMINAL_TIMEOUT_MS): Promise<void> {
     const timeoutError = new Error(
-      `Timed out waiting for job ${jobId} to reach a terminal state and release its session`,
+      `Timed out waiting for job ${jobId} to end its execution`,
     );
 
+    const execution = this.readStatusOrThrow(jobId).execution;
     const startedAt = this.deps.time.now();
     await new Promise<void>((resolve, reject) => {
       let settled = false;
@@ -229,7 +230,6 @@ export class WaitCoordinator {
         this.deps.eventBus.off('job:completed', onJobCompleted);
         this.deps.eventBus.off('job:phase_changed', onJobPhaseChanged);
         this.deps.eventBus.off('job:progress', onJobProgress);
-        this.deps.eventBus.off('session:released', onSessionReleased);
         this.deps.time.clearTimeout(timer);
       };
 
@@ -245,21 +245,17 @@ export class WaitCoordinator {
       const recheck = (): void => {
         try {
           const status = this.readStatusOrThrow(jobId);
-          if (!this.isTerminalAndReleased(jobId, status.provider, status.conversationJobId, status)) {
-            if (!isTerminalPhase(status.phase)) {
-              return;
-            }
-            return;
-          }
+          if (execution === null || status.execution === null) return;
+          if (status.execution < execution || (status.execution === execution && !isTerminalPhase(status.phase))) return;
           finish(resolve);
         } catch (error: unknown) {
           finish(() => reject(error instanceof Error ? error : new Error(String(error))));
         }
       };
 
-      const onJobCompleted = ({ jobId: completedId }: { jobId: string }): void => {
-        if (completedId === jobId) {
-          recheck();
+      const onJobCompleted = ({ jobId: completedId, execution: endedExecution }: { jobId: string; execution: number }): void => {
+        if (completedId === jobId && endedExecution === execution) {
+          finish(resolve);
         }
       };
 
@@ -275,16 +271,9 @@ export class WaitCoordinator {
         }
       };
 
-      const onSessionReleased = ({ jobId: releasedJobId }: { jobId: string }): void => {
-        if (releasedJobId === jobId) {
-          recheck();
-        }
-      };
-
       this.deps.eventBus.on('job:completed', onJobCompleted);
       this.deps.eventBus.on('job:phase_changed', onJobPhaseChanged);
       this.deps.eventBus.on('job:progress', onJobProgress);
-      this.deps.eventBus.on('session:released', onSessionReleased);
 
       recheck();
       if (settled) {
@@ -430,20 +419,4 @@ export class WaitCoordinator {
     return status;
   }
 
-  private isTerminalAndReleased(
-    jobId: string,
-    providerName: string | null,
-    conversationJobId: string | null,
-    status: JobStatus,
-  ): boolean {
-    if (!isTerminalPhase(status.phase)) {
-      return false;
-    }
-    if (providerName === null || conversationJobId === null) {
-      return true;
-    }
-
-    const session = this.deps.conversationManager.get(providerName, conversationJobId);
-    return session?.activeJobId !== jobId;
-  }
 }

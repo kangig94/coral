@@ -82,59 +82,57 @@ export class WorkflowExecutionService {
     }
     const boundCtx: InvocationContext = { ...ctx, providerScope: decodedScope.value };
 
-    const jobId = this.deps.abortRegistry.register();
+    const jobId = this.deps.abortRegistry.register(this.deps.runtime.ids.uuid(), 1);
     identifyDurableRequest(signal, { jobId });
     let plan: ReturnType<typeof buildWorkflowPlan>;
     try {
       plan = buildWorkflowPlan(jobId, ast, { defaultProvider: providerName });
       if (this.deps.admitTopLevelLaunch?.() === false) {
-        this.deps.abortRegistry.remove(jobId);
+        this.deps.abortRegistry.remove(jobId, 1);
         return refuseLaunch(
           'succession_admission_paused',
           'Launch admission is paused during succession. Retry shortly.',
         );
       }
       throwIfRequestAborted(signal);
+      this.deps.progressStore.withExecutionAdmission(jobId, 1, {
+        projectRoot: boundCtx.projectRoot, workDir, jobKind: 'workflow',
+      }, () => {
       this.deps.progressStore.commit((c) => {
         c.append(workflowPlanDeclaredEvent(jobId, plan, decodedScope.value));
         c.append({
-          type: 'job.launch.requested',
-          stream: { kind: 'job', id: jobId },
-          namespace: this.deps.backendNamespace,
-          project: ctx.projectRoot,
+          type: 'job.opened', stream: { kind: 'job', id: jobId },
+          namespace: this.deps.backendNamespace, project: ctx.projectRoot,
           refs: { jobId, workflowId: jobId },
-          body: {
-            owner: { kind: 'workflow', id: jobId },
-            projectRoot: boundCtx.projectRoot,
-            backendNamespace: this.deps.backendNamespace,
-            bundleHash: this.deps.bundleHash,
-            jobKind: 'workflow',
-            pool: 'default',
-            enqueueSequence: this.deps.progressStore.nextEnqueueSequence(),
-            request: {
-              prompt: input.startPrompt,
-              cwd: workDir,
-              bypassPermissions: false,
-              coralEnv: { ...boundCtx.coralEnv },
-            },
-            createdAt: nowIsoString(this.deps.runtime.time),
-          },
+          body: { jobKind: 'workflow', owner: { kind: 'workflow', id: jobId }, projectRoot: boundCtx.projectRoot,
+            cwd: workDir, bypassPermissions: false, createdAt: nowIsoString(this.deps.runtime.time) },
         });
         c.append({
-          type: 'job.runtime.started',
+          type: 'job.execution.requested', stream: { kind: 'job', id: jobId },
+          namespace: this.deps.backendNamespace, project: ctx.projectRoot,
+          refs: { jobId, workflowId: jobId },
+          body: { execution: 1, input: input.startPrompt, action: 'exec', pool: 'default',
+            enqueueSequence: this.deps.progressStore.nextEnqueueSequence(), coralEnv: { ...boundCtx.coralEnv },
+            backendNamespace: this.deps.backendNamespace, bundleHash: this.deps.bundleHash,
+            createdAt: nowIsoString(this.deps.runtime.time) },
+        });
+        c.append({
+          type: 'job.execution.started',
           stream: { kind: 'job', id: jobId },
           namespace: this.deps.backendNamespace,
           project: ctx.projectRoot,
           refs: { jobId, workflowId: jobId },
           body: {
+            execution: 1,
             transport: 'workflow',
             startedAt: nowIsoString(this.deps.runtime.time),
           },
         });
         return undefined;
       });
+      });
     } catch (error: unknown) {
-      this.deps.abortRegistry.remove(jobId);
+      this.deps.abortRegistry.remove(jobId, 1);
       throw error;
     }
     this.deps.runningJobs.add(jobId);
@@ -170,7 +168,7 @@ export class WorkflowExecutionService {
     } catch (error: unknown) {
       backendLog.warn(`Writing terminal artifact failed for ${jobId}: ${errorMessage(error)}`);
     }
-    this.deps.abortRegistry.remove(jobId);
+    this.deps.abortRegistry.remove(jobId, 1);
   }
 
   private runWorkflowAsync(

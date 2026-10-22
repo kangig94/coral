@@ -2180,18 +2180,6 @@ function formatSettlementRefusalRecordingFailureNextStep(failure: SettlementRefu
         `    ${inspect}`,
         `    ${status}`,
       ].join('\n');
-    case 'claim-release-failed':
-      return [
-        '    hold=repair session persistence externally; Coral cannot retry because the recovery record was not persisted. Then inspect the job and backend status.',
-        `    ${inspect}`,
-        `    ${status}`,
-      ].join('\n');
-    case 'claim-already-reassigned':
-      return [
-        '    hold=no automatic retry applies because the session claim belongs to another job. Inspect the job, verify the current session owner externally, then inspect backend status.',
-        `    ${inspect}`,
-        `    ${status}`,
-      ].join('\n');
     case 'settled-unbound-status-persist-failed':
       return [
         `    hold=Coral retries this settlement-status write automatically. Inspect backend status to confirm that job=${failure.jobId} operation=${failure.operationId} is no longer listed.`,

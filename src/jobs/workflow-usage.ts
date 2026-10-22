@@ -2,13 +2,13 @@ import type { RecoveryObservation } from '../recovery/phase-observation.js';
 import type { Database } from '../store/db.js';
 
 import { USAGE_TOKEN_FIELDS, type UsageSummary } from '../providers/contract.js';
-import { jobDiagnosticsSchema } from './terminal/result.js';
+import { jobExecutionOutcomeAcceptedBodySchema } from './terminal/result.js';
 
 const TOKEN_FIELDS = USAGE_TOKEN_FIELDS;
 
 type TokenField = (typeof TOKEN_FIELDS)[number];
 type WorkflowUsageRow = {
-  diagnostics: string;
+  body: Uint8Array;
 };
 
 function addToken(result: UsageSummary, field: TokenField, value: number | undefined): void {
@@ -28,14 +28,18 @@ export function aggregateWorkflowUsage(
   workflowJobId: string,
   observation?: RecoveryObservation,
 ): UsageSummary | undefined {
-  // Workflow aggregates intentionally sum direct child jobs only; nested
-  // workflow jobs contribute through their own terminal diagnostics.
   const rows = db
     .prepare<[string], WorkflowUsageRow>(
-      `SELECT diagnostics
-         FROM projection_jobs
-        WHERE parent_workflow_job_id = ?
-        ORDER BY job_id ASC`,
+      `SELECT accepted.body
+         FROM projection_jobs child
+         JOIN events ended ON ended.stream_kind = 'job' AND ended.stream_id = child.job_id
+           AND ended.type = 'job.execution.ended'
+         JOIN events accepted ON accepted.seq = json_extract(CAST(ended.body AS TEXT), '$.causeRef.seq')
+           AND accepted.stream_kind = 'job' AND accepted.stream_id = child.job_id
+           AND accepted.type = 'job.execution.outcome.accepted'
+           AND json_extract(CAST(accepted.body AS TEXT), '$.execution') = json_extract(CAST(ended.body AS TEXT), '$.execution')
+        WHERE child.parent_workflow_job_id = ?
+        ORDER BY ended.seq ASC`,
     )
     .all(workflowJobId);
   observation?.record('workflow-child-diagnostics', { reads: rows.length });
@@ -47,7 +51,7 @@ export function aggregateWorkflowUsage(
   let jobsWithoutCostData = 0;
 
   for (const row of rows) {
-    const usage = jobDiagnosticsSchema.parse(JSON.parse(row.diagnostics)).usage;
+    const usage = jobExecutionOutcomeAcceptedBodySchema.parse(JSON.parse(Buffer.from(row.body).toString('utf8'))).diagnostics?.usage;
     if (usage === undefined || !hasUsageValue(usage)) {
       continue;
     }
@@ -57,9 +61,8 @@ export function aggregateWorkflowUsage(
       addToken(result, field, usage[field]);
     }
 
-    if (usage.costUsd === undefined) {
-      jobsWithoutCostData += 1;
-    } else {
+    jobsWithoutCostData += usage.jobsWithoutCostData ?? (usage.costUsd === undefined ? 1 : 0);
+    if (usage.costUsd !== undefined) {
       costUsd += usage.costUsd;
       sawCost = true;
     }

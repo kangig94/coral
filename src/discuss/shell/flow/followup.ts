@@ -84,6 +84,7 @@ async function collectFollowUpAnswer(
           agentName: item.agent,
           purpose: PURPOSE_FOLLOW_UP,
           jobId: attempt.jobId,
+          execution: attempt.execution,
           attempt: attempt.attempt,
           outcome: 'non_resumable',
         });
@@ -97,6 +98,7 @@ async function collectFollowUpAnswer(
           agentName: item.agent,
           purpose: PURPOSE_FOLLOW_UP,
           jobId: attempt.jobId,
+          execution: attempt.execution,
           attempt: attempt.attempt,
           outcome: 'completed',
         });
@@ -108,6 +110,7 @@ async function collectFollowUpAnswer(
         agentName: item.agent,
         purpose: PURPOSE_FOLLOW_UP,
         jobId: attempt.jobId,
+        execution: attempt.execution,
         attempt: attempt.attempt,
         outcome: 'retryable_parse_error',
       });

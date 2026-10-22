@@ -23,7 +23,8 @@ import { providerProxyRekeyRefusalEvent } from '../../providers/proxy-failure.js
 import { isRecord } from '../../infra/json.js';
 import type { SessionContinuityState } from '../../jobs/conversation/fault.js';
 import { decodeBody } from '../../store/body-codec.js';
-import { readJobOpened, readLatestExecutionRequest } from '../../jobs/execution-state.js';
+import { readJobOpened } from '../../jobs/execution-state.js';
+import { jobExecutionRequestedBodySchema } from '../../jobs/launch.js';
 import { jobContinuityCheckpointedBodySchema } from '../../jobs/event-bodies.js';
 import { providerArtifactIdentityKey } from '../../providers/artifact-identity.js';
 import { appendProviderTerminalInCommit, appendSessionInterruptedTerminalInCommit } from './terminal-materializer.js';
@@ -80,18 +81,25 @@ function eventReadContext(deps: ProviderEventApplicationDeps) {
   };
 }
 
-function resolveJobContext(deps: ProviderEventApplicationDeps, jobId: string) {
+function resolveJobContext(deps: ProviderEventApplicationDeps, identity: ProviderOperationEventIdentity) {
+  const jobId = identity.jobId;
   const readCtx = eventReadContext(deps);
+  const record = requireJournalRecord(deps.db, identity);
   const job = readJobOpened(deps.db, jobId, readCtx);
-  const request = readLatestExecutionRequest(deps.db, jobId, readCtx);
-  if (job?.jobKind !== 'provider' || request === null)
-    throw new Error(`Provider event for job '${jobId}' has no requested provider execution.`);
+  const row = deps.db.prepare<[number, string], import('../../store/schema.js').EventsRow>(
+    "SELECT * FROM events WHERE seq = ? AND stream_kind = 'job' AND stream_id = ? AND type = 'job.execution.requested'",
+  ).get(record.jobLaunchEventSeq, jobId);
+  const request = row === undefined ? null : decodeBody(row, jobExecutionRequestedBodySchema, readCtx);
+  const status = deps.progressStore.readStatus(jobId);
+  if (job?.jobKind !== 'provider' || request === null || status?.execution !== request.execution ||
+      status.phase === 'completed' || status.phase === 'error' || status.phase === 'aborted')
+    throw new Error(`Provider operation '${identity.operationId}' does not own the open execution of '${jobId}'.`);
   return {
-    execution: request.request.execution,
+    execution: request.execution,
     provider: job.conversation.provider,
     binding: job.conversation.binding,
     projectRoot: job.projectRoot,
-    namespace: request.request.backendNamespace,
+    namespace: request.backendNamespace,
     project: job.projectRoot,
   };
 }
@@ -202,7 +210,9 @@ export function createStoreProviderEventEffectPort(
 
     verifyIdentity: async (tx, identity) => {
       const record = readJournalRecord(tx.db, identity);
-      return record?.phase === 'executing' || record?.phase === 'settlement-pending';
+      if (record?.phase !== 'executing' && record?.phase !== 'settlement-pending') return false;
+      resolveJobContext(deps, identity);
+      return true;
     },
 
     readWatermark: async (tx, identity) => {
@@ -228,7 +238,7 @@ export function createStoreProviderEventEffectPort(
     },
 
     appendProgress: async (tx, identity, _seq, body) => {
-      const ctx = resolveJobContext(deps, identity.jobId);
+      const ctx = resolveJobContext(deps, identity);
       const status = deps.progressStore.readStatus(identity.jobId);
       const launch = deps.progressStore.readLaunchProjection(identity.jobId);
       const runtimeProjection = deps.progressStore.readRuntimeProjection(identity.jobId);
@@ -254,7 +264,7 @@ export function createStoreProviderEventEffectPort(
     },
 
     appendConversationEvent: async (tx, identity, _seq, body) => {
-      const ctx = resolveJobContext(deps, identity.jobId);
+      const ctx = resolveJobContext(deps, identity);
       if (body.kind === 'continuity') {
         const bound = deps.providerRegistry.rehydrateBinding(ctx.binding);
         if (!bound.ok) throw new Error(deps.providerRegistry.renderBindingFailure(bound.failure));
@@ -294,7 +304,7 @@ export function createStoreProviderEventEffectPort(
     },
 
     acceptExecutionOutcome: async (tx, identity, _seq, disposition) => {
-      const ctx = resolveJobContext(deps, identity.jobId);
+      const ctx = resolveJobContext(deps, identity);
       const durationMs = elapsedDurationMs(deps, identity.jobId);
       const options = {
         jobId: identity.jobId,
@@ -349,6 +359,7 @@ export function createStoreProviderEventEffectPort(
         phase: 'settlement-pending',
         terminalProviderSeq,
         settlementIntent: 'release-after-terminal',
+        settlementFailure: { elapsedMs: 0, observedAtMs: deps.runtime.time.now(), containmentRequested: false },
         revision: record.revision + 1,
         retryNotBeforeMs: deps.runtime.time.now(),
         retryCount: 0,
@@ -379,7 +390,7 @@ function toApplyProviderEventBody(
       record.controlIntent.kind === 'rekey-refusal-containment'
     ) {
       return providerProxyRekeyRefusalEvent(
-        resolveJobContext(deps, identity.jobId).provider,
+        resolveJobContext(deps, identity).provider,
         record.controlIntent.reason,
       );
     }
@@ -392,7 +403,7 @@ function toApplyProviderEventBody(
     );
   }
   if (recordedStopCause === 'coordinator_rekey_refused') {
-    return providerProxyRekeyRefusalEvent(resolveJobContext(deps, identity.jobId).provider);
+    return providerProxyRekeyRefusalEvent(resolveJobContext(deps, identity).provider);
   }
   return { ...event, recordedStopCause };
 }
@@ -420,7 +431,7 @@ export function createProviderEventHandler(deps: ProviderEventApplicationDeps): 
         const acceptedOutcome = event.kind === 'terminal' || event.kind === 'suspended';
         if (result.kind === 'ack' && acceptedOutcome) {
           notifyProviderOperationSettlementPending(identity);
-          const { execution } = resolveJobContext(deps, identity.jobId);
+          const { execution } = resolveJobContext(deps, identity);
           void deps.executionFinisher.finish({ jobId: identity.jobId, execution });
         }
         return result;

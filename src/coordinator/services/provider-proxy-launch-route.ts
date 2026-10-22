@@ -72,6 +72,7 @@ export function createAppServerProxyRoute(deps: {
       const record = providerOperationRecordSchema.parse({
         version: PROVIDER_OPERATION_RECORD_VERSION,
         operation,
+        jobLaunchEventSeq: request.jobLaunchEventSeq,
         locator: providerOperationSetLocator(authority.setIdentity),
         prepareAttemptNumber,
         prepareAttemptKey: attempt.prepareAttemptKey,

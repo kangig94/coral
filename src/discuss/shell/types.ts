@@ -40,9 +40,11 @@ export type LiveDiscussSession = {
 };
 
 export type DiscussJobStatusReader = {
-  read(jobId: string): JobStatus | null;
-  readExit(jobId: string): JobExit | null;
-  listOwned(discussionId: string): Array<{ launch: JobLaunch; status: JobStatus }>;
+  read(jobId: string, execution?: number): JobStatus | null;
+  readExit(jobId: string, execution?: number): JobExit | null;
+  listOwned(discussionId: string): Array<{
+    launch: Pick<JobLaunch, 'jobId' | 'execution' | 'discussionRun' | 'createdAt'>;
+  }>;
 };
 
 export type DiscussRuntimePorts = {

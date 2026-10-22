@@ -781,6 +781,7 @@ export function retainedResultInput(
   db: Database,
   jobId: string,
   jobsRoot: string,
+  execution?: number,
 ): DecodedResultArtifact | null {
   const source = historicalSources.get(index)?.get(epochIdentity(epochKey));
   const fingerprint =
@@ -792,7 +793,7 @@ export function retainedResultInput(
   if (fingerprint === undefined) throw new HistoricalDecodeError('Retained source has no readable format fingerprint');
   switch (retainedSourceFormat(fingerprint)) {
     case 'current':
-      return currentResultInput(db, epochKey, jobId, source?.jobsRoot ?? jobsRoot);
+      return currentResultInput(db, epochKey, jobId, source?.jobsRoot ?? jobsRoot, execution);
     case 'historical':
       return historicalResultInput(db, jobId);
     default:

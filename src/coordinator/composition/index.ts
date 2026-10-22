@@ -370,11 +370,6 @@ export function probeHistoricalJobClosure(runtime: Runtime, epochKey: string): '
 
 function subscribeChildPrincipalTerminalEvents(core: ReturnType<typeof createCoordinatorCoreContext>): () => void {
   const { world, getProgressStore } = core;
-  const onChildPrincipalJobPhaseChanged = (event: { jobId: string; phase: string }): void => {
-    if (isTerminalPhase(event.phase)) {
-      world.childPrincipalRegistry.revokeParentJob(event.jobId);
-    }
-  };
   const onLaunchReclamationJobPhaseChanged = (): void => {
     try {
       if (world.launchCoordinator.active > 0 && getProgressStore().liveJobCount() === 0) {
@@ -384,14 +379,12 @@ function subscribeChildPrincipalTerminalEvents(core: ReturnType<typeof createCoo
       // An unreadable liveness view cannot authorize reclamation or escape an event callback.
     }
   };
-  const onChildPrincipalJobCompleted = (event: { jobId: string }): void => {
-    world.childPrincipalRegistry.revokeParentJob(event.jobId);
+  const onChildPrincipalJobCompleted = (event: { jobId: string; execution: number }): void => {
+    world.childPrincipalRegistry.revokeParentJob(event.jobId, event.execution);
   };
-  world.eventBus.on('job:phase_changed', onChildPrincipalJobPhaseChanged);
   world.eventBus.on('job:phase_changed', onLaunchReclamationJobPhaseChanged);
   world.eventBus.on('job:completed', onChildPrincipalJobCompleted);
   const disposeChildPrincipalTerminalListeners = (): void => {
-    world.eventBus.off('job:phase_changed', onChildPrincipalJobPhaseChanged);
     world.eventBus.off('job:phase_changed', onLaunchReclamationJobPhaseChanged);
     world.eventBus.off('job:completed', onChildPrincipalJobCompleted);
   };

@@ -19,11 +19,13 @@ export type ProviderOperationEnvironmentInput =
 export type ProviderOperationCleanupIdentity =
   | Readonly<{
       kind: 'job-local';
+      execution: number;
       jobId: string;
       pool: LaunchPool;
     }>
   | Readonly<{
       kind: 'proxy-binding';
+      execution: number;
       jobId: string;
       operationId: string;
       pool: LaunchPool;

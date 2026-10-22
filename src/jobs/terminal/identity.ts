@@ -48,10 +48,15 @@ export function validatedTerminal(
   jobId: string,
   epochKey: string,
   seq: number,
+  boundary?: { execution: number; requestedSeq: number },
 ): JobTerminalEvent | null {
   const terminals = detail.events.filter((event): event is JobTerminalEvent => event.type === 'terminal');
   const terminal = terminals.find((event) => event.seq === seq);
   if (
+    (boundary !== undefined && (
+      detail.status.execution !== boundary.execution || boundary.requestedSeq >= seq ||
+      detail.events.some(event => event.seq <= boundary.requestedSeq || event.seq > seq)
+    )) ||
     !terminal ||
     !detail.exit ||
     detail.status.jobId !== jobId ||

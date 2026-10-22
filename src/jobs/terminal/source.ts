@@ -8,15 +8,15 @@ import { observeResolvedStoreEpoch, inspectResolvedStoreEpochKey } from '../../s
 import { acquireSharedFileLockNoRepairSync } from '../../infra/fs-lock.js';
 import { observeStorePath } from '../../store/path-observation.js';
 
-export function readAcceptedTerminal(db: Database, jobId: string): EventsRow | null {
-  const row = db
-    .prepare<
-      [string],
-      EventsRow
-    >("SELECT * FROM events WHERE type = 'job.terminal.recorded' AND stream_kind = 'job' AND stream_id = ? ORDER BY seq DESC LIMIT 1")
-    .get(jobId);
-  if (!row || row.type !== 'job.terminal.recorded') return null;
-  return row;
+export function readAcceptedTerminal(db: Database, jobId: string, execution?: number): EventsRow | null {
+  const row = execution === undefined
+    ? db.prepare<[string], EventsRow>(
+      "SELECT * FROM events WHERE type = 'job.execution.ended' AND stream_kind = 'job' AND stream_id = ? AND json_extract(CAST(body AS TEXT), '$.execution') = (SELECT execution FROM projection_jobs WHERE job_id = events.stream_id) ORDER BY seq DESC LIMIT 1",
+    ).get(jobId)
+    : db.prepare<[string, number], EventsRow>(
+      "SELECT * FROM events WHERE type = 'job.execution.ended' AND stream_kind = 'job' AND stream_id = ? AND json_extract(CAST(body AS TEXT), '$.execution') = ? ORDER BY seq DESC LIMIT 1",
+    ).get(jobId, execution);
+  return row ?? null;
 }
 
 /** The source guard protects the full epoch identity against retirement and path replacement. */

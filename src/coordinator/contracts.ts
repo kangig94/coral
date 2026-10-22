@@ -56,7 +56,7 @@ interface CoordinatorJobOps {
   readWaitAdmissions?(jobIds: readonly string[], epochKey: string, session?: object): WaitAdmission[];
   observeWaitCarriers?(jobIds: readonly string[], signal: AbortSignal): Promise<WaitCarrierCoverage>;
   readWaitAdmission?(jobId: string, epochKey: string, session?: object): WaitAdmission | null;
-  holdsLocalAppServerExecution?(jobId: string): boolean;
+  holdsLocalAppServerExecution?(jobId: string, execution: number): boolean;
   abort(jobIds: string[]): AbortResult;
   send(request: JobSendRequest): Promise<ProxyOperationSendResult>;
   waitStream(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent>;

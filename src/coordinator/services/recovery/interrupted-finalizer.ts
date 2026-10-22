@@ -115,7 +115,7 @@ function exportResultAndReleaseOwnership(receipt: RecoveryCommitReceipt, deps: I
     backendLog.warn(`Writing terminal artifact failed for ${plan.launchRecord.jobId}: ${String(error)}`);
   }
   try {
-    deps.abortRegistry.remove(plan.launchRecord.jobId);
+    deps.abortRegistry.remove(plan.launchRecord.jobId, plan.launchRecord.execution);
     if (deps.launchPermit !== null) {
       const release = deps.launchAdmission.releaseLaunch(deps.launchPermit);
       if (release.kind === 'transferred') {

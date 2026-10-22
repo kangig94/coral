@@ -1,3 +1,4 @@
+import { loadRetainedCurrentJob } from '../jobs/retained-current.js';
 import { renderWorkflowReport } from '../workflow/result-report.js';
 declare const __VERSION__: string;
 
@@ -26,7 +27,7 @@ import type { AppendedEvent } from '../store/append.js';
 import { JobStore } from '../jobs/store.js';
 import { JobLocationIndex } from '../jobs/location-index.js';
 import { deriveLaunchReadiness } from '../jobs/launch-readiness.js';
-import { observeTerminalResultExports, resultPathFor } from '../jobs/terminal/export.js';
+import { observeTerminalResultExports } from '../jobs/terminal/export.js';
 import { noProviderLookupPort } from '../providers/catalog.js';
 import { createEventBodyCodec } from '../store/event-body-codec.js';
 import { AbortRegistry } from '../jobs/shell/abort-registry.js';
@@ -408,15 +409,25 @@ function createKbDaemonProgressStore({
       jobLocations === null || resolvedStore === null
         ? undefined
         : (input) => {
-            if (input.stream.kind !== 'job' || !['job.launch.requested', 'job.terminal.recorded'].includes(input.type))
+            if (input.stream.kind !== 'job' || !['job.opened', 'job.execution.requested'].includes(input.type))
               return;
             jobLocations.beforeAppend(input, encodeResolvedStoreEpoch(runtime, resolvedStore));
           },
+    withCommitGuard: jobLocations === null || resolvedStore === null ? undefined :
+      (action) => jobLocations.withAdmissionGuard(encodeResolvedStoreEpoch(runtime, resolvedStore), activeDb as ConstructorParameters<typeof JobStore>[3]['db'], action),
+    withExecutionAdmission: jobLocations === null || resolvedStore === null ? undefined :
+      (jobId, execution, subject, action) => {
+        const epochKey = encodeResolvedStoreEpoch(runtime, resolvedStore);
+        jobLocations.withAdmissionGuard(epochKey, activeDb as ConstructorParameters<typeof JobStore>[3]['db'], () => {
+          jobLocations.prepareAdmission(jobId, execution, epochKey, subject);
+          action();
+        });
+      },
     observer: (appended) => {
       observeTerminalExports(appended);
       if (jobLocations !== null) {
         for (const event of appended) {
-          if (event.stream.kind !== 'job' || event.type !== 'job.progress.emitted') continue;
+          if (event.stream.kind !== 'job' || event.type !== 'job.execution.progress') continue;
           try {
             const detail = progressStore.loadJobProjectionDetail(event.stream.id);
             if (detail.status === null) continue;
@@ -437,21 +448,13 @@ function createKbDaemonProgressStore({
   progressStore.configureResultExports(jobLocations, renderWorkflowReport);
   if (jobLocations !== null) {
     observeTerminalExports = observeTerminalResultExports(
-      (jobId) => progressStore.publishTerminalResult(jobId),
-      (jobId, seq) => {
-        const detail = progressStore.loadJobProjectionDetail(jobId);
-        if (detail.status === null) throw new Error(`Terminal has no job status: ${jobId}`);
-        jobLocations.recordTerminal(
-          jobId,
-          {
-            status: detail.status,
-            events: progressStore.readJobEvents(jobId),
-            readiness: deriveLaunchReadiness(detail),
-            exit: detail.exit,
-          },
-          resultPathFor(runtime.paths.coral.exports.jobsRoot, jobId),
-          seq,
-        );
+      (jobId, execution) => progressStore.publishTerminalResult(jobId, execution),
+      (jobId) => {
+        const epochKey = jobLocations.read(jobId)?.epochKey;
+        if (epochKey === undefined) throw new Error(`Terminal has no job location: ${jobId}`);
+        const location = loadRetainedCurrentJob(progressStore.getDb(), epochKey, jobId, runtime.paths.coral.exports.jobsRoot);
+        if (location?.detail.kind !== 'recorded') throw new Error(`Terminal has no job detail: ${jobId}`);
+        jobLocations.recordExecutionDetails(jobId, location.executions ?? [], location.detail.value);
       },
     );
   }
@@ -727,7 +730,7 @@ async function openKbDaemonBootStore(
   const runtimeDir = runtime.paths.coral.kbRuntime.root;
   cleanupSourceImportRuntimeArtifacts(runtimeDir, guardedRuntime);
   const curateAssistant = options.curateAssistant ?? createUnavailableCurateAssistant();
-  const abortRegistry = new AbortRegistry(runtime.ids);
+  const abortRegistry = new AbortRegistry();
   return {
     activeDb,
     generationWriterLease,

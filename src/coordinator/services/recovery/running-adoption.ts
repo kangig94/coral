@@ -17,7 +17,6 @@ import type { DurableCliPreReadyOwnershipEvidence } from '../../../jobs/runtime-
 import { readDurableCliContainmentStatus, writeDurableCliContainmentStatus } from '../../../jobs/runtime-meta-store.js';
 import type { RecoveryDisposition, RecoveryQuarantineRemedy } from '../../../recovery/containment.js';
 import {
-  COORDINATOR_CLAIM_RELEASE_OBLIGATION,
   COORDINATOR_NOT_APPLICABLE_FACTS,
   COORDINATOR_TERMINAL_OBLIGATION,
   durableOwnershipEvidenceHoldReason,
@@ -110,16 +109,9 @@ function nextStepRemedy(nextStep: AbortNextStep | undefined): RecoveryQuarantine
   return typeof nextStep === 'object' ? nextStep.remedy : undefined;
 }
 
-function settledRecoveryFacts(item: CoordinatorRecoveryItem, jobId: string) {
+function settledRecoveryFacts(jobId: string) {
   return [
     { obligation: COORDINATOR_TERMINAL_OBLIGATION, outcome: 'done' as const, authorityRef: `job:${jobId}:terminal` },
-    {
-      obligation: COORDINATOR_CLAIM_RELEASE_OBLIGATION,
-      outcome: item.claimedSession?.activeJobId === jobId ? ('done' as const) : ('not-applicable' as const),
-      ...(item.claimedSession?.activeJobId === jobId
-        ? { authorityRef: `session:${item.claimedSession.jobId}:claim:${jobId}` }
-        : {}),
-    },
   ];
 }
 
@@ -186,7 +178,7 @@ async function finalizeRecoveredAppServer(
   return {
     kind: 'advanced',
     outcome: 'settled',
-    facts: settledRecoveryFacts(item, jobId),
+    facts: settledRecoveryFacts(jobId),
     detail: userCancelled ? 'user-aborted app-server job finalized' : 'interrupted app-server job finalized',
   };
 }
@@ -255,7 +247,7 @@ async function finalizeContainedDurableRecovery(
   return {
     kind: 'advanced',
     outcome: 'settled',
-    facts: settledRecoveryFacts(settlement.item, jobId),
+    facts: settledRecoveryFacts(jobId),
     detail: operatorAbandoned
       ? 'operator-abandoned durable job finalized without process absence proof'
       : 'dead durable job finalized',
@@ -543,7 +535,7 @@ async function finalizeAdoptedRuntime(
       return {
         kind: 'advanced',
         outcome: 'settled',
-        facts: settledRecoveryFacts(finalItem, jobId),
+        facts: settledRecoveryFacts(jobId),
         detail: 'adopted durable job finalized',
       };
     },

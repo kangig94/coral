@@ -1,12 +1,12 @@
 export type AbortSettledCallback = () => void;
 
 export interface JobAbortRegistryPort {
-  register(jobId?: string, onAbort?: () => void, onAbortSettled?: AbortSettledCallback): string;
-  getSignal(jobId: string): AbortSignal | null;
-  has(jobId: string): boolean;
+  register(jobId: string, execution: number, onAbort?: () => void, onAbortSettled?: AbortSettledCallback): string;
+  getSignal(jobId: string, execution?: number): AbortSignal | null;
+  has(jobId: string, execution?: number): boolean;
   listActive(): string[];
   abort(jobIds: string[]): AbortResult;
-  remove(jobId: string): void;
+  remove(jobId: string, execution: number): void;
 }
 
 export interface AbortHoldOwner {

@@ -182,8 +182,8 @@ function createExecutionServiceRegistry(input: {
           isWorkflowOwnedByThisCoordinator: (jobId) => world.runningWorkflowJobs.has(jobId),
           isAdmittedByThisCoordinator: (jobId) => admittedByThisCoordinator(world.launchCoordinator, jobId),
           registryStateForJob: (jobId) => world.operationRegistry.stateForJob(jobId),
-          holdsLocalAppServerExecution: (jobId) =>
-            [...services.values()].some((service) => service.holdsLocalAppServerExecution?.(jobId) === true),
+          holdsLocalAppServerExecution: (jobId, execution) =>
+            [...services.values()].some((service) => service.holdsLocalAppServerExecution?.(jobId, execution) === true),
         },
         getCurrentJournalSeq,
         (records) =>
@@ -904,6 +904,8 @@ export function createExecutionServices(deps: CreateExecutionServicesDeps): Exec
   };
 
   const jobAttention = new JobAttention();
+  const onRequested = ({ jobId, execution }: { jobId: string; execution: number }) => jobAttention.requested(jobId, execution);
+  world.eventBus.on('job:requested', onRequested);
   const servicesPorts = createExecutionServiceRegistry({
     jobAttention,
     services,
@@ -920,6 +922,9 @@ export function createExecutionServices(deps: CreateExecutionServicesDeps): Exec
     services: servicesPorts,
     adoptRepairedProviderOperation,
     providerOperationReconciler,
-    unsubscribeProviderProxyControlEstablished,
+    unsubscribeProviderProxyControlEstablished: () => {
+      unsubscribeProviderProxyControlEstablished();
+      world.eventBus.off('job:requested', onRequested);
+    },
   });
 }

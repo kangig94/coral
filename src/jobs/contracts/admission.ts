@@ -145,7 +145,7 @@ export type LaunchPermitReclamationDiagnostic = {
     }>;
 }[ReclaimablePermitHolderKind];
 
-type SettlementRefusalCause = 'terminal-persist-failed' | 'claim-release-failed' | 'claim-already-reassigned';
+type SettlementRefusalCause = 'terminal-persist-failed';
 
 /** Only `quarantine: 'recorded'` permits callers to treat the refusal as durably contained. */
 export type SettlementRefusal = Readonly<{

@@ -74,7 +74,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     this.conversationManager = new ConversationManager(
       ctx.projectRoot, deps.runtime, coordinatorCommit, deps.progressStore.getDb(),
     );
-    this.abortRegistry = new AbortRegistry(deps.runtime.ids);
+    this.abortRegistry = new AbortRegistry();
     this.backendNamespace = deps.backendNamespace;
     this.bundleHash = deps.bundleHash ?? 'unknown';
     this.progressStore = deps.progressStore;
@@ -201,8 +201,8 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     });
   }
 
-  holdsLocalAppServerExecution(jobId: string): boolean {
-    return this.launchOrchestrator.holdsLocalAppServerExecution(jobId);
+  holdsLocalAppServerExecution(jobId: string, execution: number): boolean {
+    return this.launchOrchestrator.holdsLocalAppServerExecution(jobId, execution);
   }
 
   private runWithInvocationScope<T>(ctx: InvocationContext, run: () => T): T {

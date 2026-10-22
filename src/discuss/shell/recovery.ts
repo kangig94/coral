@@ -7,7 +7,7 @@ import type { TimePort } from '../../infra/port-types.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type { JobLaunch } from '../../jobs/records.js';
 import { jobsRegistry } from '../../jobs/events.js';
-import { jobLaunchRequestBodySchema } from '../../jobs/launch.js';
+import { jobExecutionRequestedBodySchema, jobOpenedBodySchema } from '../../jobs/launch.js';
 import { decodeProjectionJobExecutionOwner, decodeProjectionJobStoredRow } from '../../jobs/projection-row.js';
 import type { Database } from '../../store/db.js';
 import { decodeStoredBody, type StoreReadContext } from '../../store/body-codec.js';
@@ -93,7 +93,7 @@ const discussionResumeContinuationSchema = z
   .strict();
 
 type DiscussionResumeContinuation = z.infer<typeof discussionResumeContinuationSchema>;
-type DiscussionOwnedLaunch = Pick<JobLaunch, 'jobId' | 'discussionRun' | 'createdAt'>;
+type DiscussionOwnedLaunch = Pick<JobLaunch, 'jobId' | 'execution' | 'discussionRun' | 'createdAt'>;
 
 type DiscussionStartupRuntime = {
   readonly getDatabase: () => Database;
@@ -188,28 +188,27 @@ function ownedLaunchesFromRaw(envelope: RawDiscussionCandidateEnvelope): Discuss
       throw new TypeError(`Job '${projection.job_id}' is not owned by discussion '${envelope.discussion.discuss_id}'.`);
     }
 
-    let launch: z.infer<typeof jobLaunchRequestBodySchema> | null = null;
+    const opened = rawJob.events.find((row) => row.type === 'job.opened');
+    if (opened === undefined) throw new TypeError(`Job '${projection.job_id}' has no opening declaration.`);
+    const job = jobOpenedBodySchema.parse(decodeStoredBody(opened, discussionRecoveryReadContext));
+    if (job.jobKind !== 'provider' || job.owner.kind !== 'discussion' || job.owner.id !== owner.id) {
+      throw new TypeError(`Job '${projection.job_id}' opening contradicts its discussion ownership.`);
+    }
+    let requested = false;
     for (const row of rawJob.events) {
       const body = decodeStoredBody(row, discussionRecoveryReadContext);
       rowToCoralEvent(row, body);
-      if (row.type !== 'job.launch.requested') continue;
-      if (launch !== null) throw new TypeError(`Job '${projection.job_id}' has duplicate launch declarations.`);
-      launch = jobLaunchRequestBodySchema.parse(body);
+      if (row.type !== 'job.execution.requested') continue;
+      const request = jobExecutionRequestedBodySchema.parse(body);
+      launches.push({
+        jobId: projection.job_id,
+        execution: request.execution,
+        discussionRun: request.discussionRun,
+        createdAt: request.createdAt,
+      });
+      requested = true;
     }
-    if (launch === null) throw new TypeError(`Job '${projection.job_id}' has no launch declaration.`);
-    if (
-      launch.jobKind !== 'provider' ||
-      launch.owner.kind !== 'discussion' ||
-      launch.owner.id !== envelope.discussion.discuss_id
-    ) {
-      throw new TypeError(`Job '${projection.job_id}' launch contradicts its discussion ownership.`);
-    }
-    launches.push({
-      jobId: projection.job_id,
-      sessionId: launch.jobId,
-      ...(launch.discussionRun === undefined ? {} : { discussionRun: launch.discussionRun }),
-      createdAt: launch.createdAt,
-    });
+    if (!requested) throw new TypeError(`Job '${projection.job_id}' has no execution request.`);
   }
   return launches;
 }
@@ -277,7 +276,7 @@ function buildOwnedJobReconciliationEvents(
   launch: DiscussionOwnedLaunch,
   ctx: DiscussContext,
 ): DiscussDomainEvent[] {
-  if (launch.jobId === null || launch.discussionRun === undefined) {
+  if (launch.discussionRun === undefined) {
     throw new Error(`Discussion-owned job '${launch.jobId}' has no durable run descriptor.`);
   }
   const { agent, purpose, attempt } = launch.discussionRun;
@@ -285,17 +284,20 @@ function buildOwnedJobReconciliationEvents(
   if (run === undefined) {
     throw new Error(`Discussion-owned job '${launch.jobId}' names unknown agent '${agent}'.`);
   }
-  if (run.executionJobId !== undefined && run.executionJobId !== launch.jobId) {
-    throw new Error(`Discussion agent '${agent}' is already bound to another provider session.`);
+  if (run.jobId !== undefined && run.jobId !== launch.jobId) {
+    throw new Error(`Discussion agent '${agent}' is already bound to another job.`);
   }
-  if (run.currentJobId !== undefined && run.currentJobId !== launch.jobId) {
+  if (
+    run.currentJobId !== undefined &&
+    (run.currentJobId !== launch.jobId || run.currentExecution !== launch.execution)
+  ) {
     throw new Error(`Discussion agent '${agent}' already has active job '${run.currentJobId}'.`);
   }
-  if (run.currentJobId === launch.jobId) return [];
+  if (run.currentJobId === launch.jobId && run.currentExecution === launch.execution) return [];
 
   let seq = snapshot.lastAppliedSeq + 1;
   const events: DiscussDomainEvent[] = [];
-  if (run.executionJobId === undefined) {
+  if (run.jobId === undefined) {
     events.push(
       makeEvent(
         snapshot.sessionId,
@@ -304,7 +306,7 @@ function buildOwnedJobReconciliationEvents(
         seq++,
         'agent.run.bound',
         nowIsoString(ctx.runtime.time),
-        { agent, executionJobId: launch.jobId },
+        { agent, jobId: launch.jobId },
       ),
     );
   }
@@ -316,7 +318,7 @@ function buildOwnedJobReconciliationEvents(
       seq,
       'agent.job.started',
       nowIsoString(ctx.runtime.time),
-      { agent, jobId: launch.jobId, purpose, attempt },
+      { agent, jobId: launch.jobId, execution: launch.execution, purpose, attempt },
     ),
   );
   return events;
@@ -329,26 +331,25 @@ export async function reconcileDiscussionOwnedJobs(
   const owned = ctx.jobStatusReader
     .listOwned(sessionId)
     .slice()
-    .sort((left, right) =>
-      left.launch.createdAt === right.launch.createdAt
-        ? left.launch.jobId.localeCompare(right.launch.jobId)
-        : left.launch.createdAt.localeCompare(right.launch.createdAt),
+    .sort(
+      (left, right) =>
+        left.launch.jobId.localeCompare(right.launch.jobId) || left.launch.execution - right.launch.execution,
     );
   const started = new Set(
     readSessionEvents(ctx, sessionId)
       .filter((event) => event.kind === 'agent.job.started')
-      .map((event) => event.payload.jobId),
+      .map((event) => `${event.payload.jobId}:${event.payload.execution}`),
   );
 
   for (const { launch } of owned) {
-    if (started.has(launch.jobId)) continue;
+    if (started.has(`${launch.jobId}:${launch.execution}`)) continue;
     const reconciled = await appendRuntimeEvents(ctx, sessionId, (current) =>
       buildOwnedJobReconciliationEvents(current, launch, ctx),
     );
     if (reconciled === null) {
       throw new Error(`Failed to reconcile discussion-owned job '${launch.jobId}'.`);
     }
-    started.add(launch.jobId);
+    started.add(`${launch.jobId}:${launch.execution}`);
   }
 
   const reconciled = ctx.store.load(sessionId);
@@ -360,20 +361,18 @@ async function reconcileDiscussionOwnedJobsFromEnvelope(
   ctx: DiscussContext,
   candidate: HydratedDiscussionCandidate,
 ): Promise<readonly string[]> {
-  const owned = [...candidate.ownedJobs].sort((left, right) =>
-    left.createdAt === right.createdAt
-      ? left.jobId.localeCompare(right.jobId)
-      : left.createdAt.localeCompare(right.createdAt),
+  const owned = [...candidate.ownedJobs].sort(
+    (left, right) => left.jobId.localeCompare(right.jobId) || left.execution - right.execution,
   );
   const started = new Set(
     candidate.discussionEvents
       .filter((event) => event.kind === 'agent.job.started')
-      .map((event) => event.payload.jobId),
+      .map((event) => `${event.payload.jobId}:${event.payload.execution}`),
   );
   const resultRefs: string[] = [];
 
   for (const launch of owned) {
-    if (started.has(launch.jobId)) continue;
+    if (started.has(`${launch.jobId}:${launch.execution}`)) continue;
     const events = buildOwnedJobReconciliationEvents(candidate.snapshot, launch, ctx);
     if (events.length > 0) {
       candidate.snapshot = await ctx.store.append(
@@ -384,7 +383,7 @@ async function reconcileDiscussionOwnedJobsFromEnvelope(
       candidate.discussionEvents.push(...events);
       for (const event of events) resultRefs.push(`discuss:${event.sessionId}:${event.seq}`);
     }
-    started.add(launch.jobId);
+    started.add(`${launch.jobId}:${launch.execution}`);
   }
   return resultRefs;
 }

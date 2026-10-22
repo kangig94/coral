@@ -14,7 +14,7 @@ import { errorMessage } from '../infra/error-format.js';
 import { withImmediate, type Database } from '../store/db.js';
 import { decodeBody, type StoreReadContext } from '../store/body-codec.js';
 import type { EventsRow } from '../store/schema.js';
-import { jobTerminalRecordedBodySchema } from './terminal/result.js';
+import { jobExecutionEndedBodySchema } from './terminal/result.js';
 import { readJobTerminalAge } from './terminal-age.js';
 import type { JobLocation } from './location-index.js';
 import { retainedTerminal } from './terminal/identity.js';
@@ -84,8 +84,8 @@ export function readExportJobState(db: Database, readCtx: StoreReadContext, jobI
       >("SELECT * FROM events INDEXED BY events_retention_stream WHERE stream_kind = 'job' AND stream_id = ? ORDER BY seq DESC LIMIT 1")
       .get(jobId);
     if (latest === undefined) return { kind: 'absent' };
-    if (latest.type !== 'job.terminal.recorded') return { kind: 'nonterminal' };
-    decodeBody(latest, jobTerminalRecordedBodySchema, readCtx);
+    if (latest.type !== 'job.execution.ended') return { kind: 'nonterminal' };
+    decodeBody(latest, jobExecutionEndedBodySchema, readCtx);
     const terminalAt = readJobTerminalAge(db, latest);
     return typeof terminalAt === 'number' ? { kind: 'terminal', terminalAt } : { kind: terminalAt };
   } catch {

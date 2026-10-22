@@ -116,8 +116,8 @@ function createCoordinatorJobLister(
           continue;
         }
       }
-      if (filters.unwaited === true && !attention.isUnwaited(entry.jobId)) continue;
-      jobs.push({ ...entry, ...(attention.isReleased(entry.jobId) ? { released: true } : {}) });
+      if (filters.unwaited === true && !attention.isUnwaited(entry.jobId, entry.status.execution ?? 0)) continue;
+      jobs.push({ ...entry, ...(attention.isReleased(entry.jobId, entry.status.execution ?? 0) ? { released: true } : {}) });
     }
 
     return jobs;
@@ -172,14 +172,18 @@ export function createCoordinatorRpcPorts({
           if (status === null) result.unknown.push(jobId);
           else if (!isLivePhase(status.phase)) result.terminal.push(jobId);
           else {
-            services.jobAttention.release(jobId);
+            services.jobAttention.release(jobId, status.execution ?? 0);
             result.released.push(jobId);
           }
         }
         return result;
       },
       waitStream: async function* (request) {
-        const endWait = services.jobAttention.beginWait(request.jobIds);
+        const endWait = services.jobAttention.beginWait(request.jobIds.flatMap(jobId => {
+          const admission = request.admissions?.find(entry => entry.jobId === jobId);
+          const execution = admission === undefined ? getProgressStore().readStatus(jobId)?.execution : admission.detail?.status.execution;
+          return execution == null ? [] : [{ jobId, execution }];
+        }));
         try {
           yield* jobAddressing.waitStream(request);
         } finally {

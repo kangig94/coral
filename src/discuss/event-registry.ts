@@ -1,3 +1,5 @@
+import { decodeBody } from '../store/body-codec.js';
+import type { EventsRow } from '../store/schema.js';
 import type { CoralEventInput } from '../store/envelope.js';
 import { CoralSetupError } from '../runtime/errors.js';
 import { defineDomainEvent, type DomainAppendValidator, type DomainEventRegistry } from '../store/reducers.js';
@@ -8,14 +10,14 @@ import {
   type JobOpenedBody,
   type JobExecutionRequestedBody,
 } from '../jobs/launch.js';
-import { readJobOpened, readLatestExecutionRequest } from '../jobs/execution-state.js';
+import { readJobOpened } from '../jobs/execution-state.js';
 import { createDiscussSnapshot } from './reducer.js';
 import {
+  isWithinLiveSessionBoundary,
   discussEventKinds,
   discussEventBodySchemas,
   discussEventType,
   type DiscussDomainEvent,
-  type DiscussAgentJobPurpose,
   type DiscussJournalBody,
   type PersistedDiscussSnapshot,
 } from './events.js';
@@ -114,6 +116,25 @@ function invalidDiscussionLink(message: string, context: Record<string, unknown>
 export const validateDiscussionJobLaunches: DomainAppendValidator = (ctx, inputs) => {
   const snapshots = new Map<string, PersistedDiscussSnapshot | undefined>();
   const opened = new Map<string, JobOpenedBody>();
+  const jobsByAgent = new Map<string, Map<string, string>>();
+  const jobsFor = (discussionId: string) => {
+    let agents = jobsByAgent.get(discussionId);
+    if (agents !== undefined) return agents;
+    agents = new Map();
+    const rows = ctx.db
+      .prepare<[string], EventsRow>(
+        `SELECT e.* FROM events e JOIN projection_jobs p ON p.job_id = e.stream_id
+       WHERE e.stream_kind = 'job' AND e.type = 'job.execution.requested' AND p.execution_owner = ?
+       ORDER BY e.seq`,
+      )
+      .all(JSON.stringify({ kind: 'discussion', id: discussionId }));
+    for (const row of rows) {
+      const request = decodeBody(row, jobExecutionRequestedBodySchema, ctx.readCtx);
+      if (request.discussionRun !== undefined) agents.set(request.discussionRun.agent, row.stream_id);
+    }
+    jobsByAgent.set(discussionId, agents);
+    return agents;
+  };
   const closing = new Set(
     inputs.filter((input) => input.type === 'discuss.session.ended').map((input) => input.stream.id),
   );
@@ -154,15 +175,18 @@ export const validateDiscussionJobLaunches: DomainAppendValidator = (ctx, inputs
     const job = opened.get(input.stream.id) ?? readJobOpened(ctx.db, input.stream.id, ctx.readCtx);
     if (job === null || job.owner.kind !== 'discussion') continue;
     const snapshot = snapshotFor(job.owner.id);
+    const reservedJob =
+      request.discussionRun === undefined ? undefined : jobsFor(job.owner.id).get(request.discussionRun.agent);
     const run =
       request.discussionRun === undefined ? undefined : snapshot?.runtime.agentRuns[request.discussionRun.agent];
     if (
       job.jobKind !== 'provider' ||
       snapshot === undefined ||
-      snapshot.state.status === 'ended' ||
+      !isWithinLiveSessionBoundary(snapshot) ||
       closing.has(job.owner.id) ||
       job.projectRoot !== snapshot.projectRoot ||
       run?.provider !== job.conversation.provider ||
+      (reservedJob !== undefined && reservedJob !== input.stream.id) ||
       (request.execution > 1
         ? run.jobId !== input.stream.id
         : run.jobId !== undefined && run.jobId !== input.stream.id) ||
@@ -176,13 +200,49 @@ export const validateDiscussionJobLaunches: DomainAppendValidator = (ctx, inputs
         remediation: 'Continue only the job bound to that agent in the open owning discussion.',
       });
     }
+    jobsFor(job.owner.id).set(request.discussionRun!.agent, input.stream.id);
   }
 };
 
 const validateDiscussionJobLinks: DomainAppendValidator = (ctx, inputs) => {
   const snapshots = new Map<string, PersistedDiscussSnapshot | undefined>();
   const jobs = new Map<string, JobOpenedBody>();
-  const requests = new Map<string, JobExecutionRequestedBody>();
+  const requests = new Map<string, Map<number, JobExecutionRequestedBody>>();
+  const started = new Map<string, Set<string>>();
+  const requestsFor = (jobId: string) => {
+    let executions = requests.get(jobId);
+    if (executions !== undefined) return executions;
+    executions = new Map();
+    const rows = ctx.db
+      .prepare<
+        [string],
+        EventsRow
+      >("SELECT * FROM events WHERE stream_kind = 'job' AND stream_id = ? AND type = 'job.execution.requested' ORDER BY seq")
+      .all(jobId);
+    for (const row of rows) {
+      const request = decodeBody(row, jobExecutionRequestedBodySchema, ctx.readCtx);
+      executions.set(request.execution, request);
+    }
+    requests.set(jobId, executions);
+    return executions;
+  };
+  const startedFor = (discussionId: string) => {
+    let executions = started.get(discussionId);
+    if (executions !== undefined) return executions;
+    executions = new Set();
+    const rows = ctx.db
+      .prepare<
+        [string],
+        EventsRow
+      >("SELECT * FROM events WHERE stream_kind = 'discuss' AND stream_id = ? AND type = 'discuss.agent.job.started' ORDER BY seq")
+      .all(discussionId);
+    for (const row of rows) {
+      const start = decodeBody(row, discussEventBodySchemas['agent.job.started'], ctx.readCtx);
+      executions.add(`${start.jobId}:${start.execution}`);
+    }
+    started.set(discussionId, executions);
+    return executions;
+  };
   const snapshotFor = (id: string) => {
     if (!snapshots.has(id)) snapshots.set(id, readProjectionDiscuss(ctx.db, id)?.state);
     return snapshots.get(id);
@@ -193,7 +253,8 @@ const validateDiscussionJobLinks: DomainAppendValidator = (ctx, inputs) => {
       continue;
     }
     if (input.type === 'job.execution.requested') {
-      requests.set(input.stream.id, jobExecutionRequestedBodySchema.parse(input.body));
+      const request = jobExecutionRequestedBodySchema.parse(input.body);
+      requestsFor(input.stream.id).set(request.execution, request);
       continue;
     }
     if (input.type === 'discuss.session.created') {
@@ -228,11 +289,15 @@ const validateDiscussionJobLinks: DomainAppendValidator = (ctx, inputs) => {
     const snapshot = snapshotFor(input.stream.id);
     const run = snapshot?.runtime.agentRuns[body.agent];
     const job = jobs.get(body.jobId) ?? readJobOpened(ctx.db, body.jobId, ctx.readCtx);
-    const request = requests.get(body.jobId) ?? readLatestExecutionRequest(ctx.db, body.jobId, ctx.readCtx)?.request;
+    const executions = requestsFor(body.jobId);
+    const request = 'execution' in body ? executions.get(body.execution) : executions.get(1);
     if (
       run === undefined ||
       job?.owner.kind !== 'discussion' ||
       job.owner.id !== input.stream.id ||
+      job.projectRoot !== snapshot?.projectRoot ||
+      job.jobKind !== 'provider' ||
+      run.provider !== job.conversation.provider ||
       request?.discussionRun?.agent !== body.agent
     ) {
       throw invalidDiscussionLink('Discussion job linkage requires its owning aggregate and agent descriptor.', {
@@ -241,7 +306,12 @@ const validateDiscussionJobLinks: DomainAppendValidator = (ctx, inputs) => {
       });
     }
     if (input.type === 'discuss.agent.run.bound') {
-      if (run.jobId !== undefined && run.jobId !== body.jobId)
+      if (
+        (run.jobId !== undefined && run.jobId !== body.jobId) ||
+        Object.entries(snapshot!.runtime.agentRuns).some(
+          ([agent, other]) => agent !== body.agent && other.jobId === body.jobId,
+        )
+      )
         throw invalidDiscussionLink('An agent run cannot change its bound job.', { jobId: body.jobId });
       run.jobId = body.jobId;
     } else if (input.type === 'discuss.agent.job.started') {
@@ -249,6 +319,8 @@ const validateDiscussionJobLinks: DomainAppendValidator = (ctx, inputs) => {
       if (
         run.jobId !== start.jobId ||
         run.currentJobId !== undefined ||
+        startedFor(input.stream.id).has(`${start.jobId}:${start.execution}`) ||
+        (start.execution > 1 && !startedFor(input.stream.id).has(`${start.jobId}:${start.execution - 1}`)) ||
         request.execution !== start.execution ||
         request.discussionRun.purpose !== start.purpose ||
         request.discussionRun.attempt !== start.attempt
@@ -258,6 +330,7 @@ const validateDiscussionJobLinks: DomainAppendValidator = (ctx, inputs) => {
           execution: start.execution,
         });
       }
+      startedFor(input.stream.id).add(`${start.jobId}:${start.execution}`);
       run.currentJobId = start.jobId;
       run.currentExecution = start.execution;
       run.currentJobPurpose = start.purpose;
@@ -276,7 +349,9 @@ const validateDiscussionJobLinks: DomainAppendValidator = (ctx, inputs) => {
       run.currentJobId = undefined;
       run.currentExecution = undefined;
       run.currentJobPurpose = undefined;
-      run.currentAttempt = undefined;
+      run.currentAttempt = end.attempt;
+      run.lastAttemptPurpose = request.discussionRun.purpose;
+      run.lastAttemptOutcome = end.outcome;
     }
   }
 };

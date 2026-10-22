@@ -33,6 +33,7 @@ export interface AppendContext {
   reducers: ComposedReducers;
   bodyCodec: EventBodyCodec;
   beforeAppend?: (input: ResolvableCoralEventInput<unknown, unknown>) => void;
+  withCommitGuard?: <T>(action: () => T) => T;
   /**
    * Required. Production composes the port from `providers/catalog.ts`
    * (`providerLookupPortFromCatalog`). Tests that don't exercise provider
@@ -445,5 +446,6 @@ export function commit(
   cb: <Scope>(c: CommitContext<Scope>) => CommitClosureResult,
   ctx: AppendContext,
 ): AppendedEvent[] {
-  return withImmediate(db, () => commitWithinOpenTransaction(db, cb, ctx));
+  const write = () => withImmediate(db, () => commitWithinOpenTransaction(db, cb, ctx));
+  return ctx.withCommitGuard === undefined ? write() : ctx.withCommitGuard(write);
 }

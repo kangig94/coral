@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { jobExecutionRequestedBodySchema } from './launch.js';
 
 import { errorMessage } from '../infra/error-format.js';
 import type { JobProgressStore } from './contracts/job-store.js';
@@ -115,9 +116,15 @@ export function terminalizeProviderOperation(
 ): ProviderOperationTerminalizationResult {
   const status = store.readStatus(record.operation.jobId);
   const launch = store.readLaunchProjection(record.operation.jobId);
-  if (status === null || status.conversationJobId === null || launch === null) {
+  if (status === null || launch === null || status.execution !== launch.execution) {
     throw new ProviderOperationTerminalMetadataError(record.operation);
   }
+  if (status.finishing === true) throw new Error('An accepted outcome belongs to the execution finalizer.');
+  const anchored = store.getDb().prepare<[number, string], { body: Uint8Array }>(
+    "SELECT body FROM events WHERE seq = ? AND stream_kind = 'job' AND stream_id = ? AND type = 'job.execution.requested'",
+  ).get(record.jobLaunchEventSeq, record.operation.jobId);
+  if (anchored === undefined || jobExecutionRequestedBodySchema.parse(JSON.parse(Buffer.from(anchored.body).toString('utf8'))).execution !== status.execution)
+    throw new ProviderOperationTerminalMetadataError(record.operation);
   const durationMs = elapsedDurationMs(launch.createdAt, nowMs, `job ${record.operation.jobId}`);
   let result: ProviderOperationTerminalizationResult | null = null;
 

@@ -82,10 +82,10 @@ export function materializeProviderOperationPrepare(
   }
 
   const session = deps.readSession(operation.jobId);
-  if (session === null || session.execution !== source.execution || !session.open) {
+  if (session === null || session.execution !== source.execution || !session.open || session.finishing) {
     return materializationRefusal(
       'prepare_materialization_refused',
-      'Provider operation session snapshot is unavailable at its journaled version.',
+      'Provider operation does not own the open requested execution.',
     );
   }
   if (source.platform !== deps.runtime.env.platform()) {

@@ -29,7 +29,7 @@ function createDaemonJobAbortProxyRegistry({
       runtime.time.clearTimeout(tracked.cleanupTimer);
       state.daemonOwnedKbJobs.delete(jobId);
     }
-    internalJobAbortRegistry.remove(jobId);
+    internalJobAbortRegistry.remove(jobId, 1);
     if (state.daemonOwnedKbJobs.size === 0) {
       disposeDaemonJobTerminalListeners();
     }
@@ -43,8 +43,8 @@ function createDaemonJobAbortProxyRegistry({
   const onDaemonJobPhaseChanged = (event: { jobId: string; phase: string }): void => {
     cleanupTerminalDaemonJobAbortProxy(event.jobId, event.phase);
   };
-  const onDaemonJobCompleted = (event: { jobId: string }): void => {
-    if (!state.daemonOwnedKbJobs.has(event.jobId)) {
+  const onDaemonJobCompleted = (event: { jobId: string; execution: number }): void => {
+    if (event.execution !== 1 || !state.daemonOwnedKbJobs.has(event.jobId)) {
       return;
     }
     cleanupDaemonJobAbortProxy(event.jobId);
@@ -73,7 +73,7 @@ function createDaemonJobAbortProxyRegistry({
     }, KB_DAEMON_JOB_ABORT_PROXY_TTL_MS);
     cleanupTimer.unref?.();
     state.daemonOwnedKbJobs.set(jobId, { cleanupTimer });
-    internalJobAbortRegistry.register(jobId, () => {
+    internalJobAbortRegistry.register(jobId, 1, () => {
       const tracked = state.daemonOwnedKbJobs.get(jobId);
       if (tracked !== undefined) {
         runtime.time.clearTimeout(tracked.cleanupTimer);

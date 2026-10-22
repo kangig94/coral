@@ -85,15 +85,17 @@ const sessionEnded = typedDescriber(discussSessionEndedBodySchema, (body) => {
 const sessionSynthesized = typedDescriber(discussSessionSynthesizedBodySchema, () => 'Discuss synthesis recorded.');
 const agentRunBound = typedDescriber(
   discussAgentRunBoundBodySchema,
-  (body) => `Discuss agent ${body.agent} bound to execution session ${body.executionJobId}.`,
+  (body) => `Discuss agent ${body.agent} bound to job ${body.jobId}.`,
 );
 const agentJobStarted = typedDescriber(
   discussAgentJobStartedBodySchema,
-  (body) => `Discuss agent ${body.agent} started ${body.purpose} job ${body.jobId} (attempt ${body.attempt}).`,
+  (body) =>
+    `Discuss agent ${body.agent} started ${body.purpose} job ${body.jobId} execution #${body.execution} (attempt ${body.attempt}).`,
 );
 const agentJobFinished = typedDescriber(
   discussAgentJobFinishedBodySchema,
-  (body) => `Discuss agent ${body.agent} job ${body.jobId} ${describeOutcome(body.outcome)} (attempt ${body.attempt}).`,
+  (body) =>
+    `Discuss agent ${body.agent} job ${body.jobId} execution #${body.execution} ${describeOutcome(body.outcome)} (attempt ${body.attempt}).`,
 );
 
 export const discussEventDescribers: EventDescriberMap = new Map<string, EventDescriber>([

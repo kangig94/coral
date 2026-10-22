@@ -221,7 +221,7 @@ export const launchPermitDiagnosticsSchema = z
           z
             .object({
               jobId: z.string().min(1),
-              cause: z.enum(['terminal-persist-failed', 'claim-release-failed', 'claim-already-reassigned']),
+              cause: z.literal('terminal-persist-failed'),
               error: z.string().min(1),
               observedAtMs: z.number().finite().nonnegative(),
             })
@@ -457,6 +457,7 @@ export interface EventStreamHandlers {
   onProgress: (payload: { jobId: string; seq: number; message: string }) => void;
   onCompleted: (payload: {
     jobId: string;
+    execution: number;
     result: JobTerminal;
     costUsd?: number;
     tokenUsage?: {

@@ -1278,6 +1278,7 @@ function createDurableTransportAbortSignal(
   if (ownership.kind === 'internal' && transportAbortController !== null) {
     ownership.abortRegistry.register(
       permit.jobId,
+      1,
       () => transportAbortController.abort(),
       () => releaseLaunch(permit),
     );
@@ -1343,7 +1344,7 @@ async function runDurableTransportLaunch(
     if (state.forwardExternalAbort !== null) options.signal?.removeEventListener('abort', state.forwardExternalAbort);
     if (ownership.kind === 'internal') {
       void releaseLaunch(permit);
-      ownership.abortRegistry.remove(permit.jobId);
+      ownership.abortRegistry.remove(permit.jobId, 1);
     }
   }
 }

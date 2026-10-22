@@ -11,8 +11,7 @@ import type { JobLifecycleFault, JobProgressFault } from '../../../jobs/outcome.
 import type { JobStore } from '../../../jobs/store.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import type { JobEventBus } from '../../../jobs/event-bus.js';
-import type { CommitContext, CommitEventsFn } from '../../../store/append.js';
-import type { CoralEventInput } from '../../../store/envelope.js';
+import type { CommitEventsFn } from '../../../store/append.js';
 import type {
   RecoveryDisposition,
   RecoveryFault,
@@ -63,7 +62,6 @@ export type CoordinatorSettlementOptions = Readonly<{
   terminal: CoordinatorTerminalSettlement;
   coordinatorCommit: CommitEventsFn;
   nowMs: number;
-  emitSessionReleased(payload: { conversationJobId: string; jobId: string }): void;
 }>;
 
 class CoordinatorRecoveryCommitError extends Error {
@@ -159,7 +157,7 @@ export function createRecoveryWalk(
     ): readonly RecoverySettlementFact[];
   }>,
 ) {
-  const { progressStore, runtime, eventBus, log, quarantine, source, settleCoordinatorRecoveryItem } = deps;
+  const { progressStore, runtime, log, quarantine, source, settleCoordinatorRecoveryItem } = deps;
 
   const reportCoordinatorRecovery = (
     summary: string,
@@ -208,7 +206,7 @@ export function createRecoveryWalk(
         },
       },
       hydrate: (raw) => hydrateCoordinatorRecoveryItem(raw, progressStore),
-      requiredObligations: () => [COORDINATOR_TERMINAL_OBLIGATION, COORDINATOR_CLAIM_RELEASE_OBLIGATION],
+      requiredObligations: () => [COORDINATOR_TERMINAL_OBLIGATION],
       settle: async (item) => {
         const controls: CoordinatorRecoveryControls = {
           report: (message: string) => messages.push(message),
@@ -275,20 +273,6 @@ export function createRecoveryWalk(
       terminal: { kind: 'fault', fault, content },
       coordinatorCommit,
       nowMs: runtime.time.now(),
-      emitSessionReleased: (payload) => eventBus.emit('session:released', payload),
-    });
-
-  const settleClaim = (
-    item: CoordinatorRecoveryItem,
-    jobId: string,
-    coordinatorCommit: CommitEventsFn,
-  ): readonly RecoverySettlementFact[] =>
-    settleCoordinatorRecoveryItem(item, {
-      jobId,
-      terminal: { kind: 'none' },
-      coordinatorCommit,
-      nowMs: runtime.time.now(),
-      emitSessionReleased: (payload) => eventBus.emit('session:released', payload),
     });
 
   const isUninterpretableRecord = (error: unknown): boolean =>
@@ -327,7 +311,6 @@ export function createRecoveryWalk(
     createCoordinatorJobRecoveryPolicy,
     deleteCoordinatorRecoveryQuarantine,
     runCoordinatorWalk,
-    settleClaim,
     settleCoordinatorRecoveryItem,
     settleFault,
     settleUnexpectedRecoveryFailure,

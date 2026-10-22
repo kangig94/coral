@@ -228,8 +228,8 @@ export class ChildPrincipalRegistry {
     }
   }
 
-  revokeParentJob(parentJobId: string): void {
-    this.forget((record) => record.parentJobId === parentJobId);
+  revokeParentJob(parentJobId: string, execution: number): void {
+    this.forget((record) => record.parentJobId === parentJobId && record.execution === execution);
   }
 
 

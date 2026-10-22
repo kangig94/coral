@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { providerScopeSchema, type ProviderScope } from '../infra/provider-scope.js';
 import { discussionJobPurposes } from '../jobs/discussion-run.js';
+import { executionOrdinalSchema } from '../jobs/launch.js';
 
 import { participationTypes, resolveReasons, type DiscussCreateInput, type DiscussState } from './session-types.js';
 
@@ -204,7 +205,7 @@ const agentJobStartedPayloadSchema = z
   .object({
     agent: z.string(),
     jobId: z.string().uuid(),
-    execution: z.number().int().positive().safe(),
+    execution: executionOrdinalSchema,
     purpose: z.enum(discussAgentJobPurposes),
     attempt: z.number().int().positive(),
   })
@@ -214,7 +215,7 @@ const agentJobFinishedPayloadSchema = z
   .object({
     agent: z.string(),
     jobId: z.string().uuid(),
-    execution: z.number().int().positive().safe(),
+    execution: executionOrdinalSchema,
     outcome: z.enum(discussAgentJobOutcomes),
     attempt: z.number().int().positive(),
   })
@@ -439,6 +440,7 @@ export interface PersistedDiscussAgentRun {
   currentJobPurpose?: DiscussAgentJobPurpose;
   currentAttempt?: number;
   lastAttemptOutcome?: DiscussAgentJobOutcome;
+  lastAttemptPurpose?: DiscussAgentJobPurpose;
 }
 
 export interface PersistedDiscussRuntime {
@@ -452,14 +454,30 @@ const persistedDiscussAgentRunSchema = z
   .object({
     provider: z.string(),
     model: z.string(),
-    jobId: z.string().optional(),
-    currentJobId: z.string().optional(),
-    currentExecution: z.number().int().positive().safe().optional(),
+    jobId: z.string().uuid().optional(),
+    currentJobId: z.string().uuid().optional(),
+    currentExecution: executionOrdinalSchema.optional(),
     currentJobPurpose: z.enum(discussAgentJobPurposes).optional(),
     currentAttempt: z.number().int().positive().optional(),
     lastAttemptOutcome: z.enum(discussAgentJobOutcomes).optional(),
+    lastAttemptPurpose: z.enum(discussAgentJobPurposes).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((run, ctx) => {
+    if (
+      run.currentJobId === undefined
+        ? run.currentExecution !== undefined
+        : run.currentJobId !== run.jobId ||
+          run.currentExecution === undefined ||
+          run.currentJobPurpose === undefined ||
+          run.currentAttempt === undefined
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'An active discussion turn requires its bound job, execution, purpose and attempt.',
+      });
+    }
+  });
 
 export const persistedDiscussRuntimeSchema: z.ZodType<PersistedDiscussRuntime> = z
   .object({

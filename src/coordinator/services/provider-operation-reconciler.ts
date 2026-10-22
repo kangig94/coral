@@ -1,3 +1,4 @@
+import { isTerminalPhase } from '../../jobs/phase.js';
 import { startRecoveryPhase } from '../../recovery/phase-observation.js';
 import { observeDatabaseReads } from '../../recovery/read-observation.js';
 import { ControlClientError } from '../../provider-proxy/control-client.js';
@@ -1725,6 +1726,7 @@ export class ProviderOperationReconciler
       providerOperationRecordSchema.parse({
         version: record.version,
         operation: record.operation,
+        jobLaunchEventSeq: record.jobLaunchEventSeq,
         locator: record.locator,
         prepareAttemptNumber: record.prepareAttemptNumber,
         prepareAttemptKey: record.prepareAttemptKey,
@@ -2142,6 +2144,8 @@ export class ProviderOperationReconciler
     authority: DurableProviderProxyOperationAuthority,
   ): Promise<ProviderOperationRecord | null> {
     try {
+      if (record.settlementFailure.containmentRequested)
+        this.#deps.requestContainment(authority.setIdentity, 'provider_settlement_retries_exhausted');
       const released = await this.#awaitAuthority(
         authority.settleOperation(record.operation, record.terminalProviderSeq),
       );
@@ -2150,7 +2154,7 @@ export class ProviderOperationReconciler
         settledThroughProviderSeq: released.settledThroughProviderSeq,
       });
       if (verdict.kind !== 'released-after-terminal') {
-        await this.#recordRetry(record, new Error('Settlement acknowledgement did not cover the terminal watermark.'));
+        await this.#recordSettlementFailure(record, authority, new Error('Settlement acknowledgement did not cover the terminal watermark.'));
         return null;
       }
       const deleted = this.#deleteSettledOperation(record);
@@ -2159,9 +2163,30 @@ export class ProviderOperationReconciler
       this.#completeTerminalized(record);
       return null;
     } catch (error: unknown) {
-      await this.#recordRetry(record, error);
+      await this.#recordSettlementFailure(record, authority, error);
       return null;
     }
+  }
+
+  async #recordSettlementFailure(
+    record: Extract<ProviderOperationRecord, { phase: 'settlement-pending' }>,
+    authority: DurableProviderProxyOperationAuthority,
+    error: unknown,
+  ): Promise<void> {
+    const now = this.#deps.time.now();
+    const elapsedMs = record.settlementFailure.elapsedMs + Math.max(0, now - record.settlementFailure.observedAtMs);
+    const containmentRequested = record.settlementFailure.containmentRequested || elapsedMs >= PRE_EXECUTION_FAILURE_BOUND_MS;
+    const next = this.#transition(record, providerOperationRecordSchema.parse({
+      ...record,
+      settlementFailure: { elapsedMs, observedAtMs: now, containmentRequested },
+      revision: record.revision + 1,
+      retryCount: record.retryCount + 1,
+      retryNotBeforeMs: now + retryDelayMs(record.retryCount),
+      lastError: { observedAtMs: now, code: providerOperationErrorCode(error), message: providerOperationErrorReason(error) },
+    }));
+    if (next !== null) this.#schedule(retryDelayMs(record.retryCount));
+    if (next?.phase === 'settlement-pending' && containmentRequested)
+      this.#deps.requestContainment(authority.setIdentity, 'provider_settlement_retries_exhausted');
   }
 
   async #consumeContainmentDisappearance(
@@ -2369,6 +2394,7 @@ export class ProviderOperationReconciler
     const validated = providerOperationRecordSchema.safeParse({
       version: record.version,
       operation: record.operation,
+      jobLaunchEventSeq: record.jobLaunchEventSeq,
       locator: record.locator,
       prepareAttemptNumber: record.prepareAttemptNumber,
       prepareAttemptKey: record.prepareAttemptKey,
@@ -2397,9 +2423,9 @@ export class ProviderOperationReconciler
     if (next.phase !== 'executing') throw new Error('Executing journal transition failed validation.');
 
     const progressStore = this.#deps.getProgressStore();
-    const launch = readProviderOperationJobLaunch(progressStore, record.operation.jobId);
+    const launch = readProviderOperationJobLaunch(progressStore, record.operation.jobId, record.jobLaunchEventSeq);
     const status = progressStore.readStatus(record.operation.jobId);
-    if (status === null || status.conversationJobId === null || status.conversationJobId !== launch.conversationJobId) {
+    if (status === null || status.execution !== launch.execution || status.finishing === true || isTerminalPhase(status.phase)) {
       throw new Error('Provider operation runtime publication lacks matching durable job metadata.');
     }
     if (launch.provider !== activationAck.hostRef.provider) {
@@ -2413,12 +2439,13 @@ export class ProviderOperationReconciler
       }
       updated = true;
       commit.append({
-        type: 'job.runtime.started',
+        type: 'job.execution.started',
         stream: { kind: 'job', id: record.operation.jobId },
         namespace: status.backendNamespace,
         project: status.projectRoot,
         refs: buildJobEventRefs({ jobId: record.operation.jobId, }),
         body: {
+          execution: launch.execution,
           transport: 'app-server',
           startedAt: activationAck.startedAt,
           providerMeta: {
@@ -2589,7 +2616,7 @@ export class ProviderOperationReconciler
     authority: DurableProviderProxyOperationAuthority,
   ): ExecutingRegistration {
     this.#assertActiveDrive();
-    const launch = readProviderOperationJobLaunch(this.#deps.getProgressStore(), record.operation.jobId);
+    const launch = readProviderOperationJobLaunch(this.#deps.getProgressStore(), record.operation.jobId, record.jobLaunchEventSeq);
     const cleanup = providerOperationCleanupIdentity(launch);
     const control = authority.buildOperationControl(record.operation);
     const binding = this.#deps.binding.commitProviderOperationBinding(record.operation);
@@ -2616,6 +2643,7 @@ export class ProviderOperationReconciler
     const next = providerOperationRecordSchema.parse({
       version: record.version,
       operation: record.operation,
+      jobLaunchEventSeq: record.jobLaunchEventSeq,
       locator: record.locator,
       prepareAttemptNumber: record.prepareAttemptNumber,
       prepareAttemptKey: record.prepareAttemptKey,
@@ -2642,6 +2670,7 @@ export class ProviderOperationReconciler
     const next = providerOperationRecordSchema.parse({
       version: record.version,
       operation: record.operation,
+      jobLaunchEventSeq: record.jobLaunchEventSeq,
       locator: record.locator,
       prepareAttemptNumber: record.prepareAttemptNumber,
       prepareAttemptKey: record.prepareAttemptKey,

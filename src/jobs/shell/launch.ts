@@ -146,8 +146,6 @@ function releasesLaunchPermit(disposition: JobExecutionDisposition): boolean {
   }
   switch (disposition.cause) {
     case 'terminal-persist-failed':
-    case 'claim-release-failed':
-    case 'claim-already-reassigned':
       return true;
   }
 }
@@ -240,10 +238,13 @@ type ProviderLaunchOptions = {
   discussionRun?: DiscussionRunDescriptor;
 };
 
+function executionKey(jobId: string, execution: number): string { return `${jobId}:${execution}`; }
+
 export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
   // Tracks every admitted app-server job before its first asynchronous
   // preparation boundary. Quiesce-for-handoff acts on this set; CLI/durable
   // jobs not in the set keep the existing handoff preservation behavior.
+  private readonly runTasks = new Set<string>();
   private readonly appServerJobs = new Set<string>();
   private readonly localAppServerExecutions = new Set<string>();
   // Once handoff quiesces a job, the dying generation must perform no
@@ -258,16 +259,16 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
     this.deps = deps;
   }
 
-  holdsLocalAppServerExecution(jobId: string): boolean {
-    return this.localAppServerExecutions.has(jobId) && !this.quiescedAppServerJobs.has(jobId);
+  holdsLocalAppServerExecution(jobId: string, execution: number): boolean {
+    return this.localAppServerExecutions.has(executionKey(jobId, execution)) && !this.quiescedAppServerJobs.has(executionKey(jobId, execution));
   }
 
   releaseProviderOperationLocalState(identity: ProviderOperationCleanupIdentity): boolean {
-    const { jobId } = identity;
+    const { jobId, execution } = identity;
     const ownsLocalState =
-      this.deps.abortRegistry.getSignal(jobId) !== null ||
-      this.appServerJobs.has(jobId) ||
-      this.appServerHandoffAborts.has(jobId);
+      this.deps.abortRegistry.getSignal(jobId, execution) !== null ||
+      this.appServerJobs.has(executionKey(jobId, execution)) ||
+      this.appServerHandoffAborts.has(executionKey(jobId, execution));
     if (!ownsLocalState) return false;
 
     switch (identity.kind) {
@@ -282,10 +283,10 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
       case 'job-local':
         break;
     }
-    this.deps.abortRegistry.remove(jobId);
-    this.appServerJobs.delete(jobId);
-    this.localAppServerExecutions.delete(jobId);
-    this.appServerHandoffAborts.delete(jobId);
+    this.deps.abortRegistry.remove(jobId, execution);
+    this.appServerJobs.delete(executionKey(jobId, execution));
+    this.localAppServerExecutions.delete(executionKey(jobId, execution));
+    this.appServerHandoffAborts.delete(executionKey(jobId, execution));
     return true;
   }
 
@@ -301,35 +302,35 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
     await Promise.allSettled(writes);
   }
 
-  private trackAppServerWrite<T>(jobId: string, operation: () => Promise<T>): Promise<T> {
+  private trackAppServerWrite<T>(jobId: string, execution: number, operation: () => Promise<T>): Promise<T> {
     // Install the fence entry before invoking any persistence code. The
     // operation may synchronously trigger observers that begin handoff.
     const write = Promise.resolve().then(operation);
-    const writes = this.inFlightAppServerWrites.get(jobId) ?? new Set<Promise<unknown>>();
-    this.inFlightAppServerWrites.set(jobId, writes);
+    const writes = this.inFlightAppServerWrites.get(executionKey(jobId, execution)) ?? new Set<Promise<unknown>>();
+    this.inFlightAppServerWrites.set(executionKey(jobId, execution), writes);
     writes.add(write);
     void write
       .finally(() => {
         writes.delete(write);
-        if (writes.size === 0) this.inFlightAppServerWrites.delete(jobId);
+        if (writes.size === 0) this.inFlightAppServerWrites.delete(executionKey(jobId, execution));
       })
       .catch(() => undefined);
     return write;
   }
 
-  private preserveAppServerJobForHandoff(provider: BoundProvider, jobId: string): boolean {
+  private preserveAppServerJobForHandoff(provider: BoundProvider, jobId: string, execution: number): boolean {
     if (!this.appServerHandoffQuiesced || provider.appServer === undefined) return false;
-    this.quiescedAppServerJobs.add(jobId);
+    this.quiescedAppServerJobs.add(executionKey(jobId, execution));
     return true;
   }
 
-  private registerAppServerJob(provider: BoundProvider, jobId: string, jobSignal: AbortSignal): AbortSignal {
+  private registerAppServerJob(provider: BoundProvider, jobId: string, execution: number, jobSignal: AbortSignal): AbortSignal {
     if (provider.appServer === undefined) return jobSignal;
-    this.appServerJobs.add(jobId);
+    this.appServerJobs.add(executionKey(jobId, execution));
     const handoffAbort = new AbortController();
-    this.appServerHandoffAborts.set(jobId, handoffAbort);
+    this.appServerHandoffAborts.set(executionKey(jobId, execution), handoffAbort);
     if (this.appServerHandoffQuiesced) {
-      this.quiescedAppServerJobs.add(jobId);
+      this.quiescedAppServerJobs.add(executionKey(jobId, execution));
       handoffAbort.abort(new Error('App-server execution quiesced for daemon handoff.'));
     }
     return AbortSignal.any([jobSignal, handoffAbort.signal]);
@@ -451,6 +452,8 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
   ): ProviderJobLaunchDecision {
     const jobId = conversation.jobId;
     const execution = conversation.execution + 1;
+    if (this.runTasks.has(executionKey(jobId, conversation.execution)))
+      return refuseLaunch('execution_finishing', `Execution #${conversation.execution} of ${jobId} is still completing cleanup. Wait for it to finish.`);
     const pool = opts.pool ?? 'default';
     const admission = this.reserveAdmission(jobId, provider.name, opts.owner, pool,
       opts.owner.kind === 'workflow' || opts.owner.kind === 'discussion');
@@ -465,6 +468,9 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
         jobId,
         coralEnv: { ...request.coralEnv, CORAL_JOB_ID: jobId },
       };
+      this.deps.progressStore.withExecutionAdmission(jobId, execution, {
+        projectRoot: conversation.projectRoot, workDir: conversation.cwd, jobKind: 'provider',
+      }, () => {
       this.deps.coordinatorCommit(commit => {
         const current = this.deps.conversationManager.readById(jobId, { forceFresh: true });
         if (conversation.execution === 0 ? current !== null
@@ -504,6 +510,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
             : { execution, queuePosition: 0 },
         });
         return undefined;
+      });
       });
       this.activateCommittedProviderLaunch({ provider, conversationJobId: jobId, jobId,
         execution, request: hostedRequest, admission, pool, mintProtectedEnv: opts.mintProtectedEnv });
@@ -552,8 +559,8 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
       // Registered before placement so the same signal governs either owner. Local execution observes the
       // signal directly; durable publication rechecks an already-aborted signal at insertion and records later
       // stops in the saga before the proxy can act on them.
-      this.registerLaunchAbort(input.jobId, input.admission);
-      if (this.deps.abortRegistry.getSignal(input.jobId) === null) {
+      this.registerLaunchAbort(input.jobId, input.execution, input.admission);
+      if (this.deps.abortRegistry.getSignal(input.jobId, input.execution) === null) {
         throw new Error(`Abort registration produced no signal for committed job ${input.jobId}.`);
       }
       this.deps.runtime.storage.mkdirSync(this.deps.progressStore.jobDir(input.jobId), { recursive: true });
@@ -582,7 +589,8 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
     admission: AcceptedAdmission,
     error: unknown,
   ): Promise<void> {
-    const signal = this.deps.abortRegistry.getSignal(jobId) ?? new AbortController().signal;
+    const execution = this.requireExecution(jobId);
+    const signal = this.deps.abortRegistry.getSignal(jobId, execution) ?? new AbortController().signal;
     let disposition: JobExecutionDisposition = 'terminalized';
     try {
       disposition = await this.handleProviderJobErrorOnceWritable(jobId, conversationJobId, signal, error);
@@ -596,11 +604,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
 
     if (disposition === 'recovery-held') return;
 
-    this.deps.abortRegistry.remove(jobId);
-    try {
-    } catch (cleanupError: unknown) {
-      backendLog.error(`Failed to release session claim for setup-failed job ${jobId}: ${errorMessage(cleanupError)}`);
-    }
+    this.deps.abortRegistry.remove(jobId, execution);
     this.releaseAdmissionReservation(admission);
   }
 
@@ -614,20 +618,22 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
     protectedEnv?: ProviderOperationEnvironmentInput,
   ): void {
     const { abortRegistry, launchAdmission } = this.deps;
-    const signal = abortRegistry.getSignal(jobId);
+    const execution = this.requireExecution(jobId);
+    const signal = abortRegistry.getSignal(jobId, execution);
     if (!signal) {
       this.releaseAdmissionReservation(admission);
       return;
     }
 
-    const executionSignal = this.registerAppServerJob(provider, jobId, signal);
+    const executionSignal = this.registerAppServerJob(provider, jobId, execution, signal);
 
+    this.runTasks.add(executionKey(jobId, execution));
     void (async () => {
       let permit = admission.type === 'immediate' ? admission.permit : null;
       let disposition: JobExecutionDisposition = 'terminalized';
 
       try {
-        if (this.preserveAppServerJobForHandoff(provider, jobId)) {
+        if (this.preserveAppServerJobForHandoff(provider, jobId, execution)) {
           disposition = 'handed-off';
           return;
         }
@@ -639,7 +645,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
           }
 
           permit = queueOutcome.permit;
-          if (this.preserveAppServerJobForHandoff(provider, jobId)) {
+          if (this.preserveAppServerJobForHandoff(provider, jobId, execution)) {
             disposition = 'handed-off';
             return;
           }
@@ -650,13 +656,13 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
           throw new Error(`Launch permit for ${jobId} does not match its admitted pool.`);
         }
 
-        disposition = await this.executeJob(provider, request, jobId, conversationJobId, executionSignal, permit, protectedEnv);
+        disposition = await this.executeJob(provider, request, jobId, execution, conversationJobId, executionSignal, permit, protectedEnv);
       } catch (error: unknown) {
         if (error instanceof TerminalWriteError) {
           backendLog.error(error.message, error.cause);
           return;
         }
-        if (this.quiescedAppServerJobs.has(jobId)) {
+        if (this.quiescedAppServerJobs.has(executionKey(jobId, execution))) {
           disposition = 'handed-off';
           return;
         }
@@ -671,10 +677,11 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
         }
       } finally {
         if (permit !== null && releasesLaunchPermit(disposition)) void launchAdmission.releaseLaunch(permit);
-        this.appServerJobs.delete(jobId);
-        this.localAppServerExecutions.delete(jobId);
-        this.quiescedAppServerJobs.delete(jobId);
-        this.appServerHandoffAborts.delete(jobId);
+        this.appServerJobs.delete(executionKey(jobId, execution));
+        this.localAppServerExecutions.delete(executionKey(jobId, execution));
+        this.quiescedAppServerJobs.delete(executionKey(jobId, execution));
+        this.appServerHandoffAborts.delete(executionKey(jobId, execution));
+        this.runTasks.delete(executionKey(jobId, execution));
       }
     })();
   }
@@ -693,20 +700,22 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
     if (conversationJobId === null) {
       throw new Error(`Recovered queued job ${jobId} requires a provider session id.`);
     }
-    this.registerLaunchAbort(jobId, admission);
-    const signal = abortRegistry.getSignal(jobId);
+    const execution = launchRecord.execution;
+    this.registerLaunchAbort(jobId, execution, admission);
+    const signal = abortRegistry.getSignal(jobId, execution);
     if (!signal) {
       this.releaseAdmissionReservation(admission);
       return;
     }
 
-    const executionSignal = this.registerAppServerJob(provider, jobId, signal);
+    const executionSignal = this.registerAppServerJob(provider, jobId, execution, signal);
 
+    this.runTasks.add(executionKey(jobId, execution));
     void (async () => {
       let permit: LaunchPermit | null = null;
       let disposition: JobExecutionDisposition = 'terminalized';
       try {
-        if (this.preserveAppServerJobForHandoff(provider, jobId)) {
+        if (this.preserveAppServerJobForHandoff(provider, jobId, execution)) {
           disposition = 'handed-off';
           return;
         }
@@ -717,7 +726,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
         }
 
         permit = queueOutcome.permit;
-        if (this.preserveAppServerJobForHandoff(provider, jobId)) {
+        if (this.preserveAppServerJobForHandoff(provider, jobId, execution)) {
           disposition = 'handed-off';
           return;
         }
@@ -738,6 +747,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
           provider,
           toProviderRequest(launchRecord, session.conversationRef),
           jobId,
+          execution,
           conversationJobId,
           executionSignal,
           permit,
@@ -749,7 +759,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
           backendLog.error(error.message, error.cause);
           return;
         }
-        if (this.quiescedAppServerJobs.has(jobId)) {
+        if (this.quiescedAppServerJobs.has(executionKey(jobId, execution))) {
           disposition = 'handed-off';
           return;
         }
@@ -764,10 +774,11 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
         }
       } finally {
         if (permit !== null && releasesLaunchPermit(disposition)) void launchAdmission.releaseLaunch(permit);
-        this.appServerJobs.delete(jobId);
-        this.localAppServerExecutions.delete(jobId);
-        this.quiescedAppServerJobs.delete(jobId);
-        this.appServerHandoffAborts.delete(jobId);
+        this.appServerJobs.delete(executionKey(jobId, execution));
+        this.localAppServerExecutions.delete(executionKey(jobId, execution));
+        this.quiescedAppServerJobs.delete(executionKey(jobId, execution));
+        this.appServerHandoffAborts.delete(executionKey(jobId, execution));
+        this.runTasks.delete(executionKey(jobId, execution));
       }
     })();
   }
@@ -777,13 +788,14 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
   }
 
   async failJob(jobId: string, conversationJobId: string, terminal: JobTerminalInput): Promise<void> {
+    const execution = this.requireExecution(jobId);
     await this.writeJobTerminal(jobId, conversationJobId, terminal, 'error');
-    this.releaseTerminalJob(jobId, conversationJobId);
+    this.releaseTerminalJob(jobId, execution);
   }
 
-  private releaseTerminalJob(jobId: string, conversationJobId: string): void {
+  private releaseTerminalJob(jobId: string, execution: number): void {
     const { abortRegistry } = this.deps;
-    abortRegistry.remove(jobId);
+    abortRegistry.remove(jobId, execution);
   }
 
   private elapsedJobDurationMs(jobId: string): number {
@@ -835,6 +847,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
     provider: BoundProvider,
     request: ProviderRequest,
     jobId: string,
+    execution: number,
     conversationJobId: string,
     signal: AbortSignal,
     permit: LaunchPermit,
@@ -860,8 +873,9 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
         this.deps.providerRegistry.renderBindingFailure(continuity.failure),
       );
     }
+    this.readExecutionOrdinal(provider.name, conversationJobId, jobId, execution);
     const readiness = await provider.readiness('launch', this.deps.runtime.storage);
-    if (this.preserveAppServerJobForHandoff(provider, jobId)) return 'handed-off';
+    if (this.preserveAppServerJobForHandoff(provider, jobId, execution)) return 'handed-off';
     if (!readiness.ok) {
       throw new ProviderBindingRuntimeError(
         readiness.failure,
@@ -901,7 +915,6 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
       continuity.value,
       equippedTools,
     );
-    const execution = this.readExecutionOrdinal(provider.name, conversationJobId, jobId);
     try {
       const providerStream = await this.executePreparedProvider(prepared, {
         provider,
@@ -920,7 +933,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
         throw new Error('App-server placement was cancelled without an aborted launch signal.');
       }
       if (providerStream.kind === 'terminalized') {
-        this.releaseTerminalJob(jobId, conversationJobId);
+        this.releaseTerminalJob(jobId, execution);
         return 'terminalized';
       }
       if (providerStream.kind === 'proxied') {
@@ -933,34 +946,34 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
         stream: providerStream.stream,
         sessionApi: {
           checkpointJobContinuityAtomic: async (claimedSessionId, options) => {
-            if (this.quiescedAppServerJobs.has(jobId)) {
+            if (this.quiescedAppServerJobs.has(executionKey(jobId, execution))) {
               return { ok: false as const };
             }
-            const result = await this.trackAppServerWrite(jobId, () =>
+            const result = await this.trackAppServerWrite(jobId, execution, () =>
               this.deps.conversationManager.checkpointJobContinuityAtomic(claimedSessionId, options),
             );
-            if (this.quiescedAppServerJobs.has(jobId)) return { ok: false as const };
+            if (this.quiescedAppServerJobs.has(executionKey(jobId, execution))) return { ok: false as const };
             return result;
           },
           recordArtifactHandleAtomic: async (claimedSessionId, options) => {
-            if (this.quiescedAppServerJobs.has(jobId)) {
+            if (this.quiescedAppServerJobs.has(executionKey(jobId, execution))) {
               return { ok: false as const };
             }
-            const result = await this.trackAppServerWrite(jobId, () =>
+            const result = await this.trackAppServerWrite(jobId, execution, () =>
               this.deps.conversationManager.recordArtifactHandleAtomic(claimedSessionId, options),
             );
-            if (this.quiescedAppServerJobs.has(jobId)) return { ok: false as const };
+            if (this.quiescedAppServerJobs.has(executionKey(jobId, execution))) return { ok: false as const };
             return result;
           },
         },
         appendProgress: (message) => {
-          if (this.quiescedAppServerJobs.has(jobId)) return;
+          if (this.quiescedAppServerJobs.has(executionKey(jobId, execution))) return;
           this.appendProgressEvent(jobId, conversationJobId, message);
         },
       });
-      if (this.quiescedAppServerJobs.has(jobId)) return 'handed-off';
+      if (this.quiescedAppServerJobs.has(executionKey(jobId, execution))) return 'handed-off';
       if (consumed.kind === 'suspended') return 'suspended';
-      const completion = this.trackAppServerWrite(jobId, () =>
+      const completion = this.trackAppServerWrite(jobId, execution, () =>
         this.completeConsumedJob({
           conversationJobId,
           jobId,
@@ -971,7 +984,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
       );
       return await completion;
     } finally {
-      this.inFlightAppServerWrites.delete(jobId);
+      this.inFlightAppServerWrites.delete(executionKey(jobId, execution));
     }
   }
 
@@ -986,7 +999,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
 
     await this.appendProviderTerminal(jobId, conversationJobId, projectRoot, event);
 
-    this.deps.abortRegistry.remove(jobId);
+    this.deps.abortRegistry.remove(jobId, execution);
     return 'settled';
   }
 
@@ -1028,12 +1041,14 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
     }
   }
 
+
   private async handleProviderJobError(
     jobId: string,
     conversationJobId: string,
     signal: AbortSignal,
     error: unknown,
   ): Promise<JobExecutionDisposition> {
+    const execution = this.requireExecution(jobId);
     const currentStatus = this.deps.progressStore.readStatus(jobId);
     if (!currentStatus || isTerminalPhase(currentStatus.phase)) {
       return 'terminalized';
@@ -1047,7 +1062,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
         globalActive: error.detail.globalActive,
         globalLimit: error.detail.globalLimit,
       });
-      this.releaseTerminalJob(jobId, conversationJobId);
+      this.releaseTerminalJob(jobId, execution);
       return 'terminalized';
     }
 
@@ -1085,7 +1100,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
       } catch (terminalError: unknown) {
         throw new TerminalWriteError(jobId, terminalError);
       }
-      this.releaseTerminalJob(jobId, conversationJobId);
+      this.releaseTerminalJob(jobId, execution);
       return 'terminalized';
     }
 
@@ -1245,8 +1260,8 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
       throw error;
     }
     if (activation.kind === 'remote-executing') {
-      this.appServerJobs.delete(jobId);
-      this.appServerHandoffAborts.delete(jobId);
+      this.appServerJobs.delete(executionKey(jobId, execution));
+      this.appServerHandoffAborts.delete(executionKey(jobId, execution));
       return { kind: 'proxied', operationId };
     }
     if (activation.kind === 'terminalized' || activation.kind === 'rekey-refused-contained') {
@@ -1263,16 +1278,21 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
     prepared: Extract<BoundProviderPreparedExecution, { kind: 'app-server' }>,
     launch: PreparedProviderLaunchContext,
   ): Extract<PreparedProviderExecutionResult, { kind: 'local' }> {
-    const { runtime, jobId } = launch;
-    this.localAppServerExecutions.add(jobId);
+    const { runtime, jobId, execution } = launch;
+    const ownsExecution = () => {
+      const status = this.deps.progressStore.readStatus(jobId);
+      return status?.execution === execution && status.finishing !== true && !isTerminalPhase(status.phase);
+    };
+    this.localAppServerExecutions.add(executionKey(jobId, execution));
     return {
       kind: 'local',
       stream: prepared.execute({
         ...runtime,
         transport: 'app-server',
         onAppServerWaiting: ({ provider: observedProvider }) => {
+          if (!ownsExecution()) return;
           if (this.appServerHandoffQuiesced) {
-            this.quiescedAppServerJobs.add(jobId);
+            this.quiescedAppServerJobs.add(executionKey(jobId, execution));
             return;
           }
           this.deps.progressStore.appendRuntimeStarted(jobId, {
@@ -1282,7 +1302,8 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
           });
         },
         onHostRef: (hostRef: HostRef) => {
-          if (this.appServerHandoffQuiesced || this.quiescedAppServerJobs.has(jobId)) return;
+          if (!ownsExecution()) return;
+          if (this.appServerHandoffQuiesced || this.quiescedAppServerJobs.has(executionKey(jobId, execution))) return;
           this.deps.progressStore.appendRuntimeStarted(jobId, {
             transport: 'app-server',
             startTime: nowIsoString(this.deps.runtime.time.now()),
@@ -1312,7 +1333,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
   private createStandalonePlacementRunner(
     launch: PreparedProviderLaunchContext,
   ): ReturnType<typeof bindProviderRunner> {
-    const { provider, jobId, signal, permit } = launch;
+    const { provider, jobId, execution, signal, permit } = launch;
 
     return bindProviderRunner(
       this.deps.durableSpawner,
@@ -1359,6 +1380,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
                 containmentStatus.reason,
                 `Run coral-cli jobs abort ${jobId} again to abandon job ownership without proving process absence or sending another signal.`,
                 control.abandon,
+                execution,
               );
             }
             return this.publishDurableContainmentDisposition(launch, {
@@ -1378,6 +1400,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
                         reason,
                         `Run coral-cli jobs abort ${jobId} again to retry durable abandonment without sending another signal.`,
                         control.abandon,
+                        execution,
                       ),
                   }),
               progress:
@@ -1391,7 +1414,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
             return this.publishDurableContainmentDisposition(launch, {
               persist: () => deleteDurableCliContainmentStatus(this.deps.progressStore.getDb(), jobId),
               persistenceFailure: 'durable containment absence publication failed',
-              afterPersistence: () => this.deps.abortRegistry.releaseHold(jobId),
+              afterPersistence: () => this.deps.abortRegistry.releaseHold(jobId, execution),
               progress: `Durable containment pid=${identity.pid} is absent.`,
               progressFailure: 'absence progress',
             });
@@ -1405,7 +1428,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
                   disposition: containmentStatus,
                 }),
               persistenceFailure: 'durable containment abandonment publication failed',
-              afterPersistence: () => this.deps.abortRegistry.releaseHold(jobId),
+              afterPersistence: () => this.deps.abortRegistry.releaseHold(jobId, execution),
               progress: `Durable containment pid=${identity.pid} was abandoned without proof of process absence or termination.`,
               progressFailure: 'abandonment progress',
             });
@@ -1413,7 +1436,10 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
         }
       },
       jobId,
-      { permit, abortHoldOwner: this.deps.abortRegistry },
+      { permit, abortHoldOwner: {
+        hold: (id, reason, nextStep, abandon) => this.deps.abortRegistry.hold(id, reason, nextStep, abandon, execution),
+        releaseHold: (id) => this.deps.abortRegistry.releaseHold(id, execution),
+      } },
     );
   }
 
@@ -1462,10 +1488,10 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
     }
   }
 
-  private readExecutionOrdinal(providerName: string, conversationJobId: string, jobId: string): number {
+  private readExecutionOrdinal(providerName: string, conversationJobId: string, jobId: string, execution: number): number {
     const session = this.deps.conversationManager.get(providerName, conversationJobId);
-    if (!session || !session.open || session.jobId !== jobId) {
-      throw new Error(`Expected claimed session ${conversationJobId} for job ${jobId}.`);
+    if (!session || !session.open || session.jobId !== jobId || session.execution !== execution) {
+      throw new Error(`Expected open execution of ${conversationJobId} for job ${jobId}.`);
     }
     return session.execution;
   }
@@ -1513,18 +1539,19 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
     });
   }
 
-  private registerLaunchAbort(jobId: string, admission: AcceptedAdmission): void {
+  private registerLaunchAbort(jobId: string, execution: number, admission: AcceptedAdmission): void {
     this.deps.abortRegistry.register(
       jobId,
+      execution,
       () => this.deps.operations?.stop(jobId, 'signal_abort'),
       () => this.releaseAdmissionReservation(admission),
     );
   }
 
   private async finishAbortedJob(jobId: string, conversationJobId: string, reason: AbortReason): Promise<void> {
+    const execution = this.requireExecution(jobId);
     for (;;) {
       try {
-        const execution = this.requireExecution(jobId);
         const durationMs = this.elapsedJobDurationMs(jobId);
         await this.deps.executionFinisher.accept({ jobId, execution }, (c) => {
           c.append({ type: 'job.execution.aborted', stream: { kind: 'job', id: jobId }, body: { execution, reason } });
@@ -1535,7 +1562,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
           });
           return undefined;
         });
-        this.releaseTerminalJob(jobId, conversationJobId);
+        this.releaseTerminalJob(jobId, execution);
         return;
       } catch {
         await this.deps.runtime.time.sleep(500);

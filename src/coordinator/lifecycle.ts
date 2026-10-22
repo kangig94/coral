@@ -35,7 +35,7 @@ import { createRecoveryCoordinator, type RecoveryCoordinator } from './services/
 import { createReplacementBackendOwnershipChecker } from './ownership-checker.js';
 import type { JobStore } from '../jobs/store.js';
 import type { JobStatus } from '../jobs/records.js';
-import { jobLaunchRequestBodySchema } from '../jobs/launch.js';
+import { jobExecutionRequestedBodySchema } from '../jobs/launch.js';
 import { decodeProjectionJobExecutionOwner, decodeProjectionJobStoredRow } from '../jobs/projection-row.js';
 import { appendJobExecutionOutcomeAccepted } from '../jobs/terminal/recording.js';
 import { deleteDurableCliProcessRuntimeMeta } from '../jobs/runtime-meta-store.js';
@@ -506,10 +506,10 @@ function hydrateStaleJobCleanup(raw: RawStaleJobCleanupRow): StaleJobCleanupItem
   if (!isRetentionChildName(projection.job_id)) throw new TypeError('Scratch retention subject is not a child name.');
   const events = latestStatusEvents(raw.statusEvents, projection.job_id);
   const updatedAt =
-    events.get('job.terminal.recorded')?.ts ??
-    events.get('job.runtime.started')?.ts ??
-    events.get('job.launch.rejected')?.ts ??
-    events.get('job.launch.requested')?.ts ??
+    events.get('job.execution.ended')?.ts ??
+    events.get('job.execution.started')?.ts ??
+    events.get('job.execution.outcome.accepted')?.ts ??
+    events.get('job.execution.requested')?.ts ??
     projection.created_at;
   return {
     jobId: projection.job_id,
@@ -524,31 +524,22 @@ function hydrateCrashedJob(raw: RawCrashedJobRow, progressStore: JobStore): Cras
   const owner = decodeProjectionJobExecutionOwner(projection);
   let launchCreatedAt: string | null = null;
   if (raw.launchEvent !== null) {
-    const launch = jobLaunchRequestBodySchema.parse(decodeStoredBody(raw.launchEvent, progressStore));
+    const launch = jobExecutionRequestedBodySchema.parse(decodeStoredBody(raw.launchEvent, progressStore));
     rowToCoralEvent(raw.launchEvent, launch);
     if (raw.launchEvent.stream_kind !== 'job' || raw.launchEvent.stream_id !== projection.job_id) {
       throw new TypeError(`Crash terminalization launch '${raw.launchEvent.seq}' names another job.`);
     }
-    const launchWorkDir = launch.jobKind === 'kb' ? null : launch.request.cwd;
-    if (
-      launch.jobKind !== projection.job_kind ||
-      launch.backendNamespace !== projection.backend_namespace ||
-      launch.projectRoot !== projection.project_root ||
-      launchWorkDir !== projection.work_dir ||
-      JSON.stringify(launch.owner) !== JSON.stringify(owner)
-    ) {
-      throw new TypeError(`Crash terminalization launch for '${projection.job_id}' contradicts its projection.`);
-    }
-    if (launch.jobKind === 'provider' && launch.conversationJobId !== projection.session_id) {
-      throw new TypeError(`Crash terminalization launch for '${projection.job_id}' names another session.`);
-    }
+    if (launch.execution !== projection.execution || launch.backendNamespace !== projection.backend_namespace)
+      throw new TypeError(`Crash terminalization request for '${projection.job_id}' contradicts its execution projection.`);
     launchCreatedAt = launch.createdAt;
   }
   return {
     status: {
       jobId: projection.job_id,
       owner,
-      conversationJobId: projection.session_id,
+      sessionId: null,
+      execution: projection.execution,
+      finishing: projection.finishing === 1,
       provider: projection.provider,
       projectRoot: projection.project_root,
       workDir: projection.work_dir,

@@ -1,3 +1,4 @@
+import { loadRetainedCurrentJob } from '../jobs/retained-current.js';
 import { observeRecoveryPhase, startRecoveryPhase, type RecoveryObservation } from '../recovery/phase-observation.js';
 import type { ProgressSource } from '../jobs/wait/contract.js';
 import { visitJobProgress } from '../jobs/read-queries.js';
@@ -42,7 +43,7 @@ import { loadJobProjectionDetail } from '../jobs/read-queries.js';
 import { composeReducers } from '../store/reducers.js';
 import { sealCoralStoreFormat } from '../store-format.js';
 import { publishJobEvents, subscribeJobEvents } from '../jobs/shell/event-subscription.js';
-import { observeTerminalResultExports, resultPathFor } from '../jobs/terminal/export.js';
+import { observeTerminalResultExports } from '../jobs/terminal/export.js';
 import { jobsRegistry } from '../jobs/events.js';
 import { discussRegistry } from '../discuss/event-registry.js';
 import { workflowRegistry } from '../workflow/events.js';
@@ -274,26 +275,36 @@ function createJobAppendObserver({
   jobLocations: JobLocationIndex;
   activeStoreEpoch: () => ResolvedStoreEpoch | null;
   readCore: () => CoordinatorCoreResult | null;
-}): (input: Parameters<JobLocationIndex['beforeAppend']>[0]) => void {
-  return (input: Parameters<JobLocationIndex['beforeAppend']>[0]): void => {
-    const core = readCore();
-    if (input.stream.kind !== 'job' || !['job.launch.requested', 'job.terminal.recorded'].includes(input.type)) return;
+}): ((input: Parameters<JobLocationIndex['beforeAppend']>[0]) => void) & { withCommitGuard: <T>(action: () => T) => T; withExecutionAdmission: NonNullable<ConstructorParameters<typeof JobStore>[3]['withExecutionAdmission']> } {
+  const beforeAppend = (input: Parameters<JobLocationIndex['beforeAppend']>[0]): void => {
+    if (input.stream.kind !== 'job' || !['job.opened', 'job.execution.requested'].includes(input.type)) return;
     const active = activeStoreEpoch();
     if (active === null) throw new Error('Job append requires an active store epoch');
-    const generation = observeSuccessionWriterGeneration(runtime);
-    const controller =
-      core === null ||
-      generation === null ||
-      generation.storeRoot !== (active.canonicalStoreRoot ?? active.storeRoot) ||
-      generation.epoch !== active.epoch
-        ? undefined
-        : {
-            buildSetId: core.identity.buildSetId,
-            instanceId: core.identity.instanceId,
-            controlGeneration: generation.generation,
-          };
-    jobLocations.beforeAppend(input, encodeResolvedStoreEpoch(runtime, active), controller);
+    jobLocations.beforeAppend(input, encodeResolvedStoreEpoch(runtime, active));
   };
+  return Object.assign(beforeAppend, {
+    withExecutionAdmission: (jobId: string, execution: number, subject: Parameters<JobLocationIndex['register']>[2], action: () => void): void => {
+      const active = activeStoreEpoch();
+      if (active === null) throw new Error('Job admission requires an active store epoch');
+      const epochKey = encodeResolvedStoreEpoch(runtime, active);
+      jobLocations.withAdmissionGuard(epochKey, createCoordinatorStoreAccess(readCore).getStoreDb(), () => {
+        const core = readCore();
+        const generation = observeSuccessionWriterGeneration(runtime);
+        const controller = core !== null && generation !== null &&
+          generation.storeRoot === (active.canonicalStoreRoot ?? active.storeRoot) && generation.epoch === active.epoch
+          ? { buildSetId: core.identity.buildSetId, instanceId: core.identity.instanceId, controlGeneration: generation.generation }
+          : undefined;
+        jobLocations.prepareAdmission(jobId, execution, epochKey, subject, controller);
+        action();
+      });
+    },
+    withCommitGuard: <T>(action: () => T): T => {
+      const active = activeStoreEpoch();
+      const core = readCore();
+      if (active === null || core === null) throw new Error('Job append requires an active store epoch');
+      return jobLocations.withAdmissionGuard(encodeResolvedStoreEpoch(runtime, active), createCoordinatorStoreAccess(readCore).getStoreDb(), action);
+    },
+  });
 }
 
 type KbDaemonEventState = { handle: ((message: KbDaemonEventMessage) => void) | null };
@@ -368,7 +379,7 @@ function createJournalCommitObserver(
   return (appended) => {
     exportTerminalResults(appended);
     for (const event of appended) {
-      if (event.stream.kind !== 'job' || event.type !== 'job.progress.emitted') continue;
+      if (event.stream.kind !== 'job' || event.type !== 'job.execution.progress') continue;
       try {
         const detail = getStoreServices().progressStore.loadJobProjectionDetail(event.stream.id);
         if (detail.status === null) continue;
@@ -408,28 +419,20 @@ function createCoordinatorJournalAssembly({
   eventBus: TypedEventBus;
   operationRegistry: LocalOperationRegistry;
   textProjectionHealth: ReturnType<typeof createTextProjectionHealthTracker>;
-  beforeJobAppend: (input: Parameters<JobLocationIndex['beforeAppend']>[0]) => void;
+  beforeJobAppend: ReturnType<typeof createJobAppendObserver>;
   observeLifecycleCommitted: PostCommitObserver;
 }) {
   const { getStoreServices, getStoreDb, getQueryDb, getConsumerDriver } = createCoordinatorStoreAccess(readCore);
   const exportTerminalResults = observeTerminalResultExports(
-    (jobId) => getStoreServices().progressStore.publishTerminalResult(jobId),
-    (jobId, seq) => {
+    (jobId, execution) => getStoreServices().progressStore.publishTerminalResult(jobId, execution),
+    (jobId) => {
       const progressStore = getStoreServices().progressStore;
       progressStore.configureResultExports(jobLocations);
-      const detail = progressStore.loadJobProjectionDetail(jobId);
-      if (detail.status === null) throw new Error(`Terminal has no job status: ${jobId}`);
-      jobLocations.recordTerminal(
-        jobId,
-        {
-          status: detail.status,
-          events: progressStore.readJobEvents(jobId),
-          readiness: deriveLaunchReadiness(detail),
-          exit: detail.exit,
-        },
-        resultPathFor(runtime.paths.coral.exports.jobsRoot, jobId),
-        seq,
-      );
+      const epochKey = jobLocations.read(jobId)?.epochKey;
+      if (epochKey === undefined) throw new Error(`Terminal has no job location: ${jobId}`);
+      const location = loadRetainedCurrentJob(progressStore.getDb(), epochKey, jobId, runtime.paths.coral.exports.jobsRoot);
+      if (location?.detail.kind !== 'recorded') throw new Error(`Terminal has no job detail: ${jobId}`);
+      jobLocations.recordExecutionDetails(jobId, location.executions ?? [], location.detail.value);
     },
   );
   const observeCommitted = createJournalCommitObserver(
@@ -451,6 +454,8 @@ function createCoordinatorJournalAssembly({
       providers: providerLookupPortFromCatalog(providerRegistry),
       observer: observeCommitted,
       beforeAppend: beforeJobAppend,
+      withCommitGuard: beforeJobAppend.withCommitGuard,
+      withExecutionAdmission: beforeJobAppend.withExecutionAdmission,
     });
     const consumerDriver = new ConsumerDriver({
       db: storeDb,
@@ -477,6 +482,7 @@ function createCoordinatorJournalAssembly({
       bodyCodec,
       providers: providerLookupPortFromCatalog(providerRegistry),
       beforeAppend: beforeJobAppend,
+      withCommitGuard: beforeJobAppend.withCommitGuard,
     });
     if (appended.length === 0) {
       return appended;
@@ -655,7 +661,7 @@ function createCoordinatorProviderEventHandler({
   providerRegistry: ProviderRegistry;
   eventBus: TypedEventBus;
   operationRegistry: LocalOperationRegistry;
-  beforeJobAppend: (input: Parameters<JobLocationIndex['beforeAppend']>[0]) => void;
+  beforeJobAppend: ReturnType<typeof createJobAppendObserver>;
   observeCommitted: PostCommitObserver;
 }): ProviderEventHandler {
   return createProviderEventHandler({
@@ -667,6 +673,7 @@ function createCoordinatorProviderEventHandler({
       bodyCodec,
       providers: providerLookupPortFromCatalog(providerRegistry),
       beforeAppend: beforeJobAppend,
+      withCommitGuard: beforeJobAppend.withCommitGuard,
     },
     providerRegistry,
     runtime,

@@ -28,6 +28,7 @@ function fixture() {
   ] as const) {
     statuses.set(jobId, {
       jobId,
+      execution: 1,
       phase,
       owner: { kind: 'provider-session', id: 'same-execution-owner' },
       sessionId: 'provider-session',
@@ -43,6 +44,7 @@ function fixture() {
   const ports = createCoordinatorRpcPorts({
     services: { jobAttention: attention },
     getProgressStore: () => ({
+      readStatus: (jobId: string) => statuses.get(jobId) ?? null,
       listJobProjections: () => [...statuses].map(([jobId, status]) => ({ jobId, status })),
       loadJobProjectionDetail: (jobId: string) => ({
         status: statuses.get(jobId) ?? null,
@@ -52,15 +54,16 @@ function fixture() {
     jobAddressing: { waitStream: stream, snapshot, scopeCheck: () => ({ valid: [], missing: [], mismatch: [] }) },
   } as unknown as Parameters<typeof createCoordinatorRpcPorts>[0]);
   const deps = {
+    loadJobProjectionDetail: (jobId: string) => ({ status: statuses.get(jobId) ?? null, launch: null, runtime: null, exit: null }),
     jobAttention: attention,
     waitCoordinator: {
       waitForOutcomes: stream,
       waitStreamOnce: async () => {
-        expect(attention.isUnwaited('mine')).toBe(false);
+        expect(attention.isUnwaited('mine', 1)).toBe(false);
         return {};
       },
       waitForJobTerminal: async () => {
-        expect(attention.isUnwaited('mine')).toBe(false);
+        expect(attention.isUnwaited('mine', 1)).toBe(false);
       },
     },
   } as unknown as JobWaitServiceDeps;
@@ -93,17 +96,17 @@ describe('job attention', () => {
     const second = service.waitStream({ jobIds: ['mine'] });
     await first.next();
     await second.next();
-    expect(attention.isUnwaited('mine')).toBe(false);
+    expect(attention.isUnwaited('mine', 1)).toBe(false);
     await first.return(undefined);
-    expect(attention.isUnwaited('mine')).toBe(false);
+    expect(attention.isUnwaited('mine', 1)).toBe(false);
     await second.return(undefined);
-    expect(attention.isUnwaited('mine')).toBe(true);
+    expect(attention.isUnwaited('mine', 1)).toBe(true);
     await service.waitStreamOnce('mine');
     await service.waitForJobTerminal('mine');
-    expect(attention.isUnwaited('mine')).toBe(true);
+    expect(attention.isUnwaited('mine', 1)).toBe(true);
     ports.jobs.snapshot({ jobIds: ['mine'] });
     expect(snapshot).toHaveBeenCalled();
-    expect(attention.isUnwaited('mine')).toBe(true);
+    expect(attention.isUnwaited('mine', 1)).toBe(true);
   });
 
   it('session job guard: routes release through authorized dispatch and rejects foreign project jobs', async () => {

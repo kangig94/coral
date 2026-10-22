@@ -546,7 +546,10 @@ export function loadJobExecutionDetails(
       if (row.type === 'job.execution.started') phase = 'running';
       if (row.type === 'job.execution.progress') {
         const progress = decodeBody(row, jobProgressBodySchema, ctx);
-        if (progress.kind !== 'message' && progress.kind !== 'domain') diagnostics.progressFaults.push(progress);
+        if (progress.kind !== 'message' && progress.kind !== 'domain') {
+          const { execution: _execution, ...fault } = progress;
+          diagnostics.progressFaults.push(fault);
+        }
       }
       if (row.type === 'job.execution.outcome.accepted') {
         const accepted = decodeBody(row, jobExecutionOutcomeAcceptedBodySchema, ctx);

@@ -12,9 +12,9 @@ import type {
   ProviderRecoveryLaunch,
   ProviderRecoverySession,
 } from '../../../jobs/reconcile/contracts.js';
-import type { RawCoordinatorSessionRow } from './coordinator-job-source.js';
+import type { RawCoordinatorConversationRow } from './coordinator-job-source.js';
 
-export function hydrateCoordinatorSessionAuthority(raw: RawCoordinatorSessionRow): JobConversation {
+export function hydrateCoordinatorConversationAuthority(raw: RawCoordinatorConversationRow): JobConversation {
   return hydrateJobConversation(raw);
 }
 

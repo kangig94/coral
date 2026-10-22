@@ -312,7 +312,7 @@ export class RecoveryService {
 
       return jobId;
     } catch (error: unknown) {
-      this.cleanupRecoveryRegistration(jobId, queuedHandle);
+      this.cleanupRecoveryRegistration(jobId, launchRecord.execution, queuedHandle);
       throw error;
     }
   }
@@ -368,7 +368,7 @@ export class RecoveryService {
       permit = this.deps.launchRecovery.restoreActiveLaunch(jobId, launchRecord.provider, launchRecord.owner, pool);
       this.deps.progressStore.rebindNamespace(jobId, this.deps.backendNamespace, this.deps.bundleHash);
     } catch (error: unknown) {
-      this.cleanupRecoveryRegistration(jobId, null, permit);
+      this.cleanupRecoveryRegistration(jobId, launchRecord.execution, null, permit);
       throw error;
     }
 
@@ -378,13 +378,14 @@ export class RecoveryService {
       cleanup: () => {
         if (cleaned) return;
         cleaned = true;
-        this.cleanupRecoveryRegistration(jobId, null, permit);
+        this.cleanupRecoveryRegistration(jobId, launchRecord.execution, null, permit);
       },
     };
   }
 
   private cleanupRecoveryRegistration(
     jobId: string,
+    execution: number,
     queuedHandle: QueuedHandle | null = null,
     permit: LaunchPermit | null = null,
   ): void {
@@ -394,7 +395,7 @@ export class RecoveryService {
         const cancellation = queuedHandle.cancel();
         if (cancellation.kind === 'admitted') this.releaseRecoveryOwnership(cancellation.permit);
       }
-      this.deps.abortRegistry.remove(jobId);
+      this.deps.abortRegistry.remove(jobId, execution);
       if (permit !== null) this.releaseRecoveryOwnership(permit);
     } catch (error: unknown) {
       if (error instanceof RecoveryOwnershipReleaseError) throw error;

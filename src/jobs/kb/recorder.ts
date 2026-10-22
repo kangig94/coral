@@ -76,8 +76,8 @@ export class KbJobRecorder {
 
     const common = {
       jobId,
+      execution: 1,
       owner: { kind: 'system-task', id: `${params.operation}:${jobId}` },
-      conversationJobId: null,
       provider: null,
       projectRoot: params.projectRoot,
       backendNamespace: this.deps.backendNamespace,
@@ -102,13 +102,13 @@ export class KbJobRecorder {
     // setting it here is what lets downstream `AbortError.reason` map to
     // `terminal { outcome: aborted, reason: 'user_abort' }`.
     const controller = new AbortController();
-    this.deps.abortRegistry.register(jobId, () => controller.abort('user_abort'));
+    this.deps.abortRegistry.register(jobId, 1, () => controller.abort('user_abort'));
 
     let finalized = false;
     const finalize = (): void => {
       if (finalized) return;
       finalized = true;
-      this.deps.abortRegistry.remove(jobId);
+      this.deps.abortRegistry.remove(jobId, 1);
     };
 
     return { jobId, startedAtMs, signal: controller.signal, finalize };

@@ -37,19 +37,14 @@ async function finalizeSynthesizedSession(
     detachSession(ctx, sessionId);
     return;
   }
-  // The discussion is fully synthesized. Participant (and facilitator) provider
-  // sessions were retained across turns for multi-turn resume and handoff
-  // recovery, which no longer applies — discard each one's native session log so
-  // it does not accumulate as noise. Best-effort: a failure must never break the
-  // already-recorded discussion.
   for (const run of Object.values(snapshot.runtime.agentRuns)) {
-    if (run.executionJobId === undefined) {
+    if (run.jobId === undefined) {
       continue;
     }
     try {
-      await ctx.discardSessionArtifacts?.(run.executionJobId);
+      await ctx.discardSessionArtifacts?.(run.jobId);
     } catch (error) {
-      backendLog.warn(`Discuss artifact cleanup failed for session ${run.executionJobId}: ${errorMessage(error)}`);
+      backendLog.warn(`Discuss artifact cleanup failed for job ${run.jobId}: ${errorMessage(error)}`);
     }
   }
   detachSession(ctx, sessionId);

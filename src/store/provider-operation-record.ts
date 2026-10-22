@@ -253,6 +253,7 @@ export const PROVIDER_OPERATION_RECORD_VERSION = PROVIDER_OPERATION_RECORD_GENER
 const commonFields = {
   version: z.literal(PROVIDER_OPERATION_RECORD_VERSION),
   operation: providerOperationIdentitySchema,
+  jobLaunchEventSeq: nonNegativeSafeIntegerSchema,
   locator: providerOperationSetLocatorSchema,
   prepareAttemptNumber: z.number().int().positive().safe(),
   prepareAttemptKey: fingerprintSchema,
@@ -349,6 +350,11 @@ const settlementPendingSchema = z
     controlIntent: providerOperationControlIntentSchema,
     terminalProviderSeq: nonNegativeSafeIntegerSchema,
     settlementIntent: z.literal('release-after-terminal'),
+    settlementFailure: z.object({
+      elapsedMs: nonNegativeSafeIntegerSchema,
+      observedAtMs: nonNegativeSafeIntegerSchema,
+      containmentRequested: z.boolean(),
+    }).strict(),
   })
   .strict();
 
@@ -364,6 +370,8 @@ export const providerOperationRecordSchema = z
     settlementPendingSchema,
   ])
   .superRefine((record, context) => {
+    if (record.phase === 'prepare-pending' && record.jobLaunchEventSeq !== record.prepareSource.jobLaunchEventSeq)
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['jobLaunchEventSeq'], message: 'prepare source must cite the operation request' });
     if (record.operation.proxyInstanceId !== record.locator.proxy.instanceId) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
