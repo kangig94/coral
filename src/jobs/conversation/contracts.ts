@@ -3,7 +3,7 @@ import type { ProviderInstruction } from '../../providers/contract.js';
 import type { ProviderArtifactIdentity } from '../../providers/artifact-identity.js';
 import type { ProviderBindingEnvelope } from '../../infra/provider-binding-envelope.js';
 import type { CanonicalWorkDir } from '../../runtime/canonical-work-dir.js';
-import type { JobConversation, RetentionPolicy, SessionControllerProfile } from './entry.js';
+import type { JobConversation, RetentionPolicy, ConversationControllerProfile } from './entry.js';
 
 export type ConversationAllocateOptions = {
   jobId?: string;
@@ -18,7 +18,7 @@ export type ConversationAllocateOptions = {
   instruction?: ProviderInstruction;
   bypassPermissions?: boolean;
   systemPrompt?: string;
-  controllerProfile?: SessionControllerProfile;
+  controllerProfile?: ConversationControllerProfile;
   retention?: RetentionPolicy;
 };
 
@@ -34,16 +34,22 @@ export interface ConversationReadPort {
 }
 
 export interface ConversationContinuityPort extends ConversationReadPort {
-  checkpointJobContinuityAtomic(jobId: string, options: {
-    execution: number;
-    snapshot: ProviderValidatedContinuitySnapshot;
-  }): Promise<ConversationWriteResult>;
-  recordArtifactHandleAtomic(jobId: string, options: ConversationArtifactHandleRecordOptions): Promise<ConversationWriteResult>;
+  checkpointJobContinuityAtomic(
+    jobId: string,
+    options: {
+      execution: number;
+      snapshot: ProviderValidatedContinuitySnapshot;
+    },
+  ): Promise<ConversationWriteResult>;
+  recordArtifactHandleAtomic(
+    jobId: string,
+    options: ConversationArtifactHandleRecordOptions,
+  ): Promise<ConversationWriteResult>;
 }
 
 export interface ConversationInitialLaunchPort {
   prepare(options: ConversationAllocateOptions): JobConversation;
-  readById(jobId: string, options?: { forceFresh?: boolean }): JobConversation | null;
+  readById(jobId: string): JobConversation | null;
 }
 
 export interface ConversationExecutionPort extends ConversationInitialLaunchPort, ConversationReadPort {
@@ -51,5 +57,5 @@ export interface ConversationExecutionPort extends ConversationInitialLaunchPort
 }
 
 export interface ConversationRecoveryPort extends ConversationContinuityPort {
-  readById(jobId: string, options?: { forceFresh?: boolean }): JobConversation | null;
+  readById(jobId: string): JobConversation | null;
 }

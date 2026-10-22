@@ -20,7 +20,10 @@ import {
 } from '../../../recovery/row-revision-fields.js';
 import { COORDINATOR_JOB_RECOVERY_BOUNDARY } from '../../../recovery/source-registry.js';
 
-export type RawCoordinatorConversationRow = Readonly<{ projection: ProjectionJobStoredRow; events: readonly EventsRow[] }>;
+export type RawCoordinatorConversationRow = Readonly<{
+  projection: ProjectionJobStoredRow;
+  events: readonly EventsRow[];
+}>;
 
 /** One canonical provider-operation saga row from the generic `meta` keyspace. */
 type RawProviderOperationSagaRow = {
@@ -88,7 +91,10 @@ function scanCoordinatorJobRecoveryEnvelopes(
         jobId: projection.job_id,
         projection,
         statusEvents: readStatusEvents.all(projection.job_id, projection.execution),
-        conversation: projection.job_kind === 'provider' ? { projection, events: readConversationEvents.all(projection.job_id) } : null,
+        conversation:
+          projection.job_kind === 'provider'
+            ? { projection, events: readConversationEvents.all(projection.job_id) }
+            : null,
         providerOperations: readProviderOperations.all(`${providerOperationRecordKeyPrefix(projection.job_id)}%`),
       };
       return facts;
@@ -115,8 +121,8 @@ function coordinatorJobRecoverySubject(raw: CoordinatorJobRecoveryFacts): Recove
     raw.projection === null
       ? [{ table: 'projection_jobs', key: raw.jobId, field: 'projection', value: null }]
       : projectionJobRevisionFields(raw.projection);
-  for (const event of raw.statusEvents) fields.push(...eventRevisionFields(event));
-  for (const event of raw.conversation?.events ?? []) fields.push(...eventRevisionFields(event));
+  const events = new Map([...raw.statusEvents, ...(raw.conversation?.events ?? [])].map((event) => [event.seq, event]));
+  for (const event of events.values()) fields.push(...eventRevisionFields(event));
   fields.push(...providerOperationRevisionFields(raw.providerOperations));
   return {
     key: raw.jobId,

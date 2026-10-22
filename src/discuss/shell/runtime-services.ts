@@ -1,3 +1,4 @@
+import { readExecutionRequestAt } from '../../jobs/execution-journal.js';
 import type { Database } from '../../store/db.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
@@ -58,7 +59,7 @@ type CreateDiscussRuntimeDeps = {
     resume(provider: string, input: JobResumeRequest, ctx: InvocationContext): Promise<ProviderJobLaunchDecision>;
     waitStreamOnce(jobId: string, timeoutMs?: number): Promise<DiscussWaitResult>;
   };
-  discardSessionArtifacts?: (sessionId: string) => Promise<void>;
+  discardConversationArtifacts?: (sessionId: string) => Promise<void>;
 };
 
 export function createDiscussRuntime({
@@ -66,7 +67,7 @@ export function createDiscussRuntime({
   runtime,
   getProgressStore,
   getExecutionService,
-  discardSessionArtifacts,
+  discardConversationArtifacts,
 }: CreateDiscussRuntimeDeps): {
   getDiscussStoreForSource: (source: string) => DiscussSessionStore;
   getDiscussContext: (ctx: InvocationContext) => DiscussContext;
@@ -159,6 +160,8 @@ export function createDiscussRuntime({
       loadJobExecutionDetails(getProgressStore().getDb(), jobId, readCtx).find((entry) => entry.execution === execution)
         ?.detail;
     const jobStatusReader: DiscussJobStatusReader = {
+      requestedExecution: (jobId, requestedSeq) =>
+        readExecutionRequestAt(getProgressStore().getDb(), jobId, requestedSeq, readCtx)?.request.execution ?? null,
       read: (jobId, execution) =>
         execution === undefined
           ? getProgressStore().readStatus(jobId)
@@ -208,7 +211,7 @@ export function createDiscussRuntime({
       },
       jobStatusReader,
       providerRegistry: world.providerRegistry,
-      ...(discardSessionArtifacts !== undefined ? { discardSessionArtifacts } : {}),
+      ...(discardConversationArtifacts !== undefined ? { discardConversationArtifacts } : {}),
     });
   }
 

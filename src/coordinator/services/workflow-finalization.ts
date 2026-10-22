@@ -30,14 +30,14 @@ export function composeWorkflowFinalization<Scope>(
   workflowJobId: string,
   intent: WorkflowFinalizationIntent,
   recording: WorkflowFinalizationRecording,
-): void {
+): CauseRefToken<Scope> {
   if (intent.workflowJobId !== workflowJobId) {
     throw new Error(`Workflow finalization intent job '${intent.workflowJobId}' did not match '${workflowJobId}'.`);
   }
 
   if (intent.outcome === 'completed') {
     c.append(workflowCompletedEvent(workflowJobId, { outcome: 'completed', stepDetails: intent.stepDetails }));
-    appendJobExecutionOutcomeAccepted(c, {
+    return appendJobExecutionOutcomeAccepted(c, {
       jobId: workflowJobId,
       execution: recording.execution,
       namespace: recording.namespace,
@@ -48,12 +48,11 @@ export function composeWorkflowFinalization<Scope>(
         durationMs: recording.durationMs,
       },
     });
-    return;
   }
 
   if (intent.outcome === 'aborted') {
     c.append(workflowCompletedEvent(workflowJobId, { outcome: 'aborted', stepDetails: intent.stepDetails }));
-    appendJobExecutionOutcomeAccepted(c, {
+    return appendJobExecutionOutcomeAccepted(c, {
       jobId: workflowJobId,
       execution: recording.execution,
       namespace: recording.namespace,
@@ -64,7 +63,6 @@ export function composeWorkflowFinalization<Scope>(
         durationMs: recording.durationMs,
       },
     });
-    return;
   }
 
   const causeRef = selectFinalCauseRef(c, workflowJobId, intent);
@@ -76,7 +74,7 @@ export function composeWorkflowFinalization<Scope>(
       ...(intent.failureLocation === undefined ? {} : { failureLocation: intent.failureLocation }),
     }),
   );
-  appendJobExecutionOutcomeAccepted(c, {
+  return appendJobExecutionOutcomeAccepted(c, {
     jobId: workflowJobId,
     execution: recording.execution,
     namespace: recording.namespace,

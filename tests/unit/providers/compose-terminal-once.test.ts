@@ -16,7 +16,7 @@ type TestRuntime = ProviderRuntime<TestProviderContext>;
 
 const BASE_REQUEST: ProviderRequest = {
   action: 'exec',
-  sessionId: 'compose-terminal-once',
+  jobId: 'compose-terminal-once',
   prompt: 'hello',
   cwd: fixtureCanonicalWorkDir(process.cwd()),
   bypassPermissions: false,

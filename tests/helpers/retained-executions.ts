@@ -3,7 +3,11 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import { JobLocationIndex } from '#src/jobs/location-index.js';
-import { appendJobExecutionEnded, appendJobExecutionOutcomeAccepted } from '#src/jobs/terminal/recording.js';
+import {
+  appendJobExecutionEnded,
+  appendJobExecutionOutcomeAccepted,
+  failedTerminalOutcome,
+} from '#src/jobs/terminal/recording.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { initializeCustodyLedger } from '#src/store/custody-ledger.js';
 import { recordEpochCustodyCoverage } from '#src/store/epoch/closure.js';
@@ -56,7 +60,7 @@ export function retainedExecutionsFixture(roots: string[], ended = 2) {
         execution,
         terminal: {
           content: `result #${execution}`,
-          outcome: fault === null ? { kind: 'completed' } : { kind: 'failed', causeRef: fault },
+          outcome: fault === null ? { kind: 'completed' } : failedTerminalOutcome(fault),
           durationMs: execution * 10,
         },
         diagnostics: {
@@ -104,7 +108,12 @@ export function retainedExecutionsFixture(roots: string[], ended = 2) {
       },
     }),
   );
-  const index = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
+  const index = new JobLocationIndex(
+    runtime,
+    runtime.paths.coral.generation.dataRoot,
+    undefined,
+    currentCoralStoreFormat().fingerprint,
+  );
   return {
     root,
     runtime,

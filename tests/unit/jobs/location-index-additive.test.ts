@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { loadReleasedBuild } from '#tests/helpers/released-build.js';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -15,7 +16,7 @@ const directories: string[] = [];
 function fixture(): { root: string; index: JobLocationIndex } {
   const root = mkdtempSync(join(tmpdir(), 'coral-red-job-location-'));
   directories.push(root);
-  return { root, index: new JobLocationIndex(runtime, root) };
+  return { root, index: new JobLocationIndex(runtime, root, undefined, currentCoralStoreFormat().fingerprint) };
 }
 
 function terminalDetail(jobId: string): JobDetailResponse {
@@ -23,6 +24,7 @@ function terminalDetail(jobId: string): JobDetailResponse {
   return {
     status: {
       jobId,
+      execution: 1,
       owner: { kind: 'provider-session', id: 'session-1' },
       sessionId: 'session-1',
       provider: 'claude',
@@ -38,7 +40,7 @@ function terminalDetail(jobId: string): JobDetailResponse {
       {
         type: 'terminal',
         jobId,
-        sessionId: 'session-1',
+        ...{ sessionId: 'session-1' },
         seq: 2,
         ts: '2026-09-25T00:00:00.000Z',
         result,
@@ -65,6 +67,33 @@ afterEach(() => {
 });
 
 describe('job location additive records', () => {
+  it('decodes the frozen lifetime address and refuses an unknown addressing format', () => {
+    const { root, index } = fixture();
+    const jobId = 'lifetime-job';
+    index.register(jobId, 'epoch-1', {
+      projectRoot: '/workspace/project',
+      workDir: '/workspace/project',
+      jobKind: 'provider',
+    });
+    index.recordTerminal(
+      jobId,
+      { ...terminalDetail(jobId), executionAddressing: 'lifetime' },
+      join(root, 'result.md'),
+      2,
+    );
+    expect(index.read(jobId)?.detail).toMatchObject({
+      kind: 'recorded',
+      value: { executionAddressing: 'lifetime', status: { execution: 1 } },
+    });
+
+    const path = join(root, 'job-locations.v1', 'jobs', `${Buffer.from(jobId).toString('base64url')}.json`);
+    const record = JSON.parse(readFileSync(path, 'utf-8'));
+    record.detail.executionAddressing = 'future-addressing';
+    writeFileSync(path, JSON.stringify(record));
+
+    expect(index.read(jobId)?.detail.kind).toBe('unreadable');
+  });
+
   it.each(['', 'z.json'])('counts compaction file reads separately from enumeration after %j', async (afterId) => {
     const { root, index } = fixture();
     const subject = { projectRoot: '/workspace/project', workDir: '/workspace/project', jobKind: 'provider' as const };
@@ -279,7 +308,7 @@ it('bounds terminal events and leaves an unchanged terminal and certificate unwr
   detail.events.unshift({
     type: 'progress',
     jobId,
-    sessionId: 'session-1',
+    ...{ sessionId: 'session-1' },
     seq: 1,
     ts: detail.status.updatedAt,
     message: 'progress',
@@ -371,7 +400,7 @@ it('durably refuses a damaged identity, advances past it, and retries it after r
     record.detail.events.unshift({
       type: 'progress',
       jobId,
-      sessionId: 'session-1',
+      ...{ sessionId: 'session-1' },
       seq: 1,
       ts: '2026-09-25T00:00:00.000Z',
       message: 'earlier',
@@ -433,7 +462,7 @@ it('observes another index writer even when the jobs directory mtime is restored
       ? { ...stat, mtimeNs, isDirectory: () => stat.isDirectory(), isFile: () => stat.isFile() }
       : stat;
   });
-  const writer = new JobLocationIndex(runtime, root);
+  const writer = new JobLocationIndex(runtime, root, undefined, currentCoralStoreFormat().fingerprint);
   writer.register('b', 'epoch', { projectRoot: '/workspace', workDir: '/workspace', jobKind: 'kb' });
   expect(
     index
@@ -449,7 +478,7 @@ it('invalidates a decided certificate on another owner revision', () => {
   index.recordTerminal('a', terminalDetail('a'), join(root, 'a'), 2);
   expect(index.certify('epoch', 2)?.jobIds).toEqual(['a']);
   expect(index.certificate('epoch')?.jobIds).toEqual(['a']);
-  const writer = new JobLocationIndex(runtime, root);
+  const writer = new JobLocationIndex(runtime, root, undefined, currentCoralStoreFormat().fingerprint);
   writer.register('b', 'epoch', { projectRoot: '/workspace', workDir: null, jobKind: 'provider' });
   expect(index.certificate('epoch')).toBeNull();
   writer.recordTerminal('b', terminalDetail('b'), join(root, 'b'), 2);
@@ -508,7 +537,7 @@ it('resolves the hold and revision through the identity shared by lineage encodi
   const alias = JSON.stringify({ storeRoot: '/alias/store', epoch: '7', lineageKey: 'lineage:7' });
   index.holdUnknownLocations(full, 'owner settled', false);
   index.register('job', full, { projectRoot: '/project', workDir: '/project', jobKind: 'provider' });
-  const restarted = new JobLocationIndex(runtime, root);
+  const restarted = new JobLocationIndex(runtime, root, undefined, currentCoralStoreFormat().fingerprint);
   expect(restarted.unknownLocationHold(alias)).toBe('owner settled');
   expect(restarted.revision(alias)).toBe(index.revision(full));
   expect(restarted.locationsFor(alias).map((job) => job.jobId)).toEqual(['job']);
@@ -536,4 +565,19 @@ it('leaves release unproven when a certified job record cannot be read, and prop
     throw new TypeError('defect');
   });
   expect(() => index.resultsReleased(epochKey)).toThrow(TypeError);
+});
+
+it.each(['execution', 'backendNamespace'] as const)('refuses to persist a detail without %s', (field) => {
+  const { root, index } = fixture();
+  const detail = terminalDetail('job');
+  detail.status[field] = null;
+  index.register('job', 'epoch', {
+    projectRoot: '/workspace/project',
+    workDir: '/workspace/project',
+    jobKind: 'provider',
+  });
+  expect(() => index.recordTerminal('job', detail, join(root, 'result.md'), 2)).toThrow(
+    'requires an execution and backend namespace',
+  );
+  expect(index.read('job')?.detail.kind).toBe('absent');
 });

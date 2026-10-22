@@ -81,28 +81,23 @@ function pendingSecondRequest(f: ReturnType<typeof retainedExecutionsFixture>): 
       .kind,
   ).toBe('complete');
   expect(f.index.resultsReleased(f.epochKey)).toBe(true);
-  const first = f.index.execution(f.jobId, 1)!;
-  const prior = first.detail;
-  const { result: _result, ...status } = prior.status;
-  f.index.recordExecutionDetails(f.jobId, [first], {
-    ...prior,
-    status: { ...status, execution: 2, phase: 'launching', finishing: false },
-    events: [],
-    exit: null,
-    readiness: 'pending',
-  });
-  expect(f.index.certificate(f.epochKey)).toBeNull();
   const db = newRawDatabase(f.epoch.path);
   const template = executionHarness();
   try {
-    commit(
-      db,
-      (c) => {
-        c.append(requestedExecution(2));
-        return undefined;
-      },
-      template.ctx,
-    );
+    f.index.withAdmissionGuard(f.epochKey, db, () => {
+      f.index.prepareAdmission(f.jobId, 2, f.epochKey, f.index.read(f.jobId)!.subject);
+      expect(f.index.certificate(f.epochKey)).toBeNull();
+      commit(
+        db,
+        (c) => {
+          c.append(requestedExecution(2));
+          return undefined;
+        },
+        { ...template.ctx, beforeAppend: (input) => f.index.beforeAppend(input, f.epochKey) },
+      );
+    });
+    expect(f.index.read(f.jobId)).toMatchObject({ disposition: 'active-owner', latestExecution: 2, openExecution: 2 });
+    expect(f.index.resultsReleased(f.epochKey)).toBe(false);
     return db.prepare<[], { seq: number }>('SELECT MAX(seq) AS seq FROM events').get()!.seq;
   } finally {
     db.close();
@@ -147,71 +142,66 @@ describe('jobs store generation with the shipped v0.10.21 bundle', () => {
     ).toBe('newer-incompatible');
   });
 
-  it.each([true, false])(
-    'runs shipped-old against new state with newer handoff available=%s and preserves pending execution evidence',
-    async (available) => {
-      const f = retainedExecutionsFixture(roots, 1);
-      pendingSecondRequest(f);
-      const before = sourceSnapshot(f);
-      const newer = createPluginFixture(roots, { flavor: 'prod', version: '0.10.22', accepts: 'bundled' });
-      const selected = select(f, newer);
-      const old = createShippedPluginFixture(roots, 'v0.10.21');
-      if (!available) renameSync(join(newer.root, 'bridge'), join(newer.root, 'unavailable-bridge'));
-      const handle = spawnCoordinator({
-        fixture: old,
-        home: f.root,
-        tempRoots: roots,
-        env: {
-          ...Object.fromEntries(
-            Object.keys(process.env)
-              .filter((name) => name.startsWith('CORAL_'))
-              .map((name) => [name, undefined]),
-          ),
-          CORAL_KB_PATH: join(f.root, 'kb'),
-        },
-      });
-      children.push(handle);
-      if (available) {
-        homes.push({ home: f.root, fixture: newer });
-        const exited = await waitForProcessExit(handle, 30_000);
-        expect(exited).toEqual({ code: 0, signal: null });
-        await waitForCondition(
-          () => readDiscoveryRecordForHome(f.root, 'prod')?.bundleHash === selected.bundleHash,
-          30_000,
-        );
-        expect(handle.output()).not.toContain('Fatal startup error');
-        expect(existsSync(coordinatorFilesForHome(f.root, 'prod').startupErrorFile)).toBe(false);
-      } else {
-        homes.push({ home: f.root, fixture: old });
-        await waitForCondition(
-          () => readDiscoveryRecordForHome(f.root, 'prod') !== null || handle.child.exitCode !== null,
-          30_000,
-        );
-        const record = readDiscoveryRecordForHome(f.root, 'prod');
-        if (record !== null) {
-          expect(record.bundleHash).toBe(old.bundleHash);
-          expect(handle.output()).not.toContain('Fatal startup error');
-        } else {
-          const diagnostic = readFileSync(coordinatorFilesForHome(f.root, 'prod').startupDiagnosticFile, 'utf8');
-          expect(diagnostic).toMatch(/retirement-mint-withheld|SuccessionAttemptStartupHoldError/u);
-          expect(diagnostic).not.toMatch(/store_format_incompatible|unsupported store format/iu);
-        }
-        const retained = f.index.read(f.jobId)!;
-        expect(retained.disposition).not.toBe('terminal');
-        expect(f.index.resultsReleased(f.epochKey)).toBe(false);
-        expect(f.index.certificate(f.epochKey)).toBeNull();
-        expect(retained.executions).toHaveLength(1);
-      }
-      // Older startup may retain/move the source; it may never fabricate an old-format terminal for #2.
-      const read = f.index.read(f.jobId);
-      expect(read?.executions?.[0]?.detail.exit?.content).toBe('result #1');
-      const after = sourceSnapshot(f);
-      expect(after.slice(0, before.length)).toEqual(before);
-      expect(
-        after.slice(before.length).every((row) => (row as { type: string }).type !== 'job.terminal.recorded'),
-      ).toBe(true);
-      if (!available) expect(after).toEqual(before);
-    },
-    90_000,
-  );
+  it('hands shipped-old startup to an available newer bundle and preserves pending execution evidence', async () => {
+    const { f, before, newer, selected, handle } = rollbackFixture(true);
+    homes.push({ home: f.root, fixture: newer });
+    expect(await waitForProcessExit(handle, 30_000)).toEqual({ code: 0, signal: null });
+    await waitForCondition(
+      () => readDiscoveryRecordForHome(f.root, 'prod')?.bundleHash === selected.bundleHash,
+      30_000,
+    );
+    expect(handle.output()).not.toContain('Fatal startup error');
+    expect(existsSync(coordinatorFilesForHome(f.root, 'prod').startupErrorFile)).toBe(false);
+    expectPendingEvidence(f, before);
+  }, 90_000);
+
+  it('preserves pending current-format evidence when shipped-old startup recovers an unavailable selected bundle', async () => {
+    const { f, before, handle, old } = rollbackFixture(false);
+    homes.push({ home: f.root, fixture: old });
+    await waitForCondition(() => readDiscoveryRecordForHome(f.root, 'prod')?.bundleHash === old.bundleHash, 30_000);
+    expect(handle.output()).toContain('Recovered the newer-incompatible active store');
+    expect(handle.output()).not.toContain('Fatal startup error');
+    const files = coordinatorFilesForHome(f.root, 'prod');
+    expect(existsSync(files.startupErrorFile)).toBe(false);
+    expectPendingEvidence(f, before);
+    expect(sourceSnapshot(f)).toEqual(before);
+    expect(f.index.read(f.jobId)).toMatchObject({ latestExecution: 2, openExecution: 2 });
+  }, 90_000);
 });
+
+function rollbackFixture(available: boolean) {
+  const f = retainedExecutionsFixture(roots, 1);
+  pendingSecondRequest(f);
+  const before = sourceSnapshot(f);
+  const newer = createPluginFixture(roots, { flavor: 'prod', version: '0.10.22', accepts: 'bundled' });
+  const selected = select(f, newer);
+  const old = createShippedPluginFixture(roots, 'v0.10.21');
+  if (!available) renameSync(join(newer.root, 'bridge'), join(newer.root, 'unavailable-bridge'));
+  const handle = spawnCoordinator({
+    fixture: old,
+    home: f.root,
+    tempRoots: roots,
+    env: {
+      ...Object.fromEntries(
+        Object.keys(process.env)
+          .filter((name) => name.startsWith('CORAL_'))
+          .map((name) => [name, undefined]),
+      ),
+      CORAL_KB_PATH: join(f.root, 'kb'),
+    },
+  });
+  children.push(handle);
+  return { f, before, newer, selected, handle, old };
+}
+
+function expectPendingEvidence(
+  f: ReturnType<typeof retainedExecutionsFixture>,
+  before: ReturnType<typeof sourceSnapshot>,
+) {
+  expect(f.index.read(f.jobId)?.executions?.[0]?.detail.exit?.content).toBe('result #1');
+  const after = sourceSnapshot(f);
+  expect(after.slice(0, before.length)).toEqual(before);
+  expect(after.slice(before.length).every((row) => (row as { type: string }).type !== 'job.terminal.recorded')).toBe(
+    true,
+  );
+}

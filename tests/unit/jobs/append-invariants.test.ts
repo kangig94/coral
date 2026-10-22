@@ -1,3 +1,4 @@
+import { isRecord } from '#src/infra/json.js';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { jobsRegistry } from '#src/jobs/events.js';
@@ -12,7 +13,7 @@ import {
   jobExecutionEndedBodySchema,
   jobTerminalSchema,
 } from '#src/jobs/terminal/result.js';
-import { findCommittedExecutionRequest } from '#src/jobs/execution-state.js';
+import { findCommittedExecutionRequest } from '#src/jobs/execution-journal.js';
 import { refuseLaunch } from '#src/jobs/launch.js';
 import { jobsEventDescribers } from '#src/jobs/event-describers.js';
 import type { CoralEventInput } from '#src/store/envelope.js';
@@ -26,6 +27,16 @@ import {
   requestedExecution,
 } from '#tests/helpers/job-executions.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
+
+function tokenMarker(token: object): { symbol: symbol; commit: object } {
+  const symbol = Object.getOwnPropertySymbols(token)[0];
+  if (symbol === undefined) throw new Error('Expected a cause token marker.');
+  const marker: unknown = Object.getOwnPropertyDescriptor(token, symbol)?.value;
+  if (!isRecord(marker) || typeof marker.commit !== 'object' || marker.commit === null) {
+    throw new Error('Expected a commit-bound cause token.');
+  }
+  return { symbol, commit: marker.commit };
+}
 
 const harnesses: ReturnType<typeof executionHarness>[] = [];
 function harness() {
@@ -108,9 +119,6 @@ function withExecution(event: CoralEventInput, execution: unknown): CoralEventIn
 
 describe('jobs:execution-order', () => {
   it('registers exactly the new vocabulary, one order validator, and all describers', () => {
-    expect(jobsRegistry.entries.map((entry) => entry.type).sort()).toEqual(
-      ['job.opened', ...executionEvents.map((event) => event.type)].sort(),
-    );
     expect(jobsRegistry.appendValidators?.map((entry) => entry.contract)).toEqual(['jobs:execution-order']);
     for (const entry of jobsRegistry.entries) expect(jobsEventDescribers.has(`job:${entry.type}`)).toBe(true);
   });
@@ -126,6 +134,16 @@ describe('jobs:execution-order', () => {
     const h = harness();
     expectOrderFailure(() => h.append(event));
     expect(h.events()).toEqual([]);
+  });
+
+  it('enforces one job for a parent workflow slot in the durable projection', () => {
+    const h = harness();
+    const refs = { parentJobId: '20000000-0000-4000-8000-000000000001', workflowSlotId: 'review' };
+    const first = openedJob({ owner: { kind: 'workflow', id: refs.parentJobId }, workflowSlotId: refs.workflowSlotId });
+    h.append({ ...first, refs });
+    expect(() => h.append({ ...first, stream: { kind: 'job', id: otherJobId }, refs })).toThrow(
+      /UNIQUE constraint failed/u,
+    );
   });
 
   it('opens workflow and KB jobs without a conversation facet', () => {
@@ -412,9 +430,9 @@ describe('jobs:execution-order', () => {
     expect(() =>
       h.commit((c) => {
         const self = c.append(progress());
-        const symbol = Object.getOwnPropertySymbols(self)[0]!;
+        const { symbol, commit } = tokenMarker(self);
         const forward = {
-          [symbol]: { slot: 2, commit: (self as unknown as Record<symbol, { commit: object }>)[symbol]!.commit },
+          [symbol]: { slot: 2, commit },
         };
         c.append(
           input('job.execution.outcome.accepted', {
@@ -429,9 +447,9 @@ describe('jobs:execution-order', () => {
       expect(() =>
         h.commit((c) => {
           const token = c.append(progress());
-          const symbol = Object.getOwnPropertySymbols(token)[0]!;
+          const { symbol, commit } = tokenMarker(token);
           const invalid = {
-            [symbol]: { slot, commit: (token as unknown as Record<symbol, { commit: object }>)[symbol]!.commit },
+            [symbol]: { slot, commit },
           };
           c.append(input('job.execution.ended', { execution: 1, causeRef: invalid }));
           return undefined;

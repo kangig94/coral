@@ -1,3 +1,4 @@
+import { testConversationFacet } from '#tests/helpers/session.js';
 import { pruneJobProgress } from '#src/jobs/progress-retention.js';
 import { initTestJob } from '#tests/helpers/session.js';
 import { commitJobTerminal } from '#tests/helpers/job-commits.js';
@@ -106,14 +107,13 @@ describe('retention vacuum', () => {
     const f = fixture();
     f.setNow(1);
     initTestJob(f.store, {
-      jobId: 'contended',
-      sessionId: 'session',
-      provider: 'codex',
+      jobId: '93000000-0000-4000-8005-000000000001',
       projectRoot: '/workspace',
       backendNamespace: 'test-ns',
+      conversation: testConversationFacet('codex', '/workspace'),
     });
-    const seq = f.store.appendProgress('contended', 'session', 'message');
-    commitJobTerminal(f.store, 'contended', 'session', {
+    const seq = f.store.appendProgress('93000000-0000-4000-8005-000000000001', 'message');
+    commitJobTerminal(f.store, '93000000-0000-4000-8005-000000000001', 1, {
       content: 'done',
       outcome: { kind: 'completed' },
       durationMs: 1,
@@ -134,7 +134,11 @@ describe('retention vacuum', () => {
       expect(f.db.prepare('SELECT seq FROM events WHERE seq = ?').get(seq)).toBeDefined();
       expect(f.db.prepare('PRAGMA busy_timeout').get()).toEqual({ timeout: 5000 });
       expect(f.db.prepare('PRAGMA wal_autocheckpoint').get()).toEqual({ wal_autocheckpoint: 1000 });
-      expect(f.outcomes).toContainEqual({ kind: 'kept', subject: 'progress:contended', reason: 'scan-pending' });
+      expect(f.outcomes).toContainEqual({
+        kind: 'kept',
+        subject: `progress:93000000-0000-4000-8005-000000000001:${f.store.readStatus('93000000-0000-4000-8005-000000000001')?.lastSeq}`,
+        reason: 'scan-pending',
+      });
       other.exec('ROLLBACK');
       expect(await run()).toBe(0);
       expect(f.db.prepare('SELECT seq FROM events WHERE seq = ?').get(seq)).toBeUndefined();

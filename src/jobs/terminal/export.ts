@@ -1,6 +1,8 @@
+import { readJobTerminalAge } from '../terminal-age.js';
+import { resultPathFor } from '../paths.js';
+import { renderJobResultMarkdown, type WorkflowReportPort } from './render.js';
 import type { RecoveryObservation } from '../../recovery/phase-observation.js';
 import { observeDatabaseReads } from '../../recovery/read-observation.js';
-import { join } from 'node:path';
 
 import type { Database } from '../../store/db.js';
 import type { AppendedEvent, PostCommitObserver } from '../../store/append.js';
@@ -10,11 +12,7 @@ import { writeResultArtifact, type DecodedResultArtifact } from './artifact.js';
 import { type StoreReadContext } from '../../store/body-codec.js';
 
 import type { EventsRow } from '../../store/schema.js';
-import { extractCauseRef, renderCauseRefFallback, type CauseRef } from '../../causality/cause-ref.js';
-import type { CoralEvent } from '../../store/envelope.js';
-import { isRecord } from '../../infra/json.js';
 import { jobExecutionEndedBodySchema, jobExecutionOutcomeAcceptedBodySchema } from './result.js';
-import { describeTerminalOutcome } from '../outcome.js';
 import { backendLog } from '../../infra/backend-log.js';
 import { errorMessage } from '../../infra/error-format.js';
 import { setImmediate } from 'node:timers/promises';
@@ -31,94 +29,6 @@ import {
   type TerminalEligibility,
 } from '../export-retention.js';
 import type { RetentionRunBudget } from '../../store/retention-outcome.js';
-
-export function resultPathFor(jobsRoot: string, jobId: string, execution: number): string {
-  return join(jobsRoot, jobId, 'executions', String(execution), 'result.md');
-}
-
-function describeKnownEvent(event: CoralEvent): string {
-  const body = event.body;
-  if (event.type === 'workflow.completed' && isRecord(body) && typeof body.outcome === 'string') {
-    return `Workflow ${body.outcome}.`;
-  }
-
-  if (
-    event.type === 'workflow.lifecycle_fault' &&
-    isRecord(body) &&
-    typeof body.kind === 'string' &&
-    typeof body.message === 'string'
-  ) {
-    return `Workflow lifecycle fault (${body.kind}): ${body.message}.`;
-  }
-
-  if (event.type === 'job.execution.outcome.accepted') {
-    const parsed = jobExecutionOutcomeAcceptedBodySchema.safeParse(body);
-    if (parsed.success) {
-      return describeTerminalOutcome(parsed.data.terminal.outcome, {
-        describeCauseRef: renderCauseRefFallback,
-      });
-    }
-  }
-
-  return event.type;
-}
-
-function describeCauseRefChain(
-  db: Database,
-  ctx: StoreReadContext,
-  ref: CauseRef,
-  visited: Set<string>,
-): string | null {
-  const key = `${ref.stream.kind}:${ref.stream.id}:${ref.seq}`;
-  if (visited.has(key)) {
-    return null;
-  }
-  visited.add(key);
-
-  const row = db.prepare<[number], EventsRow>('SELECT * FROM events WHERE seq = ?').get(ref.seq);
-  if (!row || row.stream_kind !== ref.stream.kind || row.stream_id !== ref.stream.id) {
-    return null;
-  }
-
-  const body: unknown = JSON.parse(Buffer.from(row.body).toString('utf8'));
-  const event = { type: row.type, body } as CoralEvent;
-  const localDescription = describeKnownEvent(event);
-  const nextRef = extractCauseRef(body);
-  if (!nextRef) {
-    return localDescription;
-  }
-
-  const nextDescription = describeCauseRefChain(db, ctx, nextRef, visited);
-  return nextDescription === null ? null : `${localDescription} Caused by: ${nextDescription}`;
-}
-
-function describeResolvedCauseRef(db: Database, ctx: StoreReadContext, ref: CauseRef): string {
-  try {
-    return describeCauseRefChain(db, ctx, ref, new Set()) ?? renderCauseRefFallback(ref);
-  } catch {
-    return renderCauseRefFallback(ref);
-  }
-}
-
-function workflowIdentityMarkdown(db: Database, jobId: string): string {
-  const opened = db.prepare<[string], EventsRow>(
-    "SELECT * FROM events WHERE stream_kind = 'job' AND stream_id = ? AND type = 'job.opened' ORDER BY seq LIMIT 1",
-  ).get(jobId);
-  if (!opened) return '';
-  const refs: unknown = opened.refs ? JSON.parse(opened.refs) : null;
-  if (!isRecord(refs) || typeof refs.parentJobId !== 'string') return '';
-  return `> Parent workflow: ${refs.parentJobId}\n> Workflow slot: ${refs.workflowSlotId}\n\n`;
-}
-
-export type WorkflowReportPort = (
-  input: Readonly<{
-    db: Database;
-    epochKey: string;
-    jobId: string;
-    accepted: EventsRow;
-    terminal: JobTerminal;
-  }>,
-) => string | null;
 
 /** `pending` is every state a write owner will still retry; `failed` is one nothing will retry. */
 export type ResultAvailability =
@@ -215,25 +125,42 @@ export class TerminalResultExportOwner {
     if (accepted === null) return null;
     const end = jobExecutionEndedBodySchema.parse(JSON.parse(Buffer.from(accepted.body).toString('utf8')));
     const outcome = db.prepare<[number], EventsRow>('SELECT * FROM events WHERE seq = ?').get(end.causeRef.seq);
-    if (outcome === undefined || outcome.type !== 'job.execution.outcome.accepted' || outcome.stream_id !== jobId || outcome.stream_kind !== 'job')
+    if (
+      outcome === undefined ||
+      outcome.type !== 'job.execution.outcome.accepted' ||
+      outcome.stream_id !== jobId ||
+      outcome.stream_kind !== 'job'
+    )
       throw new Error('Execution result has no accepted outcome.');
     const body = jobExecutionOutcomeAcceptedBodySchema.parse(JSON.parse(Buffer.from(outcome.body).toString('utf8')));
     if (body.execution !== end.execution) throw new Error('Execution result cites another execution.');
-    return { accepted, terminal: body.terminal, markdown: null, age: 'unknown' };
+    return { accepted, terminal: body.terminal, markdown: null, age: readJobTerminalAge(db, accepted) };
   }
 
   private location(jobId: string, execution?: number, observation?: RecoveryObservation): JobLocation | null {
     const location = this.input.location(jobId, observation);
     if (location === null || location.executions === undefined) return execution === undefined ? location : null;
     const selected = execution ?? location.latestExecution;
-    const entry = location.executions.find(entry => entry.execution === selected);
-    if (entry === undefined || location.detail.kind === 'unreadable' ||
-      validatedTerminal(entry.detail, jobId, location.epochKey, entry.seq, entry) === null) return null;
-    return { ...location, disposition: 'terminal', terminalSeq: entry.seq, resultPath: entry.resultPath,
-      latestExecution: entry.execution, detail: { kind: 'recorded', value: entry.detail } };
+    const entry = location.executions.find((entry) => entry.execution === selected);
+    if (
+      entry === undefined ||
+      location.detail.kind === 'unreadable' ||
+      validatedTerminal(entry.detail, jobId, location.epochKey, entry.seq, entry) === null
+    )
+      return null;
+    return {
+      ...location,
+      disposition: 'terminal',
+      terminalSeq: entry.seq,
+      resultPath: entry.resultPath,
+      latestExecution: entry.execution,
+      detail: { kind: 'recorded', value: entry.detail },
+    };
   }
 
-  private workKey(jobId: string, execution?: number): string { return execution === undefined ? jobId : `${jobId}:${execution}`; }
+  private workKey(jobId: string, execution?: number): string {
+    return execution === undefined ? jobId : `${jobId}:${execution}`;
+  }
 
   private eligibility(
     jobId: string,
@@ -243,7 +170,11 @@ export class TerminalResultExportOwner {
     if (this.input.readTerminalInput !== undefined) {
       let observed: DecodedResultArtifact | null | undefined;
       try {
-        observed = this.withSource(jobId, (db) => this.input.readTerminalInput?.(db, jobId, location?.latestExecution), observation);
+        observed = this.withSource(
+          jobId,
+          (db) => this.input.readTerminalInput?.(db, jobId, location?.latestExecution),
+          observation,
+        );
       } catch (error) {
         return {
           source: sourceReadFailureDisposition(error) === 'transient-unknown' ? 'transient' : 'unusable',
@@ -278,7 +209,9 @@ export class TerminalResultExportOwner {
     try {
       const file = this.input.runtime.storage.lstatSync(path, { bigint: true });
       return file.isFile() && file.size > 0n;
-    } catch {
+    } catch (error: unknown) {
+      if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT'))
+        backendLog.warn(`Retained job observation requires its existing recovery owner: ${String(error)}`);
       return false;
     }
   }
@@ -309,11 +242,7 @@ export class TerminalResultExportOwner {
     return this.withAgreedTerminal(jobId, location, (db, ctx, accepted, terminal) => {
       const supplied = this.input.readTerminalInput?.(db, jobId, location.latestExecution);
       if (supplied !== undefined) return supplied?.markdown ?? null;
-      if (location.subject.jobKind === 'workflow')
-        return this.input.workflowReport?.({ db, epochKey: location.epochKey, jobId, accepted, terminal }) ?? null;
-      const identity = workflowIdentityMarkdown(db, jobId);
-      const content = terminal.content.trimEnd();
-      return `${identity}${content || describeTerminalOutcome(terminal.outcome, { describeCauseRef: (ref) => describeResolvedCauseRef(db, ctx, ref) })}\n`;
+      return renderJobResultMarkdown(db, ctx, location.epochKey, jobId, accepted, terminal, this.input.workflowReport);
     });
   }
 
@@ -362,18 +291,62 @@ export class TerminalResultExportOwner {
   private publish(jobId: string, repair: boolean, observation?: RecoveryObservation, execution?: number): string {
     const location = this.location(jobId, execution, observation);
     const stored = this.input.location(jobId, observation);
-    const entry = location === null ? undefined : stored?.executions?.find(entry => entry.execution === (execution ?? stored.latestExecution));
+    const entry =
+      location === null
+        ? undefined
+        : stored?.executions?.find((entry) => entry.execution === (execution ?? stored.latestExecution));
     const workKey = this.workKey(jobId, execution ?? stored?.latestExecution);
     if (entry !== undefined) {
-      if (this.readableFile(entry.resultPath)) { this.failures.delete(workKey); return entry.resultPath; }
+      if (this.readableFile(entry.resultPath)) {
+        this.failures.delete(workKey);
+        return entry.resultPath;
+      }
       try {
-        const age = this.withSource(jobId, db => this.readTerminal(jobId, db, entry.execution)?.age);
-        repairRetainedExecution(this.input.runtime, entry, () => {
-          const current = this.input.location(jobId);
-          return current?.epochKey === stored?.epochKey && current?.executions?.some(
-            known => known.execution === entry.execution && known.seq === entry.seq,
-          ) === true;
-        }, age ?? undefined);
+        const source = this.withSource(jobId, (db, ctx) => {
+          const observed = this.readTerminal(jobId, db, entry.execution);
+          const markdown =
+            observed === null
+              ? null
+              : this.input.readTerminalInput === undefined
+                ? renderJobResultMarkdown(
+                    db,
+                    ctx,
+                    stored?.epochKey ?? '',
+                    jobId,
+                    observed.accepted,
+                    observed.terminal,
+                    this.input.workflowReport,
+                  )
+                : observed.markdown;
+          return { observed, markdown };
+        });
+        if (
+          source !== null &&
+          (source.observed === null ||
+            source.markdown === null ||
+            source.observed.accepted.seq !== entry.seq ||
+            source.observed.accepted.ts !== entry.detail.exit?.endTime ||
+            entry.detail.exit === null ||
+            !sameTerminal(source.observed.terminal, entry.detail.exit))
+        ) {
+          this.unrenderable.add(jobId);
+          return entry.resultPath;
+        }
+        repairRetainedExecution(
+          this.input.runtime,
+          entry,
+          () => {
+            const current = this.input.location(jobId);
+            return (
+              current?.epochKey === stored?.epochKey &&
+              current?.executions?.some((known) => known.execution === entry.execution && known.seq === entry.seq) ===
+                true
+            );
+          },
+          source?.observed?.age,
+          this.input.jobsRoot,
+          source?.markdown ?? entry.resultMarkdown,
+        );
         if (this.readableFile(entry.resultPath)) this.failures.delete(workKey);
         return entry.resultPath;
       } catch (error) {
@@ -382,7 +355,8 @@ export class TerminalResultExportOwner {
         throw error;
       }
     }
-    const targetPath = location?.resultPath ?? resultPathFor(this.input.jobsRoot, jobId, execution ?? stored?.latestExecution ?? 1);
+    const targetPath =
+      location?.resultPath ?? resultPathFor(this.input.jobsRoot, jobId, execution ?? stored?.latestExecution ?? 1);
     if (location && hasReadableTerminalDetail(location) && this.readableFile(targetPath)) {
       this.failures.delete(jobId);
       return targetPath;
@@ -412,11 +386,19 @@ export class TerminalResultExportOwner {
     }
   }
 
-  private publishInSource(jobId: string, repair: boolean, db: Database, retained: JobLocation | null, execution?: number): string {
+  private publishInSource(
+    jobId: string,
+    repair: boolean,
+    db: Database,
+    retained: JobLocation | null,
+    execution?: number,
+  ): string {
     const recorded = retained !== null && hasReadableTerminalDetail(retained);
     if (!recorded) this.input.prepareTerminal?.(jobId, db);
     const location = recorded ? retained : this.location(jobId, execution);
-    const targetPath = location?.resultPath ?? resultPathFor(this.input.jobsRoot, jobId, execution ?? this.input.location(jobId)?.latestExecution ?? 1);
+    const targetPath =
+      location?.resultPath ??
+      resultPathFor(this.input.jobsRoot, jobId, execution ?? this.input.location(jobId)?.latestExecution ?? 1);
     if (this.readableFile(targetPath)) {
       this.failures.delete(jobId);
       return targetPath;
@@ -500,10 +482,14 @@ export class TerminalResultExportOwner {
       } else {
         const entries = this.input.location(jobId)?.executions;
         if (entries === undefined) await this.repairCandidate(jobId, budget);
-        else for (const entry of entries) {
-          if (!budget.canContinue()) { this.hintRepair(jobId, entry.execution); continue; }
-          await this.repairCandidate(jobId, budget, entry.execution);
-        }
+        else
+          for (const [index, entry] of entries.entries()) {
+            if (index > 0 && !budget.canContinue()) {
+              this.hintRepair(jobId, entry.execution);
+              continue;
+            }
+            await this.repairCandidate(jobId, budget, entry.execution);
+          }
       }
     }
     budget.record({ kind: 'kept', subject: 'result-repair', reason: 'scan-pending' });

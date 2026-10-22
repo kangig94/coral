@@ -2,14 +2,12 @@ import { currentCoralStoreFormat } from '#src/store-format.js';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   allocateTestSession,
-  validatedTestContinuityMutation,
+  testConversationOpenedInput,
   validatedTestContinuitySnapshot,
 } from '../../helpers/session.js';
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-
-let tmpHome = '';
 
 import { createRealRuntime } from '#src/runtime/real.js';
 import { commit, type AppendedEvent, type CommitEventsFn } from '#src/store/append.js';
@@ -20,57 +18,34 @@ import { jobsRegistry } from '#src/jobs/events.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { workflowRegistry } from '#src/workflow/events.js';
 import { ConversationManager } from '#src/jobs/conversation/shell.js';
+import { appendJobExecutionEnded, appendJobExecutionOutcomeAccepted } from '#src/jobs/terminal/recording.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
+import { requestedExecution } from '#tests/helpers/job-executions.js';
 
+let tmpHome = '';
 let runtime: ReturnType<typeof createRealRuntime>;
 const openDbs: Array<ReturnType<typeof openTestStoreDatabase>> = [];
 
-function openSessionDb(): ReturnType<typeof openTestStoreDatabase> {
-  const db = openTestStoreDatabase({
-    storeFormat: currentCoralStoreFormat(),
-    path: ':memory:',
-    storage: runtime.storage,
-  });
+function openSessionDb(path = ':memory:'): ReturnType<typeof openTestStoreDatabase> {
+  const db = openTestStoreDatabase({ storeFormat: currentCoralStoreFormat(), path, storage: runtime.storage });
   openDbs.push(db);
   return db;
 }
 
-describe('sessions shell store', () => {
+describe('job conversation shell store', () => {
   beforeEach(() => {
     tmpHome = mkdtempSync(join(tmpdir(), 'coral-execution-home-'));
     runtime = createRealRuntime('prod', { baseDir: tmpHome });
   });
 
   afterEach(() => {
-    for (const db of openDbs.splice(0).reverse()) {
-      try {
-        db.close();
-      } catch {
-        // already closed in-test
-      }
-    }
+    for (const db of openDbs.splice(0).reverse()) db.close();
     rmSync(tmpHome, { recursive: true, force: true });
   });
 
-  function setup(projectName: string): { mgr: ConversationManager; workDir: string } {
+  function setupWithJournal(projectName: string) {
     const workDir = join(tmpHome, projectName);
     mkdirSync(workDir, { recursive: true });
-    return {
-      mgr: new ConversationManager(workDir, runtime, undefined, undefined, openSessionDb(), permissiveProviderLookupPort),
-      workDir,
-    };
-  }
-
-  function setupWithJournal(projectName: string): {
-    db: ReturnType<typeof openTestStoreDatabase>;
-    mgr: ConversationManager;
-    workDir: string;
-    coordinatorCommit: CommitEventsFn;
-    appendedBatches: AppendedEvent[][];
-  } {
-    const workDir = join(tmpHome, projectName);
-    mkdirSync(workDir, { recursive: true });
-
     const db = openSessionDb();
     const reducers = composeReducers(jobsRegistry, discussRegistry, workflowRegistry);
     const bodyCodec = createEventBodyCodec();
@@ -85,88 +60,94 @@ describe('sessions shell store', () => {
       appendedBatches.push(appended);
       return appended;
     };
-
-    return {
-      db,
-      mgr: new ConversationManager(workDir, runtime, coordinatorCommit, undefined, db),
-      workDir,
-      coordinatorCommit,
-      appendedBatches,
-    };
+    const mgr = new ConversationManager(workDir, runtime, coordinatorCommit, db);
+    const entry = allocateTestSession(mgr, 'codex', 'alpha', 'gpt-5', workDir);
+    coordinatorCommit((c) => {
+      c.append(testConversationOpenedInput(entry));
+      return undefined;
+    });
+    return { mgr, entry, workDir, coordinatorCommit, appendedBatches };
   }
 
-  it('claimForJobAtomic allows only one concurrent claimant', async () => {
-    const { mgr, workDir } = setup('claim-atomic');
-    const entry = allocateTestSession(mgr, 'codex', 'alpha', 'gpt-5', workDir);
-
-    const results = await Promise.all([
-      mgr.claimForJobAtomic(entry.sessionId, 'job-1'),
-      mgr.claimForJobAtomic(entry.sessionId, 'job-2'),
-    ]);
-
-    expect(results.filter(Boolean)).toHaveLength(1);
-    expect(mgr.get('codex', entry.sessionId)?.activeJobId).toMatch(/^job-[12]$/);
+  it('allows only one concurrent execution request on a conversation job', async () => {
+    const { mgr, entry, coordinatorCommit } = setupWithJournal('request-atomic');
+    const request = () =>
+      coordinatorCommit((c) => {
+        c.append({ ...requestedExecution(), stream: { kind: 'job', id: entry.jobId } });
+        return undefined;
+      });
+    const results = await Promise.allSettled([Promise.resolve().then(request), Promise.resolve().then(request)]);
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    const rejected = results.filter((result) => result.status === 'rejected');
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0].reason).toMatchObject({ code: 'job_execution_order_violation' });
+    expect(mgr.get('codex', entry.jobId)).toMatchObject({ jobId: entry.jobId, execution: 1, open: true });
   });
 
-  it('finalizeJobContinuityAtomic appends caller state, checkpoint, and claim release in one commit', async () => {
-    const { appendedBatches, mgr, workDir } = setupWithJournal('finalize-dual-event');
-    const entry = allocateTestSession(mgr, 'codex', 'alpha', 'gpt-5', workDir);
-    mgr.claimForJobSync(entry.sessionId, 'job-1');
-
-    const claimed = mgr.get('codex', entry.sessionId);
-    if (!claimed) {
-      throw new Error('Expected claimed session');
-    }
-
+  it('checkpoints continuity before acceptance and retains ownership until the execution ends', async () => {
+    const { appendedBatches, mgr, entry, coordinatorCommit } = setupWithJournal('checkpoint-before-acceptance');
+    coordinatorCommit((c) => {
+      c.append({ ...requestedExecution(), stream: { kind: 'job', id: entry.jobId } });
+      return undefined;
+    });
     appendedBatches.length = 0;
     await expect(
-      mgr.finalizeJobContinuityAtomic(entry.sessionId, {
-        expectedActiveJobId: 'job-1',
-        expectedVersion: claimed.version,
-        mutation: validatedTestContinuityMutation({
-          kind: 'set_resumable',
+      mgr.checkpointJobContinuityAtomic(entry.jobId, {
+        execution: 1,
+        snapshot: validatedTestContinuitySnapshot({
           conversationRef: 'thread-1',
+          resumable: true,
+          providerContinuity: null,
         }),
-        appendBeforeRelease: (commit) => {
-          commit.append({
-            type: 'session.retention.discard.requested',
-            stream: { kind: 'session', id: entry.sessionId },
-            refs: { sessionId: entry.sessionId },
-            body: { sessionId: entry.sessionId, attempt: 1, handles: [] },
-          });
-        },
       }),
-    ).resolves.toBe(true);
-
+    ).resolves.toEqual({ ok: true, execution: 1 });
     expect(appendedBatches).toHaveLength(1);
-    expect(appendedBatches[0].map((event) => event.type)).toEqual([
-      'session.retention.discard.requested',
-      'session.continuity.checkpointed',
-      'session.claim.released',
-    ]);
-    const updated = mgr.get('codex', entry.sessionId);
-    expect(updated).toMatchObject({
-      state: 'ready',
-      conversationRef: 'thread-1',
+    expect(appendedBatches[0].map((event) => event.type)).toEqual(['job.continuity.checkpointed']);
+
+    const acceptedEvents = coordinatorCommit((c) => {
+      appendJobExecutionOutcomeAccepted(c, {
+        jobId: entry.jobId,
+        execution: 1,
+        terminal: { content: 'done', durationMs: 1, outcome: { kind: 'completed' } },
+      });
+      return undefined;
     });
-    expect(Object.hasOwn(updated ?? {}, 'activeJobId')).toBe(false);
+    const accepted = acceptedEvents?.[0];
+    if (accepted === undefined) throw new Error('Expected accepted outcome.');
+    expect(mgr.get('codex', entry.jobId)).toMatchObject({ open: true, finishing: true, conversationRef: 'thread-1' });
+    await expect(
+      mgr.checkpointJobContinuityAtomic(entry.jobId, {
+        execution: 1,
+        snapshot: validatedTestContinuitySnapshot({
+          conversationRef: 'late-thread',
+          resumable: true,
+          providerContinuity: null,
+        }),
+      }),
+    ).resolves.toEqual({ ok: false });
+    expect(() =>
+      coordinatorCommit((c) => {
+        c.append({ ...requestedExecution(2), stream: { kind: 'job', id: entry.jobId } });
+        return undefined;
+      }),
+    ).toThrowError(expect.objectContaining({ code: 'job_execution_order_violation' }));
+    coordinatorCommit((c) => {
+      appendJobExecutionEnded(c, {
+        jobId: entry.jobId,
+        execution: 1,
+        causeRef: { stream: accepted.stream, seq: accepted.seq },
+      });
+      return undefined;
+    });
+    expect(mgr.get('codex', entry.jobId)).toMatchObject({ open: false, finishing: false, conversationRef: 'thread-1' });
   });
 
-  it('checks continuity CAS after acquiring the database write transaction', async () => {
-    const workDir = join(tmpHome, 'checkpoint-cross-connection-cas');
+  it('checks the execution ordinal after acquiring the database write transaction', async () => {
+    const workDir = join(tmpHome, 'checkpoint-cross-connection');
     mkdirSync(workDir, { recursive: true });
-    const dbPath = join(tmpHome, 'checkpoint-cross-connection-cas.db');
-    const dbA = openTestStoreDatabase({
-      storeFormat: currentCoralStoreFormat(),
-      path: dbPath,
-      storage: runtime.storage,
-    });
-    const dbB = openTestStoreDatabase({
-      storeFormat: currentCoralStoreFormat(),
-      path: dbPath,
-      storage: runtime.storage,
-    });
-    openDbs.push(dbA, dbB);
+    const dbPath = join(tmpHome, 'checkpoint-cross-connection.db');
+    const dbA = openSessionDb(dbPath);
+    const dbB = openSessionDb(dbPath);
     const reducers = composeReducers(jobsRegistry, discussRegistry, workflowRegistry);
     const bodyCodec = createEventBodyCodec();
     const commitWith = (db: typeof dbA, cb: Parameters<CommitEventsFn>[0]) =>
@@ -184,24 +165,38 @@ describe('sessions shell store', () => {
       return commitWith(dbA, cb);
     };
     const commitB: CommitEventsFn = (cb) => commitWith(dbB, cb);
-    const managerA = new ConversationManager(workDir, runtime, commitA, undefined, dbA);
-    const managerB = new ConversationManager(workDir, runtime, commitB, undefined, dbB);
+    const managerA = new ConversationManager(workDir, runtime, commitA, dbA);
+    const managerB = new ConversationManager(workDir, runtime, commitB, dbB);
     const entry = allocateTestSession(managerA, 'codex', 'alpha', 'gpt-5', workDir);
-    managerA.claimForJobSync(entry.sessionId, 'job-1');
-    const claimed = managerA.readById(entry.sessionId, { forceFresh: true });
-    if (claimed === null) throw new Error('Expected claimed session');
-    managerB.readById(entry.sessionId, { forceFresh: true });
+    commitA((c) => {
+      c.append(testConversationOpenedInput(entry));
+      c.append({ ...requestedExecution(), stream: { kind: 'job', id: entry.jobId } });
+      return undefined;
+    });
+    await managerA.checkpointJobContinuityAtomic(entry.jobId, {
+      execution: 1,
+      snapshot: validatedTestContinuitySnapshot({
+        conversationRef: 'thread-1',
+        resumable: true,
+        providerContinuity: null,
+      }),
+    });
+    expect(managerB.readById(entry.jobId)?.execution).toBe(1);
     beforeNextACommit = () => {
-      void managerB.releaseJobClaimAtomic(entry.sessionId, {
-        expectedActiveJobId: 'job-1',
-        expectedVersion: claimed.version,
+      commitB((c) => {
+        const accepted = appendJobExecutionOutcomeAccepted(c, {
+          jobId: entry.jobId,
+          execution: 1,
+          terminal: { content: 'done', durationMs: 1, outcome: { kind: 'completed' } },
+        });
+        appendJobExecutionEnded(c, { jobId: entry.jobId, execution: 1, causeRef: accepted });
+        c.append({ ...requestedExecution(2), stream: { kind: 'job', id: entry.jobId } });
+        return undefined;
       });
     };
-
     await expect(
-      managerA.checkpointJobContinuityAtomic(entry.sessionId, {
-        expectedActiveJobId: 'job-1',
-        expectedVersion: claimed.version,
+      managerA.checkpointJobContinuityAtomic(entry.jobId, {
+        execution: 1,
         snapshot: validatedTestContinuitySnapshot({
           conversationRef: 'thread-racy',
           resumable: true,
@@ -209,10 +204,10 @@ describe('sessions shell store', () => {
         }),
       }),
     ).resolves.toEqual({ ok: false });
-
-    const current = managerA.readById(entry.sessionId, { forceFresh: true });
-    expect(current?.activeJobId).toBeUndefined();
-    expect(current?.conversationRef).toBeUndefined();
-    expect(current?.state).toBe('pending');
+    expect(managerA.readById(entry.jobId)).toMatchObject({
+      execution: 2,
+      open: true,
+      conversationRef: 'thread-1',
+    });
   });
 });

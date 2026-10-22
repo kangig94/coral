@@ -100,7 +100,7 @@ describe('claudeArtifactCapability', () => {
     const writeAtomicDurableSync = runtime.storage.writeAtomicDurableSync.bind(runtime.storage);
     let actionWrites = 0;
     vi.spyOn(runtime.storage, 'writeAtomicDurableSync').mockImplementation((...args) => {
-      if (args[0].includes('.provider-artifact-discard') && ++actionWrites === 2) return false;
+      if (args[0].includes('.provider-artifact-discard.v2') && ++actionWrites === 2) return false;
       return writeAtomicDurableSync(...args);
     });
     const cleanupRuntime: ArtifactCleanupRuntime = {

@@ -27,9 +27,13 @@ async function recoverSessions(harness: DiscussHarness): Promise<void> {
 
 describe('Discuss synthesis', () => {
   it('records a single synthesis entry from a terminal session', async () => {
-    const start = vi
-      .fn()
-      .mockResolvedValue({ kind: 'provider-session', status: 'running', jobId: 'job-1', sessionId: 'synth-session' });
+    const start = vi.fn().mockResolvedValue({
+      kind: 'provider-session',
+      status: 'running',
+      jobId: 'f10f3e57-0d04-53df-b4c3-3bcf75a1222d',
+      requestedSeq: 1,
+      epochKey: 'test-epoch',
+    });
     const waitStreamOnce = vi.fn().mockResolvedValue({
       content: 'The panel supported a phased pedestrianization plan centered on transit access.',
       continuity: null,
@@ -62,16 +66,24 @@ describe('Discuss synthesis', () => {
   });
 
   it('retains bound agent session logs when completed-discussion export fails', async () => {
-    const start = vi
-      .fn()
-      .mockResolvedValue({ kind: 'provider-session', status: 'running', jobId: 'job-1', sessionId: 'synth-session' });
-    const resume = vi
-      .fn()
-      .mockResolvedValue({ kind: 'provider-session', status: 'running', jobId: 'job-r', sessionId: 'alpha-session' });
+    const start = vi.fn().mockResolvedValue({
+      kind: 'provider-session',
+      status: 'running',
+      jobId: 'f10f3e57-0d04-53df-b4c3-3bcf75a1222d',
+      requestedSeq: 1,
+      epochKey: 'test-epoch',
+    });
+    const resume = vi.fn().mockResolvedValue({
+      kind: 'provider-session',
+      status: 'running',
+      jobId: '6960e368-4c7c-5e5a-95e2-6c9de7df59f8',
+      requestedSeq: 1,
+      epochKey: 'test-epoch',
+    });
     const waitStreamOnce = vi.fn().mockResolvedValue({ content: 'Final synthesis.', continuity: null });
     const harness = createDiscussHarness(createExecutionServiceStub({ start, resume, waitStreamOnce }));
-    const discardSessionArtifacts = vi.fn().mockResolvedValue(undefined);
-    harness.context.discardSessionArtifacts = discardSessionArtifacts;
+    const discardConversationArtifacts = vi.fn().mockResolvedValue(undefined);
+    harness.context.discardConversationArtifacts = discardConversationArtifacts;
     vi.spyOn(harness.runtime.storage, 'writeAtomicSync').mockReturnValue(false);
     await persistSession(harness, {
       sessionId: 'discuss-export-failure',
@@ -84,7 +96,7 @@ describe('Discuss synthesis', () => {
           snapshot.lastAppliedSeq + 1,
           'agent.run.bound',
           '2026-03-10T00:00:58.000Z',
-          { agent: 'alpha', executionSessionId: 'alpha-session' },
+          { agent: 'alpha', jobId: '6960e368-4c7c-5e5a-95e2-6c9de7df59f8' },
         ),
         makeEvent(
           snapshot.sessionId,
@@ -93,7 +105,7 @@ describe('Discuss synthesis', () => {
           snapshot.lastAppliedSeq + 2,
           'agent.job.started',
           '2026-03-10T00:00:58.100Z',
-          { agent: 'alpha', jobId: 'alpha-export-prior-job', purpose: 'bid', attempt: 1 },
+          { agent: 'alpha', jobId: '6960e368-4c7c-5e5a-95e2-6c9de7df59f8', execution: 1, purpose: 'bid', attempt: 1 },
         ),
         makeEvent(
           snapshot.sessionId,
@@ -102,7 +114,13 @@ describe('Discuss synthesis', () => {
           snapshot.lastAppliedSeq + 3,
           'agent.job.finished',
           '2026-03-10T00:00:58.200Z',
-          { agent: 'alpha', jobId: 'alpha-export-prior-job', outcome: 'completed', attempt: 1 },
+          {
+            agent: 'alpha',
+            jobId: '6960e368-4c7c-5e5a-95e2-6c9de7df59f8',
+            execution: 1,
+            outcome: 'completed',
+            attempt: 1,
+          },
         ),
         makeEvent(
           snapshot.sessionId,
@@ -125,14 +143,18 @@ describe('Discuss synthesis', () => {
       event: 'synthesis',
       detail: 'Final synthesis.',
     });
-    expect(discardSessionArtifacts).not.toHaveBeenCalled();
+    expect(discardConversationArtifacts).not.toHaveBeenCalled();
     expect(getSession(harness.context, 'discuss-export-failure')).toBeUndefined();
   });
 
   it('after recovery attach, resumeLoop resumes synthesis for ended sessions that have not been synthesized yet', async () => {
-    const start = vi
-      .fn()
-      .mockResolvedValue({ kind: 'provider-session', status: 'running', jobId: 'job-1', sessionId: 'synth-session' });
+    const start = vi.fn().mockResolvedValue({
+      kind: 'provider-session',
+      status: 'running',
+      jobId: 'f10f3e57-0d04-53df-b4c3-3bcf75a1222d',
+      requestedSeq: 1,
+      epochKey: 'test-epoch',
+    });
     const waitStreamOnce = vi.fn().mockResolvedValue({
       content: 'Recovered synthesis text.',
       continuity: null,

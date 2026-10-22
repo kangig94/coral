@@ -9,3 +9,7 @@ import type { EnvPort } from '../infra/port-types.js';
 export function jobsDir(env: Pick<EnvPort, 'tmpdir'>): string {
   return join(env.tmpdir(), 'coral-jobs');
 }
+
+export function resultPathFor(jobsRoot: string, jobId: string, execution: number): string {
+  return join(jobsRoot, jobId, 'executions', String(execution), 'result.md');
+}

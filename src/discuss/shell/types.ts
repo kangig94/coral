@@ -40,6 +40,7 @@ export type LiveDiscussSession = {
 };
 
 export type DiscussJobStatusReader = {
+  requestedExecution(jobId: string, requestedSeq: number): number | null;
   read(jobId: string, execution?: number): JobStatus | null;
   readExit(jobId: string, execution?: number): JobExit | null;
   listOwned(discussionId: string): Array<{
@@ -81,5 +82,5 @@ export type DiscussContext = {
    * Discards a participant session's provider native log. Wired from the lifecycle
    * reactor at composition; absent in lightweight harnesses, so callers guard with `?.`.
    */
-  discardSessionArtifacts?: (sessionId: string) => Promise<void>;
+  discardConversationArtifacts?: (sessionId: string) => Promise<void>;
 };

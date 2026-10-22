@@ -331,6 +331,7 @@ type BackendStatus = {
   succession?: BackendHealth['succession'];
   successionProblem?: BackendHealth['successionProblem'];
   launchStatus?: LaunchStatus;
+  skippedSettlementRefusalRecordingFailures?: number;
   skippedProviderProxySetRows: number;
   skippedProviderProxySetTokens: readonly string[];
 };
@@ -923,7 +924,12 @@ async function probeUnauthenticatedPing(
 export function statusFromParsedHealth(
   parsed: BackendHealthParseResult,
 ): Extract<AddressedProbeStatus, { status: 'ok' }> {
-  const { health, skippedProviderProxySetRows, skippedProviderProxySetTokens } = parsed;
+  const {
+    health,
+    skippedProviderProxySetRows,
+    skippedProviderProxySetTokens,
+    skippedSettlementRefusalRecordingFailures,
+  } = parsed;
   const { namespace: _namespace, shutdown, ...rest } = health;
   const normalizedShutdown = operatorFacingLiveShutdown(shutdown);
   return {
@@ -931,6 +937,7 @@ export function statusFromParsedHealth(
     health: {
       ...rest,
       ...(normalizedShutdown === undefined ? {} : { shutdown: normalizedShutdown }),
+      skippedSettlementRefusalRecordingFailures,
       skippedProviderProxySetRows,
       skippedProviderProxySetTokens,
     },

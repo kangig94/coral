@@ -40,7 +40,13 @@ export class AbortRegistry implements JobAbortRegistryPort {
     return jobId;
   }
 
-  hold(jobId: string, reason: string, nextStep: AbortNextStep, abandon: () => AbortHoldDisposition, execution?: number): void {
+  hold(
+    jobId: string,
+    reason: string,
+    nextStep: AbortNextStep,
+    abandon: () => AbortHoldDisposition,
+    execution?: number,
+  ): void {
     const key = this.key(jobId, execution);
     if (!this.controllers.has(key)) return;
     this.holds.set(key, {

@@ -1,3 +1,4 @@
+import { createTestExecutionFinisher } from '#tests/helpers/execution-finisher.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 // Transport is stubbed (no IPC bind, no HTTP listener) so the harness exercises the lifecycle/recovery contract
 // end-to-end without process boundaries.
@@ -154,6 +155,10 @@ export function createHandoffCoresHarness(options: CreateHarnessOptions = {}): H
 
     const core = createCoordinatorCore(
       {
+        executionFinisher: createTestExecutionFinisher(
+          (): JobStore => core.storeServicesRef.get().progressStore,
+          runtime,
+        ),
         onFatalShutdownError: vi.fn(),
         storeFormat: currentCoralStoreFormat(),
         runtime,

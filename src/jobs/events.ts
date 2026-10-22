@@ -32,7 +32,7 @@ import {
 } from './launch.js';
 import { jobAbortedBodySchema } from './outcome.js';
 import { jobExecutionOutcomeAcceptedBodySchema, jobExecutionEndedBodySchema } from './terminal/result.js';
-import { readJobOpened } from './execution-state.js';
+import { readJobOpened, readExecutionLifecycleEvents } from './execution-journal.js';
 
 import {
   reduceJobOpened,
@@ -75,13 +75,7 @@ function readOrderState(ctx: DomainAppendValidationContext, jobId: string): Exec
     retention: null,
     messages: new Set(),
   };
-  const rows = ctx.db
-    .prepare<[string], { seq: number; type: string; stream_kind: 'job'; body: Uint8Array }>(
-      `SELECT seq, type, stream_kind, body FROM events WHERE stream_kind = 'job' AND stream_id = ?
-     AND type IN ('job.execution.requested', 'job.execution.outcome.accepted', 'job.execution.ended',
-       'job.retention.discard.requested', 'job.retention.discard.completed', 'job.retention.discard.failed') ORDER BY seq`,
-    )
-    .all(jobId);
+  const rows = readExecutionLifecycleEvents(ctx.db, jobId);
   for (const row of rows) {
     const body = decodeStoredBody(row, ctx.readCtx);
     if (row.type === 'job.execution.requested') {
@@ -116,6 +110,7 @@ function validateOpened(ctx: DomainAppendValidationContext, input: CoralEventInp
     return;
   }
   const { owner, conversation, workflowSlotId } = opened;
+  if (owner.kind === 'system-task') orderViolation(input, 'provider jobs require a conversation owner');
   if (owner.kind === 'provider-session' && owner.id !== input.stream.id)
     orderViolation(input, 'the provider owner must name this job');
   if ((owner.kind === 'workflow') !== (workflowSlotId !== undefined))
@@ -153,6 +148,16 @@ export const validateJobExecutionOrder: DomainAppendValidator = (ctx, inputs) =>
     const { execution } = z.object({ execution: executionOrdinalSchema }).parse(input.body);
     if (input.type === 'job.execution.requested') {
       const request = jobExecutionRequestedBodySchema.parse(input.body);
+      const job = state.opened;
+      const workflowId = job.owner.kind === 'workflow' ? job.owner.id : undefined;
+      const parentJobId = job.jobKind === 'provider' ? workflowId : undefined;
+      const workflowSlotId = job.jobKind === 'provider' ? job.workflowSlotId : undefined;
+      if (
+        (input.refs?.workflowId !== undefined && input.refs.workflowId !== workflowId) ||
+        (input.refs?.parentJobId !== undefined && input.refs.parentJobId !== parentJobId) ||
+        (input.refs?.workflowSlotId !== undefined && input.refs.workflowSlotId !== workflowSlotId)
+      )
+        orderViolation(input, 'execution references must match the opened job’s owner and slot');
       if (state.open) orderViolation(input, 'an execution is already open');
       if (execution !== state.execution + 1) orderViolation(input, 'ordinals must be consecutive from 1');
       if ((state.opened.jobKind === 'kb') !== (typeof request.input !== 'string'))

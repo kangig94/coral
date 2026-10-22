@@ -1,3 +1,4 @@
+import type { JobLaunchRequest, JobConversationFacet } from '../jobs/launch.js';
 // Workflow execution contract: the port + value types that coordinator
 // services consume to drive workflow runs. Lives at the workflow root next
 // to other contract surfaces (events.ts, plan.ts).
@@ -30,7 +31,7 @@ interface CoralDispatchInput {
   jobId?: string;
   workflowSlotId?: string;
   cwd?: CanonicalWorkDir;
-  effort?: string;
+  effort?: JobConversationFacet['effort'];
   bypassPermissions?: boolean;
   systemPrompt?: string;
   parentWorkflowJobId?: string;
@@ -44,9 +45,9 @@ interface ResumeInput {
   workflowSlotId?: string;
   name?: string;
   model?: string;
-  pool?: string;
+  pool?: JobLaunchRequest['pool'];
   cwd?: CanonicalWorkDir;
-  effort?: string;
+  effort?: JobConversationFacet['effort'];
   bypassPermissions?: boolean;
   systemPrompt?: string;
   instruction?: {

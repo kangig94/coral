@@ -1,3 +1,4 @@
+import { providerArtifactDiscardDirectory } from '../providers/capability.js';
 import type { StorageBigIntStat } from '../infra/port-types.js';
 import { isRetentionChildName, readRetentionMeta } from '../store/retention-meta.js';
 import { dirname, join } from 'node:path';
@@ -12,14 +13,13 @@ import {
 } from '../store/retention-outcome.js';
 import { errorMessage } from '../infra/error-format.js';
 import { withImmediate, type Database } from '../store/db.js';
-import { decodeBody, type StoreReadContext } from '../store/body-codec.js';
+import { type StoreReadContext } from '../store/body-codec.js';
 import type { EventsRow } from '../store/schema.js';
-import { jobExecutionEndedBodySchema } from './terminal/result.js';
 import { readJobTerminalAge } from './terminal-age.js';
 import { withJobArtifactGuard } from './conversation/artifact-guard.js';
 import type { JobLocation } from './location-index.js';
 import { retainedTerminal } from './terminal/identity.js';
-import { readAcceptedTerminal } from './terminal/source.js';
+import { readAcceptedTerminal, readEndedExecutionOutcome } from './terminal/source.js';
 import { sourceReadFailureDisposition } from './source-read.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -86,7 +86,7 @@ export function readExportJobState(db: Database, readCtx: StoreReadContext, jobI
       .get(jobId);
     if (latest === undefined) return { kind: 'absent' };
     if (latest.type !== 'job.execution.ended') return { kind: 'nonterminal' };
-    decodeBody(latest, jobExecutionEndedBodySchema, readCtx);
+    readEndedExecutionOutcome(db, latest, readCtx);
     const terminalAt = readJobTerminalAge(db, latest);
     return typeof terminalAt === 'number' ? { kind: 'terminal', terminalAt } : { kind: terminalAt };
   } catch {
@@ -373,7 +373,7 @@ export async function pruneJobExports(input: {
   const pending = createRetentionPendingSet(input.db, 'storage-retention.exports.pending.v1', mutate, budget.record);
   const attempted = new Set<string>();
   const process = async (id: string, deletionBudget: RetentionRunBudget): Promise<boolean> => {
-    if (id === '.provider-artifact-discard') return true;
+    if (id === '.provider-artifact-discard' || id === providerArtifactDiscardDirectory) return true;
     attempted.add(id);
     if (!isRetentionChildName(id)) {
       pending.remove(id);
@@ -395,253 +395,261 @@ export async function pruneJobExports(input: {
       return true;
     }
     return withJobArtifactGuard(runtime, jobId, async () => {
-    let outcome: RetentionOutcome;
-    let deleting = false;
-    const admissionKey = `storage-retention.exports.admission.v1.${id}`;
-    const { value: admission, reset: admissionReset } = readRetentionMeta<number | null>({
-      db: input.db,
-      key: admissionKey,
-      mutate,
-      record: budget.record,
-      decode: (value) => z.number().finite().parse(JSON.parse(value)),
-      fresh: () => null,
-    });
-    let admittedCutoff = admission !== null && Number.isFinite(admission) && admission <= cutoff ? admission : null;
-    const evidenceKey = (name: string) => `storage-retention.exports.retirement.v1.${name}`;
-    const clearAdmission = () =>
-      mutate(() => {
-        input.db
-          .prepare('DELETE FROM meta WHERE key IN (?, ?, ?)')
-          .run(admissionKey, `storage-retention.exports.admission.v1.${workId}`, evidenceKey(workId));
+      let outcome: RetentionOutcome;
+      let deleting = false;
+      const admissionKey = `storage-retention.exports.admission.v1.${id}`;
+      const { value: admission, reset: admissionReset } = readRetentionMeta<number | null>({
+        db: input.db,
+        key: admissionKey,
+        mutate,
+        record: budget.record,
+        decode: (value) => z.number().finite().parse(JSON.parse(value)),
+        fresh: () => null,
       });
-    const keepRetirement = (): string =>
-      mutate(() => {
-        const rootEntry = runtime.storage.lstatSync(root, { bigint: true });
-        if (!rootEntry.isDirectory() || rootEntry.dev !== rootIdentity.dev || rootEntry.ino !== rootIdentity.ino)
-          throw new Error('export-root-identity-changed');
-        const original = join(root, jobId);
-        let occupied = true;
-        try {
-          runtime.storage.lstatSync(original);
-        } catch (error: unknown) {
-          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-          occupied = false;
-        }
-        const keptId = occupied ? workId.replace('.retiring-', 'kept-retiring-') : jobId;
-        const kept = join(root, keptId);
-        runtime.storage.renameSync(path, kept);
-        clearAdmission();
-        pending.remove(id);
-        pending.remove(workId);
-        return kept;
-      });
-    try {
-      const entry = runtime.storage.lstatSync(path, { bigint: true });
-      if (budget.canMutate?.() === false) return false;
-      const state = input.jobState(jobId);
-      if (!entry.isDirectory()) outcome = { kind: 'kept', subject: path, reason: 'export-directory-unproven' };
-      else if (state.kind === 'regression')
-        outcome = { kind: 'kept', subject: recovering ? keepRetirement() : path, reason: 'terminal-clock-regression' };
-      else if (state.kind === 'unknown' || state.kind === 'nonterminal')
-        outcome = {
-          kind: 'kept',
-          subject: recovering ? keepRetirement() : path,
-          reason: state.kind,
-          pending: state.kind === 'unknown',
-        };
-      else if (state.kind === 'terminal' && (!Number.isFinite(state.terminalAt) || state.terminalAt >= cutoff))
-        outcome = {
-          kind: 'kept',
-          subject: recovering ? keepRetirement() : path,
-          reason: 'terminal-not-expired-or-unknown',
-        };
-      else {
-        const { value: evidence, reset: evidenceReset } = readRetentionMeta<z.infer<
-          typeof retirementEvidenceSchema
-        > | null>({
-          db: input.db,
-          key: evidenceKey(id),
-          mutate,
-          record: budget.record,
-          decode: (value) => retirementEvidenceSchema.parse(JSON.parse(value)),
-          fresh: () => null,
+      let admittedCutoff = admission !== null && Number.isFinite(admission) && admission <= cutoff ? admission : null;
+      const evidenceKey = (name: string) => `storage-retention.exports.retirement.v1.${name}`;
+      const clearAdmission = () =>
+        mutate(() => {
+          input.db
+            .prepare('DELETE FROM meta WHERE key IN (?, ?, ?)')
+            .run(admissionKey, `storage-retention.exports.admission.v1.${workId}`, evidenceKey(workId));
         });
-        if (admissionReset || evidenceReset) {
-          budget.record({
-            kind: 'kept',
-            subject: recovering ? keepRetirement() : path,
-            reason: 'retirement-evidence-reset',
-            pending: true,
-          });
-          return true;
-        }
-        if (recovering && evidence !== null && evidence.cutoff <= cutoff) admittedCutoff = evidence.cutoff;
-        const ageCutoff = keptRetirement ? cutoff : (admittedCutoff ?? cutoff);
-        const mtimes = !keptRetirement && evidence !== null && evidence.cutoff === ageCutoff ? evidence.mtimes : {};
-        const directories = new Map<string, StorageBigIntStat>();
-        const expired =
-          recovering || keptRetirement
-            ? await exportTreeExpired(runtime, path, ageCutoff, mtimes, ageCutoff, directories)
-            : state.kind !== 'absent' || admittedCutoff !== null || (await exportTreeExpired(runtime, path, cutoff));
-        if (budget.canMutate?.() === false) return false;
-        if (!expired) {
-          const kept = recovering ? keepRetirement() : path;
+      const keepRetirement = (): string =>
+        mutate(() => {
+          const rootEntry = runtime.storage.lstatSync(root, { bigint: true });
+          if (!rootEntry.isDirectory() || rootEntry.dev !== rootIdentity.dev || rootEntry.ino !== rootIdentity.ino)
+            throw new Error('export-root-identity-changed');
+          const original = join(root, jobId);
+          let occupied = true;
+          try {
+            runtime.storage.lstatSync(original);
+          } catch (error: unknown) {
+            if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+            occupied = false;
+          }
+          const keptId = occupied ? workId.replace('.retiring-', 'kept-retiring-') : jobId;
+          const kept = join(root, keptId);
+          runtime.storage.renameSync(path, kept);
           clearAdmission();
-          outcome = { kind: 'kept', subject: kept, reason: 'residue-recent-or-unobservable' };
-        } else if (input.resultHold(jobId) !== 'released')
+          pending.remove(id);
+          pending.remove(workId);
+          return kept;
+        });
+      try {
+        const entry = runtime.storage.lstatSync(path, { bigint: true });
+        if (budget.canMutate?.() === false) return false;
+        const state = input.jobState(jobId);
+        if (!entry.isDirectory()) outcome = { kind: 'kept', subject: path, reason: 'export-directory-unproven' };
+        else if (state.kind === 'regression')
           outcome = {
             kind: 'kept',
             subject: recovering ? keepRetirement() : path,
-            reason: 'epoch-result-proof-required-or-unknown',
+            reason: 'terminal-clock-regression',
+          };
+        else if (state.kind === 'unknown' || state.kind === 'nonterminal')
+          outcome = {
+            kind: 'kept',
+            subject: recovering ? keepRetirement() : path,
+            reason: state.kind,
+            pending: state.kind === 'unknown',
+          };
+        else if (state.kind === 'terminal' && (!Number.isFinite(state.terminalAt) || state.terminalAt >= cutoff))
+          outcome = {
+            kind: 'kept',
+            subject: recovering ? keepRetirement() : path,
+            reason: 'terminal-not-expired-or-unknown',
           };
         else {
-          if (!deletionBudget.canContinue()) {
-            if (state.kind === 'absent' && admittedCutoff === null && !recovering)
-              mutate(() =>
-                input.db
-                  .prepare('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)')
-                  .run(admissionKey, String(cutoff)),
-              );
-            return false;
+          const { value: evidence, reset: evidenceReset } = readRetentionMeta<z.infer<
+            typeof retirementEvidenceSchema
+          > | null>({
+            db: input.db,
+            key: evidenceKey(id),
+            mutate,
+            record: budget.record,
+            decode: (value) => retirementEvidenceSchema.parse(JSON.parse(value)),
+            fresh: () => null,
+          });
+          if (admissionReset || evidenceReset) {
+            budget.record({
+              kind: 'kept',
+              subject: recovering ? keepRetirement() : path,
+              reason: 'retirement-evidence-reset',
+              pending: true,
+            });
+            return true;
           }
-          const saveEvidence = () =>
-            input.db
-              .prepare('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)')
-              .run(evidenceKey(workId), JSON.stringify({ cutoff: ageCutoff, mtimes }));
-          deleting = true;
-          if (!recovering) {
-            const renameTime = runtime.time.now();
-            const directoryEntry = runtime.storage.lstatSync(path, { bigint: true });
-            const directoryMtime = directoryEntry.mtimeNs;
-            const retiredId = `.retiring-${encodeURIComponent(jobId)}-${randomUUID()}`;
-            const retired = join(root, retiredId);
-            mutate(() => {
-              const rootEntry = runtime.storage.lstatSync(root, { bigint: true });
-              if (!rootEntry.isDirectory() || rootEntry.dev !== rootIdentity.dev || rootEntry.ino !== rootIdentity.ino)
-                throw new Error('export-root-identity-changed');
-              const current = runtime.storage.lstatSync(path, { bigint: true });
-              if (!current.isDirectory() || current.dev !== entry.dev || current.ino !== entry.ino)
-                throw new Error('export-directory-identity-changed');
-              runtime.storage.renameSync(path, retired);
-              workId = retiredId;
-              path = retired;
-              mtimes[''] = directoryMtime.toString();
-              saveEvidence();
-              input.db.prepare('DELETE FROM meta WHERE key = ?').run(admissionKey);
+          if (recovering && evidence !== null && evidence.cutoff <= cutoff) admittedCutoff = evidence.cutoff;
+          const ageCutoff = keptRetirement ? cutoff : (admittedCutoff ?? cutoff);
+          const mtimes = !keptRetirement && evidence !== null && evidence.cutoff === ageCutoff ? evidence.mtimes : {};
+          const directories = new Map<string, StorageBigIntStat>();
+          const expired =
+            recovering || keptRetirement
+              ? await exportTreeExpired(runtime, path, ageCutoff, mtimes, ageCutoff, directories)
+              : state.kind !== 'absent' || admittedCutoff !== null || (await exportTreeExpired(runtime, path, cutoff));
+          if (budget.canMutate?.() === false) return false;
+          if (!expired) {
+            const kept = recovering ? keepRetirement() : path;
+            clearAdmission();
+            outcome = { kind: 'kept', subject: kept, reason: 'residue-recent-or-unobservable' };
+          } else if (input.resultHold(jobId) !== 'released')
+            outcome = {
+              kind: 'kept',
+              subject: recovering ? keepRetirement() : path,
+              reason: 'epoch-result-proof-required-or-unknown',
+            };
+          else {
+            if (!deletionBudget.canContinue()) {
+              if (state.kind === 'absent' && admittedCutoff === null && !recovering)
+                mutate(() =>
+                  input.db
+                    .prepare('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)')
+                    .run(admissionKey, String(cutoff)),
+                );
+              return false;
+            }
+            const saveEvidence = () =>
               input.db
                 .prepare('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)')
-                .run(`storage-retention.exports.admission.v1.${workId}`, String(ageCutoff));
-              pending.remove(id);
-            });
-            const unchanged = sameExportEntry(directoryEntry, runtime.storage.lstatSync(path, { bigint: true }));
-            const expiredAfterRename = await exportTreeExpired(
+                .run(evidenceKey(workId), JSON.stringify({ cutoff: ageCutoff, mtimes }));
+            deleting = true;
+            if (!recovering) {
+              const renameTime = runtime.time.now();
+              const directoryEntry = runtime.storage.lstatSync(path, { bigint: true });
+              const directoryMtime = directoryEntry.mtimeNs;
+              const retiredId = `.retiring-${encodeURIComponent(jobId)}-${randomUUID()}`;
+              const retired = join(root, retiredId);
+              mutate(() => {
+                const rootEntry = runtime.storage.lstatSync(root, { bigint: true });
+                if (
+                  !rootEntry.isDirectory() ||
+                  rootEntry.dev !== rootIdentity.dev ||
+                  rootEntry.ino !== rootIdentity.ino
+                )
+                  throw new Error('export-root-identity-changed');
+                const current = runtime.storage.lstatSync(path, { bigint: true });
+                if (!current.isDirectory() || current.dev !== entry.dev || current.ino !== entry.ino)
+                  throw new Error('export-directory-identity-changed');
+                runtime.storage.renameSync(path, retired);
+                workId = retiredId;
+                path = retired;
+                mtimes[''] = directoryMtime.toString();
+                saveEvidence();
+                input.db.prepare('DELETE FROM meta WHERE key = ?').run(admissionKey);
+                input.db
+                  .prepare('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)')
+                  .run(`storage-retention.exports.admission.v1.${workId}`, String(ageCutoff));
+                pending.remove(id);
+              });
+              const unchanged = sameExportEntry(directoryEntry, runtime.storage.lstatSync(path, { bigint: true }));
+              const expiredAfterRename = await exportTreeExpired(
+                runtime,
+                path,
+                ageCutoff,
+                mtimes,
+                renameTime,
+                directories,
+              );
+              if (budget.canMutate?.() === false) return false;
+              if (!unchanged || !expiredAfterRename) {
+                outcome = { kind: 'kept', subject: keepRetirement(), reason: 'residue-recent-or-unobservable' };
+                budget.record(outcome);
+                return true;
+              }
+              mtimes[''] = directoryMtime.toString();
+            }
+            if (recovering)
+              mutate(() => {
+                saveEvidence();
+                input.db
+                  .prepare('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)')
+                  .run(`storage-retention.exports.admission.v1.${workId}`, String(ageCutoff));
+              });
+            const deletionRoot = runtime.storage.lstatSync(root, { bigint: true });
+            if (
+              !deletionRoot.isDirectory() ||
+              deletionRoot.dev !== currentRoot.dev ||
+              deletionRoot.ino !== currentRoot.ino
+            )
+              throw new Error('export-root-identity-changed');
+            directories.set(root, deletionRoot);
+            const changed = (top: string): void => {
+              const rootMtime = directories.get(path)?.mtimeNs;
+              if (rootMtime === undefined) {
+                clearAdmission();
+                pending.remove(workId);
+                return;
+              }
+              mtimes[''] = rootMtime.toString();
+              const childMtime = directories.get(join(path, top))?.mtimeNs;
+              if (top && childMtime !== undefined) mtimes[top] = childMtime.toString();
+              else delete mtimes[top];
+              saveEvidence();
+            };
+            const batch = await startExportDeletionBatch(
               runtime,
               path,
-              ageCutoff,
-              mtimes,
-              renameTime,
+              deletionBudget,
               directories,
+              mutate,
+              changed,
+              ageCutoff,
             );
-            if (budget.canMutate?.() === false) return false;
-            if (!unchanged || !expiredAfterRename) {
+            let deleted: boolean;
+            if (batch.kind === 'changed') deleted = false;
+            else if (batch.kind === 'large')
+              deleted = await deleteExportTree(runtime, path, deletionBudget, mutate, changed, directories, ageCutoff);
+            else {
+              const result = mutate(() => {
+                try {
+                  for (const item of batch.entries)
+                    if (
+                      !deleteExportEntry(
+                        runtime,
+                        item.path,
+                        deletionBudget,
+                        (operation) => operation(),
+                        changed,
+                        directories,
+                        ageCutoff,
+                        item.top,
+                        item.entry.isDirectory() ? undefined : item.entry,
+                      )
+                    )
+                      return { deleted: false };
+                  return { deleted: true };
+                } catch (error: unknown) {
+                  return { deleted: false, error };
+                }
+              });
+              if ('error' in result) throw result.error;
+              deleted = result.deleted;
+            }
+            if (!deleted) {
               outcome = { kind: 'kept', subject: keepRetirement(), reason: 'residue-recent-or-unobservable' };
               budget.record(outcome);
               return true;
             }
-            mtimes[''] = directoryMtime.toString();
+            outcome = { kind: 'deleted', subject: path, count: 1 };
           }
-          if (recovering)
-            mutate(() => {
-              saveEvidence();
-              input.db
-                .prepare('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)')
-                .run(`storage-retention.exports.admission.v1.${workId}`, String(ageCutoff));
-            });
-          const deletionRoot = runtime.storage.lstatSync(root, { bigint: true });
-          if (
-            !deletionRoot.isDirectory() ||
-            deletionRoot.dev !== currentRoot.dev ||
-            deletionRoot.ino !== currentRoot.ino
-          )
-            throw new Error('export-root-identity-changed');
-          directories.set(root, deletionRoot);
-          const changed = (top: string): void => {
-            const rootMtime = directories.get(path)?.mtimeNs;
-            if (rootMtime === undefined) {
-              clearAdmission();
-              pending.remove(workId);
-              return;
-            }
-            mtimes[''] = rootMtime.toString();
-            const childMtime = directories.get(join(path, top))?.mtimeNs;
-            if (top && childMtime !== undefined) mtimes[top] = childMtime.toString();
-            else delete mtimes[top];
-            saveEvidence();
-          };
-          const batch = await startExportDeletionBatch(
-            runtime,
-            path,
-            deletionBudget,
-            directories,
-            mutate,
-            changed,
-            ageCutoff,
-          );
-          let deleted: boolean;
-          if (batch.kind === 'changed') deleted = false;
-          else if (batch.kind === 'large')
-            deleted = await deleteExportTree(runtime, path, deletionBudget, mutate, changed, directories, ageCutoff);
-          else {
-            const result = mutate(() => {
-              try {
-                for (const item of batch.entries)
-                  if (
-                    !deleteExportEntry(
-                      runtime,
-                      item.path,
-                      deletionBudget,
-                      (operation) => operation(),
-                      changed,
-                      directories,
-                      ageCutoff,
-                      item.top,
-                      item.entry.isDirectory() ? undefined : item.entry,
-                    )
-                  )
-                    return { deleted: false };
-                return { deleted: true };
-              } catch (error: unknown) {
-                return { deleted: false, error };
-              }
-            });
-            if ('error' in result) throw result.error;
-            deleted = result.deleted;
-          }
-          if (!deleted) {
-            outcome = { kind: 'kept', subject: keepRetirement(), reason: 'residue-recent-or-unobservable' };
-            budget.record(outcome);
-            return true;
-          }
-          outcome = { kind: 'deleted', subject: path, count: 1 };
         }
+      } catch (error: unknown) {
+        if (budget.canMutate?.() === false) return false;
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT' && !deleting) {
+          pending.remove(id);
+          clearAdmission();
+          return true;
+        }
+        outcome = { kind: deleting ? 'failed' : 'kept', subject: path, reason: errorMessage(error) };
       }
-    } catch (error: unknown) {
-      if (budget.canMutate?.() === false) return false;
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT' && !deleting) {
-        pending.remove(id);
-        clearAdmission();
-        return true;
-      }
-      outcome = { kind: deleting ? 'failed' : 'kept', subject: path, reason: errorMessage(error) };
-    }
-    if (outcome.kind === 'failed') {
-      if (!pending.add(workId)) {
-        budget.record(outcome);
-        return false;
-      }
-    } else if (outcome.kind === 'deleted' || outcome.pending === false) pending.remove(workId);
-    budget.record(outcome);
-    return true;
+      if (outcome.kind === 'failed') {
+        if (!pending.add(workId)) {
+          budget.record(outcome);
+          return false;
+        }
+      } else if (outcome.kind === 'deleted' || outcome.pending === false) pending.remove(workId);
+      budget.record(outcome);
+      return true;
     });
   };
   const afterId = pending.restarted ? '' : input.afterId;

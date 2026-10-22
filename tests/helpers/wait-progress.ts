@@ -33,7 +33,10 @@ export function progressVisitFromEvents(read: (jobId: string) => readonly JobEve
           rows(id)
             .filter((row) => row.seq > after && row.seq <= through)
             .slice(0, limit),
-        newest: (id, limit, after = 0, through = Infinity) => rows(id).filter((row) => row.seq > after && row.seq <= through).slice(-limit),
+        newest: (id, limit, after = 0, through = Infinity) =>
+          rows(id)
+            .filter((row) => row.seq > after && row.seq <= through)
+            .slice(-limit),
       }),
     };
   };

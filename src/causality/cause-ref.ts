@@ -34,7 +34,6 @@ export const durableCauseRefSchema = z
   })
   .strict();
 
-
 export const causeRefSchema = z
   .object({
     stream: z

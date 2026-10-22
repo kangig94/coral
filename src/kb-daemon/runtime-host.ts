@@ -1,3 +1,5 @@
+import { ExecutionFinisher, readExecutionFinishingState } from '../jobs/finishing.js';
+import { createDefaultStoreReadContext } from '../read-model/read-context.js';
 import { loadRetainedCurrentJob } from '../jobs/retained-current.js';
 import { renderWorkflowReport } from '../workflow/result-report.js';
 declare const __VERSION__: string;
@@ -122,6 +124,7 @@ type KbDaemonWriteRuntimeState = {
   sourceImportService: KbSourceImportService;
   reindexService: KbReindexService;
   abortRegistry: AbortRegistry;
+  executionFinisher: ExecutionFinisher;
 };
 
 type KbDaemonWriteHostControl = {
@@ -399,7 +402,12 @@ function createKbDaemonProgressStore({
   const jobLocations =
     resolvedStore === null
       ? null
-      : new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot, renderWorkflowReport);
+      : new JobLocationIndex(
+          runtime,
+          runtime.paths.coral.generation.dataRoot,
+          renderWorkflowReport,
+          currentCoralStoreFormat().fingerprint,
+        );
   let observeTerminalExports: (appended: readonly AppendedEvent[]) => void = () => {};
   const progressStore = new JobStore(backendNamespace, guardedRuntime, createEventBodyCodec(), {
     db: activeDb as ConstructorParameters<typeof JobStore>[3]['db'],
@@ -408,20 +416,36 @@ function createKbDaemonProgressStore({
       jobLocations === null || resolvedStore === null
         ? undefined
         : (input) => {
-            if (input.stream.kind !== 'job' || !['job.opened', 'job.execution.requested'].includes(input.type))
-              return;
+            if (input.stream.kind !== 'job' || !['job.opened', 'job.execution.requested'].includes(input.type)) return;
             jobLocations.beforeAppend(input, encodeResolvedStoreEpoch(runtime, resolvedStore));
           },
-    withCommitGuard: jobLocations === null || resolvedStore === null ? undefined :
-      (action) => jobLocations.withAdmissionGuard(encodeResolvedStoreEpoch(runtime, resolvedStore), activeDb as ConstructorParameters<typeof JobStore>[3]['db'], action),
-    withExecutionAdmission: jobLocations === null || resolvedStore === null ? undefined :
-      (jobId, execution, subject, action) => {
-        const epochKey = encodeResolvedStoreEpoch(runtime, resolvedStore);
-        jobLocations.withAdmissionGuard(epochKey, activeDb as ConstructorParameters<typeof JobStore>[3]['db'], () => {
-          jobLocations.prepareAdmission(jobId, execution, epochKey, subject);
-          action();
-        });
-      },
+    withCommitGuard:
+      jobLocations === null || resolvedStore === null
+        ? undefined
+        : (action, admissions) =>
+            jobLocations.withAdmissionGuard(
+              encodeResolvedStoreEpoch(runtime, resolvedStore),
+              activeDb as ConstructorParameters<typeof JobStore>[3]['db'],
+              action,
+              undefined,
+              [...new Set(admissions)],
+            ),
+    withExecutionAdmission:
+      jobLocations === null || resolvedStore === null
+        ? undefined
+        : (jobId, execution, subject, action) => {
+            const epochKey = encodeResolvedStoreEpoch(runtime, resolvedStore);
+            jobLocations.withAdmissionGuard(
+              epochKey,
+              activeDb as ConstructorParameters<typeof JobStore>[3]['db'],
+              () => {
+                jobLocations.prepareAdmission(jobId, execution, epochKey, subject);
+                action();
+              },
+              undefined,
+              [jobId],
+            );
+          },
     observer: (appended) => {
       observeTerminalExports(appended);
       if (jobLocations !== null) {
@@ -446,7 +470,13 @@ function createKbDaemonProgressStore({
       (jobId) => {
         const epochKey = jobLocations.read(jobId)?.epochKey;
         if (epochKey === undefined) throw new Error(`Terminal has no job location: ${jobId}`);
-        const location = loadRetainedCurrentJob(progressStore.getDb(), epochKey, jobId, runtime.paths.coral.exports.jobsRoot);
+        const location = loadRetainedCurrentJob(
+          progressStore.getDb(),
+          epochKey,
+          jobId,
+          runtime.paths.coral.exports.jobsRoot,
+          renderWorkflowReport,
+        );
         if (location?.detail.kind !== 'recorded') throw new Error(`Terminal has no job detail: ${jobId}`);
         jobLocations.recordExecutionDetails(jobId, location.executions ?? [], location.detail.value);
       },
@@ -667,7 +697,22 @@ function createKbDaemonWriteServices({
       },
     });
   };
+  const readCtx = createDefaultStoreReadContext();
+  const executionFinisher = new ExecutionFinisher({
+    recovery: { db: () => progressStore.getDb(), readCtx, time: runtime.time },
+    time: runtime.time,
+    commit: (write) => progressStore.commit(write),
+    read: (address) => readExecutionFinishingState(progressStore.getDb(), address, readCtx),
+    quiesce: async (address) => !abortRegistry.has(address.jobId, address.execution),
+    retentionAction: async () => {
+      throw new Error('KB jobs have no provider conversation retention.');
+    },
+    settleRetention: async () => {
+      throw new Error('KB jobs have no provider conversation retention.');
+    },
+  });
   const sourceImportService = new KbSourceImportService({
+    executionFinisher,
     runtime: guardedRuntime,
     progressStore,
     backendNamespace,
@@ -677,6 +722,7 @@ function createKbDaemonWriteServices({
     internalJobOwner: 'kb-daemon',
   });
   const reindexService = new KbReindexService({
+    executionFinisher,
     runtime: guardedRuntime,
     progressStore,
     backendNamespace,
@@ -685,7 +731,7 @@ function createKbDaemonWriteServices({
     abortRegistry,
     internalJobOwner: 'kb-daemon',
   });
-  return { kbRuntime, sourceImportService, reindexService };
+  return { kbRuntime, sourceImportService, reindexService, executionFinisher };
 }
 
 async function openKbDaemonBootStore(
@@ -869,7 +915,7 @@ async function buildKbDaemonWriteRuntime(host: KbDaemonWriteHostControl): Promis
       corpusReadinessTimeoutMs,
       buildKiwiArtifactBootController,
     );
-    const { kbRuntime, sourceImportService, reindexService } = createKbDaemonWriteServices({
+    const { kbRuntime, sourceImportService, reindexService, executionFinisher } = createKbDaemonWriteServices({
       options,
       runtime,
       guardedRuntime,
@@ -896,6 +942,7 @@ async function buildKbDaemonWriteRuntime(host: KbDaemonWriteHostControl): Promis
       sourceImportService,
       reindexService,
       abortRegistry,
+      executionFinisher,
     };
     host.active = activeState;
     markReady(host);
@@ -1060,6 +1107,7 @@ async function disposeKbDaemonWriteState(
       cleanupError ??= error;
     }
   } finally {
+    await activeState.executionFinisher.dispose();
     host.active = null;
     if (activeState.ownsDb) {
       try {

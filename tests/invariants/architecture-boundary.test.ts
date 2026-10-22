@@ -30,7 +30,6 @@ const JOBS_SHELL_ROOT = 'src/jobs/shell';
 const KB_ROOT = 'src/kb';
 const COORDINATOR_ROOT = 'src/coordinator';
 const COORDINATOR_SERVICES_ROOT = 'src/coordinator/services';
-const RUNTIME_ROOT = 'src/runtime';
 const SECURITY_POLICY_ROOT = 'src/security/policy';
 const EXECUTION_ROOT = ['src', 'execution'].join('/');
 const CLIENT_ROOT = ['src', 'client'].join('/');
@@ -49,7 +48,6 @@ const PROVIDERS_ROOT = 'src/providers';
 const CONVERSATION_SHELL_ROOT = 'src/jobs/conversation/shell';
 const WORKFLOW_PROVIDER_ALLOWLIST_TARGET = 'src/providers/catalog.ts';
 const COORDINATOR_TERMINAL_MATERIALIZER = 'src/coordinator/services/terminal-materializer.ts';
-const JOBS_TERMINAL_RECORDING = 'src/jobs/terminal/recording.ts';
 const KB_PATHS_MODULE = 'src/kb/paths.ts';
 const KB_JOB_RECORDER = 'src/jobs/kb/recorder.ts';
 
@@ -340,8 +338,8 @@ describe('architecture boundary guard', () => {
 
     assertNoViolations(violations);
   });
-  it('raw job.terminal.recorded writes stay owned by jobs terminal recording', () => {
-    expect(collectRawTerminalRecordedWriters()).toEqual([JOBS_TERMINAL_RECORDING]);
+  it('keeps retired job.terminal.recorded writers absent', () => {
+    expect(collectRawTerminalRecordedWriters()).toEqual([]);
   });
   it('launch/admission vocabulary has a single jobs-owned type authority', () => {
     // `LaunchPool` is conceptually owned by the admission contract — it
@@ -1086,11 +1084,8 @@ const RECOVERY_STARTUP_BOUNDARIES: readonly RecoveryStartupBoundary[] = [
     compositionSite: 'src/discuss/shell/recovery.ts',
   },
   {
-    boundary: 'P4 session retention',
-    startupRoot: {
-      file: 'src/jobs/conversation/startup-recovery.ts',
-      symbol: 'runSessionStartupRecovery',
-    },
+    boundary: 'P4 conversation retention',
+    startupRoot: { file: 'src/jobs/conversation/lifecycle-reactor.ts', symbol: 'scanStartup' },
     compositionSite: 'src/jobs/conversation/lifecycle-reactor.ts',
   },
   {
@@ -1112,6 +1107,7 @@ const RECOVERY_STARTUP_BOUNDARIES: readonly RecoveryStartupBoundary[] = [
 ];
 
 const RECOVERY_RETRY_BOUNDARIES = [
+  { boundary: 'execution finishing retry', compositionSite: 'src/jobs/finishing.ts' },
   { boundary: 'epoch closure retry', compositionSite: 'src/coordinator/services/recovery/epoch-closure-retry-plan.ts' },
   { boundary: 'job location recovery retry', compositionSite: 'src/jobs/location-recovery.ts' },
 ] as const;
@@ -1138,10 +1134,6 @@ const RECOVERY_STARTUP_CAPABILITIES = [
     file: 'src/discuss/shell/startup-recovery.ts',
     symbol: 'DiscussionCandidateSettlement',
   },
-  {
-    file: 'src/jobs/conversation/startup-recovery.ts',
-    symbol: 'SessionRetentionWorkSettlement',
-  },
 ] as const;
 
 type RecoverySourceMatrixRow = {
@@ -1156,6 +1148,12 @@ type RecoverySourceMatrixRow = {
 // Both inverse manifests below are derived from it so legacy decoded/aggregate symbols cannot
 // accidentally become granted authorities.
 const RECOVERY_SOURCE_MATRIX: readonly RecoverySourceMatrixRow[] = [
+  {
+    boundary: 'execution finishing retry',
+    factory: 'executionFinishingRecoverySource',
+    sourceModule: 'src/jobs/execution-finishing-recovery-source.ts',
+    rawAuthorities: [],
+  },
   {
     boundary: 'epoch closure retry',
     factory: 'epochClosureRecoverySource',
@@ -1199,29 +1197,10 @@ const RECOVERY_SOURCE_MATRIX: readonly RecoverySourceMatrixRow[] = [
     rawAuthorities: ['scanDiscussionCandidateEnvelopes'],
   },
   {
-    boundary: 'P4 session retention',
-    factory: 'sessionProjectionRecoverySource',
-    sourceModule: 'src/jobs/conversation/projection-recovery-source.ts',
-    rawAuthorities: ['scanSessionProjectionRows'],
-  },
-  {
-    boundary: 'P4 session retention',
-    factory: 'terminalRetentionOutcomeRecoverySource',
-    sourceModule: 'src/jobs/conversation/terminal-retention-outcome-recovery-source.ts',
-    rawAuthorities: ['scanTerminalRetentionOutcomeRows'],
-  },
-  {
-    boundary: 'P4 session retention',
-    factory: 'retentionReleasePairComponentSource',
-    sourceModule: 'src/jobs/conversation/retention-release-pair-recovery-source.ts',
-    rawAuthorities: ['scanRetentionReleaseAndTerminalRows'],
-  },
-  {
-    boundary: 'P4 session retention',
-    factory: 'retentionWorkItemRecoverySource',
-    sourceModule: 'src/jobs/conversation/retention-work-item-recovery-source.ts',
-    rawAuthorities: ['scanRetentionWorkRows', 'composeRetentionWorkItemReceipts'],
-    composite: true,
+    boundary: 'P4 conversation retention',
+    factory: 'retentionRecoverySource',
+    sourceModule: 'src/jobs/conversation/retention-recovery-source.ts',
+    rawAuthorities: ['scanRetentionRequests'],
   },
   {
     boundary: 'P6/P7 workflow',
@@ -2586,23 +2565,8 @@ it('keeps the wait invocation handoff contract out of infra', () => {
 });
 
 describe('provider conversations belong to jobs', () => {
-  it('keeps the retired provider-session aggregate and claim writers absent', () => {
+  it('keeps the retired provider-session aggregate absent', () => {
     expect(existsSync(join(SRC_ROOT, 'sessions'))).toBe(false);
-    const retiredWriters = new Set([
-      'appendPreparedClaim', 'appendJobClaim', 'appendContinuationReplacementClaim',
-      'launchInitialProviderJob', 'launchResumedProviderJob', 'launchWorkflowReplacement',
-    ]);
-    const violations: string[] = [];
-    for (const path of PRODUCTION_FILE_PATHS) {
-      const source = ts.createSourceFile(path, readFileSync(path, 'utf8'), ts.ScriptTarget.Latest, true);
-      const visit = (node: ts.Node): void => {
-        if ((ts.isMethodDeclaration(node) || ts.isFunctionDeclaration(node)) && node.name !== undefined &&
-          retiredWriters.has(node.name.getText(source))) violations.push(`${path}: ${node.name.getText(source)}`);
-        ts.forEachChild(node, visit);
-      };
-      visit(source);
-    }
-    expect(violations).toEqual([]);
   });
 
   it('has no live Coral provider-conversation session identity', () => {
@@ -2626,27 +2590,40 @@ describe('provider conversations belong to jobs', () => {
       'src/providers/turn-failure-diagnostic.ts',
     ]);
     const durableSurfaces = new Set([
-      'src/jobs/records.ts', 'src/jobs/location-index.ts', 'src/jobs/terminal/identity.ts',
-      'src/jobs/historical-reader.ts', 'src/jobs/read-queries.ts',
+      'src/jobs/records.ts',
+      'src/jobs/location-index.ts',
+      'src/jobs/terminal/identity.ts',
+      'src/jobs/historical-reader.ts',
+      'src/jobs/read-queries.ts',
+      'src/coordinator/lifecycle.ts',
     ]);
     const violations: string[] = [];
     for (const path of PRODUCTION_FILE_PATHS) {
       const canonical = toCanonicalSrcPath(REPO_ROOT, path);
       const source = ts.createSourceFile(path, readFileSync(path, 'utf8'), ts.ScriptTarget.Latest, true);
       const visit = (node: ts.Node): void => {
-        if ((ts.isIdentifier(node) || ts.isStringLiteral(node)) &&
-          (node.text === 'CORAL_SESSION_ID' || node.text === 'parentSessionId')) {
+        if (
+          (ts.isIdentifier(node) || ts.isStringLiteral(node)) &&
+          (node.text === 'CORAL_SESSION_ID' || node.text === 'parentSessionId')
+        ) {
           violations.push(`${canonical}: ${node.text}`);
         }
-        if (ts.isIdentifier(node) && node.text === 'sessionId' &&
-          !(ts.isPropertyAssignment(node.parent) && node.parent.name === node && node.parent.initializer.kind === ts.SyntaxKind.NullKeyword) &&
-          !canonical.startsWith('src/discuss/') && !discussionSurfaces.has(canonical) &&
-          !nativeProviderSurfaces.has(canonical) && !durableSurfaces.has(canonical)) {
+        if (
+          ts.isIdentifier(node) &&
+          node.text === 'sessionId' &&
+          !canonical.startsWith('src/discuss/') &&
+          !discussionSurfaces.has(canonical) &&
+          !nativeProviderSurfaces.has(canonical) &&
+          !durableSurfaces.has(canonical)
+        ) {
           violations.push(`${canonical}: sessionId`);
         }
-        if (ts.isPropertyAccessExpression(node) && node.name.text === 'sessionId' &&
+        if (
+          ts.isPropertyAccessExpression(node) &&
+          node.name.text === 'sessionId' &&
           ['refs', 'request', 'launch', 'launchRecord', 'preparedSession'].includes(node.expression.getText(source)) &&
-          !canonical.startsWith('src/jobs/historical-reader')) {
+          !canonical.startsWith('src/jobs/historical-reader')
+        ) {
           violations.push(`${canonical}: ${node.getText(source)}`);
         }
         ts.forEachChild(node, visit);

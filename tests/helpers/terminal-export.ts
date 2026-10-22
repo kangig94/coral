@@ -1,3 +1,4 @@
+import { loadRetainedCurrentJob } from '#src/jobs/retained-current.js';
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -13,6 +14,7 @@ import { deriveLaunchReadiness } from '#src/jobs/launch-readiness.js';
 import { renderWorkflowReport } from '#src/workflow/result-report.js';
 import { permissiveProviderLookupPort } from './append-context.js';
 import { initTestJob } from './session.js';
+import { TEST_CLAUDE_BINDING } from './provider-credentials.js';
 import { newRawDatabase } from './test-db.js';
 import { commitJobTerminal } from './job-commits.js';
 import { TerminalResultExportOwner } from '#src/jobs/terminal/export.js';
@@ -34,19 +36,31 @@ export function createTerminalExportFixture(jobKind: 'provider' | 'workflow' = '
   const epochKey = fileDatabase ? encodeResolvedStoreEpoch(runtime, epoch) : JSON.stringify(epoch);
   const db = newRawDatabase(fileDatabase ? epoch.path : ':memory:');
   applyBundledStoreSchema(db, currentCoralStoreFormat());
-  const index = new JobLocationIndex(runtime, root, renderWorkflowReport);
+  const index = new JobLocationIndex(runtime, root, renderWorkflowReport, currentCoralStoreFormat().fingerprint);
   const store = new JobStore('fixture', runtime, createEventBodyCodec(), {
     db,
     providers: permissiveProviderLookupPort,
     beforeAppend: (input) => index.beforeAppend(input, epochKey),
+    withCommitGuard: (action) => index.withAdmissionGuard(epochKey, db, action),
+    withExecutionAdmission: (jobId, execution, subject, action) =>
+      index.withAdmissionGuard(epochKey, db, () => {
+        index.prepareAdmission(jobId, execution, epochKey, subject);
+        action();
+      }),
   });
   store.configureResultExports(index);
-  const jobId = 'job-1';
+  const jobId = '90000000-0000-4000-8000-000000000001';
   if (jobKind === 'provider') {
     initTestJob(store, {
       jobId,
-      sessionId: 'session-1',
-      provider: 'claude',
+      conversation: {
+        provider: 'claude',
+        binding: TEST_CLAUDE_BINDING,
+        cwd: canonicalWorkDirWireSchema.parse(root),
+        name: jobId,
+        bypassPermissions: false,
+        retention: 'retain',
+      },
       projectRoot: root,
       backendNamespace: 'fixture',
     });
@@ -54,7 +68,7 @@ export function createTerminalExportFixture(jobKind: 'provider' | 'workflow' = '
     store.appendLaunchRequested(jobId, {
       jobId,
       owner: { kind: 'workflow', id: jobId },
-      sessionId: null,
+      execution: 1,
       provider: null,
       projectRoot: root,
       backendNamespace: 'fixture',
@@ -94,7 +108,7 @@ export function createTerminalExportFixture(jobKind: 'provider' | 'workflow' = '
               events: store.readJobEvents(id),
               readiness: deriveLaunchReadiness(detail),
             },
-            locations.resultPathFor(id),
+            locations.resultPathFor(id, detail.status.execution ?? 1),
             terminal.seq,
           );
         },
@@ -123,7 +137,7 @@ export function createTerminalExportFixture(jobKind: 'provider' | 'workflow' = '
     store,
     jobId,
     locationPath: join(root, 'job-locations.v1', 'jobs', `${Buffer.from(jobId).toString('base64url')}.json`),
-    resultPath: index.resultPathFor(jobId),
+    resultPath: index.resultPathFor(jobId, 1),
     complete: (
       options: {
         terminalAt?: number;
@@ -152,23 +166,23 @@ export function createTerminalExportFixture(jobKind: 'provider' | 'workflow' = '
       const seq = commitJobTerminal(
         store,
         jobId,
-        jobKind === 'provider' ? 'session-1' : null,
+        1,
         options.terminal ?? { content: 'canonical result', outcome: { kind: 'completed' }, durationMs: 1 },
       );
-      db.prepare('UPDATE events SET ts = ? WHERE seq = ?').run(new Date(terminalAt).toISOString(), seq);
+      db.prepare(
+        "UPDATE events SET ts = ? WHERE stream_id = ? AND type IN ('job.execution.outcome.accepted', 'job.execution.ended')",
+      ).run(new Date(terminalAt).toISOString(), jobId);
       const detail = store.loadJobProjectionDetail(jobId);
       if (!detail.status) throw new Error('Missing fixture status');
-      index.recordTerminal(
+      const location = loadRetainedCurrentJob(
+        db,
+        epochKey,
         jobId,
-        {
-          status: detail.status,
-          events: store.readJobEvents(jobId),
-          exit: detail.exit,
-          readiness: deriveLaunchReadiness(detail),
-        },
-        index.resultPathFor(jobId),
-        seq,
+        runtime.paths.coral.exports.jobsRoot,
+        renderWorkflowReport,
       );
+      if (location?.detail.kind !== 'recorded') throw new Error('Missing fixture execution details');
+      index.recordExecutionDetails(jobId, location.executions ?? [], location.detail.value);
       return seq;
     },
     advance: (ms: number) => {

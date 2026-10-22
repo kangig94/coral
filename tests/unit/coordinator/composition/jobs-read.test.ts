@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { createCoordinatorRpcPorts } from '#src/coordinator/composition/rpc-ports.js';
@@ -18,7 +19,12 @@ afterEach(() => {
 function fixture(second: Parameters<typeof jobReadSurfaceFixture>[0] = 'ended') {
   const f = jobReadSurfaceFixture(second);
   fixtures.push(f);
-  const index = new JobLocationIndex(f.runtime, f.runtime.paths.coral.generation.dataRoot);
+  const index = new JobLocationIndex(
+    f.runtime,
+    f.runtime.paths.coral.generation.dataRoot,
+    undefined,
+    currentCoralStoreFormat().fingerprint,
+  );
   const addressing = new JobAddressing(
     index.readOnlyView(),
     {

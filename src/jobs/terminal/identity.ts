@@ -53,10 +53,10 @@ export function validatedTerminal(
   const terminals = detail.events.filter((event): event is JobTerminalEvent => event.type === 'terminal');
   const terminal = terminals.find((event) => event.seq === seq);
   if (
-    (boundary !== undefined && (
-      detail.status.execution !== boundary.execution || boundary.requestedSeq >= seq ||
-      detail.events.some(event => event.seq <= boundary.requestedSeq || event.seq > seq)
-    )) ||
+    (boundary !== undefined &&
+      (detail.status.execution !== boundary.execution ||
+        boundary.requestedSeq >= seq ||
+        detail.events.some((event) => event.seq <= boundary.requestedSeq || event.seq > seq))) ||
     !terminal ||
     !detail.exit ||
     detail.status.jobId !== jobId ||
@@ -65,7 +65,7 @@ export function validatedTerminal(
     (detail.status.lastSeq !== undefined && detail.status.lastSeq !== seq) ||
     detail.status.updatedAt !== terminal.ts ||
     terminal.jobId !== jobId ||
-    terminal.sessionId !== detail.status.sessionId ||
+    ('sessionId' in terminal ? terminal.sessionId : null) !== detail.status.sessionId ||
     terminal.ts !== detail.exit.endTime ||
     !Number.isFinite(Date.parse(terminal.ts)) ||
     !sameTerminal(terminal.result, detail.exit) ||
@@ -73,7 +73,7 @@ export function validatedTerminal(
     terminals.some(
       (copy) =>
         copy.jobId !== jobId ||
-        copy.sessionId !== terminal.sessionId ||
+        ('sessionId' in copy ? copy.sessionId : null) !== ('sessionId' in terminal ? terminal.sessionId : null) ||
         copy.seq !== seq ||
         copy.ts !== terminal.ts ||
         !sameTerminal(copy.result, terminal.result),

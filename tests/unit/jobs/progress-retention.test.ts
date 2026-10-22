@@ -1,11 +1,15 @@
 import { decideSessionCreate } from '#src/discuss/state-machine.js';
 import { toJournalInput } from '#src/discuss/event-registry.js';
-import { sessionControllerFromProfile } from '#src/jobs/conversation/entry.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { pruneJobProgress } from '#src/jobs/progress-retention.js';
 import { getEventsSince } from '#src/store/event-queries.js';
 import { createRetentionFixture, RETENTION_CUTOFF } from '#tests/helpers/storage-retention.js';
-import { initTestJob, seedTestSessionProjection } from '#tests/helpers/session.js';
+import {
+  testConversationOpenedInput,
+  testConversationFacet,
+  initTestJob,
+  testJobConversation,
+} from '#tests/helpers/session.js';
 import { commitJobInput, commitJobTerminal } from '#tests/helpers/job-commits.js';
 import { rebuildProjections } from '#tests/helpers/rebuild-projections.js';
 import { TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
@@ -23,15 +27,14 @@ function fixture() {
 function launch(f: ReturnType<typeof fixture>, id: string) {
   initTestJob(f.store, {
     jobId: id,
-    sessionId: `session-${id}`,
-    provider: 'codex',
+    conversation: testConversationFacet('codex'),
     projectRoot: '/workspace',
     backendNamespace: 'test-ns',
   });
-  return f.store.appendProgress(id, `session-${id}`, 'progress');
+  return f.store.appendProgress(id, 'progress');
 }
 function terminal(f: ReturnType<typeof fixture>, id: string) {
-  return commitJobTerminal(f.store, id, `session-${id}`, {
+  return commitJobTerminal(f.store, id, 1, {
     content: 'terminal result',
     outcome: { kind: 'completed' },
     durationMs: 1,
@@ -41,7 +44,7 @@ function rebuild(f: ReturnType<typeof fixture>) {
   rebuildProjections({ db: f.db, cutoffSeq: 1_000_000, reducers: f.reducers, bodyCodec: f.store.bodyCodec });
 }
 function projections(f: ReturnType<typeof fixture>) {
-  return ['jobs', 'sessions', 'discuss', 'workflows'].map((name) =>
+  return ['jobs', 'discuss', 'workflows'].map((name) =>
     f.db.prepare(`SELECT * FROM projection_${name} ORDER BY 1`).all(),
   );
 }
@@ -63,7 +66,7 @@ describe('progress retention', () => {
       });
     await run();
     expect(record).not.toHaveBeenCalled();
-    for (const id of ['first', 'second']) {
+    for (const id of ['e0b2f667-4cb2-522c-a9c1-49e588640e60', 'abb533aa-c038-5878-a710-978b19639d8d']) {
       launch(f, id);
       terminal(f, id);
     }
@@ -78,15 +81,15 @@ describe('progress retention', () => {
     async (location) => {
       const f = fixture();
       f.setNow(1);
-      launch(f, 'mentioned');
-      f.store.appendProgress('mentioned', 'session-mentioned', location === 'message' ? 'causeRef' : 'ordinary');
-      commitJobTerminal(f.store, 'mentioned', 'session-mentioned', {
+      launch(f, 'ba88dbb9-3081-5202-936f-d920b3b06b70');
+      f.store.appendProgress('ba88dbb9-3081-5202-936f-d920b3b06b70', location === 'message' ? 'causeRef' : 'ordinary');
+      commitJobTerminal(f.store, 'ba88dbb9-3081-5202-936f-d920b3b06b70', 1, {
         content: location === 'terminal' ? 'causeRef' : 'ordinary',
         outcome: { kind: 'completed' },
         durationMs: 1,
       });
-      launch(f, 'unrelated');
-      commitJobTerminal(f.store, 'unrelated', 'session-unrelated', {
+      launch(f, 'df097bb2-76e4-50f4-b966-9ce7981c3e0c');
+      commitJobTerminal(f.store, 'df097bb2-76e4-50f4-b966-9ce7981c3e0c', 1, {
         content: 'Example: {"causeRef":{"seq":1}}',
         outcome: { kind: 'completed' },
         durationMs: 1,
@@ -107,7 +110,7 @@ describe('progress retention', () => {
       ).toBeDefined();
       ensureRetentionIndexes(f.db);
       await prune(f);
-      expect(f.db.prepare("SELECT COUNT(*) AS n FROM events WHERE type = 'job.progress.emitted'").get()).toEqual({
+      expect(f.db.prepare("SELECT COUNT(*) AS n FROM events WHERE type = 'job.execution.progress'").get()).toEqual({
         n: 0,
       });
       expect(f.db.prepare("SELECT sql FROM sqlite_master WHERE name = 'events_retention_unknown_cause'").get()).toEqual(
@@ -119,8 +122,8 @@ describe('progress retention', () => {
   it('holds progress globally for an invalid body', async () => {
     const f = fixture();
     f.setNow(1);
-    const seq = launch(f, 'old');
-    terminal(f, 'old');
+    const seq = launch(f, '716e9935-d9a7-537d-80cb-9946aee0d783');
+    terminal(f, '716e9935-d9a7-537d-80cb-9946aee0d783');
     f.db
       .prepare(
         "INSERT INTO events(ts, type, stream_kind, stream_id, body) VALUES (?, 'future.event', 'workflow', 'invalid', ?)",
@@ -133,24 +136,14 @@ describe('progress retention', () => {
   it('rebuilds every projection identically and renders terminal/results with cursor gaps', async () => {
     const f = fixture();
     f.setNow(1);
-    const first = launch(f, 'expired');
-    const end = terminal(f, 'expired');
-    f.store.publishTerminalResult('expired');
-    const session = seedTestSessionProjection(f.db, {
-      sessionId: 'retained-session',
-      provider: 'codex',
+    const first = launch(f, 'd78b362e-86f4-5ddb-9b13-66f5c93778fd');
+    const end = terminal(f, 'd78b362e-86f4-5ddb-9b13-66f5c93778fd');
+    f.store.publishTerminalResult('d78b362e-86f4-5ddb-9b13-66f5c93778fd');
+    const session = testJobConversation('6c56126f-9176-588a-8bab-1a6e9de2d8bc', {
+      ...testConversationFacet('codex', '/workspace'),
       projectRoot: '/workspace',
     });
-    f.db.prepare('DELETE FROM projection_sessions WHERE session_id = ?').run(session.sessionId);
-    commitJobInput(f.store, {
-      type: 'session.opened',
-      stream: { kind: 'session', id: session.sessionId },
-      body: {
-        entry: session,
-        controller: sessionControllerFromProfile(session.controllerProfile),
-        scope_key: 'test-scope',
-      },
-    });
+    commitJobInput(f.store, testConversationOpenedInput(session));
     commitJobInput(f.store, {
       type: 'workflow.plan.declared',
       stream: { kind: 'workflow', id: 'workflow' },
@@ -177,53 +170,64 @@ describe('progress retention', () => {
     const max = f.db.prepare('SELECT MAX(seq) AS seq FROM events').get();
     await prune(f);
     expect(f.db.prepare('SELECT seq FROM events WHERE seq = ?').get(first)).toBeUndefined();
-    expect(f.store.readJobEvents('expired')).toEqual([
+    expect(f.store.readJobEvents('d78b362e-86f4-5ddb-9b13-66f5c93778fd')).toEqual([
       expect.objectContaining({
         type: 'terminal',
         seq: end,
         result: expect.objectContaining({ content: 'terminal result' }),
       }),
     ]);
-    expect(f.store.readStatus('expired')?.phase).toBe('completed');
-    expect(f.runtime.storage.readFileSync(f.store.ensureResultArtifact('expired'), 'utf-8')).toContain(
-      'terminal result',
-    );
+    expect(f.store.readStatus('d78b362e-86f4-5ddb-9b13-66f5c93778fd')?.phase).toBe('completed');
+    expect(
+      f.runtime.storage.readFileSync(f.store.ensureResultArtifact('d78b362e-86f4-5ddb-9b13-66f5c93778fd'), 'utf-8'),
+    ).toContain('terminal result');
     const page = getEventsSince(f.db, first, {}, 1000, f.store);
-    expect(page.events[0].seq).toBe(end);
+    expect(page.events.slice(0, 2).map(({ type }) => type)).toEqual([
+      'job.execution.outcome.accepted',
+      'job.execution.ended',
+    ]);
+    expect(page.events[1].seq).toBe(end);
     expect(page.nextCursor).toBeGreaterThanOrEqual(end);
     expect(f.db.prepare('SELECT MAX(seq) AS seq FROM events').get()).toEqual(max);
     rebuild(f);
     expect(projections(f)).toEqual(before);
-    expect(f.outcomes).toContainEqual({ kind: 'deleted', subject: 'progress:expired', count: 1 });
+    expect(f.outcomes).toContainEqual({
+      kind: 'deleted',
+      subject: `progress:d78b362e-86f4-5ddb-9b13-66f5c93778fd:${end}`,
+      count: 1,
+    });
   });
 
   it('keeps live and recent jobs, fault diagnostics and referenced progress evidence', async () => {
     const f = fixture();
     f.setNow(1);
-    const live = launch(f, 'live');
-    const referenced = launch(f, 'fault');
+    const live = launch(f, 'aa38cb9e-ed59-5be5-8aca-11ac91c8c859');
+    const referenced = launch(f, 'a7e1d01b-929b-5a16-ae0f-48e49abdb067');
     commitJobInput(f.store, {
-      type: 'job.progress.emitted',
-      stream: { kind: 'job', id: 'fault' },
-      body: { kind: 'missing_launch_record' },
+      type: 'job.execution.progress',
+      stream: { kind: 'job', id: 'a7e1d01b-929b-5a16-ae0f-48e49abdb067' },
+      body: { execution: 1, kind: 'missing_launch_record' },
     });
-    commitJobTerminal(f.store, 'fault', 'session-fault', {
-      content: 'fault',
-      outcome: { kind: 'failed', causeRef: { stream: { kind: 'job', id: 'fault' }, seq: referenced } },
+    commitJobTerminal(f.store, 'a7e1d01b-929b-5a16-ae0f-48e49abdb067', 1, {
+      content: 'a7e1d01b-929b-5a16-ae0f-48e49abdb067',
+      outcome: {
+        kind: 'failed',
+        causeRef: { stream: { kind: 'job', id: 'a7e1d01b-929b-5a16-ae0f-48e49abdb067' }, seq: referenced },
+      },
       durationMs: 1,
     });
     f.setNow(RETENTION_CUTOFF);
-    const recent = launch(f, 'recent');
-    terminal(f, 'recent');
+    const recent = launch(f, '662410ec-1e14-50e8-a272-62796226f37c');
+    terminal(f, '662410ec-1e14-50e8-a272-62796226f37c');
     rebuild(f);
     const before = projections(f);
     await prune(f);
     for (const seq of [live, referenced, recent])
       expect(f.db.prepare('SELECT seq FROM events WHERE seq = ?').get(seq)).toBeDefined();
-    expect(f.store.readStatus('fault')?.result?.outcome.kind).toBe('failed');
+    expect(f.store.readStatus('a7e1d01b-929b-5a16-ae0f-48e49abdb067')?.result?.outcome.kind).toBe('failed');
     expect(f.outcomes).toContainEqual({
       kind: 'kept',
-      subject: 'progress:fault',
+      subject: `progress:a7e1d01b-929b-5a16-ae0f-48e49abdb067:${f.store.readStatus('a7e1d01b-929b-5a16-ae0f-48e49abdb067')?.lastSeq}`,
       reason: 'diagnostics-or-causal-evidence',
       pending: false,
     });
@@ -234,9 +238,9 @@ describe('progress retention', () => {
   it('keeps unknown terminals and stops deletion when its injected budget is exhausted', async () => {
     const f = fixture();
     f.setNow(1);
-    const seq = launch(f, 'unknown');
-    terminal(f, 'unknown');
-    f.db.prepare("UPDATE events SET body = ? WHERE type = 'job.terminal.recorded'").run(Buffer.from('{}'));
+    const seq = launch(f, '12b73f70-483b-53ff-b584-172e178731d8');
+    terminal(f, '12b73f70-483b-53ff-b584-172e178731d8');
+    f.db.prepare("UPDATE events SET body = ? WHERE type = 'job.execution.ended'").run(Buffer.from('{}'));
     await prune(f);
     expect(f.db.prepare('SELECT seq FROM events WHERE seq = ?').get(seq)).toBeDefined();
     f.budget.canContinue = () => false;
@@ -246,12 +250,12 @@ describe('progress retention', () => {
   it('keeps causation targets and deletes large histories across bounded batches', async () => {
     const f = fixture();
     f.setNow(1);
-    const referenced = launch(f, 'large');
-    for (let i = 0; i < 1005; i += 1) f.store.appendProgress('large', 'session-large', `message ${i}`);
-    const end = terminal(f, 'large');
+    const referenced = launch(f, 'a5041bea-1489-50a6-bca4-c70d494230a2');
+    for (let i = 0; i < 1005; i += 1) f.store.appendProgress('a5041bea-1489-50a6-bca4-c70d494230a2', `message ${i}`);
+    const end = terminal(f, 'a5041bea-1489-50a6-bca4-c70d494230a2');
     f.db.prepare('UPDATE events SET causation_seq = ? WHERE seq = ?').run(referenced, end);
     await prune(f);
-    expect(f.db.prepare("SELECT COUNT(*) AS n FROM events WHERE type = 'job.progress.emitted'").get()).toEqual({
+    expect(f.db.prepare("SELECT COUNT(*) AS n FROM events WHERE type = 'job.execution.progress'").get()).toEqual({
       n: 1,
     });
     expect(f.db.prepare('SELECT seq FROM events WHERE seq = ?').get(referenced)).toBeDefined();
@@ -262,10 +266,10 @@ describe('progress retention', () => {
     async (shape) => {
       const f = fixture();
       f.setNow(1);
-      launch(f, 'old');
-      const seq = f.store.appendProgress('old', 'session-old', 'evidence');
-      terminal(f, 'old');
-      const causeRef = { stream: { kind: 'job', id: 'old' }, seq };
+      launch(f, '716e9935-d9a7-537d-80cb-9946aee0d783');
+      const seq = f.store.appendProgress('716e9935-d9a7-537d-80cb-9946aee0d783', 'evidence');
+      terminal(f, '716e9935-d9a7-537d-80cb-9946aee0d783');
+      const causeRef = { stream: { kind: 'job', id: '716e9935-d9a7-537d-80cb-9946aee0d783' }, seq };
       const bodies = {
         direct: { causeRef },
         reason: { reason: { causeRef } },
@@ -290,9 +294,9 @@ describe('progress retention', () => {
   it('resumes inside an interrupted job without revisiting its retained progress prefix', async () => {
     const f = fixture();
     f.setNow(1);
-    launch(f, 'large');
-    for (let i = 0; i < 130; i += 1) f.store.appendProgress('large', 'session-large', `message ${i}`);
-    terminal(f, 'large');
+    launch(f, 'a5041bea-1489-50a6-bca4-c70d494230a2');
+    for (let i = 0; i < 130; i += 1) f.store.appendProgress('a5041bea-1489-50a6-bca4-c70d494230a2', `message ${i}`);
+    terminal(f, 'a5041bea-1489-50a6-bca4-c70d494230a2');
     let checks = 0;
     f.budget.canContinue = () => ++checks < 10;
     expect(await prune(f)).toBeGreaterThan(0);
@@ -301,13 +305,12 @@ describe('progress retention', () => {
     };
     expect(JSON.parse(checkpoint.value).progressSeq).toBeGreaterThan(0);
     expect(JSON.parse(checkpoint.value).ceiling).toBe(
-      f.db
-        .prepare<[], { seq: number }>("SELECT MAX(seq) AS seq FROM events WHERE type = 'job.terminal.recorded'")
-        .get()!.seq,
+      f.db.prepare<[], { seq: number }>("SELECT MAX(seq) AS seq FROM events WHERE type = 'job.execution.ended'").get()!
+        .seq,
     );
     f.budget.canContinue = () => true;
     await prune(f);
-    expect(f.db.prepare("SELECT COUNT(*) AS n FROM events WHERE type = 'job.progress.emitted'").get()).toEqual({
+    expect(f.db.prepare("SELECT COUNT(*) AS n FROM events WHERE type = 'job.execution.progress'").get()).toEqual({
       n: 0,
     });
   });
@@ -317,29 +320,35 @@ describe('progress retention', () => {
     async (reference) => {
       const f = fixture();
       f.setNow(1);
-      launch(f, 'old');
-      launch(f, 'other');
+      launch(f, '716e9935-d9a7-537d-80cb-9946aee0d783');
+      launch(f, 'e8b443db-d12b-5f1e-ad0d-e79b670954a2');
       let target = 0;
-      for (let i = 0; i < 1005; i += 1) target = f.store.appendProgress('old', 'session-old', `message ${i}`);
-      terminal(f, 'old');
+      for (let i = 0; i < 1005; i += 1)
+        target = f.store.appendProgress('716e9935-d9a7-537d-80cb-9946aee0d783', `message ${i}`);
+      terminal(f, '716e9935-d9a7-537d-80cb-9946aee0d783');
       const pruning = prune(f);
       if (reference === 'causeRef') {
-        commitJobTerminal(f.store, 'other', 'session-other', {
+        commitJobTerminal(f.store, 'e8b443db-d12b-5f1e-ad0d-e79b670954a2', 1, {
           content: 'failed',
-          outcome: { kind: 'failed', causeRef: { stream: { kind: 'job', id: 'old' }, seq: target } },
+          outcome: {
+            kind: 'failed',
+            causeRef: { stream: { kind: 'job', id: '716e9935-d9a7-537d-80cb-9946aee0d783' }, seq: target },
+          },
           durationMs: 1,
         });
       } else {
-        terminal(f, 'other');
+        terminal(f, 'e8b443db-d12b-5f1e-ad0d-e79b670954a2');
         f.db
-          .prepare("UPDATE events SET causation_seq = ? WHERE stream_id = 'other' AND type = 'job.terminal.recorded'")
+          .prepare(
+            "UPDATE events SET causation_seq = ? WHERE stream_id = 'e8b443db-d12b-5f1e-ad0d-e79b670954a2' AND type = 'job.execution.ended'",
+          )
           .run(target);
       }
       await pruning;
       expect(f.db.prepare('SELECT seq FROM events WHERE seq = ?').get(target)).toBeDefined();
       await prune(f);
       expect(f.db.prepare('SELECT seq FROM events WHERE seq = ?').get(target)).toBeDefined();
-      expect(f.db.prepare("SELECT COUNT(*) AS n FROM events WHERE type = 'job.progress.emitted'").get()).toEqual({
+      expect(f.db.prepare("SELECT COUNT(*) AS n FROM events WHERE type = 'job.execution.progress'").get()).toEqual({
         n: 1,
       });
     },
@@ -357,11 +366,11 @@ describe('progress retention', () => {
   it('revisits an expired prefix while at least a thousand terminals arrive per cycle', async () => {
     const f = fixture();
     f.setNow(RETENTION_CUTOFF);
-    launch(f, 'prefix');
-    terminal(f, 'prefix');
+    launch(f, '0a6a4fbf-55e6-52ff-8081-07551f1a70db');
+    terminal(f, '0a6a4fbf-55e6-52ff-8081-07551f1a70db');
     const templates = f.db
       .prepare(
-        "SELECT ts, type, body FROM events WHERE stream_id = 'prefix' AND type IN ('job.progress.emitted', 'job.terminal.recorded') ORDER BY seq",
+        "SELECT ts, type, body FROM events WHERE stream_id = '0a6a4fbf-55e6-52ff-8081-07551f1a70db' AND type IN ('job.execution.requested', 'job.execution.progress', 'job.execution.ended') ORDER BY seq",
       )
       .all() as { ts: string; type: string; body: Uint8Array }[];
     const insert = f.db.prepare(
@@ -375,7 +384,7 @@ describe('progress retention', () => {
     };
     append(0, 1000, new Date(RETENTION_CUTOFF).toISOString());
     await prune(f);
-    expect(f.db.prepare("SELECT COUNT(*) AS n FROM events WHERE type = 'job.progress.emitted'").get()).toEqual({
+    expect(f.db.prepare("SELECT COUNT(*) AS n FROM events WHERE type = 'job.execution.progress'").get()).toEqual({
       n: 1001,
     });
     const expiredCutoff = RETENTION_CUTOFF + 30 * 86_400_000;
@@ -384,18 +393,22 @@ describe('progress retention', () => {
       await pruneJobProgress({ db: f.db, readCtx: f.store, cutoff: expiredCutoff, afterSeq: 0, budget: f.budget });
     }
     expect(
-      f.db.prepare("SELECT seq FROM events WHERE stream_id = 'prefix' AND type = 'job.progress.emitted'").get(),
+      f.db
+        .prepare(
+          "SELECT seq FROM events WHERE stream_id = '0a6a4fbf-55e6-52ff-8081-07551f1a70db' AND type = 'job.execution.progress'",
+        )
+        .get(),
     ).toBeUndefined();
     expect(
-      f.db.prepare("SELECT seq FROM events WHERE stream_id = 'arrival-1000' AND type = 'job.progress.emitted'").get(),
+      f.db.prepare("SELECT seq FROM events WHERE stream_id = 'arrival-1000' AND type = 'job.execution.progress'").get(),
     ).toBeDefined();
   });
 
   it('accepts an old cursor without a ceiling and starts a fresh capture', async () => {
     const f = fixture();
     f.setNow(1);
-    const seq = launch(f, 'prefix');
-    const end = terminal(f, 'prefix');
+    const seq = launch(f, '0a6a4fbf-55e6-52ff-8081-07551f1a70db');
+    const end = terminal(f, '0a6a4fbf-55e6-52ff-8081-07551f1a70db');
     f.db
       .prepare('INSERT INTO meta(key, value) VALUES (?, ?)')
       .run('storage-retention.progress.v1', JSON.stringify({ afterSeq: end, progressSeq: seq, futureField: true }));
@@ -415,19 +428,19 @@ describe('progress retention', () => {
   it('continues the terminal scan after a restart instead of repeating the first thousand', async () => {
     const f = fixture();
     f.setNow(1);
-    launch(f, 'first');
-    terminal(f, 'first');
-    const source = f.db.prepare("SELECT ts, body FROM events WHERE type = 'job.terminal.recorded'").get() as {
+    launch(f, 'e0b2f667-4cb2-522c-a9c1-49e588640e60');
+    terminal(f, 'e0b2f667-4cb2-522c-a9c1-49e588640e60');
+    const source = f.db.prepare("SELECT ts, body FROM events WHERE type = 'job.execution.ended'").get() as {
       ts: string;
       body: Uint8Array;
     };
     const insert = f.db.prepare(
-      "INSERT INTO events(type, stream_kind, stream_id, ts, body) VALUES ('job.terminal.recorded', 'job', ?, ?, ?)",
+      "INSERT INTO events(type, stream_kind, stream_id, ts, body) VALUES ('job.execution.ended', 'job', ?, ?, ?)",
     );
     for (let i = 0; i < 999; i += 1) insert.run(`prefix-${i}`, source.ts, source.body);
-    launch(f, 'tail');
-    const target = f.store.appendProgress('tail', 'session-tail', 'tail progress');
-    terminal(f, 'tail');
+    launch(f, 'f794d84e-51cd-5e06-b72d-d11d00bfb742');
+    const target = f.store.appendProgress('f794d84e-51cd-5e06-b72d-d11d00bfb742', 'tail progress');
+    terminal(f, 'f794d84e-51cd-5e06-b72d-d11d00bfb742');
     await prune(f);
     await prune(f);
     expect(f.db.prepare('SELECT seq FROM events WHERE seq = ?').get(target)).toBeUndefined();
@@ -437,9 +450,9 @@ describe('progress retention', () => {
     const f = fixture();
     f.setNow(1);
     f.setNow(1);
-    launch(f, 'many');
-    for (let i = 0; i < 130; i += 1) f.store.appendProgress('many', 'session-many', 'message');
-    terminal(f, 'many');
+    launch(f, '4484c8ee-1dc1-54ed-8119-7802a77fd218');
+    for (let i = 0; i < 130; i += 1) f.store.appendProgress('4484c8ee-1dc1-54ed-8119-7802a77fd218', 'message');
+    terminal(f, '4484c8ee-1dc1-54ed-8119-7802a77fd218');
     const exec = f.db.exec.bind(f.db);
     let aborted = false;
     let deletes = 0;

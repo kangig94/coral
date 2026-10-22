@@ -1,3 +1,4 @@
+import { createTestExecutionFinisher } from '#tests/helpers/execution-finisher.js';
 import { canonicalWorkDirWireSchema } from '#src/runtime/canonical-work-dir.js';
 import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -129,6 +130,7 @@ it('observes a progressing local app-server placement through production assembl
   const observedPasses: CarrierWaitObservation[][] = [];
   let localService: ExecutionService | undefined;
   const services = createExecutionServices({
+    executionFinisher: createTestExecutionFinisher(store, runtime),
     world,
     runtime,
     bundleHash: 'local-wait',
@@ -202,7 +204,7 @@ it('observes a progressing local app-server placement through production assembl
     });
     finishTurn();
     await released;
-    expect(localService.holdsLocalAppServerExecution(launch.jobId)).toBe(false);
+    expect(localService.holdsLocalAppServerExecution(launch.jobId, 1)).toBe(false);
     expect(store.readStatus(jobId)?.phase).toBe('completed');
   } finally {
     finishTurn();

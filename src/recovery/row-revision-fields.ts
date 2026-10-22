@@ -1,3 +1,4 @@
+import type { ProjectionJobStoredRow } from '../jobs/projection-row.js';
 import type { Database } from '../store/db.js';
 import type { EventsRow } from '../store/schema.js';
 import type { RecoveryRevisionField, RecoveryRevisionValue } from './containment.js';
@@ -5,7 +6,7 @@ import type { RecoveryRevisionField, RecoveryRevisionValue } from './containment
 export const EVENT_COLUMNS =
   'seq, ts, type, stream_kind, stream_id, namespace, project, correlation_id, causation_seq, refs, body';
 
-type ProjectionJobRevisionRow = import('../jobs/projection-row.js').ProjectionJobStoredRow;
+type ProjectionJobRevisionRow = ProjectionJobStoredRow;
 
 type ContinuationRevisionRow = {
   readonly continuation_kind: RecoveryRevisionValue;

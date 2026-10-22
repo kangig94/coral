@@ -66,10 +66,21 @@ export interface JobExit extends JobTerminal {
   endTime: string;
 }
 
+export const executionRetryStatusSchema = z
+  .object({
+    stage: z.enum(['accept', 'finish']),
+    kind: z.enum(['retrying', 'blocked']),
+    reason: z.string(),
+    successor: z.enum(['live-retry', 'recovery-quarantine', 'discard-issuer-release']),
+  })
+  .passthrough();
+export type ExecutionRetryStatus = Readonly<z.infer<typeof executionRetryStatusSchema>>;
+
 export interface JobStatus {
   jobId: string;
   execution: number | null;
   finishing?: boolean;
+  finishingStatus?: ExecutionRetryStatus;
   owner: ExecutionOwner;
   sessionId: string | null;
   provider: string | null;
@@ -80,8 +91,6 @@ export interface JobStatus {
   jobKind: JobKind;
   parentWorkflowJobId?: string;
   workflowSlotId?: string;
-  workflowSlotGeneration?: number;
-  replacesWorkflowJobId?: string;
   phase: JobPhase;
   updatedAt: string;
   lastSeq?: number;
@@ -215,7 +224,7 @@ export function isAppServerRuntime(record: JobRuntime | null | undefined): recor
 
 interface JobEventBase {
   jobId: string;
-  sessionId: string | null;
+  execution?: number;
   seq: number;
   ts: string;
 }
@@ -253,6 +262,7 @@ export type JobsListResponse = {
 
 /** Summary fields name the latest execution; durable single-execution details omit history. */
 export type JobDetailResponse = {
+  executionAddressing?: 'lifetime';
   availability?: ResultAvailability;
   epochKey?: string;
   requestedSeq?: number;

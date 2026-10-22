@@ -11,13 +11,13 @@ export async function consumeJobStream(options: {
   execution: number;
   stream: AsyncIterable<ProviderEventBody>;
   decodeContinuity(rawContinuity: unknown): ProviderBindingResult<ProviderValidatedContinuityBlob | undefined>;
-  sessionApi: Pick<ConversationContinuityPort, 'checkpointJobContinuityAtomic' | 'recordArtifactHandleAtomic'>;
+  conversationApi: Pick<ConversationContinuityPort, 'checkpointJobContinuityAtomic' | 'recordArtifactHandleAtomic'>;
   appendProgress(message: string): void;
 }): Promise<
   | { kind: 'terminal'; event: ProviderTerminalEventBody; execution: number }
   | { kind: 'suspended'; reason: 'interrupt_unconfirmed' | 'durable_state_uncommitted' }
 > {
-  const { jobId, stream, sessionApi } = options;
+  const { jobId, stream, conversationApi } = options;
   const execution = options.execution;
 
   for await (const event of stream) {
@@ -38,7 +38,7 @@ export async function consumeJobStream(options: {
       }
       let result: Awaited<ReturnType<ConversationContinuityPort['checkpointJobContinuityAtomic']>>;
       try {
-        result = await sessionApi.checkpointJobContinuityAtomic(jobId, {
+        result = await conversationApi.checkpointJobContinuityAtomic(jobId, {
           execution,
           snapshot: {
             conversationRef: event.conversationRef,
@@ -69,7 +69,7 @@ export async function consumeJobStream(options: {
     if (event.kind === 'artifact_handle') {
       let result: Awaited<ReturnType<ConversationContinuityPort['recordArtifactHandleAtomic']>>;
       try {
-        result = await sessionApi.recordArtifactHandleAtomic(jobId, {
+        result = await conversationApi.recordArtifactHandleAtomic(jobId, {
           execution,
           handle: event.handle,
           identity: event.identity,
@@ -81,9 +81,7 @@ export async function consumeJobStream(options: {
         return { kind: 'suspended', reason: 'durable_state_uncommitted' };
       }
       if (!result.ok) {
-        backendLog.warn(
-          `Artifact handle recording went stale for job ${options.jobId} execution #${execution}.`,
-        );
+        backendLog.warn(`Artifact handle recording went stale for job ${options.jobId} execution #${execution}.`);
         return { kind: 'suspended', reason: 'durable_state_uncommitted' };
       }
 

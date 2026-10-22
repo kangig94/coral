@@ -22,14 +22,13 @@ describe('consumeJobStream', () => {
     const warn = vi.spyOn(backendLog, 'warn').mockImplementation(() => {});
     const checkpointJobContinuityAtomic = vi
       .fn()
-      .mockResolvedValueOnce({ ok: true, nextVersion: 11 })
+      .mockResolvedValueOnce({ ok: true, execution: 3 })
       .mockResolvedValueOnce({ ok: false });
     const recordArtifactHandleAtomic = vi.fn();
 
     const consumed = consumeJobStream({
       jobId: 'job-3',
-      sessionId: 'session-3',
-      initialVersion: 10,
+      execution: 3,
       decodeContinuity,
       stream: (async function* () {
         yield {
@@ -56,7 +55,7 @@ describe('consumeJobStream', () => {
           },
         } as const;
       })(),
-      sessionApi: {
+      conversationApi: {
         checkpointJobContinuityAtomic,
         recordArtifactHandleAtomic,
       },
@@ -65,31 +64,29 @@ describe('consumeJobStream', () => {
 
     await expect(consumed).resolves.toEqual({ kind: 'suspended', reason: 'durable_state_uncommitted' });
 
-    expect(checkpointJobContinuityAtomic).toHaveBeenNthCalledWith(1, 'session-3', {
-      expectedActiveJobId: 'job-3',
-      expectedVersion: 10,
+    expect(checkpointJobContinuityAtomic).toHaveBeenNthCalledWith(1, 'job-3', {
+      execution: 3,
       snapshot: {
         conversationRef: 'thread-1',
         resumable: true,
         providerContinuity: { threadId: 'thread-1' },
       },
     });
-    expect(checkpointJobContinuityAtomic).toHaveBeenNthCalledWith(2, 'session-3', {
-      expectedActiveJobId: 'job-3',
-      expectedVersion: 11,
+    expect(checkpointJobContinuityAtomic).toHaveBeenNthCalledWith(2, 'job-3', {
+      execution: 3,
       snapshot: {
         conversationRef: 'thread-2',
         resumable: false,
         providerContinuity: { threadId: 'thread-2', state: 'closed' },
       },
     });
-    expect(warn).toHaveBeenCalledWith('Continuity checkpoint went stale for claimed job job-3 on session session-3.');
+    expect(warn).toHaveBeenCalledWith('Continuity checkpoint went stale for job job-3 execution #3.');
     expect(appendProgress).not.toHaveBeenCalled();
     expect(recordArtifactHandleAtomic).not.toHaveBeenCalled();
   });
 
   it('commits the provider receipt only after the atomic checkpoint succeeds', async () => {
-    const persisted = createDeferred<{ ok: true; nextVersion: number }>();
+    const persisted = createDeferred<{ ok: true; execution: number }>();
     const committed = createDeferred<void>();
     let providerSideEffectStarted = false;
     const stream = (async function* () {
@@ -113,17 +110,16 @@ describe('consumeJobStream', () => {
     const checkpointJobContinuityAtomic = vi.fn(() => persisted.promise);
     const consumed = consumeJobStream({
       jobId: 'job-durable',
-      sessionId: 'session-durable',
-      initialVersion: 1,
+      execution: 1,
       decodeContinuity,
       stream,
-      sessionApi: { checkpointJobContinuityAtomic, recordArtifactHandleAtomic: vi.fn() },
+      conversationApi: { checkpointJobContinuityAtomic, recordArtifactHandleAtomic: vi.fn() },
       appendProgress: vi.fn(),
     });
 
     await vi.waitFor(() => expect(checkpointJobContinuityAtomic).toHaveBeenCalledTimes(1));
     expect(providerSideEffectStarted).toBe(false);
-    persisted.resolve({ ok: true, nextVersion: 2 });
+    persisted.resolve({ ok: true, execution: 1 });
     await consumed;
     expect(providerSideEffectStarted).toBe(true);
   });
@@ -148,11 +144,10 @@ describe('consumeJobStream', () => {
     await expect(
       consumeJobStream({
         jobId: 'job-write-error',
-        sessionId: 'session-write-error',
-        initialVersion: 1,
+        execution: 1,
         decodeContinuity,
         stream,
-        sessionApi: {
+        conversationApi: {
           checkpointJobContinuityAtomic: vi.fn(async () => Promise.reject(failure)),
           recordArtifactHandleAtomic: vi.fn(),
         },

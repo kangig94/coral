@@ -38,11 +38,11 @@ function fixture(transport: 'app-server' | 'durable-cli' = 'app-server') {
     providers: permissiveProviderLookupPort,
     reducers: composeReducers(jobsRegistry),
   });
-  const sessions = new ConversationManager('/project', runtime, undefined, undefined, db, permissiveProviderLookupPort);
+  const sessions = new ConversationManager('/project', runtime, (cb) => store.commit(cb), db);
   const launch: JobLaunch = {
     jobId: '00000000-0000-4000-8000-000000000001',
-    owner: { kind: 'provider-session', id: 'session-1' },
-    sessionId: 'session-1',
+    owner: { kind: 'provider-session', id: '00000000-0000-4000-8000-000000000001' },
+    execution: 1,
     provider: 'codex',
     projectRoot: '/project',
     backendNamespace: 'test',
@@ -54,11 +54,10 @@ function fixture(transport: 'app-server' | 'durable-cli' = 'app-server') {
     createdAt: new Date(runtime.time.now()).toISOString(),
   };
   seedTestSessionProjection(db, {
-    sessionId: 'session-1',
+    jobId: '00000000-0000-4000-8000-000000000001',
     provider: 'codex',
     projectRoot: '/project',
     backendNamespace: 'test',
-    activeJobId: '00000000-0000-4000-8000-000000000001',
   });
   store.appendLaunchRequested('00000000-0000-4000-8000-000000000001', launch);
   const incarnation = testIncarnation('wrapper');
@@ -109,7 +108,7 @@ function fixture(transport: 'app-server' | 'durable-cli' = 'app-server') {
       ok: true,
       authority: {
         launchRecord: launch,
-        session: sessions.get('codex', 'session-1'),
+        session: sessions.get('codex', '00000000-0000-4000-8000-000000000001'),
         boundProvider: { name: 'codex' },
       } as unknown as ProviderRecoveryAuthority,
     })),
@@ -117,12 +116,11 @@ function fixture(transport: 'app-server' | 'durable-cli' = 'app-server') {
     finalizeInterruptedDurableJob: vi.fn<RecoveryCapableService['finalizeInterruptedDurableJob']>(
       async (_authority, _record, observation, fence) => {
         fence.onCommitStart();
-        commitJobTerminal(store, '00000000-0000-4000-8000-000000000001', 'session-1', {
+        commitJobTerminal(store, '00000000-0000-4000-8000-000000000001', 1, {
           content: '',
           durationMs: 0,
           outcome: observation.cancelled ? { kind: 'aborted', reason: 'user_abort' } : { kind: 'completed' },
         });
-        sessions.releaseJob('session-1', '00000000-0000-4000-8000-000000000001');
         finalized.resolve();
       },
     ),
@@ -206,7 +204,7 @@ describe('RecoveryCoordinator shutdown', () => {
     expect(
       f.store.readJobEvents('00000000-0000-4000-8000-000000000001').filter((event) => event.type === 'terminal'),
     ).toEqual([]);
-    expect(f.sessions.get('codex', 'session-1')?.activeJobId).toBe('00000000-0000-4000-8000-000000000001');
+    expect(f.sessions.get('codex', '00000000-0000-4000-8000-000000000001')?.open).toBe(true);
   });
 
   it('waits for in-flight durable finalization before releasing recovery authority', async () => {
@@ -230,10 +228,10 @@ describe('RecoveryCoordinator shutdown', () => {
     });
     await Promise.resolve();
     expect(stopped).toBe(false);
-    expect(f.sessions.get('codex', 'session-1')?.activeJobId).toBe('00000000-0000-4000-8000-000000000001');
+    expect(f.sessions.get('codex', '00000000-0000-4000-8000-000000000001')?.open).toBe(true);
     release.resolve();
     await shutdown;
     expect(f.store.readStatus('00000000-0000-4000-8000-000000000001')?.phase).toBe('completed');
-    expect(f.sessions.get('codex', 'session-1')?.activeJobId).toBeUndefined();
+    expect(f.sessions.get('codex', '00000000-0000-4000-8000-000000000001')?.open).toBe(false);
   });
 });

@@ -8,35 +8,40 @@ import type { ProviderContinuityBlob } from './continuity.js';
 export const retentionPolicySchema = z.enum(['retain', 'discard_provider_artifacts_on_terminal']);
 export type RetentionPolicy = z.infer<typeof retentionPolicySchema>;
 
-export const providerArtifactHandleSchema = z.object({
-  handle: z.string().min(1),
-  identity: providerArtifactIdentitySchema,
-  identityKey: z.string().min(1),
-  execution: z.number().int().positive().safe(),
-  sourceJobId: z.string().min(1),
-  recordedAt: z.string().datetime(),
-}).strict();
+export const providerArtifactHandleSchema = z
+  .object({
+    handle: z.string().min(1),
+    identity: providerArtifactIdentitySchema,
+    identityKey: z.string().min(1),
+    execution: z.number().int().positive().safe(),
+    sourceJobId: z.string().min(1),
+    recordedAt: z.string().datetime(),
+  })
+  .strict();
 export type ProviderArtifactHandle = z.infer<typeof providerArtifactHandleSchema>;
 
 export const retentionDiscardCompletedOutcomeSchema = z.enum([
-  'discarded', 'skipped_no_handles', 'provider_declares_none',
+  'discarded',
+  'skipped_no_handles',
+  'provider_declares_none',
 ]);
-export type RetentionDiscardCompletedOutcome = z.infer<typeof retentionDiscardCompletedOutcomeSchema>;
 
-export const retentionDiscardAttemptSchema = z.object({
-  execution: z.number().int().positive().safe(),
-  attempt: z.number().int().nonnegative().safe(),
-  handles: z.array(z.string()).readonly(),
-  status: z.enum(['requested', 'completed', 'failed']),
-  outcome: retentionDiscardCompletedOutcomeSchema.optional(),
-  reason: z.string().optional(),
-  causeRef: causeRefSchema.optional(),
-}).strict();
+export const retentionDiscardAttemptSchema = z
+  .object({
+    execution: z.number().int().positive().safe(),
+    attempt: z.number().int().nonnegative().safe(),
+    handles: z.array(z.string()).readonly(),
+    status: z.enum(['requested', 'completed', 'failed']),
+    outcome: retentionDiscardCompletedOutcomeSchema.optional(),
+    reason: z.string().optional(),
+    causeRef: causeRefSchema.optional(),
+  })
+  .strict();
 export type RetentionDiscardAttempt = z.infer<typeof retentionDiscardAttemptSchema>;
 
-export type SessionControllerId = string;
-export const SESSION_CONTROLLER_PROFILE_FIELDS = ['owner', 'effort', 'claudeModelCap'] as const;
-export type SessionControllerProfile = NonNullable<JobConversationFacet['controllerProfile']>;
+export type ConversationControllerId = string;
+export const CONVERSATION_CONTROLLER_PROFILE_FIELDS = ['owner', 'effort', 'claudeModelCap'] as const;
+export type ConversationControllerProfile = NonNullable<JobConversationFacet['controllerProfile']>;
 
 export interface JobConversation extends JobConversationFacet {
   readonly jobId: string;
@@ -57,10 +62,15 @@ export function jobConversationProvider(conversation: Pick<JobConversation, 'bin
   return conversation.binding.provider;
 }
 
-export function sessionControllerFromProfile(profile?: SessionControllerProfile): SessionControllerId {
-  return profile?.owner || 'default';
+export function conversationControllerFromProfile(profile?: ConversationControllerProfile): ConversationControllerId {
+  const owner = profile?.owner ?? 'default';
+  return owner.length === 0 ? 'default' : owner;
 }
 
-export function hasUnterminalRetentionDiscardRequest(entry: Pick<JobConversation, 'retentionDiscard' | 'execution'>): boolean {
-  return entry.retentionDiscard.attempts.some(attempt => attempt.execution === entry.execution && attempt.status === 'requested');
+export function hasUnterminalRetentionDiscardRequest(
+  entry: Pick<JobConversation, 'retentionDiscard' | 'execution'>,
+): boolean {
+  return entry.retentionDiscard.attempts.some(
+    (attempt) => attempt.execution === entry.execution && attempt.status === 'requested',
+  );
 }

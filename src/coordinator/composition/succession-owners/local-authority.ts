@@ -1,5 +1,5 @@
 import { readSuccessionJobIdsByKind } from '../../../jobs/succession-coverage.js';
-import { listProjectionConversationEntries } from '../../../jobs/conversation/projections.js';
+import { listProjectionConversationEntries } from '../../../jobs/conversation/read-queries.js';
 import { knownDiscussSources } from '../../../discuss/shell/session-read-service.js';
 import type { SuccessionOwner } from '../../succession/obligations.js';
 import type { SuccessionOwnersInput } from './index.js';
@@ -86,9 +86,8 @@ export function createLocalAuthoritySuccessionOwners(input: SuccessionOwnersInpu
       id: 'conversation-retention',
       classify: async () => {
         const sessions = listProjectionConversationEntries(getProgressStore().getDb());
-        const held = sessions.filter(
-          (session) =>
-            session.retentionDiscard.attempts.some((attempt) => attempt.status === 'requested'),
+        const held = sessions.filter((session) =>
+          session.retentionDiscard.attempts.some((attempt) => attempt.status === 'requested'),
         );
         return held.length === 0
           ? { kind: 'completed', reason: 'no conversation retention hold' }

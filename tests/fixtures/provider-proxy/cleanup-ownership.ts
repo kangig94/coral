@@ -28,7 +28,7 @@ const prepared: ProxyPreparedAppServerOperation = {
   binding: { provider: 'codex', kind: 'account', binding: { account: 'test' } },
   request: {
     action: 'exec',
-    sessionId: 'test',
+    jobId: 'test',
     prompt: 'test',
     cwd: fixtureCanonicalWorkDir('/project'),
     bypassPermissions: false,

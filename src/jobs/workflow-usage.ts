@@ -51,7 +51,8 @@ export function aggregateWorkflowUsage(
   let jobsWithoutCostData = 0;
 
   for (const row of rows) {
-    const usage = jobExecutionOutcomeAcceptedBodySchema.parse(JSON.parse(Buffer.from(row.body).toString('utf8'))).diagnostics?.usage;
+    const usage = jobExecutionOutcomeAcceptedBodySchema.parse(JSON.parse(Buffer.from(row.body).toString('utf8')))
+      .diagnostics?.usage;
     if (usage === undefined || !hasUsageValue(usage)) {
       continue;
     }
@@ -61,8 +62,9 @@ export function aggregateWorkflowUsage(
       addToken(result, field, usage[field]);
     }
 
-    jobsWithoutCostData += usage.jobsWithoutCostData ?? (usage.costUsd === undefined ? 1 : 0);
-    if (usage.costUsd !== undefined) {
+    if (usage.costUsd === undefined) {
+      jobsWithoutCostData += 1;
+    } else {
       costUsd += usage.costUsd;
       sawCost = true;
     }

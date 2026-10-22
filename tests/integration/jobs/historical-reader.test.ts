@@ -1,3 +1,4 @@
+import { testConversationFacet } from '#tests/helpers/session.js';
 import { nextFinal } from '#tests/helpers/wait-stream.js';
 import { progressVisitFromDetails } from '#tests/helpers/wait-progress.js';
 import { symlinkSync, unlinkSync, renameSync } from 'node:fs';
@@ -94,7 +95,7 @@ describe('historical job readers', () => {
     const address = protectStoreEpoch(runtime, epoch);
     const result = seedHistoricalEpoch(
       runtime,
-      new JobLocationIndex(runtime, root),
+      new JobLocationIndex(runtime, root, undefined, currentCoralStoreFormat().fingerprint),
       epoch,
       epochKey,
       fingerprints[0],
@@ -110,7 +111,7 @@ describe('historical job readers', () => {
     db.close();
     const epoch = { storeRoot: join(root, 'db'), epoch: '7', path: join(epochDir, 'store.db') };
     const epochKey = readOrCreateEpochKey(runtime, epoch);
-    const index = new JobLocationIndex(runtime, root);
+    const index = new JobLocationIndex(runtime, root, undefined, currentCoralStoreFormat().fingerprint);
     expect(
       seedHistoricalEpoch(runtime, index, epoch, epochKey, fingerprints[0], join(root, 'results'), storage).kind,
     ).toBe('uncertified');
@@ -125,7 +126,7 @@ describe('historical job readers', () => {
     db.close();
     const epoch = { storeRoot: join(root, 'db'), epoch: '7', path: join(epochDir, 'store.db') };
     const epochKey = readOrCreateEpochKey(runtime, epoch);
-    const index = new JobLocationIndex(runtime, root);
+    const index = new JobLocationIndex(runtime, root, undefined, currentCoralStoreFormat().fingerprint);
     expect(
       seedHistoricalEpoch(runtime, index, epoch, epochKey, fingerprints[0], join(root, 'results'), storage).kind,
     ).toBe('uncertified');
@@ -157,7 +158,7 @@ describe('historical job readers', () => {
     replacement.close();
     const result = seedHistoricalEpoch(
       runtime,
-      new JobLocationIndex(runtime, root),
+      new JobLocationIndex(runtime, root, undefined, currentCoralStoreFormat().fingerprint),
       epoch,
       epochKey,
       fingerprints[0],
@@ -232,7 +233,7 @@ describe('historical job readers', () => {
         ),
       );
       db.close();
-      const index = new JobLocationIndex(runtime, root);
+      const index = new JobLocationIndex(runtime, root, undefined, currentCoralStoreFormat().fingerprint);
       const result = seedHistoricalEpoch(
         runtime,
         index,
@@ -296,7 +297,7 @@ describe('historical job readers', () => {
     );
     db.close();
     const epochKey = '00000000-0000-4000-8000-000000000007:7';
-    const index = new JobLocationIndex(runtime, root);
+    const index = new JobLocationIndex(runtime, root, undefined, currentCoralStoreFormat().fingerprint);
     const epoch = { storeRoot: join(root, 'db'), epoch: '7', path: join(epochDir, 'store.db') };
     expect(
       seedHistoricalEpoch(runtime, index, epoch, epochKey, fingerprints[0], join(root, 'results'), storage, [], true)
@@ -339,7 +340,7 @@ describe('historical job readers', () => {
     const { root, epochDir, db } = fixture(fingerprints[0]);
     db.close();
     rmSync(join(epochDir, 'store.db'));
-    const index = new JobLocationIndex(runtime, root);
+    const index = new JobLocationIndex(runtime, root, undefined, currentCoralStoreFormat().fingerprint);
     const result = seedHistoricalEpoch(
       runtime,
       index,
@@ -392,7 +393,7 @@ describe('historical job readers', () => {
     );
     const protectedAddress = readFileSync(addressPath, 'utf8');
     writeFileSync(addressPath, '{invalid');
-    const index = new JobLocationIndex(runtime, root);
+    const index = new JobLocationIndex(runtime, root, undefined, currentCoralStoreFormat().fingerprint);
     index.register('known-live', epochKey, {
       projectRoot: '/workspace/project',
       workDir: '/workspace/project',
@@ -444,7 +445,7 @@ describe('historical job readers', () => {
       );
     }
     db.close();
-    const index = new JobLocationIndex(runtime, root);
+    const index = new JobLocationIndex(runtime, root, undefined, currentCoralStoreFormat().fingerprint);
     expect(
       seedHistoricalEpoch(
         runtime,
@@ -473,7 +474,7 @@ describe('historical job readers', () => {
       Buffer.from(JSON.stringify({ projectRoot: '/workspace/project', jobKind: 'provider', request: {} })),
     );
     db.close();
-    const index = new JobLocationIndex(runtime, root);
+    const index = new JobLocationIndex(runtime, root, undefined, currentCoralStoreFormat().fingerprint);
     index.register('known-live', '00000000-0000-4000-8000-000000000007:7', {
       projectRoot: '/workspace/project',
       workDir: '/workspace/project',
@@ -513,7 +514,7 @@ describe('historical job readers', () => {
       ),
     );
     db.close();
-    const index = new JobLocationIndex(runtime, root);
+    const index = new JobLocationIndex(runtime, root, undefined, currentCoralStoreFormat().fingerprint);
     const result = seedHistoricalEpoch(
       runtime,
       index,
@@ -554,7 +555,7 @@ describe('historical job readers', () => {
     );
     db.close();
 
-    const index = new JobLocationIndex(runtime, root);
+    const index = new JobLocationIndex(runtime, root, undefined, currentCoralStoreFormat().fingerprint);
     const epoch = { storeRoot: join(root, 'db'), epoch: '7', path: join(epochDir, 'store.db') };
     expect(
       seedHistoricalEpoch(
@@ -630,7 +631,7 @@ describe('historical job readers', () => {
       ),
     );
     db.close();
-    const index = new JobLocationIndex(runtime, root);
+    const index = new JobLocationIndex(runtime, root, undefined, currentCoralStoreFormat().fingerprint);
     expect(
       seedHistoricalEpoch(
         runtime,
@@ -685,7 +686,7 @@ describe('historical job readers', () => {
       throw new Error('database is temporarily locked');
     });
     try {
-      const index = new JobLocationIndex(runtime, root);
+      const index = new JobLocationIndex(runtime, root, undefined, currentCoralStoreFormat().fingerprint);
       seedHistoricalEpoch(
         runtime,
         index,
@@ -741,15 +742,19 @@ describe('historical read dispositions', () => {
         f.runtime.paths.coral.exports.jobsRoot,
         f.runtime.storage,
       );
-      const seq = commitJobTerminal(f.store, f.jobId, 'session-1', {
+      commitJobTerminal(f.store, f.jobId, 1, {
         content: 'real outcome',
         outcome: { kind: 'completed' },
         durationMs: 1,
       });
-      const raw = f.db.prepare('SELECT body FROM events WHERE seq = ?').get(seq) as { body: Uint8Array };
+      const raw = f.db
+        .prepare("SELECT body FROM events WHERE type = 'job.execution.outcome.accepted' AND stream_id = ?")
+        .get(f.jobId) as { body: Uint8Array };
       const body = JSON.parse(Buffer.from(raw.body).toString('utf8'));
       body.terminal.outcome = { kind: 'future_kind' };
-      f.db.prepare('UPDATE events SET body = ? WHERE seq = ?').run(Buffer.from(JSON.stringify(body)), seq);
+      f.db
+        .prepare("UPDATE events SET body = ? WHERE type = 'job.execution.outcome.accepted' AND stream_id = ?")
+        .run(Buffer.from(JSON.stringify(body)), f.jobId);
       const addressing = new JobAddressing(
         f.index.readOnlyView(),
         {
@@ -792,7 +797,9 @@ it.each([
       f.runtime.paths.coral.exports.jobsRoot,
       f.runtime.storage,
     );
-    const index = scenario.startsWith('unregistered') ? new JobLocationIndex(f.runtime, f.root) : f.index;
+    const index = scenario.startsWith('unregistered')
+      ? new JobLocationIndex(f.runtime, f.root, undefined, currentCoralStoreFormat().fingerprint)
+      : f.index;
     if (scenario.endsWith(' absent')) rmSync(f.epoch.path);
     const identity =
       scenario === 'identity mismatch'
@@ -936,7 +943,7 @@ it('delivers a historical sibling terminal without its progress and settles dete
     db.close();
     const epoch = { storeRoot: join(root, 'db'), epoch: '7', path: join(epochDir, 'store.db') };
     const epochKey = readOrCreateEpochKey(runtime, epoch);
-    const index = new JobLocationIndex(runtime, root);
+    const index = new JobLocationIndex(runtime, root, undefined, currentCoralStoreFormat().fingerprint);
     seedHistoricalEpoch(runtime, index, epoch, epochKey, fingerprints[0], join(root, 'results'), runtime.storage);
     const addressing = new JobAddressing(
       index.readOnlyView(),
@@ -1026,7 +1033,7 @@ it('budgets seed writes, yields between epochs and resumes every hydration slice
   f.db.close();
   const epoch = { storeRoot: join(f.root, 'db'), epoch: '7', path: join(f.epochDir, 'store.db') };
   const key = encodeResolvedStoreEpoch(runtime, epoch);
-  const index = new JobLocationIndex(runtime, f.root);
+  const index = new JobLocationIndex(runtime, f.root, undefined, currentCoralStoreFormat().fingerprint);
   const register = vi.spyOn(index, 'register');
   const budget = { remaining: 16 };
   seedHistoricalEpoch(runtime, index, epoch, key, fingerprints[0], join(f.root, 'results'), storage, [], false, budget);
@@ -1055,7 +1062,12 @@ describe('released hold reconciliation uses its path', () => {
     lock.exec('CREATE TABLE IF NOT EXISTS m (id INTEGER)');
     lock.close();
     writeFileSync(join(epochDir, 'store.db'), '');
-    const index = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
+    const index = new JobLocationIndex(
+      runtime,
+      runtime.paths.coral.generation.dataRoot,
+      undefined,
+      currentCoralStoreFormat().fingerprint,
+    );
     // a hold exactly as v0.10.16/17 write it: { version, reason } at epochs/sha256(epochKey)/
     const historicalKey = JSON.stringify({
       storeRoot: dbDir,
@@ -1208,7 +1220,12 @@ describe('historical maintenance budgets and retirement', () => {
   }
 
   it('isolates unobservable epoch entries during registration', () => {
-    const index = new JobLocationIndex(runtime, join(fixture().root, 'state'));
+    const index = new JobLocationIndex(
+      runtime,
+      join(fixture().root, 'state'),
+      undefined,
+      currentCoralStoreFormat().fingerprint,
+    );
     const inaccessible = { storeRoot: '/inaccessible', epoch: '1', path: '/inaccessible/store.db' };
     const brokenRuntime = {
       ...runtime,
@@ -1240,7 +1257,7 @@ describe('historical maintenance budgets and retirement', () => {
     const epoch = { storeRoot: join(f.root, 'db'), epoch: '7', path: join(f.epochDir, 'store.db') };
     const key = encodeResolvedStoreEpoch(runtime, epoch);
     const state = join(f.root, 'state');
-    const index = new JobLocationIndex(runtime, state);
+    const index = new JobLocationIndex(runtime, state, undefined, currentCoralStoreFormat().fingerprint);
     expect(seedHistoricalEpoch(runtime, index, epoch, key, FP0, join(f.root, 'results'), storage, [], true).kind).toBe(
       'complete',
     );
@@ -1249,7 +1266,7 @@ describe('historical maintenance budgets and retirement', () => {
     await retryUnknownHistoricalEpochs(index, { remaining: 0 });
     await refreshHistoricalEpochs(index, { remaining: 0 });
     expect(index.unknownLocationHolds()).toEqual([]);
-    const restarted = new JobLocationIndex(runtime, state);
+    const restarted = new JobLocationIndex(runtime, state, undefined, currentCoralStoreFormat().fingerprint);
     restarted.reconcileUnknownLocationHolds([]);
     const addressing = new JobAddressing(
       restarted.readOnlyView(),
@@ -1323,7 +1340,12 @@ it.each(['malformed guard', 'symlink guard', 'malformed metadata'])(
       }
       const metadata = join(f.epochDir, 'epoch.json');
       if (fault === 'malformed metadata') writeFileSync(metadata, 'malformed');
-      const index = new JobLocationIndex(f.runtime, join(f.root, 'unregistered'));
+      const index = new JobLocationIndex(
+        f.runtime,
+        join(f.root, 'unregistered'),
+        undefined,
+        currentCoralStoreFormat().fingerprint,
+      );
       // The inventory rejects these epochs, so registration must still discover their present source and lineage.
       const entry = {
         resolved: null,
@@ -1359,7 +1381,7 @@ it('healthy source observations reset the consecutive failure allowance', async 
   db.close();
   const epoch = { storeRoot: join(root, 'db'), epoch: '7', path: join(epochDir, 'store.db') };
   const key = encodeResolvedStoreEpoch(runtime, epoch);
-  const index = new JobLocationIndex(runtime, join(root, 'state'));
+  const index = new JobLocationIndex(runtime, join(root, 'state'), undefined, currentCoralStoreFormat().fingerprint);
   expect(
     seedHistoricalEpoch(runtime, index, epoch, key, fingerprints[0], join(root, 'results'), storage, [], true).kind,
   ).toBe('complete');
@@ -1403,7 +1425,7 @@ it('an undecodable launch row cannot stop hydration of the subjects after it in 
     f.index.markUncertified(f.jobId);
     f.db
       .prepare(
-        "INSERT INTO events(seq, ts, type, stream_kind, stream_id, body) VALUES (0, ?, 'job.launch.requested', 'job', 'job-0', ?)",
+        "INSERT INTO events(seq, ts, type, stream_kind, stream_id, body) VALUES (0, ?, 'job.opened', 'job', 'job-0', ?)",
       )
       .run(new Date(TERMINAL_EXPORT_CUTOFF).toISOString(), Buffer.from('not json'));
     seedHistoricalEpoch(
@@ -1440,19 +1462,20 @@ describe('per-job failures stay per-job (F4)', () => {
     const f = createTerminalExportFixture('provider', true);
     try {
       initTestJob(f.store, {
-        jobId: 'sibling',
-        sessionId: 'sibling-session',
-        provider: 'claude',
+        jobId: '93000000-0000-4000-8003-000000000001',
         projectRoot: f.root,
         backendNamespace: 'fixture',
+        conversation: testConversationFacet('claude', f.root),
       });
-      rmSync(locationOf(f, 'sibling'));
+      rmSync(locationOf(f, '93000000-0000-4000-8003-000000000001'));
       writeFileSync(f.locationPath, '{bad json');
       expect(seedFixture(f).kind).not.toBe('unrecoverable-retained');
-      expect(f.index.read('sibling')).toMatchObject({ jobId: 'sibling' });
+      expect(f.index.read('93000000-0000-4000-8003-000000000001')).toMatchObject({
+        jobId: '93000000-0000-4000-8003-000000000001',
+      });
       expect(f.index.unknownLocationHolds()).toEqual([]);
-      const read = readHistoricalSource(f.index, f.epochKey, ['sibling'], {});
-      expect(read.kind === 'read' && read.dispositions.get('sibling')).toBe('readable');
+      const read = readHistoricalSource(f.index, f.epochKey, ['93000000-0000-4000-8003-000000000001'], {});
+      expect(read.kind === 'read' && read.dispositions.get('93000000-0000-4000-8003-000000000001')).toBe('readable');
     } finally {
       f.close();
     }
@@ -1460,7 +1483,7 @@ describe('per-job failures stay per-job (F4)', () => {
 });
 
 import * as liveTerminalSource from '#src/jobs/terminal/source.js';
-import * as liveTerminalExport from '#src/jobs/terminal/export.js';
+import * as liveTerminalExport from '#src/jobs/paths.js';
 import { initializeCustodyLedger } from '#src/store/custody-ledger.js';
 import { recordEpochCustodyCoverage } from '#src/store/epoch/closure.js';
 import { settleSupersededEpochClosures } from '#src/coordinator/services/recovery/epoch-closure.js';
@@ -1550,7 +1573,12 @@ describe('frozen released-format readers', () => {
           epochDir,
           initializeCustodyLedger(local, local.paths.coral.coordinator.runDir),
         );
-        const index = new JobLocationIndex(local, local.paths.coral.generation.dataRoot);
+        const index = new JobLocationIndex(
+          local,
+          local.paths.coral.generation.dataRoot,
+          undefined,
+          currentCoralStoreFormat().fingerprint,
+        );
         expect(
           seedHistoricalEpoch(local, index, epoch, epochKey, fingerprint, join(root, 'results'), storage, [], true),
         ).toMatchObject({ kind: 'complete', jobIds: ['failed'] });
@@ -1659,7 +1687,7 @@ describe('frozen released-format readers', () => {
       );
       db.close();
       const epoch = { storeRoot: join(root, 'db'), epoch: '7', path: join(epochDir, 'store.db') };
-      const index = new JobLocationIndex(runtime, root);
+      const index = new JobLocationIndex(runtime, root, undefined, currentCoralStoreFormat().fingerprint);
       const epochKey = encodeResolvedStoreEpoch(runtime, epoch);
       seedHistoricalEpoch(runtime, index, epoch, epochKey, fingerprint, join(root, 'results'), storage);
       expect(readFileSync(join(root, 'results', 'workflow', 'result.md'), 'utf8')).toBe(

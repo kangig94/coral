@@ -411,6 +411,7 @@ function createHostedKbAssembly(
     if (existing) return existing;
     const created = new KbJobRecorder({
       runtime,
+      executionFinisher: core.executionFinisher,
       progressStore: getProgressStore(),
       backendNamespace: world.namespace,
       bundleHash: identity.bundleHash,
@@ -438,13 +439,14 @@ function createHostedKbAssembly(
 
     const progressStore = getProgressStore();
     const status = progressStore.readStatus(jobId);
-    if (!status || !isLivePhase(status.phase)) {
+    if (!status || status.execution === null || status.backendNamespace === null || !isLivePhase(status.phase)) {
       return;
     }
 
     const detail = normalizeHostedKbFailureDetail(result.detail);
     getKbJobRecorder().appendHostedKbOperationFailure({
       jobId,
+      execution: status.execution,
       projectRoot: status.projectRoot,
       namespace: status.backendNamespace,
       operation,
@@ -468,7 +470,14 @@ function createHostedKbAssembly(
     disposeKbDaemonExitListener,
     disposeDaemonJobTerminalListeners,
     registerDaemonJobAbortProxy,
-  } = createKbDaemonJobTracking({ runtime, world, kbDaemonSupervisor, getProgressStore, internalJobAbortRegistry });
+  } = createKbDaemonJobTracking({
+    runtime,
+    world,
+    kbDaemonSupervisor,
+    getProgressStore,
+    internalJobAbortRegistry,
+    executionFinisher: core.executionFinisher,
+  });
   const daemonKbReadPort = createKbDaemonReadPort(kbDaemonSupervisorWithTrackedShutdown);
   const kbRpcPort = createKbDaemonMutationPort(
     daemonKbReadPort,
@@ -521,6 +530,8 @@ function assembleCoordinatorCoreResult(
     runtimeState,
     storeServicesRef,
     eventBus: world.eventBus,
+    holdsInternalExecution: (jobId, ordinal) =>
+      world.runningWorkflowJobs.has(jobId) || execution.internalJobAbortRegistry.has(jobId, ordinal),
     launchCoordinator: world.launchCoordinator,
     providerRegistry: world.providerRegistry,
     ...(world.systemProviderScope === undefined ? {} : { systemProviderScope: world.systemProviderScope }),
@@ -548,6 +559,7 @@ export function createCoordinatorCore(
     read: (boundary, subjectKey) => getRecoveryQuarantineStore().read(boundary, subjectKey),
     upsert: (write) => getRecoveryQuarantineStore().upsert(write),
     delete: (request) => getRecoveryQuarantineStore().delete(request),
+    releaseRetry: (request) => getRecoveryQuarantineStore().releaseRetry(request),
     claimRetry: (request) => getRecoveryQuarantineStore().claimRetry(request),
     reclaimRetry: (request) => getRecoveryQuarantineStore().reclaimRetry(request),
   };
@@ -566,6 +578,7 @@ export function createCoordinatorCore(
   const internalWaitRequests = new WeakMap<object, WaitStreamRequest>();
   const preparedExecution = prepareCoordinatorExecutionAssembly(core, options);
   const services = createExecutionServices({
+    executionFinisher: options.executionFinisher,
     world,
     runtime,
     getActiveEpochPath: () => core.state.selectedStoreEpochPath,

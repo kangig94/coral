@@ -4,7 +4,7 @@ import {
   readOwnDataProperty,
 } from '../../../infra/immutable-snapshot.js';
 import type { JobConversation } from '../../../jobs/conversation/entry.js';
-import { hydrateJobConversation } from '../../../jobs/conversation/projections.js';
+import { hydrateJobConversation } from '../../../jobs/conversation/read-queries.js';
 import type { BoundProvider } from '../../../providers/bound-provider-contract.js';
 import type { ProviderContinuityBlob } from '../../../jobs/conversation/continuity.js';
 import type {
@@ -91,6 +91,7 @@ function snapshotRecoverySession(
     `${label}.artifactHandles`,
   );
   const minimalArtifactHandles = artifactHandles.map((artifact, index) => ({
+    execution: readOwnDataProperty(artifact, 'execution', `${label}.artifactHandles[${index}]`),
     handle: readOwnDataProperty(artifact, 'handle', `${label}.artifactHandles[${index}]`),
     identity: readOwnDataProperty(artifact, 'identity', `${label}.artifactHandles[${index}]`),
     sourceJobId: readOwnDataProperty(artifact, 'sourceJobId', `${label}.artifactHandles[${index}]`),

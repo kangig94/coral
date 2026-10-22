@@ -1,3 +1,4 @@
+import { formatRecoveryQuarantineCommand } from './format/backend.js';
 import type { WaitExecutionSelection } from '../jobs/wait/execution-selection.js';
 import { waitCommandPaths } from '../coordinator/handoff-routing/wait-command.js';
 import { performance } from 'node:perf_hooks';
@@ -65,7 +66,12 @@ type ReconnectPolicy = 'bounded' | 'unbounded' | 'until-terminal';
 
 type FollowStart =
   | Readonly<{ kind: 'launch'; launchResult: AcceptedLaunchResponse }>
-  | Readonly<{ kind: 'jobs'; jobIds: readonly string[]; serializedCursor?: string; executionSelections?: WaitExecutionSelection[] }>;
+  | Readonly<{
+      kind: 'jobs';
+      jobIds: readonly string[];
+      serializedCursor?: string;
+      executionSelections?: WaitExecutionSelection[];
+    }>;
 
 // `unknown`, not `WaitStreamEvent`: the wire carries whatever the coordinator's build emits, which can be
 // a type this build predates. `followJobs` validates each item through `parseWaitStreamEventValue` before
@@ -125,7 +131,16 @@ function jobIdsFromStart(start: FollowStart): readonly string[] {
 }
 
 function initialExecutionSelections(start: FollowStart): WaitExecutionSelection[] {
-  return start.kind === 'jobs' ? start.executionSelections ?? [] : [{ jobId: start.launchResult.jobId, epochKey: start.launchResult.epochKey, requestedSeq: start.launchResult.requestedSeq, awaitingArtifact: false }];
+  return start.kind === 'jobs'
+    ? (start.executionSelections ?? [])
+    : [
+        {
+          jobId: start.launchResult.jobId,
+          epochKey: start.launchResult.epochKey,
+          requestedSeq: start.launchResult.requestedSeq,
+          awaitingArtifact: false,
+        },
+      ];
 }
 
 function initialSerializedCursor(start: FollowStart): string | undefined {
@@ -196,7 +211,10 @@ function formatFollowWaitEvent(
     case 'cursor':
       return '';
     case 'notice':
-      line = event.message;
+      line =
+        event.remedy?.kind === 'recovery-quarantine-list'
+          ? `${event.message}\n${formatRecoveryQuarantineCommand({ kind: 'list' })}`
+          : event.message;
       break;
     case 'disposition':
       line = `Job ${event.jobId}: ${event.disposition}${event.message ? ` — ${event.message}` : ''}`;
@@ -466,7 +484,10 @@ async function deliverFollowEvent(event: WaitStreamEvent, context: FollowContext
   state.remainingJobIds = eventRemainingJobs(event, state.remainingJobIds);
   const remaining = state.remainingJobIds;
   const savedContinuation = foldedContinuation(state);
-  const renderedEvent = event.type === 'waiting' || event.type === 'terminal' ? { ...event, executionSelections: state.executionSelections } : event;
+  const renderedEvent =
+    event.type === 'waiting' || event.type === 'terminal'
+      ? { ...event, executionSelections: state.executionSelections }
+      : event;
   const delivery = emitWaitEvent(
     renderedEvent,
     cursor,
@@ -525,7 +546,8 @@ async function applyFollowStreamEvent(
     state.carrierUnknownJobIds = state.carrierUnknownJobIds.filter((id) => id !== event.jobId);
     state.carrierAbsentJobIds.add(event.jobId);
   } else if (event.type === 'waiting') state.carrierUnknownJobIds = [...(event.carrierUnknownJobIds ?? [])];
-  if ('executionSelections' in event && event.executionSelections !== undefined) state.executionSelections = event.executionSelections;
+  if ('executionSelections' in event && event.executionSelections !== undefined)
+    state.executionSelections = event.executionSelections;
   if ('exitCode' in event && event.exitCode !== undefined) state.lastExitCode = event.exitCode;
   const decision = advanceWaitRenderCursor(state.currentCursor, event);
   state.currentCursor = decision.cursor;
@@ -565,7 +587,7 @@ async function followReadFailure(error: unknown, context: FollowContext): Promis
   options.invocation?.check();
   if (state.interrupted) return { kind: 'exit', code: finishInterruptedFollow(state) };
   if (error instanceof WaitOutputError) throw error;
-  const handledError = mapWaitSubscriptionError(error);
+  const handledError = mapWaitSubscriptionError(error, state.continuationMode);
   if (
     handledError instanceof BackendToolHttpError &&
     isRecord(handledError.body) &&
@@ -584,7 +606,13 @@ async function followReadFailure(error: unknown, context: FollowContext): Promis
   }
   if (state.retriesLeft === 0) {
     options.emitError(
-      new WaitResumeError(handledError.message, state.remainingJobIds, state.currentCursor, state.continuationMode, state.executionSelections),
+      new WaitResumeError(
+        handledError.message,
+        state.remainingJobIds,
+        state.currentCursor,
+        state.continuationMode,
+        state.executionSelections,
+      ),
     );
     return { kind: 'exit', code: errorCodeToExit('transient') };
   }
@@ -640,7 +668,9 @@ function prepareFollowOptions(options: FollowJobsOptions) {
           ...waitCommandPaths.current.split(' '),
           ...allJobIds,
           ...(rawCursor === undefined ? [] : ['--cursor', rawCursor]),
-          ...(options.start.kind === 'jobs' && options.start.executionSelections ? ['--execution-selection', JSON.stringify(options.start.executionSelections)] : []),
+          ...(options.start.kind === 'jobs' && options.start.executionSelections
+            ? ['--execution-selection', JSON.stringify(options.start.executionSelections)]
+            : []),
           ...(options.render.embed ? ['--embed'] : []),
           ...(options.render.verbose ? ['--verbose'] : []),
         ])
@@ -720,7 +750,12 @@ async function monitorFollowJobs(context: FollowContext): Promise<number> {
     if (connection.kind === 'subscription' && options.reconnectPolicy === 'bounded') {
       options.invocation?.saveContinuation(
         formatWaitWaiting(
-          { type: 'waiting', waitingJobIds: state.remainingJobIds, carrierUnknownJobIds: state.carrierUnknownJobIds, executionSelections: state.executionSelections },
+          {
+            type: 'waiting',
+            waitingJobIds: state.remainingJobIds,
+            carrierUnknownJobIds: state.carrierUnknownJobIds,
+            executionSelections: state.executionSelections,
+          },
           state.currentCursor ?? null,
         ) + '\n',
       );
@@ -785,7 +820,15 @@ export async function launchAndFollow(options: FollowOptions): Promise<number> {
       embed: false,
       verbose: false,
     },
-    connect: async ({ jobIds, cursor, executionSelections, timeoutSeconds, signal, drainProgress, onDelegatedChild }) => {
+    connect: async ({
+      jobIds,
+      cursor,
+      executionSelections,
+      timeoutSeconds,
+      signal,
+      drainProgress,
+      onDelegatedChild,
+    }) => {
       const probeStarted = performance.now();
       let backend;
       try {
@@ -796,7 +839,9 @@ export async function launchAndFollow(options: FollowOptions): Promise<number> {
           {
             kind: 'wait-jobs',
             jobId: options.launchResult.jobId,
-            serializedExecutionSelections: JSON.stringify(executionSelections),
+            ...(executionSelections.length === 0
+              ? {}
+              : { serializedExecutionSelections: JSON.stringify(executionSelections) }),
             ...(cursor === undefined ? {} : { serializedCursor: cursor }),
           },
           {
@@ -891,7 +936,7 @@ async function recoverFollowConnection(
   if (state.interrupted) {
     return { kind: 'exit', code: finishInterruptedFollow(state) };
   }
-  const handledError = mapWaitSubscriptionError(error);
+  const handledError = mapWaitSubscriptionError(error, state.continuationMode);
   if (
     handledError instanceof BackendToolHttpError &&
     isRecord(handledError.body) &&
@@ -917,7 +962,13 @@ async function recoverFollowConnection(
       handledError instanceof IpcRequestTimeout
     ) {
       options.emitError(
-        new WaitResumeError(handledError.message, state.remainingJobIds, state.currentCursor, state.continuationMode, state.executionSelections),
+        new WaitResumeError(
+          handledError.message,
+          state.remainingJobIds,
+          state.currentCursor,
+          state.continuationMode,
+          state.executionSelections,
+        ),
       );
       return { kind: 'exit', code: errorCodeToExit('transient') };
     }

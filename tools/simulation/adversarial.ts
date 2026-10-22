@@ -26,7 +26,6 @@ import { isTerminalPhase } from '../../src/jobs/phase.js';
 import type { JobEvent, JobRuntime, JobStatus, JobTerminal } from '../../src/jobs/records.js';
 import type { DurableCliRuntimeRecord, DurableProcessExit } from '../../src/runtime/durable-runtime.js';
 import type { JobConversation } from '../../src/jobs/conversation/entry.js';
-import { providerLookupPortFromCatalog } from '../../src/providers/catalog.js';
 import type { ShutdownReason } from '../../src/infra/shutdown-contract.js';
 
 const RESULT_FILE = 'result.md';
@@ -459,7 +458,7 @@ export class SimulationWorld {
     this.assertUsable();
     const row = this.current.backend.progressStore
       .getDb()
-      .prepare<[], { total: number }>(`SELECT COUNT(*) AS total FROM events WHERE type = 'job.terminal.recorded'`)
+      .prepare<[], { total: number }>(`SELECT COUNT(*) AS total FROM events WHERE type = 'job.execution.ended'`)
       .get();
     return row?.total ?? 0;
   }
@@ -475,10 +474,8 @@ export class SimulationWorld {
     return new ConversationManager(
       targetRoot,
       this.current.backend.runtime,
-      undefined,
-      () => {},
+      (cb) => this.current.backend.progressStore.commit(cb),
       this.current.backend.progressStore.getDb(),
-      providerLookupPortFromCatalog(this.current.backend.providerRegistry),
     ).list(provider);
   }
 

@@ -11,7 +11,7 @@ import type {
   ProviderSteeringPort,
 } from '../contract.js';
 import { providerRequestFailed, type ProviderFailureCause } from '../fault.js';
-import { sessionProviderFailureDiagnosticSchema, type SessionProviderFailureDiagnostic } from '../../jobs/conversation/fault.js';
+import { turnFailureDiagnosticSchema, type TurnFailureDiagnostic } from '../turn-failure-diagnostic.js';
 import { buildProviderFailureMessage } from '../app-server.js';
 import { streamProviderEvents } from '../stream.js';
 import { buildJobDiagnostics, buildJobTerminal } from '../terminal.js';
@@ -36,10 +36,7 @@ import { locateClaudeJsonlArtifactFromRuntime } from './artifacts.js';
 import { normalizeClaudeUsage } from './usage.js';
 import { compileClaudeControllerEnvironment, type ClaudeExecutionPlan } from './execution-plan.js';
 
-function buildClaudeSessionFailureCause(
-  message: string,
-  diagnostic?: SessionProviderFailureDiagnostic,
-): ProviderFailureCause {
+function buildClaudeSessionFailureCause(message: string, diagnostic?: TurnFailureDiagnostic): ProviderFailureCause {
   return providerRequestFailed({
     provider: 'claude',
     message,
@@ -63,7 +60,7 @@ type ClaudeTurnOutcome =
       message: string;
       content?: string;
       durationMs?: number;
-      diagnostic?: SessionProviderFailureDiagnostic;
+      diagnostic?: TurnFailureDiagnostic;
     }
   | { kind: 'aborted'; reason: 'signal_abort' };
 
@@ -543,7 +540,7 @@ function buildFailedTerminal(
   model: string | undefined,
   durationMs: number,
   message: string,
-  diagnostic?: SessionProviderFailureDiagnostic,
+  diagnostic?: TurnFailureDiagnostic,
   usage?: UsageSummary,
 ): ProviderTerminalEventBody {
   return {
@@ -696,10 +693,10 @@ function readErrors(value: unknown): string[] {
   return value.filter((entry): entry is string => typeof entry === 'string' && entry.length > 0);
 }
 
-function readTurnFailureDiagnostic(value: unknown): SessionProviderFailureDiagnostic | undefined {
+function readTurnFailureDiagnostic(value: unknown): TurnFailureDiagnostic | undefined {
   if (value === undefined) {
     return undefined;
   }
-  const parsed = sessionProviderFailureDiagnosticSchema.safeParse(value);
+  const parsed = turnFailureDiagnosticSchema.safeParse(value);
   return parsed.success ? parsed.data : undefined;
 }

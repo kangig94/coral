@@ -287,6 +287,27 @@ function buildOwnedJobReconciliationEvents(
   if (run.jobId !== undefined && run.jobId !== launch.jobId) {
     throw new Error(`Discussion agent '${agent}' is already bound to another job.`);
   }
+  const exit = ctx.jobStatusReader.readExit(launch.jobId, launch.execution);
+  if (exit !== null) {
+    if (run.currentJobId !== launch.jobId || run.currentExecution !== launch.execution) return [];
+    return [
+      makeEvent(
+        snapshot.sessionId,
+        snapshot.projectRoot,
+        snapshot.state.topic,
+        snapshot.lastAppliedSeq + 1,
+        'agent.job.finished',
+        nowIsoString(ctx.runtime.time),
+        {
+          agent,
+          jobId: launch.jobId,
+          execution: launch.execution,
+          attempt,
+          outcome: exit.outcome.kind === 'completed' ? 'completed' : 'recovery_failed',
+        },
+      ),
+    ];
+  }
   if (
     run.currentJobId !== undefined &&
     (run.currentJobId !== launch.jobId || run.currentExecution !== launch.execution)
@@ -342,7 +363,11 @@ export async function reconcileDiscussionOwnedJobs(
   );
 
   for (const { launch } of owned) {
-    if (started.has(`${launch.jobId}:${launch.execution}`)) continue;
+    if (
+      started.has(`${launch.jobId}:${launch.execution}`) &&
+      ctx.jobStatusReader.readExit(launch.jobId, launch.execution) === null
+    )
+      continue;
     const reconciled = await appendRuntimeEvents(ctx, sessionId, (current) =>
       buildOwnedJobReconciliationEvents(current, launch, ctx),
     );
@@ -372,7 +397,11 @@ async function reconcileDiscussionOwnedJobsFromEnvelope(
   const resultRefs: string[] = [];
 
   for (const launch of owned) {
-    if (started.has(`${launch.jobId}:${launch.execution}`)) continue;
+    if (
+      started.has(`${launch.jobId}:${launch.execution}`) &&
+      ctx.jobStatusReader.readExit(launch.jobId, launch.execution) === null
+    )
+      continue;
     const events = buildOwnedJobReconciliationEvents(candidate.snapshot, launch, ctx);
     if (events.length > 0) {
       candidate.snapshot = await ctx.store.append(

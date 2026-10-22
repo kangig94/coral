@@ -50,7 +50,7 @@ describe('discussion-owned job linkage invariants', () => {
     const f = fixture();
     const empty = executionHarness(discussRegistry);
     try {
-      const created = f.events()[0]!;
+      const created = f.events()[0];
       expect(() =>
         empty.append(
           toJournalInput(created),
@@ -160,4 +160,15 @@ describe('discussion-owned job linkage invariants', () => {
     });
     expect(f.snapshot()).toEqual(before);
   });
+});
+
+it('admits a later turn when the predecessor start observation was never committed', () => {
+  const f = fixture();
+  f.request(jobId, descriptor);
+  bind(f);
+  f.complete(jobId, 1);
+  const second = { ...descriptor, attempt: 2 };
+  f.request(jobId, second);
+  expect(() => f.append('agent.job.started', { ...second, jobId, execution: 2 })).not.toThrow();
+  expect(f.snapshot().runtime.agentRuns.alpha.currentExecution).toBe(2);
 });

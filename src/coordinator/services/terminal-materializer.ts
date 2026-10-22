@@ -13,14 +13,13 @@ import {
 } from '../../jobs/terminal/recording.js';
 import type {
   SessionAdapterUnparseableFault,
-  SessionInterruptedFault,
+  ConversationInterruptedFault,
   SessionProviderFailedFault,
 } from '../../jobs/conversation/fault.js';
 
 export interface RuntimeIngestOptions {
   readonly jobId: string;
   readonly execution: number;
-  readonly conversationJobId?: string | null;
   readonly namespace?: string;
   readonly project?: string;
   readonly correlationId?: string;
@@ -31,7 +30,7 @@ export interface RuntimeIngestOptions {
 
 type RuntimeIngestDomainBody =
   | JobProgressFault
-  | SessionInterruptedFault
+  | ConversationInterruptedFault
   | SessionProviderFailedFault
   | SessionAdapterUnparseableFault;
 
@@ -63,7 +62,7 @@ type JobRecoveryFault = JobLifecycleFault | JobProgressFault;
 function baseRefs(options: RuntimeIngestOptions): NonNullable<CoralEventInput['refs']> {
   return {
     jobId: options.jobId,
-        ...(options.parentJobId ? { parentJobId: options.parentJobId } : {}),
+    ...(options.parentJobId ? { parentJobId: options.parentJobId } : {}),
     ...(options.workflowId ? { workflowId: options.workflowId } : {}),
     ...(options.workflowSlotId ? { workflowSlotId: options.workflowSlotId } : {}),
   };
@@ -111,7 +110,10 @@ function planJobRecoveryFault(fault: JobRecoveryFault, options: RuntimeIngestOpt
   }
 }
 
-function planSessionInterrupted(fault: SessionInterruptedFault, options: RuntimeIngestOptions): RuntimeIngestPlan {
+function planConversationInterrupted(
+  fault: ConversationInterruptedFault,
+  options: RuntimeIngestOptions,
+): RuntimeIngestPlan {
   return planFailed(baseEvent(options, { kind: 'job', id: options.jobId }, 'job.interrupted', fault));
 }
 
@@ -323,9 +325,9 @@ function appendTerminalWithOutcomePlan<Scope>(
   );
 }
 
-export function appendSessionInterruptedTerminalInCommit<Scope>(
+export function appendConversationInterruptedTerminalInCommit<Scope>(
   c: CommitContext<Scope>,
-  fault: SessionInterruptedFault,
+  fault: ConversationInterruptedFault,
   options: RuntimeIngestOptions,
   record: {
     readonly content: string;
@@ -333,7 +335,7 @@ export function appendSessionInterruptedTerminalInCommit<Scope>(
     readonly diagnostics?: JobTerminalDiagnostics;
   },
 ): void {
-  appendTerminalWithOutcomePlan(c, planSessionInterrupted(fault, options), options, record);
+  appendTerminalWithOutcomePlan(c, planConversationInterrupted(fault, options), options, record);
 }
 
 export function appendJobRecoveryFaultTerminalInCommit<Scope>(

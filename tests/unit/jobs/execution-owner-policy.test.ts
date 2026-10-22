@@ -9,7 +9,6 @@ import {
   EXECUTION_JOB_ID as jobId,
   OTHER_EXECUTION_JOB_ID as otherJobId,
   executionHarness,
-  executionInput as input,
   openedJob,
   requestedExecution,
 } from '#tests/helpers/job-executions.js';
@@ -159,8 +158,8 @@ describe('execution continuation owner policy', () => {
       first(h, owner);
       const snapshot = readProjectionDiscuss(h.db, discussionId)!.state;
       if (reason === 'closed') snapshot.state.status = 'ended';
-      else snapshot.runtime.agentRuns.alpha!.jobId = reason === 'unbound' ? undefined : otherJobId;
-      if (reason === 'other-agent') snapshot.runtime.agentRuns.beta = { ...snapshot.runtime.agentRuns.alpha!, jobId };
+      else snapshot.runtime.agentRuns.alpha.jobId = reason === 'unbound' ? undefined : otherJobId;
+      if (reason === 'other-agent') snapshot.runtime.agentRuns.beta = { ...snapshot.runtime.agentRuns.alpha, jobId };
       h.db
         .prepare('UPDATE projection_discuss SET state = ? WHERE discuss_id = ?')
         .run(JSON.stringify(snapshot), discussionId);
@@ -195,7 +194,15 @@ describe('execution continuation owner policy', () => {
   it('never admits system-task #2, including a request with a jobs send message identity', () => {
     const h = harness();
     const owner = { kind: 'system-task', id: 'system' } as const;
-    first(h, owner);
+    h.append(
+      {
+        type: 'job.opened',
+        stream: { kind: 'job', id: jobId },
+        body: { jobKind: 'kb', owner, projectRoot: '/workspace', createdAt: '2026-10-22T00:00:00.000Z' },
+      },
+      requestedExecution(1, { input: { operation: 'kb.reindex', request: {} } }),
+    );
+    h.complete();
     expect(() => h.append(next(owner))).toThrowError(
       expect.objectContaining({ code: 'job_execution_order_violation' }),
     );

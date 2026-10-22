@@ -152,7 +152,7 @@ it('settles an aborted job after real proxy control loss and confirmed containme
     await harness.reconciler.reconcile(pending, authority);
     expect(readProviderOperation(harness.db, operation)?.lastError?.code).toBe('control_client_closed');
     expect(readProviderOperationsDue(harness.db, Number.MAX_SAFE_INTEGER, 10)).toHaveLength(1);
-    expect(harness.appended).not.toContainEqual(expect.objectContaining({ type: 'job.terminal.recorded' }));
+    expect(harness.appended).not.toContainEqual(expect.objectContaining({ type: 'job.execution.outcome.accepted' }));
     await harness.reconciler.containmentDisappeared({
       operation,
       setIdentity: authority.setIdentity,
@@ -162,7 +162,7 @@ it('settles an aborted job after real proxy control loss and confirmed containme
     expect(readProviderOperationsDue(harness.db, Number.MAX_SAFE_INTEGER, 10)).toEqual([]);
     expect(harness.appended).toContainEqual(
       expect.objectContaining({
-        type: 'job.terminal.recorded',
+        type: 'job.execution.outcome.accepted',
         body: expect.objectContaining({
           terminal: expect.objectContaining({ outcome: { kind: 'aborted', reason: 'signal_abort' } }),
         }),

@@ -124,7 +124,7 @@ const PREPARED: ProxyPreparedAppServerOperation = {
   binding: { provider: 'claude', kind: 'account', binding: {} },
   request: {
     action: 'exec',
-    sessionId: 'session-1',
+    jobId: 'session-1',
     prompt: 'hi',
     cwd: fixtureCanonicalWorkDir('/tmp'),
     bypassPermissions: false,
@@ -468,7 +468,7 @@ const CONTINUITY_PREPARED: ProxyPreparedAppServerOperation = {
   binding: { provider: 'codex', kind: 'account', binding: {} },
   request: {
     action: 'exec',
-    sessionId: 'session-1',
+    jobId: 'session-1',
     prompt: 'hi',
     cwd: fixtureCanonicalWorkDir('/tmp'),
     bypassPermissions: false,

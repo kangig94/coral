@@ -381,7 +381,6 @@ async function executeStep(
         const detail = {
           decision,
           jobId: decision.jobId,
-          sessionId: decision.sessionId,
         };
         cursor.currentJobId = decision.jobId;
         cursor.launchedJobIds.add(decision.jobId);

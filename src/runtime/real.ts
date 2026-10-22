@@ -404,11 +404,19 @@ function createRealStoragePort(platform: NodeJS.Platform): StoragePort {
           linked = true;
         } catch (error: unknown) {
           if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-          try { unlinkSync(stage); } catch { /* Finishing owns the deterministic stage. */ }
+          try {
+            unlinkSync(stage);
+          } catch {
+            // An existing destination must stay usable when private-stage cleanup fails.
+          }
           return { kind: 'exists' };
         }
         const parent = openSync(dirname(destination), 'r');
-        try { fsyncSync(parent); } finally { closeSync(parent); }
+        try {
+          fsyncSync(parent);
+        } finally {
+          closeSync(parent);
+        }
         unlinkSync(stage);
         return { kind: 'published' };
       } catch (error: unknown) {

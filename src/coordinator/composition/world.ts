@@ -594,7 +594,11 @@ export function createCoordinatorWorld(
         if (services === null) return null;
         const status = services.progressStore.readStatus(jobId);
         if (status === null || typeof status.execution !== 'number' || isTerminalPhase(status.phase)) return null;
-        const origin = readJobLaunchOriginNamespace(services.progressStore.getDb(), jobId, createDefaultStoreReadContext());
+        const origin = readJobLaunchOriginNamespace(
+          services.progressStore.getDb(),
+          jobId,
+          createDefaultStoreReadContext(),
+        );
         return origin === null ? null : { namespace: origin, execution: status.execution };
       },
       log,

@@ -29,9 +29,13 @@ async function recoverSessions(harness: DiscussHarness): Promise<void> {
 
 describe('Discuss speech collection', () => {
   it('records a successful speech and emits a derived speech_done watch event', async () => {
-    const start = vi
-      .fn()
-      .mockResolvedValue({ kind: 'provider-session', status: 'running', jobId: 'job-1', sessionId: 'exec-alpha' });
+    const start = vi.fn().mockResolvedValue({
+      kind: 'provider-session',
+      status: 'running',
+      jobId: 'f10f3e57-0d04-53df-b4c3-3bcf75a1222d',
+      requestedSeq: 1,
+      epochKey: 'test-epoch',
+    });
     const waitStreamOnce = vi.fn().mockResolvedValue({
       content: 'Pedestrianization should start with the transit-heavy core and freight exemptions.',
       continuity: null,
@@ -97,12 +101,20 @@ describe('Discuss speech collection', () => {
   });
 
   it('retries an empty speech once and persists only the accepted content', async () => {
-    const start = vi
-      .fn()
-      .mockResolvedValue({ kind: 'provider-session', status: 'running', jobId: 'job-1', sessionId: 'exec-alpha' });
-    const resume = vi
-      .fn()
-      .mockResolvedValue({ kind: 'provider-session', status: 'running', jobId: 'job-2', sessionId: 'exec-alpha' });
+    const start = vi.fn().mockResolvedValue({
+      kind: 'provider-session',
+      status: 'running',
+      jobId: 'f10f3e57-0d04-53df-b4c3-3bcf75a1222d',
+      requestedSeq: 1,
+      epochKey: 'test-epoch',
+    });
+    const resume = vi.fn().mockResolvedValue({
+      kind: 'provider-session',
+      status: 'running',
+      jobId: 'f10f3e57-0d04-53df-b4c3-3bcf75a1222d',
+      requestedSeq: 1,
+      epochKey: 'test-epoch',
+    });
     const waitStreamOnce = vi
       .fn()
       .mockResolvedValueOnce({
@@ -165,7 +177,7 @@ describe('Discuss speech collection', () => {
     expect(resume).toHaveBeenCalledWith(
       'codex',
       expect.objectContaining({
-        sessionId: 'exec-alpha',
+        jobId: 'f10f3e57-0d04-53df-b4c3-3bcf75a1222d',
         pool: 'discuss',
         owner: { kind: 'discussion', id: 'discuss-empty-retry' },
       }),
@@ -187,8 +199,9 @@ describe('Discuss speech collection', () => {
     const resume = vi.fn().mockResolvedValue({
       kind: 'provider-session',
       status: 'running',
-      jobId: 'job-2',
-      sessionId: 'exec-alpha',
+      jobId: 'f10f3e57-0d04-53df-b4c3-3bcf75a1222d',
+      requestedSeq: 1,
+      epochKey: 'test-epoch',
     });
     const waitStreamOnce = vi.fn().mockResolvedValue({
       content: 'Start with the transit-heavy core.',
@@ -239,7 +252,7 @@ describe('Discuss speech collection', () => {
           snapshot.lastAppliedSeq + 4,
           'agent.run.bound',
           '2026-03-10T00:01:03.000Z',
-          { agent: 'alpha', executionSessionId: 'exec-alpha' },
+          { agent: 'alpha', jobId: 'f10f3e57-0d04-53df-b4c3-3bcf75a1222d' },
         ),
         makeEvent(
           snapshot.sessionId,
@@ -248,7 +261,13 @@ describe('Discuss speech collection', () => {
           snapshot.lastAppliedSeq + 5,
           'agent.job.started',
           '2026-03-10T00:01:04.000Z',
-          { agent: 'alpha', jobId: 'job-1', purpose: 'speech', attempt: 1 },
+          {
+            agent: 'alpha',
+            jobId: 'f10f3e57-0d04-53df-b4c3-3bcf75a1222d',
+            execution: 1,
+            purpose: 'speech',
+            attempt: 1,
+          },
         ),
       ],
     });
@@ -265,7 +284,7 @@ describe('Discuss speech collection', () => {
     expect(resume).toHaveBeenCalledWith(
       'codex',
       expect.objectContaining({
-        sessionId: 'exec-alpha',
+        jobId: 'f10f3e57-0d04-53df-b4c3-3bcf75a1222d',
         pool: 'discuss',
         owner: { kind: 'discussion', id: 'discuss-1' },
       }),

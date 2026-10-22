@@ -133,7 +133,10 @@ describe('ChildPrincipalRegistry', () => {
   it('denies a child after its parent job becomes terminal', () => {
     const db = childCredentialDatabase();
     let origin: string | null = 'ns-a';
-    const registry = testChildPrincipalRegistry(ids(), { db, openJobExecution: () => origin === null ? null : { namespace: origin, execution: 1 } });
+    const registry = testChildPrincipalRegistry(ids(), {
+      db,
+      openJobExecution: () => (origin === null ? null : { namespace: origin, execution: 1 }),
+    });
     const credential = register(registry, testPrincipal());
     expect(authenticated(registry, credential)).not.toBeNull();
     origin = null;
@@ -145,23 +148,23 @@ describe('ChildPrincipalRegistry', () => {
     const credential = register(registry, testPrincipal());
     const challenge = registry.issueChallenge();
 
-    for (const claim of [{ jobId: 'job-b' }]) {
-      expect(registry.authenticate(prove(credential, challenge, REQUEST, claim), challenge, REQUEST, 1_001)).toEqual({
-        kind: 'refused',
-      });
-    }
+    expect(
+      registry.authenticate(prove(credential, challenge, REQUEST, { jobId: 'job-b' }), challenge, REQUEST, 1_001),
+    ).toEqual({ kind: 'refused' });
   });
 
   it('should refuse an expired credential, a revoked job, and a job no longer active', () => {
     let active = true;
-    const registry = testChildPrincipalRegistry(ids(), { openJobExecution: () => active ? { namespace: 'ns-a', execution: 1 } : null });
+    const registry = testChildPrincipalRegistry(ids(), {
+      openJobExecution: () => (active ? { namespace: 'ns-a', execution: 1 } : null),
+    });
     const parent = testPrincipal();
     const expiring = register(registry, parent, { jobId: 'job-expiring', ttlMs: 10 });
     const revokedJob = register(registry, parent, { jobId: 'job-terminal' });
     const settled = register(registry, parent, { jobId: 'job-settled' });
 
     expect(authenticated(registry, expiring, 1_010)).toBeNull();
-    registry.revokeParentJob('job-terminal');
+    registry.revokeParentJob('job-terminal', 1);
     expect(authenticated(registry, revokedJob)).toBeNull();
     expect(authenticated(registry, settled)).not.toBeNull();
     active = false;
@@ -172,17 +175,21 @@ describe('ChildPrincipalRegistry', () => {
     const db = childCredentialDatabase();
     const durable = createStoreChildPrincipalCredentials(() => db);
     let execution: number | null = 1;
-    const registry = new ChildPrincipalRegistry(ids(), {
-      ...durable,
-      deleteWhere: () => undefined,
-    }, {
-      namespace: 'ns-a',
-      openJobExecution: () => execution === null ? null : { namespace: 'ns-a', execution },
-    });
+    const registry = new ChildPrincipalRegistry(
+      ids(),
+      {
+        ...durable,
+        deleteWhere: () => undefined,
+      },
+      {
+        namespace: 'ns-a',
+        openJobExecution: () => (execution === null ? null : { namespace: 'ns-a', execution }),
+      },
+    );
     const oldChild = register(registry, testPrincipal(), { execution: 1 });
     expect(authenticated(registry, oldChild)).not.toBeNull();
     execution = null;
-    registry.revokeParentJob(oldChild.parentJobId);
+    registry.revokeParentJob(oldChild.parentJobId, 1);
     expect(durable.read(oldChild.credentialId).kind).toBe('valid');
     expect(authenticated(registry, oldChild)).toBeNull();
 
@@ -192,7 +199,7 @@ describe('ChildPrincipalRegistry', () => {
     expect(authenticated(registry, newChild)).not.toBeNull();
     expect(durable.read(oldChild.credentialId).kind).toBe('valid');
 
-    const successor = new ChildPrincipalRegistry({ randomBytes: length => Buffer.alloc(length, 73) }, durable, {
+    const successor = new ChildPrincipalRegistry({ randomBytes: (length) => Buffer.alloc(length, 73) }, durable, {
       namespace: 'ns-successor',
       openJobExecution: () => ({ namespace: 'ns-a', execution: 2 }),
     });
@@ -216,7 +223,11 @@ describe('ChildPrincipalRegistry', () => {
     const booted = new ChildPrincipalRegistry(
       { randomBytes: (length) => Buffer.alloc(length, 42) },
       createStoreChildPrincipalCredentials(() => db),
-      { namespace: 'ns-a', openJobExecution: () => ({ namespace: 'ns-a', execution: 1 }), log: (message) => logged.push(message) },
+      {
+        namespace: 'ns-a',
+        openJobExecution: () => ({ namespace: 'ns-a', execution: 1 }),
+        log: (message) => logged.push(message),
+      },
     );
     const challenge = booted.issueChallenge();
 

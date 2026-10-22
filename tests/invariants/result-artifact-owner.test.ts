@@ -10,7 +10,13 @@ import {
 
 const root = resolve('.');
 const files = listProductionSourceFiles(resolve(root, 'src'));
-const owner = 'src/jobs/terminal/export.ts';
+const publicationOwners = new Set([
+  'src/jobs/terminal/export.ts',
+  'src/jobs/terminal/artifact.ts',
+  'src/jobs/historical-reader.ts',
+  'src/jobs/retained-current.ts',
+]);
+const pathOwners = new Set(['src/jobs/paths.ts', 'src/jobs/historical-reader.ts']);
 const parsed = new Map<string, ts.SourceFile>();
 beforeAll(() => {
   for (const path of files)
@@ -20,12 +26,12 @@ beforeAll(() => {
 it('gives only the jobs terminal export owner access to result.md publication', () => {
   const violations: string[] = [];
   for (const path of files) {
-    if (relative(root, path) === owner) continue;
+    const name = relative(root, path);
     const source = parsed.get(path)!;
     const visit = (node: ts.Node): void => {
       if (
-        (ts.isIdentifier(node) && node.text === 'writeResultArtifact') ||
-        (ts.isStringLiteralLike(node) && node.text === 'result.md')
+        (ts.isIdentifier(node) && node.text === 'writeResultArtifact' && !publicationOwners.has(name)) ||
+        (ts.isStringLiteralLike(node) && node.text === 'result.md' && !pathOwners.has(name))
       )
         violations.push(relative(root, path));
       ts.forEachChild(node, visit);

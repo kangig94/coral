@@ -1,4 +1,7 @@
-import { committedExecutionRequest } from '../wait/execution-detail.js';
+import { EXECUTION_RETRY_MS } from '../finishing.js';
+import { raceWithSignal } from '../../infra/promise-signal.js';
+import { executionKey } from '../execution-address.js';
+import { committedExecutionRequest } from '../execution-journal.js';
 import { localProviderHostRoot } from '../../infra/bundle-manifest.js';
 import {
   bindProviderRunner,
@@ -58,10 +61,18 @@ import { nowIsoString } from '../../infra/time.js';
 import { backendLog } from '../../infra/backend-log.js';
 import { type ProviderJobLaunchDecision, refuseLaunch } from '../launch.js';
 import { isTerminalPhase, type JobPhase } from '../phase.js';
-import type { JobLaunch, JobTerminalInput } from '../records.js';
-import { hasUnterminalRetentionDiscardRequest, type RetentionPolicy, type JobConversation } from '../conversation/entry.js';
+import type { JobLaunch, JobTerminal } from '../records.js';
+import {
+  hasUnterminalRetentionDiscardRequest,
+  type RetentionPolicy,
+  type JobConversation,
+} from '../conversation/entry.js';
 import { collectArtifactHandles } from '../conversation/artifact-discard.js';
-import { publishConversationRestore, verifyConversationRestore, type ConversationRestoreVerification } from '../conversation/provider-artifact-archive.js';
+import {
+  publishConversationRestore,
+  verifyConversationRestore,
+  type ConversationRestoreVerification,
+} from '../conversation/provider-artifact-archive.js';
 import { withJobArtifactGuard } from '../conversation/artifact-guard.js';
 import { hasProviderOperationForJob } from '../../store/provider-operation-journal.js';
 import { decodeEventBody } from '../../store/body-codec.js';
@@ -234,9 +245,8 @@ type ProviderLaunchOptions = {
   protectedEnv?: Record<string, string>;
   owner?: ExecutionOwner;
   discussionRun?: DiscussionRunDescriptor;
+  originatingClientMessageId?: string;
 };
-
-function executionKey(jobId: string, execution: number): string { return `${jobId}:${execution}`; }
 
 export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
   // Tracks every admitted app-server job before its first asynchronous
@@ -259,7 +269,10 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
   }
 
   holdsLocalAppServerExecution(jobId: string, execution: number): boolean {
-    return this.localAppServerExecutions.has(executionKey(jobId, execution)) && !this.quiescedAppServerJobs.has(executionKey(jobId, execution));
+    return (
+      this.localAppServerExecutions.has(executionKey(jobId, execution)) &&
+      !this.quiescedAppServerJobs.has(executionKey(jobId, execution))
+    );
   }
 
   releaseProviderOperationLocalState(identity: ProviderOperationCleanupIdentity): boolean {
@@ -323,7 +336,12 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
     return true;
   }
 
-  private registerAppServerJob(provider: BoundProvider, jobId: string, execution: number, jobSignal: AbortSignal): AbortSignal {
+  private registerAppServerJob(
+    provider: BoundProvider,
+    jobId: string,
+    execution: number,
+    jobSignal: AbortSignal,
+  ): AbortSignal {
     if (provider.appServer === undefined) return jobSignal;
     this.appServerJobs.add(executionKey(jobId, execution));
     const handoffAbort = new AbortController();
@@ -355,7 +373,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
 
   private appendJobEvent(
     jobId: string,
-    conversationJobId: string,
+    execution: number,
     type: CoralEventInput['type'],
     body: LauncherJobEventBody,
     options: {
@@ -377,25 +395,19 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
           parentJobId: options.parentJobId,
           workflowSlotId: options.workflowSlotId,
         }),
-        body: { ...body, execution: this.requireExecution(jobId) },
+        body: { ...body, execution },
       });
       return undefined;
     });
   }
 
-  private appendProgressEvent(jobId: string, conversationJobId: string, message: string): void {
-    this.deps.progressStore.appendProgress(jobId, conversationJobId, message);
-  }
-
-  private requireExecution(jobId: string): number {
-    const status = this.deps.progressStore.readStatus(jobId);
-    if (status === null || status.execution === null) throw new Error(`Job '${jobId}' has no execution to accept an outcome for.`);
-    return status.execution;
+  private appendProgressEvent(jobId: string, message: string): void {
+    this.deps.progressStore.appendProgress(jobId, message);
   }
 
   private async appendLaunchRejectedTerminal(
     jobId: string,
-    conversationJobId: string,
+    execution: number,
     body: JobLaunchRejected,
     options: {
       parentJobId?: string;
@@ -405,7 +417,6 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
   ): Promise<void> {
     const metadata = this.resolveEventMetadata(jobId, options.projectRoot);
     const workflowId = options.parentJobId;
-    const execution = this.requireExecution(jobId);
     await this.deps.executionFinisher.accept({ jobId, execution }, (c) => {
       const cause = c.append({
         type: 'job.provider_failed',
@@ -449,10 +460,60 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
       mintProtectedEnv: (jobId: string, execution: number) => ProviderOperationEnvironmentInput;
     },
   ): Promise<ProviderJobLaunchDecision> {
-    if (this.launching.has(conversation.jobId)) return refuseLaunch('execution_finishing', 'Another execution admission is in progress. Wait for it to finish.');
+    if (this.launching.has(conversation.jobId))
+      return refuseLaunch(
+        'execution_admission_in_flight',
+        'Another execution admission is in progress. Wait for its decision.',
+      );
     this.launching.add(conversation.jobId);
-    try { return await this.launchVerifiedExecution(provider, conversation, request, opts); }
-    finally { this.launching.delete(conversation.jobId); }
+    try {
+      let current = conversation;
+      for (let attempt = 0; current.execution > 0; attempt++) {
+        const prior = { jobId: current.jobId, execution: current.execution };
+        const blocked =
+          current.open ||
+          hasUnterminalRetentionDiscardRequest(current) ||
+          this.runTasks.has(executionKey(prior.jobId, prior.execution)) ||
+          this.deps.launchAdmission.reservationFor(prior.jobId) !== null ||
+          hasProviderOperationForJob(this.deps.progressStore.getDb(), prior.jobId);
+        if (!blocked) break;
+        if (current.open && !current.finishing)
+          return refuseLaunch(
+            'session_busy',
+            `Execution #${prior.execution} of ${prior.jobId} is running. Run coral-cli jobs wait ${prior.jobId} before continuing.`,
+          );
+        if (attempt >= 10 || this.deps.executionFinisher.status(prior)?.kind === 'blocked')
+          return refuseLaunch(
+            'execution_finishing',
+            `Execution #${prior.execution} of ${prior.jobId} is finishing; successor=execution finalizer. Run coral-cli jobs wait ${prior.jobId} before continuing.`,
+          );
+        const stopped = await raceWithSignal(
+          this.deps.runtime.time
+            .sleep(EXECUTION_RETRY_MS, { signal: this.deps.executionFinisher.signal })
+            .then(() => false),
+          this.deps.executionFinisher.signal,
+          () => true,
+        ).catch((error: unknown) => {
+          if (this.deps.executionFinisher.signal.aborted) return true;
+          throw error;
+        });
+        if (stopped)
+          return refuseLaunch(
+            'execution_finishing',
+            `Execution #${prior.execution} of ${prior.jobId} is finishing during shutdown. Run coral-cli jobs wait ${prior.jobId} before continuing.`,
+          );
+        const refreshed = this.deps.conversationManager.readById(current.jobId);
+        if (refreshed === null || refreshed.execution !== conversation.execution)
+          return refuseLaunch(
+            'execution_superseded',
+            `The execution changed while awaiting finishing of ${current.jobId}.`,
+          );
+        current = refreshed;
+      }
+      return await this.launchVerifiedExecution(provider, current, request, opts);
+    } finally {
+      this.launching.delete(conversation.jobId);
+    }
   }
 
   private async launchVerifiedExecution(
@@ -467,34 +528,61 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
     const jobId = conversation.jobId;
     const execution = conversation.execution + 1;
     if (this.runTasks.has(executionKey(jobId, conversation.execution)))
-      return refuseLaunch('execution_finishing', `Execution #${conversation.execution} of ${jobId} is still completing cleanup. Wait for it to finish.`);
+      return refuseLaunch(
+        'execution_finishing',
+        `Execution #${conversation.execution} of ${jobId} is still completing cleanup; successor=execution finalizer. Run coral-cli jobs wait ${jobId} before continuing.`,
+      );
     let verification: ConversationRestoreVerification | null = null;
     if (conversation.execution > 0) {
-      const end = this.deps.progressStore.getDb().prepare<[string], EventsRow>(
-        "SELECT * FROM events WHERE stream_kind = 'job' AND stream_id = ? AND type = 'job.execution.ended' ORDER BY seq DESC LIMIT 1",
-      ).get(jobId);
-      if (conversation.open || hasUnterminalRetentionDiscardRequest(conversation) ||
-          this.deps.launchAdmission.reservationFor(jobId) !== null ||
-          hasProviderOperationForJob(this.deps.progressStore.getDb(), jobId) ||
-          end === undefined || jobExecutionEndedBodySchema.parse(decodeEventBody(end.body)).execution !== conversation.execution) {
-        return refuseLaunch('execution_finishing', `Execution #${conversation.execution} of ${jobId} has not completed finishing. Wait for it to finish.`);
+      const end = this.deps.progressStore
+        .getDb()
+        .prepare<
+          [string],
+          EventsRow
+        >("SELECT * FROM events WHERE stream_kind = 'job' AND stream_id = ? AND type = 'job.execution.ended' ORDER BY seq DESC LIMIT 1")
+        .get(jobId);
+      if (
+        conversation.open ||
+        hasUnterminalRetentionDiscardRequest(conversation) ||
+        this.deps.launchAdmission.reservationFor(jobId) !== null ||
+        hasProviderOperationForJob(this.deps.progressStore.getDb(), jobId) ||
+        end === undefined ||
+        jobExecutionEndedBodySchema.parse(decodeEventBody(end.body)).execution !== conversation.execution
+      ) {
+        return refuseLaunch(
+          'execution_finishing',
+          `Execution #${conversation.execution} of ${jobId} has not completed finishing; successor=execution finalizer. Run coral-cli jobs wait ${jobId} before continuing.`,
+        );
       }
       const identity = provider.compareIdentity(conversation.binding);
-      if (!identity.ok) return refuseLaunch('profile_mismatch', 'Continue with the conversation\'s original provider profile.');
+      if (!identity.ok)
+        return refuseLaunch('profile_mismatch', "Continue with the conversation's original provider profile.");
       if (provider.artifacts.kind === 'managed') {
         try {
           const handles = collectArtifactHandles(conversation, provider, this.deps.runtime);
-          const runs = this.deps.progressStore.getDb().prepare<[string], EventsRow>(
-            `SELECT * FROM events WHERE stream_kind = 'job' AND stream_id = ?
+          const runs = this.deps.progressStore
+            .getDb()
+            .prepare<[string], EventsRow>(
+              `SELECT * FROM events WHERE stream_kind = 'job' AND stream_id = ?
               AND type IN ('job.execution.started', 'job.artifact.recorded') ORDER BY seq`,
-          ).all(jobId);
+            )
+            .all(jobId);
           const minimumExecution = runs.reduce((latest, row) => {
             const body = decodeEventBody(row.body);
-            return Math.max(latest, (row.type === 'job.execution.started'
-              ? jobRuntimeStartedBodySchema.parse(body) : jobArtifactRecordedBodySchema.parse(body)).execution);
+            return Math.max(
+              latest,
+              (row.type === 'job.execution.started'
+                ? jobRuntimeStartedBodySchema.parse(body)
+                : jobArtifactRecordedBodySchema.parse(body)
+              ).execution,
+            );
           }, 1);
-          verification = await verifyConversationRestore({ runtime: this.deps.runtime, conversation,
-            nativeHandle: handles.at(-1) ?? null, minimumExecution });
+          verification = await verifyConversationRestore({
+            runtime: this.deps.runtime,
+            conversation,
+            nativeHandle: handles.at(-1) ?? null,
+            minimumExecution,
+          });
         } catch (error: unknown) {
           return refuseLaunch('native_unobservable', `Cannot verify native conversation: ${errorMessage(error)}`);
         }
@@ -502,8 +590,13 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
       }
     }
     const pool = opts.pool ?? 'default';
-    const admission = this.reserveAdmission(jobId, provider.name, opts.owner, pool,
-      opts.owner.kind === 'workflow' || opts.owner.kind === 'discussion');
+    const admission = this.reserveAdmission(
+      jobId,
+      provider.name,
+      opts.owner,
+      pool,
+      opts.owner.kind === 'workflow' || opts.owner.kind === 'discussion',
+    );
     if (admission === 'queue_full') return refuseLaunch('busy', QUEUE_FULL_MESSAGE);
     if (admission instanceof SuccessionAdmissionPausedError) {
       return refuseLaunch('succession_admission_paused', admission.message);
@@ -516,67 +609,154 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
         jobId,
         coralEnv: { ...request.coralEnv, CORAL_JOB_ID: jobId },
       };
-      await withJobArtifactGuard(this.deps.runtime, jobId, () => this.deps.progressStore.withExecutionAdmission(jobId, execution, {
-        projectRoot: conversation.projectRoot, workDir: conversation.cwd, jobKind: 'provider',
-      }, () => {
-      this.deps.coordinatorCommit(commit => {
-        const current = this.deps.conversationManager.readById(jobId, { forceFresh: true });
-        if (conversation.execution === 0 ? current !== null
-          : current === null || current.open || current.execution !== conversation.execution) {
-          throw new Error(`Job ${jobId} no longer admits execution #${execution}.`);
-        }
-        const refs = buildJobEventRefs({ jobId, parentJobId: opts.parentWorkflowJobId,
-          workflowId: opts.parentWorkflowJobId, workflowSlotId: opts.workflowSlotId });
-        if (execution === 1) {
-          const { provider: providerName, binding, cwd, name, model, effort, agent, instruction,
-            bypassPermissions, systemPrompt, retention, controllerProfile } = conversation;
-          commit.append({
-            type: 'job.opened', stream: { kind: 'job', id: jobId }, ...metadata, refs,
-            body: jobOpenedBodySchema.parse({
-              jobKind: 'provider', owner: opts.owner, projectRoot: conversation.projectRoot,
-              createdAt: conversation.createdAt, workflowSlotId: opts.workflowSlotId,
-              conversation: { provider: providerName, binding, cwd, name, model, effort, agent, instruction,
-                bypassPermissions, systemPrompt, retention, controllerProfile },
-            }),
-          });
-        }
-        commit.append({
-          type: 'job.execution.requested', stream: { kind: 'job', id: jobId }, ...metadata, refs,
-          body: jobExecutionRequestedBodySchema.parse({
-            execution, input: hostedRequest.prompt, action: hostedRequest.action, pool,
-            enqueueSequence: this.deps.progressStore.nextEnqueueSequence(),
-            coralEnv: hostedRequest.coralEnv, createdAt: nowIsoString(this.deps.runtime.time),
-            backendNamespace: this.deps.backendNamespace, bundleHash: this.deps.bundleHash,
-            discussionRun: opts.discussionRun,
-          }),
-        });
-        commit.append({
-          type: admission.type === 'queued' ? 'job.execution.queued' : 'job.execution.admitted',
-          stream: { kind: 'job', id: jobId }, ...metadata, refs,
-          body: admission.type === 'queued'
-            ? { execution, queuePosition: admission.queuePosition, runningJobIds: [] }
-            : { execution, queuePosition: 0 },
-        });
-        return undefined;
-      });
-      }));
+      await withJobArtifactGuard(this.deps.runtime, jobId, () =>
+        this.deps.progressStore.withExecutionAdmission(
+          jobId,
+          execution,
+          {
+            projectRoot: conversation.projectRoot,
+            workDir: conversation.cwd,
+            jobKind: 'provider',
+          },
+          () => {
+            this.deps.coordinatorCommit(
+              (commit) => {
+                const current = this.deps.conversationManager.readById(jobId);
+                if (
+                  conversation.execution === 0
+                    ? current !== null
+                    : current === null || current.open || current.execution !== conversation.execution
+                ) {
+                  throw new Error(`Job ${jobId} no longer admits execution #${execution}.`);
+                }
+                const refs = buildJobEventRefs({
+                  jobId,
+                  parentJobId: opts.parentWorkflowJobId,
+                  workflowId: opts.parentWorkflowJobId,
+                  workflowSlotId: opts.workflowSlotId,
+                });
+                if (execution === 1) {
+                  const {
+                    provider: providerName,
+                    binding,
+                    cwd,
+                    name,
+                    model,
+                    effort,
+                    agent,
+                    instruction,
+                    bypassPermissions,
+                    systemPrompt,
+                    retention,
+                    controllerProfile,
+                  } = conversation;
+                  commit.append({
+                    type: 'job.opened',
+                    stream: { kind: 'job', id: jobId },
+                    ...metadata,
+                    refs,
+                    body: jobOpenedBodySchema.parse({
+                      jobKind: 'provider',
+                      owner: opts.owner,
+                      projectRoot: conversation.projectRoot,
+                      createdAt: conversation.createdAt,
+                      workflowSlotId: opts.workflowSlotId,
+                      conversation: {
+                        provider: providerName,
+                        binding,
+                        cwd,
+                        name,
+                        model,
+                        effort,
+                        agent,
+                        instruction,
+                        bypassPermissions,
+                        systemPrompt,
+                        retention,
+                        controllerProfile,
+                      },
+                    }),
+                  });
+                }
+                commit.append({
+                  type: 'job.execution.requested',
+                  stream: { kind: 'job', id: jobId },
+                  ...metadata,
+                  refs,
+                  body: jobExecutionRequestedBodySchema.parse({
+                    execution,
+                    input: hostedRequest.prompt,
+                    action: hostedRequest.action,
+                    pool,
+                    enqueueSequence: this.deps.progressStore.nextEnqueueSequence(),
+                    coralEnv: hostedRequest.coralEnv,
+                    createdAt: nowIsoString(this.deps.runtime.time),
+                    backendNamespace: this.deps.backendNamespace,
+                    bundleHash: this.deps.bundleHash,
+                    discussionRun: opts.discussionRun,
+                    originatingClientMessageId: opts.originatingClientMessageId,
+                  }),
+                });
+                commit.append({
+                  type: admission.type === 'queued' ? 'job.execution.queued' : 'job.execution.admitted',
+                  stream: { kind: 'job', id: jobId },
+                  ...metadata,
+                  refs,
+                  body:
+                    admission.type === 'queued'
+                      ? { execution, queuePosition: admission.queuePosition, runningJobIds: [] }
+                      : { execution, queuePosition: 0 },
+                });
+                return undefined;
+              },
+              { admittingJobs: [jobId] },
+            );
+          },
+        ),
+      );
       committed = true;
       if (verification !== null) {
-        const restored = await publishConversationRestore({ runtime: this.deps.runtime, jobId, execution, verification });
+        const restored = await publishConversationRestore({
+          runtime: this.deps.runtime,
+          jobId,
+          execution,
+          verification,
+        });
         if (restored.kind === 'unrestorable') {
           const error = new Error(`Committed conversation restore failed: ${restored.message}`);
-          await this.finalizeCommittedLaunchSetupFailure(jobId, jobId, admission, error);
-          return refuseLaunch(restored.reason, error.message);
+          await this.finalizeCommittedLaunchSetupFailure(jobId, execution, admission, error);
+          return {
+            kind: 'provider-session',
+            status: admission.type === 'queued' ? 'queued' : 'running',
+            jobId,
+            epochKey: this.deps.currentJobEpochKey?.() ?? ':memory:',
+            ...committedExecutionRequest(this.deps.progressStore.getDb(), jobId, execution),
+          };
         }
       }
-      this.activateCommittedProviderLaunch({ provider, conversationJobId: jobId, jobId,
-        execution, request: hostedRequest, admission, pool, mintProtectedEnv: opts.mintProtectedEnv });
+      this.activateCommittedProviderLaunch({
+        provider,
+        jobId,
+        execution,
+        request: hostedRequest,
+        admission,
+        pool,
+        mintProtectedEnv: opts.mintProtectedEnv,
+      });
     } catch (error) {
-      if (!committed) this.releaseAdmissionReservation(admission);
-      throw error;
+      if (!committed) {
+        this.releaseAdmissionReservation(admission);
+        throw error;
+      }
+      await this.finalizeCommittedLaunchSetupFailure(jobId, execution, admission, error);
     }
-    return { kind: 'provider-session', status: admission.type === 'queued' ? 'queued' : 'running', jobId,
-      ...committedExecutionRequest(this.deps.progressStore.getDb(), jobId, execution, this.deps.currentJobEpochKey?.() ?? ':memory:') };
+    return {
+      kind: 'provider-session',
+      status: admission.type === 'queued' ? 'queued' : 'running',
+      jobId,
+      epochKey: this.deps.currentJobEpochKey?.() ?? ':memory:',
+      ...committedExecutionRequest(this.deps.progressStore.getDb(), jobId, execution),
+    };
   }
 
   private reserveAdmission(
@@ -605,7 +785,6 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
 
   private activateCommittedProviderLaunch(input: {
     provider: BoundProvider;
-    conversationJobId: string;
     jobId: string;
     request: ProviderRequest;
     admission: AcceptedAdmission;
@@ -613,45 +792,39 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
     execution: number;
     mintProtectedEnv: (jobId: string, execution: number) => ProviderOperationEnvironmentInput;
   }): void {
-    try {
-      // Registered before placement so the same signal governs either owner. Local execution observes the
-      // signal directly; durable publication rechecks an already-aborted signal at insertion and records later
-      // stops in the saga before the proxy can act on them.
-      this.registerLaunchAbort(input.jobId, input.execution, input.admission);
-      if (this.deps.abortRegistry.getSignal(input.jobId, input.execution) === null) {
-        throw new Error(`Abort registration produced no signal for committed job ${input.jobId}.`);
-      }
-      this.deps.runtime.storage.mkdirSync(this.deps.progressStore.jobDir(input.jobId), { recursive: true });
-      if (input.admission.type === 'queued') {
-        this.appendProgressEvent(input.jobId, input.conversationJobId, `queued (position ${input.admission.queuePosition})`);
-      }
-      const protectedEnv = input.mintProtectedEnv(input.jobId, input.execution);
-      this.runAsync(
-        input.provider,
-        input.conversationJobId,
-        input.jobId,
-        input.request,
-        input.admission,
-        input.pool,
-        protectedEnv,
-      );
-    } catch (error: unknown) {
-      void this.finalizeCommittedLaunchSetupFailure(input.jobId, input.conversationJobId, input.admission, error);
-      throw error;
+    // The abort signal must be registered before placement, so either owner observes the same stop.
+    this.registerLaunchAbort(input.jobId, input.execution, input.admission);
+    if (this.deps.abortRegistry.getSignal(input.jobId, input.execution) === null) {
+      throw new Error(`Abort registration produced no signal for committed job ${input.jobId}.`);
     }
+    this.deps.runtime.storage.mkdirSync(this.deps.progressStore.jobDir(input.jobId), { recursive: true });
+    if (input.admission.type === 'queued') {
+      this.appendProgressEvent(input.jobId, `queued (position ${input.admission.queuePosition})`);
+    }
+    const protectedEnv = input.mintProtectedEnv(input.jobId, input.execution);
+    this.runAsync(
+      input.provider,
+      input.jobId,
+      input.execution,
+      input.request,
+      input.admission,
+      input.pool,
+      protectedEnv,
+    );
   }
 
   private async finalizeCommittedLaunchSetupFailure(
     jobId: string,
-    conversationJobId: string,
+    execution: number,
     admission: AcceptedAdmission,
     error: unknown,
   ): Promise<void> {
-    const execution = this.requireExecution(jobId);
-    const signal = this.deps.abortRegistry.getSignal(jobId, execution) ?? new AbortController().signal;
-    let disposition: JobExecutionDisposition = 'terminalized';
     try {
-      disposition = await this.handleProviderJobErrorOnceWritable(jobId, conversationJobId, signal, error);
+      const signal = this.deps.abortRegistry.getSignal(jobId, execution) ?? new AbortController().signal;
+      const disposition = await this.handleProviderJobErrorOnceWritable(jobId, execution, signal, error);
+      if (disposition === 'recovery-held') return;
+      this.deps.abortRegistry.remove(jobId, execution);
+      this.releaseAdmissionReservation(admission);
     } catch (finalizationError: unknown) {
       backendLog.error(
         `Failed to terminalize committed provider launch ${jobId}: ${errorMessage(finalizationError)}`,
@@ -659,24 +832,18 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
       );
       return;
     }
-
-    if (disposition === 'recovery-held') return;
-
-    this.deps.abortRegistry.remove(jobId, execution);
-    this.releaseAdmissionReservation(admission);
   }
 
   runAsync(
     provider: BoundProvider,
-    conversationJobId: string,
     jobId: string,
+    execution: number,
     request: ProviderRequest,
     admission: AcceptedAdmission,
     pool: LaunchPool,
     protectedEnv?: ProviderOperationEnvironmentInput,
   ): void {
     const { abortRegistry, launchAdmission } = this.deps;
-    const execution = this.requireExecution(jobId);
     const signal = abortRegistry.getSignal(jobId, execution);
     if (!signal) {
       this.releaseAdmissionReservation(admission);
@@ -698,7 +865,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
         if (admission.type === 'queued') {
           const queueOutcome = await this.waitForQueuedPermit(admission, signal);
           if (queueOutcome.kind === 'aborted') {
-            await this.finishQueuedAbort(jobId, conversationJobId, 'queue_shutdown');
+            await this.finishQueuedAbort(jobId, execution, 'queue_shutdown');
             return;
           }
 
@@ -707,14 +874,14 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
             disposition = 'handed-off';
             return;
           }
-          this.appendJobEvent(jobId, conversationJobId, 'job.execution.admitted', {});
-          this.appendProgressEvent(jobId, conversationJobId, 'dequeued, launching');
+          this.appendJobEvent(jobId, execution, 'job.execution.admitted', {});
+          this.appendProgressEvent(jobId, 'dequeued, launching');
         }
         if (permit === null || permit.pool !== pool) {
           throw new Error(`Launch permit for ${jobId} does not match its admitted pool.`);
         }
 
-        disposition = await this.executeJob(provider, request, jobId, execution, conversationJobId, executionSignal, permit, protectedEnv);
+        disposition = await this.executeJob(provider, request, jobId, execution, executionSignal, permit, protectedEnv);
       } catch (error: unknown) {
         if (error instanceof TerminalWriteError) {
           backendLog.error(error.message, error.cause);
@@ -725,7 +892,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
           return;
         }
         try {
-          disposition = await this.handleProviderJobErrorOnceWritable(jobId, conversationJobId, signal, error);
+          disposition = await this.handleProviderJobErrorOnceWritable(jobId, execution, signal, error);
         } catch (finalizeError: unknown) {
           if (finalizeError instanceof TerminalWriteError) {
             backendLog.error(finalizeError.message, finalizeError.cause);
@@ -753,10 +920,6 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
   ): void {
     const { abortRegistry, launchAdmission } = this.deps;
     const jobId = launchRecord.jobId;
-    const conversationJobId = launchRecord.jobId;
-    if (conversationJobId === null) {
-      throw new Error(`Recovered queued job ${jobId} requires a provider session id.`);
-    }
     const execution = launchRecord.execution;
     this.registerLaunchAbort(jobId, execution, admission);
     const signal = abortRegistry.getSignal(jobId, execution);
@@ -778,7 +941,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
         }
         const queueOutcome = await this.waitForQueuedPermit(admission, signal);
         if (queueOutcome.kind === 'aborted') {
-          await this.finishQueuedAbort(jobId, conversationJobId, 'queue_shutdown');
+          await this.finishQueuedAbort(jobId, execution, 'queue_shutdown');
           return;
         }
 
@@ -787,22 +950,21 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
           disposition = 'handed-off';
           return;
         }
-        this.appendJobEvent(jobId, conversationJobId, 'job.execution.admitted', {});
-        this.appendProgressEvent(jobId, conversationJobId, 'dequeued, launching');
+        this.appendJobEvent(jobId, execution, 'job.execution.admitted', {});
+        this.appendProgressEvent(jobId, 'dequeued, launching');
         if (permit.pool !== pool) {
           throw new Error(`Recovered launch permit for ${jobId} does not match its admitted pool.`);
         }
 
-        const session = this.deps.conversationManager.get(provider.name, conversationJobId);
+        const session = this.deps.conversationManager.get(provider.name, jobId);
         if (session === null) {
-          throw new Error(`Recovered queued job ${jobId} has no provider session snapshot.`);
+          throw new Error(`Recovered queued job ${jobId} has no provider conversation snapshot.`);
         }
         disposition = await this.executeJob(
           provider,
           toProviderRequest(launchRecord, session.conversationRef),
           jobId,
           execution,
-          conversationJobId,
           executionSignal,
           permit,
           protectedEnv,
@@ -817,7 +979,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
           return;
         }
         try {
-          disposition = await this.handleProviderJobErrorOnceWritable(jobId, conversationJobId, signal, error);
+          disposition = await this.handleProviderJobErrorOnceWritable(jobId, execution, signal, error);
         } catch (finalizeError: unknown) {
           if (finalizeError instanceof TerminalWriteError) {
             backendLog.error(finalizeError.message, finalizeError.cause);
@@ -836,13 +998,12 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
     })();
   }
 
-  private async finishQueuedAbort(jobId: string, conversationJobId: string, reason: AbortReason): Promise<void> {
-    await this.finishAbortedJob(jobId, conversationJobId, reason);
+  private async finishQueuedAbort(jobId: string, execution: number, reason: AbortReason): Promise<void> {
+    await this.finishAbortedJob(jobId, execution, reason);
   }
 
-  async failJob(jobId: string, conversationJobId: string, terminal: JobTerminalInput): Promise<void> {
-    const execution = this.requireExecution(jobId);
-    await this.writeJobTerminal(jobId, conversationJobId, terminal, 'error');
+  async failJob(jobId: string, execution: number, terminal: JobTerminal): Promise<void> {
+    await this.writeJobTerminal(jobId, execution, terminal, 'error');
     this.releaseTerminalJob(jobId, execution);
   }
 
@@ -869,31 +1030,24 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
 
   async writeJobTerminal(
     jobId: string,
-    _conversationJobId: string,
-    result: JobTerminalInput,
+    execution: number,
+    result: JobTerminal,
     _phase: JobPhase,
     options: TerminalWriteOptions = {},
   ): Promise<number> {
-    for (;;) {
-      try {
-        const status = this.deps.progressStore.readStatus(jobId);
-        const execution = this.requireExecution(jobId);
-        const accepted = await this.deps.executionFinisher.accept({ jobId, execution }, (c) => {
-          appendJobExecutionOutcomeAccepted(c, {
-            jobId,
-            execution,
-            namespace: status?.backendNamespace ?? this.deps.backendNamespace,
-            project: status?.projectRoot,
-            terminal: result,
-            diagnostics: options.diagnostics,
-          });
-          return undefined;
-        });
-        return accepted.seq;
-      } catch {
-        await this.deps.runtime.time.sleep(500);
-      }
-    }
+    const status = this.deps.progressStore.readStatus(jobId);
+    const accepted = await this.deps.executionFinisher.accept({ jobId, execution }, (c) => {
+      appendJobExecutionOutcomeAccepted(c, {
+        jobId,
+        execution,
+        namespace: status?.backendNamespace ?? this.deps.backendNamespace,
+        project: status?.projectRoot,
+        terminal: result,
+        diagnostics: options.diagnostics,
+      });
+      return undefined;
+    });
+    return accepted.seq;
   }
 
   private async executeJob(
@@ -901,16 +1055,15 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
     request: ProviderRequest,
     jobId: string,
     execution: number,
-    conversationJobId: string,
     signal: AbortSignal,
     permit: LaunchPermit,
     protectedEnv?: ProviderOperationEnvironmentInput,
   ): Promise<JobExecutionDisposition> {
-    const session = this.deps.conversationManager.get(provider.name, conversationJobId);
+    const session = this.deps.conversationManager.get(provider.name, jobId);
     if (!session) {
       throw new ProviderBindingRuntimeError(
         { reason: 'invalid-persisted-binding', provider: provider.name },
-        `Provider session ${conversationJobId} has no binding.`,
+        `Provider conversation ${jobId} has no binding.`,
       );
     }
     const identity = provider.compareIdentity(session.binding);
@@ -925,7 +1078,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
         this.deps.providerRegistry.renderBindingFailure(continuity.failure),
       );
     }
-    this.readExecutionOrdinal(provider.name, conversationJobId, jobId, execution);
+    this.readExecutionOrdinal(provider.name, jobId, execution);
     const readiness = await provider.readiness('launch', this.deps.runtime.storage);
     if (this.preserveAppServerJobForHandoff(provider, jobId, execution)) return 'handed-off';
     if (!readiness.ok) {
@@ -958,7 +1111,6 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
     const runtime = this.createProviderRuntime(
       provider,
       requestWithInject,
-      conversationJobId,
       jobId,
       signal,
       continuity.value,
@@ -992,23 +1144,23 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
         execution,
         decodeContinuity: (rawContinuity) => provider.decodeContinuity(rawContinuity),
         stream: providerStream.stream,
-        sessionApi: {
-          checkpointJobContinuityAtomic: async (claimedSessionId, options) => {
+        conversationApi: {
+          checkpointJobContinuityAtomic: async (claimedJobId, options) => {
             if (this.quiescedAppServerJobs.has(executionKey(jobId, execution))) {
               return { ok: false as const };
             }
             const result = await this.trackAppServerWrite(jobId, execution, () =>
-              this.deps.conversationManager.checkpointJobContinuityAtomic(claimedSessionId, options),
+              this.deps.conversationManager.checkpointJobContinuityAtomic(claimedJobId, options),
             );
             if (this.quiescedAppServerJobs.has(executionKey(jobId, execution))) return { ok: false as const };
             return result;
           },
-          recordArtifactHandleAtomic: async (claimedSessionId, options) => {
+          recordArtifactHandleAtomic: async (claimedJobId, options) => {
             if (this.quiescedAppServerJobs.has(executionKey(jobId, execution))) {
               return { ok: false as const };
             }
             const result = await this.trackAppServerWrite(jobId, execution, () =>
-              this.deps.conversationManager.recordArtifactHandleAtomic(claimedSessionId, options),
+              this.deps.conversationManager.recordArtifactHandleAtomic(claimedJobId, options),
             );
             if (this.quiescedAppServerJobs.has(executionKey(jobId, execution))) return { ok: false as const };
             return result;
@@ -1016,14 +1168,13 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
         },
         appendProgress: (message) => {
           if (this.quiescedAppServerJobs.has(executionKey(jobId, execution))) return;
-          this.appendProgressEvent(jobId, conversationJobId, message);
+          this.appendProgressEvent(jobId, message);
         },
       });
       if (this.quiescedAppServerJobs.has(executionKey(jobId, execution))) return 'handed-off';
       if (consumed.kind === 'suspended') return 'suspended';
       const completion = this.trackAppServerWrite(jobId, execution, () =>
         this.completeConsumedJob({
-          conversationJobId,
           jobId,
           projectRoot: request.cwd,
           event: consumed.event,
@@ -1037,15 +1188,14 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
   }
 
   private async completeConsumedJob(options: {
-    conversationJobId: string;
     jobId: string;
     projectRoot: string | undefined;
     event: Extract<ProviderEventBody, { kind: 'terminal' }>;
     execution: number;
   }): Promise<'settled' | SettlementRefusal> {
-    const { conversationJobId, jobId, projectRoot, event, execution } = options;
+    const { jobId, projectRoot, event, execution } = options;
 
-    await this.appendProviderTerminal(jobId, conversationJobId, projectRoot, event);
+    await this.appendProviderTerminal(jobId, execution, projectRoot, event);
 
     this.deps.abortRegistry.remove(jobId, execution);
     return 'settled';
@@ -1075,35 +1225,36 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
 
   private async handleProviderJobErrorOnceWritable(
     jobId: string,
-    conversationJobId: string,
+    execution: number,
     signal: AbortSignal,
     error: unknown,
   ): Promise<JobExecutionDisposition> {
     for (;;) {
       try {
-        return await this.handleProviderJobError(jobId, conversationJobId, signal, error);
+        return await this.handleProviderJobError(jobId, execution, signal, error);
       } catch (finalizeError: unknown) {
-        if (finalizeError instanceof SuccessionWriterParkedError) await finalizeError.unparked;
-        else await this.deps.runtime.time.sleep(500);
+        if (finalizeError instanceof SuccessionWriterParkedError)
+          await raceWithSignal(finalizeError.unparked, this.deps.executionFinisher.signal, () => {
+            throw this.deps.executionFinisher.signal.reason;
+          });
+        else throw finalizeError;
       }
     }
   }
 
-
   private async handleProviderJobError(
     jobId: string,
-    conversationJobId: string,
+    execution: number,
     signal: AbortSignal,
     error: unknown,
   ): Promise<JobExecutionDisposition> {
-    const execution = this.requireExecution(jobId);
     const currentStatus = this.deps.progressStore.readStatus(jobId);
     if (!currentStatus || isTerminalPhase(currentStatus.phase)) {
       return 'terminalized';
     }
 
     if (error instanceof CliBusyError) {
-      await this.appendLaunchRejectedTerminal(jobId, conversationJobId, {
+      await this.appendLaunchRejectedTerminal(jobId, execution, {
         reason: 'busy',
         message: error.message,
         provider: error.detail.provider,
@@ -1117,15 +1268,15 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
     if (error instanceof ProviderHostUnserviceableError) {
       const durationMs = this.elapsedJobDurationMs(jobId);
       try {
-        await this.deps.executionFinisher.accept({ jobId, execution: currentStatus.execution }, (commit) => {
+        await this.deps.executionFinisher.accept({ jobId, execution }, (commit) => {
           const cause = commit.append({
             type: 'job.execution.progress',
             stream: { kind: 'job', id: jobId },
-            namespace: currentStatus.backendNamespace,
+            namespace: currentStatus.backendNamespace ?? this.deps.backendNamespace,
             project: currentStatus.projectRoot,
-            refs: buildJobEventRefs({ jobId, }),
+            refs: buildJobEventRefs({ jobId }),
             body: {
-              execution: currentStatus.execution,
+              execution,
               kind: 'domain',
               stage: 'provider_operation_failed',
               message: error.message,
@@ -1138,8 +1289,8 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
           });
           appendJobExecutionOutcomeAccepted(commit, {
             jobId,
-            execution: currentStatus.execution,
-            namespace: currentStatus.backendNamespace,
+            execution,
+            namespace: currentStatus.backendNamespace ?? this.deps.backendNamespace,
             project: currentStatus.projectRoot,
             terminal: { content: '', durationMs, outcome: failedTerminalOutcome(cause) },
           });
@@ -1153,12 +1304,12 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
     }
 
     if (signal.aborted || isAbortError(error)) {
-      await this.finishAbortedJob(jobId, conversationJobId, 'signal_abort');
+      await this.finishAbortedJob(jobId, execution, 'signal_abort');
       return 'terminalized';
     }
 
     if (error instanceof ProviderBindingRuntimeError) {
-      await this.failJob(jobId, conversationJobId, {
+      await this.failJob(jobId, execution, {
         content: '',
         durationMs: this.elapsedJobDurationMs(jobId),
         outcome: {
@@ -1174,7 +1325,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
       return 'terminalized';
     }
 
-    await this.failJob(jobId, conversationJobId, {
+    await this.failJob(jobId, execution, {
       content: '',
       durationMs: this.elapsedJobDurationMs(jobId),
       outcome: {
@@ -1188,18 +1339,17 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
     return 'terminalized';
   }
 
-  private markJobQueued(jobId: string, conversationJobId: string, queuePosition: number): void {
-    this.appendJobEvent(jobId, conversationJobId, 'job.execution.queued', {
+  private markJobQueued(jobId: string, execution: number, queuePosition: number): void {
+    this.appendJobEvent(jobId, execution, 'job.execution.queued', {
       queuePosition,
       runningJobIds: [],
     });
-    this.appendProgressEvent(jobId, conversationJobId, `queued (position ${queuePosition})`);
+    this.appendProgressEvent(jobId, `queued (position ${queuePosition})`);
   }
 
   private createProviderRuntime(
     provider: BoundProvider,
     request: ProviderRequest,
-    conversationJobId: string,
     jobId: string,
     signal: AbortSignal,
     persistedContinuity: ProviderContinuityBlob | undefined,
@@ -1255,16 +1405,8 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
     prepared: Extract<BoundProviderPreparedExecution, { kind: 'app-server' }>,
     launch: PreparedProviderLaunchContext,
   ): Promise<Exclude<PreparedProviderExecutionResult, { kind: 'local' }> | undefined> {
-    const {
-      provider,
-      jobId,
-      signal,
-      permit,
-      requestForRoute,
-      persistedContinuity,
-      operationEnvironment,
-      execution,
-    } = launch;
+    const { provider, jobId, signal, permit, requestForRoute, persistedContinuity, operationEnvironment, execution } =
+      launch;
     const route = this.deps.appServerProxyRoute;
     if (route === undefined) return undefined;
     if (operationEnvironment.childAuthorization === undefined) {
@@ -1483,10 +1625,14 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
         }
       },
       jobId,
-      { permit, abortHoldOwner: {
-        hold: (id, reason, nextStep, abandon) => this.deps.abortRegistry.hold(id, reason, nextStep, abandon, execution),
-        releaseHold: (id) => this.deps.abortRegistry.releaseHold(id, execution),
-      } },
+      {
+        permit,
+        abortHoldOwner: {
+          hold: (id, reason, nextStep, abandon) =>
+            this.deps.abortRegistry.hold(id, reason, nextStep, abandon, execution),
+          releaseHold: (id) => this.deps.abortRegistry.releaseHold(id, execution),
+        },
+      },
     );
   }
 
@@ -1494,7 +1640,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
     launch: PreparedProviderLaunchContext,
     publication: DurableContainmentPublication,
   ): DurableProcessPublicationDisposition {
-    const { jobId, requestForRoute } = launch;
+    const { jobId } = launch;
     try {
       publication.persist();
     } catch (error: unknown) {
@@ -1504,7 +1650,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
     }
     publication.afterPersistence?.();
     try {
-      this.appendProgressEvent(jobId, requestForRoute.jobId, publication.progress);
+      this.appendProgressEvent(jobId, publication.progress);
     } catch (error: unknown) {
       backendLog.warn(
         `Failed to append durable containment ${publication.progressFailure} for ${jobId}: ${errorMessage(error)}`,
@@ -1515,30 +1661,23 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
 
   private async appendProviderTerminal(
     jobId: string,
-    _conversationJobId: string,
+    execution: number,
     projectRoot: string | undefined,
     event: Extract<ProviderEventBody, { kind: 'terminal' }>,
   ): Promise<void> {
-    for (;;) {
-      try {
-        const metadata = this.resolveEventMetadata(jobId, projectRoot);
-        const execution = this.requireExecution(jobId);
-        await this.deps.terminalMaterializer.recordProviderTerminal(this.deps.executionFinisher, event, {
-          jobId,
-          execution,
-          ...metadata,
-        });
-        return;
-      } catch {
-        await this.deps.runtime.time.sleep(500);
-      }
-    }
+    const metadata = this.resolveEventMetadata(jobId, projectRoot);
+    await this.deps.terminalMaterializer.recordProviderTerminal(this.deps.executionFinisher, event, {
+      jobId,
+      execution,
+      ...metadata,
+    });
+    return;
   }
 
-  private readExecutionOrdinal(providerName: string, conversationJobId: string, jobId: string, execution: number): number {
-    const session = this.deps.conversationManager.get(providerName, conversationJobId);
+  private readExecutionOrdinal(providerName: string, jobId: string, execution: number): number {
+    const session = this.deps.conversationManager.get(providerName, jobId);
     if (!session || !session.open || session.jobId !== jobId || session.execution !== execution) {
-      throw new Error(`Expected open execution of ${conversationJobId} for job ${jobId}.`);
+      throw new Error(`Expected open execution of ${jobId} for job ${jobId}.`);
     }
     return session.execution;
   }
@@ -1595,25 +1734,18 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
     );
   }
 
-  private async finishAbortedJob(jobId: string, conversationJobId: string, reason: AbortReason): Promise<void> {
-    const execution = this.requireExecution(jobId);
-    for (;;) {
-      try {
-        const durationMs = this.elapsedJobDurationMs(jobId);
-        await this.deps.executionFinisher.accept({ jobId, execution }, (c) => {
-          c.append({ type: 'job.execution.aborted', stream: { kind: 'job', id: jobId }, body: { execution, reason } });
-          appendJobExecutionOutcomeAccepted(c, {
-            jobId,
-            execution,
-            terminal: { content: '', outcome: { kind: 'aborted', reason }, durationMs },
-          });
-          return undefined;
-        });
-        this.releaseTerminalJob(jobId, execution);
-        return;
-      } catch {
-        await this.deps.runtime.time.sleep(500);
-      }
-    }
+  private async finishAbortedJob(jobId: string, execution: number, reason: AbortReason): Promise<void> {
+    const durationMs = this.elapsedJobDurationMs(jobId);
+    await this.deps.executionFinisher.accept({ jobId, execution }, (c) => {
+      c.append({ type: 'job.execution.aborted', stream: { kind: 'job', id: jobId }, body: { execution, reason } });
+      appendJobExecutionOutcomeAccepted(c, {
+        jobId,
+        execution,
+        terminal: { content: '', outcome: { kind: 'aborted', reason }, durationMs },
+      });
+      return undefined;
+    });
+    this.releaseTerminalJob(jobId, execution);
+    return;
   }
 }

@@ -104,7 +104,7 @@ function preparedFixture(overrides: Partial<ProxyPreparedAppServerOperation> = {
     binding: { provider: 'claude', kind: 'account', binding: {} },
     request: {
       action: 'exec',
-      sessionId: 'session-1',
+      jobId: 'job-1',
       prompt: 'hello',
       cwd: fixtureCanonicalWorkDir(process.cwd()),
       bypassPermissions: false,

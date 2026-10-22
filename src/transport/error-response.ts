@@ -92,7 +92,11 @@ const SUCCESSION_WRITER_PARKED_MESSAGE =
 
 export function buildTransportErrorResponse(error: unknown): TransportErrorResponse {
   if (error instanceof WaitSessionError) {
-    const data = { code: error.code, message: error.message };
+    const data = {
+      code: error.code,
+      message: error.message,
+      ...(error.remedy === undefined ? {} : { remedy: error.remedy }),
+    };
     return { message: error.message, statusCode: 409, data, body: data };
   }
   if (error instanceof SuccessionWriterParkedError) {

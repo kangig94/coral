@@ -1,10 +1,7 @@
 import { hydrateJobRecoveryProjection, type JobStore } from '../../../jobs/store.js';
 import { type JobConversation } from '../../../jobs/conversation/entry.js';
 import type { ProcessPort } from '../../../runtime/ports.js';
-import type {
-  RecoveryJobFacts,
-  RecoveryProjectionSnapshot,
-} from '../../../jobs/reconcile/plan.js';
+import type { RecoveryJobFacts, RecoveryProjectionSnapshot } from '../../../jobs/reconcile/plan.js';
 import type { JobProjectionDetail } from '../../../jobs/read-queries.js';
 import type { JobStatus } from '../../../jobs/records.js';
 import type { RawCoordinatorJobRecoveryEnvelope } from './coordinator-job-source.js';

@@ -666,7 +666,6 @@ it('delegates a launch follow as a jobs wait invocation carrying its cursor, and
   expect(mockState.spawn.mock.calls[1][1].slice(1)).toEqual(['jobs', 'wait', 'a']);
 });
 
-
 it('delegates the full wait selection beside a low seq cursor', async () => {
   mockState.execFile.mockImplementation((_file, _args, _options, callback) => {
     queueMicrotask(() => callback(null, JSON.stringify({ version: 1, monitorOnly: true })));
@@ -682,6 +681,12 @@ it('delegates the full wait selection beside a low seq cursor', async () => {
     { pluginRoot: '/plugin/root', waitProbeRemainingMs: () => 10_000 },
   );
   expect(mockState.spawn.mock.calls[0][1].slice(1)).toEqual([
-    'jobs', 'wait', 'a', '--cursor', '279', '--execution-selection', selections,
+    'jobs',
+    'wait',
+    'a',
+    '--cursor',
+    '279',
+    '--execution-selection',
+    selections,
   ]);
 });

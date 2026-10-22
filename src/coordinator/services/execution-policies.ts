@@ -21,21 +21,21 @@ import {
   type AgentResolutionContext,
 } from '../../jobs/agent-resolution.js';
 import type { ConversationAllocateOptions } from '../../jobs/conversation/contracts.js';
-import { describeSessionInterrupted, type SessionInterruptedFault } from '../../jobs/conversation/fault.js';
+import { describeConversationInterrupted, type ConversationInterruptedFault } from '../../jobs/conversation/fault.js';
 import { documentedCoralSetupError } from '../../runtime/errors.js';
 import { throwIfRequestAborted } from '../../runtime/request-lease-identity.js';
 import type { Runtime } from '../../runtime/ports.js';
-import { SESSION_CONTROLLER_PROFILE_FIELDS, type RetentionPolicy } from '../../jobs/conversation/entry.js';
+import { CONVERSATION_CONTROLLER_PROFILE_FIELDS, type RetentionPolicy } from '../../jobs/conversation/entry.js';
 import { CONTEXT_ENV_KEY } from '../../transport/context-profile.js';
 
 export type CoralIntent = Omit<JobLaunchRequest, 'effort' | 'agent' | 'pool' | 'retention'> & {
-  conversationJobId?: string;
+  jobId?: string;
   effort?: EffortLevel;
   retention?: RetentionPolicy;
 };
 
-export type CanonicalCoralIntent = Omit<CoralIntent, 'conversationJobId'> & {
-  conversationJobId?: string;
+export type CanonicalCoralIntent = Omit<CoralIntent, 'jobId'> & {
+  jobId?: string;
 };
 
 export type ResolvedAgentLaunchProfile = {
@@ -58,12 +58,12 @@ export type EffectiveContinuationProfile = {
   agentName?: string;
 };
 
-export function buildSessionControllerProfile(
+export function buildConversationControllerProfile(
   coralEnv: Record<string, string>,
 ): ConversationAllocateOptions['controllerProfile'] | undefined {
   const profile: Partial<NonNullable<ConversationAllocateOptions['controllerProfile']>> = {};
 
-  for (const field of SESSION_CONTROLLER_PROFILE_FIELDS) {
+  for (const field of CONVERSATION_CONTROLLER_PROFILE_FIELDS) {
     const value = coralEnv[CONTEXT_ENV_KEY[field]];
     if (value !== undefined) {
       profile[field] = value;
@@ -87,14 +87,14 @@ export function mapResolverError(err: unknown): RefusedLaunchDecision | null {
 }
 
 export function normalizeCoralIntent(input: CoralIntent): CanonicalCoralIntent | RefusedLaunchDecision {
-  const { conversationJobId, ...rest } = input;
-  if (conversationJobId === undefined) {
+  const { jobId, ...rest } = input;
+  if (jobId === undefined) {
     return rest;
   }
-  if (conversationJobId.length === 0) {
+  if (jobId.length === 0) {
     return refuseLaunch('invalid_request', 'Session ID is required when provided.');
   }
-  return { ...rest, conversationJobId };
+  return { ...rest, jobId };
 }
 
 /** The frontmatter range Claude Code's native agents also accept; `ultra` exists only on Codex. */
@@ -142,7 +142,7 @@ export function buildEffectiveCoralEnv(
   const merged = { ...coralEnv };
   const storedProfile = options.controllerProfile;
 
-  for (const field of SESSION_CONTROLLER_PROFILE_FIELDS) {
+  for (const field of CONVERSATION_CONTROLLER_PROFILE_FIELDS) {
     const envKey = CONTEXT_ENV_KEY[field];
     if (field === 'effort') {
       if (options.effort !== undefined) {
@@ -160,8 +160,8 @@ export function buildEffectiveCoralEnv(
   return merged;
 }
 
-export function buildInterruptedAppServerReport(fault: SessionInterruptedFault): string {
-  const lines = [describeSessionInterrupted(fault), ''];
+export function buildInterruptedAppServerReport(fault: ConversationInterruptedFault): string {
+  const lines = [describeConversationInterrupted(fault), ''];
 
   lines.push(
     fault.continuity === 'pre_checkpoint_empty'

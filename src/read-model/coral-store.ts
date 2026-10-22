@@ -168,7 +168,6 @@ export class CoralStore implements StoreReadContext {
       summaryIndex: (source) => readDiscussSummaryIndex(this.db, source),
     };
 
-
     this.workflows = {
       projection: (workflowId) => readWorkflowProjection(this.db, workflowId),
       list: () => listWorkflowProjections(this.db),

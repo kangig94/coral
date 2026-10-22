@@ -76,9 +76,14 @@ type Final = { cursor: WaitCursor | null; exitCode: number; executionSelections?
  * field omits it, and a reader treats an absent value as one it may not resume past.
  */
 export type WaitEndedBy = 'settled' | 'deadline' | 'progress-budget' | 'unanswered';
-type TerminalBlock = TerminalWaitEvent & { availability: ResultAvailability; resultPath?: string; epochKey?: string; cursor?: WaitCursor | null };
+type TerminalBlock = TerminalWaitEvent & {
+  availability: ResultAvailability;
+  resultPath?: string;
+  epochKey?: string;
+  cursor?: WaitCursor | null;
+};
 export type WaitStreamEvent =
-  | { type: 'notice'; message: string }
+  | { type: 'notice'; message: string; remedy?: { kind: 'recovery-quarantine-list' } }
   // The frontier for a cut before the final event: it replaces the client's cursor and never completes.
   | { type: 'cursor'; cursor: WaitCursor; executionSelections?: WaitExecutionSelection[] }
   | { type: 'admission'; executionSelections: WaitExecutionSelection[] }
@@ -89,7 +94,7 @@ export type WaitStreamEvent =
       message?: string;
     }
   | ProgressWaitEvent
-  | (QueuedWaitEventBase & { jobKind: 'provider'; conversationJobId: string })
+  | (QueuedWaitEventBase & { jobKind: 'provider' })
   | (QueuedWaitEventBase & { jobKind: 'workflow'; workflowId: string })
   | (QueuedWaitEventBase & { jobKind: 'kb'; systemTaskId: string })
   // A terminal at or below the request's watermark carries no final fields: it is printed and ends nothing.
@@ -124,6 +129,7 @@ export type WaitCarrierCoverage = {
 };
 
 export interface JobWaitPort {
+  admitWait(request: WaitStreamRequest): WaitAdmission[];
   visitProgress?: ProgressVisit;
   readWaitAdmissions?(jobIds: readonly string[], epochKey: string, session?: object): WaitAdmission[];
   observeWaitCarriers?(jobIds: readonly string[], signal: AbortSignal): Promise<WaitCarrierCoverage>;

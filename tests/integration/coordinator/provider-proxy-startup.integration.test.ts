@@ -1,4 +1,8 @@
+import { TypedEventBus } from '#src/coordinator/event-bus.js';
+import { ExecutionFinisher, readExecutionFinishingState } from '#src/jobs/finishing.js';
+import { readProviderOperationForJob } from '#src/store/provider-operation-journal.js';
 import { randomUUID } from 'node:crypto';
+import { encodeProviderOperationRecord } from '#src/store/provider-operation-record.js';
 import { AsyncResource } from 'node:async_hooks';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { createServer, type Socket } from 'node:net';
@@ -54,6 +58,7 @@ import { seedTestSessionProjection } from '#tests/helpers/session.js';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { createProviderOperationStartupOwnership } from '#src/coordinator/services/recovery/provider-operation-startup-ownership.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
+import { testConversationFacet } from '#tests/helpers/session.js';
 import { providerProxySetIdentityFromRecord } from '#src/coordinator/services/provider-proxy-set/identity.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 const FIXTURE_BUILD_SET_ID = '00000000-0000-4000-8000-000000000004';
@@ -103,6 +108,27 @@ function composeProductionStartup(
   const fatals = vi.fn();
   const lifecycleRef = new ProviderProxySetLifecycleRef();
   const progressStore = createProgressStore(db);
+  for (const startupRecord of record === null ? additionalRecords : [record, ...additionalRecords]) {
+    const jobId = startupRecord.operation.jobId;
+    if (progressStore.readStatus(jobId) === null) {
+      progressStore.initJob({
+        jobId,
+        projectRoot: process.cwd(),
+        backendNamespace: 'provider-proxy-startup-integration',
+        conversation: testConversationFacet('codex', process.cwd()),
+      });
+    }
+    const requestedSeq = progressStore.loadJobWaitDetail(jobId).requestedSeq;
+    if (requestedSeq === undefined) throw new Error('Missing startup fixture execution request.');
+    const current = readProviderOperation(db, startupRecord.operation);
+    if (current !== null && current.jobLaunchEventSeq !== requestedSeq) {
+      const normalized = { ...current, jobLaunchEventSeq: requestedSeq };
+      Object.assign(startupRecord, normalized);
+      db.prepare(
+        "UPDATE meta SET value = ? WHERE json_valid(value) AND json_extract(value, '$.operation.jobId') = ?",
+      ).run(encodeProviderOperationRecord(normalized), jobId);
+    }
+  }
   const launchCoordinator = new LaunchCoordinator({ runtime });
   const startupOwnership = createProviderOperationStartupOwnership({
     runtime,
@@ -115,7 +141,22 @@ function composeProductionStartup(
     throw new Error('provider proxy startup fixture unexpectedly requested recorded containment reaping');
   });
   const logs: string[] = [];
+  const executionFinisher = new ExecutionFinisher({
+    time: runtime.time,
+    commit: (write) => progressStore.commit(write),
+    read: (address) => readExecutionFinishingState(db, address, progressStore),
+    quiesce: async ({ jobId }) => readProviderOperationForJob(db, jobId) === null,
+    retentionAction: async () => ({ attempt: 0, handles: [] }),
+    settleRetention: async () => ({ kind: 'completed', outcome: 'skipped_no_handles' }),
+  });
+  const commit = progressStore.commit.bind(progressStore);
+  vi.spyOn(progressStore, 'commit').mockImplementation((write) => {
+    const appended = commit(write);
+    executionFinisher.observeCommitted(appended);
+    return appended;
+  });
   const world = {
+    eventBus: new TypedEventBus(),
     log: (line: string) => logs.push(line),
     identity: { instanceId: randomUUID(), buildSetId: FIXTURE_BUILD_SET_ID },
     storeServicesRef: { tryGet: () => ({ progressStore }) },
@@ -129,6 +170,7 @@ function composeProductionStartup(
     launchCoordinator,
   } as never;
   const services = createExecutionServices({
+    executionFinisher,
     world,
     runtime,
     bundleHash: 'provider-proxy-startup-integration',
@@ -235,16 +277,14 @@ describe('orphaned provider operation retries after double startup hydration', (
           });
           const jobId = record.operation.jobId;
           seedTestSessionProjection(db, {
-            sessionId: jobId,
             provider: 'codex',
             projectRoot: process.cwd(),
             backendNamespace: 'provider-proxy-startup-integration',
-            activeJobId: jobId,
+            jobId: jobId,
           });
           progressStore.appendLaunchRequested(jobId, {
             jobId,
             owner: { kind: 'provider-session', id: jobId },
-            sessionId: jobId,
             provider: 'codex',
             projectRoot: process.cwd(),
             backendNamespace: 'provider-proxy-startup-integration',
@@ -259,6 +299,7 @@ describe('orphaned provider operation retries after double startup hydration', (
               bypassPermissions: false,
               coralEnv: {},
             },
+            execution: 1,
           });
           progressStore.appendRuntimeStarted(jobId, {
             transport: 'app-server',

@@ -86,7 +86,7 @@ export type DiscussContextConstructionOptions = {
   runtime: DiscussRuntimePorts;
   jobStatusReader: DiscussJobStatusReader;
   providerRegistry: ProviderBindingCatalog;
-  discardSessionArtifacts?: (sessionId: string) => Promise<void>;
+  discardConversationArtifacts?: (sessionId: string) => Promise<void>;
 };
 
 export function createDiscussContextRegistry(): DiscussContextRegistry {
@@ -115,8 +115,8 @@ export function getOrCreate(
     runtime: options.runtime,
     jobStatusReader: options.jobStatusReader,
     providerRegistry: options.providerRegistry,
-    ...(options.discardSessionArtifacts !== undefined
-      ? { discardSessionArtifacts: options.discardSessionArtifacts }
+    ...(options.discardConversationArtifacts !== undefined
+      ? { discardConversationArtifacts: options.discardConversationArtifacts }
       : {}),
   };
   registry.contexts.set(projectRoot, context);

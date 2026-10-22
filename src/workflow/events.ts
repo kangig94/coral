@@ -1,3 +1,4 @@
+import { jobOpenedBodySchema } from '../jobs/launch.js';
 import type { Database } from '../store/db.js';
 import { z } from 'zod';
 
@@ -425,14 +426,9 @@ const validateWorkflowPlanValidity: DomainAppendValidator = (ctx, inputs) => {
       });
     }
 
-    if (input.type === 'job.launch.requested') {
-      const provider =
-        typeof input.body === 'object' &&
-        input.body !== null &&
-        'provider' in input.body &&
-        typeof input.body.provider === 'string'
-          ? input.body.provider
-          : undefined;
+    if (input.type === 'job.opened') {
+      const opened = jobOpenedBodySchema.parse(input.body);
+      const provider = opened.jobKind === 'provider' ? opened.conversation.provider : undefined;
       const plannedProvider = readPlan(workflowId)?.slots.find((slot) => slot.slotId === slotId)?.provider;
       if (provider !== plannedProvider) {
         throw workflowPlanInvalid('provider_mismatch', {

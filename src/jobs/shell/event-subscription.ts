@@ -1,6 +1,10 @@
+import type { Database } from '../../store/db.js';
+import { decodeBody, type StoreReadContext } from '../../store/body-codec.js';
+import type { EventsRow } from '../../store/schema.js';
+import { jobExecutionEndedBodySchema, jobExecutionOutcomeAcceptedBodySchema } from '../terminal/result.js';
 import type { JobProgressTiming } from '../event-bodies.js';
 import type { AppendedEvent } from '../../store/append.js';
-import type { JobEvent, JobTerminal, JobTerminalDiagnostics } from '../records.js';
+import type { JobEvent } from '../records.js';
 import { normalizeJobTerminal } from '../terminal/result.js';
 
 type JobSubscriber = {
@@ -16,20 +20,20 @@ function matches(subscriber: JobSubscriber, event: JobEvent): boolean {
   return event.seq > subscriber.afterSeq && subscriber.jobIds.has(event.jobId);
 }
 
-function toJobEvent(event: AppendedEvent): JobEvent | null {
+function toJobEvent(event: AppendedEvent, db: Database, ctx: StoreReadContext): JobEvent | null {
   if (event.stream.kind !== 'job') {
     return null;
   }
 
-  if (event.type === 'job.progress.emitted') {
-    const body = event.body as { kind?: string; message: string; timing: JobProgressTiming };
+  if (event.type === 'job.execution.progress') {
+    const body = event.body as { execution: number; kind?: string; message: string; timing: JobProgressTiming };
     if (body.kind !== 'message') {
       return null;
     }
 
     return {
       jobId: event.stream.id,
-      sessionId: null,
+      execution: body.execution,
       seq: event.seq,
       type: 'progress',
       ts: event.ts,
@@ -38,33 +42,38 @@ function toJobEvent(event: AppendedEvent): JobEvent | null {
     };
   }
 
-  if (event.type !== 'job.terminal.recorded') {
+  if (event.type !== 'job.execution.ended') {
     return null;
   }
 
-  const body = event.body as {
-    terminal: JobTerminal;
-    diagnostics?: JobTerminalDiagnostics;
-  };
+  const end = jobExecutionEndedBodySchema.parse(event.body);
+  const row = db
+    .prepare<
+      [number, string],
+      EventsRow
+    >("SELECT * FROM events WHERE seq = ? AND stream_kind = 'job' AND stream_id = ? AND type = 'job.execution.outcome.accepted'")
+    .get(end.causeRef.seq, event.stream.id);
+  if (row === undefined || end.causeRef.stream.kind !== 'job' || end.causeRef.stream.id !== event.stream.id)
+    throw new Error('Execution end must cite its accepted outcome.');
+  const body = decodeBody(row, jobExecutionOutcomeAcceptedBodySchema, ctx);
+  if (body.execution !== end.execution) throw new Error('Execution end must cite its own outcome.');
   const usage = body.diagnostics?.usage;
 
   return {
     jobId: event.stream.id,
-    sessionId: null,
+    execution: end.execution,
     seq: event.seq,
     type: 'terminal',
     ts: event.ts,
     result: normalizeJobTerminal(body.terminal),
-    // Appended terminal events do not carry jobKind; the wait coordinator
-    // replaces workflow terminal usage with the read-time aggregate.
     ...(usage === undefined ? {} : { usage }),
   };
 }
 
-export function publishJobEvents(appended: readonly AppendedEvent[]): void {
+export function publishJobEvents(appended: readonly AppendedEvent[], db: Database, ctx: StoreReadContext): void {
   const projected: JobEvent[] = [];
   for (const appendedEvent of appended) {
-    const event = toJobEvent(appendedEvent);
+    const event = toJobEvent(appendedEvent, db, ctx);
     if (event === null) {
       continue;
     }

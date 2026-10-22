@@ -1,3 +1,4 @@
+import { testConversationFacet } from '#tests/helpers/session.js';
 import * as transfers from '#src/coordinator/services/durable-cli-transfer.js';
 import { processIncarnationSchema } from '#src/infra/node-process.js';
 import { recoverJobLocations } from '#src/jobs/location-recovery.js';
@@ -52,10 +53,9 @@ it('discharges a durable carrier only with an exact terminal result and discharg
   });
   initTestJob(store, {
     jobId: jobId,
-    sessionId: 'session',
-    provider: 'codex',
     projectRoot: '/workspace',
     backendNamespace: 'test',
+    conversation: testConversationFacet('codex', '/workspace'),
   });
   const intent = recordCustodyIntent(f.runtime, f.runDir, {
     effect: 'process-spawn',
@@ -82,7 +82,7 @@ it('discharges a durable carrier only with an exact terminal result and discharg
   recoverJobLocations(f.index, epochKey, store);
   await f.reconcile();
   expect(readCustodyLedger(f.runtime, f.runDir)).toMatchObject([{ kind: 'bound' }]);
-  commitJobTerminal(store, jobId, 'session', {
+  commitJobTerminal(store, jobId, 1, {
     content: 'result',
     outcome: { kind: 'completed' },
     durationMs: 1,
@@ -128,6 +128,7 @@ it('discharges a durable carrier only with an exact terminal result and discharg
   }
   f.runtime.process.observeLiveness = () => 'absent';
   f.runtime.process.readProcessIncarnation = () => null;
+  store.publishTerminalResult(jobId);
   const resultPath = location.resultPath!;
   const result = readFileSync(resultPath);
   rmSync(resultPath);

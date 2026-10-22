@@ -99,7 +99,10 @@ export interface StorageMutationPort {
   ): void;
   renameSync(oldPath: StoragePath, newPath: StoragePath): void;
   linkSync(existingPath: string, newPath: string): void;
-  publishFileNoReplaceSync(stage: string, destination: string):
+  publishFileNoReplaceSync(
+    stage: string,
+    destination: string,
+  ):
     | { readonly kind: 'published' }
     | { readonly kind: 'exists' }
     | { readonly kind: 'failed'; readonly reason: string; readonly linked: boolean };

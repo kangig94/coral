@@ -108,7 +108,7 @@ export function withTestBindingLocation(
 
 const TEST_EXECUTION_REQUEST = {
   action: 'exec',
-  sessionId: 'test-session',
+  jobId: 'test-session',
   prompt: 'test',
   cwd: fixtureCanonicalWorkDir('/workspace'),
   bypassPermissions: false,

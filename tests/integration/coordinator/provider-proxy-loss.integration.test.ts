@@ -1,3 +1,4 @@
+import { requestedExecution } from '#tests/helpers/job-executions.js';
 import { describe, expect, it, vi } from 'vitest';
 
 import { ControlClientError } from '#src/provider-proxy/control-client.js';
@@ -30,13 +31,19 @@ import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
 describe('provider proxy loss recovery', () => {
   it('discharges both executing shared-root claims after guardian confirmation', async () => {
     const executing = providerOperationRecord('executing');
-    const sibling = providerOperationRecord('executing', { job: 9 });
+    const sibling = { ...providerOperationRecord('executing', { job: 9 }), jobLaunchEventSeq: 2 };
     const harness = createProviderOperationReconcilerHarness();
     const time = new VirtualTime();
     const claims = new ProviderProxySetClaimMirror();
     claims.initialize([]);
     const unsubscribe = subscribeProviderOperationMutations(harness.db, (mutation) => claims.applyMutation(mutation));
     insertProviderOperation(harness.db, executing);
+    const request = requestedExecution();
+    harness.db
+      .prepare(
+        "INSERT INTO events(seq,ts,type,stream_kind,stream_id,body) VALUES (2,?,'job.execution.requested','job',?,?)",
+      )
+      .run('2026-08-09T12:34:55.000Z', sibling.operation.jobId, Buffer.from(JSON.stringify(request.body)));
     insertProviderOperation(harness.db, sibling);
     const identity = providerProxySetIdentityFromRecord(executing);
     const base = createRealRuntime('prod');
@@ -162,7 +169,7 @@ describe('provider proxy loss recovery', () => {
       await vi.waitFor(() => expect(claims.size).toBe(0));
       expect(readProviderOperations(harness.db).records).toEqual([]);
       const terminals = harness.appended.filter(
-        (event) => (event as { type: string }).type === 'job.terminal.recorded',
+        (event) => (event as { type: string }).type === 'job.execution.outcome.accepted',
       );
       expect(terminals).toHaveLength(2);
       expect(terminals).toEqual(
@@ -178,7 +185,7 @@ describe('provider proxy loss recovery', () => {
       expect(harness.appended).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
-            type: 'job.progress.emitted',
+            type: 'job.execution.progress',
             body: expect.objectContaining({
               stage: 'provider_operation_failed',
               detail: expect.objectContaining({ code: 'provider_lost' }),

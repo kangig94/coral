@@ -1,3 +1,8 @@
+import { readJobOpenedEvent } from './execution-journal.js';
+import { JobEvidenceDecodeError } from './source-read.js';
+import { readAcceptedTerminal } from './terminal/source.js';
+import { decodeBody } from '../store/body-codec.js';
+import { jobExecutionEndedBodySchema, jobExecutionOutcomeAcceptedBodySchema } from './terminal/result.js';
 import type { EventsRow } from '../store/schema.js';
 import type { Database } from '../store/db.js';
 import type { Runtime } from '../runtime/ports.js';
@@ -8,26 +13,36 @@ import { deriveLaunchReadiness } from './launch-readiness.js';
 import { loadJobExecutionDetails, loadJobProjectionDetail } from './read-queries.js';
 import type { JobExecutionLocation, JobLocation, JobLocationIndex } from './location-index.js';
 import { hasReadableTerminalDetail } from './terminal/identity.js';
-import { writeResultArtifact, type DecodedResultArtifact } from './terminal/artifact.js';
-import { describeTerminalOutcome } from './outcome.js';
+import {
+  ResultArtifactPublicationError,
+  writeResultArtifact,
+  type DecodedResultArtifact,
+} from './terminal/artifact.js';
+import { renderJobResultMarkdown, renderResultMarkdown, type WorkflowReportPort } from './terminal/render.js';
+import { resultPathFor } from './paths.js';
 import { readJobTerminalAge } from './terminal-age.js';
 import { jobRetentionCutoff } from './export-retention.js';
 import { sameEpoch } from '../store/epoch/identity.js';
-import { dirname, join } from 'node:path';
+import { dirname } from 'node:path';
+import { backendLog } from '../infra/backend-log.js';
 
-/** Current epochs retain complete per-execution evidence, independently of the latest projection. */
 export function loadRetainedCurrentJob(
   db: Database,
   epochKey: string,
   jobId: string,
   jobsRoot: string,
+  workflowReport?: WorkflowReportPort,
 ): JobLocation | null {
   const ctx = { ...composeReducers(jobsRegistry), bodyCodec: createEventBodyCodec() };
   const details = loadJobExecutionDetails(db, jobId, ctx);
   const latest = details.at(-1);
   if (latest === undefined) {
     const opened = loadJobProjectionDetail(db, jobId, ctx);
-    if (opened.status === null) return null;
+    if (opened.status === null) {
+      if (readJobOpenedEvent(db, jobId) !== undefined)
+        throw new JobEvidenceDecodeError('Opened job has no readable projection.');
+      return null;
+    }
     return {
       version: 'v1',
       jobId,
@@ -51,20 +66,22 @@ export function loadRetainedCurrentJob(
       },
     };
   }
-  const executions: JobExecutionLocation[] = details.flatMap(({ execution, requestedSeq, detail }) => {
+  const executions: JobExecutionLocation[] = [];
+  for (const { execution, requestedSeq, detail } of details) {
     const terminal = detail.events.find((event) => event.type === 'terminal');
-    return terminal === undefined
-      ? []
-      : [
-          {
-            execution,
-            requestedSeq,
-            seq: terminal.seq,
-            resultPath: join(jobsRoot, jobId, 'executions', String(execution), 'result.md'),
-            detail: { ...detail, epochKey },
-          },
-        ];
-  });
+    if (terminal === undefined) continue;
+    const end = db.prepare<[number], EventsRow>('SELECT * FROM events WHERE seq = ?').get(terminal.seq);
+    if (end === undefined) throw new JobEvidenceDecodeError('Retained execution end is unavailable.');
+    const markdown = renderJobResultMarkdown(db, ctx, epochKey, jobId, end, terminal.result, workflowReport);
+    executions.push({
+      execution,
+      requestedSeq,
+      seq: terminal.seq,
+      resultPath: resultPathFor(jobsRoot, jobId, execution),
+      ...(markdown === null ? {} : { resultMarkdown: markdown }),
+      detail: { ...detail, epochKey },
+    });
+  }
   const ended = latest.detail.exit !== null;
   const terminal = ended ? executions.at(-1) : undefined;
   return {
@@ -85,7 +102,7 @@ export function loadRetainedCurrentJob(
       value: {
         ...latest.detail,
         epochKey,
-        resultPath: join(jobsRoot, jobId, 'executions', String(latest.execution), 'result.md'),
+        resultPath: resultPathFor(jobsRoot, jobId, latest.execution),
       },
     },
   };
@@ -95,21 +112,29 @@ export function currentResultInput(
   db: Database,
   epochKey: string,
   jobId: string,
-  jobsRoot: string,
   execution?: number,
+  workflowReport?: WorkflowReportPort,
 ): DecodedResultArtifact | null {
-  const location = loadRetainedCurrentJob(db, epochKey, jobId, jobsRoot);
-  if (location === null) return null;
-  const selectedExecution = execution ?? location.latestExecution;
-  const entry = location.executions?.find(entry => entry.execution === selectedExecution);
-  if (entry === undefined || entry.detail.exit === null) return null;
-  const accepted = db.prepare<[number], EventsRow>('SELECT * FROM events WHERE seq = ?').get(entry.seq);
-  if (accepted === undefined) return null;
-  const exit = entry.detail.exit;
+  const accepted = readAcceptedTerminal(db, jobId, execution);
+  if (accepted === null) return null;
+  const ctx = { ...composeReducers(jobsRegistry), bodyCodec: createEventBodyCodec() };
+  const end = decodeBody(accepted, jobExecutionEndedBodySchema, ctx);
+  const outcome = db.prepare<[number], EventsRow>('SELECT * FROM events WHERE seq = ?').get(end.causeRef.seq);
+  if (
+    outcome === undefined ||
+    outcome.stream_kind !== 'job' ||
+    outcome.stream_id !== jobId ||
+    outcome.type !== 'job.execution.outcome.accepted' ||
+    end.causeRef.stream.kind !== 'job' ||
+    end.causeRef.stream.id !== jobId
+  )
+    throw new JobEvidenceDecodeError('Execution end has no matching accepted outcome.');
+  const body = decodeBody(outcome, jobExecutionOutcomeAcceptedBodySchema, ctx);
+  if (body.execution !== end.execution) throw new JobEvidenceDecodeError('Execution end cites another execution.');
   return {
     accepted,
-    terminal: { content: exit.content, outcome: exit.outcome, durationMs: exit.durationMs },
-    markdown: `${exit.content.trimEnd() || describeTerminalOutcome(exit.outcome)}\n`,
+    terminal: body.terminal,
+    markdown: renderJobResultMarkdown(db, ctx, epochKey, jobId, accepted, body.terminal, workflowReport),
     age: readJobTerminalAge(db, accepted),
   };
 }
@@ -123,58 +148,59 @@ export function retainCurrentJob(
   runtime: Pick<Runtime, 'storage' | 'time' | 'env'>,
   verifySource: () => void,
 ): void {
-  const location = loadRetainedCurrentJob(db, epochKey, jobId, jobsRoot);
+  const location = loadRetainedCurrentJob(db, epochKey, jobId, jobsRoot, index.workflowReport);
   if (location === null || location.detail.kind !== 'recorded') return;
   index.register(jobId, epochKey, location.subject);
   index.recordExecutionDetails(jobId, location.executions ?? [], location.detail.value);
   for (const entry of location.executions ?? []) {
     const end = db.prepare<[number], EventsRow>('SELECT * FROM events WHERE seq = ?').get(entry.seq);
-    repairRetainedExecution(
-      runtime,
-      entry,
-      () => {
-        verifySource();
-        const current = index.read(jobId);
-        return (
-          current !== null &&
-          sameEpoch(current.epochKey, epochKey) &&
-          current.executions?.some((known) => known.execution === entry.execution && known.seq === entry.seq) === true
-        );
-      },
-      end === undefined ? 'unknown' : readJobTerminalAge(db, end),
-    );
+    try {
+      repairRetainedExecution(
+        runtime,
+        entry,
+        () => {
+          verifySource();
+          const current = index.read(jobId);
+          return (
+            current !== null &&
+            sameEpoch(current.epochKey, epochKey) &&
+            current.executions?.some((known) => known.execution === entry.execution && known.seq === entry.seq) === true
+          );
+        },
+        end === undefined ? 'unknown' : readJobTerminalAge(db, end),
+        jobsRoot,
+      );
+    } catch (error: unknown) {
+      if (!(error instanceof ResultArtifactPublicationError)) throw error;
+      backendLog.warn(`Retained execution result publication remains pending: ${String(error)}`);
+    }
   }
 }
 
-/** Complete durable evidence can repair an execution after its journal has been retired. */
 export function repairRetainedExecution(
   runtime: Pick<Runtime, 'storage' | 'time' | 'env'>,
   entry: JobExecutionLocation,
   authorized: () => boolean,
-  sourceAge?: DecodedResultArtifact['age'],
+  sourceAge: DecodedResultArtifact['age'] | undefined,
+  jobsRoot: string,
+  sourceMarkdown?: string | null,
 ): void {
   if (entry.detail.exit === null) return;
   try {
     const stat = runtime.storage.lstatSync(entry.resultPath, { bigint: true });
     if (stat.isFile() && stat.size > 0n) return;
-  } catch {
-    /* Only a missing artifact is eligible for publication. */
+  } catch (error: unknown) {
+    if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error;
   }
   const age = sourceAge ?? Date.parse(entry.detail.exit.endTime);
   if (typeof age === 'number' && Number.isFinite(age) && age < jobRetentionCutoff(runtime)) return;
   const terminal = entry.detail.exit;
-  const markdown = `${terminal.content.trimEnd() || describeTerminalOutcome(terminal.outcome)}\n`;
-  writeResultArtifact(
-    runtime.storage,
-    entry.resultPath,
-    markdown,
-    authorized,
-    dirname(dirname(dirname(dirname(entry.resultPath)))),
-  );
+  const markdown = sourceMarkdown ?? entry.resultMarkdown ?? renderResultMarkdown(terminal);
+  writeResultArtifact(runtime.storage, entry.resultPath, markdown, authorized, jobsRoot);
 }
 
 export function currentResultsDurable(
-  runtime: Pick<Runtime, 'storage' | 'time' | 'env'>,
+  runtime: Pick<Runtime, 'storage' | 'time' | 'env' | 'paths'>,
   location: JobLocation,
   source: Database | null,
 ): boolean {
@@ -204,9 +230,12 @@ export function currentResultsDurable(
   }
   return executions.every((entry) => {
     if (source !== null) {
-      const request = source.prepare<[number, string, number], { seq: number }>(
-        "SELECT seq FROM events WHERE seq = ? AND stream_kind = 'job' AND stream_id = ? AND type = 'job.execution.requested' AND json_extract(CAST(body AS TEXT), '$.execution') = ?",
-      ).get(entry.requestedSeq, location.jobId, entry.execution);
+      const request = source
+        .prepare<
+          [number, string, number],
+          { seq: number }
+        >("SELECT seq FROM events WHERE seq = ? AND stream_kind = 'job' AND stream_id = ? AND type = 'job.execution.requested' AND json_extract(CAST(body AS TEXT), '$.execution') = ?")
+        .get(entry.requestedSeq, location.jobId, entry.execution);
       if (request === undefined) return false;
       const end = source
         .prepare<
@@ -216,18 +245,17 @@ export function currentResultsDurable(
         .get(entry.seq, location.jobId, entry.execution);
       if (end === undefined || end.ts !== entry.detail.exit?.endTime) return false;
       const age = readJobTerminalAge(source, end);
-      if (end?.ts === entry.detail.exit?.endTime && typeof age === 'number' && age < jobRetentionCutoff(runtime))
-        return true;
+      if (typeof age === 'number' && age < jobRetentionCutoff(runtime)) return true;
     }
     const fd = runtime.storage.openSync(entry.resultPath, 'r');
     try {
       const file = runtime.storage.fstatSync(fd, { bigint: true });
       if (!file.isFile() || file.size === 0n) return false;
       runtime.storage.fdatasyncSync(fd);
-      let directory = dirname(entry.resultPath);
-      for (let depth = 0; depth < 4; depth++) {
+      const boundary = dirname(runtime.paths.coral.exports.jobsRoot);
+      for (let directory = dirname(entry.resultPath); ; directory = dirname(directory)) {
         if (!runtime.storage.syncDirectoryDurableSync(directory)) return false;
-        directory = dirname(directory);
+        if (directory === boundary || directory === dirname(directory)) break;
       }
       return true;
     } finally {

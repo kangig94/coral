@@ -36,7 +36,7 @@ export function admitted(
         jobKind: 'provider',
         updatedAt: '',
         phase: terminal ? (failed ? 'error' : 'completed') : 'running',
-        lastSeq: terminalSeq,
+        lastSeq: Math.max(terminalSeq, ...messages.map(([seq]) => seq)),
       },
       terminalSeq: terminal ? terminalSeq : undefined,
       exit: terminal ? { ...result, diagnostics: { progressFaults: [] } } : null,

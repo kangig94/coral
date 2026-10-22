@@ -32,12 +32,18 @@ export class JobWaitService {
   }
 
   private attentionExecutions(jobIds: readonly string[], req?: WaitStreamRequest): AttentionExecution[] {
-    return jobIds.flatMap(jobId => {
-      const admission = req?.admissions?.find(entry => entry.jobId === jobId);
-      const execution = admission === undefined
-        ? this.deps.loadJobProjectionDetail(jobId).status?.execution
-        : admission.detail?.status.execution;
-      return execution == null ? [] : [{ jobId, execution }];
+    return jobIds.flatMap((jobId) => {
+      const selected = req?.executionSelections?.find((entry) => entry.jobId === jobId);
+      const admission =
+        req?.admissions?.find((entry) => entry.jobId === jobId) ??
+        (selected === undefined
+          ? undefined
+          : this.deps.waitCoordinator.readWaitAdmission?.(jobId, selected.epochKey, req));
+      const execution =
+        admission === undefined && selected === undefined
+          ? this.deps.loadJobProjectionDetail(jobId).status?.execution
+          : admission?.detail?.status.execution;
+      return execution === null || execution === undefined ? [] : [{ jobId, execution }];
     });
   }
 
@@ -105,12 +111,15 @@ export class JobWaitService {
   }
 
   async *waitStream(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent> {
-    const endWait = this.deps.jobAttention?.beginWait(this.attentionExecutions(req.jobIds, req));
-    try {
+    if (this.deps.jobAttention === undefined) {
       yield* this.deps.waitCoordinator.waitForOutcomes(req);
-    } finally {
-      endWait?.();
+      return;
     }
+    yield* this.deps.jobAttention.waitStream(
+      req,
+      (scoped) => this.deps.waitCoordinator.admitWait(scoped),
+      (scoped) => this.deps.waitCoordinator.waitForOutcomes(scoped),
+    );
   }
 
   async waitStreamOnce(jobId: string, timeoutMs?: number): Promise<WaitStreamOnceResult> {

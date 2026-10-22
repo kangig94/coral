@@ -24,7 +24,7 @@ type TestState = {
 
 const BASE_REQUEST: ProviderRequest = {
   action: 'exec',
-  sessionId: 'job-session-continuity',
+  jobId: 'job-session-continuity',
   name: 'claude-opus-4-7',
   prompt: 'hello',
   cwd: fixtureCanonicalWorkDir(process.cwd()),

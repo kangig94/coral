@@ -119,7 +119,7 @@ async function finalizeRecoveredAppServer(
   settlement: RunningRecoverySettlement,
   runtimeRecord: AppServerRunningRuntime,
 ): Promise<RecoveryDisposition> {
-  const { deps, recovery, context, item, controls, service } = settlement;
+  const { deps, recovery, context, controls, service } = settlement;
   const { state, startTrackedFinalization } = deps;
   const { jobId, authority } = recovery;
   const { signal, interruptedAppServerReason } = context;
@@ -183,16 +183,24 @@ async function finalizeRecoveredAppServer(
   };
 }
 
+function appendRecoveryProgress(settlement: RunningRecoverySettlement, message: string): void {
+  const { jobId, authority } = settlement.recovery;
+  const status = settlement.deps.progressStore.readStatus(jobId);
+  if (status?.execution !== authority.launchRecord.execution || status.finishing === true) return;
+  settlement.deps.progressStore.appendProgress(jobId, message);
+}
+
 function createRecoveredProgress(
   settlement: RunningRecoverySettlement,
   initialRuntimeRecord: DurableRunningRuntime,
 ): RecoveredProgress {
   const { progressStore } = settlement.deps;
   const { jobId, authority } = settlement.recovery;
-  const { launchRecord, boundProvider } = authority;
+  const { boundProvider } = authority;
   let adoptedRuntimeRecord = initialRuntimeRecord;
   return {
     drain(): void {
+      if (progressStore.readStatus(jobId)?.finishing === true) return;
       if (!boundProvider.recovery?.extractProgress) return;
       try {
         const { messages, newOffset } = boundProvider.recovery.extractProgress({
@@ -204,7 +212,7 @@ function createRecoveredProgress(
           progressStore.appendRuntimeStarted(jobId, nextRuntimeRecord);
           adoptedRuntimeRecord = nextRuntimeRecord;
         }
-        for (const message of messages) progressStore.appendProgress(jobId, launchRecord.conversationJobId, message);
+        for (const message of messages) appendRecoveryProgress(settlement, message);
       } catch (error: unknown) {
         if (error instanceof SuccessionWriterParkedError) throw error;
         settlement.controls.report(`Failed to tail recovered progress for job ${jobId}: ${formatError(error)}\n`);
@@ -284,7 +292,7 @@ async function retryHeldCleanup(
 ): Promise<void> {
   const { state, progressStore, clearRecoveryPoller, observeDurableRecoveryContainment, runHeldRecoveryReap } =
     settlement.deps;
-  const { jobId, authority } = settlement.recovery;
+  const { jobId } = settlement.recovery;
   const { signal } = settlement.context;
   if (state.teardownRequested) return;
 
@@ -323,11 +331,7 @@ async function retryHeldCleanup(
     currentStatus.status.disposition.kind !== 'held' ||
     currentStatus.status.disposition.reason !== cleanup.reason
   ) {
-    progressStore.appendProgress(
-      jobId,
-      authority.launchRecord.conversationJobId,
-      `Durable recovery cleanup remains held (${cleanup.reason}).`,
-    );
+    appendRecoveryProgress(settlement, `Durable recovery cleanup remains held (${cleanup.reason}).`);
   }
 }
 
@@ -365,7 +369,7 @@ async function reconcileHeldContainmentStatus(
   RecoveryDisposition | Readonly<{ kind: 'reconciled'; operatorAbandoned: boolean; absenceConfirmed: boolean }>
 > {
   const { state, progressStore, runHeldRecoveryReap } = settlement.deps;
-  const { jobId, authority } = settlement.recovery;
+  const { jobId } = settlement.recovery;
   const { signal, abandonHeldJob } = settlement.context;
   const cleanup =
     containment.evidence.kind === 'current' || containment.evidence.kind === 'provisional'
@@ -404,7 +408,7 @@ async function reconcileHeldContainmentStatus(
   const detail =
     `${cleanup.reason}. Identity-safe reaping continues every ${retryIntervalMs}ms until absence is confirmed. ` +
     'Operator abandonment remains available without proving process absence or sending another signal.';
-  progressStore.appendProgress(jobId, authority.launchRecord.conversationJobId, detail);
+  appendRecoveryProgress(settlement, detail);
   settlement.controls.report(`Held durable recovery cleanup: ${jobId}: ${cleanup.reason}\n`);
   return {
     kind: 'deferred',
@@ -420,16 +424,14 @@ async function settleDurableContainment(
   progress: RecoveredProgress,
 ): Promise<RecoveryDisposition | Readonly<{ kind: 'observable-live'; containment: DurableContainment }>> {
   const { state, progressStore, observeDurableRecoveryContainment } = settlement.deps;
-  const { jobId, authority } = settlement.recovery;
-  const { launchRecord } = authority;
+  const { jobId } = settlement.recovery;
   const { abandonHeldJob } = settlement.context;
   const { controls } = settlement;
   const persistedContainment = readDurableCliContainmentStatus(progressStore.getDb(), jobId);
   if (persistedContainment.kind === 'corrupt') {
     const reason = 'The durable containment status is corrupt.';
-    progressStore.appendProgress(
-      jobId,
-      launchRecord.conversationJobId,
+    appendRecoveryProgress(
+      settlement,
       `${reason} Repair or remove the status row before retrying this recovery coordinate.`,
     );
     state.recoveryRegistry?.setAbortHandler(jobId, () => abandonHeldJob(jobId));
@@ -475,8 +477,7 @@ function holdUnobservableDurableRecovery(
   containment: DurableContainment,
 ): RecoveryDisposition {
   const { state, progressStore } = settlement.deps;
-  const { jobId, authority } = settlement.recovery;
-  const { launchRecord } = authority;
+  const { jobId } = settlement.recovery;
   const { abandonHeldJob } = settlement.context;
   if (containment.observation.kind !== 'unobservable') {
     throw new Error('Unobservable durable recovery hold requires an unobservable containment result.');
@@ -490,11 +491,7 @@ function holdUnobservableDurableRecovery(
   const detail =
     `${reason}. Repair the recorded containment before retrying this recovery coordinate. ` +
     'Operator abandonment remains available without proving process absence or sending a signal.';
-  progressStore.appendProgress(
-    jobId,
-    launchRecord.conversationJobId,
-    `Durable recovery containment pid=${runtimeRecord.pid} is held (${detail})`,
-  );
+  appendRecoveryProgress(settlement, `Durable recovery containment pid=${runtimeRecord.pid} is held (${detail})`);
   state.recoveryRegistry?.setAbortHandler(jobId, () => abandonHeldJob(jobId));
   settlement.controls.clearProcessLocalCleanup();
   settlement.controls.report(`Held durable recovery job: ${jobId}: ${reason}\n`);

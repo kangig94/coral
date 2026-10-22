@@ -14,11 +14,14 @@ export type SourceReadDisposition = 'readable' | 'transient-unknown' | 'settled-
 
 export class HistoricalDecodeError extends Error {}
 
+export class JobEvidenceDecodeError extends Error {}
+
 /** Only the job decoder can settle a read; source failures belong to the epoch's maintenance owner. */
 export function sourceReadFailureDisposition(error: unknown): Exclude<SourceReadDisposition, 'readable' | 'retired'> {
   return error instanceof z.ZodError ||
     error instanceof SyntaxError ||
     error instanceof HistoricalDecodeError ||
+    error instanceof JobEvidenceDecodeError ||
     error instanceof StoreCodecError ||
     error instanceof StoreDecodeError
     ? 'settled-unreadable'

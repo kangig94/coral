@@ -273,7 +273,7 @@ async function startKernelThroughPool(child: FakeClaudePrintChild) {
     claudeSessionKernel(
       {
         action: 'exec',
-        sessionId: TEST_SESSION_ID,
+        jobId: TEST_SESSION_ID,
         name: 'claude',
         prompt: 'hello',
         cwd: fixtureCanonicalWorkDir('/workspace'),
@@ -1212,7 +1212,7 @@ describe('PrintSessionController', () => {
     };
     const request: ProviderRequest = {
       action: 'exec',
-      sessionId: TEST_SESSION_ID,
+      jobId: TEST_SESSION_ID,
       name: 'claude',
       prompt: 'hello',
       cwd: fixtureCanonicalWorkDir('/workspace'),
@@ -1401,7 +1401,7 @@ describe('PrintSessionController', () => {
     };
     const request: ProviderRequest = {
       action: 'exec',
-      sessionId: TEST_SESSION_ID,
+      jobId: TEST_SESSION_ID,
       name: 'claude',
       prompt: 'hello',
       cwd: fixtureCanonicalWorkDir('/workspace'),

@@ -120,10 +120,18 @@ export function terminalizeProviderOperation(
     throw new ProviderOperationTerminalMetadataError(record.operation);
   }
   if (status.finishing === true) throw new Error('An accepted outcome belongs to the execution finalizer.');
-  const anchored = store.getDb().prepare<[number, string], { body: Uint8Array }>(
-    "SELECT body FROM events WHERE seq = ? AND stream_kind = 'job' AND stream_id = ? AND type = 'job.execution.requested'",
-  ).get(record.jobLaunchEventSeq, record.operation.jobId);
-  if (anchored === undefined || jobExecutionRequestedBodySchema.parse(JSON.parse(Buffer.from(anchored.body).toString('utf8'))).execution !== status.execution)
+  const anchored = store
+    .getDb()
+    .prepare<
+      [number, string],
+      { body: Uint8Array }
+    >("SELECT body FROM events WHERE seq = ? AND stream_kind = 'job' AND stream_id = ? AND type = 'job.execution.requested'")
+    .get(record.jobLaunchEventSeq, record.operation.jobId);
+  if (
+    anchored === undefined ||
+    jobExecutionRequestedBodySchema.parse(JSON.parse(Buffer.from(anchored.body).toString('utf8'))).execution !==
+      status.execution
+  )
     throw new ProviderOperationTerminalMetadataError(record.operation);
   const durationMs = elapsedDurationMs(launch.createdAt, nowMs, `job ${record.operation.jobId}`);
   let result: ProviderOperationTerminalizationResult | null = null;
@@ -138,8 +146,8 @@ export function terminalizeProviderOperation(
 
       const options = {
         jobId: record.operation.jobId,
-        execution: status.execution,
-        namespace: status.backendNamespace,
+        execution: launch.execution,
+        namespace: launch.backendNamespace,
         project: status.projectRoot,
       } as const;
       if (directive.kind === 'terminal-aborted') {
@@ -159,11 +167,11 @@ export function terminalizeProviderOperation(
         const cause = commit.append({
           type: 'job.execution.progress',
           stream: { kind: 'job', id: record.operation.jobId },
-          namespace: status.backendNamespace,
+          namespace: launch.backendNamespace,
           project: status.projectRoot,
-          refs: buildJobEventRefs({ jobId: record.operation.jobId, }),
+          refs: buildJobEventRefs({ jobId: record.operation.jobId }),
           body: {
-            execution: status.execution,
+            execution: launch.execution,
             kind: 'domain',
             stage: 'provider_operation_failed',
             message: directive.reason,

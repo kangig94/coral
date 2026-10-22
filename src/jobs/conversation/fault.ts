@@ -1,11 +1,7 @@
 import { z } from 'zod';
 
 import { assertNever } from '../../infra/error-format.js';
-import {
-  turnFailureDiagnosticPhaseSchema,
-  turnFailureDiagnosticReasonSchema,
-  turnFailureDiagnosticSchema,
-} from '../../providers/turn-failure-diagnostic.js';
+import { turnFailureDiagnosticSchema } from '../../providers/turn-failure-diagnostic.js';
 
 const sessionInterruptTriggerSchema = z.enum(['restart', 'handoff']);
 
@@ -18,29 +14,22 @@ const sessionContinuityStateSchema = z.enum([
 ]);
 export type SessionContinuityState = z.infer<typeof sessionContinuityStateSchema>;
 
-export const sessionInterruptedFaultSchema = z
+export const conversationInterruptedFaultSchema = z
   .object({
     trigger: sessionInterruptTriggerSchema,
     continuity: sessionContinuityStateSchema,
   })
   .strict();
-export type SessionInterruptedFault = z.infer<typeof sessionInterruptedFaultSchema>;
+export type ConversationInterruptedFault = z.infer<typeof conversationInterruptedFaultSchema>;
 
 const sessionProviderFailureReasonSchema = z.enum(['session_unavailable', 'request_failed']);
-
-export const sessionProviderFailureDiagnosticReasonSchema = turnFailureDiagnosticReasonSchema;
-
-export const sessionProviderFailureDiagnosticPhaseSchema = turnFailureDiagnosticPhaseSchema;
-
-export const sessionProviderFailureDiagnosticSchema = turnFailureDiagnosticSchema;
-export type SessionProviderFailureDiagnostic = z.infer<typeof sessionProviderFailureDiagnosticSchema>;
 
 export const sessionProviderFailedFaultSchema = z
   .object({
     provider: z.string(),
     reason: sessionProviderFailureReasonSchema,
     message: z.string(),
-    diagnostic: sessionProviderFailureDiagnosticSchema.optional(),
+    diagnostic: turnFailureDiagnosticSchema.optional(),
   })
   .strict();
 export type SessionProviderFailedFault = z.infer<typeof sessionProviderFailedFaultSchema>;
@@ -73,7 +62,7 @@ export function continuitySentenceFragment(continuity: SessionContinuityState): 
   }
 }
 
-export function describeSessionInterrupted(fault: SessionInterruptedFault): string {
+export function describeConversationInterrupted(fault: ConversationInterruptedFault): string {
   const triggerText =
     fault.trigger === 'restart'
       ? 'App-server restarted during the turn'

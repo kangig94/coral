@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -68,7 +69,12 @@ it.each([
       expect(observe).not.toHaveBeenCalled();
       if (scenario === 'custody-with-readable-job') {
         const epochKey = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa:1';
-        new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot).register('job-live', epochKey, {
+        new JobLocationIndex(
+          runtime,
+          runtime.paths.coral.generation.dataRoot,
+          undefined,
+          currentCoralStoreFormat().fingerprint,
+        ).register('job-live', epochKey, {
           projectRoot: root,
           workDir: null,
           jobKind: 'provider',

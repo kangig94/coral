@@ -9,7 +9,6 @@ export function jobCreatedEvent(jobId: string, launch: JobOpenedBody): JobCreate
     return {
       kind: 'provider',
       jobId,
-      conversationJobId: jobId,
       provider: launch.conversation.provider,
       projectRoot: launch.projectRoot,
     };

@@ -66,9 +66,10 @@ describe('cause-ref job rendering', () => {
   it('surfaces indeterminate provider activation with a durable inspection command', () => {
     expect(
       renderRootEventDescription({
-        type: 'job.progress.emitted',
+        type: 'job.execution.progress',
         stream: { kind: 'job', id: 'job-activation-unknown' },
         body: {
+          execution: 1,
           kind: 'domain',
           stage: 'provider_operation_failed',
           message: 'Provider containment disappeared after activation may have begun.',

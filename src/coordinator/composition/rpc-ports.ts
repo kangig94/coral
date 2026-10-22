@@ -182,18 +182,12 @@ export function createCoordinatorRpcPorts({
         }
         return result;
       },
-      waitStream: async function* (request) {
-        const endWait = services.jobAttention.beginWait(request.jobIds.flatMap(jobId => {
-          const admission = request.admissions?.find(entry => entry.jobId === jobId);
-          const execution = admission === undefined ? getProgressStore().readStatus(jobId)?.execution : admission.detail?.status.execution;
-          return execution == null ? [] : [{ jobId, execution }];
-        }));
-        try {
-          yield* jobAddressing.waitStream(request);
-        } finally {
-          endWait();
-        }
-      },
+      waitStream: (request) =>
+        services.jobAttention.waitStream(
+          request,
+          (scoped) => jobAddressing.admitWait(scoped),
+          (scoped) => jobAddressing.waitStream(scoped),
+        ),
       waitHandoverSignal,
       list: createCoordinatorJobLister(getProgressStore, services.jobAttention),
       detail: (jobId) => jobAddressing.detail(jobId),

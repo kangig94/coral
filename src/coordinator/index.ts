@@ -1,3 +1,10 @@
+import type { AppendContext } from '../store/append.js';
+import type { StoreReadContext } from '../store/body-codec.js';
+import { currentCoralStoreFormat } from '../store-format.js';
+import { observeDurableRecoveryContainmentFor } from './services/recovery/lifecycle.js';
+import { readDurableCliContainmentStatus } from '../jobs/runtime-meta-store.js';
+import { ExecutionFinisher, readExecutionFinishingState } from '../jobs/finishing.js';
+import { hasProviderOperationForJob } from '../store/provider-operation-journal.js';
 import { loadRetainedCurrentJob } from '../jobs/retained-current.js';
 import { observeRecoveryPhase, startRecoveryPhase, type RecoveryObservation } from '../recovery/phase-observation.js';
 import type { ProgressSource } from '../jobs/wait/contract.js';
@@ -85,6 +92,7 @@ export type CoordinatorServerOptions = Omit<
   | 'createStoreServicesFromDbFn'
   | 'kbDaemonSupervisor'
   | 'buildProviderEventHandler'
+  | 'executionFinisher'
   | 'operationRegistry'
 > & {
   runtime?: Runtime;
@@ -112,7 +120,6 @@ function createCoordinatorStartupRecoveryRunner({
   getCurrentJournalSeq,
   bootFreshnessTimeoutMs,
   coordinatorCommit,
-  eventBus,
   lifecycleReactor,
   lifecycleReactorLifetime,
 }: {
@@ -245,7 +252,7 @@ function createCoordinatorStartupRecoveryRunner({
 }
 
 function registerBaseJournalCursors(driver: ConsumerDriver): void {
-  for (const id of ['jobs', 'sessions', 'discuss', 'workflow'] as const) {
+  for (const id of ['jobs', 'discuss', 'workflow'] as const) {
     driver.register({ id, authority: 'journal', kind: 'cursor', registrationKind: 'base' });
   }
 }
@@ -275,7 +282,10 @@ function createJobAppendObserver({
   jobLocations: JobLocationIndex;
   activeStoreEpoch: () => ResolvedStoreEpoch | null;
   readCore: () => CoordinatorCoreResult | null;
-}): ((input: Parameters<JobLocationIndex['beforeAppend']>[0]) => void) & { withCommitGuard: <T>(action: () => T) => T; withExecutionAdmission: NonNullable<ConstructorParameters<typeof JobStore>[3]['withExecutionAdmission']> } {
+}): ((input: Parameters<JobLocationIndex['beforeAppend']>[0]) => void) & {
+  withCommitGuard: NonNullable<AppendContext['withCommitGuard']>;
+  withExecutionAdmission: NonNullable<ConstructorParameters<typeof JobStore>[3]['withExecutionAdmission']>;
+} {
   const beforeAppend = (input: Parameters<JobLocationIndex['beforeAppend']>[0]): void => {
     if (input.stream.kind !== 'job' || !['job.opened', 'job.execution.requested'].includes(input.type)) return;
     const active = activeStoreEpoch();
@@ -283,26 +293,53 @@ function createJobAppendObserver({
     jobLocations.beforeAppend(input, encodeResolvedStoreEpoch(runtime, active));
   };
   return Object.assign(beforeAppend, {
-    withExecutionAdmission: (jobId: string, execution: number, subject: Parameters<JobLocationIndex['register']>[2], action: () => void): void => {
+    withExecutionAdmission: (
+      jobId: string,
+      execution: number,
+      subject: Parameters<JobLocationIndex['register']>[2],
+      action: () => void,
+    ): void => {
       const active = activeStoreEpoch();
       if (active === null) throw new Error('Job admission requires an active store epoch');
       const epochKey = encodeResolvedStoreEpoch(runtime, active);
-      jobLocations.withAdmissionGuard(epochKey, createCoordinatorStoreAccess(readCore).getStoreDb(), () => {
-        const core = readCore();
-        const generation = observeSuccessionWriterGeneration(runtime);
-        const controller = core !== null && generation !== null &&
-          generation.storeRoot === (active.canonicalStoreRoot ?? active.storeRoot) && generation.epoch === active.epoch
-          ? { buildSetId: core.identity.buildSetId, instanceId: core.identity.instanceId, controlGeneration: generation.generation }
-          : undefined;
-        jobLocations.prepareAdmission(jobId, execution, epochKey, subject, controller);
-        action();
-      });
+      jobLocations.withAdmissionGuard(
+        epochKey,
+        createCoordinatorStoreAccess(readCore).getStoreDb(),
+        () => {
+          const core = readCore();
+          const generation = observeSuccessionWriterGeneration(runtime);
+          const controller =
+            core !== null &&
+            generation !== null &&
+            generation.storeRoot === (active.canonicalStoreRoot ?? active.storeRoot) &&
+            generation.epoch === active.epoch
+              ? {
+                  buildSetId: core.identity.buildSetId,
+                  instanceId: core.identity.instanceId,
+                  controlGeneration: generation.generation,
+                }
+              : undefined;
+          jobLocations.prepareAdmission(jobId, execution, epochKey, subject, controller);
+          action();
+        },
+        undefined,
+        [jobId],
+      );
     },
-    withCommitGuard: <T>(action: () => T): T => {
+    withCommitGuard: <T>(
+      action: () => T,
+      admissions: Parameters<NonNullable<AppendContext['withCommitGuard']>>[1],
+    ): T => {
       const active = activeStoreEpoch();
       const core = readCore();
       if (active === null || core === null) throw new Error('Job append requires an active store epoch');
-      return jobLocations.withAdmissionGuard(encodeResolvedStoreEpoch(runtime, active), createCoordinatorStoreAccess(readCore).getStoreDb(), action);
+      return jobLocations.withAdmissionGuard(
+        encodeResolvedStoreEpoch(runtime, active),
+        createCoordinatorStoreAccess(readCore).getStoreDb(),
+        action,
+        undefined,
+        [...new Set(admissions)],
+      );
     },
   });
 }
@@ -409,6 +446,7 @@ function createCoordinatorJournalAssembly({
   textProjectionHealth,
   beforeJobAppend,
   observeLifecycleCommitted,
+  getExecutionFinisher,
 }: {
   runtime: Runtime;
   readCore: () => CoordinatorCoreResult | null;
@@ -421,6 +459,7 @@ function createCoordinatorJournalAssembly({
   textProjectionHealth: ReturnType<typeof createTextProjectionHealthTracker>;
   beforeJobAppend: ReturnType<typeof createJobAppendObserver>;
   observeLifecycleCommitted: PostCommitObserver;
+  getExecutionFinisher: () => ExecutionFinisher;
 }) {
   const { getStoreServices, getStoreDb, getQueryDb, getConsumerDriver } = createCoordinatorStoreAccess(readCore);
   const exportTerminalResults = observeTerminalResultExports(
@@ -430,7 +469,13 @@ function createCoordinatorJournalAssembly({
       progressStore.configureResultExports(jobLocations);
       const epochKey = jobLocations.read(jobId)?.epochKey;
       if (epochKey === undefined) throw new Error(`Terminal has no job location: ${jobId}`);
-      const location = loadRetainedCurrentJob(progressStore.getDb(), epochKey, jobId, runtime.paths.coral.exports.jobsRoot);
+      const location = loadRetainedCurrentJob(
+        progressStore.getDb(),
+        epochKey,
+        jobId,
+        runtime.paths.coral.exports.jobsRoot,
+        renderWorkflowReport,
+      );
       if (location?.detail.kind !== 'recorded') throw new Error(`Terminal has no job detail: ${jobId}`);
       jobLocations.recordExecutionDetails(jobId, location.executions ?? [], location.detail.value);
     },
@@ -474,21 +519,26 @@ function createCoordinatorJournalAssembly({
 
   const getCurrentJournalSeq = () =>
     prepareCached<[], { seq: number }>(getQueryDb(), 'SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get()?.seq ?? 0;
-  const coordinatorCommit: CommitEventsFn = (cb) => {
+  const coordinatorCommit: CommitEventsFn = (cb, options) => {
     const db = getStoreDb();
-    const appended = commitJournalEvents(db, cb, {
-      now: () => nowDate(runtime.time),
-      reducers,
-      bodyCodec,
-      providers: providerLookupPortFromCatalog(providerRegistry),
-      beforeAppend: beforeJobAppend,
-      withCommitGuard: beforeJobAppend.withCommitGuard,
-    });
+    const appended = commitJournalEvents(
+      db,
+      cb,
+      {
+        now: () => nowDate(runtime.time),
+        reducers,
+        bodyCodec,
+        providers: providerLookupPortFromCatalog(providerRegistry),
+        beforeAppend: beforeJobAppend,
+        withCommitGuard: beforeJobAppend.withCommitGuard,
+      },
+      options,
+    );
     if (appended.length === 0) {
       return appended;
     }
 
-    publishJobEvents(appended);
+    publishJobEvents(appended, getStoreDb(), { ...reducers, bodyCodec });
     getConsumerDriver().notify('journal', appended[appended.length - 1]?.seq ?? getCurrentJournalSeq());
     observeCommitted(appended);
     return appended;
@@ -505,6 +555,7 @@ function createCoordinatorJournalAssembly({
       operationRegistry,
       beforeJobAppend,
       observeCommitted,
+      executionFinisher: getExecutionFinisher(),
     });
   return {
     getStoreDb,
@@ -519,10 +570,14 @@ function createCoordinatorJournalAssembly({
 }
 
 function createKbDaemonEventHandler({
+  getStoreDb,
+  readCtx,
   getConsumerDriver,
   getCurrentJournalSeq,
   observeCommitted,
 }: {
+  getStoreDb: () => Database;
+  readCtx: StoreReadContext;
   getConsumerDriver: () => ConsumerDriver;
   getCurrentJournalSeq: () => number;
   observeCommitted: PostCommitObserver;
@@ -537,7 +592,7 @@ function createKbDaemonEventHandler({
       if (appended.length === 0) {
         return;
       }
-      publishJobEvents(appended);
+      publishJobEvents(appended, getStoreDb(), readCtx);
       getConsumerDriver().notify('journal', appended[appended.length - 1]?.seq ?? getCurrentJournalSeq());
       observeCommitted(appended);
       return;
@@ -648,10 +703,10 @@ function createCoordinatorProviderEventHandler({
   reducers,
   bodyCodec,
   providerRegistry,
-  eventBus,
   operationRegistry,
   beforeJobAppend,
   observeCommitted,
+  executionFinisher,
 }: {
   runtime: Runtime;
   getStoreDb: () => Database;
@@ -663,8 +718,10 @@ function createCoordinatorProviderEventHandler({
   operationRegistry: LocalOperationRegistry;
   beforeJobAppend: ReturnType<typeof createJobAppendObserver>;
   observeCommitted: PostCommitObserver;
+  executionFinisher: ExecutionFinisher;
 }): ProviderEventHandler {
   return createProviderEventHandler({
+    executionFinisher,
     db: getStoreDb(),
     progressStore: getStoreServices().progressStore,
     appendContext: {
@@ -684,19 +741,6 @@ function createCoordinatorProviderEventHandler({
     },
 
     recordedStopCauseFor: (identity) => operationRegistry.recordedStopCauseFor(identity),
-    operations: {
-      settled: (identity) => {
-        // The saga tombstone must outlive a lost settlement reply, so this callback releases only the
-        // process-local admission, abort, and pool bookkeeping owned by this coordinator generation.
-        try {
-          operationRegistry.settled(identity);
-        } catch (error: unknown) {
-          backendLog.warn(
-            `Failed to release local bookkeeping for job '${identity.jobId}'/operation '${identity.operationId}': ${errorMessage(error)}`,
-          );
-        }
-      },
-    },
   });
 }
 
@@ -789,7 +833,6 @@ export async function awaitRecoveryCursorBarrier(
 ): Promise<void> {
   await Promise.all([
     driver.waitFreshUntil('journal', currentMaxSeq, 'jobs', timeoutMs),
-    driver.waitFreshUntil('journal', currentMaxSeq, 'sessions', timeoutMs),
     driver.waitFreshUntil('journal', currentMaxSeq, 'discuss', timeoutMs),
     driver.waitFreshUntil('journal', currentMaxSeq, 'workflow', timeoutMs),
   ]);
@@ -858,7 +901,12 @@ export function createCoordinatorServer(options: CoordinatorServerOptions): Coor
   } = options;
   const flavor = deriveCoordinatorFlavor(options);
   const runtime = providedRuntime ?? createRealRuntime(flavor);
-  const jobLocations = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot, renderWorkflowReport);
+  const jobLocations = new JobLocationIndex(
+    runtime,
+    runtime.paths.coral.generation.dataRoot,
+    renderWorkflowReport,
+    currentCoralStoreFormat().fingerprint,
+  );
   let core: CoordinatorCoreResult | null = null;
   const activeStoreEpoch = (): ResolvedStoreEpoch | null => {
     const opened = core?.openedStoreEpoch() ?? null;
@@ -903,7 +951,14 @@ export function createCoordinatorServer(options: CoordinatorServerOptions): Coor
     operationRegistry,
     textProjectionHealth,
     beforeJobAppend,
-    observeLifecycleCommitted: (appended) => lifecycleReactor.observe(appended),
+    observeLifecycleCommitted: (appended) => {
+      try {
+        lifecycleReactor.observe(appended);
+      } finally {
+        executionFinisher.observeCommitted(appended);
+      }
+    },
+    getExecutionFinisher: () => executionFinisher,
   });
   const lifecycleReactorLifetime = new AbortController();
   const lifecycleReactor = createLifecycleReactor({
@@ -917,22 +972,99 @@ export function createCoordinatorServer(options: CoordinatorServerOptions): Coor
     commitEvents: coordinatorCommit,
     signal: lifecycleReactorLifetime.signal,
   });
+  const executionFinisher = new ExecutionFinisher({
+    recovery: { db: getQueryDb, readCtx, time: runtime.time },
+    time: runtime.time,
+    log: (message) => backendLog.warn(message),
+    commit: coordinatorCommit,
+    read: (address) => readExecutionFinishingState(getQueryDb(), address, readCtx),
+    quiesce: async (address) => {
+      if (core === null) throw new Error('Execution finishing requires the coordinator.');
+      if (core.holdsInternalExecution(address.jobId, address.execution)) return false;
+      const progressStore = core.storeServicesRef.get().progressStore;
+      const jobRuntime = progressStore.readRuntimeProjection(address.jobId);
+      if (jobRuntime?.transport === 'durable-cli') {
+        const containment = readDurableCliContainmentStatus(getQueryDb(), address.jobId);
+        if (containment.kind === 'corrupt') return false;
+        const abandoned = containment.kind === 'valid' && containment.status.disposition.kind === 'operator-abandoned';
+        if (
+          !abandoned &&
+          observeDurableRecoveryContainmentFor(progressStore, runtime, address.jobId, jobRuntime).observation.kind !==
+            'absent'
+        )
+          return false;
+      }
+      if (jobRuntime?.transport === 'internal' && jobRuntime.owner === 'kb-daemon') {
+        const daemon = kbDaemonSupervisor.read();
+        if (daemon.phase === 'online') {
+          const inventory = await kbDaemonSupervisor.listActiveKbJobsForSuccession?.();
+          if (inventory === undefined || inventory.active.includes(address.jobId)) return false;
+        } else if (
+          !(
+            daemon.phase === 'disabled' ||
+            daemon.phase === 'stopped' ||
+            (daemon.phase === 'failed' && daemon.childPresence === 'absent')
+          )
+        ) {
+          return false;
+        }
+      }
+      return (
+        !hasProviderOperationForJob(getQueryDb(), address.jobId) &&
+        operationRegistry.stateForJob(address.jobId) === null &&
+        core.launchCoordinator.reservationFor(address.jobId) === null
+      );
+    },
+    retentionAction: (address) => {
+      return lifecycleReactor.retentionAction(address);
+    },
+    settleRetention: (address, action) =>
+      lifecycleReactor.isRetentionAdmitted()
+        ? lifecycleReactor.settleRetention(address, action)
+        : Promise.resolve({ kind: 'pending' }),
+  });
   const disposeLifecycleReactor = createCoordinatorLifecycleReactorDisposal(lifecycleReactor, lifecycleReactorLifetime);
-  const shutdownLifecycleReactor = coreOptions.disposeLifecycleReactor ?? disposeLifecycleReactor;
-  kbDaemonEventState.handle = createKbDaemonEventHandler({ getConsumerDriver, getCurrentJournalSeq, observeCommitted });
+  const shutdownLifecycleReactor = async (): Promise<void> => {
+    lifecycleReactorLifetime.abort();
+    await Promise.all([
+      executionFinisher.dispose(),
+      (coreOptions.disposeLifecycleReactor ?? disposeLifecycleReactor)(),
+    ]);
+  };
+  kbDaemonEventState.handle = createKbDaemonEventHandler({
+    getStoreDb,
+    readCtx,
+    getConsumerDriver,
+    getCurrentJournalSeq,
+    observeCommitted,
+  });
 
   core = createCoordinatorCore(
     {
       ...coreOptions,
+      executionFinisher,
       jobLocationIndex: jobLocations,
       providerRegistry,
       providerHostAdmission: createCoordinatorProviderHostAdmission(),
       eventBus,
       runtime,
       storeFormat,
-      discardSessionArtifacts: (conversationJobId) => lifecycleReactor.discardConversationArtifacts(conversationJobId),
+      discardConversationArtifacts: (jobId) => lifecycleReactor.discardConversationArtifacts(jobId),
       disposeLifecycleReactor: shutdownLifecycleReactor,
-      admitLifecycleRetention: () => lifecycleReactor.admitRetention(),
+      admitLifecycleRetention: () => {
+        lifecycleReactor.admitRetention();
+        const finishing = getQueryDb()
+          .prepare<
+            [],
+            { job_id: string; execution: number }
+          >('SELECT job_id, execution FROM projection_jobs WHERE finishing = 1 AND execution IS NOT NULL')
+          .all();
+        for (const row of finishing) {
+          void executionFinisher.finish({ jobId: row.job_id, execution: row.execution }).catch((error: unknown) => {
+            backendLog.warn(`Execution finishing remains pending for ${row.job_id}: ${errorMessage(error)}`);
+          });
+        }
+      },
       createStoreServicesFromDbFn,
       buildProviderEventHandler,
       operationRegistry,

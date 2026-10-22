@@ -5,7 +5,7 @@ import { errorMessage } from '../../../infra/error-format.js';
 import { StoreDecodeError } from '../../../store/body-codec.js';
 import { elapsedDurationMs } from '../../../jobs/duration.js';
 import { isTerminalPhase } from '../../../jobs/phase.js';
-import type { JobTerminalInput } from '../../../jobs/records.js';
+import type { JobTerminal } from '../../../jobs/records.js';
 import { appendJobExecutionOutcomeAccepted } from '../../../jobs/terminal/recording.js';
 import type { JobLifecycleFault, JobProgressFault } from '../../../jobs/outcome.js';
 import type { JobStore } from '../../../jobs/store.js';
@@ -55,7 +55,7 @@ export type CoordinatorWalkOptions = {
 export type CoordinatorTerminalSettlement =
   | Readonly<{ kind: 'none' }>
   | Readonly<{ kind: 'fault'; fault: JobLifecycleFault | JobProgressFault; content: string }>
-  | Readonly<{ kind: 'terminal'; terminal: JobTerminalInput }>;
+  | Readonly<{ kind: 'terminal'; terminal: JobTerminal }>;
 
 export type CoordinatorSettlementOptions = Readonly<{
   jobId: string;
@@ -74,8 +74,8 @@ class CoordinatorRecoveryCommitError extends Error {
 export type CoordinatorRecoveryStatus = NonNullable<CoordinatorRecoveryItem['detail']>['status'];
 
 export type CoordinatorSettlementProvenance = Readonly<{
-  fault(status: CoordinatorRecoveryStatus): Readonly<{ namespace: string }>;
-  terminal(status: CoordinatorRecoveryStatus): Readonly<{ namespace: string }>;
+  fault(status: CoordinatorRecoveryStatus): Readonly<{ namespace: string | undefined }>;
+  terminal(status: CoordinatorRecoveryStatus): Readonly<{ namespace: string | undefined }>;
 }>;
 
 export function settleCoordinatorRecoveryItemWithProvenance(
@@ -85,9 +85,12 @@ export function settleCoordinatorRecoveryItemWithProvenance(
 ): readonly RecoverySettlementFact[] {
   const { detail } = item;
   const status = detail?.status.jobId === options.jobId ? detail.status : null;
-  const terminalRequired = options.terminal.kind !== 'none' && status !== null && !isTerminalPhase(status.phase);
+  const terminalRequired =
+    options.terminal.kind !== 'none' && status !== null && !status.finishing && !isTerminalPhase(status.phase);
 
   if (terminalRequired) {
+    if (status.execution === null) throw new Error(`Job '${options.jobId}' has no execution to settle.`);
+    const execution = status.execution;
     try {
       options.coordinatorCommit((commit) => {
         if (terminalRequired && status !== null) {
@@ -108,7 +111,7 @@ export function settleCoordinatorRecoveryItemWithProvenance(
               options.terminal.fault,
               {
                 jobId: options.jobId,
-                execution: status.execution,
+                execution,
                 namespace: provenance.fault(status).namespace,
                 project: status.projectRoot,
               },
@@ -117,10 +120,16 @@ export function settleCoordinatorRecoveryItemWithProvenance(
           } else if (options.terminal.kind === 'terminal') {
             appendJobExecutionOutcomeAccepted(commit, {
               jobId: options.jobId,
-              execution: status.execution,
+              execution,
               namespace: provenance.terminal(status).namespace,
               project: status.projectRoot,
-              terminal: options.terminal.terminal,
+              terminal: {
+                ...options.terminal.terminal,
+                outcome:
+                  options.terminal.terminal.outcome.kind === 'failed'
+                    ? { kind: 'failed', causeRef: options.terminal.terminal.outcome.causeRef }
+                    : options.terminal.terminal.outcome,
+              },
             });
           }
         }
@@ -137,7 +146,6 @@ export function settleCoordinatorRecoveryItemWithProvenance(
       outcome: terminalRequired ? ('done' as const) : ('not-applicable' as const),
       ...(terminalRequired ? { authorityRef: `job:${options.jobId}:terminal` } : {}),
     }),
-
   ]);
 }
 

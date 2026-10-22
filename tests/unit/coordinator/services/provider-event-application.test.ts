@@ -16,7 +16,8 @@ import { discussRegistry } from '#src/discuss/event-registry.js';
 import { workflowRegistry } from '#src/workflow/events.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
-import { allocateTestSession } from '#tests/helpers/session.js';
+import { seedTestSessionProjection } from '#tests/helpers/session.js';
+import { ExecutionFinisher, readExecutionFinishingState } from '#src/jobs/finishing.js';
 import { ConversationManager } from '#src/jobs/conversation/shell.js';
 import type { JobConversation } from '#src/jobs/conversation/entry.js';
 import type { ProviderBindingCatalog } from '#src/providers/catalog.js';
@@ -26,6 +27,8 @@ import { providerOperationRecord } from '#tests/unit/store/provider-operation-fi
 import {
   compareAndSwapProviderOperation,
   insertProviderOperation,
+  deleteProviderOperation,
+  readProviderOperationForJob,
   readProviderOperation,
 } from '#src/store/provider-operation-journal.js';
 import { providerOperationRecordSchema } from '#src/store/provider-operation-record.js';
@@ -53,6 +56,7 @@ const BACKEND_NAMESPACE = 'test-ns';
 let runtime: ReturnType<typeof createRealRuntime>;
 let progressStore: JobStore;
 let conversationManager: ConversationManager;
+let executionFinisher: ExecutionFinisher;
 
 function testAppendContext() {
   return {
@@ -100,9 +104,8 @@ function testDeps(overrides: Partial<ProviderEventApplicationDeps> = {}): Provid
     appendContext: testAppendContext(),
     providerRegistry: fakeCatalog(),
     runtime,
-    emitSessionReleased: () => {},
+    executionFinisher,
     recordedStopCauseFor: () => null,
-    operations: { settled: () => {} },
     observeCommitted: () => {},
     ...overrides,
   };
@@ -111,22 +114,25 @@ function testDeps(overrides: Partial<ProviderEventApplicationDeps> = {}): Provid
 /** Allocates a claimed job and its executing saga. */
 function seedOperation(): { jobId: string; sessionId: string; identity: ProviderOperationEventIdentity } {
   const jobId = randomUUID();
-  const session = allocateTestSession(
-    conversationManager,
-    'codex',
-    'agent',
-    undefined,
-    '/project',
-    '/project',
-    BACKEND_NAMESPACE,
-  );
-  conversationManager.claimForJobSync(session.sessionId, jobId);
-  progressStore.initJob({
+  seedTestSessionProjection(progressStore.getDb(), {
     jobId,
-    sessionId: session.sessionId,
     provider: 'codex',
     projectRoot: '/project',
     backendNamespace: BACKEND_NAMESPACE,
+  });
+  progressStore.appendLaunchRequested(jobId, {
+    jobId,
+    execution: 1,
+    owner: { kind: 'provider-session', id: jobId },
+    provider: 'codex',
+    projectRoot: '/project',
+    backendNamespace: BACKEND_NAMESPACE,
+    jobKind: 'provider',
+    pool: 'default',
+    enqueueSequence: 1,
+    providerAction: 'exec',
+    request: { prompt: 'test', cwd: '/project', bypassPermissions: false, coralEnv: {} },
+    createdAt: new Date(runtime.time.now()).toISOString(),
   });
 
   const identity: ProviderOperationEventIdentity = {
@@ -135,16 +141,34 @@ function seedOperation(): { jobId: string; sessionId: string; identity: Provider
     proxyInstanceId: PROXY_INSTANCE_ID,
     buildSetId: BUILD_SET_ID,
   };
-  insertProviderOperation(progressStore.getDb(), providerOperationRecord('executing', { operation: identity }));
+  const requested = progressStore
+    .getDb()
+    .prepare<
+      [string],
+      { seq: number }
+    >("SELECT seq FROM events WHERE stream_id = ? AND type = 'job.execution.requested'")
+    .get(jobId);
+  if (requested === undefined) throw new Error('Expected execution request');
+  insertProviderOperation(progressStore.getDb(), {
+    ...providerOperationRecord('executing', { operation: identity }),
+    jobLaunchEventSeq: requested.seq,
+  });
 
-  return { jobId, sessionId: session.sessionId, identity };
+  return { jobId, sessionId: jobId, identity };
+}
+
+async function settleOperation(identity: ProviderOperationEventIdentity): Promise<void> {
+  const record = readProviderOperation(progressStore.getDb(), identity);
+  if (record?.phase !== 'settlement-pending') throw new Error('Expected a pending settlement');
+  deleteProviderOperation(progressStore.getDb(), record);
+  await executionFinisher.finish({ jobId: identity.jobId, execution: 1 });
 }
 
 function readSession(sessionId: string): JobConversation | null {
   return conversationManager.get('codex', sessionId);
 }
 
-/** `JobStore.readJobEvents` only ever returns `job.progress.emitted`/`job.terminal.recorded` (normalized to
+/** `JobStore.readJobEvents` only ever returns `job.execution.progress`/`job.terminal.recorded` (normalized to
  *  `'progress'`/`'terminal'`), so proving `session.interrupted` landed means reading the raw journal. Its
  *  stream is the *session*, not the job (`sessionFaultEvent`), so callers pass the session id. */
 function rawEventsByType(streamId: string, type: string): { body: unknown }[] {
@@ -166,13 +190,20 @@ beforeEach(() => {
     providers: permissiveProviderLookupPort,
     reducers: composeReducers(jobsRegistry, discussRegistry, workflowRegistry),
   });
-  conversationManager = ConversationManager.forProduction(
+  conversationManager = new ConversationManager(
     '/project',
     runtime,
     (cb) => progressStore.commit(cb),
-    () => {},
-    { db: progressStore.getDb() },
+    progressStore.getDb(),
   );
+  executionFinisher = new ExecutionFinisher({
+    time: runtime.time,
+    commit: (write) => progressStore.commit(write),
+    read: (address) => readExecutionFinishingState(progressStore.getDb(), address, progressStore),
+    quiesce: async (address) => readProviderOperationForJob(progressStore.getDb(), address.jobId) === null,
+    retentionAction: async () => ({ attempt: 0, handles: [] }),
+    settleRetention: async () => ({ kind: 'completed', outcome: 'skipped_no_handles' }),
+  });
 });
 
 afterEach(() => {
@@ -220,7 +251,7 @@ describe('createStoreProviderEventEffectPort', () => {
 
     await expect(
       port.runInTransaction(async (tx) => {
-        await port.appendJobTerminal(tx, identity, 1, {
+        await port.acceptExecutionOutcome(tx, identity, 1, {
           kind: 'direct',
           body: {
             kind: 'terminal',
@@ -228,7 +259,6 @@ describe('createStoreProviderEventEffectPort', () => {
             diagnostics: {},
           },
         });
-        await port.releaseSessionClaim(tx, identity);
         await port.advanceWatermark(tx, identity, 1);
         await port.markSettlementPending(tx, identity, 1);
         throw new Error('boom after settlement intent');
@@ -249,7 +279,7 @@ describe('createStoreProviderEventEffectPort', () => {
 
     await expect(
       port.runInTransaction(async (tx) => {
-        await port.appendJobTerminal(tx, identity, 1, {
+        await port.acceptExecutionOutcome(tx, identity, 1, {
           kind: 'direct',
           body: {
             kind: 'terminal',
@@ -267,7 +297,7 @@ describe('createStoreProviderEventEffectPort', () => {
 
 describe('createProviderEventHandler', () => {
   it.each([false, true])(
-    'keeps send accounting and final failure=%s readable by strict legacy codecs, detail and wait',
+    'keeps send accounting and final failure=%s readable by strict execution codecs, detail and wait',
     async (fails) => {
       const { identity } = seedOperation();
       const handler = createProviderEventHandler(testDeps());
@@ -312,11 +342,12 @@ describe('createProviderEventHandler', () => {
 
       const rows = progressStore
         .getDb()
-        .prepare("SELECT * FROM events WHERE stream_id = ? AND type = 'job.progress.emitted' ORDER BY seq")
+        .prepare("SELECT * FROM events WHERE stream_id = ? AND type = 'job.execution.progress' ORDER BY seq")
         .all(identity.jobId) as EventsRow[];
       expect(rows).toHaveLength(3);
-      const legacyMessageSchema = z
+      const executionMessageSchema = z
         .object({
+          execution: z.literal(1),
           kind: z.literal('message'),
           message: z.string(),
           timing: z
@@ -329,18 +360,26 @@ describe('createProviderEventHandler', () => {
             .strict(),
         })
         .strict();
-      const legacyReadContext = {
-        schemas: new Map([['job.progress.emitted', legacyMessageSchema]]),
-        streamKinds: new Map([['job.progress.emitted', 'job' as const]]),
+      const executionReadContext = {
+        schemas: new Map([['job.execution.progress', executionMessageSchema]]),
+        streamKinds: new Map([['job.execution.progress', 'job' as const]]),
         bodyCodec: createEventBodyCodec(),
       };
       for (const [index, row] of rows.entries()) {
-        expect(decodeStoredBody(row, legacyReadContext)).toEqual({
+        expect(decodeStoredBody(row, executionReadContext)).toEqual({
+          execution: 1,
           kind: 'message',
           message: messages[index],
           timing: expect.any(Object),
         });
       }
+      expect(readProviderOperation(progressStore.getDb(), identity)).toMatchObject({
+        phase: 'settlement-pending',
+        committedThroughProviderSeq: 4,
+        terminalProviderSeq: 4,
+      });
+      expect(progressStore.readStatus(identity.jobId)?.finishing).toBe(true);
+      await settleOperation(identity);
       const detail = loadJobDetail(progressStore.getDb(), identity.jobId, progressStore);
       expect(detail?.events.filter((event) => event.type === 'progress').map((event) => event.message)).toEqual(
         messages,
@@ -372,11 +411,7 @@ describe('createProviderEventHandler', () => {
         kind: 'read',
         value: messages,
       });
-      expect(readProviderOperation(progressStore.getDb(), identity)).toMatchObject({
-        phase: 'settlement-pending',
-        committedThroughProviderSeq: 4,
-        terminalProviderSeq: 4,
-      });
+      expect(readProviderOperation(progressStore.getDb(), identity)).toBeNull();
     },
   );
 
@@ -409,11 +444,14 @@ describe('createProviderEventHandler', () => {
     expect(await handler(request)).toEqual({ kind: 'ack', committedThroughProviderSeq: 1 });
     expect(await handler(request)).toEqual({ kind: 'ack', committedThroughProviderSeq: 1 });
 
-    expect(progressStore.readJobEvents(identity.jobId).filter((event) => event.type === 'terminal')).toHaveLength(1);
+    expect(rawEventsByType(identity.jobId, 'job.execution.outcome.accepted')).toHaveLength(1);
+    expect(progressStore.readTerminalProjection(identity.jobId)).toBeNull();
     expect(readProviderOperation(progressStore.getDb(), identity)).toMatchObject({
       phase: 'settlement-pending',
       terminalProviderSeq: 1,
     });
+    await settleOperation(identity);
+    expect(progressStore.readJobEvents(identity.jobId).filter((event) => event.type === 'terminal')).toHaveLength(1);
   });
 
   it('requests replay from the current watermark on a sequence gap, writing nothing', async () => {
@@ -450,10 +488,12 @@ describe('createProviderEventHandler', () => {
     });
 
     expect(result).toEqual({ kind: 'ack', committedThroughProviderSeq: 1 });
-    const interrupted = rawEventsByType(sessionId, 'session.interrupted')[0];
+    const interrupted = rawEventsByType(sessionId, 'job.interrupted')[0];
     expect((interrupted?.body as { trigger?: string } | undefined)?.trigger).toBe('restart');
-    expect(readSession(sessionId)?.activeJobId).toBeUndefined();
+    expect(readSession(sessionId)?.finishing).toBe(true);
     expect(readProviderOperation(progressStore.getDb(), identity)?.phase).toBe('settlement-pending');
+    await settleOperation(identity);
+    expect(readSession(sessionId)?.open).toBe(false);
   });
 
   it('refuses a suspended event with no recorded operation.stop.v1 cause rather than guessing one', async () => {
@@ -498,12 +538,15 @@ describe('createProviderEventHandler', () => {
       committedThroughProviderSeq: 1,
     });
 
-    expect(progressStore.readTerminalProjection(identity.jobId)?.outcome.kind).toBe('failed');
-    expect(rawEventsByType(sessionId, 'session.interrupted')).toEqual([]);
-    expect(readSession(sessionId)?.activeJobId).toBeUndefined();
+    expect(rawEventsByType(identity.jobId, 'job.execution.outcome.accepted')).toHaveLength(1);
+    expect(rawEventsByType(sessionId, 'job.interrupted')).toEqual([]);
+    expect(readSession(sessionId)?.finishing).toBe(true);
     expect(readProviderOperation(progressStore.getDb(), identity)).toMatchObject({
       phase: 'settlement-pending',
       controlIntent: contained.controlIntent,
     });
+    await settleOperation(identity);
+    expect(progressStore.readTerminalProjection(identity.jobId)?.outcome.kind).toBe('failed');
+    expect(readSession(sessionId)?.open).toBe(false);
   });
 });

@@ -10,7 +10,7 @@ import {
   type RecordedProcessIdentity,
 } from '../../../infra/process-containment.js';
 import { elapsedDurationMs } from '../../../jobs/duration.js';
-import type { JobTerminalInput } from '../../../jobs/records.js';
+import type { JobTerminal } from '../../../jobs/records.js';
 import { MAX_PROXY_RECORDED_PROVIDER_ROOTS } from '../../../provider-proxy/enforcement.js';
 import {
   DEFAULT_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS,
@@ -41,10 +41,10 @@ export type PerformedInterruptedRecovery =
 export type PerformedDurableRecovery = Readonly<{
   kind: 'durable-resolved';
   terminal:
-    | Readonly<{ kind: 'persisted'; value: JobTerminalInput }>
+    | Readonly<{ kind: 'persisted'; value: JobTerminal }>
     | Readonly<{ kind: 'provider'; value: ProviderTerminalEventBody }>
     | Readonly<{ kind: 'recovery-fault'; message: string }>
-    | Readonly<{ kind: 'direct'; value: JobTerminalInput }>;
+    | Readonly<{ kind: 'direct'; value: JobTerminal }>;
   mutation: ProviderValidatedSessionContinuityMutation;
   artifactHandles: readonly ProviderArtifactHandleInput[];
 }>;
@@ -199,7 +199,7 @@ export async function performInterruptedDurableRecovery(
     });
   }
   if (plan.kind === 'durable-aborted') {
-    const terminal: JobTerminalInput = {
+    const terminal: JobTerminal = {
       content: '',
       durationMs: elapsedDurationMs(plan.launchRecord.createdAt, runtime.time.now(), `job ${plan.launchRecord.jobId}`),
       outcome: { kind: 'aborted', reason: 'user_abort' },
@@ -212,7 +212,7 @@ export async function performInterruptedDurableRecovery(
     });
   }
   if (plan.kind === 'durable-wrapper-lost') {
-    const terminal: JobTerminalInput = {
+    const terminal: JobTerminal = {
       content: '',
       durationMs: elapsedDurationMs(plan.runtimeRecord.startTime, runtime.time.now(), `job ${plan.launchRecord.jobId}`),
       outcome: { kind: 'job_fault', fault: { kind: 'wrapper_lost' } },
@@ -253,7 +253,7 @@ export async function performInterruptedDurableRecovery(
       ),
       fallbackConversationRef: plan.session.conversationRef,
       knownArtifactHandles: plan.session.artifactHandles
-        .filter((artifact) => artifact.sourceJobId === plan.launchRecord.jobId)
+        .filter((artifact) => artifact.execution === plan.launchRecord.execution)
         .map((artifact) => ({
           handle: artifact.handle,
           identity: artifact.identity,

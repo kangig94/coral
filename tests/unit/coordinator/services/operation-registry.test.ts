@@ -25,12 +25,13 @@ function identityFor(m: ExecutingRecord): ProviderOperationEventIdentity {
 }
 
 function cleanupFor(m: ExecutingRecord) {
-  return { kind: 'job-local' as const, jobId: m.operation.jobId, pool: 'default' as const };
+  return { kind: 'job-local' as const, execution: 1, jobId: m.operation.jobId, pool: 'default' as const };
 }
 
 function proxyCleanupFor(m: ExecutingRecord) {
   return {
     kind: 'proxy-binding' as const,
+    execution: 1,
     jobId: m.operation.jobId,
     operationId: m.operation.operationId,
     pool: 'default' as const,

@@ -1,3 +1,6 @@
+import { observeDurableRecoveryContainmentFor } from './services/recovery/lifecycle.js';
+import type { ExecutionFinisher } from '../jobs/finishing.js';
+import { readProviderOperationForJob } from '../store/provider-operation-journal.js';
 import { observeDatabaseReads } from '../recovery/read-observation.js';
 import {
   createStartupPhaseObserver,
@@ -37,7 +40,7 @@ import type { JobStore } from '../jobs/store.js';
 import type { JobStatus } from '../jobs/records.js';
 import { jobExecutionRequestedBodySchema } from '../jobs/launch.js';
 import { decodeProjectionJobExecutionOwner, decodeProjectionJobStoredRow } from '../jobs/projection-row.js';
-import { appendJobExecutionOutcomeAccepted } from '../jobs/terminal/recording.js';
+import { appendJobExecutionOutcomeAccepted, failedTerminalOutcome } from '../jobs/terminal/recording.js';
 import { deleteDurableCliProcessRuntimeMeta } from '../jobs/runtime-meta-store.js';
 import { elapsedDurationMs } from '../jobs/duration.js';
 import type { ProviderHostManager } from './live/provider-hosts/index.js';
@@ -112,7 +115,7 @@ import type { TypedEventBus } from './event-bus.js';
 import type { IpcListener, ListenIpcServerResult, PublishedIpcSocketAddress } from '../transport/ipc/server.js';
 import { resolveRunningBundleDir, resolveStrictBundleIdentity } from '../infra/bundle-manifest.js';
 import { inspectValidatedHandoffTarget, type ValidatedHandoffTarget } from '../infra/handoff-target.js';
-import { type Database } from '../store/db.js';
+import { withImmediate, type Database } from '../store/db.js';
 import {
   decodeResolvedStoreEpoch,
   encodeResolvedStoreEpoch,
@@ -158,6 +161,7 @@ import type { CommitEventsFn } from '../store/append.js';
 import {
   type RecoveryObligationId,
   type RecoveryPolicy,
+  type RecoveryReport,
   type RecoverySettlementFact,
   type RecoverySubject,
 } from '../recovery/containment.js';
@@ -530,7 +534,9 @@ function hydrateCrashedJob(raw: RawCrashedJobRow, progressStore: JobStore): Cras
       throw new TypeError(`Crash terminalization launch '${raw.launchEvent.seq}' names another job.`);
     }
     if (launch.execution !== projection.execution || launch.backendNamespace !== projection.backend_namespace)
-      throw new TypeError(`Crash terminalization request for '${projection.job_id}' contradicts its execution projection.`);
+      throw new TypeError(
+        `Crash terminalization request for '${projection.job_id}' contradicts its execution projection.`,
+      );
     launchCreatedAt = launch.createdAt;
   }
   return {
@@ -565,6 +571,8 @@ type StaleJobCleanupPolicyContext = {
 
 type CrashedJobTerminalizationPolicyContext = {
   readonly progressStore: JobStore;
+  readonly executionFinisher: ExecutionFinisher;
+  readonly runtime: Runtime;
   readonly message: string;
   readonly endTimeMs: number;
   readonly coordinatorCommit: CommitEventsFn;
@@ -582,42 +590,46 @@ function createStaleJobCleanupPolicy(
     processLocalCleanup: { kind: 'not-required' },
     hydrate: hydrateStaleJobCleanup,
     requiredObligations: () => [STALE_ARTIFACT_PRUNE_OBLIGATION],
-    settle: (item) => {
-      const fromOldBundle = item.bundleHash !== undefined && item.bundleHash !== currentBundleHash;
-      const agedOut = isAgedOut(item.updatedAt, nowMs, retentionMs);
-      if (!isTerminalPhase(item.phase) || (!fromOldBundle && !agedOut)) {
+    settle: (item) =>
+      withImmediate(progressStore.getDb(), () => {
+        const current = progressStore.readStatus(item.jobId);
+        const fromOldBundle = item.bundleHash !== undefined && item.bundleHash !== currentBundleHash;
+        const agedOut = isAgedOut(item.updatedAt, nowMs, retentionMs);
+        if (
+          current === null ||
+          current.finishing === true ||
+          current.updatedAt !== item.updatedAt ||
+          !isTerminalPhase(current.phase) ||
+          (!fromOldBundle && !agedOut)
+        ) {
+          return {
+            kind: 'advanced',
+            outcome: 'settled',
+            facts: [recoveryFact(STALE_ARTIFACT_PRUNE_OBLIGATION, 'not-applicable')],
+            detail: 'job artifact is not eligible for cleanup',
+          };
+        }
+
+        const artifactPath = progressStore.jobDir(item.jobId);
+        let removed = false;
+        try {
+          removeTreeNoFollowSync(storage, artifactPath);
+          removed = true;
+          budget?.record({ kind: 'deleted', subject: artifactPath, count: 1 });
+        } catch (error: unknown) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+          budget?.record({ kind: 'kept', subject: artifactPath, reason: 'scratch-already-absent', pending: false });
+        }
+        progressStore.purgeFromCache(item.jobId);
+        deleteDurableCliProcessRuntimeMeta(progressStore.getDb(), item.jobId);
+        bestEffortLifecycleLog(log, `Cleaned up ${fromOldBundle ? 'stale' : 'aged'} job artifact: ${item.jobId}\n`);
         return {
           kind: 'advanced',
           outcome: 'settled',
-          facts: [recoveryFact(STALE_ARTIFACT_PRUNE_OBLIGATION, 'not-applicable')],
-          detail: 'job artifact is not eligible for cleanup',
+          facts: [recoveryFact(STALE_ARTIFACT_PRUNE_OBLIGATION, removed ? 'done' : 'not-applicable', artifactPath)],
+          detail: removed ? 'job artifact pruned' : 'job artifact already absent',
         };
-      }
-
-      const artifactPath = progressStore.jobDir(item.jobId);
-      let removed = false;
-      try {
-        removeTreeNoFollowSync(storage, artifactPath);
-        removed = true;
-        budget?.record({ kind: 'deleted', subject: artifactPath, count: 1 });
-      } catch (error: unknown) {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-        budget?.record({ kind: 'kept', subject: artifactPath, reason: 'scratch-already-absent', pending: false });
-      }
-      progressStore.purgeFromCache(item.jobId);
-      // The carrier identity captured at launch describes a process, so nothing about the job ending makes it
-      // stale — this prune is the only thing that ever removes it. Deleting it here rather than on the
-      // terminal event is deliberate: the identity outlives the job for exactly as long as the artifact does,
-      // and the two are reclaimed together. Idempotent, and a job that never captured one is a no-op.
-      deleteDurableCliProcessRuntimeMeta(progressStore.getDb(), item.jobId);
-      bestEffortLifecycleLog(log, `Cleaned up ${fromOldBundle ? 'stale' : 'aged'} job artifact: ${item.jobId}\n`);
-      return {
-        kind: 'advanced',
-        outcome: 'settled',
-        facts: [recoveryFact(STALE_ARTIFACT_PRUNE_OBLIGATION, removed ? 'done' : 'not-applicable', artifactPath)],
-        detail: removed ? 'job artifact pruned' : 'job artifact already absent',
-      };
-    },
+      }),
     onFault: (fault) => {
       if (fault.stage === 'scan') return { kind: 'fatal', error: fault.error };
       const subject =
@@ -637,25 +649,79 @@ function createCrashedJobTerminalizationPolicy(
     hydrate: (raw) => hydrateCrashedJob(raw, progressStore),
     requiredObligations: () => [CRASH_TERMINALIZATION_OBLIGATION],
     settle: (item) => {
-      const { status } = item;
+      const status = progressStore.readStatus(item.status.jobId);
+      if (
+        status === null ||
+        status.execution !== item.status.execution ||
+        status.finishing ||
+        isTerminalPhase(status.phase)
+      )
+        return {
+          kind: 'advanced',
+          outcome: 'settled',
+          facts: [recoveryFact(CRASH_TERMINALIZATION_OBLIGATION, 'not-applicable')],
+          detail: 'Execution no longer belongs to crash recovery.',
+        };
+      if (
+        status.execution !== null &&
+        (context.executionFinisher.owns({ jobId: status.jobId, execution: status.execution }) ||
+          readProviderOperationForJob(progressStore.getDb(), status.jobId) !== null)
+      )
+        return {
+          kind: 'deferred',
+          authoritativeSource: { kind: 'unchanged-and-still-enumerable' },
+          detail:
+            'Original outcome remains with its live producer or provider operation; successor=producer acceptance and execution finalizer.',
+        };
       if (item.launchCreatedAt === null) {
         throw new Error(`Cannot record recovery terminal for ${status.jobId} without its launch record.`);
       }
 
+      if (status.execution === null) throw new Error(`Job '${status.jobId}' has no requested execution.`);
+      const execution = status.execution;
+      const runtimeRecord = progressStore.readRuntimeProjection(status.jobId);
+      if (
+        runtimeRecord?.transport === 'durable-cli' &&
+        observeDurableRecoveryContainmentFor(progressStore, context.runtime, status.jobId, runtimeRecord).observation
+          .kind !== 'absent'
+      )
+        return {
+          kind: 'deferred',
+          authoritativeSource: { kind: 'unchanged-and-still-enumerable' },
+          detail:
+            'Producer loss lacks authoritative process quiescence; successor=durable process containment recovery.',
+        };
+      const recordedFault = progressStore
+        .getDb()
+        .prepare<
+          [string, number],
+          { seq: number }
+        >("SELECT seq FROM events WHERE stream_kind = 'job' AND stream_id = ? AND json_extract(CAST(body AS TEXT), '$.execution') = ? AND type IN ('job.provider_failed', 'job.adapter_unparseable', 'job.interrupted') ORDER BY seq DESC LIMIT 1")
+        .get(status.jobId, execution);
       const durationMs = elapsedDurationMs(item.launchCreatedAt, endTimeMs, `job ${status.jobId}`);
       coordinatorCommit((c) => {
+        const outcome =
+          recordedFault === undefined
+            ? failedTerminalOutcome(
+                c.append({
+                  type: 'job.interrupted',
+                  stream: { kind: 'job', id: status.jobId },
+                  body: { execution, trigger: 'restart', continuity: 'unavailable' },
+                }),
+              )
+            : {
+                kind: 'failed' as const,
+                causeRef: { stream: { kind: 'job' as const, id: status.jobId }, seq: recordedFault.seq },
+              };
         appendJobExecutionOutcomeAccepted(c, {
           jobId: status.jobId,
-          execution: status.execution,
-          namespace: status.backendNamespace,
+          execution,
+          namespace: status.backendNamespace ?? undefined,
           project: status.projectRoot,
           terminal: {
-            content: '',
+            content: recordedFault === undefined ? `Original result unavailable after producer loss. ${message}` : '',
             durationMs,
-            outcome: {
-              kind: 'job_fault',
-              fault: { kind: 'wrapper_crashed', cause: { message } },
-            },
+            outcome,
           },
         });
         return undefined;
@@ -894,15 +960,17 @@ export async function markJobsAsError(
   endTimeMs: number,
   signal: AbortSignal,
   coordinatorCommit: CommitEventsFn,
-): Promise<void> {
-  const context = { progressStore, message, endTimeMs, coordinatorCommit };
+  executionFinisher: ExecutionFinisher,
+  runtime: Runtime,
+): Promise<RecoveryReport<CrashedJobTerminalizationItem>> {
+  const context = { progressStore, message, endTimeMs, coordinatorCommit, executionFinisher, runtime };
   crashedJobTerminalizationRetryContexts.set(progressStore.getDb(), context);
   const policy: RecoveryPolicy<RawCrashedJobRow, CrashedJobTerminalizationItem> = {
     signal,
     quarantine: new RecoveryQuarantineStore(progressStore.getDb(), { now: () => endTimeMs }),
     ...createCrashedJobTerminalizationPolicy(context),
   };
-  await runShutdownCrashTerminalization({
+  return runShutdownCrashTerminalization({
     source: crashedJobTerminalizationSource(progressStore.getDb()),
     policy,
   });
@@ -1043,7 +1111,10 @@ export type LifecycleDeps = {
   readonly cleanupStaleJobsFn: (currentBundleHash: string, signal: AbortSignal) => void | Promise<void>;
   readonly readSelfIncarnationFn: () => ProcessIncarnation | null;
   readonly successionIncumbent: () => UpgradeIntent['incumbent'];
-  readonly markJobsAsErrorFn: (message: string, signal: AbortSignal) => void | Promise<void>;
+  readonly markJobsAsErrorFn: (
+    message: string,
+    signal: AbortSignal,
+  ) => void | RecoveryReport<unknown> | Promise<void | RecoveryReport<unknown>>;
   readonly settlePendingLaunchesFn: SettlePendingLaunchesFn;
   readonly terminateRegisteredChildrenFn: TerminateRegisteredChildrenFn;
   readonly providerHostManager: Pick<ProviderHostManager, 'drainForHandoff' | 'shutdown'>;
@@ -1251,7 +1322,12 @@ async function resolveUnservedSuccession(
     deps.storeFormat,
     currentBuild,
     (epochKey) =>
-      new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot, renderWorkflowReport)
+      new JobLocationIndex(
+        runtime,
+        runtime.paths.coral.generation.dataRoot,
+        renderWorkflowReport,
+        deps.storeFormat.fingerprint,
+      )
         .locationsFor(epochKey)
         .some((location) => location.disposition !== 'terminal'),
   );
@@ -1730,7 +1806,12 @@ async function openSelectedStartupStore({
       if (preparedCommittedStore === null) {
         throw new SuccessionAttemptStartupHoldError('committed epoch was not prepared');
       }
-      const historical = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot, renderWorkflowReport);
+      const historical = new JobLocationIndex(
+        runtime,
+        runtime.paths.coral.generation.dataRoot,
+        renderWorkflowReport,
+        deps.storeFormat.fingerprint,
+      );
       const opened = await observeRecoveryPhase(startupPhases.options('store-open'), async () =>
         openSuccessionAttemptStore(successionStoreContext, successionAttemptChild, preparedCommittedStore, {
           interposition,

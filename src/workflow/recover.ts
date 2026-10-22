@@ -30,12 +30,8 @@ import {
   type WorkflowPlan,
 } from './plan.js';
 import type { WorkflowFinalizationIntent } from './finalization.js';
-import {
-  jobConversationProvider,
-  sessionControllerFromProfile,
-  type JobConversation,
-} from '../jobs/conversation/entry.js';
-import { hydrateJobConversation } from '../jobs/conversation/projections.js';
+import { jobConversationProvider, type JobConversation } from '../jobs/conversation/entry.js';
+import { hydrateJobConversation } from '../jobs/conversation/read-queries.js';
 import type { ProjectionJobStoredRow } from '../jobs/projection-row.js';
 import type {
   RecoveryDisposition,
@@ -72,6 +68,7 @@ export type WorkflowRecoveryDescendantRelease = {
 export type WorkflowRecoveryAtomicClose = {
   readonly intent: WorkflowFinalizationIntent;
   readonly recording: {
+    readonly execution: number;
     readonly namespace?: string;
     readonly project?: string;
     readonly startedAt: string;
@@ -188,7 +185,8 @@ function validateAndReadCurrentSlotJobIds(
   }
   const selected = new Map<string, string>();
   for (const row of rows) {
-    if (row.parent_workflow_job_id !== workflowId || row.workflow_slot === null || !slotIds.has(row.workflow_slot)) continue;
+    if (row.parent_workflow_job_id !== workflowId || row.workflow_slot === null || !slotIds.has(row.workflow_slot))
+      continue;
     executionOrdinalSchema.parse(row.execution);
     if (selected.has(row.workflow_slot)) {
       throw new Error(`Workflow recovery rejected duplicate jobs for slot '${row.workflow_slot}'.`);
@@ -263,12 +261,12 @@ function validateDurableSlotRelations(
     const session = deps.jobConversationsById.get(launch.jobId);
     if (session === undefined) {
       throw new Error(
-        `Workflow recovery could not find provider session '${launch.jobId}' for slot '${slot.slotId}'.`,
+        `Workflow recovery could not find provider conversation '${launch.jobId}' for slot '${slot.slotId}'.`,
       );
     }
     if (jobConversationProvider(session) !== slot.provider) {
       throw new Error(
-        `Workflow recovery rejected provider session '${launch.jobId}' for slot '${slot.slotId}': expected '${slot.provider}'.`,
+        `Workflow recovery rejected provider conversation '${launch.jobId}' for slot '${slot.slotId}': expected '${slot.provider}'.`,
       );
     }
   }
@@ -526,9 +524,17 @@ function parseWorkflowRecoveryContinuation(envelope: RawWorkflowRecoveryEnvelope
   const workflowId = parsed.workflowId;
   const sourceRevision = parsed.sourceRevision;
   const childIds = parsed.childIds;
-  const descendants = z.array(z.object({
-    jobId: z.string().min(1), execution: executionOrdinalSchema, projectRoot: z.string().min(1),
-  }).strict()).parse(parsed.descendants);
+  const descendants = z
+    .array(
+      z
+        .object({
+          jobId: z.string().min(1),
+          execution: executionOrdinalSchema,
+          projectRoot: z.string().min(1),
+        })
+        .strict(),
+    )
+    .parse(parsed.descendants);
   const stage = parsed.stage;
   const intendedFinalization = asRecord(parsed.intendedFinalization, 'Workflow intended finalization');
   const completedObligations = parsed.completedObligations;
@@ -562,7 +568,8 @@ function parseWorkflowRecoveryContinuation(envelope: RawWorkflowRecoveryEnvelope
     throw new TypeError(`Workflow '${workflowId}' recovery continuation has invalid child executions.`);
   }
   const canonicalDescendants = descendants.map((child) => ({
-    ...child, projectRoot: canonicalizeWorkDir(child.projectRoot, process.cwd()),
+    ...child,
+    projectRoot: canonicalizeWorkDir(child.projectRoot, process.cwd()),
   }));
   const finalization =
     intendedFinalization.kind === 'pending'
@@ -637,7 +644,8 @@ function hydrateWorkflowRecovery(raw: RawWorkflowRecoveryEnvelope, ctx: StoreRea
   const jobConversationsById = new Map<string, JobConversation>();
   for (const evidence of raw.jobConversations) {
     const entry = hydrateJobConversation(evidence);
-    if (jobConversationsById.has(entry.jobId)) throw new TypeError(`Workflow recovery repeats provider job '${entry.jobId}'.`);
+    if (jobConversationsById.has(entry.jobId))
+      throw new TypeError(`Workflow recovery repeats provider job '${entry.jobId}'.`);
     jobConversationsById.set(entry.jobId, entry);
   }
 
@@ -662,8 +670,7 @@ function hydrateWorkflowRecovery(raw: RawWorkflowRecoveryEnvelope, ctx: StoreRea
   const completion = completionRow === null ? null : decodeBody(completionRow, workflowCompletedBodySchema, ctx);
   const drain = drainRow === null ? null : decodeBody(drainRow, workflowDrainEnteredBodySchema, ctx);
   const recoveredContinuation = parseWorkflowRecoveryContinuation(raw);
-  const continuation =
-    recoveredContinuation ?? initialWorkflowContinuation(raw, rootProjectRoot);
+  const continuation = recoveredContinuation ?? initialWorkflowContinuation(raw, rootProjectRoot);
   return {
     envelope: raw,
     rootDetail,
@@ -755,14 +762,15 @@ const workflowRetryOptions = new WeakMap<Database, RecoverAllOptions>();
 function finalizationRecording(item: HydratedWorkflowRecovery): WorkflowRecoveryAtomicClose['recording'] {
   const status = item.rootDetail.status;
   const runtime = item.rootDetail.runtime;
-  if (status === null || runtime?.transport !== 'workflow') {
+  if (status === null || status.execution === null || runtime?.transport !== 'workflow') {
     throw new Error(`Workflow '${item.envelope.subject.key}' has no workflow runtime start.`);
   }
   if (!Number.isFinite(Date.parse(runtime.startTime))) {
     throw new Error(`Workflow '${item.envelope.subject.key}' has an invalid runtime start timestamp.`);
   }
   return {
-    namespace: status.backendNamespace,
+    execution: status.execution,
+    namespace: status.backendNamespace ?? undefined,
     project: status.projectRoot,
     startedAt: runtime.startTime,
   };
@@ -866,9 +874,7 @@ function logWorkflowRecoveryClose(
   options: RecoverAllOptions,
 ): void {
   for (const released of item.descendantReleases) {
-    options.log?.(
-      `Workflow recovery child ${released.jobId} released.\n`,
-    );
+    options.log?.(`Workflow recovery child ${released.jobId} released.\n`);
   }
   if (containedFailure !== null) {
     const outcomeDescription =

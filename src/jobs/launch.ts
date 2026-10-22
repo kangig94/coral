@@ -15,13 +15,17 @@ export type KbJobOperation = 'kb.source_import' | 'kb.reindex' | 'kb.community_s
 
 export type CommittedExecutionRequest = { requestedSeq: number; epochKey: string };
 
-export type AcceptedProviderJobLaunchDecision = CommittedExecutionRequest & (
-  | { kind: 'provider-session'; status: 'running'; jobId: string }
-  | { kind: 'provider-session'; status: 'queued'; jobId: string; message?: undefined });
+export type AcceptedProviderJobLaunchDecision = CommittedExecutionRequest &
+  (
+    | { kind: 'provider-session'; status: 'running'; jobId: string }
+    | { kind: 'provider-session'; status: 'queued'; jobId: string; message?: undefined }
+  );
 
-export type AcceptedWorkflowLaunchDecision = CommittedExecutionRequest & (
-  | { kind: 'workflow'; status: 'running'; jobId: string; workflowId: string }
-  | { kind: 'workflow'; status: 'queued'; jobId: string; workflowId: string; message?: undefined });
+export type AcceptedWorkflowLaunchDecision = CommittedExecutionRequest &
+  (
+    | { kind: 'workflow'; status: 'running'; jobId: string; workflowId: string }
+    | { kind: 'workflow'; status: 'queued'; jobId: string; workflowId: string; message?: undefined }
+  );
 
 export type RefusedLaunchDecision = {
   status: 'refused';
@@ -87,12 +91,6 @@ export interface JobLaunchRequest {
   bypassPermissions?: boolean;
   systemPrompt?: string;
   instruction?: ProviderInstruction;
-  /**
-   * The workflow job that owns the plan slot this child is filling. By spec
-   * §6.1 line 813 convention `workflowJobId === workflowId`, so this value
-   * also becomes `refs.workflowId` on the resulting `job.launch.requested`
-   * envelope — the launch path in `store.ts` is the producer.
-   */
   parentWorkflowJobId?: string;
   agent?: string;
   pool?: LaunchPool;
@@ -101,8 +99,9 @@ export interface JobLaunchRequest {
   discussionRun?: DiscussionRunDescriptor;
 }
 
-export interface JobResumeRequest extends Omit<JobLaunchRequest, 'retention'> {
+export interface JobResumeRequest extends Omit<JobLaunchRequest, 'retention' | 'cwd' | 'model'> {
   jobId: string;
+  originatingClientMessageId?: string;
   provider?: string;
 }
 
@@ -136,7 +135,8 @@ export const jobConversationFacetSchema = z
         message: 'Binding provider must match the conversation provider.',
       });
     }
-  });
+  })
+  .describe('job-conversation-provider-binding-match-v1');
 
 const jobOpenedBase = {
   owner: executionOwnerSchema,

@@ -42,7 +42,7 @@ async function finalizeSynthesizedSession(
       continue;
     }
     try {
-      await ctx.discardSessionArtifacts?.(run.jobId);
+      await ctx.discardConversationArtifacts?.(run.jobId);
     } catch (error) {
       backendLog.warn(`Discuss artifact cleanup failed for job ${run.jobId}: ${errorMessage(error)}`);
     }

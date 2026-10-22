@@ -1,28 +1,30 @@
-import { backendLog } from '../../../infra/backend-log.js';
 import { assertNever } from '../../../infra/error-format.js';
 import { elapsedDurationMs } from '../../../jobs/duration.js';
-import type { JobStatus, JobTerminalInput } from '../../../jobs/records.js';
+import type { JobStatus, JobTerminal } from '../../../jobs/records.js';
+import { ExecutionAcceptanceRefusedError, type ExecutionFinisher } from '../../../jobs/finishing.js';
+import { providerArtifactIdentityKey } from '../../../providers/artifact-identity.js';
+import type { ProviderArtifactHandleInput } from '../../../providers/contract.js';
 import type { JobAbortRegistryPort } from '../../../jobs/contracts/abort-registry.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import type { ConversationRecoveryPort } from '../../../jobs/conversation/contracts.js';
-import type { SessionInterruptedFault } from '../../../jobs/conversation/fault.js';
+import type { ConversationInterruptedFault } from '../../../jobs/conversation/fault.js';
 import type { ProviderValidatedSessionContinuityMutation } from '../../../jobs/conversation/continuity-mutation.js';
 import type { CommitContext } from '../../../store/append.js';
 import { buildInterruptedAppServerReport } from '../execution-policies.js';
 import {
   appendJobRecoveryFaultTerminalInCommit,
   appendProviderTerminalInCommit,
-  appendSessionInterruptedTerminalInCommit,
+  appendConversationInterruptedTerminalInCommit,
 } from '../terminal-materializer.js';
 import { appendJobExecutionOutcomeAccepted } from '../../../jobs/terminal/recording.js';
 import type { JobAdmissionPort, LaunchPermit } from '../../../jobs/contracts/admission.js';
 import type { AppServerInterruptedRecoveryPlan, DurableInterruptedRecoveryPlan } from './interrupted-plan.js';
 import type { PerformedDurableRecovery, PerformedInterruptedRecovery } from './interrupted-performer.js';
 
-export class InterruptedRecoveryCommitError extends Error {
+export class InterruptedRecoveryCommitError extends ExecutionAcceptanceRefusedError {
   readonly jobId: string;
-  readonly stage: 'artifact-handle' | 'session-finalize';
-  constructor(jobId: string, stage: 'artifact-handle' | 'session-finalize') {
+  readonly stage: 'execution-checkpoint';
+  constructor(jobId: string, stage: 'execution-checkpoint') {
     super(`Interrupted app-server recovery commit failed for ${jobId} at ${stage}.`);
     this.name = 'InterruptedRecoveryCommitError';
     this.jobId = jobId;
@@ -42,78 +44,82 @@ export class RecoveryOwnershipReleaseError extends Error {
 
 type InterruptedFinalizerDeps = Readonly<{
   runtime: Pick<Runtime, 'storage' | 'paths' | 'time'>;
-  conversationManager: Pick<ConversationRecoveryPort, 'recordArtifactHandleAtomic' | 'finalizeJobContinuityAtomic'>;
+  conversationManager: Pick<ConversationRecoveryPort, 'readById'>;
+  executionFinisher: ExecutionFinisher;
   abortRegistry: JobAbortRegistryPort;
   launchAdmission: Pick<JobAdmissionPort, 'releaseLaunch'>;
   launchPermit: LaunchPermit | null;
-  publishTerminalResult(jobId: string): string;
 }>;
 
-type RecoveryCommitPlan = Pick<
-  AppServerInterruptedRecoveryPlan | DurableInterruptedRecoveryPlan,
-  'launchRecord' | 'session' | 'expectedSessionVersion'
->;
-
-declare const recoveryCommitReceiptBrand: unique symbol;
-type RecoveryCommitReceipt = Readonly<{
-  plan: RecoveryCommitPlan;
-  [recoveryCommitReceiptBrand]: true;
-}>;
+type RecoveryCommitPlan = Pick<AppServerInterruptedRecoveryPlan | DurableInterruptedRecoveryPlan, 'launchRecord'>;
 
 type TerminalAppender = <Scope>(commit: CommitContext<Scope>) => void;
 
-async function recordArtifactHandlesExact(
+async function acceptRecoveryOutcome(
   plan: RecoveryCommitPlan,
-  artifacts: readonly Readonly<{
-    handle: string;
-    identity: Parameters<InterruptedFinalizerDeps['conversationManager']['recordArtifactHandleAtomic']>[1]['identity'];
-  }>[],
-  deps: InterruptedFinalizerDeps,
-): Promise<number> {
-  let expectedVersion = plan.expectedSessionVersion;
-  for (const artifact of artifacts) {
-    const recorded = await deps.conversationManager.recordArtifactHandleAtomic(plan.session.jobId, {
-      expectedActiveJobId: plan.launchRecord.jobId,
-      expectedVersion,
-      handle: artifact.handle,
-      identity: artifact.identity,
-      sourceJobId: plan.launchRecord.jobId,
-    });
-    if (!recorded.ok) {
-      throw new InterruptedRecoveryCommitError(plan.launchRecord.jobId, 'artifact-handle');
-    }
-    expectedVersion = recorded.nextVersion;
-  }
-  return expectedVersion;
-}
-
-async function finalizeSessionExact(
-  plan: RecoveryCommitPlan,
-  expectedVersion: number,
   mutation: ProviderValidatedSessionContinuityMutation,
-  appendBeforeRelease: TerminalAppender | undefined,
+  artifacts: readonly ProviderArtifactHandleInput[],
+  appendTerminal: TerminalAppender,
   deps: InterruptedFinalizerDeps,
-): Promise<RecoveryCommitReceipt> {
-  const finalized = await deps.conversationManager.finalizeJobContinuityAtomic(plan.session.jobId, {
-    expectedActiveJobId: plan.launchRecord.jobId,
-    expectedVersion,
-    mutation,
-    appendBeforeRelease,
+): Promise<void> {
+  const { jobId, execution } = plan.launchRecord;
+  const address = { jobId, execution };
+  await deps.executionFinisher.accept(address, (commit) => {
+    const entry = deps.conversationManager.readById(jobId);
+    if (entry === null || !entry.open || entry.finishing || entry.execution !== execution) {
+      throw new InterruptedRecoveryCommitError(jobId, 'execution-checkpoint');
+    }
+    const identities = new Set(
+      entry.artifactHandles
+        .filter((artifact) => artifact.execution === execution)
+        .map((artifact) => artifact.identityKey),
+    );
+    for (const artifact of artifacts) {
+      const identityKey = providerArtifactIdentityKey(entry.binding.provider, artifact.identity);
+      if (identities.has(identityKey)) continue;
+      commit.append({
+        type: 'job.artifact.recorded',
+        stream: { kind: 'job', id: jobId },
+        refs: { jobId },
+        body: {
+          execution,
+          provider: entry.binding.provider,
+          handle: artifact.handle,
+          identity: artifact.identity,
+          identityKey,
+        },
+      });
+      identities.add(identityKey);
+    }
+    if (mutation.kind !== 'preserve' || mutation.providerContinuity !== undefined) {
+      const conversationRef =
+        mutation.kind === 'set_resumable'
+          ? mutation.conversationRef
+          : mutation.kind === 'clear_non_resumable'
+            ? null
+            : (entry.conversationRef ?? null);
+      commit.append({
+        type: 'job.continuity.checkpointed',
+        stream: { kind: 'job', id: jobId },
+        refs: { jobId },
+        body: {
+          execution,
+          snapshot: {
+            conversationRef,
+            resumable: mutation.kind === 'set_resumable' || (mutation.kind === 'preserve' && conversationRef !== null),
+            providerContinuity: mutation.providerContinuity ?? entry.providerContinuity,
+          },
+        },
+      });
+    }
+    appendTerminal(commit);
+    return undefined;
   });
-  if (!finalized) {
-    throw new InterruptedRecoveryCommitError(plan.launchRecord.jobId, 'session-finalize');
-  }
-  // eslint-disable-next-line no-restricted-syntax -- RecoveryCommitReceipt may only be minted by finalizeSessionExact.
-  return Object.freeze({ plan }) as RecoveryCommitReceipt;
+  releaseLocalOwnership(plan, deps);
+  deps.executionFinisher.schedule(address);
 }
 
-function exportResultAndReleaseOwnership(receipt: RecoveryCommitReceipt, deps: InterruptedFinalizerDeps): void {
-  const { plan } = receipt;
-  try {
-    deps.publishTerminalResult(plan.launchRecord.jobId);
-  } catch (error: unknown) {
-    backendLog.warn(`Writing terminal artifact failed for ${plan.launchRecord.jobId}: ${String(error)}`);
-  }
+function releaseLocalOwnership(plan: RecoveryCommitPlan, deps: InterruptedFinalizerDeps): void {
   try {
     deps.abortRegistry.remove(plan.launchRecord.jobId, plan.launchRecord.execution);
     if (deps.launchPermit !== null) {
@@ -127,11 +133,12 @@ function exportResultAndReleaseOwnership(receipt: RecoveryCommitReceipt, deps: I
   }
 }
 
-function continuityState(mutation: ProviderValidatedSessionContinuityMutation): SessionInterruptedFault['continuity'] {
+function continuityState(
+  mutation: ProviderValidatedSessionContinuityMutation,
+): ConversationInterruptedFault['continuity'] {
   return mutation.kind === 'clear_non_resumable' ? 'pre_checkpoint_empty' : 'pre_checkpoint_preserved';
 }
 
-/** Commits an app-server recovery outcome, then releases local ownership only after exact session CAS. */
 export async function finalizeInterruptedAppServerRecovery(
   plan: AppServerInterruptedRecoveryPlan,
   performed: PerformedInterruptedRecovery,
@@ -140,8 +147,8 @@ export async function finalizeInterruptedAppServerRecovery(
 ): Promise<void> {
   const terminalOptions = {
     jobId: plan.launchRecord.jobId,
-    execution: status.execution,
-    namespace: status.backendNamespace,
+    execution: plan.launchRecord.execution,
+    namespace: status.backendNamespace ?? undefined,
     project: status.projectRoot,
   };
   const durationMs = elapsedDurationMs(
@@ -160,7 +167,7 @@ export async function finalizeInterruptedAppServerRecovery(
     }
     content = '';
     mutation = { kind: 'preserve' };
-    appendTerminal = directTerminalAppender(status, {
+    appendTerminal = directTerminalAppender(plan, status, {
       content,
       durationMs,
       outcome: { kind: 'aborted', reason: 'user_abort' },
@@ -184,28 +191,33 @@ export async function finalizeInterruptedAppServerRecovery(
       );
     }
     mutation = performed.mutation;
-    const fault: SessionInterruptedFault = {
+    const fault: ConversationInterruptedFault = {
       trigger: plan.reason,
       continuity: continuityState(mutation),
     };
     content = buildInterruptedAppServerReport(fault);
     appendTerminal = <Scope>(commit: CommitContext<Scope>): void => {
-      appendSessionInterruptedTerminalInCommit(commit, fault, terminalOptions, { content, durationMs });
+      appendConversationInterruptedTerminalInCommit(commit, fault, terminalOptions, { content, durationMs });
     };
   }
 
-  const receipt = await finalizeSessionExact(plan, plan.expectedSessionVersion, mutation, appendTerminal, deps);
-  exportResultAndReleaseOwnership(receipt, deps);
+  await acceptRecoveryOutcome(plan, mutation, [], appendTerminal, deps);
 }
 
-function directTerminalAppender(status: JobStatus, terminal: JobTerminalInput): TerminalAppender {
+function directTerminalAppender(plan: RecoveryCommitPlan, status: JobStatus, terminal: JobTerminal): TerminalAppender {
   return <Scope>(commit: CommitContext<Scope>): void => {
     appendJobExecutionOutcomeAccepted(commit, {
       jobId: status.jobId,
-      execution: status.execution,
-      namespace: status.backendNamespace,
+      execution: plan.launchRecord.execution,
+      namespace: status.backendNamespace ?? undefined,
       project: status.projectRoot,
-      terminal,
+      terminal: {
+        ...terminal,
+        outcome:
+          terminal.outcome.kind === 'failed'
+            ? { kind: 'failed', causeRef: terminal.outcome.causeRef }
+            : terminal.outcome,
+      },
     });
   };
 }
@@ -217,11 +229,10 @@ export async function finalizeInterruptedDurableRecovery(
   status: JobStatus,
   deps: InterruptedFinalizerDeps,
 ): Promise<void> {
-  const expectedVersion = await recordArtifactHandlesExact(plan, performed.artifactHandles, deps);
   const terminalOptions = {
     jobId: plan.launchRecord.jobId,
-    execution: status.execution,
-    namespace: status.backendNamespace,
+    execution: plan.launchRecord.execution,
+    namespace: status.backendNamespace ?? undefined,
     project: status.projectRoot,
   };
   const durationMs = elapsedDurationMs(
@@ -231,11 +242,11 @@ export async function finalizeInterruptedDurableRecovery(
   );
 
   let content: string;
-  let appendTerminal: TerminalAppender | undefined;
+  let appendTerminal: TerminalAppender;
   switch (performed.terminal.kind) {
     case 'persisted':
       content = performed.terminal.value.content;
-      appendTerminal = undefined;
+      appendTerminal = directTerminalAppender(plan, status, performed.terminal.value);
       break;
     case 'provider': {
       const providerTerminal = performed.terminal.value;
@@ -258,12 +269,11 @@ export async function finalizeInterruptedDurableRecovery(
     }
     case 'direct':
       content = performed.terminal.value.content;
-      appendTerminal = directTerminalAppender(status, performed.terminal.value);
+      appendTerminal = directTerminalAppender(plan, status, performed.terminal.value);
       break;
     default:
       return assertNever(performed.terminal);
   }
 
-  const receipt = await finalizeSessionExact(plan, expectedVersion, performed.mutation, appendTerminal, deps);
-  exportResultAndReleaseOwnership(receipt, deps);
+  await acceptRecoveryOutcome(plan, performed.mutation, performed.artifactHandles, appendTerminal, deps);
 }

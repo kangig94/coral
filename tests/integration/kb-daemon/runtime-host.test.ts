@@ -15,6 +15,8 @@ import type { Database } from '#src/store/db.js';
 import { openSettledTestStoreDb, openTestStoreDb } from '#tests/helpers/store-db.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
+import { executionHarness, openedJob, requestedExecution, EXECUTION_JOB_ID } from '#tests/helpers/job-executions.js';
+import { commit } from '#src/store/append.js';
 
 type Deferred<T = void> = {
   promise: Promise<T>;
@@ -103,6 +105,59 @@ describe('KB daemon runtime host', () => {
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
     vi.useRealTimers();
+  });
+
+  it('cancels an execution producer retry before closing its owned database', async () => {
+    const root = createTempRoot();
+    vi.stubEnv('CLAUDE_CONFIG_DIR', join(root, '.claude'));
+    const runtime = createRealRuntime('prod', { baseDir: root });
+    openSettledTestStoreDb(runtime).close();
+    const host = createKbDaemonWriteRuntimeHost({
+      pluginRoot: join(root, 'plugin'),
+      backendNamespace: 'test-namespace',
+      bundleHash: 'test-bundle',
+      curateUsageBudget: { isExhausted: async () => false },
+      runtime,
+    });
+    const fixture = executionHarness();
+    fixture.db.close();
+    try {
+      await host.withKb(async ({ db, consumerDriver, executionFinisher }) => {
+        await consumerDriver.drainAll();
+        commit(
+          db as Database,
+          (c) => {
+            c.append(openedJob());
+            c.append(requestedExecution());
+            return undefined;
+          },
+          fixture.ctx,
+          { admittingJobs: [EXECUTION_JOB_ID] },
+        );
+        const address = { jobId: EXECUTION_JOB_ID, execution: 1 };
+        const cancelled = expect(
+          executionFinisher.accept(address, () => {
+            throw new Error('outcome storage unavailable');
+          }),
+        ).rejects.toBeDefined();
+        await vi.waitFor(() => expect(executionFinisher.status(address)?.kind).toBe('retrying'));
+        const close = db.close.bind(db);
+        const closing = vi.spyOn(db, 'close').mockImplementation(() => {
+          expect(executionFinisher.signal.aborted).toBe(true);
+          expect(executionFinisher.owns(address)).toBe(false);
+          close();
+        });
+
+        await host.dispose();
+        await cancelled;
+
+        expect(closing).toHaveBeenCalledOnce();
+        expect(host.health().phase).toBe('disposed');
+      });
+    } finally {
+      await host.dispose();
+      for (const root of tempRoots.splice(0)) rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('waits for in-flight corpus mutations before closing an owned database during dispose', async () => {

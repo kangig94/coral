@@ -1,3 +1,4 @@
+import { sameEpoch } from '../store/epoch/identity.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
 import { assertNever } from '../infra/error-format.js';
@@ -69,9 +70,10 @@ async function readLaunchFailure(
       const selection = event.executionSelections?.find((entry) => entry.jobId === jobId);
       if (
         selection?.requestedSeq !== request.requestedSeq ||
-        selection.epochKey !== request.epochKey ||
+        !sameEpoch(selection.epochKey, request.epochKey) ||
         selection.deliveredEndSeq !== event.seq
-      ) continue;
+      )
+        continue;
     }
     return {
       message: describeTerminalFailure(event.result),

@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { runPlainTurn, executeAgentAttempt, recordJobFinished } from '#src/discuss/shell/runtime-build.js';
 import { reconcileDiscussionOwnedJobs, runStartup } from '#src/discuss/shell/recovery.js';
 import { reduceDiscussEvent } from '#src/discuss/reducer.js';
-import { readJobOpened } from '#src/jobs/execution-state.js';
+import { readJobOpened } from '#src/jobs/execution-journal.js';
 import type { DiscussWaitResult } from '#src/discuss/shell/types.js';
 import { discussionExecutionFixture, DISCUSSION_ID, PARTICIPANT_JOBS } from '#tests/unit/discuss/execution-fixture.js';
 
@@ -173,6 +173,34 @@ describe('discussion turns as job executions', () => {
         currentJobPurpose: 'speech',
       });
       expect(f.service.start).toHaveBeenCalledTimes(1);
+      expect(f.service.resume).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['live', 'startup'] as const)(
+    'does not restart an ended turn whose started event was lost during %s recovery',
+    async (mode) => {
+      const f = fixture();
+      const jobId = PARTICIPANT_JOBS.alpha;
+      f.request(jobId, { agent: 'alpha', purpose: 'bid', attempt: 1 });
+      f.complete(jobId, 1);
+      f.append('agent.run.bound', { agent: 'alpha', jobId });
+      f.request(jobId, { agent: 'alpha', purpose: 'speech', attempt: 1 });
+      if (mode === 'live') await reconcileDiscussionOwnedJobs(f.context, DISCUSSION_ID);
+      else
+        await runStartup({
+          getDiscussContext: f.reopen().getDiscussContext,
+          createInvocationContext: () => f.invocation,
+          signal: new AbortController().signal,
+        });
+      expect(
+        f
+          .events()
+          .filter((event) => event.kind === 'agent.job.started')
+          .map((event) => event.payload.execution),
+      ).toEqual([2]);
+      expect(f.snapshot().runtime.agentRuns.alpha).toMatchObject({ jobId, currentJobId: jobId, currentExecution: 2 });
+      expect(f.service.start).not.toHaveBeenCalled();
       expect(f.service.resume).not.toHaveBeenCalled();
     },
   );

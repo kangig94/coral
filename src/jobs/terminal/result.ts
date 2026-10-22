@@ -1,14 +1,9 @@
+import { causeRefSchema } from '../../causality/cause-ref.js';
 import { z } from 'zod';
 
 import { executionOrdinalSchema } from '../launch.js';
-import type { ResolvableCauseRef } from '../../causality/cause-ref.js';
 
-import {
-  executionCauseRefSchema,
-  executionOutcomeSchema,
-  jobProgressFaultSchema,
-  terminalOutcomeSchema,
-} from '../outcome.js';
+import { executionOutcomeSchema, jobProgressFaultSchema, terminalOutcomeSchema } from '../outcome.js';
 import { usageSummarySchema } from '../../providers/contract.js';
 import type { JobTerminal, JobTerminalDiagnostics, JobTerminalInput } from '../records.js';
 
@@ -66,7 +61,7 @@ export const jobExecutionOutcomeAcceptedBodySchema = z
   .strict();
 
 export const jobExecutionEndedBodySchema = z
-  .object({ execution: executionOrdinalSchema, causeRef: executionCauseRefSchema })
+  .object({ execution: executionOrdinalSchema, causeRef: causeRefSchema })
   .strict();
 
 export type JobExecutionOutcomeAcceptedBody = z.infer<typeof jobExecutionOutcomeAcceptedBodySchema>;
@@ -76,9 +71,4 @@ export interface JobExecutionOutcomeAcceptedInputBody<Scope = never> {
   execution: number;
   terminal: JobTerminalInput<Scope>;
   diagnostics?: JobTerminalDiagnostics;
-}
-
-export interface JobExecutionEndedInputBody<Scope = never> {
-  execution: number;
-  causeRef: ResolvableCauseRef<Scope>;
 }

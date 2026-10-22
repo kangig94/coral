@@ -85,7 +85,7 @@ describe('subscription primitive', () => {
   it('opens and receives a scripted notification sequence', async () => {
     const socketPath = makeSocketPath('receive');
     const events = [
-      { type: 'queued', jobId: 'job-1', sessionId: 'session-1', queuePosition: 1, runningJobIds: [] },
+      { type: 'queued', jobId: 'job-1', jobKind: 'provider', queuePosition: 1, runningJobIds: [] },
       { type: 'progress', jobId: 'job-1', seq: 1, message: 'working' },
       {
         type: 'terminal',
@@ -265,7 +265,7 @@ it.each([false, true])('times out subscription opening when proof exhausts the d
     }
   });
   const keys = mintChildCredentialKeyPair();
-  const claim = { credentialId: 'credential', jobId: 'job', sessionId: 'session' };
+  const claim = { credentialId: 'credential', jobId: 'job' };
   let now = 0;
   const controller = new AbortController();
   const handshake = subscribeIpcMethod(

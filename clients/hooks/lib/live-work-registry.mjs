@@ -78,8 +78,14 @@ function writeJobGuard(projectDir, sessionId, state) {
   mkdirSync(root, { recursive: true });
   const path = join(root, JOB_GUARD_FILE);
   const temporary = `${path}.${randomBytes(6).toString('hex')}.tmp`;
-  writeFileSync(temporary, JSON.stringify(state));
-  renameSync(temporary, path);
+  try {
+    writeFileSync(temporary, JSON.stringify(state));
+    renameSync(temporary, path);
+  } finally {
+    try {
+      unlinkSync(temporary);
+    } catch {}
+  }
 }
 
 export function jobGuardAlreadyBlocked(projectDir, sessionId, executions) {

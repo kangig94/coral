@@ -1,3 +1,4 @@
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -16,13 +17,16 @@ import { RecoveryQuarantineStore } from '#src/recovery/quarantine.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { JobConversation } from '#src/jobs/conversation/entry.js';
 import * as lifecycle from '#src/jobs/conversation/lifecycle-reactor.js';
-import { readProjectionJobConversation } from '#src/jobs/conversation/projections.js';
-import { sessionRetentionWorkKey } from '#src/jobs/conversation/retention-work.js';
+import { readProjectionJobConversation } from '#src/jobs/conversation/read-queries.js';
 import { ConversationManager } from '#src/jobs/conversation/shell.js';
 import type { AppendedEvent } from '#src/store/append.js';
 import type { Database } from '#src/store/db.js';
 import * as rebindableStore from '#src/store/rebindable-database.js';
-import { insertProviderOperation } from '#src/store/provider-operation-journal.js';
+import {
+  deleteProviderOperation,
+  readProviderOperationForJob,
+  insertProviderOperation,
+} from '#src/store/provider-operation-journal.js';
 import { TEST_CODEX_BINDING, withTestBindingLocation } from '#tests/helpers/provider-credentials.js';
 import { openTestStoreDatabase } from '#tests/helpers/store-db.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
@@ -224,39 +228,50 @@ async function fixture() {
   });
   const publishResult = vi.spyOn(progressStore, 'publishTerminalResult');
   const namespace = core.identity.namespace;
-  const sessions = ConversationManager.forProduction(
-    home,
-    runtime,
-    (cb) => progressStore.commit(cb),
-    () => {},
-    { db },
-  );
+  const sessions = new ConversationManager(home, runtime, (cb) => progressStore.commit(cb), db);
   function seedOperation(retention: JobConversation['retention'] = 'retain') {
-    const session = sessions.open({
+    const jobId = randomUUID();
+    const session = sessions.prepare({
+      jobId,
       binding,
       name: 'provider event retention',
-      cwd: home,
+      cwd: fixtureCanonicalWorkDir(home),
       projectRoot: home,
       backendNamespace: namespace,
       retention,
     });
     const operation = {
-      jobId: randomUUID(),
+      jobId,
       operationId: randomUUID(),
       proxyInstanceId: randomUUID(),
       buildSetId: randomUUID(),
     };
-    sessions.claimForJobSync(session.sessionId, operation.jobId);
     progressStore.initJob({
       jobId: operation.jobId,
-      sessionId: session.sessionId,
-      provider: 'codex',
+      conversation: {
+        binding: session.binding,
+        provider: session.provider,
+        name: session.name,
+        cwd: session.cwd,
+        bypassPermissions: session.bypassPermissions,
+        retention: session.retention,
+      },
       projectRoot: home,
       backendNamespace: namespace,
       initialPhase: 'running',
     });
-    insertProviderOperation(db, providerOperationRecord('executing', { operation }));
-    return { operation, sessionId: session.sessionId };
+    const request = db
+      .prepare<
+        [string],
+        { seq: number }
+      >("SELECT seq FROM events WHERE stream_kind = 'job' AND stream_id = ? AND type = 'job.execution.requested'")
+      .get(jobId);
+    if (request === undefined) throw new Error('Missing execution request.');
+    insertProviderOperation(db, {
+      ...providerOperationRecord('executing', { operation }),
+      jobLaunchEventSeq: request.seq,
+    });
+    return { operation, jobId };
   }
   return {
     coordinator,
@@ -270,6 +285,12 @@ async function fixture() {
     handler,
     runtime,
     locations,
+    finish: async (jobId: string) => {
+      const record = readProviderOperationForJob(db, jobId);
+      if (record === null) throw new Error('Missing provider operation.');
+      expect(deleteProviderOperation(db, record)).toEqual({ kind: 'deleted' });
+      await options.executionFinisher.finish({ jobId, execution: 1 });
+    },
     traceCommit: (jobId: string, type: string) => {
       const afterSeq =
         reader.prepare<[], { seq: number }>('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get()?.seq ?? 0;
@@ -297,12 +318,12 @@ describe('provider events through coordinator composition', () => {
     const unrelated = f.seedOperation('discard_provider_artifacts_on_terminal');
     const quarantine = new RecoveryQuarantineStore(f.db, f.runtime.time);
     const subject = {
-      key: sessionRetentionWorkKey(unrelated.sessionId, unrelated.operation.jobId),
+      key: `${unrelated.operation.jobId}:1:1`,
       revision: { kind: 'until-cleared' as const },
     };
     expect(
       quarantine.upsert({
-        boundary: 'session-retention-work',
+        boundary: 'job-conversation-retention',
         subject,
         state: 'active',
         stage: 'settle',
@@ -310,48 +331,51 @@ describe('provider events through coordinator composition', () => {
         detail: 'retry retains this subject',
       }),
     ).toBe(true);
-    const quarantined = quarantine.read('session-retention-work', subject.key);
+    const quarantined = quarantine.read('job-conversation-retention', subject.key);
     await f.handler(terminalRequest(unrelated.operation));
     await f.reactor.waitForIdle();
 
     const tested = f.seedOperation('discard_provider_artifacts_on_terminal');
     await f.reactor.waitForIdle();
-    const trace = f.traceCommit(tested.operation.jobId, 'job.terminal.recorded');
+    const trace = f.traceCommit(tested.operation.jobId, 'job.execution.outcome.accepted');
     const request = terminalRequest(tested.operation);
     expect(await f.handler(request)).toEqual({ kind: 'ack', committedThroughProviderSeq: 1 });
     await f.reactor.waitForIdle();
     expect(trace.stages.map(({ stage }) => stage)).toEqual(['commit', 'export', 'lifecycle', 'announcement']);
     const events = trace.events.map(({ seq, stream, type }) => ({ seq, stream, type }));
     expect(events).toEqual([
-      { seq: expect.any(Number), stream: { kind: 'job', id: tested.operation.jobId }, type: 'job.terminal.recorded' },
+      {
+        seq: expect.any(Number),
+        stream: { kind: 'job', id: tested.operation.jobId },
+        type: 'job.execution.outcome.accepted',
+      },
     ]);
-    expect(trace.stages[0]?.events).toEqual([
-      ...events,
-      { seq: expect.any(Number), stream: { kind: 'session', id: tested.sessionId }, type: 'session.claim.released' },
-    ]);
-    for (const stage of trace.stages.slice(1)) expect(stage.events).toEqual(events);
-    expect(f.publishResult.mock.calls.filter(([jobId]) => jobId === tested.operation.jobId)).toHaveLength(1);
-    expect(readProjectionJobConversation(f.db, tested.sessionId)?.activeJobId).toBeUndefined();
-    expect(
-      f.reader
-        .prepare<
-          [string],
-          { type: string }
-        >("SELECT type FROM events WHERE stream_kind = 'session' AND stream_id = ? AND type = 'session.retention.discard.completed'")
-        .all(tested.sessionId),
-    ).toHaveLength(1);
-    expect(quarantine.read('session-retention-work', subject.key)).toEqual(quarantined);
-    expect(
-      f.reader
-        .prepare<
-          [string],
-          { type: string }
-        >("SELECT type FROM events WHERE stream_kind = 'session' AND stream_id = ? AND type = 'session.retention.discard.completed'")
-        .all(unrelated.sessionId),
-    ).toHaveLength(0);
+    expect(trace.stages[0]?.events).toEqual(events);
     expect(await f.handler(request)).toEqual({ kind: 'ack', committedThroughProviderSeq: 1 });
     expect(trace.stages.map(({ stage }) => stage)).toEqual(['commit', 'export', 'lifecycle', 'announcement']);
+    await f.finish(tested.operation.jobId);
+    for (const stage of trace.stages.slice(1)) expect(stage.events).toEqual(events);
     expect(f.publishResult.mock.calls.filter(([jobId]) => jobId === tested.operation.jobId)).toHaveLength(1);
+    expect(readProjectionJobConversation(f.db, tested.operation.jobId)?.open).toBe(false);
+    expect(
+      f.reader
+        .prepare<
+          [string],
+          { type: string }
+        >("SELECT type FROM events WHERE stream_kind = 'job' AND stream_id = ? AND type = 'job.retention.discard.completed'")
+        .all(tested.operation.jobId),
+    ).toHaveLength(1);
+    expect(quarantine.read('job-conversation-retention', subject.key)).toEqual(quarantined);
+    expect(
+      f.reader
+        .prepare<
+          [string],
+          { type: string }
+        >("SELECT type FROM events WHERE stream_kind = 'job' AND stream_id = ? AND type = 'job.retention.discard.completed'")
+        .all(unrelated.operation.jobId),
+    ).toHaveLength(0);
+    expect(f.publishResult.mock.calls.filter(([jobId]) => jobId === tested.operation.jobId)).toHaveLength(1);
+    await f.finish(unrelated.operation.jobId);
   });
 
   it('records provider progress location once between export and lifecycle, visible at announcement', async () => {
@@ -360,7 +384,7 @@ describe('provider events through coordinator composition', () => {
     await f.reactor.waitForIdle();
     const registeredLocation = f.locations.read(tested.operation.jobId);
     expect(registeredLocation).not.toBeNull();
-    const trace = f.traceCommit(tested.operation.jobId, 'job.progress.emitted');
+    const trace = f.traceCommit(tested.operation.jobId, 'job.execution.progress');
     expect(
       await f.handler({
         operation: tested.operation,

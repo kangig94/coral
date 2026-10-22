@@ -22,7 +22,6 @@ type InterruptedRecoveryPlanBase = Readonly<{
   reason: RecoveredAppServerFinalizationReason;
   continuity: ProviderContinuityBlob | undefined;
   preservedConversationRef: string | undefined;
-  expectedSessionVersion: number;
 }>;
 
 export type AppServerInterruptedRecoveryPlan =
@@ -38,7 +37,6 @@ type DurableInterruptedRecoveryPlanBase = Readonly<{
   launchRecord: ProviderRecoveryLaunch;
   session: ProviderRecoverySession;
   runtimeRecord: DurableCliRuntimeRecord;
-  expectedSessionVersion: number;
 }>;
 
 export type DurableInterruptedRecoveryPlan =
@@ -64,7 +62,6 @@ export function planInterruptedAppServerRecovery(
     reason,
     continuity,
     preservedConversationRef: readContinuityRef(session.conversationRef),
-    expectedSessionVersion: session.version,
   } as const;
 
   if (!capabilities.recovery) return Object.freeze({ ...common, kind: 'unsupported' });
@@ -88,7 +85,6 @@ export function planInterruptedDurableRecovery(
     launchRecord: authority.launchRecord,
     session: authority.session,
     runtimeRecord,
-    expectedSessionVersion: authority.session.version,
   } as const;
 
   if (observation.terminal !== null) {

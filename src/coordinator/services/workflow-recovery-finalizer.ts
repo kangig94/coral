@@ -10,6 +10,7 @@ import type {
   WorkflowRecoveryFinalizer,
 } from '../../workflow/recover.js';
 import { composeWorkflowFinalization } from './workflow-finalization.js';
+import { appendJobExecutionEnded } from '../../jobs/terminal/recording.js';
 
 function exportRecoveredWorkflowResult(
   options: {
@@ -39,7 +40,10 @@ export function createWorkflowRecoveryFinalizer(options: {
 }): WorkflowRecoveryFinalizer {
   const finalize = ((intent: WorkflowFinalizationIntent) => {
     const status = options.progressStore.readStatus(intent.workflowJobId);
-    const namespace = status?.backendNamespace;
+    if (status === null || status.execution === null)
+      throw new Error(`Workflow '${intent.workflowJobId}' has no requested execution.`);
+    const execution = status.execution;
+    const namespace = status.backendNamespace ?? undefined;
     const project = status?.projectRoot;
     const runtime = options.progressStore.readRuntimeProjection(intent.workflowJobId);
     if (runtime?.transport !== 'workflow') {
@@ -52,7 +56,13 @@ export function createWorkflowRecoveryFinalizer(options: {
     const durationMs = Math.max(0, options.runtime.time.now() - startedAt);
 
     options.coordinatorCommit((c) => {
-      composeWorkflowFinalization(c, intent.workflowJobId, intent, { namespace, project, durationMs });
+      const accepted = composeWorkflowFinalization(c, intent.workflowJobId, intent, {
+        execution,
+        namespace,
+        project,
+        durationMs,
+      });
+      appendJobExecutionEnded(c, { jobId: intent.workflowJobId, execution, causeRef: accepted });
       return undefined;
     });
 
@@ -67,12 +77,18 @@ export function createWorkflowRecoveryFinalizer(options: {
     const durationMs = Math.max(0, options.runtime.time.now() - startedAt);
     let releases: readonly WorkflowRecoveryDescendantRelease[] = [];
     options.coordinatorCommit((c) => {
-      composeWorkflowFinalization(c, request.intent.workflowJobId, request.intent, {
+      const accepted = composeWorkflowFinalization(c, request.intent.workflowJobId, request.intent, {
+        execution: request.recording.execution,
         namespace: request.recording.namespace,
         project: request.recording.project,
         durationMs,
       });
       releases = request.releaseDescendants.composeAtomic(c, request.descendants);
+      appendJobExecutionEnded(c, {
+        jobId: request.intent.workflowJobId,
+        execution: request.recording.execution,
+        causeRef: accepted,
+      });
       if (!request.clearContinuation()) {
         throw new Error(`Workflow recovery continuation changed for '${request.intent.workflowJobId}'.`);
       }

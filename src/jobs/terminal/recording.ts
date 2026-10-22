@@ -1,13 +1,9 @@
-import type { CauseRefToken, ResolvableCauseRef } from '../../causality/cause-ref.js';
+import type { TerminalOutcomeInput } from '../outcome.js';
+import type { CauseRef, CauseRefToken } from '../../causality/cause-ref.js';
 import type { CommitContext } from '../../store/append.js';
 import type { ResolvableCoralEventInput } from '../../store/envelope.js';
-import type { TerminalOutcomeInput } from '../outcome.js';
 import { buildJobEventRefs } from '../refs.js';
-import {
-  normalizeJobTerminal,
-  type JobExecutionOutcomeAcceptedInputBody,
-  type JobExecutionEndedInputBody,
-} from './result.js';
+import { normalizeJobTerminal, type JobExecutionOutcomeAcceptedInputBody } from './result.js';
 import type { JobTerminalDiagnostics, JobTerminalInput } from '../records.js';
 
 export function failedTerminalOutcome<Scope>(causeRef: CauseRefToken<Scope>): TerminalOutcomeInput<Scope> {
@@ -66,12 +62,16 @@ export function appendJobExecutionOutcomeAccepted<Scope>(
 
 export function appendJobExecutionEnded<Scope>(
   c: CommitContext<Scope>,
-  options: JobExecutionEventOptions & { causeRef: ResolvableCauseRef<Scope> },
+  options: JobExecutionEventOptions & { causeRef: CauseRef | CauseRefToken<Scope> },
 ): CauseRefToken<Scope> {
   return c.append(
-    executionEvent<Scope, JobExecutionEndedInputBody<Scope>>(options, 'job.execution.ended', {
-      execution: options.execution,
-      causeRef: options.causeRef,
-    }),
+    executionEvent<Scope, { execution: number; causeRef: CauseRef | CauseRefToken<Scope> }>(
+      options,
+      'job.execution.ended',
+      {
+        execution: options.execution,
+        causeRef: options.causeRef,
+      },
+    ),
   );
 }

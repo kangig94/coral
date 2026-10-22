@@ -503,7 +503,11 @@ export class InMemoryStorage implements StoragePort {
         linked = true;
       } catch (error: unknown) {
         if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-        try { this.unlinkSync(stage); } catch { /* Finishing owns the deterministic stage. */ }
+        try {
+          this.unlinkSync(stage);
+        } catch {
+          /* Finishing owns the deterministic stage. */
+        }
         return { kind: 'exists' };
       }
       if (!this.syncDirectoryDurableSync(parentPath(normalizePathForStorage(destination)))) {

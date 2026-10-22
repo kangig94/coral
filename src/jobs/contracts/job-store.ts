@@ -57,5 +57,5 @@ export interface JobProgressStore {
   rebindNamespace(jobId: string, newNamespace: string, newBundleHash?: string): void;
   listJobIds(): string[];
   liveJobCount(): number;
-  appendProgress(jobId: string, conversationJobId: string | null, message: string): number;
+  appendProgress(jobId: string, message: string): number;
 }

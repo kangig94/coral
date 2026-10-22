@@ -1,3 +1,4 @@
+import { testConversationFacet } from '#tests/helpers/session.js';
 import { createServer } from 'node:http';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -17,11 +18,10 @@ import { createBuiltInProviderRegistry } from '#src/providers/bootstrap.js';
 import { providerLookupPortFromCatalog } from '#src/providers/catalog.js';
 import * as reactorModule from '#src/jobs/conversation/lifecycle-reactor.js';
 import * as phaseObservation from '#src/recovery/phase-observation.js';
-import { ConversationManager } from '#src/jobs/conversation/shell.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { initTestJob } from '#tests/helpers/session.js';
-import { commitJobTerminal } from '#tests/helpers/job-commits.js';
+import { appendJobExecutionOutcomeAccepted } from '#src/jobs/terminal/recording.js';
 import { TEST_CODEX_BINDING, withTestBindingLocation } from '#tests/helpers/provider-credentials.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { encodeResolvedStoreEpoch, resolveCurrentStoreEpoch, resolvedStoreEpoch } from '#src/store/epoch/index.js';
@@ -76,8 +76,8 @@ function fixture(overrides: Partial<lifecycle.LifecycleDeps> = {}, backlog = 0) 
     reactor = createReactor(options);
     vi.spyOn(reactor, 'scanStartup').mockImplementation((signal, observation) => {
       const db = core.storeServicesRef.get().storeDb;
-      expect(db.prepare('SELECT session_id FROM projection_sessions').all()).toHaveLength(backlog);
-      expect(db.prepare("SELECT seq FROM events WHERE type LIKE 'session.retention.discard.%'").all()).toEqual([]);
+      expect(db.prepare("SELECT job_id FROM projection_jobs WHERE job_kind = 'provider'").all()).toHaveLength(backlog);
+      expect(db.prepare("SELECT seq FROM events WHERE type LIKE 'job.retention.discard.%'").all()).toEqual([]);
       return reactorModule.LifecycleReactor.prototype.scanStartup.call(reactor, signal, observation);
     });
     const admit = reactor.admitRetention.bind(reactor);
@@ -96,7 +96,7 @@ function fixture(overrides: Partial<lifecycle.LifecycleDeps> = {}, backlog = 0) 
     const observe = reactor.observe;
     vi.spyOn(reactor, 'observe').mockImplementation((events) => {
       for (const event of events) {
-        if (event.type === 'session.retention.discard.requested') order.push('discard-requested');
+        if (event.type === 'job.retention.discard.requested') order.push('discard-requested');
       }
       observe(events);
     });
@@ -128,43 +128,34 @@ function fixture(overrides: Partial<lifecycle.LifecycleDeps> = {}, backlog = 0) 
         reducers: composeReducers(jobsRegistry),
         providers: providerLookupPortFromCatalog(createBuiltInProviderRegistry()),
       });
-      const sessions = ConversationManager.forProduction(
-        home,
-        runtime,
-        (cb) => progressStore.commit(cb),
-        () => {},
-        { db },
-      );
       for (let index = 0; index < backlog; index += 1) {
-        const session = sessions.open({
-          binding,
-          name: `backlog-${index}`,
-          cwd: home,
-          projectRoot: home,
-          backendNamespace: namespace,
-          retention: 'discard_provider_artifacts_on_terminal',
-        });
-        const jobId = `backlog-${index}`;
-        sessions.claimForJobSync(session.sessionId, jobId);
+        const jobId = `10000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`;
         initTestJob(progressStore, {
           jobId,
-          sessionId: session.sessionId,
-          provider: 'codex',
           projectRoot: home,
           backendNamespace: namespace,
           initialPhase: 'running',
+          conversation: {
+            ...testConversationFacet('codex', home),
+            binding,
+            retention: 'discard_provider_artifacts_on_terminal',
+          },
         });
-        commitJobTerminal(progressStore, jobId, session.sessionId, {
-          content: 'done',
-          outcome: { kind: 'completed' },
-          durationMs: 1,
+        progressStore.commit((c) => {
+          appendJobExecutionOutcomeAccepted(c, {
+            jobId,
+            execution: 1,
+            terminal: { content: 'done', outcome: { kind: 'completed' }, durationMs: 1 },
+          });
+          return undefined;
         });
-        sessions.releaseJob(session.sessionId, jobId);
       }
-      expect(db.prepare('SELECT session_id FROM projection_sessions').all()).toHaveLength(backlog);
-      expect(db.prepare("SELECT seq FROM events WHERE type = 'job.terminal.recorded'").all()).toHaveLength(backlog);
-      expect(db.prepare("SELECT seq FROM events WHERE type = 'session.claim.released'").all()).toHaveLength(backlog);
-      expect(db.prepare("SELECT seq FROM events WHERE type LIKE 'session.retention.discard.%'").all()).toEqual([]);
+      expect(db.prepare("SELECT job_id FROM projection_jobs WHERE job_kind = 'provider'").all()).toHaveLength(backlog);
+      expect(db.prepare("SELECT seq FROM events WHERE type = 'job.execution.outcome.accepted'").all()).toHaveLength(
+        backlog,
+      );
+      expect(db.prepare("SELECT seq FROM events WHERE type = 'job.execution.ended'").all()).toEqual([]);
+      expect(db.prepare("SELECT seq FROM events WHERE type LIKE 'job.retention.discard.%'").all()).toEqual([]);
     } finally {
       db.close();
     }
@@ -239,7 +230,7 @@ function fixture(overrides: Partial<lifecycle.LifecycleDeps> = {}, backlog = 0) 
     retentionEvents: () =>
       core.storeServicesRef
         .get()
-        .storeDb.prepare<[], { type: string }>("SELECT type FROM events WHERE type LIKE 'session.retention.discard.%'")
+        .storeDb.prepare<[], { type: string }>("SELECT type FROM events WHERE type LIKE 'job.retention.discard.%'")
         .all()
         .map(({ type }) => type),
     advance: (ms: number) => {
@@ -255,16 +246,18 @@ function phaseLines(logs: string[], phase: string) {
 describe('startup phase observations through lifecycle fallbacks', () => {
   it.each([1, 5])('serves after component scanning with %s deferred retention subjects', async (backlog) => {
     const f = fixture({}, backlog);
-    const settle = reactorModule.LifecycleReactor.prototype.enforceRetention;
+    const settle = reactorModule.LifecycleReactor.prototype.settleRetention;
     const held = createDeferred();
+    const settledJobs = new Set<string>();
     const settlement = vi
-      .spyOn(reactorModule.LifecycleReactor.prototype, 'enforceRetention')
-      .mockImplementation(async function (this: reactorModule.LifecycleReactor, work) {
+      .spyOn(reactorModule.LifecycleReactor.prototype, 'settleRetention')
+      .mockImplementation(async function (this: reactorModule.LifecycleReactor, address, action) {
+        settledJobs.add(`${address.jobId}:${address.execution}`);
         expect(this.isRetentionAdmitted()).toBe(true);
         expect(f.order.slice(0, 2)).toEqual(['serving-complete', 'admitted']);
         await held.promise;
         f.advance(1_000);
-        return settle.call(this, work);
+        return settle.call(this, address, action);
       });
     const scan = reactorModule.LifecycleReactor.prototype.scanStartup;
     vi.spyOn(reactorModule.LifecycleReactor.prototype, 'scanStartup').mockImplementation(async function (
@@ -283,28 +276,26 @@ describe('startup phase observations through lifecycle fallbacks', () => {
       expect(f.transitions).toHaveBeenCalledOnce();
       const scanLine = phaseLines(f.logs, 'reactor-scan')[0];
       expect(scanLine).toContain('duration_ms=7.000');
-      expect(scanLine).toContain(`"session-retention-work":{"subjects":${backlog},"reads":0}`);
+      expect(scanLine).toContain(`"job-conversation-retention":{"subjects":${backlog},"reads":0}`);
       expect(phaseLines(f.logs, 'recovery-and-serve')[0]).toContain('duration_ms=7.000');
-      expect(f.retentionEvents()).toEqual([]);
+      await vi.waitFor(() => expect(settledJobs.size).toBe(backlog));
+      expect(f.retentionEvents()).toEqual(Array.from({ length: backlog }, () => 'job.retention.discard.requested'));
     } finally {
       held.resolve();
+      await vi.waitFor(() =>
+        expect(f.retentionEvents().filter((type) => type.endsWith('.completed'))).toHaveLength(backlog),
+      );
       await f.reactor().waitForIdle();
     }
-    expect(settlement).toHaveBeenCalledTimes(backlog);
+    expect(settledJobs.size).toBe(backlog);
     expect(f.order.indexOf('discard-requested')).toBeGreaterThan(f.order.indexOf('admitted'));
     expect(f.retentionEvents().filter((type) => type.endsWith('.completed'))).toHaveLength(backlog);
-    const background = f.logs.filter((line) => line.includes('kind=background phase=reactor-recovery event=finish'));
-    expect(background.some((line) => line.includes(`"session-retention-work":{"subjects":${backlog},"reads":0}`))).toBe(
-      true,
-    );
-    const passes = f.logs.filter((line) => line.includes('kind=background phase=reactor-recovery event=start')).length;
+    const completed = f.retentionEvents();
     f.reactor().admitRetention();
     f.reactor().admitRetention();
     await f.reactor().waitForIdle();
     expect(f.transitions).toHaveBeenCalledOnce();
-    expect(f.logs.filter((line) => line.includes('kind=background phase=reactor-recovery event=start'))).toHaveLength(
-      passes,
-    );
+    expect(f.retentionEvents()).toEqual(completed);
   });
 
   it('settles after serving while dead-attempt discharge still holds the start result', async () => {
@@ -332,11 +323,11 @@ describe('startup phase observations through lifecycle fallbacks', () => {
     });
     try {
       await entered.promise;
+      await vi.waitFor(() => expect(f.retentionEvents().filter((type) => type.endsWith('.completed'))).toHaveLength(2));
       await f.reactor().waitForIdle();
       expect(returned).toBe(false);
       expect(f.order.slice(0, 2)).toEqual(['serving-complete', 'admitted']);
       expect(f.retentionEvents().filter((type) => type.endsWith('.completed'))).toHaveLength(2);
-      expect(f.logs.some((line) => line.includes('kind=background phase=reactor-recovery event=finish'))).toBe(true);
       expect(f.logs.some((line) => line.includes('Running on'))).toBe(false);
     } finally {
       discharge.resolve();
@@ -377,12 +368,11 @@ describe('startup phase observations through lifecycle fallbacks', () => {
     expect(f.transitions).not.toHaveBeenCalled();
     expect(f.order).toEqual([]);
     const persisted = f.open();
-    expect(persisted.db.prepare("SELECT type FROM events WHERE type LIKE 'session.retention.discard.%'").all()).toEqual(
-      [],
-    );
+    expect(persisted.db.prepare("SELECT type FROM events WHERE type LIKE 'job.retention.discard.%'").all()).toEqual([]);
     persisted.db.close();
     const successor = f.successor();
     await successor.start();
+    await vi.waitFor(() => expect(f.retentionEvents().filter((type) => type.endsWith('.completed'))).toHaveLength(2));
     await f.reactor().waitForIdle();
     expect(f.order.slice(0, 2)).toEqual(['serving-complete', 'admitted']);
     expect(f.transitions).toHaveBeenCalledOnce();
@@ -480,6 +470,7 @@ describe('startup phase observations through lifecycle fallbacks', () => {
     await expect(f.coordinator.start()).resolves.toMatchObject({ instanceId: expect.any(String) });
     expect(phaseLines(f.logs, 'boot')).toHaveLength(1);
     expect(phaseLines(f.logs, 'boot')[0]).toContain('outcome=complete');
+    await vi.waitFor(() => expect(f.retentionEvents().filter((type) => type.endsWith('.completed'))).toHaveLength(2));
     await f.reactor().waitForIdle();
     expect(phaseLines(f.logs, 'serving')[0]).toContain('outcome=failed');
     expect(f.order.slice(0, 2)).toEqual(['serving-failed', 'admitted']);

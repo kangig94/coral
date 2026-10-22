@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { progressVisitFromDetails } from '#tests/helpers/wait-progress.js';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -22,15 +23,16 @@ const runtime = createRealRuntime('prod', { baseDir: tmpdir() });
 function fixture(): { root: string; index: JobLocationIndex } {
   const root = mkdtempSync(join(tmpdir(), 'coral-job-addressing-'));
   directories.push(root);
-  return { root, index: new JobLocationIndex(runtime, root) };
+  return { root, index: new JobLocationIndex(runtime, root, undefined, currentCoralStoreFormat().fingerprint) };
 }
 
 function detail(jobId: string, phase: 'running' | 'completed', seq = 12): JobDetailResponse {
   const result = { content: `${jobId} result`, outcome: { kind: 'completed' as const }, durationMs: 10 };
   const status = {
     jobId,
-    owner: { kind: 'provider-session' as const, id: 'session-1' },
-    sessionId: 'session-1',
+    execution: 1,
+    owner: { kind: 'provider-session' as const, id: jobId },
+    sessionId: null,
     provider: 'claude',
     projectRoot: '/workspace/project',
     workDir: canonicalWorkDirWireSchema.parse('/workspace/project'),
@@ -41,7 +43,8 @@ function detail(jobId: string, phase: 'running' | 'completed', seq = 12): JobDet
     lastSeq: seq,
     ...(phase === 'completed' ? { result } : {}),
   };
-  return {
+  const value: JobDetailResponse = {
+    requestedSeq: 1,
     status,
     events:
       phase === 'completed'
@@ -49,7 +52,7 @@ function detail(jobId: string, phase: 'running' | 'completed', seq = 12): JobDet
             {
               type: 'terminal',
               jobId,
-              sessionId: 'session-1',
+              execution: 1,
               seq,
               ts: '2026-09-25T00:00:00.000Z',
               result,
@@ -66,6 +69,7 @@ function detail(jobId: string, phase: 'running' | 'completed', seq = 12): JobDet
           }
         : null,
   };
+  return { ...value, executions: [{ ...value, execution: 1, requestedSeq: 1, resultPath: '/result.md' }] };
 }
 
 afterEach(() => {
@@ -98,7 +102,7 @@ it('admits a job its location record cannot decode when the active journal answe
     () => false,
     () => 'pending',
     undefined,
-    (jobId) => ({ kind: 'available', resultPath: index.resultPathFor(jobId) }),
+    (jobId) => ({ kind: 'available', resultPath: index.resultPathFor(jobId, 1) }),
   );
   const [answered, unanswered] = addressing.admitWait({ jobIds: ['done', 'neither'] });
   expect(answered).toMatchObject({ disposition: 'admitted', epochKey: 'lineage-new:8' });
@@ -131,7 +135,7 @@ function historicalAddressing(index: JobLocationIndex): JobAddressing {
     () => false,
     () => 'pending',
     undefined,
-    (jobId) => ({ kind: 'available', resultPath: index.resultPathFor(jobId) }),
+    (jobId) => ({ kind: 'available', resultPath: index.resultPathFor(jobId, 1) }),
   );
 }
 
@@ -145,7 +149,8 @@ describe('job addressing', () => {
       workDir: '/workspace/project',
       jobKind: 'provider',
     });
-    index.recordTerminal('old', detail('old', 'completed'), resultPath, 12);
+    const ended = detail('old', 'completed');
+    index.recordExecutionDetails('old', [{ execution: 1, requestedSeq: 1, seq: 12, resultPath, detail: ended }], ended);
     const addressing = historicalAddressing(index);
     const cursor: WaitCursor = savedCursor(100);
     expect(addressing.detail('old')).toMatchObject({ epochKey: 'lineage-old:7' });
@@ -161,7 +166,7 @@ describe('job addressing', () => {
 
   it('should not overwrite a terminal another process records while an unresolved mark waits for the lock', () => {
     const { root, index } = fixture();
-    const other = new JobLocationIndex(runtime, root);
+    const other = new JobLocationIndex(runtime, root, undefined, currentCoralStoreFormat().fingerprint);
     index.register('racing', 'lineage-old:7', {
       projectRoot: '/workspace/project',
       workDir: '/workspace/project',
@@ -187,7 +192,7 @@ it.each([0, -3_600_000, 3_600_000])('bounds historical waiting across a %s ms wa
   const wall = time.now.bind(time);
   let offset = 0;
   Object.assign(time, { now: () => wall() + offset });
-  const index = new JobLocationIndex({ ...runtime, time }, root);
+  const index = new JobLocationIndex({ ...runtime, time }, root, undefined, currentCoralStoreFormat().fingerprint);
   index.register('old', 'lineage-old:7', {
     projectRoot: '/workspace/project',
     workDir: '/workspace/project',
@@ -223,7 +228,12 @@ it('keeps retryable unknown IDs in a direct continuation and re-admits them afte
     workDir: '/workspace/project',
     jobKind: 'provider',
   });
-  index.recordTerminal('unknown', detail('unknown', 'completed'), index.resultPathFor('unknown'), 12);
+  const ended = detail('unknown', 'completed');
+  index.recordExecutionDetails(
+    'unknown',
+    [{ execution: 1, requestedSeq: 1, seq: 12, resultPath: index.resultPathFor('unknown', 1), detail: ended }],
+    ended,
+  );
   index.clearUnknownLocations('recovering');
   const admitted = addressing.waitStream({ jobIds: ['unknown'] });
   expect((await nextFinal(admitted)).value).toMatchObject({ type: 'terminal', jobId: 'unknown' });

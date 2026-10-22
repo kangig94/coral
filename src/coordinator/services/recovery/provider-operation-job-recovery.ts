@@ -124,14 +124,7 @@ async function applyRecoveryPlanActionToItem(
   controls: CoordinatorRecoveryControls,
   options: ProviderOperationRecoveryPlanActionOptions,
 ): Promise<RecoveryDisposition> {
-  const {
-    progressStore,
-    runtime,
-    getRecoveryService,
-    createInvocationContext,
-    settleFault,
-    abandonHeldJob,
-  } = deps;
+  const { progressStore, runtime, getRecoveryService, createInvocationContext, settleFault, abandonHeldJob } = deps;
   try {
     return await applyRecoveryAction(action, {
       progressStore,

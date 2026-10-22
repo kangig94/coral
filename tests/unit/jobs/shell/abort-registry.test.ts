@@ -20,7 +20,9 @@ describe('jobs AbortRegistry', () => {
       'default',
     );
     if (launched === 'queue_full' || launched.type !== 'immediate') throw new Error('expected exact permit');
-    registry.register(launched.permit.jobId, 1, signalStopWithoutWaiting, () => admission.releaseLaunch(launched.permit));
+    registry.register(launched.permit.jobId, 1, signalStopWithoutWaiting, () =>
+      admission.releaseLaunch(launched.permit),
+    );
 
     expect(registry.abort([launched.permit.jobId])).toEqual({ aborted: [launched.permit.jobId], notFound: [] });
     expect(signalledStop).toBe(true);

@@ -134,7 +134,12 @@ it('resumes recovery through ExecutionService and the real WaitCoordinator using
   const f = createTerminalExportFixture();
   try {
     const seq = f.complete();
-    const request = f.db.prepare<[string], { seq: number }>("SELECT seq FROM events WHERE stream_id = ? AND type = 'job.execution.requested' ORDER BY seq DESC LIMIT 1").get(f.jobId)!;
+    const request = f.db
+      .prepare<
+        [string],
+        { seq: number }
+      >("SELECT seq FROM events WHERE stream_id = ? AND type = 'job.execution.requested' ORDER BY seq DESC LIMIT 1")
+      .get(f.jobId)!;
     const addressing = new JobAddressing(
       f.index.readOnlyView(),
       {

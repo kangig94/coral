@@ -84,11 +84,7 @@ export function planRecovery(snapshot: RecoveryProjectionSnapshot): RecoveryPlan
 
   return {
     register: [...registerRunning, ...registerQueued],
-    cleanup: [
-      ...discardIncompleteAdmission,
-      ...markMissingLaunchRecord,
-      ...markStaleRunning,
-    ],
+    cleanup: [...discardIncompleteAdmission, ...markMissingLaunchRecord, ...markStaleRunning],
   };
 }
 
@@ -230,4 +226,3 @@ function readJobIds(jobIds: readonly string[]): string[] {
   if (!Array.isArray(jobIds)) return [];
   return jobIds.filter((jobId): jobId is string => typeof jobId === 'string');
 }
-

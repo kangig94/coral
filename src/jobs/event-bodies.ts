@@ -1,14 +1,15 @@
+import { causeRefSchema } from '../causality/cause-ref.js';
 import { z } from 'zod';
 
 import { executionOrdinalSchema } from './launch.js';
 import { providerArtifactIdentityKey, providerArtifactIdentitySchema } from '../providers/artifact-identity.js';
 import { continuitySnapshotSchema } from './conversation/continuity.js';
 import {
-  sessionInterruptedFaultSchema,
+  conversationInterruptedFaultSchema,
   sessionProviderFailedFaultSchema,
   sessionAdapterUnparseableFaultSchema,
 } from './conversation/fault.js';
-import { executionCauseRefSchema, externalErrorSchema, jobDomainProgressSchema } from './outcome.js';
+import { externalErrorSchema, jobDomainProgressSchema } from './outcome.js';
 
 export const jobQueueQueuedBodySchema = z
   .object({
@@ -166,7 +167,8 @@ export const jobArtifactRecordedBodySchema = z
         message: 'Artifact identityKey must match its provider and identity.',
       });
     }
-  });
+  })
+  .describe('job-artifact-recorded-identity-key-v1');
 
 const retentionDiscardFields = {
   execution: executionOrdinalSchema,
@@ -185,11 +187,13 @@ export const jobRetentionDiscardFailedBodySchema = z
   .object({
     ...retentionDiscardFields,
     reason: z.string().min(1),
-    causeRef: executionCauseRefSchema.optional(),
+    causeRef: causeRefSchema.optional(),
   })
   .strict();
 
-export const jobInterruptedBodySchema = sessionInterruptedFaultSchema.extend({ execution: executionOrdinalSchema });
+export const jobInterruptedBodySchema = conversationInterruptedFaultSchema.extend({
+  execution: executionOrdinalSchema,
+});
 export const jobProviderFailedBodySchema = sessionProviderFailedFaultSchema.extend({
   execution: executionOrdinalSchema,
 });
@@ -198,10 +202,4 @@ export const jobAdapterUnparseableBodySchema = sessionAdapterUnparseableFaultSch
 });
 
 export type JobContinuityCheckpointedBody = z.infer<typeof jobContinuityCheckpointedBodySchema>;
-export type JobArtifactRecordedBody = z.infer<typeof jobArtifactRecordedBodySchema>;
 export type JobRetentionDiscardRequestedBody = z.infer<typeof jobRetentionDiscardRequestedBodySchema>;
-export type JobRetentionDiscardCompletedBody = z.infer<typeof jobRetentionDiscardCompletedBodySchema>;
-export type JobRetentionDiscardFailedBody = z.infer<typeof jobRetentionDiscardFailedBodySchema>;
-export type JobInterruptedBody = z.infer<typeof jobInterruptedBodySchema>;
-export type JobProviderFailedBody = z.infer<typeof jobProviderFailedBodySchema>;
-export type JobAdapterUnparseableBody = z.infer<typeof jobAdapterUnparseableBodySchema>;

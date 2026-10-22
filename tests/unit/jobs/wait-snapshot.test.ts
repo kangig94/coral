@@ -204,3 +204,18 @@ it('keeps a historical pending artifact in a snapshot continuation with exit 75 
   expect(second.remainingJobIds).toEqual([]);
   expect(second.exitCode).toBe(0);
 });
+
+it('keeps blocked finishing status and typed recovery inspection in snapshots', () => {
+  const job = admitted('held', [], false);
+  job.detail.status.finishingStatus = {
+    kind: 'blocked',
+    stage: 'accept',
+    reason: 'acceptance disk failure',
+    successor: 'recovery-quarantine',
+  };
+  const snapshot = collect([job]);
+  expect(parseWaitSnapshot(snapshot).jobs[0].finishingStatus).toEqual(job.detail.status.finishingStatus);
+  const text = formatWaitSnapshot(snapshot);
+  expect(text).toContain('acceptance disk failure');
+  expect(text).toContain('command=coral-cli backend recovery-quarantine list');
+});

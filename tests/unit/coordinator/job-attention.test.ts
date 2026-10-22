@@ -51,12 +51,25 @@ function fixture() {
         launch: { request: { coralEnv: { CORAL_OWNER: jobId === 'other' ? 'other-session' : 'session' } } },
       }),
     }),
-    jobAddressing: { waitStream: stream, snapshot, scopeCheck: () => ({ valid: [], missing: [], mismatch: [] }) },
+    jobAddressing: {
+      admitWait: (request: { jobIds: string[] }) =>
+        request.jobIds.map((jobId) => ({ jobId, detail: { status: statuses.get(jobId) } })),
+      waitStream: stream,
+      snapshot,
+      scopeCheck: () => ({ valid: [], missing: [], mismatch: [] }),
+    },
   } as unknown as Parameters<typeof createCoordinatorRpcPorts>[0]);
   const deps = {
-    loadJobProjectionDetail: (jobId: string) => ({ status: statuses.get(jobId) ?? null, launch: null, runtime: null, exit: null }),
+    loadJobProjectionDetail: (jobId: string) => ({
+      status: statuses.get(jobId) ?? null,
+      launch: null,
+      runtime: null,
+      exit: null,
+    }),
     jobAttention: attention,
     waitCoordinator: {
+      admitWait: (request: { jobIds: string[] }) =>
+        request.jobIds.map((jobId) => ({ jobId, detail: { status: statuses.get(jobId) } })),
       waitForOutcomes: stream,
       waitStreamOnce: async () => {
         expect(attention.isUnwaited('mine', 1)).toBe(false);

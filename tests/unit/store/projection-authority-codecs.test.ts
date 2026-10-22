@@ -12,8 +12,9 @@ import { readWorkflowProjection, readWorkflowView } from '#src/workflow/read-que
 import { TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
+import { seedTestSessionProjection, testConversationFacet } from '#tests/helpers/session.js';
 import { readCorpusState } from '#src/kb/state/corpus-state.js';
-import { reduceJobLaunchRequested } from '#src/jobs/projections.js';
+import { reduceJobOpened } from '#src/jobs/projections.js';
 
 describe('persisted projection authority codecs', () => {
   it.each([
@@ -25,9 +26,9 @@ describe('persisted projection authority codecs', () => {
       applyBundledStoreSchema(db, currentCoralStoreFormat());
       const insert = db.prepare(
         `INSERT INTO projection_jobs (
-           job_id, execution_owner, phase, diagnostics, project_root, work_dir,
+           job_id, execution_owner, phase, diagnostics, finishing, project_root, work_dir,
            backend_namespace, job_kind, created_at, last_seq
-         ) VALUES (?, '{}', 'running', '{"progressFaults":[]}', '/workspace', ?, 'tests', ?, ?, 1)`,
+         ) VALUES (?, '{}', 'running', '{"progressFaults":[]}', 0, '/workspace', ?, 'tests', ?, ?, 1)`,
       );
 
       expect(() => insert.run(`invalid-${jobKind}`, workDir, jobKind, '2026-07-22T00:00:00.000Z')).toThrow(
@@ -49,9 +50,9 @@ describe('persisted projection authority codecs', () => {
       const jobId = `valid-${jobKind}`;
       db.prepare(
         `INSERT INTO projection_jobs (
-           job_id, execution_owner, phase, diagnostics, project_root, work_dir,
+           job_id, execution_owner, phase, diagnostics, finishing, project_root, work_dir,
            backend_namespace, job_kind, created_at, last_seq
-         ) VALUES (?, '{}', 'running', '{"progressFaults":[]}', '/workspace', ?, 'tests', ?, ?, 1)`,
+         ) VALUES (?, '{}', 'running', '{"progressFaults":[]}', 0, '/workspace', ?, 'tests', ?, ?, 1)`,
       ).run(jobId, original, jobKind, '2026-07-22T00:00:00.000Z');
 
       expect(() => db.prepare('UPDATE projection_jobs SET work_dir = ? WHERE job_id = ?').run(invalid, jobId)).toThrow(
@@ -95,22 +96,15 @@ describe('persisted projection authority codecs', () => {
     const db = newRawDatabase(':memory:');
     try {
       applyBundledStoreSchema(db, currentCoralStoreFormat());
-      db.prepare(
-        `INSERT INTO projection_jobs (
-           job_id, execution_owner, phase, terminal, diagnostics, session_id, provider,
-           project_root, work_dir, backend_namespace, bundle_hash, job_kind, parent_workflow_job_id,
-           workflow_slot, workflow_slot_generation, replaces_workflow_job_id, created_at, last_seq
-         ) VALUES (?, ?, 'running', NULL, '{"progressFaults":[]}', ?, 'codex', ?, ?, 'tests', NULL, 'provider',
-                   NULL, NULL, NULL, NULL, ?, 1)`,
-      ).run(
-        'corrupted-scalar-job',
-        JSON.stringify({ kind: 'provider-session', id: 'provider-session-1' }),
-        'provider-session-1',
-        '/workspace',
-        '/workspace',
-        '2026-07-22T00:00:00.000Z',
+      seedTestSessionProjection(db, {
+        jobId: '10000000-0000-4000-8000-000000000001',
+        provider: 'codex',
+        projectRoot: '/workspace',
+      });
+      db.prepare(`UPDATE projection_jobs SET ${column} = ? WHERE job_id = ?`).run(
+        value,
+        '10000000-0000-4000-8000-000000000001',
       );
-      db.prepare(`UPDATE projection_jobs SET ${column} = ? WHERE job_id = ?`).run(value, 'corrupted-scalar-job');
       const reducers = composeReducers(jobsRegistry, discussRegistry, workflowRegistry);
       const readCtx = {
         schemas: reducers.schemas,
@@ -118,8 +112,8 @@ describe('persisted projection authority codecs', () => {
         bodyCodec: createEventBodyCodec(),
       };
 
-      expect(() => loadJobProjectionDetail(db, 'corrupted-scalar-job', readCtx)).toThrow();
-      expect(() => loadJobProjectionDetails(db, ['corrupted-scalar-job'], readCtx)).toThrow();
+      expect(() => loadJobProjectionDetail(db, '10000000-0000-4000-8000-000000000001', readCtx)).toThrow();
+      expect(() => loadJobProjectionDetails(db, ['10000000-0000-4000-8000-000000000001'], readCtx)).toThrow();
     } finally {
       db.close();
     }
@@ -139,24 +133,24 @@ describe('persisted projection authority codecs', () => {
         JSON.stringify({ slots: [{ slotId, dependencies: [], provider: 'codex', instruction: 'run' }] }),
         JSON.stringify(TEST_PROVIDER_SCOPE),
       );
-      db.prepare(
-        `INSERT INTO projection_jobs (
-           job_id, execution_owner, phase, terminal, diagnostics, session_id, provider,
-           project_root, work_dir, backend_namespace, bundle_hash, job_kind, parent_workflow_job_id,
-           workflow_slot, workflow_slot_generation, replaces_workflow_job_id, created_at, last_seq
-         ) VALUES (?, ?, ?, NULL, '{"progressFaults":[]}', ?, 'codex', ?, ?, 'tests', NULL, 'provider',
-                   ?, ?, 0, NULL, ?, 2)`,
-      ).run(
-        'corrupted-child-job',
-        JSON.stringify({ kind: 'workflow', id: workflowId }),
-        'not-a-phase',
-        'session-corrupted-child',
-        '/workspace',
-        '/workspace',
-        workflowId,
-        slotId,
-        '2026-07-22T00:00:00.000Z',
-      );
+      reduceJobOpened(db, {
+        seq: 2,
+        ts: '2026-07-22T00:00:00.000Z',
+        type: 'job.opened',
+        stream: { kind: 'job', id: 'corrupted-child-job' },
+        namespace: 'tests',
+        project: '/workspace',
+        refs: { jobId: 'corrupted-child-job', workflowId },
+        body: {
+          owner: { kind: 'workflow', id: workflowId },
+          jobKind: 'provider',
+          conversation: testConversationFacet('codex', '/workspace'),
+          workflowSlotId: slotId,
+          projectRoot: '/workspace',
+          createdAt: '2026-07-22T00:00:00.000Z',
+        },
+      });
+      db.prepare('UPDATE projection_jobs SET phase = ? WHERE job_id = ?').run('not-a-phase', 'corrupted-child-job');
       const reducers = composeReducers(jobsRegistry, discussRegistry, workflowRegistry);
 
       expect(() =>
@@ -207,30 +201,19 @@ describe('persisted projection authority codecs', () => {
       applyBundledStoreSchema(db, currentCoralStoreFormat());
 
       expect(() =>
-        reduceJobLaunchRequested(db, {
+        reduceJobOpened(db, {
           seq: 1,
           ts: '2026-07-22T00:00:00.000Z',
-          type: 'job.launch.requested',
+          type: 'job.opened',
           stream: { kind: 'job', id: 'invalid-created-at' },
           namespace: 'tests',
           project: '/workspace',
-          refs: { sessionId: 'session-1' },
+          refs: { jobId: 'invalid-created-at' },
           body: {
-            owner: { kind: 'provider-session', id: 'session-1' },
-            sessionId: 'session-1',
-            provider: 'codex',
-            providerAction: 'exec',
+            owner: { kind: 'provider-session', id: 'invalid-created-at' },
             projectRoot: fixtureCanonicalWorkDir('/workspace'),
-            backendNamespace: 'tests',
             jobKind: 'provider',
-            pool: 'default',
-            enqueueSequence: 1,
-            request: {
-              prompt: 'run',
-              cwd: fixtureCanonicalWorkDir('/workspace'),
-              bypassPermissions: false,
-              coralEnv: {},
-            },
+            conversation: testConversationFacet('codex', '/workspace'),
             createdAt: 'not-an-iso-timestamp',
           },
         }),
@@ -241,40 +224,35 @@ describe('persisted projection authority codecs', () => {
     }
   });
 
-  it('rejects a launch projection whose derived work directory is absent before writing', () => {
+  it('rejects a conversation projection whose work directory is absent before writing', () => {
     const db = newRawDatabase(':memory:');
     try {
       applyBundledStoreSchema(db, currentCoralStoreFormat());
+      const conversation = testConversationFacet('codex', '/workspace');
+      Reflect.deleteProperty(conversation, 'cwd');
 
       expect(() =>
-        reduceJobLaunchRequested(db, {
+        reduceJobOpened(db, {
           seq: 1,
           ts: '2026-07-22T00:00:00.000Z',
-          type: 'job.launch.requested',
+          type: 'job.opened',
           stream: { kind: 'job', id: 'missing-work-dir' },
           namespace: 'tests',
           project: '/workspace',
-          refs: { sessionId: 'session-1' },
+          refs: { jobId: 'missing-work-dir' },
           body: {
-            owner: { kind: 'provider-session', id: 'session-1' },
-            sessionId: 'session-1',
-            provider: 'codex',
-            providerAction: 'exec',
+            owner: { kind: 'provider-session', id: 'missing-work-dir' },
             projectRoot: '/workspace',
-            backendNamespace: 'tests',
             jobKind: 'provider',
-            pool: 'default',
-            enqueueSequence: 1,
-            request: {
-              prompt: 'run',
-              cwd: undefined as never,
-              bypassPermissions: false,
-              coralEnv: {},
-            },
+            conversation,
             createdAt: '2026-07-22T00:00:00.000Z',
           },
         }),
-      ).toThrowError(expect.objectContaining({ code: 'projection_jobs_premature_event' }));
+      ).toThrowError(
+        expect.objectContaining({
+          issues: expect.arrayContaining([expect.objectContaining({ path: ['cwd'] })]),
+        }),
+      );
       expect(db.prepare('SELECT COUNT(*) AS count FROM projection_jobs').get()).toEqual({ count: 0 });
     } finally {
       db.close();

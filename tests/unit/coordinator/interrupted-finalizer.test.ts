@@ -1,10 +1,19 @@
+import { afterEach } from 'vitest';
+import { executionHarness, openedJob, requestedExecution } from '#tests/helpers/job-executions.js';
+import { TEST_CODEX_BINDING } from '#tests/helpers/provider-credentials.js';
+import { testJobConversation } from '#tests/helpers/session.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
+import { JobStore } from '#src/jobs/store.js';
+import { ConversationManager } from '#src/jobs/conversation/shell.js';
+import { ExecutionFinisher, readExecutionFinishingState } from '#src/jobs/finishing.js';
+import { AbortRegistry } from '#src/jobs/shell/abort-registry.js';
+import type { ProviderRecoveryLaunch } from '#src/jobs/reconcile/contracts.js';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
   finalizeInterruptedAppServerRecovery,
   finalizeInterruptedDurableRecovery,
 } from '#src/coordinator/services/recovery/interrupted-finalizer.js';
-import type { InterruptedRecoveryCommitError } from '#src/coordinator/services/recovery/interrupted-finalizer.js';
 import type {
   AppServerInterruptedRecoveryPlan,
   DurableInterruptedRecoveryPlan,
@@ -26,39 +35,65 @@ import type { ProviderValidatedSessionContinuityMutation } from '#src/jobs/conve
 import { validatedTestContinuityBlob } from '#tests/helpers/session.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 
-const plan = {
+const launchRecord: ProviderRecoveryLaunch = {
+  jobId: '0589caa7-f637-5cc3-834e-aa56ebcb2ac5',
+  execution: 1,
+  owner: { kind: 'provider-session', id: '0589caa7-f637-5cc3-834e-aa56ebcb2ac5' },
+  provider: 'fixture',
+  jobKind: 'provider',
+  projectRoot: '/project',
+  backendNamespace: 'namespace',
+  pool: 'default',
+  enqueueSequence: 1,
+  providerAction: 'exec',
+  request: { prompt: 'recover', cwd: '/project', bypassPermissions: false, coralEnv: {} },
+  createdAt: '2026-07-22T00:00:00.000Z',
+};
+const recoveredSession = testJobConversation(launchRecord.jobId, {
+  execution: 1,
+  open: true,
+  projectRoot: '/project',
+  cwd: fixtureCanonicalWorkDir('/project'),
+  provider: 'fixture',
+  binding: { ...TEST_CODEX_BINDING, provider: 'fixture' },
+  conversationRef: 'thread-recovered',
+  providerContinuity: validatedTestContinuityBlob({ threadId: 'thread-recovered', turnId: 'turn-active' }),
+});
+const plan: AppServerInterruptedRecoveryPlan = {
   kind: 'interrupted',
-  launchRecord: {
-    jobId: 'interrupted-job',
-    sessionId: 'interrupted-session',
-    provider: 'fixture',
-    projectRoot: '/project',
-    backendNamespace: 'namespace',
-    pool: 'default',
-  },
-  session: {
-    sessionId: 'interrupted-session',
-    version: 7,
-    conversationRef: 'thread-recovered',
-    providerContinuity: validatedTestContinuityBlob({ threadId: 'thread-recovered', turnId: 'turn-active' }),
-  },
+  launchRecord,
+  session: recoveredSession,
   runtimeRecord: {
+    transport: 'app-server',
     startTime: '2026-07-22T00:00:00.000Z',
     providerMeta: {
+      provider: 'fixture',
       leaseState: 'acquired',
-      hostRef: { provider: 'fixture', hostId: 'host-interrupted', generation: 1 },
+      hostRef: {
+        provider: 'fixture',
+        fingerprint: 'f'.repeat(64),
+        instanceId: 'host-interrupted',
+        leaseMode: 'shared',
+      },
     },
   },
   reason: 'restart',
-  expectedSessionVersion: 7,
-} as unknown as AppServerInterruptedRecoveryPlan;
-
-const status = {
-  jobId: 'interrupted-job',
-  sessionId: 'interrupted-session',
+  continuity: recoveredSession.providerContinuity ?? undefined,
+  preservedConversationRef: recoveredSession.conversationRef,
+};
+const status: JobStatus = {
+  jobId: launchRecord.jobId,
+  execution: 1,
+  owner: launchRecord.owner,
+  provider: 'fixture',
+  sessionId: null,
   backendNamespace: 'namespace',
   projectRoot: '/project',
-} as JobStatus;
+  workDir: recoveredSession.cwd,
+  jobKind: 'provider',
+  phase: 'running',
+  updatedAt: launchRecord.createdAt,
+};
 
 const performed = {
   kind: 'resolved',
@@ -85,7 +120,6 @@ const durablePlan = {
     signal: null,
     endTime: '2026-07-22T00:01:00.000Z',
   },
-  expectedSessionVersion: 7,
 } as unknown as DurableInterruptedRecoveryPlan;
 
 const durablePerformed = {
@@ -111,31 +145,85 @@ const durablePerformed = {
   ],
 } as unknown as PerformedDurableRecovery;
 
+const journals: ReturnType<typeof executionHarness>[] = [];
+afterEach(() => {
+  for (const journal of journals.splice(0)) journal.db.close();
+});
+
 function createHarness(
   options: { artifactRecorded?: boolean; sessionFinalized?: boolean; sessionFinalizeError?: Error } = {},
 ) {
+  const runtime = new SimulationRuntime({ epochMs: Date.parse('2026-07-22T00:01:00.000Z') });
+  const journal = executionHarness();
+  journals.push(journal);
+  const stream = { kind: 'job', id: launchRecord.jobId } as const;
+  journal.append(
+    {
+      ...openedJob({
+        owner: launchRecord.owner,
+        projectRoot: '/project',
+        conversation: {
+          provider: recoveredSession.provider,
+          binding: recoveredSession.binding,
+          cwd: recoveredSession.cwd,
+          name: recoveredSession.name,
+          bypassPermissions: false,
+          retention: 'retain',
+        },
+      }),
+      stream,
+    },
+    { ...requestedExecution(1), stream },
+  );
   const order: string[] = [];
-  const append = vi.fn(() => {
-    order.push('terminal');
-    return {} as never;
+  const append = vi.fn();
+  let blocked = options.sessionFinalized === false || options.sessionFinalizeError !== undefined;
+  let artifactBlocked = options.artifactRecorded === false;
+  const store = new JobStore('namespace', runtime, journal.ctx.bodyCodec, {
+    db: journal.db,
+    reducers: journal.ctx.reducers,
+    providers: journal.ctx.providers,
+    beforeAppend: (input) => {
+      if (artifactBlocked && input.type === 'job.artifact.recorded')
+        throw Object.assign(new Error('artifact store unavailable'), { code: 'EIO' });
+    },
+    observer: (events) => {
+      for (const event of events) {
+        append(event);
+        order.push(event.type);
+      }
+    },
   });
-  const recordArtifactHandleAtomic = vi.fn(async () => {
-    order.push('artifact-cas');
-    return options.artifactRecorded === false ? ({ ok: false } as const) : ({ ok: true, nextVersion: 8 } as const);
+  const conversationManager = new ConversationManager('/project', runtime, (write) => store.commit(write), journal.db);
+  const readExact = conversationManager.readById.bind(conversationManager);
+  const readById = vi.spyOn(conversationManager, 'readById').mockImplementation((jobId) => {
+    if (blocked) {
+      if (options.sessionFinalizeError !== undefined) throw options.sessionFinalizeError;
+      return null;
+    }
+    return readExact(jobId);
   });
-  const finalizeJobContinuityAtomic = vi.fn(async (_sessionId, commitOptions) => {
-    order.push('session-cas');
-    if (options.sessionFinalizeError !== undefined) throw options.sessionFinalizeError;
-    if (options.sessionFinalized === false) return false;
-    commitOptions.appendBeforeRelease?.({ append });
-    return true;
+  const finisher = new ExecutionFinisher({
+    time: runtime.time,
+    commit: (write) => store.commit(write),
+    read: (address) => readExecutionFinishingState(journal.db, address, store),
+    quiesce: async (address) =>
+      !abortRegistry.has(address.jobId, address.execution) && launchCoordinator.reservationFor(address.jobId) === null,
+    retentionAction: async () => ({ attempt: 0, handles: [] }),
+    settleRetention: async () => ({ kind: 'completed', outcome: 'skipped_no_handles' }),
   });
-  const remove = vi.fn(() => order.push('abort-remove'));
-  const launchCoordinator = new LaunchCoordinator({ runtime: new SimulationRuntime() });
+  const abortRegistry = new AbortRegistry();
+  abortRegistry.register(launchRecord.jobId, 1);
+  const removeExact = abortRegistry.remove.bind(abortRegistry);
+  const remove = vi.spyOn(abortRegistry, 'remove').mockImplementation((jobId, execution) => {
+    order.push('abort-remove');
+    removeExact(jobId, execution);
+  });
+  const launchCoordinator = new LaunchCoordinator({ runtime });
   const launchPermit = launchCoordinator.restoreActiveLaunch(
-    'interrupted-job',
+    launchRecord.jobId,
     'fixture',
-    { kind: 'provider-session', id: 'interrupted-session' },
+    launchRecord.owner,
     'default',
   );
   const releaseExact = launchCoordinator.releaseLaunch.bind(launchCoordinator);
@@ -143,31 +231,34 @@ function createHarness(
     order.push('admission-release');
     return releaseExact(permit);
   });
-  const publishTerminalResult = vi.fn((jobId: string) => {
-    order.push('artifact-publish');
-    return `/jobs/${jobId}/result.md`;
-  });
-
   return {
     order,
     append,
-    recordArtifactHandleAtomic,
-    finalizeJobContinuityAtomic,
+    readById,
     remove,
     releaseLaunch,
     launchCoordinator,
     launchPermit,
-    publishTerminalResult,
+    store,
+    journal,
+    finish: async () => {
+      runtime.time.tick(500);
+      await finisher.finish(launchRecord);
+    },
+    repairWrites: async () => {
+      blocked = false;
+      artifactBlocked = false;
+      runtime.time.tick(500);
+      for (let index = 0; index < 50; index += 1) await Promise.resolve();
+    },
     deps: {
-      runtime: {
-        time: { now: () => Date.parse('2026-07-22T00:01:00.000Z') },
-      },
-      conversationManager: { recordArtifactHandleAtomic, finalizeJobContinuityAtomic },
-      abortRegistry: { remove },
+      runtime,
+      conversationManager,
+      executionFinisher: finisher,
+      abortRegistry,
       launchAdmission: launchCoordinator,
       launchPermit,
-      publishTerminalResult,
-    } as never,
+    },
   };
 }
 
@@ -314,14 +405,16 @@ describe('interrupted app-server recovery performer', () => {
         },
       });
       await finalizeInterruptedAppServerRecovery(recoveryPlan, result, status, harness.deps);
+      await harness.finish();
 
       expect(provider.finalizeInterrupted).toHaveBeenCalledWith({ resumable: true }, plan.session.providerContinuity, {
         preservedConversationRef: 'thread-recovered',
       });
-      expect(harness.finalizeJobContinuityAtomic).toHaveBeenCalledWith(
-        'interrupted-session',
+      expect(harness.store.readStatus(launchRecord.jobId)?.phase).toBe('error');
+      expect(harness.journal.events()).toContainEqual(
         expect.objectContaining({
-          mutation: expect.objectContaining({ kind: 'set_resumable', conversationRef: 'thread-recovered' }),
+          type: 'job.continuity.checkpointed',
+          body: expect.objectContaining({ snapshot: expect.objectContaining({ conversationRef: 'thread-recovered' }) }),
         }),
       );
       expect(provider.openReplacement).not.toHaveBeenCalled();
@@ -361,10 +454,11 @@ describe('interrupted app-server recovery performer', () => {
     expect(reapCarrier).toHaveBeenCalledWith(carrier);
     expect(provider.finalizeInterrupted).not.toHaveBeenCalled();
     expect(harness.append).not.toHaveBeenCalled();
-    expect(harness.finalizeJobContinuityAtomic).not.toHaveBeenCalled();
+    expect(harness.readById).not.toHaveBeenCalled();
 
     finishReap();
     await settlement;
+    await harness.finish();
 
     expect(provider.finalizeInterrupted).toHaveBeenCalledWith(
       {
@@ -393,190 +487,164 @@ describe('interrupted app-server recovery performer', () => {
     ).rejects.toBe(failure);
 
     expect(provider.finalizeInterrupted).not.toHaveBeenCalled();
-    expect(harness.finalizeJobContinuityAtomic).not.toHaveBeenCalled();
+    expect(harness.readById).not.toHaveBeenCalled();
     expect(harness.append).not.toHaveBeenCalled();
     expect(harness.remove).not.toHaveBeenCalled();
     expect(harness.releaseLaunch).not.toHaveBeenCalled();
-    expect(harness.launchCoordinator.reservationFor('interrupted-job')).toMatchObject({ kind: 'active' });
+    expect(harness.launchCoordinator.reservationFor('0589caa7-f637-5cc3-834e-aa56ebcb2ac5')).toMatchObject({
+      kind: 'active',
+    });
   });
 });
 
 describe('interrupted app-server recovery finalizer', () => {
   it('records a provider-acknowledged user cancellation as user_abort', async () => {
     const harness = createHarness();
-    const userAbortPlan = { ...plan, reason: 'user_abort' } as unknown as AppServerInterruptedRecoveryPlan;
-
+    const userAbortPlan = { ...plan, reason: 'user_abort' } as const;
     await finalizeInterruptedAppServerRecovery(userAbortPlan, { kind: 'user-aborted' }, status, harness.deps);
-
-    expect(harness.finalizeJobContinuityAtomic).toHaveBeenCalledWith(
-      'interrupted-session',
-      expect.objectContaining({
-        expectedActiveJobId: 'interrupted-job',
-        expectedVersion: 7,
-        mutation: { kind: 'preserve' },
-      }),
-    );
-    expect(harness.append).toHaveBeenCalledWith(
-      expect.objectContaining({
-        type: 'job.terminal.recorded',
-        body: expect.objectContaining({
-          terminal: expect.objectContaining({ outcome: { kind: 'aborted', reason: 'user_abort' } }),
-        }),
-      }),
-    );
-    expect(harness.remove).toHaveBeenCalledWith('interrupted-job');
+    await harness.finish();
+    expect(harness.store.readTerminalProjection(launchRecord.jobId)?.outcome).toEqual({
+      kind: 'aborted',
+      reason: 'user_abort',
+    });
+    expect(harness.readById).toHaveBeenCalledWith(launchRecord.jobId);
+    expect(harness.remove).toHaveBeenCalledWith(launchRecord.jobId, 1);
     expect(harness.launchPermit.reservationId).not.toBe('');
-    expect(harness.launchCoordinator.reservationFor('interrupted-job')).toBeNull();
+    expect(harness.launchCoordinator.reservationFor(launchRecord.jobId)).toBeNull();
   });
 
-  it('settles without artifact writes using the captured session version', async () => {
+  it('settles continuity and the accepted outcome atomically before ending and releasing ownership', async () => {
     const harness = createHarness();
-
     await finalizeInterruptedAppServerRecovery(plan, performed, status, harness.deps);
-
-    expect(harness.recordArtifactHandleAtomic).not.toHaveBeenCalled();
-    expect(harness.finalizeJobContinuityAtomic).toHaveBeenCalledWith(
-      'interrupted-session',
+    await harness.finish();
+    expect(harness.journal.events().filter((event) => event.type === 'job.artifact.recorded')).toEqual([]);
+    expect(harness.journal.events()).toContainEqual(
       expect.objectContaining({
-        expectedActiveJobId: 'interrupted-job',
-        expectedVersion: 7,
-        mutation: {
-          kind: 'set_resumable',
-          conversationRef: 'thread-recovered',
-          providerContinuity: { threadId: 'thread-recovered' },
+        type: 'job.continuity.checkpointed',
+        body: {
+          execution: 1,
+          snapshot: {
+            conversationRef: 'thread-recovered',
+            resumable: true,
+            providerContinuity: { threadId: 'thread-recovered' },
+          },
         },
-        appendBeforeRelease: expect.any(Function),
       }),
     );
     expect(harness.order).toEqual([
-      'session-cas',
-      'terminal',
-      'terminal',
-      'artifact-publish',
+      'job.continuity.checkpointed',
+      'job.interrupted',
+      'job.execution.outcome.accepted',
       'abort-remove',
       'admission-release',
+      'job.execution.ended',
     ]);
     expect(harness.launchPermit.reservationId).not.toBe('');
-    expect(harness.launchCoordinator.reservationFor('interrupted-job')).toBeNull();
+    expect(harness.launchCoordinator.reservationFor(launchRecord.jobId)).toBeNull();
   });
 
-  it.each<{
-    mutation: ProviderValidatedSessionContinuityMutation;
-    continuity: string;
-  }>([
+  it.each<{ mutation: ProviderValidatedSessionContinuityMutation; continuity: string }>([
     { mutation: performed.mutation, continuity: 'pre_checkpoint_preserved' },
     { mutation: { kind: 'preserve' }, continuity: 'pre_checkpoint_preserved' },
     { mutation: { kind: 'clear_non_resumable' }, continuity: 'pre_checkpoint_empty' },
   ])('records $continuity for $mutation.kind', async ({ mutation, continuity }) => {
     const harness = createHarness();
-
     await finalizeInterruptedAppServerRecovery(plan, { kind: 'resolved', mutation }, status, harness.deps);
-
+    await harness.finish();
     expect(harness.append).toHaveBeenCalledWith(
       expect.objectContaining({
-        type: 'session.interrupted',
-        body: { trigger: 'restart', continuity },
+        type: 'job.interrupted',
+        body: { execution: 1, trigger: 'restart', continuity },
       }),
     );
   });
 
-  it('preserves local ownership when the final session CAS is stale', async () => {
+  it('returns a deterministic checkpoint refusal to recovery without releasing original ownership', async () => {
     const harness = createHarness({ sessionFinalized: false });
-
-    await expect(finalizeInterruptedAppServerRecovery(plan, performed, status, harness.deps)).rejects.toEqual(
-      expect.objectContaining<Partial<InterruptedRecoveryCommitError>>({
-        name: 'InterruptedRecoveryCommitError',
-        stage: 'session-finalize',
-      }),
-    );
-
-    expect(harness.order).toEqual(['session-cas']);
-    expect(harness.launchCoordinator.reservationFor('interrupted-job')).toMatchObject({ kind: 'active' });
+    await expect(finalizeInterruptedAppServerRecovery(plan, performed, status, harness.deps)).rejects.toMatchObject({
+      name: 'InterruptedRecoveryCommitError',
+    });
+    expect(harness.deps.executionFinisher.owns(launchRecord)).toBe(false);
+    expect(harness.deps.executionFinisher.status(launchRecord)).toBeNull();
+    expect(harness.append).not.toHaveBeenCalled();
+    expect(harness.launchCoordinator.reservationFor(launchRecord.jobId)).toMatchObject({ kind: 'active' });
     expect(harness.remove).not.toHaveBeenCalled();
     expect(harness.releaseLaunch).not.toHaveBeenCalled();
+    await harness.repairWrites();
+    await finalizeInterruptedAppServerRecovery(plan, performed, status, harness.deps);
+    await harness.finish();
+    expect(harness.store.readStatus(launchRecord.jobId)?.phase).toBe('error');
   });
 
-  it('preserves local ownership when the final session CAS throws', async () => {
-    const harness = createHarness({ sessionFinalizeError: new Error('session store unavailable') });
-
-    await expect(finalizeInterruptedAppServerRecovery(plan, performed, status, harness.deps)).rejects.toThrow(
-      'session store unavailable',
-    );
-
-    expect(harness.order).toEqual(['session-cas']);
-    expect(harness.launchCoordinator.reservationFor('interrupted-job')).toMatchObject({ kind: 'active' });
+  it('preserves local ownership across a checkpoint store failure and retries the original outcome', async () => {
+    const harness = createHarness({
+      sessionFinalizeError: Object.assign(new Error('session store unavailable'), { code: 'EIO' }),
+    });
+    const pending = finalizeInterruptedAppServerRecovery(plan, performed, status, harness.deps);
+    await Promise.resolve();
+    expect(harness.readById).toHaveBeenCalled();
+    expect(harness.append).not.toHaveBeenCalled();
+    expect(harness.launchCoordinator.reservationFor(launchRecord.jobId)).toMatchObject({ kind: 'active' });
     expect(harness.remove).not.toHaveBeenCalled();
     expect(harness.releaseLaunch).not.toHaveBeenCalled();
+    await harness.repairWrites();
+    await pending;
+    await harness.finish();
+    expect(harness.journal.events().filter((event) => event.type === 'job.execution.outcome.accepted')).toHaveLength(1);
   });
 });
 
 describe('interrupted durable recovery finalizer', () => {
-  it('uses the same exact-version CAS and ownership-release boundary', async () => {
+  it('records artifact evidence and continuity in the outcome acceptance transaction before releasing ownership', async () => {
     const harness = createHarness();
-
     await finalizeInterruptedDurableRecovery(durablePlan, durablePerformed, status, harness.deps);
-
-    expect(harness.recordArtifactHandleAtomic).toHaveBeenCalledWith('interrupted-session', {
-      expectedActiveJobId: 'interrupted-job',
-      expectedVersion: 7,
-      handle: '/provider/thread-recovered.jsonl',
-      identity: { kind: 'fixture', threadId: 'thread-recovered' },
-      sourceJobId: 'interrupted-job',
-    });
-    expect(harness.finalizeJobContinuityAtomic).toHaveBeenCalledWith(
-      'interrupted-session',
+    await harness.finish();
+    expect(harness.append).toHaveBeenCalledWith(
       expect.objectContaining({
-        expectedActiveJobId: 'interrupted-job',
-        expectedVersion: 8,
-        mutation: durablePerformed.mutation,
-        appendBeforeRelease: expect.any(Function),
+        type: 'job.artifact.recorded',
+        body: expect.objectContaining({
+          execution: 1,
+          handle: '/provider/thread-recovered.jsonl',
+          identity: { kind: 'fixture', threadId: 'thread-recovered' },
+        }),
       }),
     );
     expect(harness.order).toEqual([
-      'artifact-cas',
-      'session-cas',
-      'terminal',
-      'artifact-publish',
+      'job.artifact.recorded',
+      'job.continuity.checkpointed',
+      'job.execution.outcome.accepted',
       'abort-remove',
       'admission-release',
+      'job.execution.ended',
     ]);
     expect(harness.launchPermit.reservationId).not.toBe('');
-    expect(harness.launchCoordinator.reservationFor('interrupted-job')).toBeNull();
+    expect(harness.launchCoordinator.reservationFor(launchRecord.jobId)).toBeNull();
   });
 
-  it('does not persist a durable terminal when the exact final session CAS is stale', async () => {
+  it('does not persist a durable outcome or release ownership while the exact execution is unavailable', async () => {
     const harness = createHarness({ sessionFinalized: false });
-
-    await expect(
-      finalizeInterruptedDurableRecovery(durablePlan, durablePerformed, status, harness.deps),
-    ).rejects.toEqual(
-      expect.objectContaining({
-        name: 'InterruptedRecoveryCommitError',
-        stage: 'session-finalize',
-      }),
-    );
-
-    expect(harness.order).toEqual(['artifact-cas', 'session-cas']);
-    expect(harness.launchCoordinator.reservationFor('interrupted-job')).toMatchObject({ kind: 'active' });
+    const pending = finalizeInterruptedDurableRecovery(durablePlan, durablePerformed, status, harness.deps);
+    expect(harness.append).not.toHaveBeenCalled();
+    expect(harness.launchCoordinator.reservationFor(launchRecord.jobId)).toMatchObject({ kind: 'active' });
     expect(harness.remove).not.toHaveBeenCalled();
     expect(harness.releaseLaunch).not.toHaveBeenCalled();
+    await harness.repairWrites();
+    await pending;
+    await harness.finish();
+    expect(harness.store.readStatus(launchRecord.jobId)?.phase).toBe('completed');
   });
 
-  it('does not terminalize or release ownership after stale artifact evidence', async () => {
+  it('keeps artifact evidence and terminal acceptance pending together across an artifact write failure', async () => {
     const harness = createHarness({ artifactRecorded: false });
-
-    await expect(
-      finalizeInterruptedDurableRecovery(durablePlan, durablePerformed, status, harness.deps),
-    ).rejects.toEqual(
-      expect.objectContaining({
-        name: 'InterruptedRecoveryCommitError',
-        stage: 'artifact-handle',
-      }),
-    );
-
-    expect(harness.recordArtifactHandleAtomic).toHaveBeenCalled();
-    expect(harness.order).toEqual(['artifact-cas']);
-    expect(harness.launchCoordinator.reservationFor('interrupted-job')).toMatchObject({ kind: 'active' });
+    const pending = finalizeInterruptedDurableRecovery(durablePlan, durablePerformed, status, harness.deps);
+    await Promise.resolve();
+    expect(harness.readById).toHaveBeenCalled();
+    expect(harness.append).not.toHaveBeenCalled();
+    expect(harness.launchCoordinator.reservationFor(launchRecord.jobId)).toMatchObject({ kind: 'active' });
     expect(harness.releaseLaunch).not.toHaveBeenCalled();
+    await harness.repairWrites();
+    await pending;
+    await harness.finish();
+    expect(harness.journal.events().filter((event) => event.type === 'job.artifact.recorded')).toHaveLength(1);
   });
 });

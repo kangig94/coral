@@ -17,7 +17,7 @@ const input = {
   purpose: 'execution' as const,
   request: {
     action: 'exec' as const,
-    sessionId: 'session',
+    jobId: 'session',
     prompt: 'hello',
     cwd: fixtureCanonicalWorkDir('/workspace'),
     bypassPermissions: false,

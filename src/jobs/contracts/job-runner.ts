@@ -4,7 +4,7 @@ import type { RetentionPolicy, JobConversation } from '../conversation/entry.js'
 import type { TerminalWriteOptions } from './job-store.js';
 import type { JobPhase } from '../phase.js';
 import type { ProviderJobLaunchDecision } from '../launch.js';
-import type { JobLaunch, JobTerminalInput } from '../records.js';
+import type { JobLaunch, JobTerminal } from '../records.js';
 import type { LaunchPool, QueuedHandle } from './admission.js';
 import type { ExecutionOwner } from '../../runtime/execution-owner.js';
 import type { DiscussionRunDescriptor } from '../discussion-run.js';
@@ -22,6 +22,7 @@ export interface ProviderJobLaunchPort {
       workflowSlotId?: string;
       retention?: RetentionPolicy;
       discussionRun?: DiscussionRunDescriptor;
+      originatingClientMessageId?: string;
       mintProtectedEnv: (jobId: string, execution: number) => ProviderOperationEnvironmentInput;
     },
   ): Promise<ProviderJobLaunchDecision>;
@@ -31,8 +32,8 @@ export interface WorkflowJobLifecyclePort {
   markJobRunning(jobId: string): void;
   writeJobTerminal(
     jobId: string,
-    conversationJobId: string,
-    result: JobTerminalInput,
+    execution: number,
+    result: JobTerminal,
     phase: JobPhase,
     options?: TerminalWriteOptions,
   ): void;
@@ -48,8 +49,8 @@ export interface RecoveredJobLifecyclePort {
   ): void;
   writeJobTerminal(
     jobId: string,
-    conversationJobId: string,
-    result: JobTerminalInput,
+    execution: number,
+    result: JobTerminal,
     phase: JobPhase,
     options?: TerminalWriteOptions,
   ): void;

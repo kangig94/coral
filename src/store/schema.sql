@@ -10,7 +10,7 @@
 CREATE TABLE IF NOT EXISTS events (
   seq            INTEGER PRIMARY KEY,                -- coordinator-reserved (see comment above)
   ts             TEXT    NOT NULL,                   -- ISO 8601 (informational; see §4.1)
-  type           TEXT    NOT NULL,                   -- e.g. 'job.terminal.recorded'
+  type           TEXT    NOT NULL,
   stream_kind    TEXT    NOT NULL,                   -- 'job'|'session'|'discuss'|'workflow' (the four Journal stream kinds)
   stream_id      TEXT    NOT NULL,
   namespace      TEXT,
@@ -56,6 +56,9 @@ CREATE TABLE IF NOT EXISTS projection_jobs (
 );
 CREATE INDEX IF NOT EXISTS projection_jobs_phase_namespace ON projection_jobs(phase, backend_namespace);
 CREATE INDEX IF NOT EXISTS projection_jobs_parent ON projection_jobs(parent_workflow_job_id);
+CREATE UNIQUE INDEX IF NOT EXISTS projection_jobs_workflow_slot
+  ON projection_jobs(parent_workflow_job_id, workflow_slot)
+  WHERE parent_workflow_job_id IS NOT NULL AND workflow_slot IS NOT NULL;
 CREATE TABLE IF NOT EXISTS projection_discuss (
   discuss_id TEXT PRIMARY KEY,
   state      TEXT NOT NULL,        -- JSON (reducer output) @persisted-codec store.projection_discuss.state

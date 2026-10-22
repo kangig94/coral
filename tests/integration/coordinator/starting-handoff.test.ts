@@ -1,3 +1,4 @@
+import { createTestExecutionFinisher } from '#tests/helpers/execution-finisher.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -32,6 +33,10 @@ function createCoordinator(runStartupRecovery: RunStartupRecoveryOrchestratorFn)
   };
   const core = createCoordinatorCore(
     {
+      executionFinisher: createTestExecutionFinisher(
+        (): JobStore => core.storeServicesRef.get().progressStore,
+        runtime,
+      ),
       runtime,
       storeFormat: currentCoralStoreFormat(),
       pluginRoot: join(process.cwd(), 'clients'),

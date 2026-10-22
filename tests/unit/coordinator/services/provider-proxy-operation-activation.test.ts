@@ -266,7 +266,7 @@ it('keeps the exhaustive operation policy dispositions separate from send uncert
     binding: { provider: 'codex', kind: 'account', binding: {} },
     request: {
       action: 'exec',
-      sessionId: 'session-1',
+      jobId: 'session-1',
       prompt: 'hello',
       cwd: fixtureCanonicalWorkDir('/tmp'),
       bypassPermissions: false,

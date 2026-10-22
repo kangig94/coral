@@ -11,6 +11,7 @@ import { jobProgressBodySchema } from './event-bodies.js';
 import { jobExecutionEndedBodySchema } from './terminal/result.js';
 import { jobExecutionRequestedBodySchema } from './launch.js';
 import { errorMessage } from '../infra/error-format.js';
+import { readEndedExecutionOutcome } from './terminal/source.js';
 
 const CURSOR_KEY = 'storage-retention.progress.v1';
 const PAGE_SIZE = 64;
@@ -111,10 +112,12 @@ export async function pruneJobProgress(input: {
       let unknownEvidence = false;
       try {
         const ended = decodeBody(terminal, jobExecutionEndedBodySchema, readCtx);
+        readEndedExecutionOutcome(db, terminal, readCtx);
         const request = db
-          .prepare<[string, number], EventsRow>(
-            "SELECT * FROM events WHERE stream_kind = 'job' AND stream_id = ? AND type = 'job.execution.requested' AND seq < ? ORDER BY seq DESC LIMIT 1",
-          )
+          .prepare<
+            [string, number],
+            EventsRow
+          >("SELECT * FROM events WHERE stream_kind = 'job' AND stream_id = ? AND type = 'job.execution.requested' AND seq < ? ORDER BY seq DESC LIMIT 1")
           .get(terminal.stream_id, terminal.seq);
         const requested = request === undefined ? null : decodeBody(request, jobExecutionRequestedBodySchema, readCtx);
         const terminalAt = readJobTerminalAge(db, terminal);

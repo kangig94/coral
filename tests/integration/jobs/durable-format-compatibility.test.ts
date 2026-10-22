@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { EventEmitter } from 'node:events';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -61,7 +62,7 @@ function oldDetail(jobId: string): JobDetailResponse {
       lastSeq: 2,
       result: terminal,
     },
-    events: [{ jobId, sessionId: 'old-session', type: 'terminal', seq: 2, ts, result: terminal }],
+    events: [{ jobId, ...{ sessionId: 'old-session' }, type: 'terminal', seq: 2, ts, result: terminal }],
     exit: { ...terminal, diagnostics: { progressFaults: [], usage: { inputTokens: 1 } }, endTime: ts },
     readiness: 'error',
   };
@@ -121,7 +122,7 @@ describe('durable terminal and location compatibility with shipped v0.10.21', ()
     raw.detail.events.unshift({
       type: 'progress',
       jobId: f.jobId,
-      sessionId: null,
+      ...{ sessionId: null },
       seq: f.requests[1],
       ts: raw.detail.status.updatedAt,
       message: 'compact me',
@@ -142,7 +143,12 @@ describe('durable terminal and location compatibility with shipped v0.10.21', ()
     const rewritten = JSON.parse(readFileSync(path, 'utf8'));
     expect(rewritten.future).toEqual(raw.future);
     expect(rewritten.executions).toEqual(raw.executions);
-    const newIndex = new JobLocationIndex(f.runtime, f.runtime.paths.coral.generation.dataRoot);
+    const newIndex = new JobLocationIndex(
+      f.runtime,
+      f.runtime.paths.coral.generation.dataRoot,
+      undefined,
+      currentCoralStoreFormat().fingerprint,
+    );
     expect(newIndex.execution(f.jobId, 1)?.detail.exit).toMatchObject({
       content: 'result #1',
       diagnostics: { usage: { inputTokens: 100, costUsd: 0.1 }, future: { keep: 'diagnostics' } },
@@ -170,7 +176,12 @@ describe('durable terminal and location compatibility with shipped v0.10.21', ()
       2,
     );
     expect(
-      new JobLocationIndex(f.runtime, f.runtime.paths.coral.generation.dataRoot).read('old')?.detail,
+      new JobLocationIndex(
+        f.runtime,
+        f.runtime.paths.coral.generation.dataRoot,
+        undefined,
+        currentCoralStoreFormat().fingerprint,
+      ).read('old')?.detail,
     ).toMatchObject({ kind: 'recorded', value: { exit: { outcome: detail.exit!.outcome } } });
     const { sessionId: _sessionId, ...withoutSession } = detail.status;
     expect(storedJobDetailSchema.safeParse({ ...detail, status: withoutSession }).success).toBe(false);

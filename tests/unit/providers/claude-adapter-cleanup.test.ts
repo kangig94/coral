@@ -11,11 +11,19 @@ describe('claudeArtifactCapability.discardArtifacts', () => {
     runtime.storage.mkdirSync('/native');
     runtime.storage.writeFileSync(handle, '{}\n');
     const unlink = vi.spyOn(runtime.storage, 'unlinkSync');
-    const action = { handles: [handle], actionId: 'test-action', payloadHash: 'test-payload',
-      access: TEST_CLAUDE_ACCESS, runtime };
+    const action = {
+      handles: [handle],
+      actionId: 'test-action',
+      payloadHash: 'test-payload',
+      access: TEST_CLAUDE_ACCESS,
+      runtime,
+    };
     await expect(claudeArtifactCapability.discardArtifacts(action)).resolves.toMatchObject({ kind: 'discarded' });
     expect(runtime.storage.existsSync(handle)).toBe(false);
-    expect(await claudeArtifactCapability.reconcileDiscard(action)).toMatchObject({ kind: 'applied', outcome: { kind: 'discarded' } });
+    expect(await claudeArtifactCapability.reconcileDiscard(action)).toMatchObject({
+      kind: 'applied',
+      outcome: { kind: 'discarded' },
+    });
     expect(unlink).toHaveBeenCalledExactlyOnceWith(handle);
   });
 });

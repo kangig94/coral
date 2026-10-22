@@ -8,7 +8,9 @@ import { createDiscussRuntime } from '#src/discuss/shell/runtime-services.js';
 import type { DiscussService } from '#src/discuss/shell/types.js';
 import { readSessionEvents } from '#src/discuss/shell/persistence.js';
 import type { DiscussionRunDescriptor } from '#src/jobs/discussion-run.js';
-import { readLatestExecutionRequest } from '#src/jobs/execution-state.js';
+import { jobExecutionRequestedBodySchema } from '#src/jobs/launch.js';
+import { decodeBody, type StoreReadContext } from '#src/store/body-codec.js';
+import type { Database } from '#src/store/db.js';
 import { JobStore } from '#src/jobs/store.js';
 import { appendJobExecutionEnded, appendJobExecutionOutcomeAccepted } from '#src/jobs/terminal/recording.js';
 import { ProviderRegistry } from '#src/providers/registry.js';
@@ -19,6 +21,22 @@ import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { TEST_CODEX_BINDING, TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
+
+function readLatestExecutionRequest(
+  db: Database,
+  jobId: string,
+  ctx: StoreReadContext,
+): { jobId: string; requestedSeq: number; request: ReturnType<typeof jobExecutionRequestedBodySchema.parse> } | null {
+  const row = db
+    .prepare<
+      [string],
+      { seq: number; type: string; stream_kind: 'job'; body: Uint8Array }
+    >("SELECT seq, type, stream_kind, body FROM events WHERE stream_kind = 'job' AND stream_id = ? AND type = 'job.execution.requested' ORDER BY seq DESC LIMIT 1")
+    .get(jobId);
+  return row === undefined
+    ? null
+    : { jobId, requestedSeq: row.seq, request: decodeBody(row, jobExecutionRequestedBodySchema, ctx) };
+}
 
 export const DISCUSSION_ID = 'turn-executions';
 export const PARTICIPANT_JOBS = {
@@ -122,11 +140,23 @@ export function discussionExecutionFixture() {
       const descriptor = input.discussionRun!;
       const jobId = PARTICIPANT_JOBS[descriptor.agent as keyof typeof PARTICIPANT_JOBS];
       activate(jobId, request(jobId, descriptor, input.prompt));
-      return { kind: 'provider-session', status: 'running', jobId };
+      return {
+        kind: 'provider-session',
+        status: 'running',
+        jobId,
+        requestedSeq: readLatestExecutionRequest(journal.db, jobId, journal.readCtx)!.requestedSeq,
+        epochKey: 'test-epoch',
+      };
     }),
     resume: vi.fn<DiscussService['resume']>(async (_provider, input) => {
       activate(input.jobId, request(input.jobId, input.discussionRun!, input.prompt));
-      return { kind: 'provider-session', status: 'running', jobId: input.jobId };
+      return {
+        kind: 'provider-session',
+        status: 'running',
+        jobId: input.jobId,
+        requestedSeq: readLatestExecutionRequest(journal.db, input.jobId, journal.readCtx)!.requestedSeq,
+        epochKey: 'test-epoch',
+      };
     }),
     waitStreamOnce: vi.fn<DiscussService['waitStreamOnce']>(async (jobId) => {
       const execution = readLatestExecutionRequest(journal.db, jobId, journal.readCtx)!.request.execution;
@@ -163,7 +193,14 @@ export function discussionExecutionFixture() {
       EXECUTION_NOW,
       payload,
     );
-    journal.append(toJournalInput(event));
+    journal.append({
+      type: `discuss.${kind}`,
+      stream: { kind: 'discuss', id: DISCUSSION_ID },
+      project: projectRoot,
+      refs: { discussSessionId: DISCUSSION_ID },
+      body: { ...payload, sourceSeq: event.seq },
+      tsOverride: event.ts,
+    });
     return event;
   }
   return {

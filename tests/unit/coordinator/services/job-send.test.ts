@@ -43,6 +43,8 @@ afterEach(() => {
 function jobStatus(overrides: Partial<JobStatus> = {}): JobStatus {
   return {
     jobId: REQUEST.jobId,
+    execution: 1,
+    finishing: false,
     owner: { kind: 'provider-session', id: 'session-1' },
     sessionId: 'session-1',
     provider: 'codex',
@@ -129,6 +131,7 @@ describe('JobSendService', () => {
       }),
       code: 'transport_unsupported',
     },
+    { defect: 'finishing execution', status: jobStatus({ finishing: true }), code: 'turn_ended' },
     ...(['completed', 'error', 'aborted'] as const).map((phase) => ({
       defect: `${phase} job despite an executing operation`,
       status: jobStatus({ phase }),

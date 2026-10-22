@@ -1,3 +1,4 @@
+import { testConversationFacet } from '#tests/helpers/session.js';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { TEST_SYSTEM_PROVIDER_SCOPE } from '../../../helpers/provider-credentials.js';
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
@@ -425,7 +426,7 @@ describe('execution backend server', () => {
   }
 
   it('marks tracked daemon-owned KB jobs as error when the KB daemon exits', async () => {
-    const jobId = 'kb-daemon-import-job-1';
+    const jobId = '93000000-0000-4000-8006-000000000003';
     const projectRoot = ALTERNATE_PROJECT_ROOT;
     const daemonHealth: KbDaemonHealthSnapshot = {
       enabled: true,
@@ -459,7 +460,6 @@ describe('execution backend server', () => {
     progressStore.appendLaunchRequested(jobId, {
       jobId,
       owner: { kind: 'system-task', id: `kb.source_import:${jobId}` },
-      sessionId: null,
       provider: null,
       projectRoot,
       backendNamespace: testBackendNamespace,
@@ -474,6 +474,7 @@ describe('execution backend server', () => {
         readiness: 'base-search',
       },
       createdAt: new Date().toISOString(),
+      execution: 1,
     });
     progressStore.appendRuntimeStarted(jobId, {
       transport: 'internal',
@@ -1041,7 +1042,8 @@ describe('execution backend server', () => {
             kind: 'provider-session',
             status: 'running',
             jobId: 'job-start',
-            sessionId: 'session-start',
+            requestedSeq: 1,
+            epochKey: 'test-epoch',
           })),
         });
         const { deps } = createHttpHandlerDeps({ executionService: fakeService });
@@ -1152,17 +1154,16 @@ describe('execution backend server', () => {
     const progressStore = createProgressStore();
     const backend = await startBackendServer();
 
-    createdJobIds.add('job-foreign-project');
+    createdJobIds.add('93000000-0000-4000-8006-000000000001');
     initTestJob(progressStore, {
-      jobId: 'job-foreign-project',
-      sessionId: 'session-foreign-project',
-      provider: 'codex',
+      jobId: '93000000-0000-4000-8006-000000000001',
       projectRoot: '/tmp/other-project',
       backendNamespace: testBackendNamespace,
+      conversation: testConversationFacet('codex', '/tmp/other-project'),
     });
 
     const response = await fetch(
-      `${backend.baseUrl}/jobs/job-foreign-project?projectRoot=${encodeURIComponent(DEFAULT_PROJECT_ROOT)}`,
+      `${backend.baseUrl}/jobs/93000000-0000-4000-8006-000000000001?projectRoot=${encodeURIComponent(DEFAULT_PROJECT_ROOT)}`,
       {
         headers: { 'X-Coral-Backend-Token': backend.token },
       },
@@ -1174,20 +1175,19 @@ describe('execution backend server', () => {
       message: "Jobs are outside the caller's work directory scope",
       remediation:
         "Change cwd to the job's work directory, or a directory that contains it, then rerun. Use `coral-cli jobs list --all` to find its work directory, including terminal jobs.",
-      detail: { jobs: ['job-foreign-project'] },
+      detail: { jobs: ['93000000-0000-4000-8006-000000000001'] },
     });
   });
 
   it('answers a cross-project /jobs/wait member with a scope-mismatch disposition and exit 1', async () => {
     const fakeService = createFakeExecutionService();
     const progressStore = createProgressStore();
-    createdJobIds.add('job-foreign');
+    createdJobIds.add('93000000-0000-4000-8006-000000000002');
     initTestJob(progressStore, {
-      jobId: 'job-foreign',
-      sessionId: 'session-foreign',
-      provider: 'codex',
+      jobId: '93000000-0000-4000-8006-000000000002',
       projectRoot: '/tmp/other-project',
       backendNamespace: testBackendNamespace,
+      conversation: testConversationFacet('codex', '/tmp/other-project'),
     });
 
     const backend = await startBackendServer({
@@ -1201,7 +1201,7 @@ describe('execution backend server', () => {
         'X-Coral-Backend-Token': backend.token,
       },
       body: JSON.stringify({
-        jobIds: ['job-foreign'],
+        jobIds: ['93000000-0000-4000-8006-000000000002'],
         timeoutSeconds: 1,
         projectRoot: DEFAULT_PROJECT_ROOT,
       }),
@@ -1250,6 +1250,36 @@ describe('execution backend server', () => {
       expect(settlePendingLaunchesFn).not.toHaveBeenCalled();
       expect(terminateRegisteredChildrenFn).not.toHaveBeenCalled();
       expect(markJobsAsErrorFn).not.toHaveBeenCalled();
+    });
+
+    it('reports deferred crashed job terminalization as a successor recovery remainder', async () => {
+      const markJobsAsErrorFn = vi.fn(() => ({
+        advanced: 0,
+        deferred: 1,
+        quarantined: 0,
+        skipped: 0,
+        receipts: [],
+      }));
+      const backend = await startBackendServer({
+        markJobsAsErrorFn,
+        settlePendingLaunchesFn: async () => ({ kind: 'all-pending-launches-settled' }),
+        terminateRegisteredChildrenFn: async () => ({ kind: 'all-children-observed-absent' }),
+      });
+      const result = await backend.controller.shutdown('sigint');
+      expect(markJobsAsErrorFn).toHaveBeenCalledOnce();
+      expect(result).toMatchObject({
+        disposition: 'finalized-with-losses',
+        undischarged: expect.arrayContaining([
+          expect.objectContaining({
+            label: 'crashed job terminalization',
+            settlement: expect.objectContaining({
+              cause: 'unconfirmed',
+              detail: expect.stringContaining('deferred=1'),
+            }),
+            remainder: expect.objectContaining({ owner: 'successor-recovery' }),
+          }),
+        ]),
+      });
     });
 
     it('hard shutdown completes after child absence is confirmed and marks jobs as error', async () => {

@@ -1,5 +1,5 @@
 import { expect } from 'vitest';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { ExecutionService } from '#src/coordinator/execution-service.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
@@ -22,13 +22,34 @@ import { testChildPrincipalRegistry } from '#tests/helpers/child-principal-regis
 import { executionHarness } from '#tests/helpers/job-executions.js';
 import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
-import { TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
+import { TEST_CODEX_ACCESS, TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
 import { toProviderDefinition, type StandaloneTestProvider } from '#tests/helpers/scripted-provider.js';
 import { flushMicrotasks } from '#tools/simulation/core/virtual-time.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 
-export function conversationIdentityFixture(options: { stall?: boolean; managedArtifacts?: boolean; failOnResume?: boolean } = {}) {
+export function conversationIdentityFixture(
+  options: { stall?: boolean; managedArtifacts?: boolean; failOnResume?: boolean } = {},
+) {
   const runtime = new SimulationRuntime();
+  const epochDir = join(runtime.paths.coral.store.dbDir, 'epoch-1');
+  runtime.storage.mkdirSync(epochDir, { recursive: true });
+  runtime.storage.writeFileSync(join(epochDir, 'store.db'), 'fixture');
+  runtime.storage.writeFileSync(join(epochDir, '.lock'), '');
+  runtime.storage.writeFileSync(
+    join(epochDir, 'epoch.json'),
+    JSON.stringify({
+      supersedes: null,
+      classification: { kind: 'absent' },
+      publishedAt: '2026-10-22T00:00:00.000Z',
+      build: {
+        version: '0.10.22',
+        buildSetId: '10000000-0000-4000-8000-000000000099',
+        bundleHash: '0123456789abcdef',
+        flavor: 'prod',
+        storeFormatFingerprint: 'sha256:' + 'a'.repeat(64),
+      },
+    }),
+  );
   const projectRoot = fixtureCanonicalWorkDir('/workspace');
   runtime.storage.mkdirSync(projectRoot, { recursive: true });
   const journal = executionHarness(discussRegistry, workflowRegistry);
@@ -44,8 +65,13 @@ export function conversationIdentityFixture(options: { stall?: boolean; managedA
   const providers = new ProviderRegistry();
   const retentionAbort = new AbortController();
   const reactor = new LifecycleReactor({
-    db: () => journal.db, readCtx: journal.readCtx, providers, runtime, time: runtime.time,
-    commitEvents: (write) => commit(write), signal: retentionAbort.signal,
+    db: () => journal.db,
+    readCtx: journal.readCtx,
+    providers,
+    runtime,
+    time: runtime.time,
+    commitEvents: (write) => commit(write),
+    signal: retentionAbort.signal,
   });
   const commit: CommitEventsFn = (write) => {
     const appended = journalDeps.coordinatorCommit(write);
@@ -62,7 +88,7 @@ export function conversationIdentityFixture(options: { stall?: boolean; managedA
     settleRetention: (address, action) => reactor.settleRetention(address, action),
   });
   const requests: ProviderRequest[] = [];
-  const nativePath = (jobId: string) => `/native/rollout-thread-${jobId}.jsonl`;
+  const nativePath = (jobId: string) => `${TEST_CODEX_ACCESS.home}/sessions/rollout-thread-${jobId}.jsonl`;
   const restored: string[] = [];
   const discarded: string[][] = [];
   const completions = new Map<string, () => void>();
@@ -70,14 +96,18 @@ export function conversationIdentityFixture(options: { stall?: boolean; managedA
   for (const name of ['codex', 'claude']) {
     const provider: StandaloneTestProvider = {
       name,
-      ...(options.managedArtifacts ? { artifactCapability: managed({
-        discardArtifacts: async ({ handles }) => {
-          discarded.push([...handles]);
-          for (const handle of handles) runtime.storage.unlinkSync(handle);
-          return { kind: 'discarded' };
-        },
-        locateArtifact: ({ conversationRef }) => nativePath(conversationRef.slice('thread-'.length)),
-      }) } : {}),
+      ...(options.managedArtifacts
+        ? {
+            artifactCapability: managed({
+              discardArtifacts: async ({ handles }) => {
+                discarded.push([...handles]);
+                for (const handle of handles) runtime.storage.unlinkSync(handle);
+                return { kind: 'discarded' };
+              },
+              locateArtifact: ({ conversationRef }) => nativePath(conversationRef.slice('thread-'.length)),
+            }),
+          }
+        : {}),
       execute: async function* (request, providerRuntime): AsyncIterable<ProviderEventBody> {
         requests.push({ ...request, coralEnv: { ...request.coralEnv } });
         yield {
@@ -92,7 +122,11 @@ export function conversationIdentityFixture(options: { stall?: boolean; managedA
           if (request.action === 'resume') restored.push(previous);
           runtime.storage.mkdirSync(dirname(path), { recursive: true });
           runtime.storage.writeFileSync(path, `${previous}${request.prompt}\n`);
-          yield { kind: 'artifact_handle', handle: path, identity: { kind: 'fixture-conversation', jobId: request.jobId } };
+          yield {
+            kind: 'artifact_handle',
+            handle: path,
+            identity: { kind: 'fixture-conversation', jobId: request.jobId },
+          };
         }
         await providerRuntime.runCli({ command: 'identity-fixture', args: [] });
         if (options.stall) {
@@ -108,13 +142,14 @@ export function conversationIdentityFixture(options: { stall?: boolean; managedA
           terminal: {
             content: request.prompt,
             durationMs: 1,
+            ...(options.managedArtifacts ? { usage: { inputTokens: 10, outputTokens: 5, costUsd: 0.25 } } : {}),
             outcome: providerRuntime.signal.aborted
               ? { kind: 'aborted', reason: 'signal_abort' }
               : options.failOnResume && request.action === 'resume'
                 ? { kind: 'provider_exit', code: 7, note: 'replacement failed' }
                 : { kind: 'completed' },
           },
-          diagnostics: options.managedArtifacts ? { usage: { inputTokens: 10, outputTokens: 5, costUsd: 0.25 } } : {},
+          diagnostics: {},
         };
       },
     };

@@ -1,3 +1,5 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
+import { testConversationFacet } from '#tests/helpers/session.js';
 import { expect, it, vi } from 'vitest';
 import { existsSync, lstatSync, mkdirSync, renameSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -19,6 +21,10 @@ vi.mock('#src/store/active-store-selection.js', async (original) => ({
   readActiveStoreSelectionForCoordination: () => ({ kind: 'valid' }),
 }));
 
+function jobId(index: number): string {
+  return `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`;
+}
+
 function fixture() {
   const f = createRetentionFixture();
   f.runtime.env.tmpdir = () => f.baseDir;
@@ -30,12 +36,11 @@ function expiredJobs(f: ReturnType<typeof createRetentionFixture>, ids: string[]
   for (const id of ids) {
     initTestJob(f.store, {
       jobId: id,
-      sessionId: `session-${id}`,
-      provider: 'codex',
+      conversation: testConversationFacet('codex', '/workspace'),
       projectRoot: '/workspace',
       backendNamespace: 'test-ns',
     });
-    commitJobTerminal(f.store, id, `session-${id}`, {
+    commitJobTerminal(f.store, id, 1, {
       content: 'result',
       outcome: { kind: 'completed' },
       durationMs: 1,
@@ -76,7 +81,12 @@ function runner(f: ReturnType<typeof createRetentionFixture>) {
       path: join(runtime.paths.coral.store.dbDir, 'epoch-1/store.db'),
     }),
     activeEpochKey: () => null,
-    jobLocations: new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot),
+    jobLocations: new JobLocationIndex(
+      runtime,
+      runtime.paths.coral.generation.dataRoot,
+      undefined,
+      currentCoralStoreFormat().fingerprint,
+    ),
     log: () => {},
     cleanupScratch: (signal, budget) =>
       cleanupStaleJobs(
@@ -117,7 +127,7 @@ function runner(f: ReturnType<typeof createRetentionFixture>) {
 it('retries failed scratch subjects before the saved cursor on every daily cycle', async () => {
   const f = fixture();
   openSettledTestStoreDb(f.runtime).close();
-  const ids = ['skip-a', 'skip-b', 'skip-c'];
+  const ids = [jobId(1), jobId(2), jobId(3)];
   expiredJobs(f, ids);
   const s = runner(f);
   const rm = f.runtime.storage.rmdirSync;
@@ -163,7 +173,7 @@ it('retries failed scratch subjects before the saved cursor on every daily cycle
 it('counts actual scratch removals and distinguishes already absent artifacts', async () => {
   const f = fixture();
   openSettledTestStoreDb(f.runtime).close();
-  const ids = ['count-a', 'count-b'];
+  const ids = [jobId(1), jobId(2)];
   expiredJobs(f, ids);
   const s = runner(f);
   try {
@@ -189,7 +199,7 @@ it('counts actual scratch removals and distinguishes already absent artifacts', 
 it('bounds pending scratch failures and retains the cursor at overflow until failures clear', async () => {
   const f = fixture();
   openSettledTestStoreDb(f.runtime).close();
-  const ids = Array.from({ length: 101 }, (_, i) => `overflow-${String(i).padStart(3, '0')}`);
+  const ids = Array.from({ length: 101 }, (_, i) => jobId(i + 1));
   expiredJobs(f, ids);
   const s = runner(f);
   const rm = f.runtime.storage.rmdirSync;
@@ -224,8 +234,8 @@ it('bounds pending scratch failures and retains the cursor at overflow until fai
 it.each([5, 10])('rotates %i slow scratch failures while discovering unrelated expired artifacts', async (count) => {
   const f = fixture();
   openSettledTestStoreDb(f.runtime).close();
-  const bad = Array.from({ length: count }, (_, i) => `fairness-a-${i}`);
-  const good = 'fairness-z-good';
+  const bad = Array.from({ length: count }, (_, i) => jobId(i + 1));
+  const good = jobId(count + 1);
   expiredJobs(f, [...bad, good]);
   f.db
     .prepare('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)')
@@ -263,7 +273,7 @@ it.each([5, 10])('rotates %i slow scratch failures while discovering unrelated e
 it('keeps export failures visible beyond the main cursor and retries until cleared', async () => {
   const f = fixture();
   openSettledTestStoreDb(f.runtime).close();
-  const ids = ['export-a', 'export-b', 'export-c'];
+  const ids = [jobId(1), jobId(2), jobId(3)];
   expiredJobs(f, ids);
   for (const id of ids) {
     const path = join(f.runtime.paths.coral.exports.jobsRoot, id);
@@ -289,7 +299,7 @@ it('keeps export failures visible beyond the main cursor and retries until clear
     expect(second.outcomes).toContainEqual(
       expect.objectContaining({
         reason: 'export-cleanup-pending',
-        subject: expect.stringMatching(/^\.retiring-export-a-/),
+        subject: expect.stringMatching(new RegExp(`^\\.retiring-${ids[0]}-`)),
       }),
     );
     expect(existsSync(join(f.runtime.paths.coral.exports.jobsRoot, ids[2]))).toBe(false);
@@ -307,8 +317,8 @@ it('keeps export failures visible beyond the main cursor and retries until clear
 it('rotates slow export failures while the main scan reaches unrelated exports', async () => {
   const f = fixture();
   openSettledTestStoreDb(f.runtime).close();
-  const bad = Array.from({ length: 10 }, (_, i) => `export-fairness-${i}`);
-  const good = 'z-export-good';
+  const bad = Array.from({ length: 10 }, (_, i) => jobId(i + 1));
+  const good = jobId(11);
   expiredJobs(f, [...bad, good]);
   for (const id of [...bad, good]) {
     const path = join(f.runtime.paths.coral.exports.jobsRoot, id);
@@ -352,7 +362,7 @@ it('rotates slow export failures while the main scan reaches unrelated exports',
 it('reports export pending overflow even when failure details fill the status limit', async () => {
   const f = fixture();
   openSettledTestStoreDb(f.runtime).close();
-  const ids = Array.from({ length: 101 }, (_, i) => `export-overflow-${String(i).padStart(3, '0')}`);
+  const ids = Array.from({ length: 101 }, (_, i) => jobId(i + 1));
   expiredJobs(f, ids);
   for (const id of ids) {
     const path = join(f.runtime.paths.coral.exports.jobsRoot, id);
@@ -382,12 +392,16 @@ it('reports export pending overflow even when failure details fill the status li
 it('refuses a durable scratch job ID that escapes its root', async () => {
   const f = fixture();
   try {
-    expiredJobs(f, ['safe-job']);
-    const outside = join(f.store.jobDir('safe-job'), '..', '..', 'outside');
+    expiredJobs(f, ['00000000-0000-4000-8000-000000000999']);
+    const outside = join(f.store.jobDir('00000000-0000-4000-8000-000000000999'), '..', '..', 'outside');
     mkdirSync(outside);
     writeFileSync(join(outside, 'keep.txt'), 'outside evidence');
-    f.db.prepare('UPDATE projection_jobs SET job_id = ? WHERE job_id = ?').run('../outside', 'safe-job');
-    f.db.prepare('UPDATE events SET stream_id = ? WHERE stream_id = ?').run('../outside', 'safe-job');
+    f.db
+      .prepare('UPDATE projection_jobs SET job_id = ? WHERE job_id = ?')
+      .run('../outside', '00000000-0000-4000-8000-000000000999');
+    f.db
+      .prepare('UPDATE events SET stream_id = ? WHERE stream_id = ?')
+      .run('../outside', '00000000-0000-4000-8000-000000000999');
     f.db
       .prepare('INSERT INTO meta(key, value) VALUES (?, ?)')
       .run(
@@ -419,8 +433,8 @@ it('refuses a durable scratch job ID that escapes its root', async () => {
 it('keeps scratch evidence when a directory becomes a symlink during enumeration', async () => {
   const f = fixture();
   try {
-    expiredJobs(f, ['safe-job']);
-    const path = f.store.jobDir('safe-job');
+    expiredJobs(f, ['00000000-0000-4000-8000-000000000999']);
+    const path = f.store.jobDir('00000000-0000-4000-8000-000000000999');
     const nested = join(path, 'nested');
     const outside = join(f.baseDir, 'outside');
     mkdirSync(nested);
@@ -460,8 +474,8 @@ it('keeps scratch evidence when a directory becomes a symlink during enumeration
 it('does not treat a disappearing descendant as proof that the scratch root is absent', async () => {
   const f = fixture();
   try {
-    expiredJobs(f, ['safe-job']);
-    const path = f.store.jobDir('safe-job');
+    expiredJobs(f, ['00000000-0000-4000-8000-000000000999']);
+    const path = f.store.jobDir('00000000-0000-4000-8000-000000000999');
     const nested = join(path, 'nested');
     mkdirSync(nested);
     const read = f.runtime.storage.readdirSync;
@@ -487,6 +501,54 @@ it('does not treat a disappearing descendant as proof that the scratch root is a
     expect(existsSync(path)).toBe(true);
     expect(f.outcomes).toContainEqual(expect.objectContaining({ kind: 'failed' }));
     expect(f.outcomes).not.toContainEqual(expect.objectContaining({ reason: 'scratch-already-absent' }));
+  } finally {
+    f.close();
+  }
+});
+
+it('does not let a scanned predecessor prune a newly requested execution', async () => {
+  const f = fixture();
+  const id = jobId(777);
+  try {
+    expiredJobs(f, [id]);
+    await cleanupStaleJobs(
+      f.store,
+      'current',
+      () => {},
+      f.runtime.storage,
+      RETENTION_NOW,
+      1,
+      new AbortController().signal,
+      { canContinue: () => false, record: () => {} },
+    );
+    const { createStaleJobCleanupRetryPlan } = await import('#src/coordinator/lifecycle.js');
+    const plan = createStaleJobCleanupRetryPlan(f.store.getDb(), { key: id, revision: { kind: 'until-cleared' } });
+    const { requestedExecution } = await import('#tests/helpers/job-executions.js');
+    const { RecoveryContainment } = await import('#src/recovery/containment.js');
+    const { RecoveryQuarantineStore } = await import('#src/recovery/quarantine.js');
+    const remove = vi.spyOn(f.runtime.storage, 'rmSync');
+    let settlement: unknown;
+    await RecoveryContainment.each(plan.source, {
+      ...plan.policy,
+      signal: new AbortController().signal,
+      quarantine: new RecoveryQuarantineStore(f.store.getDb(), f.runtime.time),
+      hydrate: async (raw) => {
+        const scanned = await plan.policy.hydrate(raw);
+        f.store.commit((c) => {
+          c.append({ ...requestedExecution(2), stream: { kind: 'job', id } });
+          return undefined;
+        });
+        return scanned;
+      },
+      settle: async (item) => {
+        const result = await plan.policy.settle(item);
+        settlement = result;
+        return result;
+      },
+    });
+    expect(settlement).toMatchObject({ kind: 'advanced', facts: [{ outcome: 'not-applicable' }] });
+    expect(remove).not.toHaveBeenCalled();
+    expect(existsSync(f.store.jobDir(id))).toBe(true);
   } finally {
     f.close();
   }

@@ -18,6 +18,7 @@ export type ProviderRecoverySession = Readonly<{
   conversationRef?: string;
   providerContinuity: ProviderContinuityBlob | null;
   artifactHandles: readonly Readonly<{
+    execution: number;
     handle: string;
     identity: ProviderArtifactIdentity;
     sourceJobId: string;

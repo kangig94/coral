@@ -27,7 +27,7 @@ describe('provider_exit outcome materialization', () => {
   it('passes provider_exit { code, note } through 1:1 to the planned terminal outcome', () => {
     const recipe = materializeProviderTerminal(
       baseTerminal({ outcome: { kind: 'provider_exit', code: 1, note: 'Codex turn failed.' } }),
-      { jobId: 'job-1' },
+      { jobId: 'job-1', execution: 1 },
     );
 
     expect(recipe.outcomePlan).toEqual({
@@ -40,6 +40,7 @@ describe('provider_exit outcome materialization', () => {
   it('preserves a numeric exit code without a note', () => {
     const recipe = materializeProviderTerminal(baseTerminal({ outcome: { kind: 'provider_exit', code: 137 } }), {
       jobId: 'job-2',
+      execution: 1,
     });
 
     expect(recipe.outcomePlan).toEqual({

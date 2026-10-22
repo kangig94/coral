@@ -64,7 +64,8 @@ export function createCoordinatorRequestPorts(input: {
       ].some((path) => runtime.storage.existsSync(path)),
     (epochKey) => probeHistoricalClosure(epochKey),
     historicalSourceReader(jobLocationIndex),
-    (jobId, execution) => getProgressStore().getResultExportOwner().observeResultAvailability(jobId, undefined, execution),
+    (jobId, execution) =>
+      getProgressStore().getResultExportOwner().observeResultAvailability(jobId, undefined, execution),
     (jobId, execution) => {
       hintHistoricalHydration(jobLocationIndex, jobId);
       getProgressStore().getResultExportOwner().hintRepair(jobId, execution);

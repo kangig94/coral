@@ -73,7 +73,9 @@ function terminal(
     type: 'terminal',
     jobId,
     seq,
-    executionSelections: [{ jobId, requestedSeq: 1, epochKey: ':memory:', deliveredEndSeq: seq, awaitingArtifact: false }],
+    executionSelections: [
+      { jobId, requestedSeq: 1, epochKey: ':memory:', deliveredEndSeq: seq, awaitingArtifact: false },
+    ],
     remainingJobIds: [],
     resultPath: `/tmp/coral-exports/jobs/${jobId}/result.md`,
     availability: { kind: 'available', resultPath: `/tmp/coral-exports/jobs/${jobId}/result.md` },
@@ -264,15 +266,31 @@ describe('workflow pipe executor', () => {
   it('reports a refused continuation after consuming the targeted abort', async () => {
     let calls = 0;
     const executionSvc = createExecutionService({
-      resume: vi.fn(async () => ({ status: 'refused', code: 'archive_missing', message: 'Conversation archive is missing' })),
-      waitStream: vi.fn(() => emit(++calls === 1 ? [stillWaiting(['job-1'])] : [
-        terminal('job-1', 'job-1', { content: '', outcome: { kind: 'aborted', reason: 'signal_abort' } }),
-      ])),
+      resume: vi.fn<WorkflowExecutionPort['resume']>(async () => ({
+        status: 'refused',
+        code: 'archive_missing',
+        message: 'Conversation archive is missing',
+      })),
+      waitStream: vi.fn(() =>
+        emit(
+          ++calls === 1
+            ? [stillWaiting(['job-1'])]
+            : [terminal('job-1', 'job-1', { content: '', outcome: { kind: 'aborted', reason: 'signal_abort' } })],
+        ),
+      ),
     });
-    await expect(waitForAtoms([launchedAtom()], executionSvc, ctx, {
-      staleTimeoutMs: 1, staleCheckIntervalMs: 1, staleAbortTimeoutMs: 30_000, drainDeadlineMs: 15_000,
-      workflowJobId: 'workflow-1', onProgress: vi.fn(), recoverStaleAtom, time: workflowTime,
-    })).rejects.toMatchObject({ message: "Step 0, atom 'architect' resume failed: Conversation archive is missing" });
+    await expect(
+      waitForAtoms([launchedAtom()], executionSvc, ctx, {
+        staleTimeoutMs: 1,
+        staleCheckIntervalMs: 1,
+        staleAbortTimeoutMs: 30_000,
+        drainDeadlineMs: 15_000,
+        workflowJobId: 'workflow-1',
+        onProgress: vi.fn(),
+        recoverStaleAtom,
+        time: workflowTime,
+      }),
+    ).rejects.toMatchObject({ message: "Step 0, atom 'architect' resume failed: Conversation archive is missing" });
     expect(executionSvc.resume).toHaveBeenCalledWith('codex', expect.objectContaining({ jobId: 'job-1' }), ctx);
   });
 
@@ -438,7 +456,7 @@ describe('waitForAtoms', () => {
             type: 'queued',
             jobKind: 'provider',
             jobId: 'job-1',
-            conversationJobId: 'job-1',
+
             queuePosition: 2,
             runningJobIds: ['job-a'],
             timing: waitTiming,
@@ -484,7 +502,7 @@ describe('waitForAtoms', () => {
   it('does not resume a duplicate atom when stale abort was a no-op and the original completes', async () => {
     const executionSvc = createExecutionService({
       abort: vi.fn(() => ({ aborted: [], notFound: [] })),
-        waitStream: vi.fn(() => emit([stillWaiting(['job-1']), terminal('job-1', 'session-1', { content: 'ARCH' })])),
+      waitStream: vi.fn(() => emit([stillWaiting(['job-1']), terminal('job-1', 'session-1', { content: 'ARCH' })])),
     });
 
     const results = await waitForAtoms([launchedAtom()], executionSvc, ctx, {

@@ -194,7 +194,6 @@ function createHeldRecoveryAbandonment(
       try {
         progressStore.appendProgress(
           jobId,
-          jobStatus.conversationJobId,
           'Durable containment was abandoned without proof of process absence and without sending a signal.',
         );
       } catch (error: unknown) {
@@ -415,11 +414,7 @@ async function runStartupRecovery(
 
   registerHeldDurableJobs(progressStore, recoveryRegistry, deleteCoordinatorRecoveryQuarantine, abandonHeldRecoveryJob);
 
-  const { plan, itemsByJobId } = await planCoordinatorStartupRecovery(
-    ctx,
-    deps,
-    retryCoordinatorItem,
-  );
+  const { plan, itemsByJobId } = await planCoordinatorStartupRecovery(ctx, deps, retryCoordinatorItem);
 
   const planActionOptions = {
     itemsByJobId,

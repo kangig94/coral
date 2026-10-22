@@ -72,7 +72,10 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     this.eventBus = deps.eventBus;
     const coordinatorCommit = deps.coordinatorCommit;
     this.conversationManager = new ConversationManager(
-      ctx.projectRoot, deps.runtime, coordinatorCommit, deps.progressStore.getDb(),
+      ctx.projectRoot,
+      deps.runtime,
+      coordinatorCommit,
+      deps.progressStore.getDb(),
     );
     this.abortRegistry = new AbortRegistry();
     this.backendNamespace = deps.backendNamespace;
@@ -113,6 +116,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
       time: this.runtime.time,
       loadJobWaitDetail: deps.loadJobWaitDetail,
       readJobLastSeq: deps.readJobLastSeq,
+      readExecutionFinishingStatus: deps.readExecutionFinishingStatus,
 
       visitProgress: deps.visitProgress,
       aggregateWorkflowUsage: deps.aggregateWorkflowUsage,
@@ -128,6 +132,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     });
 
     this.recoveryService = new RecoveryService({
+      executionFinisher: deps.executionFinisher,
       runtime: this.runtime,
       conversationManager: this.conversationManager,
       abortRegistry: this.abortRegistry,
@@ -189,6 +194,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     });
     this.abortService = new JobAbortService({
       abortRegistry: this.abortRegistry,
+      readStatus: (jobId) => this.progressStore.readStatus(jobId),
     });
     this.sendService = new JobSendService({
       progressStore: this.progressStore,

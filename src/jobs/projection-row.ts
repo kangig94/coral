@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import { hashToken } from '../infra/hash.js';
-import { sessionControllerFromProfile } from './conversation/entry.js';
+import { conversationControllerFromProfile } from './conversation/entry.js';
 
 import { executionOwnerSchema } from '../runtime/execution-owner.js';
 import type { ExecutionOwner } from '../runtime/execution-owner.js';
@@ -132,7 +132,7 @@ export function decodeProjectionJobStoredRow(raw: unknown): ProjectionJobStoredR
     if (
       facet.provider !== row.provider ||
       facet.cwd !== row.work_dir ||
-      sessionControllerFromProfile(facet.controllerProfile) !== row.controller ||
+      conversationControllerFromProfile(facet.controllerProfile) !== row.controller ||
       hashToken(row.project_root, 12) !== row.scope_key
     ) {
       throw new TypeError(`projection_jobs conversation facet for '${row.job_id}' contradicts its columns.`);

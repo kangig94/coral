@@ -27,7 +27,7 @@ import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
 import type { ListResult } from '../contracts.js';
 import {
   buildEffectiveCoralEnv,
-  buildSessionControllerProfile,
+  buildConversationControllerProfile,
   type CoralIntent,
   type EffectiveContinuationProfile,
   mapResolverError,
@@ -128,7 +128,7 @@ export class JobLaunchService {
     const name = requestName ?? `session-${this.deps.runtime.time.now()}`;
     const model = input.model ?? resolvedAgent?.model;
     const pool = input.pool ?? 'default';
-    const controllerProfile = buildSessionControllerProfile(effectiveCoralEnv);
+    const controllerProfile = buildConversationControllerProfile(effectiveCoralEnv);
     const instruction = resolvedAgent?.instruction ?? input.instruction;
     const bypassPermissions = input.bypassPermissions ?? resolvedAgent !== null;
     const retention = input.retention ?? 'retain';
@@ -215,7 +215,7 @@ export class JobLaunchService {
     if (!session) {
       return refuseLaunch(
         'session_not_found',
-        `Session not found: ${input.jobId}. Use exec to start a new session.`,
+        `Conversation job not found: ${input.jobId}. Use exec to open a new conversation job.`,
       );
     }
 
@@ -267,15 +267,14 @@ export class JobLaunchService {
     const forcedIdent = coralName.startsWith('coral:') ? coralName : `coral:${coralName}`;
     const bypassPermissions = input.bypassPermissions ?? true;
 
-    if (input.conversationJobId !== undefined) {
+    if (input.jobId !== undefined && this.deps.conversationManager.readById(input.jobId) !== null) {
       return this.resume(
         providerName,
         {
-          jobId: input.conversationJobId,
+          jobId: input.jobId,
           prompt: input.prompt,
           workflowSlotId: input.workflowSlotId,
           agent: forcedIdent,
-          cwd: input.cwd,
           effort: input.effort,
           bypassPermissions,
           systemPrompt: input.systemPrompt,
@@ -310,7 +309,7 @@ export class JobLaunchService {
   }
 
   private buildContinuationProfile(
-    input: Pick<JobResumeRequest, 'model' | 'cwd' | 'effort' | 'bypassPermissions' | 'systemPrompt' | 'instruction'>,
+    input: Pick<JobResumeRequest, 'effort' | 'bypassPermissions' | 'systemPrompt' | 'instruction'>,
     session: JobConversation,
     ctx: InvocationContext,
   ): CanonicalContinuationProfile {
@@ -326,7 +325,7 @@ export class JobLaunchService {
       bypassPermissions: session.bypassPermissions,
       systemPrompt: session.systemPrompt,
       instruction: session.instruction,
-      controllerProfile: buildSessionControllerProfile(coralEnv),
+      controllerProfile: buildConversationControllerProfile(coralEnv),
       coralEnv,
       agentName: session.agent,
     };
@@ -339,20 +338,20 @@ export class JobLaunchService {
     input: JobResumeRequest,
     ctx: InvocationContext,
   ): Promise<ProviderJobLaunchDecision> {
-    const busyMessage = `Session ${input.jobId} already has an active job. Wait for it to complete or abort it first.`;
+    const busyMessage = `Job ${input.jobId} already has an active execution. Run coral-cli jobs wait ${input.jobId} before continuing.`;
     if (session.conversationRef === undefined) {
       return refuseLaunch(
         'non_resumable',
-        `Session ${input.jobId} is non-resumable. Use exec to start a new session.`,
+        `Conversation job ${input.jobId} is non-resumable. Use exec to open a new conversation job.`,
       );
     }
-    if (session.open) {
+    if (session.open && !session.finishing) {
       return refuseLaunch('session_busy', busyMessage);
     }
-    if (hasUnterminalRetentionDiscardRequest(session)) {
+    if (!session.finishing && hasUnterminalRetentionDiscardRequest(session)) {
       return refuseLaunch(
         'retention_discard_in_flight',
-        `Session ${input.jobId} has a retention discard request in flight. Start a new session instead.`,
+        `Execution of ${input.jobId} is finishing retention. Run coral-cli jobs wait ${input.jobId} before continuing.`,
       );
     }
     const pool = input.pool ?? 'default';
@@ -393,7 +392,6 @@ export class JobLaunchService {
       coralEnv: continuation.coralEnv,
     };
 
-
     return this.launchOrRefuse(() =>
       this.deps.launchOrchestrator.launchExecution(provider, session, request, {
         owner: input.owner ?? { kind: 'provider-session', id: session.jobId },
@@ -401,6 +399,7 @@ export class JobLaunchService {
         parentWorkflowJobId: input.parentWorkflowJobId,
         workflowSlotId: input.workflowSlotId,
         discussionRun: input.discussionRun,
+        originatingClientMessageId: input.originatingClientMessageId,
         mintProtectedEnv: (jobId, execution) =>
           this.mintChildPrincipalSecretEnv(ctx, jobId, execution, 'job-launch:resume'),
       }),

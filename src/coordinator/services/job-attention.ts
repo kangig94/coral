@@ -1,10 +1,14 @@
+import type { WaitAdmission } from '../../jobs/wait/session.js';
+import type { WaitStreamRequest, WaitStreamEvent } from '../../jobs/wait/contract.js';
 export type AttentionExecution = Readonly<{ jobId: string; execution: number }>;
 
 export class JobAttention {
   private readonly waits = new Map<string, number>();
   private readonly released = new Set<string>();
 
-  private key(jobId: string, execution: number): string { return `${jobId}:${execution}`; }
+  private key(jobId: string, execution: number): string {
+    return `${jobId}:${execution}`;
+  }
 
   requested(jobId: string, execution: number): void {
     this.released.delete(this.key(jobId, execution));
@@ -23,6 +27,26 @@ export class JobAttention {
         else this.waits.set(key, remaining);
       }
     };
+  }
+
+  async *waitStream(
+    request: WaitStreamRequest,
+    admit: (request: WaitStreamRequest) => WaitAdmission[],
+    stream: (request: WaitStreamRequest) => AsyncIterable<WaitStreamEvent>,
+  ): AsyncGenerator<WaitStreamEvent> {
+    const scoped = request;
+    scoped.admissions ??= admit(scoped);
+    const endWait = this.beginWait(
+      scoped.admissions.flatMap((admission) => {
+        const execution = admission.detail?.status.execution;
+        return execution === null || execution === undefined ? [] : [{ jobId: admission.jobId, execution }];
+      }),
+    );
+    try {
+      yield* stream(scoped);
+    } finally {
+      endWait();
+    }
   }
 
   release(jobId: string, execution: number): void {

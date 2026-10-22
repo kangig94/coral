@@ -232,7 +232,6 @@ export class ChildPrincipalRegistry {
     this.forget((record) => record.parentJobId === parentJobId && record.execution === execution);
   }
 
-
   pruneExpired(nowMs: number): void {
     this.forget((record) => record.expiresAtMs <= nowMs);
   }

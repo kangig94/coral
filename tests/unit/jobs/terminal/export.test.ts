@@ -1,3 +1,9 @@
+import { loadRetainedCurrentJob, repairRetainedExecution } from '#src/jobs/retained-current.js';
+import {
+  appendJobExecutionOutcomeAccepted,
+  appendJobExecutionEnded,
+  failedTerminalOutcome,
+} from '#src/jobs/terminal/recording.js';
 import { renderWorkflowReport } from '#src/workflow/result-report.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { jobsRegistry } from '#src/jobs/events.js';
@@ -10,7 +16,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { TerminalResultExportOwner } from '#src/jobs/terminal/export.js';
 import { deriveLaunchReadiness } from '#src/jobs/launch-readiness.js';
 import { commitJobTerminal } from '#tests/helpers/job-commits.js';
-import { initTestJob } from '#tests/helpers/session.js';
+import { testConversationFacet, initTestJob } from '#tests/helpers/session.js';
 import { createTerminalExportFixture, TERMINAL_EXPORT_CUTOFF } from '#tests/helpers/terminal-export.js';
 
 const fixtures: ReturnType<typeof createTerminalExportFixture>[] = [];
@@ -42,7 +48,7 @@ describe('terminal export owner', () => {
 
   it('repairs a committed terminal even if recording its location failed', async () => {
     const f = fixture();
-    commitJobTerminal(f.store, f.jobId, 'session-1', {
+    commitJobTerminal(f.store, f.jobId, 1, {
       content: 'canonical result',
       outcome: { kind: 'completed' },
       durationMs: 1,
@@ -65,16 +71,15 @@ describe('terminal export owner', () => {
   it('repairs an unhinted tail despite persistent failed retries with a one-candidate pass budget', async () => {
     const f = fixture();
     f.complete();
-    const heads = ['head-1', 'head-2'];
+    const heads = ['10000000-0000-4000-8000-000000000011', '10000000-0000-4000-8000-000000000012'];
     for (const jobId of heads) {
       initTestJob(f.store, {
         jobId,
-        sessionId: jobId,
-        provider: 'claude',
+        conversation: testConversationFacet('claude'),
         projectRoot: f.root,
         backendNamespace: 'fixture',
       });
-      const seq = commitJobTerminal(f.store, jobId, jobId, {
+      const seq = commitJobTerminal(f.store, jobId, 1, {
         content: 'head result',
         outcome: { kind: 'completed' },
         durationMs: 1,
@@ -89,7 +94,7 @@ describe('terminal export owner', () => {
           exit: detail.exit,
           readiness: deriveLaunchReadiness(detail),
         },
-        f.index.resultPathFor(jobId),
+        f.index.resultPathFor(jobId, 1),
         seq,
       );
     }
@@ -99,7 +104,7 @@ describe('terminal export owner', () => {
     const write = f.runtime.storage.writeAtomicDurableSync;
     const attempts: string[] = [];
     vi.spyOn(f.runtime.storage, 'writeAtomicDurableSync').mockImplementation((path, bytes, options) => {
-      const jobId = [...heads, f.jobId].find((id) => path === f.index.resultPathFor(id));
+      const jobId = [...heads, f.jobId].find((id) => path === f.index.resultPathFor(id, 1));
       if (jobId) attempts.push(jobId);
       if (jobId && heads.includes(jobId)) return false;
       return write(path, bytes, options);
@@ -116,6 +121,36 @@ describe('terminal export owner', () => {
       expect(owner.observeResultAvailability(jobId)).toEqual({ kind: 'pending' });
     }
     expect(wakeup).not.toHaveBeenCalled();
+  });
+
+  it('repairs workflow identity and resolved failure evidence after source retirement', () => {
+    const f = fixture();
+    const parentJobId = '90000000-0000-4000-8000-000000000002';
+    f.db
+      .prepare("UPDATE events SET refs = ? WHERE type = 'job.opened' AND stream_id = ?")
+      .run(JSON.stringify({ jobId: f.jobId, parentJobId, workflowSlotId: 'review' }), f.jobId);
+    f.store.commit((c) => {
+      const cause = c.append({
+        type: 'job.provider_failed',
+        stream: { kind: 'job', id: f.jobId },
+        body: { execution: 1, provider: 'claude', reason: 'request_failed', message: 'Original provider failure' },
+      });
+      const accepted = appendJobExecutionOutcomeAccepted(c, {
+        jobId: f.jobId,
+        execution: 1,
+        terminal: { content: '', durationMs: 1, outcome: failedTerminalOutcome(cause) },
+      });
+      appendJobExecutionEnded(c, { jobId: f.jobId, execution: 1, causeRef: accepted });
+    });
+    const location = loadRetainedCurrentJob(f.db, f.epochKey, f.jobId, f.runtime.paths.coral.exports.jobsRoot);
+    const execution = location?.executions?.[0];
+    if (execution === undefined) throw new Error('Missing retained execution');
+    expect(execution.resultMarkdown).toContain(`> Parent workflow: ${parentJobId}`);
+    expect(execution.resultMarkdown).toContain('> Workflow slot: review');
+    expect(execution.resultMarkdown).toContain('Original provider failure');
+    f.removeSource();
+    repairRetainedExecution(f.runtime, execution, () => true, undefined, f.runtime.paths.coral.exports.jobsRoot);
+    expect(readFileSync(execution.resultPath, 'utf8')).toBe(execution.resultMarkdown);
   });
 
   it('renders a real workflow step report through deletion and repair', () => {
@@ -244,14 +279,15 @@ describe('terminal export owner', () => {
 it('checks accepted source content at publication rather than observation', () => {
   const f = fixture();
   f.complete();
-  f.db
-    .prepare("UPDATE events SET body = ? WHERE stream_id = ? AND type = 'job.terminal.recorded'")
-    .run(
-      Buffer.from(
-        JSON.stringify({ terminal: { content: 'different result', outcome: { kind: 'completed' }, durationMs: 1 } }),
-      ),
-      f.jobId,
-    );
+  f.db.prepare("UPDATE events SET body = ? WHERE stream_id = ? AND type = 'job.execution.outcome.accepted'").run(
+    Buffer.from(
+      JSON.stringify({
+        execution: 1,
+        terminal: { content: 'different result', outcome: { kind: 'completed' }, durationMs: 1 },
+      }),
+    ),
+    f.jobId,
+  );
   const owner = f.store.getResultExportOwner();
   expect(owner.observeResultAvailability(f.jobId)).toEqual({ kind: 'pending' });
   owner.publishTerminalResult(f.jobId);
@@ -321,7 +357,14 @@ it('settles a readable terminal whose owner cannot capture it without a repair l
   const owner = new TerminalResultExportOwner({
     runtime: f.runtime,
     jobsRoot: f.runtime.paths.coral.exports.jobsRoot,
-    location: () => ({ ...retained, disposition: 'unresolved', detail: { kind: 'absent' }, terminalSeq: undefined }),
+    location: () => ({
+      ...retained,
+      disposition: 'unresolved',
+      detail: { kind: 'absent' },
+      terminalSeq: undefined,
+      executions: undefined,
+      latestExecution: undefined,
+    }),
     withSource: (_id, read) => read(f.db, f.store),
     prepareTerminal: prepare,
   });

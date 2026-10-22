@@ -408,9 +408,7 @@ export async function executeAgentAttempt(
               {
                 jobId: boundJobId,
                 prompt: `${instruction}\n\n---\n\n${prompt}`,
-                model,
                 pool: 'discuss',
-                cwd,
                 bypassPermissions: true,
                 owner: { kind: 'discussion', id: sessionId },
                 discussionRun: { agent: agentName, purpose, attempt },
@@ -442,7 +440,9 @@ export async function executeAgentAttempt(
     default:
       return assertNever(launch);
   }
-  const ordinal = executionOrdinalSchema.safeParse(ctx.jobStatusReader.read(launch.jobId)?.execution);
+  const ordinal = executionOrdinalSchema.safeParse(
+    ctx.jobStatusReader.requestedExecution(launch.jobId, launch.requestedSeq),
+  );
   if (!ordinal.success) {
     return { ok: false, attempt, consumedAttempt: true, message: `Execution not found for job ${launch.jobId}.` };
   }

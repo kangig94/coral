@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { dirname, join } from 'node:path';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -128,11 +129,12 @@ describe('retained current-format dispatch', () => {
     }
     expect(seed(f).kind).toBe('unrecoverable-retained');
     const location = f.index.read(f.jobId)!;
-    expect(location.disposition).toBe('unresolved');
+    expect(location.disposition).toBe('active-owner');
     expect(location.detail).toMatchObject({
       kind: 'recorded',
-      value: { status: { execution: 2, finishing: true }, exit: null },
+      value: { status: { execution: 1, finishing: false }, exit: { content: 'result #1' } },
     });
+    expect(location.openExecution).toBe(2);
     expect(location.executions).toHaveLength(1);
     expect(f.index.resultsReleased(f.epochKey)).toBe(false);
     expect(f.index.certificate(f.epochKey)).toBeNull();
@@ -144,7 +146,12 @@ describe('retained current-format dispatch', () => {
     const before = f.index.read(f.jobId)!.executions!;
     await f.index.compactTerminalRecords('', { canContinue: () => true, record: () => {} }, (write) => write());
     rmSync(dirname(f.epoch.path), { recursive: true });
-    const reopened = new JobLocationIndex(f.runtime, f.runtime.paths.coral.generation.dataRoot);
+    const reopened = new JobLocationIndex(
+      f.runtime,
+      f.runtime.paths.coral.generation.dataRoot,
+      undefined,
+      currentCoralStoreFormat().fingerprint,
+    );
     expect(before.every((entry) => entry.detail.events.some((event) => event.type === 'progress'))).toBe(true);
     expect(reopened.read(f.jobId)!.executions).toEqual(
       before.map((entry) => ({
@@ -154,7 +161,13 @@ describe('retained current-format dispatch', () => {
     );
     for (const entry of reopened.read(f.jobId)!.executions!) {
       rmSync(entry.resultPath);
-      repairRetainedExecution(f.runtime, entry, () => reopened.execution(f.jobId, entry.execution)?.seq === entry.seq);
+      repairRetainedExecution(
+        f.runtime,
+        entry,
+        () => reopened.execution(f.jobId, entry.execution)?.seq === entry.seq,
+        undefined,
+        f.jobsRoot,
+      );
       expect(readFileSync(entry.resultPath, 'utf8')).toBe(`result #${entry.execution}\n`);
       expect(entry.detail.exit?.diagnostics.warnings).toEqual([`warning #${entry.execution}`]);
     }

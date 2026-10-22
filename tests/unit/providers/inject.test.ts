@@ -27,7 +27,7 @@ async function loadApply() {
 describe('applyInjectBundle', () => {
   const baseRequest = {
     action: 'exec' as const,
-    sessionId: 's-1',
+    jobId: 's-1',
     prompt: 'task',
     cwd: fixtureCanonicalWorkDir('/tmp'),
     bypassPermissions: false,

@@ -46,7 +46,7 @@ export class JobSendService {
         reason: 'The job has no provider turn to receive input.',
       };
     }
-    if (isTerminalPhase(status.phase)) {
+    if (status.finishing || isTerminalPhase(status.phase)) {
       return { state: 'refused', code: 'turn_ended', reason: 'The job turn has ended.' };
     }
 

@@ -3,7 +3,7 @@ import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 
-import type { JobLaunchRequestBody } from '#src/jobs/launch.js';
+import type { JobOpenedBody } from '#src/jobs/launch.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import type { ProviderLookupPort } from '#src/providers/catalog.js';
 import { CoralAppendError } from '#src/store/append-error.js';
@@ -13,8 +13,7 @@ import { composeReducers } from '#src/store/reducers.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { workflowPlanDeclaredEvent, workflowRegistry } from '#src/workflow/events.js';
 import type { PlanSlot, WorkflowPlan } from '#src/workflow/plan.js';
-import { seedTestSessionProjection } from '#tests/helpers/session.js';
-import { TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
+import { TEST_CODEX_BINDING, TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
 const NOW = new Date('2026-04-30T00:00:00.000Z');
@@ -59,32 +58,27 @@ function plan(slots: readonly PlanSlot[]): WorkflowPlan {
 }
 
 function launchInput(workflowId: string, slotId: string) {
-  const jobId = `${slotId}:job`;
-  const sessionId = `${jobId}:session`;
-  const body: JobLaunchRequestBody = {
+  const jobId = '30000000-0000-4000-8000-000000000002';
+  const body: JobOpenedBody = {
     owner: { kind: 'workflow', id: workflowId },
-    sessionId,
-    provider: 'codex',
-    providerAction: 'exec',
-    projectRoot: fixtureCanonicalWorkDir('/workspace/coral'),
-    backendNamespace: 'tests',
+    projectRoot: '/workspace/coral',
     jobKind: 'provider',
-    workflowSlotGeneration: 0,
-    pool: 'default',
-    enqueueSequence: 1,
-    request: {
-      prompt: 'run slot',
+    workflowSlotId: slotId,
+    conversation: {
+      provider: 'codex',
+      binding: TEST_CODEX_BINDING,
+      name: jobId,
       cwd: fixtureCanonicalWorkDir('/workspace/coral'),
       bypassPermissions: false,
-      coralEnv: {},
+      retention: 'retain',
     },
     createdAt: NOW.toISOString(),
   };
 
   return {
-    type: 'job.launch.requested' as const,
+    type: 'job.opened' as const,
     stream: { kind: 'job' as const, id: jobId },
-    refs: { jobId, sessionId, parentJobId: workflowId, workflowId, workflowSlotId: slotId },
+    refs: { jobId, parentJobId: workflowId, workflowId, workflowSlotId: slotId },
     body,
   };
 }
@@ -218,12 +212,6 @@ describe('workflow plan validity append validator', () => {
         },
         ctx(),
       );
-      seedTestSessionProjection(db, {
-        sessionId: 'wf-ref:0:1:job:session',
-        provider: 'codex',
-        projectRoot: '/workspace/coral',
-        activeJobId: 'wf-ref:0:1:job',
-      });
 
       expectWorkflowPlanInvalid(
         () =>
@@ -314,12 +302,6 @@ describe('workflow plan validity append validator', () => {
         },
         ctx(),
       );
-      seedTestSessionProjection(db, {
-        sessionId: `${slotId}:job:session`,
-        provider: 'codex',
-        projectRoot: '/workspace/coral',
-        activeJobId: `${slotId}:job`,
-      });
 
       const appended = commit(
         db,

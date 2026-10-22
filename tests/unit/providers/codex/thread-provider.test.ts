@@ -102,7 +102,7 @@ function makeLease(rpcImpl: (method: string, params: Record<string, unknown>) =>
 function makeRequest(overrides: Partial<ProviderRequest> = {}): ProviderRequest {
   return {
     action: 'resume',
-    sessionId: 'job-codex-thread-provider',
+    jobId: 'job-codex-thread-provider',
     name: 'codex',
     conversationRef: 'thread-1',
     prompt: 'Resume and continue',
@@ -224,8 +224,8 @@ describe('codexThreadProvider', () => {
       if (method === 'turn/interrupt') return {};
       throw new Error(`Unexpected method: ${method}`);
     });
-    const requestA = makeRequest({ sessionId: 'job-a', conversationRef: 'thread-a' });
-    const requestB = makeRequest({ sessionId: 'job-b', conversationRef: 'thread-b' });
+    const requestA = makeRequest({ jobId: 'job-a', conversationRef: 'thread-a' });
+    const requestB = makeRequest({ jobId: 'job-b', conversationRef: 'thread-b' });
     const controllerB = new AbortController();
     const runtimeA = makeRuntime(lease, { cwd: TEST_WORKSPACE, threadId: 'thread-a' });
     const runtimeB = makeRuntime(lease, { cwd: TEST_WORKSPACE, threadId: 'thread-b' }, { signal: controllerB.signal });

@@ -69,7 +69,7 @@ export function executionHarness(...registries: DomainEventRegistry[]) {
     providers: permissiveProviderLookupPort,
   };
   const readCtx = { schemas: reducers.schemas, streamKinds: reducers.streamKinds, bodyCodec };
-  const commitEvents: CommitEventsFn = (cb) => commit(db, cb, ctx);
+  const commitEvents: CommitEventsFn = (cb, options) => commit(db, cb, ctx, options);
   const append = (...inputs: CoralEventInput[]) =>
     commit(
       db,
@@ -78,6 +78,11 @@ export function executionHarness(...registries: DomainEventRegistry[]) {
         return undefined;
       },
       ctx,
+      {
+        admittingJobs: inputs
+          .filter((input) => ['job.opened', 'job.execution.requested'].includes(input.type))
+          .map((input) => input.stream.id),
+      },
     );
   const complete = (execution = 1) =>
     commit(

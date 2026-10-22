@@ -1,3 +1,4 @@
+import type { EventsRow } from '../../store/schema.js';
 import type { Database } from '../../store/db.js';
 import {
   commitWithinOpenTransaction,
@@ -23,11 +24,14 @@ import { providerProxyRekeyRefusalEvent } from '../../providers/proxy-failure.js
 import { isRecord } from '../../infra/json.js';
 import type { SessionContinuityState } from '../../jobs/conversation/fault.js';
 import { decodeBody } from '../../store/body-codec.js';
-import { readJobOpened } from '../../jobs/execution-state.js';
+import { readJobOpened } from '../../jobs/execution-journal.js';
 import { jobExecutionRequestedBodySchema } from '../../jobs/launch.js';
 import { jobContinuityCheckpointedBodySchema } from '../../jobs/event-bodies.js';
 import { providerArtifactIdentityKey } from '../../providers/artifact-identity.js';
-import { appendProviderTerminalInCommit, appendSessionInterruptedTerminalInCommit } from './terminal-materializer.js';
+import {
+  appendProviderTerminalInCommit,
+  appendConversationInterruptedTerminalInCommit,
+} from './terminal-materializer.js';
 import type { ProviderEventHandler } from '../../provider-proxy/control-client.js';
 import type { ProviderEventRequest, ProviderEventResult } from '../../provider-proxy/protocol.js';
 import {
@@ -86,13 +90,22 @@ function resolveJobContext(deps: ProviderEventApplicationDeps, identity: Provide
   const readCtx = eventReadContext(deps);
   const record = requireJournalRecord(deps.db, identity);
   const job = readJobOpened(deps.db, jobId, readCtx);
-  const row = deps.db.prepare<[number, string], import('../../store/schema.js').EventsRow>(
-    "SELECT * FROM events WHERE seq = ? AND stream_kind = 'job' AND stream_id = ? AND type = 'job.execution.requested'",
-  ).get(record.jobLaunchEventSeq, jobId);
+  const row = deps.db
+    .prepare<
+      [number, string],
+      EventsRow
+    >("SELECT * FROM events WHERE seq = ? AND stream_kind = 'job' AND stream_id = ? AND type = 'job.execution.requested'")
+    .get(record.jobLaunchEventSeq, jobId);
   const request = row === undefined ? null : decodeBody(row, jobExecutionRequestedBodySchema, readCtx);
   const status = deps.progressStore.readStatus(jobId);
-  if (job?.jobKind !== 'provider' || request === null || status?.execution !== request.execution ||
-      status.phase === 'completed' || status.phase === 'error' || status.phase === 'aborted')
+  if (
+    job?.jobKind !== 'provider' ||
+    request === null ||
+    status?.execution !== request.execution ||
+    status.phase === 'completed' ||
+    status.phase === 'error' ||
+    status.phase === 'aborted'
+  )
     throw new Error(`Provider operation '${identity.operationId}' does not own the open execution of '${jobId}'.`);
   return {
     execution: request.execution,
@@ -341,7 +354,7 @@ export function createStoreProviderEventEffectPort(
       }
       const continuity = derivedInterruptionContinuity(deps, identity.jobId);
       commitInTx(tx, (c) => {
-        appendSessionInterruptedTerminalInCommit(c, { trigger, continuity }, options, { content: '', durationMs });
+        appendConversationInterruptedTerminalInCommit(c, { trigger, continuity }, options, { content: '', durationMs });
         return undefined;
       });
       tx.pendingInterruption = undefined;
@@ -389,10 +402,7 @@ function toApplyProviderEventBody(
       (record?.phase === 'executing' || record?.phase === 'settlement-pending') &&
       record.controlIntent.kind === 'rekey-refusal-containment'
     ) {
-      return providerProxyRekeyRefusalEvent(
-        resolveJobContext(deps, identity).provider,
-        record.controlIntent.reason,
-      );
+      return providerProxyRekeyRefusalEvent(resolveJobContext(deps, identity).provider, record.controlIntent.reason);
     }
   }
   if (event.kind !== 'suspended') return event;
@@ -432,7 +442,7 @@ export function createProviderEventHandler(deps: ProviderEventApplicationDeps): 
         if (result.kind === 'ack' && acceptedOutcome) {
           notifyProviderOperationSettlementPending(identity);
           const { execution } = resolveJobContext(deps, identity);
-          void deps.executionFinisher.finish({ jobId: identity.jobId, execution });
+          deps.executionFinisher.schedule({ jobId: identity.jobId, execution });
         }
         return result;
       },

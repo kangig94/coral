@@ -97,7 +97,7 @@ describe('selectFinalCauseRef precedence', () => {
     const descendants: readonly WorkflowRecoveryDescendant[] = [
       {
         jobId: 'workflow-1:slot:0',
-        sessionId: 'session-1',
+        execution: 1,
         projectRoot: fixtureCanonicalWorkDir('/project'),
       },
     ];
@@ -105,7 +105,7 @@ describe('selectFinalCauseRef precedence', () => {
     releaseDescendants.composeAtomic = (_commit, received) => {
       order.push('descendants');
       expect(received).toBe(descendants);
-      return [{ jobId: 'workflow-1:slot:0', sessionId: 'session-1', sessionClaimRelease: 'released' }];
+      return [{ jobId: 'workflow-1:slot:0', execution: 1 }];
     };
     releaseDescendants.cleanup = () => {};
     const intent: WorkflowFinalizationIntent = {
@@ -117,7 +117,12 @@ describe('selectFinalCauseRef precedence', () => {
 
     const releases = finalizer.atomicClose?.({
       intent,
-      recording: { namespace: 'ns', project: '/project', startedAt: new Date(runtime.time.now()).toISOString() },
+      recording: {
+        execution: 1,
+        namespace: 'ns',
+        project: '/project',
+        startedAt: new Date(runtime.time.now()).toISOString(),
+      },
       descendants,
       releaseDescendants,
       clearContinuation: () => {
@@ -126,12 +131,13 @@ describe('selectFinalCauseRef precedence', () => {
       },
     });
 
-    expect(releases).toEqual([{ jobId: 'workflow-1:slot:0', sessionId: 'session-1', sessionClaimRelease: 'released' }]);
+    expect(releases).toEqual([{ jobId: 'workflow-1:slot:0', execution: 1 }]);
     expect(order).toEqual(['commit:start', 'descendants', 'continuation', 'commit:end']);
     expect(appended.map(({ input }) => input.type)).toEqual([
       'workflow.lifecycle_fault',
       'workflow.completed',
-      'job.terminal.recorded',
+      'job.execution.outcome.accepted',
+      'job.execution.ended',
     ]);
   });
 });

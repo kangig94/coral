@@ -100,10 +100,6 @@ export function phaseForOutcome(outcome: TerminalOutcome): Extract<JobPhase, 'co
   }
 }
 
-export function describeLaunchRejected(rejected: JobLaunchRejected): string {
-  return `Launch rejected (${rejected.provider} busy: ${rejected.globalActive}/${rejected.globalLimit}).`;
-}
-
 export function describeJobProgressFault(fault: JobProgressFault): string {
   switch (fault.kind) {
     case 'missing_launch_record':
@@ -172,15 +168,10 @@ export const jobAbortedBodySchema = z
 
 export type JobAbortedBody = z.infer<typeof jobAbortedBodySchema>;
 
-export const executionCauseRefSchema = causeRefSchema.extend({
-  seq: z.number().int().positive().safe(),
-  stream: z.object({ kind: z.enum(['job', 'discuss', 'workflow']), id: z.string().min(1) }).strict(),
-});
-
 export const executionOutcomeSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('completed') }).strict(),
   z.object({ kind: z.literal('aborted'), reason: abortReasonSchema }).strict(),
   z.object({ kind: z.literal('provider_exit'), code: z.number(), note: z.string().optional() }).strict(),
-  z.object({ kind: z.literal('failed'), causeRef: executionCauseRefSchema }).strict(),
+  z.object({ kind: z.literal('failed'), causeRef: causeRefSchema }).strict(),
   z.object({ kind: z.literal('job_fault'), fault: jobLifecycleFaultSchema }).strict(),
 ]);

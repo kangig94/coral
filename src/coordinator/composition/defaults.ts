@@ -1,3 +1,4 @@
+import type { RecoveryReport } from '../../recovery/containment.js';
 declare const __PLUGIN_ROOT__: string;
 
 import { createServer, type Server } from 'node:http';
@@ -52,7 +53,10 @@ type BackendWorldBoundDefaults = {
     signal: AbortSignal,
     budget?: RetentionRunBudget,
   ) => void | Promise<void>;
-  readonly markJobsAsErrorFn: (message: string, signal: AbortSignal) => void | Promise<void>;
+  readonly markJobsAsErrorFn: (
+    message: string,
+    signal: AbortSignal,
+  ) => void | RecoveryReport<unknown> | Promise<void | RecoveryReport<unknown>>;
   readonly settlePendingLaunchesFn: NonNullable<CoordinatorCoreOptions['settlePendingLaunchesFn']>;
   readonly terminateRegisteredChildrenFn: NonNullable<CoordinatorCoreOptions['terminateRegisteredChildrenFn']>;
 };
@@ -163,7 +167,15 @@ export function resolveCoordinatorDefaults(
         ((message, signal) => {
           const progressStore = bindings.getProgressStore();
           if (progressStore === null) return;
-          return markJobsAsError(progressStore, message, runtime.time.now(), signal, (cb) => progressStore.commit(cb));
+          return markJobsAsError(
+            progressStore,
+            message,
+            runtime.time.now(),
+            signal,
+            (cb) => progressStore.commit(cb),
+            options.executionFinisher,
+            runtime,
+          );
         });
       const settlePendingLaunchesFn: BackendWorldBoundDefaults['settlePendingLaunchesFn'] =
         options.settlePendingLaunchesFn ?? ((signal) => bindings.launchCoordinator.settlePendingLaunches(signal));

@@ -1,3 +1,4 @@
+import { formatRecoveryQuarantineCommand } from './backend.js';
 import type { WaitExecutionSelection } from '../../jobs/wait/execution-selection.js';
 import { waitCommandPrefix } from '../../coordinator/handoff-routing/wait-command.js';
 import { formatResultAvailability } from './result-availability.js';
@@ -5,7 +6,7 @@ import type { CauseRef } from '../../causality/cause-ref.js';
 import { describeTerminalOutcome } from '../../jobs/outcome.js';
 import { assertNever } from '../../infra/error-format.js';
 import type { AbortResult } from '../../jobs/contracts/abort-registry.js';
-import type { AbortNextStep } from '../../jobs/contracts/abort-registry.js';
+import type { AbortRefusalNextStep } from '../../jobs/contracts/abort-registry.js';
 import type { JobOperatorRemedy } from '../../jobs/contracts/operator-remedy.js';
 import type { JobDetailResponse, JobStatus, JobTerminal, JobsListResponse } from '../../jobs/records.js';
 import type { AcceptedLaunchResponse } from '../../jobs/launch.js';
@@ -46,6 +47,15 @@ export type JobSendOutputContext = Readonly<{
   inputTokens: readonly string[];
   launch: Readonly<{ provider: string; agent: string | null }> | null;
 }>;
+
+export type UnknownLaunchOutcome = Readonly<{ kind: 'launch-outcome-unknown' }>;
+
+export function formatUnknownLaunchOutcome(_outcome: UnknownLaunchOutcome): string {
+  return [
+    'Launch outcome unknown — the job may already be running. Check the job list before taking another action.',
+    formatJobsOperatorCommand({ kind: 'jobs-list' }),
+  ].join('\n');
+}
 
 export function formatJobSendResult(
   jobId: string,
@@ -234,10 +244,21 @@ export function formatDetachedLaunchStatus(result: AcceptedLaunchResponse): stri
     : `Workflow ${result.workflowId} ${result.launchState} (job ${result.jobId})`;
 }
 
-export function formatLaunchWaitHint(result: Pick<AcceptedLaunchResponse, 'jobId' | 'requestedSeq' | 'epochKey'>): string {
+export function formatLaunchWaitHint(
+  result: Pick<AcceptedLaunchResponse, 'jobId' | 'requestedSeq' | 'epochKey'>,
+): string {
   return [
     'Wait for completion with the command below.',
-    formatJobsOperatorCommand({ jobId: result.jobId, kind: 'wait-job', executionSelection: { jobId: result.jobId, epochKey: result.epochKey, requestedSeq: result.requestedSeq, awaitingArtifact: false } }),
+    formatJobsOperatorCommand({
+      jobId: result.jobId,
+      kind: 'wait-job',
+      executionSelection: {
+        jobId: result.jobId,
+        epochKey: result.epochKey,
+        requestedSeq: result.requestedSeq,
+        awaitingArtifact: false,
+      },
+    }),
   ].join('\n');
 }
 
@@ -272,9 +293,7 @@ export function formatAbortResult(result: AbortResult): string {
   ]);
 }
 
-function formatWorkflowSlotId(
-  status: Pick<JobStatus, 'parentWorkflowJobId' | 'workflowSlotId' | 'workflowSlotGeneration'>,
-): string | null {
+export function formatWorkflowSlot(status: Pick<JobStatus, 'parentWorkflowJobId' | 'workflowSlotId'>): string | null {
   if (status.workflowSlotId === undefined) {
     return null;
   }
@@ -287,22 +306,11 @@ function formatWorkflowSlotId(
   return slot;
 }
 
-export function formatWorkflowSlot(
-  status: Pick<JobStatus, 'parentWorkflowJobId' | 'workflowSlotId' | 'workflowSlotGeneration'>,
-): string | null {
-  const slot = formatWorkflowSlotId(status);
-  if (slot === null) {
-    return null;
-  }
-
-  return status.workflowSlotGeneration === undefined ? slot : `${slot} (g${status.workflowSlotGeneration})`;
-}
-
 export function formatJobsList(data: JobsListResponse, now = Date.now()): JobsListItem[] {
   return data.jobs.map(({ jobId, status, released }) => ({
     jobId,
     execution: status.execution === null ? '-' : `#${status.execution}`,
-    phase: `${status.phase}${status.finishing === true ? ' (finishing)' : ''}${released === true ? ' (released)' : ''}`,
+    phase: `${status.phase}${status.finishingStatus === undefined ? (status.finishing === true ? ' (finishing)' : '') : ` (finishing ${status.finishingStatus.kind}: ${status.finishingStatus.reason})`}${released === true ? ' (released)' : ''}`,
     provider: status.provider ?? status.jobKind,
     cwd: status.workDir ?? status.projectRoot,
     jobKind: status.jobKind,
@@ -336,7 +344,7 @@ function formatWorkflowChildren(children: ReadonlyArray<WorkflowChildJob>): stri
 
   const ordered = [...children].sort(
     (left, right) =>
-      (formatWorkflowSlotId(left.status) ?? '').localeCompare(formatWorkflowSlotId(right.status) ?? '') ||
+      (formatWorkflowSlot(left.status) ?? '').localeCompare(formatWorkflowSlot(right.status) ?? '') ||
       (left.status.execution ?? 0) - (right.status.execution ?? 0) ||
       left.jobId.localeCompare(right.jobId),
   );
@@ -346,7 +354,7 @@ function formatWorkflowChildren(children: ReadonlyArray<WorkflowChildJob>): stri
     formatTable(
       ['SLOT', 'EXECUTION', 'CHILD JOB ID'],
       ordered.map(({ jobId, status }) => [
-        formatWorkflowSlotId(status) ?? '-',
+        formatWorkflowSlot(status) ?? '-',
         status.execution?.toString() ?? '-',
         jobId,
       ]),
@@ -366,6 +374,10 @@ export function formatJobDetail(
     `Phase: ${status.phase}`,
     status.execution === null ? undefined : `Latest execution: #${status.execution}`,
     status.finishing === true ? 'Finishing: true' : undefined,
+    status.finishingStatus?.kind === 'blocked' ? formatRecoveryQuarantineCommand({ kind: 'list' }) : undefined,
+    status.finishingStatus === undefined
+      ? undefined
+      : `Finishing status: ${status.finishingStatus.kind}; ${status.finishingStatus.reason}; successor=${status.finishingStatus.successor}`,
     `Readiness: ${response.readiness}`,
     status.provider === null ? undefined : `Provider: ${status.provider}`,
     `Kind: ${status.jobKind}`,
@@ -379,7 +391,7 @@ export function formatJobDetail(
     status.lastSeq === undefined ? undefined : `Last seq: ${status.lastSeq}`,
     response.availability === undefined ? undefined : formatResultAvailability(response.availability),
     ...(response.executions === undefined
-      ? [formatExecutionResult(response, describeCauseRef, full)]
+      ? [formatExecutionResult(response, describeCauseRef, full, response.epochKey)]
       : response.executions.map((execution) =>
           joinLines([
             `Execution #${execution.execution}`,
@@ -387,8 +399,8 @@ export function formatJobDetail(
             execution.status.finishing === true ? 'Finishing: true' : undefined,
             `Readiness: ${execution.readiness}`,
             `Requested seq: ${execution.requestedSeq}`,
-            `Result path: ${execution.resultPath}`,
-            formatExecutionResult(execution, describeCauseRef, full),
+            execution.exit === null ? undefined : `Result path: ${execution.resultPath}`,
+            formatExecutionResult(execution, describeCauseRef, full, response.epochKey),
           ]),
         )),
   ];
@@ -397,15 +409,29 @@ export function formatJobDetail(
 }
 
 function formatExecutionResult(
-  response: Pick<JobDetailResponse, 'status' | 'exit'>,
+  response: Pick<JobDetailResponse, 'status' | 'exit' | 'requestedSeq'>,
   describeCauseRef: CauseRefDescriber | undefined,
   full: boolean,
+  epochKey: string | undefined,
 ): string {
   const exit = response.exit;
   if (exit === null) {
     return joinLines([
       'Follow it with the command below.',
-      formatJobsOperatorCommand({ kind: 'wait-job', jobId: response.status.jobId }),
+      formatJobsOperatorCommand({
+        kind: 'wait-job',
+        jobId: response.status.jobId,
+        ...(epochKey === undefined || response.requestedSeq === undefined
+          ? {}
+          : {
+              executionSelection: {
+                jobId: response.status.jobId,
+                epochKey,
+                requestedSeq: response.requestedSeq,
+                awaitingArtifact: false,
+              },
+            }),
+      }),
     ]);
   }
   const usage = formatUsageSegment(exit.diagnostics.usage, { verbose: true, cacheReadAnnotation: 'full' });
@@ -531,7 +557,7 @@ function formatJobsOperatorCommand(command: JobsOperatorCommand): string {
   return `command=${renderJobsOperatorCommand(command)}`;
 }
 
-function formatAbortNextStep(nextStep: AbortNextStep): readonly string[] {
+function formatAbortNextStep(nextStep: AbortRefusalNextStep): readonly string[] {
   return typeof nextStep === 'string'
     ? [`Next step: ${nextStep}`]
     : [`Next step: ${nextStep.detail}`, formatJobsOperatorCommand(nextStep.remedy)];

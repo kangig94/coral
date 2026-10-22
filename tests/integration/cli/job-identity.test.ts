@@ -18,6 +18,8 @@ describe('CLI provider conversation identity', () => {
       const response: AcceptedLaunchResponse = {
         kind: 'provider-session',
         jobId: launched.jobId,
+        requestedSeq: launched.requestedSeq,
+        epochKey: launched.epochKey,
         launchState: launched.status,
       };
       decisions.push(response);
@@ -31,7 +33,7 @@ describe('CLI provider conversation identity', () => {
     try {
       await f.drive(program.parseAsync([provider, '-i', 'first input', '-d'], { from: 'user' }));
       expect(decisions).toHaveLength(1);
-      const first = decisions[0]!;
+      const first = decisions[0];
       await f.drive(f.service.waitForJobTerminal(first.jobId, 10_000));
       for (const execution of [2, 3]) {
         const continuation = {

@@ -2,7 +2,7 @@ import { currentCoralStoreFormat } from '#src/store-format.js';
 import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
-import { TEST_CODEX_BINDING, TEST_PROVIDER_SCOPE } from '../../helpers/provider-credentials.js';
+import { TEST_PROVIDER_SCOPE } from '../../helpers/provider-credentials.js';
 import { fixtureCanonicalWorkDir } from '../../helpers/canonical-work-dir.js';
 
 import { decodeEventBody } from '#src/store/body-codec.js';
@@ -13,11 +13,14 @@ import type { WorkflowDeclaredBody } from '#src/workflow/events.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { jobsRegistry } from '#src/jobs/events.js';
-import type { JobLaunchRequestBody } from '#src/jobs/launch.js';
-import type { JobConversation } from '#src/jobs/conversation/entry.js';
+import type { JobExecutionRequestedBody } from '#src/jobs/launch.js';
 import { workflowRegistry } from '#src/workflow/events.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
-import { seedTestSessionProjection } from '#tests/helpers/session.js';
+import { seedTestSessionProjection, testJobConversation, testConversationOpenedInput } from '#tests/helpers/session.js';
+
+const JOB_A = '10000000-0000-4000-8000-000000000001';
+const JOB_B = '10000000-0000-4000-8000-000000000002';
+const JOB_BEFORE_OPEN = '10000000-0000-4000-8000-000000000003';
 
 const NOW = new Date('2026-04-19T00:00:00.000Z');
 const TS_OVERRIDE = '2026-04-18T12:00:00.000Z';
@@ -49,52 +52,21 @@ function bodiesBySeq(db: Database): Map<number, unknown> {
   return new Map(rows.map((row) => [row.seq, decodeEventBody(row.body)]));
 }
 
-function launchBody(jobId: string, sessionId = `session-${jobId}`): JobLaunchRequestBody {
+function launchInput(jobId: string): CoralEventInput<JobExecutionRequestedBody> {
   return {
-    sessionId,
-    owner: { kind: 'provider-session', id: sessionId },
-    provider: 'codex',
-    providerAction: 'exec',
-    projectRoot: fixtureCanonicalWorkDir(`/workspace/${sessionId}`),
-    backendNamespace: 'tests',
-    jobKind: 'provider',
-    pool: 'default',
-    enqueueSequence: 0,
-    request: {
-      prompt: `prompt for ${jobId}`,
-      cwd: fixtureCanonicalWorkDir(`/workspace/${sessionId}`),
-      bypassPermissions: false,
-      coralEnv: {},
-    },
-    createdAt: NOW.toISOString(),
-  };
-}
-
-function launchInput(jobId: string, sessionId = `session-${jobId}`): CoralEventInput<JobLaunchRequestBody> {
-  return {
-    type: 'job.launch.requested',
+    type: 'job.execution.requested',
     stream: { kind: 'job', id: jobId },
-    refs: { jobId, sessionId },
-    body: launchBody(jobId, sessionId),
-  };
-}
-
-function sessionEntry(sessionId: string): JobConversation {
-  return {
-    sessionId,
-    binding: TEST_CODEX_BINDING,
-    name: sessionId,
-    state: 'pending',
-    retention: 'retain',
-    artifactHandles: [],
-    retentionDiscard: { attempts: [] },
-    cwd: `/workspace/${sessionId}`,
-    projectRoot: `/workspace/${sessionId}`,
-    backendNamespace: 'tests',
-    providerContinuity: null,
-    createdAt: NOW.toISOString(),
-    lastUsedAt: NOW.toISOString(),
-    version: 1,
+    refs: { jobId },
+    body: {
+      execution: 1,
+      input: `prompt for ${jobId}`,
+      action: 'exec',
+      pool: 'default',
+      enqueueSequence: 0,
+      coralEnv: {},
+      backendNamespace: 'tests',
+      createdAt: NOW.toISOString(),
+    },
   };
 }
 
@@ -123,24 +95,24 @@ describe('journal commit primitive', () => {
   it('resolves tokens before schema parse and preserves source stream for cross-stream terminals', () => {
     const db = createDb();
     try {
-      for (const sessionId of ['session-a', 'session-b']) {
+      for (const jobId of [JOB_A, JOB_B]) {
         seedTestSessionProjection(db, {
-          sessionId,
+          jobId,
           provider: 'codex',
-          projectRoot: `/workspace/${sessionId}`,
-          activeJobId: sessionId.replace('session-', 'job-'),
+          projectRoot: fixtureCanonicalWorkDir(`/workspace/${jobId}`),
         });
       }
       const appended = commit(
         db,
         (c) => {
-          const jobACause = c.append(launchInput('job-a', 'session-a'));
-          c.append(launchInput('job-b', 'session-b'));
+          const jobACause = c.append(launchInput(JOB_A));
+          c.append(launchInput(JOB_B));
           c.append({
-            type: 'job.terminal.recorded',
-            stream: { kind: 'job', id: 'job-b' },
-            refs: { jobId: 'job-b', sessionId: 'session-b' },
+            type: 'job.execution.outcome.accepted',
+            stream: { kind: 'job', id: JOB_B },
+            refs: { jobId: JOB_B },
             body: {
+              execution: 1,
               terminal: {
                 outcome: { kind: 'failed', causeRef: jobACause },
                 durationMs: 1,
@@ -153,20 +125,20 @@ describe('journal commit primitive', () => {
         ctx(),
       );
 
-      expect(appended.map((event) => event.seq)).toEqual([1, 2, 3]);
+      expect(appended.map((event) => event.seq)).toEqual([3, 4, 5]);
       expect(appended[2]?.body).toMatchObject({
         terminal: {
           outcome: {
             kind: 'failed',
-            causeRef: { stream: { kind: 'job', id: 'job-a' }, seq: 1 },
+            causeRef: { stream: { kind: 'job', id: JOB_A }, seq: 3 },
           },
         },
       });
-      expect(bodiesBySeq(db).get(3)).toMatchObject({
+      expect(bodiesBySeq(db).get(5)).toMatchObject({
         terminal: {
           outcome: {
             kind: 'failed',
-            causeRef: { stream: { kind: 'job', id: 'job-a' }, seq: 1 },
+            causeRef: { stream: { kind: 'job', id: JOB_A }, seq: 3 },
           },
         },
       });
@@ -228,25 +200,20 @@ describe('journal commit primitive', () => {
     }
   });
 
-  it('rolls back a batch whose launch precedes its session opening', () => {
+  it('rolls back a batch whose execution request precedes its job opening', () => {
     const db = createDb();
-    const entry = sessionEntry('session-order');
+    const entry = testJobConversation(JOB_BEFORE_OPEN);
     try {
       expect(() =>
         commit(
           db,
           (c) => {
-            c.append(launchInput('job-before-open', entry.sessionId));
-            c.append({
-              type: 'session.opened',
-              stream: { kind: 'session', id: entry.sessionId },
-              refs: { sessionId: entry.sessionId },
-              body: { entry, controller: 'default', scope_key: 'tests' },
-            });
+            c.append(launchInput(entry.jobId));
+            c.append(testConversationOpenedInput(entry));
           },
           ctx(),
         ),
-      ).toThrow(/no provider session/u);
+      ).toThrow(/job.opened must be first/u);
       expect(countEvents(db)).toBe(0);
     } finally {
       db.close();

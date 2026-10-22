@@ -21,7 +21,7 @@ it.each(['present', 'absent', 'identity mismatch', 'open failure'])(
       const read = vi.fn((db: Database) => readAcceptedTerminal(db, f.jobId)?.type);
       const observe = () => withTerminalSource(f.runtime, f.epochKey, read);
       if (scenario === 'present') {
-        expect(observe()).toBe('job.terminal.recorded');
+        expect(observe()).toBe('job.execution.ended');
         expect(read).toHaveBeenCalledTimes(1);
       } else if (scenario === 'absent') {
         expect(observe()).toBeNull();

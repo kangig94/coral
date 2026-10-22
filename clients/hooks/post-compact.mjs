@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 
 import { existsSync, readFileSync, readdirSync, unlinkSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 import {
   exitIfChildProcess,
+  buildFlavor,
   exitIfWrongFlavor,
   failOpen,
   logHookLine,
@@ -13,7 +14,7 @@ import {
   writeHookOutput,
 } from './lib/hook-utils.mjs';
 import { isLivePhase, SNAPSHOT_PREFIX, SNAPSHOT_SUFFIX, SNAPSHOT_TTL_MS } from './lib/jobs-state.mjs';
-import { projectDirFromInput, projectTmpDir } from './lib/plugin-paths.mjs';
+import { exportsJobsDir, projectDirFromInput, projectTmpDir } from './lib/plugin-paths.mjs';
 
 exitIfChildProcess();
 exitIfWrongFlavor();
@@ -34,6 +35,12 @@ function readLatestSnapshotPath(snapshotDir) {
   return entries.length > 0 ? join(snapshotDir, entries[0]) : null;
 }
 
+function isResultPath(value) {
+  if (typeof value !== 'string' || !isAbsolute(value) || !value.endsWith('/result.md')) return false;
+  const descendant = relative(exportsJobsDir(buildFlavor()), value);
+  return descendant !== '' && descendant !== '..' && !descendant.startsWith(`..${sep}`) && !isAbsolute(descendant);
+}
+
 function isSnapshotJob(value) {
   return (
     value !== null &&
@@ -42,7 +49,7 @@ function isSnapshotJob(value) {
     /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(value.jobId) &&
     typeof value.phase === 'string' &&
     typeof value.hasResult === 'boolean' &&
-    (value.resultPath === null || (typeof value.resultPath === 'string' && value.resultPath.startsWith('/')))
+    (value.resultPath == null || isResultPath(value.resultPath))
   );
 }
 
@@ -75,7 +82,7 @@ await failOpen(async () => {
     logHookLine('post-compact', 'rejected invalid compact snapshot', { projectDir, snapshotPath });
     return;
   }
-  const jobs = snapshot.jobs;
+  const jobs = snapshot.jobs.map((job) => ({ ...job, resultPath: job.resultPath ?? null }));
   const liveJobs = jobs.filter((job) => isLivePhase(job.phase));
   const terminalJobs = jobs
     .filter((job) => !isLivePhase(job.phase) && job.hasResult)

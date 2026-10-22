@@ -25,7 +25,10 @@ export function createFailedWorkflowDescendantReleaser(
   const hasEndedChildExecution = ({ jobId, execution }: WorkflowRecoveryDescendant): boolean => {
     const child = deps.progressStore
       .getDb()
-      .prepare<[string], { execution: number | null; terminal: string | null }>('SELECT execution, terminal FROM projection_jobs WHERE job_id = ?')
+      .prepare<
+        [string],
+        { execution: number | null; terminal: string | null }
+      >('SELECT execution, terminal FROM projection_jobs WHERE job_id = ?')
       .get(jobId);
     return child?.execution === execution && child.terminal !== null;
   };

@@ -7,7 +7,7 @@ import { acceptedLaunchResponseSchema, type AcceptedLaunchResponse } from '../jo
 import { getWaitInvocation } from './wait-invocation.js';
 import { WaitResumeError, buildErrorEnvelope } from './errors.js';
 import { formatErrorEnvelope } from './format/error.js';
-import { formatDetachedLaunchStatus, formatLaunchWaitHint } from './format/jobs.js';
+import { formatDetachedLaunchStatus, formatLaunchWaitHint, formatUnknownLaunchOutcome } from './format/jobs.js';
 import { launchAndFollow } from './follow.js';
 import { renderHandoffPublicationIncidents } from './handoff-notice.js';
 import { clearPendingReadStoreNote, flushPendingReadStoreNote } from './read-store.js';
@@ -76,7 +76,8 @@ export function getTerminalContext(): { isTTY: boolean; columns: number } {
 
 export async function handleLaunchResult(result: unknown, detach: boolean | undefined): Promise<void> {
   if (!isAcceptedLaunchResponse(result)) {
-    emitError(new Error(`Expected accepted launch response, received: ${JSON.stringify(result)}`));
+    process.stderr.write(formatUnknownLaunchOutcome({ kind: 'launch-outcome-unknown' }) + '\n');
+    process.exitCode = 75;
     return;
   }
 

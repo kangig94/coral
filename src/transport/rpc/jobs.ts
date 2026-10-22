@@ -49,7 +49,14 @@ export const jobWaitSnapshotSchema = jobWaitFieldsSchema
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: '--lines cannot be used with --cursor' });
   });
 
-const WAIT_REQUEST_FIELDS = new Set(['jobIds', 'projectRoot', 'timeoutSeconds', 'cursor', 'drainProgress', 'executionSelections']);
+const WAIT_REQUEST_FIELDS = new Set([
+  'jobIds',
+  'projectRoot',
+  'timeoutSeconds',
+  'cursor',
+  'drainProgress',
+  'executionSelections',
+]);
 
 export const WAIT_BUILD_MISMATCH_REASON =
   'This Coral CLI and the running coordinator are different builds, and wait does not bridge builds.';

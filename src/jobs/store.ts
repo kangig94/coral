@@ -1,3 +1,4 @@
+import type { AppendContext } from '../store/append.js';
 import { loadExecutionWaitDetail, type ExecutionWaitDetail } from './wait/execution-detail.js';
 import { currentResultInput, loadRetainedCurrentJob } from './retained-current.js';
 import { retainedResultInput } from './historical-reader.js';
@@ -33,7 +34,9 @@ import {
 } from './read-queries.js';
 import type { Runtime } from '../runtime/ports.js';
 import { jobsDir } from './paths.js';
-import { resultPathFor, TerminalResultExportOwner, type WorkflowReportPort } from './terminal/export.js';
+import { TerminalResultExportOwner } from './terminal/export.js';
+import { resultPathFor } from './paths.js';
+import { type WorkflowReportPort } from './terminal/render.js';
 import { type JobLocationIndex, type JobLocation, type JobLocationSubject } from './location-index.js';
 import { withTerminalSource } from './terminal/source.js';
 import { deriveLaunchReadiness } from './launch-readiness.js';
@@ -47,7 +50,13 @@ import { jobsRegistry } from './events.js';
 import { isLivePhase } from './phase.js';
 import type { InitJobOptions, JobProgressStore } from './contracts/job-store.js';
 import { type JobProgressTiming, type JobRuntimeStartedBody } from './event-bodies.js';
-import { type JobLaunch, type JobRuntime, type JobStatus, type JobTerminal, type JobDetailResponse } from './records.js';
+import {
+  type JobLaunch,
+  type JobRuntime,
+  type JobStatus,
+  type JobTerminal,
+  type JobDetailResponse,
+} from './records.js';
 import { progressTimingFromProjection } from './progress-timing.js';
 import { buildJobEventRefs } from './refs.js';
 import {
@@ -76,7 +85,7 @@ export type JobStoreOptions = {
   providers: ProviderLookupPort;
   observer?: PostCommitObserver;
   beforeAppend?: (input: ResolvableCoralEventInput<unknown, unknown>) => void;
-  withCommitGuard?: <T>(action: () => T) => T;
+  withCommitGuard?: AppendContext['withCommitGuard'];
   withExecutionAdmission?: (jobId: string, execution: number, subject: JobLocationSubject, action: () => void) => void;
 };
 
@@ -157,9 +166,12 @@ export function jobLaunchRequestedEvent(jobId: string, launch: JobLaunch) {
     execution: launch.execution,
     input: launch.jobKind === 'kb' ? { operation: launch.operation, request: launch.request } : launch.request.prompt,
     action: launch.jobKind === 'provider' ? launch.providerAction : 'exec',
-    pool: launch.pool, enqueueSequence: launch.enqueueSequence,
+    pool: launch.pool,
+    enqueueSequence: launch.enqueueSequence,
     coralEnv: launch.jobKind === 'kb' ? {} : launch.request.coralEnv,
-    createdAt: launch.createdAt, backendNamespace: launch.backendNamespace, bundleHash: launch.bundleHash,
+    createdAt: launch.createdAt,
+    backendNamespace: launch.backendNamespace,
+    bundleHash: launch.bundleHash,
     discussionRun: launch.discussionRun,
   });
 
@@ -215,7 +227,7 @@ export class JobStore implements JobProgressStore {
       beforeAppend: options.beforeAppend,
       withCommitGuard: options.withCommitGuard,
     };
-    this.commitEvents = (cb) => commitJournalEvents(this.db, cb, appendContext);
+    this.commitEvents = (cb, options) => commitJournalEvents(this.db, cb, appendContext, options);
   }
 
   withExecutionAdmission(jobId: string, execution: number, subject: JobLocationSubject, action: () => void): void {
@@ -345,8 +357,8 @@ export class JobStore implements JobProgressStore {
     };
   }
 
-  loadJobWaitDetail(jobId: string, requestedSeq?: number): ExecutionWaitDetail {
-    const detail = loadExecutionWaitDetail(this.db, jobId, this, requestedSeq);
+  loadJobWaitDetail(jobId: string, requestedSeq?: number, jobIds?: readonly string[]): ExecutionWaitDetail {
+    const detail = loadExecutionWaitDetail(this.db, jobId, this, requestedSeq, jobIds);
     return detail.status === null
       ? detail
       : { ...detail, status: this.applyNamespaceOverrideToStatus(jobId, detail.status) };
@@ -393,15 +405,8 @@ export class JobStore implements JobProgressStore {
         const index = this.exportLocations;
         const location = index?.read(jobId);
         return index && location
-          ? retainedResultInput(
-              index,
-              location.epochKey,
-              db,
-              jobId,
-              this.runtime.paths.coral.exports.jobsRoot,
-              execution,
-            )
-          : currentResultInput(db, ':memory:', jobId, this.runtime.paths.coral.exports.jobsRoot, execution);
+          ? retainedResultInput(index, location.epochKey, db, jobId, execution)
+          : currentResultInput(db, ':memory:', jobId, execution, this.workflowReport);
       },
       failures: this.exportLocations?.resultRepairFailures,
       repairScope: this.exportLocations ?? undefined,
@@ -420,7 +425,13 @@ export class JobStore implements JobProgressStore {
       },
       location: (jobId, observation): JobLocation | null => {
         if (this.exportLocations) return this.exportLocations.read(jobId, observation);
-        return loadRetainedCurrentJob(this.db, ':memory:', jobId, this.runtime.paths.coral.exports.jobsRoot);
+        return loadRetainedCurrentJob(
+          this.db,
+          ':memory:',
+          jobId,
+          this.runtime.paths.coral.exports.jobsRoot,
+          this.workflowReport,
+        );
       },
       withSource: (jobId, read, snapshot) => {
         if (!this.exportLocations) return read(this.db, this);
@@ -508,7 +519,10 @@ export class JobStore implements JobProgressStore {
     return [...appended];
   }
 
-  commit(cb: <Scope>(c: CommitContext<Scope>) => CommitClosureResult): AppendedEvent[] {
+  commit(
+    cb: <Scope>(c: CommitContext<Scope>) => CommitClosureResult,
+    options?: Parameters<CommitEventsFn>[1],
+  ): AppendedEvent[] {
     const previousByJob = new Map<string, JobStatus | null>();
     const appended =
       this.commitEvents(<Scope>(c: CommitContext<Scope>) => {
@@ -525,7 +539,7 @@ export class JobStore implements JobProgressStore {
         };
 
         return cb(tracked);
-      }) ?? [];
+      }, options) ?? [];
 
     const published = this.publishAppendedEvents(appended, previousByJob);
     if (published.length > 0) {
@@ -679,7 +693,8 @@ export class JobStore implements JobProgressStore {
   ): void {
     const detail = this.detail(jobId);
     const status = detail.status;
-    if (status?.execution == null) throw new Error(`Job '${jobId}' has no requested execution.`);
+    if (status === null || status.execution === null) throw new Error(`Job '${jobId}' has no requested execution.`);
+    const execution = status.execution;
     this.commit((c) => {
       c.append({
         type: 'job.execution.started',
@@ -687,7 +702,7 @@ export class JobStore implements JobProgressStore {
         namespace: status?.backendNamespace ?? this.namespace,
         project: status?.projectRoot,
         refs: buildJobEventRefs({ jobId }),
-        body: jobRuntimeStartedBody(runtime, status.execution!),
+        body: jobRuntimeStartedBody(runtime, execution),
       });
       if (provisionalProcess !== undefined) {
         writeDurableCliProvisionalProcessRuntimeMeta(this.db, { jobId, ...provisionalProcess });
@@ -744,10 +759,12 @@ export class JobStore implements JobProgressStore {
     return this.countProjectedLiveJobs() + this.countLiveOverrideJobs();
   }
 
-  appendProgress(jobId: string, conversationJobId: string | null, message: string): number {
+  appendProgress(jobId: string, message: string): number {
     const nowMs = this.runtime.time.now();
     const detail = this.detail(jobId);
     const status = detail.status;
+    if (status === null || status.execution === null) throw new Error(`Job '${jobId}' has no requested execution.`);
+    const execution = status.execution;
     const timing = progressTimingFromProjection(detail, nowMs);
     const [appended] = this.commit((c) => {
       c.append({
@@ -757,7 +774,7 @@ export class JobStore implements JobProgressStore {
         project: status?.projectRoot,
         refs: buildJobEventRefs({ jobId }),
         body: {
-          execution: status.execution!,
+          execution,
           kind: 'message',
           message,
           timing,

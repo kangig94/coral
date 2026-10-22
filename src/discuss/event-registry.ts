@@ -10,7 +10,7 @@ import {
   type JobOpenedBody,
   type JobExecutionRequestedBody,
 } from '../jobs/launch.js';
-import { readJobOpened } from '../jobs/execution-state.js';
+import { readJobOpened } from '../jobs/execution-journal.js';
 import { createDiscussSnapshot } from './reducer.js';
 import {
   isWithinLiveSessionBoundary,
@@ -149,12 +149,18 @@ export const validateDiscussionJobLaunches: DomainAppendValidator = (ctx, inputs
     }
     if (input.type === 'discuss.session.created') {
       const { sourceSeq, ...payload } = discussEventBodySchemas['session.created'].parse(input.body);
+      const projectRoot = input.project;
+      if (projectRoot === undefined) {
+        throw invalidDiscussionLink('Discussion creation requires its durable project scope.', {
+          discussionId: input.stream.id,
+        });
+      }
       snapshots.set(
         input.stream.id,
         createDiscussSnapshot({
           v: 1,
           sessionId: input.stream.id,
-          projectRoot: input.project!,
+          projectRoot,
           topic: payload.input.topic,
           seq: sourceSeq,
           kind: 'session.created',
@@ -181,6 +187,8 @@ export const validateDiscussionJobLaunches: DomainAppendValidator = (ctx, inputs
       request.discussionRun === undefined ? undefined : snapshot?.runtime.agentRuns[request.discussionRun.agent];
     if (
       job.jobKind !== 'provider' ||
+      request.discussionRun === undefined ||
+      run === undefined ||
       snapshot === undefined ||
       !isWithinLiveSessionBoundary(snapshot) ||
       closing.has(job.owner.id) ||
@@ -200,7 +208,7 @@ export const validateDiscussionJobLaunches: DomainAppendValidator = (ctx, inputs
         remediation: 'Continue only the job bound to that agent in the open owning discussion.',
       });
     }
-    jobsFor(job.owner.id).set(request.discussionRun!.agent, input.stream.id);
+    jobsFor(job.owner.id).set(request.discussionRun.agent, input.stream.id);
   }
 };
 
@@ -259,12 +267,18 @@ const validateDiscussionJobLinks: DomainAppendValidator = (ctx, inputs) => {
     }
     if (input.type === 'discuss.session.created') {
       const { sourceSeq, ...payload } = discussEventBodySchemas['session.created'].parse(input.body);
+      const projectRoot = input.project;
+      if (projectRoot === undefined) {
+        throw invalidDiscussionLink('Discussion creation requires its durable project scope.', {
+          discussionId: input.stream.id,
+        });
+      }
       snapshots.set(
         input.stream.id,
         createDiscussSnapshot({
           v: 1,
           sessionId: input.stream.id,
-          projectRoot: input.project!,
+          projectRoot,
           topic: payload.input.topic,
           seq: sourceSeq,
           kind: 'session.created',
@@ -290,8 +304,15 @@ const validateDiscussionJobLinks: DomainAppendValidator = (ctx, inputs) => {
     const run = snapshot?.runtime.agentRuns[body.agent];
     const job = jobs.get(body.jobId) ?? readJobOpened(ctx.db, body.jobId, ctx.readCtx);
     const executions = requestsFor(body.jobId);
-    const request = 'execution' in body ? executions.get(body.execution) : executions.get(1);
+    const execution =
+      input.type === 'discuss.agent.run.bound'
+        ? 1
+        : input.type === 'discuss.agent.job.started'
+          ? discussEventBodySchemas['agent.job.started'].parse(input.body).execution
+          : discussEventBodySchemas['agent.job.finished'].parse(input.body).execution;
+    const request = executions.get(execution);
     if (
+      snapshot === undefined ||
       run === undefined ||
       job?.owner.kind !== 'discussion' ||
       job.owner.id !== input.stream.id ||
@@ -308,7 +329,7 @@ const validateDiscussionJobLinks: DomainAppendValidator = (ctx, inputs) => {
     if (input.type === 'discuss.agent.run.bound') {
       if (
         (run.jobId !== undefined && run.jobId !== body.jobId) ||
-        Object.entries(snapshot!.runtime.agentRuns).some(
+        Object.entries(snapshot.runtime.agentRuns).some(
           ([agent, other]) => agent !== body.agent && other.jobId === body.jobId,
         )
       )
@@ -320,7 +341,6 @@ const validateDiscussionJobLinks: DomainAppendValidator = (ctx, inputs) => {
         run.jobId !== start.jobId ||
         run.currentJobId !== undefined ||
         startedFor(input.stream.id).has(`${start.jobId}:${start.execution}`) ||
-        (start.execution > 1 && !startedFor(input.stream.id).has(`${start.jobId}:${start.execution - 1}`)) ||
         request.execution !== start.execution ||
         request.discussionRun.purpose !== start.purpose ||
         request.discussionRun.attempt !== start.attempt

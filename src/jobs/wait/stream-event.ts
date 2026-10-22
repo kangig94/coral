@@ -34,7 +34,13 @@ export type WaitRenderDecision = Readonly<{
 export function advanceWaitRenderCursor(cursor: WaitCursor | undefined, event: WaitStreamEvent): WaitRenderDecision {
   if (event.type === 'admission') return { cursor, shouldRender: false };
   if (event.type === 'cursor') return { cursor: event.cursor, shouldRender: false };
-  return { cursor: isFinalWaitEvent(event) || (event.type === 'terminal' && event.cursor !== undefined) ? (event.cursor ?? undefined) : cursor, shouldRender: true };
+  return {
+    cursor:
+      isFinalWaitEvent(event) || (event.type === 'terminal' && event.cursor !== undefined)
+        ? (event.cursor ?? undefined)
+        : cursor,
+    shouldRender: true,
+  };
 }
 
 const finalFields = {
@@ -68,7 +74,7 @@ const waitQueuedEventBaseSchema = z.object({
 });
 
 const waitQueuedEventSchema = z.discriminatedUnion('jobKind', [
-  waitQueuedEventBaseSchema.extend({ jobKind: z.literal('provider'), conversationJobId: z.string().min(1) }).strip(),
+  waitQueuedEventBaseSchema.extend({ jobKind: z.literal('provider') }).strip(),
   waitQueuedEventBaseSchema.extend({ jobKind: z.literal('workflow'), workflowId: z.string().min(1) }).strip(),
   waitQueuedEventBaseSchema.extend({ jobKind: z.literal('kb'), systemTaskId: z.string().min(1) }).strip(),
 ]);
@@ -129,6 +135,7 @@ const waitNoticeSchema = z
   .object({
     type: z.literal('notice'),
     message: z.string(),
+    remedy: z.object({ kind: z.literal('recovery-quarantine-list') }).optional(),
     ...nonFinalFields,
   })
   .strip();

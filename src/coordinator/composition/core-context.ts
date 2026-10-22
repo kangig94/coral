@@ -39,7 +39,12 @@ export function createCoordinatorCoreContext(options: CoordinatorCoreOptions) {
   const getProgressStore = () => getStoreServices().progressStore;
   const jobLocationIndex =
     options.jobLocationIndex ??
-    new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot, renderWorkflowReport);
+    new JobLocationIndex(
+      runtime,
+      runtime.paths.coral.generation.dataRoot,
+      renderWorkflowReport,
+      options.storeFormat.fingerprint,
+    );
   const state = {
     retentionStatus: null as RetentionRunStatus | null,
     selectedStoreEpochKey: null as string | null,
@@ -88,6 +93,7 @@ export function createCoordinatorCoreContext(options: CoordinatorCoreOptions) {
     return createSystemInvocationContext(projectRoot, 'recovery-retry');
   };
   return {
+    executionFinisher: options.executionFinisher,
     runtime,
     defaultsPlan,
     startupRecoveryBarrier,

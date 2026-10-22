@@ -44,7 +44,7 @@ export type ProviderOperationPrepareMaterializerDeps = Readonly<{
   providerRegistry: ProviderBindingCatalog;
   childPrincipalRegistry: Pick<ChildPrincipalRegistry, 'registerPersistedAuthorization'>;
   readJobLaunch(jobId: string, eventSeq: number): ProviderJobLaunch;
-  readSession(conversationJobId: string): JobConversation | null;
+  readConversation(jobId: string): JobConversation | null;
 }>;
 
 function materializationRefusal(
@@ -81,7 +81,7 @@ export function materializeProviderOperationPrepare(
     );
   }
 
-  const session = deps.readSession(operation.jobId);
+  const session = deps.readConversation(operation.jobId);
   if (session === null || session.execution !== source.execution || !session.open || session.finishing) {
     return materializationRefusal(
       'prepare_materialization_refused',

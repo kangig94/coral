@@ -19,7 +19,7 @@ describe('workflow carrier ownership', () => {
       const runtime = new SimulationRuntime();
       const workDir = fixtureCanonicalWorkDir('/workspace');
       const runningJobs = new Set<string>();
-      const abortRegistry = new AbortRegistry(runtime.ids);
+      const abortRegistry = new AbortRegistry();
       let complete!: () => void;
       executor.execute.mockImplementation(
         () =>
@@ -38,9 +38,12 @@ describe('workflow carrier ownership', () => {
         bundleHash: 'test',
         providerRegistry: { get: () => ({}), decodeCompleteScope: () => ({ ok: true, value: TEST_CODEX_SCOPE }) },
         progressStore: {
+          withExecutionAdmission: (_jobId: string, _execution: number, _subject: unknown, action: () => void) =>
+            action(),
+          getDb: () => ({ prepare: () => ({ get: () => ({ seq: 1 }) }) }),
           commit: (cb: (writer: { append: () => void }) => unknown) => cb({ append: () => {} }),
           nextEnqueueSequence: () => 1,
-          readStatus: () => null,
+          readStatus: () => ({ execution: 1, backendNamespace: 'test', projectRoot: workDir }),
           readRuntimeProjection: () => ({
             transport: 'workflow',
             startTime: new Date(runtime.time.now()).toISOString(),

@@ -6,7 +6,7 @@ import type { z } from 'zod';
  * this boundary; there is deliberately no alternate-version translation.
  */
 export class EventBodyCodec {
-  parse<T>(body: unknown, schema: z.ZodType<T>): T {
+  parse<T, Input>(body: unknown, schema: z.ZodType<T, z.ZodTypeDef, Input>): T {
     return schema.parse(body);
   }
 }

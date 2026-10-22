@@ -1,3 +1,4 @@
+import { testConversationFacet } from '#tests/helpers/session.js';
 import { existsSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -45,6 +46,12 @@ describe('publication and retention under Revision S1', () => {
     f.store.publishTerminalResult(f.jobId);
     utimesSync(f.resultPath, new Date(TERMINAL_EXPORT_CUTOFF), new Date(TERMINAL_EXPORT_CUTOFF));
     utimesSync(dirname(f.resultPath), new Date(TERMINAL_EXPORT_CUTOFF), new Date(TERMINAL_EXPORT_CUTOFF));
+    utimesSync(dirname(dirname(f.resultPath)), new Date(TERMINAL_EXPORT_CUTOFF), new Date(TERMINAL_EXPORT_CUTOFF));
+    utimesSync(
+      dirname(dirname(dirname(f.resultPath))),
+      new Date(TERMINAL_EXPORT_CUTOFF),
+      new Date(TERMINAL_EXPORT_CUTOFF),
+    );
     f.advance(1);
     writeFileSync(join(f.root, 'clock'), String(TERMINAL_EXPORT_NOW + 1));
     await prune(f);
@@ -63,7 +70,7 @@ describe('publication and retention under Revision S1', () => {
     expect(f.index.resultDurable(f.jobId)).toBe(true);
     f.removeSource();
     // A retired source leaves only the retained timestamp, which chooses the label and never discharges by age.
-    const restarted = new JobLocationIndex(f.runtime, f.root);
+    const restarted = new JobLocationIndex(f.runtime, f.root, undefined, currentCoralStoreFormat().fingerprint);
     expect(restarted.terminalEligibility(f.jobId)).toEqual({ source: 'absent', age: 'unknown' });
     f.store.configureResultExports(restarted);
     expect(f.store.getResultExportOwner().observeResultAvailability(f.jobId).kind).toBe('retained-away');
@@ -73,24 +80,32 @@ describe('publication and retention under Revision S1', () => {
     const f = fixture('workflow');
     f.complete({ steps: [{ stepIndex: 0, atomIndex: 0, label: 'middle', output: 'middle output' }] });
     initTestJob(f.store, {
-      jobId: 'child-1',
-      sessionId: 'child-session',
-      provider: 'claude',
+      jobId: '93000000-0000-4000-8004-000000000001',
       projectRoot: f.root,
       backendNamespace: 'fixture',
+      conversation: testConversationFacet('claude', f.root),
     });
     commitJobTerminal(
       f.store,
-      'child-1',
-      'child-session',
+      '93000000-0000-4000-8004-000000000001',
+      1,
       { content: 'child output', outcome: { kind: 'completed' }, durationMs: 1 },
       { diagnostics: { usage: { inputTokens: 7, outputTokens: 11 } } },
     );
-    f.db.prepare('UPDATE projection_jobs SET parent_workflow_job_id = ? WHERE job_id = ?').run(f.jobId, 'child-1');
+    f.db
+      .prepare(
+        'UPDATE projection_jobs SET parent_workflow_job_id = ?, workflow_slot = ?, execution_owner = ? WHERE job_id = ?',
+      )
+      .run(
+        f.jobId,
+        `${f.jobId}:0:0`,
+        JSON.stringify({ kind: 'workflow', id: f.jobId }),
+        '93000000-0000-4000-8004-000000000001',
+      );
     const expected = aggregateWorkflowUsage(f.db, f.jobId);
     expect(expected).toMatchObject({ inputTokens: 7, outputTokens: 11 });
     f.db
-      .prepare("UPDATE projection_jobs SET phase = 'running', diagnostics = ? WHERE job_id = ?")
+      .prepare("UPDATE projection_jobs SET phase = 'running', terminal = NULL, diagnostics = ? WHERE job_id = ?")
       .run(JSON.stringify({ progressFaults: [], warnings: ['stale projection'] }), f.jobId);
     const sourceLocation = JSON.parse(readFileSync(f.locationPath, 'utf8'));
     delete sourceLocation.detail;
@@ -112,7 +127,12 @@ describe('publication and retention under Revision S1', () => {
       ).kind,
     ).toBe('uncertified');
     expect(f.store.getResultExportOwner().observeResultAvailability(f.jobId)).toEqual({ kind: 'pending' });
-    const restarted = new JobLocationIndex(f.runtime, f.root, f.index.workflowReport);
+    const restarted = new JobLocationIndex(
+      f.runtime,
+      f.root,
+      f.index.workflowReport,
+      currentCoralStoreFormat().fingerprint,
+    );
     f.store.configureResultExports(restarted);
     expect(f.store.getResultExportOwner().observeResultAvailability(f.jobId).kind).toBe('pending');
     f.store.configureResultExports(f.index);
@@ -122,8 +142,8 @@ describe('publication and retention under Revision S1', () => {
     expect(location.detail.value.status.phase).toBe('completed');
     expect(location.detail.value.exit?.diagnostics.warnings).toBeUndefined();
     expect(location.detail.value.exit?.diagnostics.usage).toEqual(expected);
-    expect(f.index.read('child-1')?.detail.kind).toBe('recorded');
-    expect(existsSync(f.index.resultPathFor('child-1'))).toBe(true);
+    expect(f.index.read('93000000-0000-4000-8004-000000000001')?.detail.kind).toBe('recorded');
+    expect(existsSync(f.index.resultPathFor('93000000-0000-4000-8004-000000000001', 1))).toBe(true);
     vi.restoreAllMocks();
     f.store.ensureResultArtifact(f.jobId);
     expect(readFileSync(f.resultPath, 'utf8')).toContain('middle output');

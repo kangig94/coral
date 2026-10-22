@@ -477,7 +477,8 @@ const persistedDiscussAgentRunSchema = z
         message: 'An active discussion turn requires its bound job, execution, purpose and attempt.',
       });
     }
-  });
+  })
+  .describe('discuss-agent-run-bound-execution-v1');
 
 export const persistedDiscussRuntimeSchema: z.ZodType<PersistedDiscussRuntime> = z
   .object({

@@ -1,3 +1,4 @@
+import type { ExecutionRetryStatus } from '../records.js';
 import type { WaitExecutionSelection } from './execution-selection.js';
 import assert from 'node:assert/strict';
 import { sameEpoch } from '../../store/epoch/identity.js';
@@ -85,6 +86,7 @@ export type WaitSnapshotJob = {
   disposition: WaitDisposition;
   message?: string;
   phase?: string;
+  finishingStatus?: ExecutionRetryStatus;
   progress: string[];
   terminal?: WaitTerminalSummary;
   availability?: ResultAvailability;
@@ -100,9 +102,11 @@ export type WaitSnapshot = {
 
 export class WaitSessionError extends Error {
   readonly code: string;
-  constructor(code: string, message: string) {
+  readonly remedy?: { kind: 'fresh-wait'; jobIds: string[] };
+  constructor(code: string, message: string, jobIds?: readonly string[]) {
     super(message);
     this.code = code;
+    if (jobIds !== undefined) this.remedy = { kind: 'fresh-wait', jobIds: [...jobIds] };
   }
 }
 
@@ -145,7 +149,13 @@ export class WaitSession {
   private readonly activeEpochKey: string;
   /** The request's watermark: every requested active-epoch row at or below it was delivered by an earlier read. */
   private readonly base: number | undefined;
-  constructor(jobIds: readonly string[], input: WaitCursor | undefined, activeEpochKey: string, internal = false, selections: readonly WaitExecutionSelection[] = []) {
+  constructor(
+    jobIds: readonly string[],
+    input: WaitCursor | undefined,
+    activeEpochKey: string,
+    internal = false,
+    selections: readonly WaitExecutionSelection[] = [],
+  ) {
     this.jobIds = jobIds;
     this.input = input;
     this.inputExecutionSelections = selections.map((selection) => ({ ...selection }));
@@ -174,7 +184,8 @@ export class WaitSession {
       }
       if (job.selection) {
         const saved = this.selections.get(job.jobId);
-        const changed = saved?.requestedSeq !== job.selection.requestedSeq || !sameEpoch(saved?.epochKey, job.selection.epochKey);
+        const changed =
+          saved?.requestedSeq !== job.selection.requestedSeq || !sameEpoch(saved?.epochKey, job.selection.epochKey);
         if (saved && changed && (saved.deliveredEndSeq === undefined || saved.awaitingArtifact)) {
           job.disposition = 'unknown';
           job.message = 'The admitted execution is unavailable; its selection is preserved.';
@@ -185,13 +196,22 @@ export class WaitSession {
           this.selections.set(job.jobId, { ...job.selection });
           member.delivered = job.selection.deliveredEndSeq !== undefined;
           member.awaitingArtifact = job.selection.awaitingArtifact;
-          member.seq = this.base === undefined ? undefined : Math.min(Math.max(this.base, job.selection.requestedSeq), job.detail?.terminalSeq ?? job.detail?.status.lastSeq ?? this.base);
+          member.seq =
+            this.base === undefined
+              ? undefined
+              : Math.min(
+                  Math.max(this.base, job.selection.requestedSeq),
+                  job.detail?.terminalSeq ?? job.detail?.status.lastSeq ?? this.base,
+                );
         } else {
           member.delivered ||= saved.deliveredEndSeq !== undefined;
           member.awaitingArtifact ||= saved.awaitingArtifact;
         }
         if (member.seq !== undefined)
-          member.seq = Math.min(Math.max(member.seq, job.selection.requestedSeq), job.detail?.terminalSeq ?? job.detail?.status.lastSeq ?? member.seq);
+          member.seq = Math.min(
+            Math.max(member.seq, job.selection.requestedSeq),
+            job.detail?.terminalSeq ?? job.detail?.status.lastSeq ?? member.seq,
+          );
       }
       if (job.historical) {
         member.progress = 'exhausted';
@@ -266,7 +286,9 @@ export class WaitSession {
     if (source === undefined) return { rows: [], reached: new Map(), full: false };
     const readable = this.admissions.filter((job) => this.readable(job));
     const frontier = (job: WaitAdmission & { epochKey: string }): number | null =>
-      this.readRows(job.jobId, () => Math.min(source.frontier(), job.detail?.terminalSeq ?? job.detail?.status.lastSeq ?? source.frontier()));
+      this.readRows(job.jobId, () =>
+        Math.min(source.frontier(), job.detail?.terminalSeq ?? job.detail?.status.lastSeq ?? source.frontier()),
+      );
     const rows: WaitSelectedRow[] = [];
     const reached = new Map<string, { seq: number; exhausted: boolean }>();
     const fresh = budget.lines === WAIT_PROGRESS_LINES && budget.bytes === WAIT_PROGRESS_BYTES;
@@ -289,7 +311,14 @@ export class WaitSession {
         else {
           const omitted: string[] = [];
           for (const job of unpositioned) {
-            const newest = this.readRows(job.jobId, () => source.newest(job.jobId, target + 1, this.selections.get(job.jobId)?.requestedSeq ?? 0, job.detail?.terminalSeq ?? job.detail?.status.lastSeq));
+            const newest = this.readRows(job.jobId, () =>
+              source.newest(
+                job.jobId,
+                target + 1,
+                this.selections.get(job.jobId)?.requestedSeq ?? 0,
+                job.detail?.terminalSeq ?? job.detail?.status.lastSeq,
+              ),
+            );
             const through = newest === null ? null : frontier(job);
             if (newest === null || through === null) continue;
             const candidates = newest.slice(-target);
@@ -325,7 +354,12 @@ export class WaitSession {
         const pages = later
           .flatMap((job) => {
             const page = this.readRows(job.jobId, () =>
-              source.after(job.jobId, Math.max(this.member(job.jobId).seq ?? 0, this.selections.get(job.jobId)?.requestedSeq ?? 0), pageRows, job.detail?.terminalSeq ?? job.detail?.status.lastSeq),
+              source.after(
+                job.jobId,
+                Math.max(this.member(job.jobId).seq ?? 0, this.selections.get(job.jobId)?.requestedSeq ?? 0),
+                pageRows,
+                job.detail?.terminalSeq ?? job.detail?.status.lastSeq,
+              ),
             );
             return page === null ? [] : [{ job, page }];
           })
@@ -437,7 +471,12 @@ export class WaitSession {
     const member = this.member(job.jobId);
     member.awaitingArtifact = this.artifactPending(job);
     const selection = this.selections.get(job.jobId);
-    if (selection) this.selections.set(job.jobId, { ...selection, deliveredEndSeq: this.terminalSeq(job), awaitingArtifact: member.awaitingArtifact });
+    if (selection)
+      this.selections.set(job.jobId, {
+        ...selection,
+        deliveredEndSeq: this.terminalSeq(job),
+        awaitingArtifact: member.awaitingArtifact,
+      });
     member.delivered = true;
   }
   /** A delivered job stays in the continuation while its artifact is still pending. */
@@ -482,9 +521,12 @@ export class WaitSession {
     for (const job of this.admissions) {
       if (!this.holdsWatermark(job)) continue;
       const member = this.member(job.jobId);
-      let consumed = member.progress === 'lost'
-        ? (this.selections.has(job.jobId) ? job.detail?.terminalSeq ?? job.detail?.status.lastSeq ?? member.seq : Infinity)
-        : member.seq;
+      let consumed =
+        member.progress === 'lost'
+          ? this.selections.has(job.jobId)
+            ? (job.detail?.terminalSeq ?? job.detail?.status.lastSeq ?? member.seq)
+            : Infinity
+          : member.seq;
       if (consumed === undefined) return null;
       if (job.detail?.exit && !member.delivered) consumed = Math.min(consumed, this.terminalSeq(job) - 1);
       watermark = Math.min(watermark, consumed);

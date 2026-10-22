@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Command } from 'commander';
 
 import { createIpcClient } from '#src/transport/ipc/client.js';
@@ -8,6 +8,10 @@ import { createSettledUnboundStatusPort } from '#src/coordinator/services/recove
 import { registerBackendCommands } from '#src/cli/commands/backend.js';
 import { formatRecoveryQuarantineList } from '#src/cli/format/backend.js';
 import { executeRenderedCommand } from '#tests/helpers/rendered-command.js';
+import { commit } from '#src/store/append.js';
+import { appendJobExecutionOutcomeAccepted } from '#src/jobs/terminal/recording.js';
+import { ExecutionFinisher, readExecutionFinishingState } from '#src/jobs/finishing.js';
+import { executionHarness, openedJob, requestedExecution, EXECUTION_JOB_ID } from '#tests/helpers/job-executions.js';
 import {
   deleteProviderOperation,
   insertProviderOperation,
@@ -25,6 +29,76 @@ describe('recovery quarantine composition', () => {
   afterEach(async () => {
     await harness?.cleanup();
     harness = null;
+  });
+
+  it('re-drives a persisted finishing quarantine through the serving coordinator after producer loss', async () => {
+    harness = createHandoffCoresHarness();
+    const fixture = executionHarness();
+    fixture.db.close();
+    commit(
+      harness.db,
+      (c) => {
+        c.append(openedJob());
+        c.append(requestedExecution());
+        appendJobExecutionOutcomeAccepted(c, {
+          jobId: EXECUTION_JOB_ID,
+          execution: 1,
+          terminal: { content: 'result preserved across restart', durationMs: 1, outcome: { kind: 'completed' } },
+        });
+        return undefined;
+      },
+      fixture.ctx,
+      { admittingJobs: [EXECUTION_JOB_ID] },
+    );
+    const address = { jobId: EXECUTION_JOB_ID, execution: 1 };
+    const previousFinisher = new ExecutionFinisher({
+      recovery: { db: () => harness!.db, readCtx: fixture.readCtx, time: harness.runtime.time },
+      time: { sleep: async () => {} },
+      log: vi.fn(),
+      commit: () => {
+        throw new Error('end write failed');
+      },
+      read: (address) => readExecutionFinishingState(harness!.db, address, fixture.readCtx),
+      quiesce: async () => true,
+      retentionAction: async () => ({ attempt: 0, handles: [] }),
+      settleRetention: async () => ({ kind: 'completed', outcome: 'skipped_no_handles' }),
+    });
+    const stopped = expect(previousFinisher.finish(address)).rejects.toBeDefined();
+    await vi.waitFor(() => expect(previousFinisher.status(address)).toMatchObject({ kind: 'blocked' }));
+    await previousFinisher.dispose();
+    await stopped;
+    const quarantine = new RecoveryQuarantineStore(harness.db, harness.runtime.time);
+    const subject = quarantine.list()[0].subject;
+
+    const coordinator = await harness.bootCore({ instanceId: 'finishing-restart-owner' });
+    const client = createIpcClient(coordinator.serverInfo.socketPath, harness.runtime.time, {
+      kind: 'boot',
+      token: coordinator.serverInfo.bootToken,
+    });
+    const program = new Command();
+    program.exitOverride();
+    registerBackendCommands(program, {
+      recoveryQuarantine: {
+        list: () => quarantine.list(),
+        clear: (request) =>
+          client.request<RecoveryQuarantineClearResult>('coordinator.recovery_quarantine.clear', request),
+      },
+    });
+    await executeRenderedCommand(program, formatRecoveryQuarantineList(quarantine.list()), {
+      label: 'clear',
+      includes: encodeRecoveryQuarantineKey(subject.key),
+    });
+
+    expect(quarantine.read('job-execution-finishing', subject.key)).toBeNull();
+    expect(
+      readExecutionFinishingState(harness.db, { jobId: EXECUTION_JOB_ID, execution: 1 }, fixture.readCtx),
+    ).toMatchObject({
+      kind: 'ended',
+      accepted: { terminal: { content: 'result preserved across restart' } },
+    });
+    expect(
+      harness.db.prepare("SELECT COUNT(*) AS n FROM events WHERE type = 'job.execution.outcome.accepted'").get(),
+    ).toEqual({ n: 1 });
   });
 
   it('runs the advertised command after restart to clear durable and rehydrated settled-unbound ownership', async () => {

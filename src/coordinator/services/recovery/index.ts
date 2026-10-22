@@ -68,8 +68,8 @@ function settleCoordinatorRecoveryItem(
   options: CoordinatorSettlementOptions,
 ): readonly RecoverySettlementFact[] {
   return settleCoordinatorRecoveryItemWithProvenance(item, options, {
-    fault: (status) => ({ namespace: status.backendNamespace }),
-    terminal: (status) => ({ namespace: status.backendNamespace }),
+    fault: (status) => ({ namespace: status.backendNamespace ?? undefined }),
+    terminal: (status) => ({ namespace: status.backendNamespace ?? undefined }),
   });
 }
 

@@ -209,7 +209,11 @@ function restorePermit(
   const status = progressStore.readStatus(jobId);
   if (status === null) return { kind: 'job-absent', permit: null };
   try {
-    const launch = readProviderOperationJobLaunch(progressStore, jobId, ownership.kind === 'operation' ? ownership.requestedSeq : undefined);
+    const launch = readProviderOperationJobLaunch(
+      progressStore,
+      jobId,
+      ownership.kind === 'operation' ? ownership.requestedSeq : undefined,
+    );
     const permit = binding.restoreActiveLaunch(
       jobId,
       launch.provider,
@@ -288,14 +292,24 @@ function settleOwnership(
   record: Extract<ProviderOperationRecord, { phase: 'settlement-pending' }>,
   restoredPermit: LaunchPermit | null,
 ): ProviderOperationStartupRecordOwnership {
-  if (restoredPermit === null) return {
-    phase: record.phase, operation: record.operation, restoredPermit,
-    bindingDisposition: { kind: 'refused', reason: 'Settlement still owns its launch reservation.', remedy: { kind: 'remote-settlement' } },
-  };
+  if (restoredPermit === null)
+    return {
+      phase: record.phase,
+      operation: record.operation,
+      restoredPermit,
+      bindingDisposition: {
+        kind: 'refused',
+        reason: 'Settlement still owns its launch reservation.',
+        remedy: { kind: 'remote-settlement' },
+      },
+    };
   const prepared = state.binding.prepareProviderOperationBinding(restoredPermit, record.operation);
-  const bindingDisposition = prepared.kind === 'refused'
-    ? { ...prepared, remedy: { kind: 'remote-settlement' as const } }
-    : prepared.kind === 'already-settled' ? prepared : { kind: 'prepared' as const };
+  const bindingDisposition =
+    prepared.kind === 'refused'
+      ? { ...prepared, remedy: { kind: 'remote-settlement' as const } }
+      : prepared.kind === 'already-settled'
+        ? prepared
+        : { kind: 'prepared' as const };
   return { phase: record.phase, operation: record.operation, restoredPermit, bindingDisposition };
 }
 

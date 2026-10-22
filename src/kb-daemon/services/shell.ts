@@ -95,16 +95,16 @@ export class KbOperationJobShell {
       });
 
       throwIfAborted(started.signal, 'finalize');
-      this.recorder.appendCompleted(started.jobId, started.startedAtMs, result.terminalContent);
+      await this.recorder.appendCompleted(started.jobId, started.startedAtMs, result.terminalContent);
       return kbSuccess(result.data);
     } catch (error: unknown) {
       if (isUserAbort(error)) {
-        this.recorder.appendAborted(started.jobId, started.startedAtMs, 'user_abort');
+        await this.recorder.appendAborted(started.jobId, started.startedAtMs, 'user_abort');
         return kbError(ctx.failure.abortedCode, error.message, { job: started.jobId });
       }
 
       const cause = normalizeKbFailureDetail(error);
-      this.recorder.appendOperationFailureWithTerminal({
+      await this.recorder.appendOperationFailureWithTerminal({
         jobId: started.jobId,
         projectRoot: ctx.projectRoot,
         operation: ctx.failure.operation,

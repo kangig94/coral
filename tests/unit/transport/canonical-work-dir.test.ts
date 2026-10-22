@@ -44,7 +44,8 @@ function createPorts() {
     kind: 'provider-session' as const,
     status: 'running' as const,
     jobId: 'job-1',
-    sessionId: 'session-1',
+    requestedSeq: 1,
+    epochKey: 'test-epoch',
   }));
   const execute = vi.fn<HttpHandlerPorts['workflows']['execute']>(async () => ({
     kind: 'decision' as const,
@@ -53,6 +54,8 @@ function createPorts() {
       status: 'running' as const,
       jobId: 'workflow-1',
       workflowId: 'workflow-1',
+      requestedSeq: 1,
+      epochKey: 'test-epoch',
     },
   }));
   const ports = {

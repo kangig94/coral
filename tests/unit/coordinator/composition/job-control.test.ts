@@ -6,7 +6,6 @@ import type { ProviderStopDecision } from '#src/coordinator/services/provider-op
 import { AbortRegistry } from '#src/jobs/shell/abort-registry.js';
 import { insertProviderOperation, readProviderOperation } from '#src/store/provider-operation-journal.js';
 import { type ProviderOperationRecord } from '#src/store/provider-operation-record.js';
-import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { createProviderOperationReconcilerHarness } from '#tests/helpers/provider-operation-reconciler-harness.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
@@ -20,7 +19,7 @@ function noProviderStops(jobIds: readonly string[]): ProviderStopDecision {
 
 function controlFor(
   harness: ReturnType<typeof createProviderOperationReconcilerHarness>,
-  internalJobAbortRegistry = new AbortRegistry(new SimulationRuntime().ids),
+  internalJobAbortRegistry = new AbortRegistry(),
 ) {
   return createCoordinatorControl({
     world: { idleTimer: { requestDrain() {} } } as unknown as CoordinatorWorld,
@@ -37,8 +36,7 @@ function createControlHarness(): {
   control: ReturnType<typeof createCoordinatorControl>;
   internalJobAbortRegistry: AbortRegistry;
 } {
-  const runtime = new SimulationRuntime();
-  const internalJobAbortRegistry = new AbortRegistry(runtime.ids);
+  const internalJobAbortRegistry = new AbortRegistry();
   const world = {
     idleTimer: { requestDrain() {} },
   } as unknown as CoordinatorWorld;
@@ -59,11 +57,10 @@ describe('createCoordinatorControl.abortJobs', () => {
     const harness = createProviderOperationReconcilerHarness();
     const record = providerOperationRecord('executing');
     insertProviderOperation(harness.db, record);
-    const runtime = new SimulationRuntime();
-    const registry = new AbortRegistry(runtime.ids);
+    const registry = new AbortRegistry();
     const listener = vi.fn();
     const settle = vi.fn();
-    registry.register(record.operation.jobId, listener, settle);
+    registry.register(record.operation.jobId, 1, listener, settle);
     const signal = registry.getSignal(record.operation.jobId);
     const control = createCoordinatorControl({
       world: {
@@ -74,7 +71,7 @@ describe('createCoordinatorControl.abortJobs', () => {
       isLifecycleRunning: () => true,
       getLifecycleController: () => null,
       getProgressStore: () => harness.progressStore as never,
-      internalJobAbortRegistry: new AbortRegistry(runtime.ids),
+      internalJobAbortRegistry: new AbortRegistry(),
       requestStops: (jobIds, cause) => harness.reconciler.requestStops(jobIds, cause),
     });
     expect(harness.reconciler.stop()).toEqual({ kind: 'drained' });
@@ -92,14 +89,13 @@ describe('createCoordinatorControl.abortJobs', () => {
     const harness = createProviderOperationReconcilerHarness();
     const record = providerOperationRecord('executing');
     insertProviderOperation(harness.db, record);
-    const runtime = new SimulationRuntime();
     const control = createCoordinatorControl({
       world: { idleTimer: { requestDrain() {} } } as unknown as CoordinatorWorld,
       listExecutionServices: () => [],
       isLifecycleRunning: () => true,
       getLifecycleController: () => null,
       getProgressStore: () => harness.progressStore as never,
-      internalJobAbortRegistry: new AbortRegistry(runtime.ids),
+      internalJobAbortRegistry: new AbortRegistry(),
       requestStops: (jobIds, cause) => harness.reconciler.requestStops(jobIds, cause),
     });
 
@@ -145,10 +141,9 @@ describe('createCoordinatorControl.abortJobs', () => {
   });
 
   it('refuses an unrecorded saga stop without firing its local abort effects', () => {
-    const runtime = new SimulationRuntime();
-    const registry = new AbortRegistry(runtime.ids);
+    const registry = new AbortRegistry();
     const listener = vi.fn();
-    const jobId = registry.register('unrecorded-saga-stop', listener);
+    const jobId = registry.register('unrecorded-saga-stop', 1, listener);
     const signal = registry.getSignal(jobId);
     const control = createCoordinatorControl({
       world: { idleTimer: { requestDrain() {} } } as unknown as CoordinatorWorld,
@@ -156,7 +151,7 @@ describe('createCoordinatorControl.abortJobs', () => {
       isLifecycleRunning: () => true,
       getLifecycleController: () => null,
       getProgressStore: () => ({}) as never,
-      internalJobAbortRegistry: new AbortRegistry(runtime.ids),
+      internalJobAbortRegistry: new AbortRegistry(),
       requestStops: () => ({
         kind: 'answered',
         outcomes: new Map([[jobId, { kind: 'unrecorded', reason: 'provider journal unavailable' }]]),
@@ -186,16 +181,16 @@ describe('createCoordinatorControl.abortJobs', () => {
     const harness = createProviderOperationReconcilerHarness();
     const record = providerOperationRecord('executing');
     insertProviderOperation(harness.db, record);
-    const registry = new AbortRegistry(new SimulationRuntime().ids);
+    const registry = new AbortRegistry();
     const listener = vi.fn(() => harness.reconciler.requestStop(record.operation.jobId, 'signal_abort'));
-    registry.register(record.operation.jobId, listener);
+    registry.register(record.operation.jobId, 1, listener);
     const control = createCoordinatorControl({
       world: { idleTimer: { requestDrain() {} } } as unknown as CoordinatorWorld,
       listExecutionServices: () => [{ abort: (jobIds: string[]) => registry.abort(jobIds) }] as never,
       isLifecycleRunning: () => true,
       getLifecycleController: () => null,
       getProgressStore: () => harness.progressStore as never,
-      internalJobAbortRegistry: new AbortRegistry(new SimulationRuntime().ids),
+      internalJobAbortRegistry: new AbortRegistry(),
       requestStops: (jobIds, cause) => {
         const decision = harness.reconciler.requestStops(jobIds, cause);
         harness.reconciler.stop();
@@ -215,9 +210,8 @@ describe('createCoordinatorControl.abortJobs', () => {
   });
 
   it('returns a typed retryable cancellation while writers are parked and aborts after admission reopens', () => {
-    const runtime = new SimulationRuntime();
-    const registry = new AbortRegistry(runtime.ids);
-    const jobId = registry.register('parked-job');
+    const registry = new AbortRegistry();
+    const jobId = registry.register('parked-job', 1);
     let parked = true;
     const control = createCoordinatorControl({
       world: {
@@ -248,7 +242,7 @@ describe('createCoordinatorControl.abortJobs', () => {
 
   it('consults the internal-job abort registry before returning notFound', () => {
     const { control, internalJobAbortRegistry } = createControlHarness();
-    const jobId = internalJobAbortRegistry.register('kb-reindex-1');
+    const jobId = internalJobAbortRegistry.register('kb-reindex-1', 1);
 
     const decision = control.abortJobs([jobId, 'unknown-job']);
 
@@ -260,8 +254,7 @@ describe('createCoordinatorControl.abortJobs', () => {
   });
 
   it('preserves a recovery abort refusal without trying another owner', () => {
-    const runtime = new SimulationRuntime();
-    const internalJobAbortRegistry = new AbortRegistry(runtime.ids);
+    const internalJobAbortRegistry = new AbortRegistry();
     const internalAbort = vi.spyOn(internalJobAbortRegistry, 'abort');
     const executionAbort = vi.fn();
     const refusal = {
@@ -294,8 +287,7 @@ describe('createCoordinatorControl.abortJobs', () => {
   });
 
   it('preserves an asynchronous recovery abort hold without trying another owner', () => {
-    const runtime = new SimulationRuntime();
-    const internalJobAbortRegistry = new AbortRegistry(runtime.ids);
+    const internalJobAbortRegistry = new AbortRegistry();
     const internalAbort = vi.spyOn(internalJobAbortRegistry, 'abort');
     const executionAbort = vi.fn();
     const hold = {
@@ -331,8 +323,7 @@ describe('createCoordinatorControl.scopeCheckJobs', () => {
   // The status deliberately carries a foreign `backendNamespace`, so this assertion fails again if
   // namespace ever re-enters scope judgement.
   it('keeps a job recorded under another build namespace in scope when the work directory matches', () => {
-    const runtime = new SimulationRuntime();
-    const internalJobAbortRegistry = new AbortRegistry(runtime.ids);
+    const internalJobAbortRegistry = new AbortRegistry();
     const world = { idleTimer: { requestDrain() {} } } as unknown as CoordinatorWorld;
     const control = createCoordinatorControl({
       world,
@@ -357,8 +348,7 @@ describe('createCoordinatorControl.scopeCheckJobs', () => {
   });
 
   it('keeps KB jobs in scope from any project but rejects foreign non-KB jobs', () => {
-    const runtime = new SimulationRuntime();
-    const internalJobAbortRegistry = new AbortRegistry(runtime.ids);
+    const internalJobAbortRegistry = new AbortRegistry();
     const statuses = {
       'kb-job': { workDir: null, jobKind: 'kb', backendNamespace: 'test-ns' },
       'provider-job': {
@@ -413,7 +403,7 @@ it('keeps a recorded stop applied when its saga has a permanent diagnostic', () 
 it('annotates an applied stop with a condensed retry diagnostic without creating an abort hold', () => {
   const harness = createProviderOperationReconcilerHarness();
   const initial = providerOperationRecord('executing');
-  const registry = new AbortRegistry(new SimulationRuntime().ids);
+  const registry = new AbortRegistry();
   vi.spyOn(registry, 'abort').mockReturnValue({
     aborted: [],
     notFound: [],

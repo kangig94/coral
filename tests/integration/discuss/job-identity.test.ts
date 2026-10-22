@@ -1,3 +1,4 @@
+import { readExecutionRequestAt } from '#src/jobs/execution-journal.js';
 import { describe, expect, it } from 'vitest';
 
 import { readDiscussEventLog } from '#src/discuss/read-queries.js';
@@ -63,6 +64,8 @@ describe('discussion participant conversation identity', () => {
         },
         providerRegistry: f.providers,
         jobStatusReader: {
+          requestedExecution: (id, seq) =>
+            readExecutionRequestAt(f.store.getDb(), id, seq, f.store)?.request.execution ?? null,
           read: (id) => f.store.readStatus(id),
           readExit: () => null,
           listOwned: () => [],

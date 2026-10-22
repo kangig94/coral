@@ -1,3 +1,4 @@
+import { testConversationFacet } from '#tests/helpers/session.js';
 import { progressVisitFromDetails } from '#tests/helpers/wait-progress.js';
 import { Command } from 'commander';
 import { registerSessionCommands } from '#src/cli/commands/session.js';
@@ -76,22 +77,23 @@ describe('actual wait carriage', () => {
   it('delivers two bounded retained outcomes in one complete unary IPC envelope and full detail keeps diagnostics and trailing text', async () => {
     const f = createTerminalExportFixture('provider', true);
     cleanup.push(f.close);
-    const ids = Array.from({ length: 2 }, (_, i) => (i === 0 ? f.jobId : `large-${i}`));
+    const ids = Array.from({ length: 2 }, (_, i) =>
+      i === 0 ? f.jobId : `93000000-0000-4000-9003-${String(i + 1).padStart(12, '0')}`,
+    );
     const content = '🙂\\\"\n'.repeat(6000) + '\nUNIQUE_BEYOND_10000\nTAIL_CONTENT\n';
     const warning = 'complete diagnostic '.repeat(8000) + 'DIAGNOSTIC_TAIL';
     for (const [i, jobId] of ids.entries()) {
       if (i > 0)
         initTestJob(f.store, {
           jobId,
-          sessionId: `session-${i}`,
-          provider: 'claude',
           projectRoot: f.root,
           backendNamespace: 'fixture',
+          conversation: testConversationFacet('claude', f.root),
         });
       const seq = commitJobTerminal(
         f.store,
         jobId,
-        i === 0 ? 'session-1' : `session-${i}`,
+        1,
         { content, outcome: { kind: 'provider_exit', code: 0, note: 'large note '.repeat(500) }, durationMs: 9 },
         { diagnostics: { warnings: [warning] } },
       );
@@ -99,7 +101,7 @@ describe('actual wait carriage', () => {
       f.index.recordTerminal(
         jobId,
         { status: d.status!, exit: d.exit, events: f.store.readJobEvents(jobId), readiness: deriveLaunchReadiness(d) },
-        f.index.resultPathFor(jobId),
+        f.index.resultPathFor(jobId, 1),
         seq,
       );
     }

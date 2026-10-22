@@ -115,7 +115,7 @@ export class KbJobRecorder {
   }
 
   appendMessage(jobId: string, _projectRoot: string, message: string): void {
-    this.deps.progressStore.appendProgress(jobId, null, message);
+    this.deps.progressStore.appendProgress(jobId, message);
   }
 
   async appendOperationFailureWithTerminal(params: {
@@ -162,7 +162,6 @@ export class KbJobRecorder {
   appendHostedKbOperationFailure(params: {
     jobId: string;
     execution: number;
-    conversationJobId: string;
     projectRoot: string;
     namespace: string;
     operation: string;
@@ -176,7 +175,7 @@ export class KbJobRecorder {
         stream: { kind: 'job', id: params.jobId },
         namespace: params.namespace,
         project: params.projectRoot,
-        refs: buildJobEventRefs({ jobId: params.jobId, }),
+        refs: buildJobEventRefs({ jobId: params.jobId }),
         body: {
           execution: params.execution,
           kind: 'domain',

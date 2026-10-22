@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import type { CauseRefToken } from '#src/causality/cause-ref.js';
 import { materializeProviderFailureCauseInCommit } from '#src/coordinator/services/terminal-materializer.js';
 import { providerProxyReplayFailed } from '#src/providers/proxy-failure.js';
-import { sessionProviderFailedBodySchema } from '#src/jobs/conversation/event-bodies.js';
-import { sessionsEventDescribers } from '#src/jobs/conversation/event-describers.js';
+import { jobProviderFailedBodySchema } from '#src/jobs/event-bodies.js';
+import { jobsEventDescribers } from '#src/jobs/event-describers.js';
 import type { CommitContext } from '#src/store/append.js';
 import type { CoralEvent, ResolvableCoralEventInput } from '#src/store/envelope.js';
 
@@ -13,8 +13,8 @@ type RecordedInput = {
 };
 
 const OPTIONS = {
-  jobId: 'job-1',
-  sessionId: 'session-1',
+  jobId: 'f10f3e57-0d04-53df-b4c3-3bcf75a1222d',
+  execution: 1,
   parentJobId: 'parent-1',
   workflowSlotId: 'slot-1',
 } as const;
@@ -40,10 +40,10 @@ function asSessionProviderFailedEvent(input: ResolvableCoralEventInput<unknown, 
   return {
     seq: 1,
     ts: '2026-06-23T00:00:00.000Z',
-    type: 'session.provider_failed',
-    stream: { kind: 'session', id: 'session-1' },
+    type: 'job.provider_failed',
+    stream: { kind: 'job', id: 'f10f3e57-0d04-53df-b4c3-3bcf75a1222d' },
     refs: input.refs,
-    body: sessionProviderFailedBodySchema.parse(input.body),
+    body: jobProviderFailedBodySchema.parse(input.body),
   };
 }
 
@@ -57,10 +57,10 @@ describe('terminal materializer turn failure diagnostics', () => {
     );
 
     expect(outcome).toEqual({ kind: 'failed', causeRef: recorder.appended[0]?.token });
-    const body = sessionProviderFailedBodySchema.parse(recorder.appended[0]?.input.body);
+    const body = jobProviderFailedBodySchema.parse(recorder.appended[0]?.input.body);
     expect(body.provider).toBe('@coral/provider-proxy');
 
-    const describer = sessionsEventDescribers.get('session:session.provider_failed');
+    const describer = jobsEventDescribers.get('job:job.provider_failed');
     const text = describer?.(asSessionProviderFailedEvent(recorder.appended[0].input));
     expect(text).toBeDefined();
     expect(text).not.toMatch(/claude|codex/iu);

@@ -1,5 +1,5 @@
 import { hashToken } from '../infra/hash.js';
-import { sessionControllerFromProfile } from './conversation/entry.js';
+import { conversationControllerFromProfile } from './conversation/entry.js';
 import type { Database } from '../store/db.js';
 import { decodeEventBody } from '../store/body-codec.js';
 import type { CoralEvent } from '../store/envelope.js';
@@ -64,7 +64,7 @@ export const reduceJobOpened: Reducer<JobOpenedBody> = (db, event) => {
     terminal: null,
     diagnostics: JSON.stringify(emptyJobDiagnostics()),
     provider: facet?.provider ?? null,
-    controller: facet === null ? null : sessionControllerFromProfile(facet.controllerProfile),
+    controller: facet === null ? null : conversationControllerFromProfile(facet.controllerProfile),
     resumable: facet === null ? null : 0,
     conversation_ref: null,
     scope_key: facet === null ? null : hashToken(body.projectRoot, 12),

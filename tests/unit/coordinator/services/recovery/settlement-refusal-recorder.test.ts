@@ -21,18 +21,16 @@ function seededJob() {
     providers: permissiveProviderLookupPort,
   });
   const jobId = randomUUID();
-  const sessionId = randomUUID();
   seedTestSessionProjection(db, {
-    sessionId,
+    jobId: jobId,
     provider: 'codex',
     projectRoot: '/tmp/settlement-refusal-test',
     backendNamespace: 'settlement-refusal-test',
-    activeJobId: jobId,
   });
   store.appendLaunchRequested(jobId, {
     jobId,
-    owner: { kind: 'provider-session', id: sessionId },
-    sessionId,
+    owner: { kind: 'provider-session', id: jobId },
+    execution: 1,
     provider: 'codex',
     projectRoot: '/tmp/settlement-refusal-test',
     backendNamespace: 'settlement-refusal-test',
@@ -81,7 +79,7 @@ describe('coordinator job settlement-refusal recorder', () => {
     });
 
     await expect(
-      recorder.record({ jobId, cause: 'claim-release-failed', failure: 'claim store unavailable' }),
+      recorder.record({ jobId, cause: 'terminal-persist-failed', failure: 'claim store unavailable' }),
     ).rejects.toThrow('recovery quarantine write did not persist');
     db.close();
   });

@@ -1,13 +1,29 @@
-import { describe, expect, it } from 'vitest';
+import { ProviderRegistry } from '#src/providers/registry.js';
+import { TEST_CODEX_BINDING } from '#tests/helpers/provider-credentials.js';
+import { ExecutionFinisher, readExecutionFinishingState } from '#src/jobs/finishing.js';
+import { JobStore } from '#src/jobs/store.js';
+import { ConversationManager } from '#src/jobs/conversation/shell.js';
+import { recordProviderTerminal } from '#src/coordinator/services/terminal-materializer.js';
+import { executionHarness } from '#tests/helpers/job-executions.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
+import { initTestJob, testConversationFacet } from '#tests/helpers/session.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { AbortRegistry } from '#src/jobs/shell/abort-registry.js';
 import { LaunchOrchestrator } from '#src/jobs/shell/launch.js';
 import type { BoundProvider } from '#src/providers/bound-provider-contract.js';
-import type { ProviderEventBody, ProviderRequest } from '#src/providers/contract.js';
+import type { ProviderEventBody } from '#src/providers/contract.js';
 import { attachContinuityCommit } from '#src/providers/internal/continuity-commit.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
+
+const jobId = '10000000-0000-4000-8000-000000000001';
+const journals: ReturnType<typeof executionHarness>[] = [];
+afterEach(() => {
+  vi.restoreAllMocks();
+  for (const h of journals.splice(0)) h.db.close();
+});
 
 function controlledStream() {
   const started = createDeferred<void>();
@@ -48,17 +64,30 @@ function controlledStream() {
 
 function fixture(options: { checkpointGate?: Promise<void>; releaseGate?: Promise<void> } = {}) {
   const runtime = new SimulationRuntime();
+  const h = executionHarness();
+  journals.push(h);
+  const store = new JobStore('test', runtime, h.ctx.bodyCodec, {
+    db: h.db,
+    providers: h.ctx.providers,
+    reducers: h.ctx.reducers,
+  });
+  initTestJob(store, {
+    jobId: jobId,
+    conversation: testConversationFacet('codex', '/project'),
+    projectRoot: '/project',
+    backendNamespace: 'test',
+  });
+  const sessions = new ConversationManager('/project', runtime, (cb) => store.commit(cb), h.db);
   const admission = new LaunchCoordinator({ runtime });
-  const registry = new AbortRegistry(runtime.ids);
+  const registry = new AbortRegistry();
   const stream = controlledStream();
   const checkpointStarted = createDeferred<void>();
   const releaseStarted = createDeferred<void>();
   const completed = createDeferred<void>();
   const terminals: ProviderEventBody[] = [];
-  const session = { sessionId: 'session-1', activeJobId: 'job-1', version: 1, providerContinuity: null };
   let artifact = false;
-  registry.register('job-1');
-  const accepted = admission.requestLaunch('job-1', 'codex', { kind: 'provider-session', id: 'session-1' }, 'default');
+  registry.register(jobId, 1);
+  const accepted = admission.requestLaunch(jobId, 'codex', { kind: 'provider-session', id: jobId }, 'default');
   if (accepted === 'queue_full' || accepted.type !== 'immediate') throw new Error('expected permit');
   const release = admission.releaseLaunch.bind(admission);
   admission.releaseLaunch = (permit) => {
@@ -66,14 +95,52 @@ function fixture(options: { checkpointGate?: Promise<void>; releaseGate?: Promis
     completed.resolve();
     return result;
   };
-  const provider = {
+  const checkpoint = sessions.checkpointJobContinuityAtomic.bind(sessions);
+  vi.spyOn(sessions, 'checkpointJobContinuityAtomic').mockImplementation(async (...args) => {
+    checkpointStarted.resolve();
+    await options.checkpointGate;
+    return checkpoint(...args);
+  });
+  const ensureResult = store.ensureResultArtifact.bind(store);
+  vi.spyOn(store, 'ensureResultArtifact').mockImplementation((...args) => {
+    artifact = true;
+    return ensureResult(...args);
+  });
+  const finisher = new ExecutionFinisher({
+    time: { sleep: async () => {} },
+    commit: (cb) => store.commit(cb),
+    read: (address) => readExecutionFinishingState(h.db, address, store),
+    quiesce: async () => true,
+    retentionAction: async () => ({ attempt: 0, handles: [] }),
+    settleRetention: async () => ({ kind: 'completed', outcome: 'skipped_no_handles' }),
+  });
+  const provider: BoundProvider = {
     name: 'codex',
-    appServer: {},
-    compareIdentity: () => ({ ok: true }),
+    envelope: TEST_CODEX_BINDING,
+    present: () => 'Codex fixture',
+    artifacts: { kind: 'none', reason: 'fixture' },
+    appServer: {
+      supportsInterrupt: false,
+      openReplacement: async () => {
+        throw new Error('Replacement hosts are outside this fixture.');
+      },
+      interrupt: async () => {
+        throw new Error('Provider interruption is outside this fixture.');
+      },
+      send: async () => {
+        throw new Error('Provider input is outside this fixture.');
+      },
+    },
+    compareIdentity: () => ({ ok: true, value: true }),
     decodeContinuity: () => ({ ok: true, value: undefined }),
-    readiness: async () => ({ ok: true }),
-    prepareExecution: () => ({ kind: 'app-server', execute: () => stream.iterable }),
-  } as unknown as BoundProvider;
+    readiness: async (use) => ({ ok: true, value: { ready: true, use } }),
+    preflight: async () => ({ kind: 'satisfied' }),
+    prepareExecution: () => ({
+      kind: 'app-server',
+      hostSpec: { provider: 'codex', command: 'fixture', args: [], leaseMode: 'job-exclusive' },
+      execute: () => stream.iterable,
+    }),
+  };
   const orchestrator = new LaunchOrchestrator({
     runtime,
     launchAdmission: admission,
@@ -81,56 +148,34 @@ function fixture(options: { checkpointGate?: Promise<void>; releaseGate?: Promis
     abortRegistry: registry,
     backendNamespace: 'test',
     bundleHash: 'test',
-    providerRegistry: {} as never,
-    durableSpawner: {} as never,
-    progressStore: {
-      appendProgress: () => {},
-      readStatus: () => ({ phase: 'running' }),
-      readLaunchProjection: () => null,
-      ensureResultArtifact: () => {
-        artifact = true;
-      },
-    } as never,
-    conversationManager: {
-      get: () => session,
-      checkpointJobContinuityAtomic: async () => {
-        checkpointStarted.resolve();
-        await options.checkpointGate;
-        session.version++;
-        return { ok: true, nextVersion: session.version };
-      },
-      releaseJobClaimAtomic: async (
-        _sessionId: string,
-        claim: { expectedActiveJobId: string; expectedVersion: number },
-      ) => {
-        releaseStarted.resolve();
-        await options.releaseGate;
-        if (session.activeJobId !== claim.expectedActiveJobId || session.version !== claim.expectedVersion)
-          return false;
-        session.activeJobId = '';
-        return true;
-      },
-    } as never,
-    coordinatorCommit: () => [],
+    providerRegistry: new ProviderRegistry(),
+    durableSpawner: admission,
+    progressStore: store,
+    conversationManager: sessions,
+    coordinatorCommit: (cb) => store.commit(cb),
+    executionFinisher: finisher,
     settlementRefusalRecorder: { record: () => true },
     terminalMaterializer: {
-      recordProviderTerminal: (_store, event) => {
+      recordProviderTerminal: async (owner, event, address) => {
         terminals.push(event);
+        releaseStarted.resolve();
+        await options.releaseGate;
+        return recordProviderTerminal(owner, event, address);
       },
     },
   });
   orchestrator.runAsync(
     provider,
-    'session-1',
-    'job-1',
+    jobId,
+    1,
     {
       action: 'exec',
-      sessionId: 'session-1',
+      jobId: jobId,
       prompt: 'run',
-      cwd: '/project',
+      cwd: fixtureCanonicalWorkDir('/project'),
       coralEnv: {},
       bypassPermissions: false,
-    } as ProviderRequest,
+    },
     accepted,
     'default',
   );
@@ -139,8 +184,9 @@ function fixture(options: { checkpointGate?: Promise<void>; releaseGate?: Promis
     admission,
     registry,
     stream,
-    session,
+    sessions,
     terminals,
+    finisher,
     checkpointStarted: checkpointStarted.promise,
     releaseStarted: releaseStarted.promise,
     completed: completed.promise,
@@ -197,8 +243,8 @@ describe('LaunchOrchestrator handoff quiesce', () => {
     await f.stream.emit(terminal);
     expect(f.terminals).toEqual([]);
     expect(f.hasArtifact()).toBe(false);
-    expect(f.session.activeJobId).toBe('job-1');
-    expect(f.admission.reservationFor('job-1')).not.toBeNull();
+    expect(f.sessions.readById(jobId)?.open).toBe(true);
+    expect(f.admission.reservationFor(jobId)).not.toBeNull();
     f.stream.end();
   });
 
@@ -215,21 +261,22 @@ describe('LaunchOrchestrator handoff quiesce', () => {
     await Promise.resolve();
     expect(quiesced).toBe(false);
     expect(f.terminals).toHaveLength(1);
-    expect(f.session.activeJobId).toBe('job-1');
+    expect(f.sessions.readById(jobId)?.open).toBe(true);
     release.resolve();
     await Promise.all([quiesce, emitted, f.completed]);
-    expect(f.session.activeJobId).toBe('');
+    await f.finisher.finish({ jobId: jobId, execution: 1 });
+    expect(f.sessions.readById(jobId)?.open).toBe(false);
   });
 
-  it('cannot clear a replacement claim with a stale terminal release', async () => {
+  it('cannot clear a replacement execution registration with stale terminal cleanup', async () => {
     const f = fixture();
     await f.stream.started;
-    f.session.activeJobId = 'replacement';
-    f.session.version++;
+    f.registry.register(jobId, 2);
+    const replacement = f.registry.getSignal(jobId, 2);
     await f.stream.emit(terminal);
     await f.completed;
-    expect(f.session.activeJobId).toBe('replacement');
-    expect(f.admission.reservationFor('job-1')).toBeNull();
-    expect(f.registry.has('job-1')).toBe(false);
+    expect(f.registry.getSignal(jobId, 2)).toBe(replacement);
+    expect(f.admission.reservationFor(jobId)).toBeNull();
+    expect(f.registry.has(jobId, 2)).toBe(true);
   });
 });

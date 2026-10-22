@@ -6,6 +6,7 @@ import { currentCoralStoreFormat } from '#src/store-format.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { composeReducers } from '#src/store/reducers.js';
+import { seedTestSessionProjection } from '#tests/helpers/session.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 
@@ -14,20 +15,11 @@ describe('jobs queries', () => {
     const db = newRawDatabase(':memory:');
     try {
       applyBundledStoreSchema(db, currentCoralStoreFormat());
-      db.prepare(
-        `INSERT INTO projection_jobs (
-           job_id, execution_owner, phase, diagnostics, session_id, provider,
-           project_root, work_dir, backend_namespace, job_kind, created_at, last_seq
-         ) VALUES (?, ?, 'running', '{"progressFaults":[]}', ?, 'codex',
-                   ?, ?, 'tests', 'provider', ?, 1)`,
-      ).run(
-        'job-other-project',
-        JSON.stringify({ kind: 'provider-session', id: 'session-other-project' }),
-        'session-other-project',
-        '/workspace/other-project',
-        '/workspace/other-project',
-        '2026-04-20T00:00:00.000Z',
-      );
+      seedTestSessionProjection(db, {
+        jobId: '10000000-0000-4000-8000-000000000001',
+        provider: 'codex',
+        projectRoot: '/workspace/other-project',
+      });
       const reducers = composeReducers(jobsRegistry);
       const readCtx = {
         schemas: reducers.schemas,
@@ -42,7 +34,7 @@ describe('jobs queries', () => {
 
       db.prepare('UPDATE projection_jobs SET diagnostics = ? WHERE job_id = ?').run(
         'invalid-json',
-        'job-other-project',
+        '10000000-0000-4000-8000-000000000001',
       );
 
       expect(() => listJobs(db, filters, readCtx)).toThrow();

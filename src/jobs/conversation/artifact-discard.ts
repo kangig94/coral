@@ -16,8 +16,13 @@ export function collectArtifactHandles(
     .filter((artifact) => artifact.execution === (opts.execution ?? entry.execution))
     .map((artifact) => artifact.handle);
   if (handles.length === 0) {
-    const latestArtifactExecution = entry.artifactHandles.reduce((latest, artifact) => Math.max(latest, artifact.execution), 0);
-    handles = entry.artifactHandles.filter(artifact => artifact.execution === latestArtifactExecution).map(artifact => artifact.handle);
+    const latestArtifactExecution = entry.artifactHandles.reduce(
+      (latest, artifact) => Math.max(latest, artifact.execution),
+      0,
+    );
+    handles = entry.artifactHandles
+      .filter((artifact) => artifact.execution === latestArtifactExecution)
+      .map((artifact) => artifact.handle);
   }
   if (handles.length === 0) handles = [...(entry.retentionDiscard.attempts.at(-1)?.handles ?? [])];
   if (

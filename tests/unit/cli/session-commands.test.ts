@@ -34,11 +34,11 @@ const client = vi.hoisted(() => ({
 }));
 const stdin = vi.hoisted(() => ({ text: '' }));
 const readStore = vi.hoisted(() => ({
-  jobs: { detail: vi.fn(() => ({ status: { jobKind: 'provider', sessionId: 'session-1' } })) },
-  sessions: {
-    readEntry: vi.fn<() => { binding: { provider: string }; agentName?: string }>(() => ({
+  jobs: {
+    detail: vi.fn(() => ({ status: { jobKind: 'provider' } })),
+    conversation: vi.fn<() => { binding: { provider: string }; agent?: string }>(() => ({
       binding: { provider: 'codex' },
-      agentName: 'coral:architect',
+      agent: 'coral:architect',
     })),
   },
 }));
@@ -345,9 +345,9 @@ it.each([
   async (provider, agent) => {
     const output = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
-    readStore.sessions.readEntry.mockReturnValueOnce({
+    readStore.jobs.conversation.mockReturnValueOnce({
       binding: { provider },
-      ...(agent === undefined ? {} : { agentName: agent }),
+      ...(agent === undefined ? {} : { agent }),
     });
     client.sendJob.mockResolvedValueOnce({ state: 'refused', code: 'turn_ended', reason: 'Ended.' });
     const inputTokens = ['a message', '-', '$HOME', "don't expand"];
@@ -427,7 +427,7 @@ it.each(['turn_not_started', 'control_unavailable', 'turn_ended'] as const)(
 it('preserves the refusal and result remedy when launch metadata cannot be read', async () => {
   const output = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
   client.sendJob.mockResolvedValueOnce({ state: 'refused', code: 'turn_ended', reason: 'Ended.' });
-  readStore.sessions.readEntry.mockImplementationOnce(() => {
+  readStore.jobs.conversation.mockImplementationOnce(() => {
     throw new Error('Session not found.');
   });
   await program().parseAsync(['jobs', 'send', 'job-1', '-i', 'message'], { from: 'user' });
@@ -513,23 +513,102 @@ it.each(
 });
 
 it('passes the complete execution selection from a continuation into streaming follow', async () => {
-  const selections = [{ jobId: 'a', epochKey: 'epoch', requestedSeq: 1000, awaitingArtifact: false }, { jobId: 'b', epochKey: 'epoch', requestedSeq: 2, deliveredEndSeq: 950, awaitingArtifact: false }];
-  await program().parseAsync(['node', 'coral-cli', 'jobs', 'wait', 'a', '--cursor', '279', '--execution-selection', JSON.stringify(selections)]);
-  expect(followJobs).toHaveBeenCalledWith(expect.objectContaining({ start: { kind: 'jobs', jobIds: ['a'], serializedCursor: '279', executionSelections: selections } }));
+  const selections = [
+    { jobId: 'a', epochKey: 'epoch', requestedSeq: 1000, awaitingArtifact: false },
+    { jobId: 'b', epochKey: 'epoch', requestedSeq: 2, deliveredEndSeq: 950, awaitingArtifact: false },
+  ];
+  await program().parseAsync([
+    'node',
+    'coral-cli',
+    'jobs',
+    'wait',
+    'a',
+    '--cursor',
+    '279',
+    '--execution-selection',
+    JSON.stringify(selections),
+  ]);
+  expect(followJobs).toHaveBeenCalledWith(
+    expect.objectContaining({
+      start: { kind: 'jobs', jobIds: ['a'], serializedCursor: '279', executionSelections: selections },
+    }),
+  );
 });
 
 it('passes execution selection through snapshot requests and rendered continuations', async () => {
   const selections = [{ jobId: 'a', epochKey: 'epoch', requestedSeq: 1000, awaitingArtifact: false }];
   client.snapshotJobsWait.mockResolvedValueOnce({
     jobs: [{ jobId: 'a', disposition: 'admitted', phase: 'running', progress: [] }],
-    notices: [], cursor: '1000', remainingJobIds: ['a'], exitCode: 75, executionSelections: selections,
+    notices: [],
+    cursor: '1000',
+    remainingJobIds: ['a'],
+    exitCode: 75,
+    executionSelections: selections,
   });
   let output = '';
   vi.spyOn(process.stdout, 'write').mockImplementation(((text: unknown, callback?: () => void) => {
-    output += String(text); callback?.(); return true;
+    output += String(text);
+    callback?.();
+    return true;
   }) as typeof process.stdout.write);
-  await program().parseAsync(['node', 'coral-cli', 'jobs', 'wait', 'a', '--snapshot', '--cursor', '279', '--execution-selection', JSON.stringify(selections)]);
-  expect(client.snapshotJobsWait).toHaveBeenCalledWith(expect.objectContaining({ cursor: '279', executionSelections: selections }));
+  await program().parseAsync([
+    'node',
+    'coral-cli',
+    'jobs',
+    'wait',
+    'a',
+    '--snapshot',
+    '--cursor',
+    '279',
+    '--execution-selection',
+    JSON.stringify(selections),
+  ]);
+  expect(client.snapshotJobsWait).toHaveBeenCalledWith(
+    expect.objectContaining({ cursor: '279', executionSelections: selections }),
+  );
   expect(output).toContain(`--execution-selection '${JSON.stringify(selections)}'`);
   expect(output).toContain('--snapshot --cursor 1000');
+});
+
+it.each([[], ['--snapshot'], ['--unbounded']].map((args) => [args]))(
+  'rejects malformed execution selections with a runnable recovery %j',
+  async (mode) => {
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    await program().parseAsync([
+      'node',
+      'coral-cli',
+      'jobs',
+      'wait',
+      'a',
+      'b',
+      ...mode,
+      '--execution-selection',
+      '{bad',
+    ]);
+    expect(process.exitCode).toBe(2);
+    const output = stderr.mock.calls.map(([text]) => String(text)).join('');
+    expect(output).toContain('Rerun the printed continuation exactly as printed');
+    expect(output).toContain('coral-cli jobs wait a b');
+    expect(followJobs).not.toHaveBeenCalled();
+    expect(client.snapshotJobsWait).not.toHaveBeenCalled();
+  },
+);
+
+it('renders a snapshot admission refusal with one snapshot-mode fresh-wait remedy', async () => {
+  client.snapshotJobsWait.mockRejectedValueOnce(
+    new Error('wire', {
+      cause: {
+        code: 'wait_selection_invalid',
+        message: 'Malformed selection.',
+        remedy: { kind: 'fresh-wait', jobIds: ['a'] },
+      },
+    }),
+  );
+  const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+  await program().parseAsync(['node', 'coral-cli', 'jobs', 'wait', 'a', '--snapshot']);
+  const output = stderr.mock.calls.map(([text]) => String(text)).join('');
+  expect(output.match(/coral-cli jobs wait/g)).toHaveLength(1);
+  expect(output).toContain('coral-cli jobs wait a --snapshot');
+  expect(output).toContain('Already-delivered results may print again.');
+  expect(process.exitCode).toBe(1);
 });

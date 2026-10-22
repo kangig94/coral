@@ -1,3 +1,4 @@
+import { readExecutionRequestAt } from '#src/jobs/execution-journal.js';
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -28,7 +29,7 @@ import type { Runtime } from '#src/runtime/ports.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { JobStore } from '#src/jobs/store.js';
-import { commitJobInputs } from '#tests/helpers/job-commits.js';
+import { commitJobTerminal, commitJobInputs } from '#tests/helpers/job-commits.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { composeReducers } from '#src/store/reducers.js';
@@ -40,7 +41,8 @@ import { testProjectPrincipal } from '#tests/helpers/principal.js';
 import { TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
 import { ProviderRegistry } from '#src/providers/registry.js';
 import { registerBuiltInProviders } from '#src/providers/bootstrap.js';
-import { seedTestSessionProjection } from '#tests/helpers/session.js';
+import { testConversationFacet } from '#tests/helpers/session.js';
+import { openedJob } from '#tests/helpers/job-executions.js';
 import type { JobLaunchRequest } from '#src/jobs/launch.js';
 import { canonicalizeWorkDir, type CanonicalWorkDir } from '#src/runtime/canonical-work-dir.js';
 
@@ -175,7 +177,7 @@ export function createProgressStoreDiscussJournal(
 
 export function createDiscussContextOptions(
   runtime: Pick<Runtime, 'ids' | 'env' | 'time' | 'storage' | 'paths'>,
-  progressStore?: Pick<JobStore, 'readStatus' | 'listJobProjections' | 'loadJobProjectionDetail'>,
+  progressStore?: JobStore,
 ): DiscussContextConstructionOptions {
   const providerRegistry = new ProviderRegistry();
   registerBuiltInProviders(providerRegistry);
@@ -188,6 +190,11 @@ export function createDiscussContextOptions(
       projectData: (projectRoot: string) => runtime.paths.projectData(projectRoot),
     },
     jobStatusReader: {
+      requestedExecution: (jobId, requestedSeq) =>
+        progressStore === undefined
+          ? null
+          : (readExecutionRequestAt(progressStore.getDb(), jobId, requestedSeq, progressStore)?.request.execution ??
+            null),
       read: (jobId) => progressStore?.readStatus(jobId) ?? null,
       readExit: () => null,
       listOwned: (discussionId) =>
@@ -243,30 +250,32 @@ export function createDiscussHarness(
   });
   const persistMockLaunch = (
     provider: string,
-    request: Record<string, unknown>,
+    request: JobLaunchRequest,
     decision: Awaited<ReturnType<ExecutionService['start']>>,
   ) => {
     if (decision.status !== 'running' && decision.status !== 'queued') return;
-    if (progressStore.readStatus(decision.jobId) !== null) return;
-    seedTestSessionProjection(progressStore.getDb(), {
-      sessionId: decision.sessionId,
-      provider,
-      projectRoot,
-      backendNamespace: progressStore.getNamespace(),
-      activeJobId: decision.jobId,
-    });
+    const previous = progressStore.readStatus(decision.jobId);
+    const execution = (previous?.execution ?? 0) + 1;
+    if (previous === null) {
+      const opened = openedJob({
+        owner: request.owner ?? { kind: 'provider-session', id: decision.jobId },
+        projectRoot,
+        conversation: testConversationFacet(provider, projectRoot),
+      });
+      commitJobInputs(progressStore, [{ ...opened, stream: { kind: 'job', id: decision.jobId } }]);
+    }
     progressStore.appendLaunchRequested(decision.jobId, {
       jobId: decision.jobId,
-      owner: request.owner as NonNullable<JobLaunchRequest['owner']>,
-      discussionRun: request.discussionRun as NonNullable<JobLaunchRequest['discussionRun']>,
-      sessionId: decision.sessionId,
+      owner: request.owner ?? { kind: 'provider-session', id: decision.jobId },
+      discussionRun: request.discussionRun,
+      execution,
       provider,
       projectRoot,
       backendNamespace: progressStore.getNamespace(),
       jobKind: 'provider',
       pool: 'discuss',
       enqueueSequence: 0,
-      providerAction: 'sessionId' in request ? 'resume' : 'exec',
+      providerAction: execution === 1 ? 'exec' : 'resume',
       request: {
         prompt: typeof request.prompt === 'string' ? request.prompt : '',
         cwd: projectRoot,
@@ -275,19 +284,31 @@ export function createDiscussHarness(
       },
       createdAt: DEFAULT_TS,
     });
+    return progressStore.loadJobWaitDetail(decision.jobId).requestedSeq;
   };
   const contextService: DiscussService = {
     start: async (provider, request, invocation) => {
       const decision = await service.start(provider, request, invocation);
-      persistMockLaunch(provider, request as unknown as Record<string, unknown>, decision);
-      return decision;
+      const requestedSeq = persistMockLaunch(provider, request, decision);
+      return { ...decision, requestedSeq } as typeof decision;
     },
     resume: async (provider, request, invocation) => {
       const decision = await service.resume(provider, request, invocation);
-      persistMockLaunch(provider, request as unknown as Record<string, unknown>, decision);
-      return decision;
+      const requestedSeq = persistMockLaunch(provider, request, decision);
+      return { ...decision, requestedSeq } as typeof decision;
     },
-    waitStreamOnce: (...args) => service.waitStreamOnce(...args),
+    waitStreamOnce: async (...args) => {
+      const result = await service.waitStreamOnce(...args);
+      const status = progressStore.readStatus(args[0]);
+      if (status?.execution !== null && status?.execution !== undefined && status.result === undefined) {
+        commitJobTerminal(progressStore, args[0], status.execution, {
+          content: result.content,
+          durationMs: 1,
+          outcome: { kind: 'completed' },
+        });
+      }
+      return result;
+    },
   };
   const registry = createDiscussContextRegistry();
   const context = getOrCreateDiscussContext(
@@ -379,38 +400,23 @@ function seedTailJobLinks(
   const startedAgents = new Set(
     events.filter((event) => event.kind === 'agent.job.started').map((event) => event.payload.agent),
   );
-  const rejectSeededJob = (jobId: string, sessionId: string, provider: string, ts: string) => {
-    commitJobInputs(harness.progressStore, [
-      {
-        type: 'job.launch.rejected',
-        stream: { kind: 'job', id: jobId },
-        namespace: harness.progressStore.getNamespace(),
-        project: harness.projectRoot,
-        refs: { jobId, sessionId },
-        body: { reason: 'busy', message: 'synthetic unavailable test job', provider, globalActive: 1, globalLimit: 1 },
-        tsOverride: ts,
-      },
-    ]);
+  const finishUnavailableJob = (jobId: string, execution: number) => {
+    commitJobTerminal(harness.progressStore, jobId, execution, {
+      content: 'synthetic unavailable test job',
+      durationMs: 0,
+      outcome: { kind: 'job_fault', fault: { kind: 'ghost_launch' } },
+    });
   };
-  const sessionsByAgent = new Map<string, string>();
-  for (const [agent, run] of Object.entries(snapshot.runtime.agentRuns)) {
-    if (run.executionSessionId !== undefined) sessionsByAgent.set(agent, run.executionSessionId);
-  }
-  for (const event of events) {
-    if (event.kind === 'agent.run.bound') sessionsByAgent.set(event.payload.agent, event.payload.executionSessionId);
-  }
   for (const event of events) {
     if (event.kind !== 'agent.job.started' || harness.progressStore.readStatus(event.payload.jobId) !== null) continue;
     const run = snapshot.runtime.agentRuns[event.payload.agent];
-    const sessionId = sessionsByAgent.get(event.payload.agent) ?? `${event.payload.jobId}-session`;
     const provider = run?.provider ?? 'codex';
-    seedTestSessionProjection(harness.progressStore.getDb(), {
-      sessionId,
-      provider,
+    const opened = openedJob({
+      owner: { kind: 'discussion', id: snapshot.sessionId },
       projectRoot: harness.projectRoot,
-      backendNamespace: harness.progressStore.getNamespace(),
-      activeJobId: event.payload.jobId,
+      conversation: testConversationFacet(provider, harness.projectRoot),
     });
+    commitJobInputs(harness.progressStore, [{ ...opened, stream: { kind: 'job', id: event.payload.jobId } }]);
     harness.progressStore.appendLaunchRequested(event.payload.jobId, {
       jobId: event.payload.jobId,
       owner: { kind: 'discussion', id: snapshot.sessionId },
@@ -419,39 +425,44 @@ function seedTailJobLinks(
         purpose: event.payload.purpose,
         attempt: event.payload.attempt,
       },
-      sessionId,
+      execution: event.payload.execution,
       provider,
       projectRoot: harness.projectRoot,
       backendNamespace: harness.progressStore.getNamespace(),
       jobKind: 'provider',
       pool: 'discuss',
       enqueueSequence: 0,
-      providerAction: run?.executionSessionId === undefined ? 'exec' : 'resume',
+      providerAction: event.payload.execution === 1 ? 'exec' : 'resume',
       request: { prompt: '', cwd: harness.projectRoot, bypassPermissions: true, coralEnv: {} },
       createdAt: event.ts,
     });
     if (!finishedJobIds.has(event.payload.jobId)) {
-      rejectSeededJob(event.payload.jobId, sessionId, provider, event.ts);
+      finishUnavailableJob(event.payload.jobId, event.payload.execution);
+    } else {
+      commitJobTerminal(harness.progressStore, event.payload.jobId, event.payload.execution, {
+        content: 'completed prior turn',
+        durationMs: 1,
+        outcome: { kind: 'completed' },
+      });
     }
   }
   for (const event of events) {
     if (event.kind !== 'agent.run.bound' || startedAgents.has(event.payload.agent)) continue;
-    const jobId = `${snapshot.sessionId}-${event.payload.agent}-prior-binding`;
+    const jobId = event.payload.jobId;
     if (harness.progressStore.readStatus(jobId) !== null) continue;
     const run = snapshot.runtime.agentRuns[event.payload.agent];
     const provider = run?.provider ?? 'codex';
-    seedTestSessionProjection(harness.progressStore.getDb(), {
-      sessionId: event.payload.executionSessionId,
-      provider,
+    const opened = openedJob({
+      owner: { kind: 'discussion', id: snapshot.sessionId },
       projectRoot: harness.projectRoot,
-      backendNamespace: harness.progressStore.getNamespace(),
-      activeJobId: jobId,
+      conversation: testConversationFacet(provider, harness.projectRoot),
     });
+    commitJobInputs(harness.progressStore, [{ ...opened, stream: { kind: 'job', id: jobId } }]);
     harness.progressStore.appendLaunchRequested(jobId, {
       jobId,
       owner: { kind: 'discussion', id: snapshot.sessionId },
       discussionRun: { agent: event.payload.agent, purpose: 'bid', attempt: 1 },
-      sessionId: event.payload.executionSessionId,
+      execution: 1,
       provider,
       projectRoot: harness.projectRoot,
       backendNamespace: harness.progressStore.getNamespace(),
@@ -462,7 +473,7 @@ function seedTailJobLinks(
       request: { prompt: '', cwd: harness.projectRoot, bypassPermissions: true, coralEnv: {} },
       createdAt: event.ts,
     });
-    rejectSeededJob(jobId, event.payload.executionSessionId, provider, event.ts);
+    finishUnavailableJob(jobId, 1);
   }
 }
 

@@ -1,3 +1,4 @@
+import type { ExecutionRetryStatus } from '../jobs/records.js';
 import type { ExecutionWaitDetail } from '../jobs/wait/execution-detail.js';
 import type { ExecutionFinisher } from '../jobs/finishing.js';
 import type { JobAttention } from './services/job-attention.js';
@@ -106,7 +107,8 @@ export type ExecutionServiceDeps = {
   coordinatorCommit: CommitEventsFn;
   jobAttention?: JobAttention;
   loadJobProjectionDetail: (jobId: string) => JobProjectionDetail;
-  loadJobWaitDetail: (jobId: string, requestedSeq?: number) => ExecutionWaitDetail;
+  loadJobWaitDetail: (jobId: string, requestedSeq?: number, jobIds?: readonly string[]) => ExecutionWaitDetail;
+  readExecutionFinishingStatus?: (address: { jobId: string; execution: number }) => ExecutionRetryStatus | null;
   readJobLastSeq: (jobId: string) => number | null;
   visitProgress: ProgressVisit;
 

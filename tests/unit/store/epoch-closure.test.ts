@@ -133,6 +133,11 @@ it('excludes an active full JSON key from lineage closure candidates', async () 
   const old = resolvedStoreEpoch(runtime.paths.coral.store.dbDir, '1');
   const lineage = readOrCreateEpochKey(runtime, old);
   const full = encodeResolvedStoreEpoch(runtime, old);
-  const index = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
+  const index = new JobLocationIndex(
+    runtime,
+    runtime.paths.coral.generation.dataRoot,
+    undefined,
+    currentCoralStoreFormat().fingerprint,
+  );
   expect(await settleSupersededEpochClosures(runtime, index, undefined, lineage, full)).toEqual([]);
 });

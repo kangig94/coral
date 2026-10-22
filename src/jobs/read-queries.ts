@@ -1,3 +1,5 @@
+import { readExecutionRetryStatus } from './finishing.js';
+import { JobEvidenceDecodeError } from './source-read.js';
 import type { RecoveryObservation } from '../recovery/phase-observation.js';
 import type { ProgressSource, ProgressVisitResult, WaitProgressRow } from './wait/contract.js';
 import type { Database } from '../store/db.js';
@@ -232,7 +234,7 @@ function executionEvents(
   const selected = new Map<string, EventsRow>();
   for (const row of rows) {
     if (row.stream_kind !== 'job' || row.stream_id !== projection.job_id) {
-      throw new TypeError(`Job event '${row.seq}' names another stream.`);
+      throw new JobEvidenceDecodeError(`Job event '${row.seq}' names another stream.`);
     }
     rowToCoralEvent(row, null);
     if (row.seq > projection.last_seq) continue;
@@ -261,7 +263,6 @@ function decodeLaunch(
   const common = {
     jobId,
     owner: job.owner,
-    sessionId: null,
     projectRoot: job.projectRoot,
     backendNamespace: request.backendNamespace,
     bundleHash: request.bundleHash,
@@ -271,10 +272,11 @@ function decodeLaunch(
     createdAt: request.createdAt,
   };
   if (job.jobKind === 'kb') {
-    if (typeof request.input === 'string') throw new TypeError('KB execution requires a KB input.');
+    if (typeof request.input === 'string') throw new JobEvidenceDecodeError('KB execution requires a KB input.');
     return { ...common, jobKind: 'kb', provider: null, ...request.input };
   }
-  if (typeof request.input !== 'string') throw new TypeError('Provider and workflow executions require text input.');
+  if (typeof request.input !== 'string')
+    throw new JobEvidenceDecodeError('Provider and workflow executions require text input.');
   if (job.jobKind === 'workflow') {
     return {
       ...common,
@@ -399,10 +401,10 @@ function decodeTerminalRecord(
     end.causeRef.stream.id !== jobId ||
     end.causeRef.seq !== accepted.seq
   ) {
-    throw new TypeError(`Execution end '${row.seq}' does not cite its accepted outcome.`);
+    throw new JobEvidenceDecodeError(`Execution end '${row.seq}' does not cite its accepted outcome.`);
   }
   const body = decodeBody(accepted, jobExecutionOutcomeAcceptedBodySchema, ctx);
-  if (body.execution !== end.execution) throw new TypeError('Execution end cites another execution.');
+  if (body.execution !== end.execution) throw new JobEvidenceDecodeError('Execution end cites another execution.');
   return { record: normalizeJobTerminal(body.terminal), diagnostics: body.diagnostics ?? {} };
 }
 
@@ -508,7 +510,6 @@ export function hydrateJobProjectionDetailFromEvents(
   return { ...detail, launch: decodeLaunch(projection.job_id, events.get('job.opened') ?? null, requested, ctx) };
 }
 
-/** Retained current epochs use the same codecs and execution hydrator as live reads. */
 export function loadJobExecutionDetails(
   db: Database,
   jobId: string,
@@ -526,11 +527,11 @@ export function loadJobExecutionDetails(
       ? projection.execution !== null
       : decodeBody(latestRequest, jobExecutionRequestedBodySchema, ctx).execution !== projection.execution
   )
-    throw new TypeError('Execution requests disagree with the latest projection.');
+    throw new JobEvidenceDecodeError('Execution requests disagree with the latest projection.');
   const rendered = readJobEvents(db, jobId, ctx);
   return requests.map((request, index) => {
     const requested = decodeBody(request, jobExecutionRequestedBodySchema, ctx);
-    if (requested.execution !== index + 1) throw new TypeError('Execution request history has a gap.');
+    if (requested.execution !== index + 1) throw new JobEvidenceDecodeError('Execution request history has a gap.');
     const boundary = requests[index + 1]?.seq ?? Infinity;
     const executionRows = rows.filter((row) => row.seq >= request.seq && row.seq < boundary);
     let phase: JobPhase = 'launching';
@@ -540,7 +541,7 @@ export function loadJobExecutionDetails(
       rowToCoralEvent(row, null);
       const body = decodeStoredBody(row, ctx) as { execution?: unknown };
       if (executionOrdinalSchema.parse(body.execution) !== requested.execution)
-        throw new TypeError('Execution evidence crosses its request boundary.');
+        throw new JobEvidenceDecodeError('Execution evidence crosses its request boundary.');
       if (row.type === 'job.execution.queued') phase = 'queued';
       if (row.type === 'job.execution.admitted') phase = 'launching';
       if (row.type === 'job.execution.started') phase = 'running';
@@ -560,10 +561,20 @@ export function loadJobExecutionDetails(
         const end = decodeBody(row, jobExecutionEndedBodySchema, ctx);
         const accepted = executionRows.find((candidate) => candidate.seq === end.causeRef.seq) ?? null;
         const terminal = decodeTerminalRecord(row, accepted, jobId, ctx);
-        if (terminal === null) throw new TypeError('Execution end has no accepted outcome.');
+        if (terminal === null) throw new JobEvidenceDecodeError('Execution end has no accepted outcome.');
         phase = phaseForOutcome(terminal.record.outcome);
         finishing = false;
       }
+    }
+    if (requested.execution === projection.execution) {
+      const retained = jobDiagnosticsSchema.parse(JSON.parse(projection.diagnostics)).progressFaults;
+      const unmatched = [...retained];
+      for (const fault of diagnostics.progressFaults) {
+        const index = unmatched.findIndex((known) => JSON.stringify(known) === JSON.stringify(fault));
+        if (index >= 0) unmatched.splice(index, 1);
+        else retained.push(fault);
+      }
+      diagnostics.progressFaults = retained;
     }
     const selected = {
       ...projection,
@@ -581,22 +592,29 @@ export function loadJobExecutionDetails(
       ctx,
       projection.job_kind === 'workflow' ? aggregateWorkflowUsage(db, jobId) : undefined,
     );
-    if (hydrated.status === null) throw new TypeError('Execution detail has no status.');
+    if (hydrated.status === null) throw new JobEvidenceDecodeError('Execution detail has no status.');
     if (index < requests.length - 1 && hydrated.exit === null)
-      throw new TypeError('A continuation has no ended predecessor.');
+      throw new JobEvidenceDecodeError('A continuation has no ended predecessor.');
     return {
       execution: requested.execution,
       requestedSeq: request.seq,
       runtime: hydrated.runtime,
       detail: {
         requestedSeq: request.seq,
-        status: hydrated.status,
+        status: withFinishingStatus(db, { status: hydrated.status }).status,
         readiness: deriveLaunchReadiness(hydrated),
         events: rendered.filter((event) => event.seq >= request.seq && event.seq < boundary),
         exit: hydrated.exit,
       },
     };
   });
+}
+
+function withFinishingStatus<T extends { status: JobStatus | null }>(db: Database, detail: T): T {
+  const status = detail.status;
+  if (status === null || status.execution === null) return detail;
+  const finishingStatus = readExecutionRetryStatus(db, { jobId: status.jobId, execution: status.execution });
+  return finishingStatus === null ? detail : { ...detail, status: { ...status, finishingStatus } };
 }
 
 export function loadJobProjectionDetail(
@@ -609,11 +627,14 @@ export function loadJobProjectionDetail(
   if (projection === null) return emptyJobProjectionDetail();
   const rows = readExecutionDetailEvents(db, [jobId]);
   observation?.record('job-details', { reads: rows.length });
-  return hydrateJobProjectionDetailFromEvents(
-    projection,
-    rows,
-    ctx,
-    isWorkflowJobKind(projection.job_kind) ? aggregateWorkflowUsage(db, jobId, observation) : undefined,
+  return withFinishingStatus(
+    db,
+    hydrateJobProjectionDetailFromEvents(
+      projection,
+      rows,
+      ctx,
+      isWorkflowJobKind(projection.job_kind) ? aggregateWorkflowUsage(db, jobId, observation) : undefined,
+    ),
   );
 }
 
@@ -636,14 +657,17 @@ export function loadJobWaitDetail(db: Database, jobId: string, ctx: StoreReadCon
       "SELECT ts FROM events WHERE stream_kind = 'job' AND stream_id = ? AND type = 'job.execution.requested' AND json_extract(CAST(body AS TEXT), '$.execution') = ? ORDER BY seq DESC LIMIT 1",
     ).get(jobId, projection.execution)?.ts ?? null;
   const events = executionEvents(projection, readExecutionDetailEvents(db, [jobId], true), ctx);
-  return hydrateJobWaitDetail(
-    projection,
-    events,
-    requestedAt,
-    ctx,
-    events.has('job.execution.ended') && isWorkflowJobKind(projection.job_kind)
-      ? aggregateWorkflowUsage(db, jobId)
-      : undefined,
+  return withFinishingStatus(
+    db,
+    hydrateJobWaitDetail(
+      projection,
+      events,
+      requestedAt,
+      ctx,
+      events.has('job.execution.ended') && isWorkflowJobKind(projection.job_kind)
+        ? aggregateWorkflowUsage(db, jobId)
+        : undefined,
+    ),
   );
 }
 
@@ -667,11 +691,14 @@ export function loadJobProjectionDetails(
         jobId,
         projection === undefined
           ? emptyJobProjectionDetail()
-          : hydrateJobProjectionDetailFromEvents(
-              projection,
-              rowsByJob.get(jobId) ?? [],
-              ctx,
-              isWorkflowJobKind(projection.job_kind) ? aggregateWorkflowUsage(db, jobId) : undefined,
+          : withFinishingStatus(
+              db,
+              hydrateJobProjectionDetailFromEvents(
+                projection,
+                rowsByJob.get(jobId) ?? [],
+                ctx,
+                isWorkflowJobKind(projection.job_kind) ? aggregateWorkflowUsage(db, jobId) : undefined,
+              ),
             ),
       ];
     }),
@@ -704,12 +731,14 @@ export function listJobProjections(
   const requestedAt = new Map(requestedTimes.map((row) => [row.stream_id, row.ts]));
   return projections.map((projection) => ({
     jobId: projection.job_id,
-    status: projectionRowToStatus(
-      projection,
-      executionEvents(projection, rowsByJob.get(projection.job_id) ?? [], ctx),
-      requestedAt.get(projection.job_id) ?? null,
-      ctx,
-    ),
+    ...withFinishingStatus(db, {
+      status: projectionRowToStatus(
+        projection,
+        executionEvents(projection, rowsByJob.get(projection.job_id) ?? [], ctx),
+        requestedAt.get(projection.job_id) ?? null,
+        ctx,
+      ),
+    }),
   }));
 }
 
@@ -763,7 +792,7 @@ export function readJobEvents(
 
       events.push({
         jobId,
-        sessionId: null,
+        execution: body.execution,
         seq: row.seq,
         type: 'progress',
         ts: row.ts,
@@ -790,7 +819,7 @@ export function readJobEvents(
 
     events.push({
       jobId,
-      sessionId: null,
+      execution: end.execution,
       seq: row.seq,
       type: 'terminal',
       ts: row.ts,

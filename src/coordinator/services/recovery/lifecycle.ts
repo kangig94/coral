@@ -75,7 +75,7 @@ function trackRecoveryFinalization(
   return promise;
 }
 
-function observeDurableRecoveryContainmentFor(
+export function observeDurableRecoveryContainmentFor(
   progressStore: JobStore,
   runtime: Runtime,
   jobId: string,

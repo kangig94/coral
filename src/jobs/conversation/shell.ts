@@ -11,15 +11,25 @@ import type {
   ConversationWriteResult,
 } from './contracts.js';
 import type { ProviderValidatedContinuitySnapshot } from './continuity.js';
-import { listProjectionConversationEntries, readProjectionJobConversation } from './projections.js';
+import { listProjectionConversationEntries, readProjectionJobConversation } from './read-queries.js';
 
 export class ConversationManager {
+  private readonly workingDirectory: string;
+  private readonly runtime: Pick<Runtime, 'time' | 'ids'>;
+  private readonly commitEvents: CommitEventsFn;
+  private readonly db: Database;
+
   constructor(
-    private readonly workingDirectory: string,
-    private readonly runtime: Pick<Runtime, 'time' | 'ids'>,
-    private readonly commitEvents: CommitEventsFn,
-    private readonly db: Database,
-  ) {}
+    workingDirectory: string,
+    runtime: Pick<Runtime, 'time' | 'ids'>,
+    commitEvents: CommitEventsFn,
+    db: Database,
+  ) {
+    this.workingDirectory = workingDirectory;
+    this.runtime = runtime;
+    this.commitEvents = commitEvents;
+    this.db = db;
+  }
 
   prepare(options: ConversationAllocateOptions): JobConversation {
     const now = nowIsoString(this.runtime.time);
@@ -50,7 +60,7 @@ export class ConversationManager {
     };
   }
 
-  readById(jobId: string, _options?: { forceFresh?: boolean }): JobConversation | null {
+  readById(jobId: string): JobConversation | null {
     const entry = readProjectionJobConversation(this.db, jobId);
     return entry?.projectRoot === this.workingDirectory ? entry : null;
   }
@@ -64,43 +74,63 @@ export class ConversationManager {
     return listProjectionConversationEntries(this.db, provider, hashToken(this.workingDirectory, 12));
   }
 
-  async checkpointJobContinuityAtomic(jobId: string, options: {
-    execution: number;
-    snapshot: ProviderValidatedContinuitySnapshot;
-  }): Promise<ConversationWriteResult> {
-    let result: ConversationWriteResult = { ok: false };
-    this.commitEvents(commit => {
-      const entry = this.readById(jobId);
-      if (entry === null || !entry.open || entry.finishing || entry.execution !== options.execution) return undefined;
-      commit.append({
-        type: 'job.continuity.checkpointed',
-        stream: { kind: 'job', id: jobId },
-        refs: { jobId },
-        body: { execution: options.execution, snapshot: options.snapshot },
-      });
-      result = { ok: true, execution: options.execution };
-      return undefined;
-    });
-    return result;
-  }
-
-  async recordArtifactHandleAtomic(jobId: string, options: ConversationArtifactHandleRecordOptions): Promise<ConversationWriteResult> {
-    let result: ConversationWriteResult = { ok: false };
-    this.commitEvents(commit => {
-      const entry = this.readById(jobId);
-      if (entry === null || !entry.open || entry.finishing || entry.execution !== options.execution) return undefined;
-      const identityKey = providerArtifactIdentityKey(entry.provider, options.identity);
-      if (!entry.artifactHandles.some(handle => handle.execution === options.execution && handle.identityKey === identityKey)) {
+  checkpointJobContinuityAtomic(
+    jobId: string,
+    options: {
+      execution: number;
+      snapshot: ProviderValidatedContinuitySnapshot;
+    },
+  ): Promise<ConversationWriteResult> {
+    return Promise.resolve().then(() => {
+      let result: ConversationWriteResult = { ok: false };
+      this.commitEvents((commit) => {
+        const entry = this.readById(jobId);
+        if (entry === null || !entry.open || entry.finishing || entry.execution !== options.execution) return undefined;
         commit.append({
-          type: 'job.artifact.recorded',
+          type: 'job.continuity.checkpointed',
           stream: { kind: 'job', id: jobId },
           refs: { jobId },
-          body: { execution: options.execution, provider: entry.provider, handle: options.handle, identity: options.identity, identityKey },
+          body: { execution: options.execution, snapshot: options.snapshot },
         });
-      }
-      result = { ok: true, execution: options.execution };
-      return undefined;
+        result = { ok: true, execution: options.execution };
+        return undefined;
+      });
+      return result;
     });
-    return result;
+  }
+
+  recordArtifactHandleAtomic(
+    jobId: string,
+    options: ConversationArtifactHandleRecordOptions,
+  ): Promise<ConversationWriteResult> {
+    return Promise.resolve().then(() => {
+      let result: ConversationWriteResult = { ok: false };
+      this.commitEvents((commit) => {
+        const entry = this.readById(jobId);
+        if (entry === null || !entry.open || entry.finishing || entry.execution !== options.execution) return undefined;
+        const identityKey = providerArtifactIdentityKey(entry.provider, options.identity);
+        if (
+          !entry.artifactHandles.some(
+            (handle) => handle.execution === options.execution && handle.identityKey === identityKey,
+          )
+        ) {
+          commit.append({
+            type: 'job.artifact.recorded',
+            stream: { kind: 'job', id: jobId },
+            refs: { jobId },
+            body: {
+              execution: options.execution,
+              provider: entry.provider,
+              handle: options.handle,
+              identity: options.identity,
+              identityKey,
+            },
+          });
+        }
+        result = { ok: true, execution: options.execution };
+        return undefined;
+      });
+      return result;
+    });
   }
 }

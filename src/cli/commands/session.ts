@@ -2,7 +2,12 @@ import { waitExecutionSelectionsSchema, type WaitExecutionSelection } from '../.
 import { decodeWaitCursor, WAIT_CURSOR_REPLAY_NOTICE } from '../../jobs/wait/cursor.js';
 import type { WaitCursor } from '../../jobs/wait/contract.js';
 import { parseWaitSnapshot } from '../../jobs/wait/snapshot.js';
-import { formatWaitSnapshot, formatWaitContinuation, waitCommandPrefix } from '../format/wait.js';
+import {
+  formatWaitSnapshot,
+  formatWaitContinuation,
+  waitCommandPrefix,
+  waitContinuationCommand,
+} from '../format/wait.js';
 import { mapWaitSubscriptionError, SOFT_CURSOR_REFUSALS } from '../wait-stream-error.js';
 import { MAX_WAIT_JOB_IDS } from '../../jobs/wait/stream-event.js';
 import { BackendToolHttpError } from '../../transport/http/errors.js';
@@ -432,7 +437,7 @@ async function runWaitSnapshot(
   lines: number | undefined,
 ): Promise<void> {
   const invocation = getWaitInvocation();
-  const executionSelections = parseExecutionSelections(opts.executionSelection);
+  const executionSelections = parseExecutionSelections(opts.executionSelection, jobIds);
   let cursor: WaitCursor | undefined;
   if (opts.cursor !== undefined) {
     if (decodeWaitCursor(opts.cursor).kind === 'decoded') cursor = opts.cursor;
@@ -454,7 +459,7 @@ async function runWaitSnapshot(
   try {
     response = await read();
   } catch (error) {
-    const mapped = mapWaitSubscriptionError(error);
+    const mapped = mapWaitSubscriptionError(error, 'snapshot');
     if (mapped instanceof WaitBuildMismatchError) throw mapped;
     if (
       !(mapped instanceof BackendToolHttpError) ||
@@ -476,7 +481,8 @@ async function runWaitSnapshot(
     );
   }
   const output = formatWaitSnapshot(snapshot) + '\n';
-  const continuation = formatWaitContinuation(snapshot.remainingJobIds, snapshot.cursor, 'snapshot', snapshot.executionSelections) + '\n';
+  const continuation =
+    formatWaitContinuation(snapshot.remainingJobIds, snapshot.cursor, 'snapshot', snapshot.executionSelections) + '\n';
   const write = () =>
     new Promise<void>((resolve, reject) =>
       process.stdout.write(output, (error) => (error ? reject(error) : resolve())),
@@ -502,7 +508,12 @@ async function runStreamingWaitJobs(
   opts: WaitJobsOptions,
 ): Promise<void> {
   process.exitCode = await followJobs({
-    start: { kind: 'jobs', jobIds, executionSelections: parseExecutionSelections(opts.executionSelection), ...(opts.cursor === undefined ? {} : { serializedCursor: opts.cursor }) },
+    start: {
+      kind: 'jobs',
+      jobIds,
+      executionSelections: parseExecutionSelections(opts.executionSelection, jobIds),
+      ...(opts.cursor === undefined ? {} : { serializedCursor: opts.cursor }),
+    },
     reconnectPolicy: opts.unbounded === true ? 'unbounded' : 'bounded',
     invocation: getWaitInvocation(),
     projectRoot,
@@ -515,18 +526,30 @@ async function runStreamingWaitJobs(
     connect: async ({ jobIds: activeJobIds, cursor, executionSelections, timeoutSeconds, signal, drainProgress }) => ({
       kind: 'subscription',
       subscription: await client.subscribeJobsWait(
-        { jobIds: activeJobIds, timeoutSeconds, projectRoot, drainProgress, executionSelections, ...(cursor ? { cursor } : {}) },
+        {
+          jobIds: activeJobIds,
+          timeoutSeconds,
+          projectRoot,
+          drainProgress,
+          executionSelections,
+          ...(cursor ? { cursor } : {}),
+        },
         { signal },
       ),
     }),
   });
 }
 
-function parseExecutionSelections(value: string | undefined): WaitExecutionSelection[] | undefined {
+function parseExecutionSelections(
+  value: string | undefined,
+  jobIds: readonly string[],
+): WaitExecutionSelection[] | undefined {
   if (value === undefined) return undefined;
   try {
     return waitExecutionSelectionsSchema.parse(JSON.parse(value));
   } catch {
-    throw new UsageError('--execution-selection must be the complete JSON state from a wait continuation.');
+    throw new UsageError(
+      `--execution-selection must be the complete JSON state from a wait continuation. Rerun the printed continuation exactly as printed, or start a fresh wait: ${waitContinuationCommand(jobIds, null, 'bounded')}`,
+    );
   }
 }

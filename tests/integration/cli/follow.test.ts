@@ -284,7 +284,13 @@ it('launch-and-follow returns a failed terminal code and offers a continuation f
     const code = await followJobs({
       start: {
         kind: 'launch',
-        launchResult: { kind: 'provider-session', jobId: 'a', requestedSeq: 1, epochKey: 'active-epoch', launchState: 'running' },
+        launchResult: {
+          kind: 'provider-session',
+          jobId: 'a',
+          requestedSeq: 1,
+          epochKey: 'active-epoch',
+          launchState: 'running',
+        },
       },
       reconnectPolicy: 'until-terminal',
       projectRoot: '/tmp',
@@ -293,7 +299,11 @@ it('launch-and-follow returns a failed terminal code and offers a continuation f
         throw error;
       },
       connect: async ({ jobIds, cursor, signal, drainProgress }) => {
-        const { cursor: wireCursor, ...fields } = jobWaitSchema.parse(
+        const {
+          cursor: wireCursor,
+          executionSelections: _executionSelections,
+          ...fields
+        } = jobWaitSchema.parse(
           jobsWaitRequest({ jobIds, projectRoot: '/tmp', timeoutSeconds: 1, cursor, drainProgress }),
         );
         const stream = owner.waitStream({

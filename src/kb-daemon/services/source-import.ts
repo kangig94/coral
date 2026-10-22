@@ -1,3 +1,4 @@
+import type { ExecutionFinisher } from '../../jobs/finishing.js';
 import { isRecord } from '../../infra/json.js';
 import {
   deriveSourceImportReadPolicy,
@@ -54,6 +55,7 @@ export type KbSourceImportReadinessWaiter = (params: {
 }) => Promise<void>;
 
 export interface KbSourceImportServiceDeps {
+  executionFinisher: ExecutionFinisher;
   runtime: Pick<Runtime, 'ids' | 'time' | 'storage' | 'env' | 'process'>;
   progressStore: JobProgressStore;
   backendNamespace: string;

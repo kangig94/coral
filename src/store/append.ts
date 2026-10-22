@@ -33,7 +33,7 @@ export interface AppendContext {
   reducers: ComposedReducers;
   bodyCodec: EventBodyCodec;
   beforeAppend?: (input: ResolvableCoralEventInput<unknown, unknown>) => void;
-  withCommitGuard?: <T>(action: () => T) => T;
+  withCommitGuard?: <T>(action: () => T, admittingJobs: readonly string[]) => T;
   /**
    * Required. Production composes the port from `providers/catalog.ts`
    * (`providerLookupPortFromCatalog`). Tests that don't exercise provider
@@ -95,8 +95,13 @@ export type CommitAppendInput<Scope, Body> = ResolvableCoralEventInput<Scope, Bo
 export interface CommitContext<Scope> {
   append<const Body>(input: CommitAppendInput<Scope, Body>): CauseRefToken<Scope>;
 }
+export interface CommitOptions {
+  readonly admittingJobs: readonly string[];
+}
+
 export type CommitEventsFn = (
   cb: <Scope>(c: CommitContext<Scope>) => CommitClosureResult,
+  options?: CommitOptions,
 ) => readonly AppendedEvent[] | void;
 
 function toTimestamp(value: Date): string {
@@ -445,7 +450,10 @@ export function commit(
   db: Database,
   cb: <Scope>(c: CommitContext<Scope>) => CommitClosureResult,
   ctx: AppendContext,
+  options?: CommitOptions,
 ): AppendedEvent[] {
   const write = () => withImmediate(db, () => commitWithinOpenTransaction(db, cb, ctx));
-  return ctx.withCommitGuard === undefined ? write() : ctx.withCommitGuard(write);
+  return options !== undefined && options.admittingJobs.length > 0 && ctx.withCommitGuard !== undefined
+    ? ctx.withCommitGuard(write, options.admittingJobs)
+    : write();
 }

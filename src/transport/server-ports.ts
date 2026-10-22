@@ -1,3 +1,4 @@
+import type { ExecutionRetryStatus } from '../jobs/records.js';
 import type { RetentionRunStatus } from '../store/retention-outcome.js';
 import type { LaunchStatus } from '../infra/launch-status.js';
 import type { ProcessIncarnation } from '../infra/node-process.js';
@@ -420,6 +421,8 @@ export type HealthSnapshot = {
    */
   listCounts?: Readonly<Record<string, number>>;
   diagnostics?: LaunchPermitDiagnostics & {
+    executionFinishing?: Array<{ jobId: string; execution: number; status: ExecutionRetryStatus }>;
+    skippedExecutionFinishingStatuses?: number;
     providerOperationStartupReconciliation?: ProviderOperationStartupStatus;
     carriers?: {
       coverage: 'complete' | 'unknown';

@@ -1,10 +1,6 @@
-import { currentCoralStoreFormat } from '#src/store-format.js';
-// Spec §6.1 line 813 + §13.1 worked example: workflow children carry
-// `refs.workflowId` on their `job.launch.requested` envelope. The producer is
-// `src/jobs/store.ts:appendLaunchRequested`. This test exercises the
-// producer with synthetic launches and asserts the field appears whenever the
-// launch belongs to a workflow.
+import { testConversationFacet } from '#tests/helpers/session.js';
 
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -19,8 +15,7 @@ import { workflowPlanDeclaredEvent, workflowRegistry } from '#src/workflow/event
 import { composeReducers } from '#src/store/reducers.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
-import { TEST_CODEX_BINDING, TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
-import type { JobConversation } from '#src/jobs/conversation/entry.js';
+import { TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
 import type { CoralEventInput } from '#src/store/envelope.js';
 interface PersistedRefs {
   jobId?: string;
@@ -52,7 +47,7 @@ function createDb(): Database {
 
 function readPersistedLaunches(db: Database): PersistedEvent[] {
   const rows = db
-    .prepare("SELECT type, refs FROM events WHERE type = 'job.launch.requested' ORDER BY seq ASC")
+    .prepare("SELECT type, refs FROM events WHERE type = 'job.execution.requested' ORDER BY seq ASC")
     .all() as Array<{ type: string; refs: string | null }>;
   return rows.map((row) => ({
     type: row.type,
@@ -60,14 +55,12 @@ function readPersistedLaunches(db: Database): PersistedEvent[] {
   }));
 }
 
-function makeProviderLaunch(
-  overrides: Partial<Omit<ProviderJobLaunch, 'jobId' | 'sessionId'>> & { jobId: string; sessionId: string },
-): JobLaunch {
-  const { jobId, sessionId, ...rest } = overrides;
+function makeProviderLaunch(overrides: Partial<Omit<ProviderJobLaunch, 'jobId'>> & { jobId: string }): JobLaunch {
+  const { jobId, ...rest } = overrides;
   return {
     jobId,
-    owner: { kind: 'provider-session', id: sessionId },
-    sessionId,
+    owner: { kind: 'provider-session', id: jobId },
+    execution: 1,
     provider: 'codex',
     providerAction: 'exec',
     projectRoot: `/workspace/${overrides.jobId}`,
@@ -84,7 +77,6 @@ function makeProviderLaunch(
     },
     createdAt: '2026-04-29T00:00:00.000Z',
     ...rest,
-    ...(rest.workflowSlotId === undefined ? {} : { workflowSlotGeneration: rest.workflowSlotGeneration ?? 0 }),
   };
 }
 
@@ -92,7 +84,7 @@ function makeWorkflowLaunch(jobId: string): JobLaunch {
   return {
     jobId,
     owner: { kind: 'workflow', id: jobId },
-    sessionId: null,
+    execution: 1,
     provider: null,
     projectRoot: `/workspace/${jobId}`,
     backendNamespace: 'test-ns',
@@ -110,36 +102,28 @@ function makeWorkflowLaunch(jobId: string): JobLaunch {
   };
 }
 
-function jobConversationInputs(sessionId: string, jobId: string, projectRoot: string): CoralEventInput[] {
-  const opened: JobConversation = {
-    sessionId,
-    binding: TEST_CODEX_BINDING,
-    name: sessionId,
-    state: 'pending',
-    retention: 'retain',
-    artifactHandles: [],
-    retentionDiscard: { attempts: [] },
-    providerContinuity: null,
-    cwd: projectRoot,
-    projectRoot,
-    backendNamespace: 'test-ns',
-    createdAt: '2026-04-29T00:00:00.000Z',
-    lastUsedAt: '2026-04-29T00:00:00.000Z',
-    version: 1,
-  };
-  const claimed: JobConversation = { ...opened, activeJobId: jobId, version: 2 };
+function jobConversationInputs(
+  name: string,
+  jobId: string,
+  projectRoot: string,
+  workflowJobId?: string,
+): CoralEventInput[] {
   return [
     {
-      type: 'session.opened',
-      stream: { kind: 'session', id: sessionId },
-      refs: { sessionId },
-      body: { entry: opened, controller: 'default', scope_key: `${sessionId}-scope` },
-    },
-    {
-      type: 'session.claimed',
-      stream: { kind: 'session', id: sessionId },
-      refs: { sessionId, jobId },
-      body: { entry: claimed, jobId },
+      type: 'job.opened',
+      stream: { kind: 'job', id: jobId },
+      refs: { jobId },
+      body: {
+        jobKind: 'provider',
+        projectRoot,
+        createdAt: '2026-04-29T00:00:00.000Z',
+        owner:
+          workflowJobId === undefined
+            ? { kind: 'provider-session', id: jobId }
+            : { kind: 'workflow', id: workflowJobId },
+        ...(workflowJobId === undefined ? {} : { workflowSlotId: `${workflowJobId}:0:0` }),
+        conversation: { ...testConversationFacet('codex', projectRoot), name },
+      },
     },
   ];
 }
@@ -158,8 +142,17 @@ describe('refs.workflowId producer invariant', () => {
     commitInputs(
       db,
       [
-        ...jobConversationInputs('session-a-1', 'a-1', '/workspace/a-1'),
-        ...jobConversationInputs('session-p-1', 'p-1', '/workspace/p-1'),
+        ...jobConversationInputs(
+          'session-91000000-0000-4000-8000-000000000002',
+          '91000000-0000-4000-8000-000000000002',
+          '/workspace/91000000-0000-4000-8000-000000000002',
+          '91000000-0000-4000-8000-000000000001',
+        ),
+        ...jobConversationInputs(
+          'session-91000000-0000-4000-8000-000000000003',
+          '91000000-0000-4000-8000-000000000003',
+          '/workspace/91000000-0000-4000-8000-000000000003',
+        ),
       ],
       {
         now: () => new Date('2026-04-29T00:00:00.000Z'),
@@ -173,11 +166,11 @@ describe('refs.workflowId producer invariant', () => {
     store.commit((c) => {
       c.append(
         workflowPlanDeclaredEvent(
-          'wf-1',
+          '91000000-0000-4000-8000-000000000001',
           {
             slots: [
               {
-                slotId: 'wf-1:0:0',
+                slotId: '91000000-0000-4000-8000-000000000001:0:0',
                 dependencies: [],
                 provider: 'codex',
                 instruction: 'run',
@@ -189,35 +182,40 @@ describe('refs.workflowId producer invariant', () => {
       );
       return undefined;
     });
-    store.appendLaunchRequested('wf-1', makeWorkflowLaunch('wf-1'));
+    store.appendLaunchRequested(
+      '91000000-0000-4000-8000-000000000001',
+      makeWorkflowLaunch('91000000-0000-4000-8000-000000000001'),
+    );
 
     // A workflow child: parentJobId === workflowId === parent workflow id.
     store.appendLaunchRequested(
-      'a-1',
+      '91000000-0000-4000-8000-000000000002',
       makeProviderLaunch({
-        jobId: 'a-1',
-        sessionId: 'session-a-1',
-        owner: { kind: 'workflow', id: 'wf-1' },
-        parentWorkflowJobId: 'wf-1',
-        workflowSlotId: 'wf-1:0:0',
+        jobId: '91000000-0000-4000-8000-000000000002',
+        owner: { kind: 'workflow', id: '91000000-0000-4000-8000-000000000001' },
+        parentWorkflowJobId: '91000000-0000-4000-8000-000000000001',
+        workflowSlotId: '91000000-0000-4000-8000-000000000001:0:0',
       }),
     );
 
     // A plain job (no workflow involvement): no workflowId.
-    store.appendLaunchRequested('p-1', makeProviderLaunch({ jobId: 'p-1', sessionId: 'session-p-1' }));
+    store.appendLaunchRequested(
+      '91000000-0000-4000-8000-000000000003',
+      makeProviderLaunch({ jobId: '91000000-0000-4000-8000-000000000003' }),
+    );
 
     const events = readPersistedLaunches(db);
     expect(events).toHaveLength(3);
 
-    const wfEvent = events.find((event) => event.refs?.jobId === 'wf-1');
-    expect(wfEvent?.refs?.workflowId).toBe('wf-1');
+    const wfEvent = events.find((event) => event.refs?.jobId === '91000000-0000-4000-8000-000000000001');
+    expect(wfEvent?.refs?.workflowId).toBe('91000000-0000-4000-8000-000000000001');
 
-    const childEvent = events.find((event) => event.refs?.jobId === 'a-1');
-    expect(childEvent?.refs?.workflowId).toBe('wf-1');
-    expect(childEvent?.refs?.parentJobId).toBe('wf-1');
-    expect(childEvent?.refs?.workflowSlotId).toBe('wf-1:0:0');
+    const childEvent = events.find((event) => event.refs?.jobId === '91000000-0000-4000-8000-000000000002');
+    expect(childEvent?.refs?.workflowId).toBe('91000000-0000-4000-8000-000000000001');
+    expect(childEvent?.refs?.parentJobId).toBe('91000000-0000-4000-8000-000000000001');
+    expect(childEvent?.refs?.workflowSlotId).toBe('91000000-0000-4000-8000-000000000001:0:0');
 
-    const plainEvent = events.find((event) => event.refs?.jobId === 'p-1');
+    const plainEvent = events.find((event) => event.refs?.jobId === '91000000-0000-4000-8000-000000000003');
     expect(plainEvent?.refs?.workflowId).toBeUndefined();
     expect(plainEvent?.refs?.parentJobId).toBeUndefined();
 
@@ -238,20 +236,24 @@ describe('refs.workflowId producer invariant', () => {
       reducers,
       providers: permissiveProviderLookupPort,
     });
-    commitInputs(db, jobConversationInputs('session-wrong-owner', 'wrong-owner-child', '/workspace/wrong-owner'), {
-      now: () => new Date('2026-04-29T00:00:00.000Z'),
-      reducers,
-      bodyCodec,
-      providers: permissiveProviderLookupPort,
-    });
+    commitInputs(
+      db,
+      jobConversationInputs('session-wrong-owner', '91000000-0000-4000-8000-000000000005', '/workspace/wrong-owner'),
+      {
+        now: () => new Date('2026-04-29T00:00:00.000Z'),
+        reducers,
+        bodyCodec,
+        providers: permissiveProviderLookupPort,
+      },
+    );
     store.commit((c) => {
       c.append(
         workflowPlanDeclaredEvent(
-          'wf-owner',
+          '91000000-0000-4000-8000-000000000004',
           {
             slots: [
               {
-                slotId: 'wf-owner:0:0',
+                slotId: '91000000-0000-4000-8000-000000000004:0:0',
                 dependencies: [],
                 provider: 'codex',
                 instruction: 'run',
@@ -266,14 +268,13 @@ describe('refs.workflowId producer invariant', () => {
 
     expect(() =>
       store.appendLaunchRequested(
-        'wrong-owner-child',
+        '91000000-0000-4000-8000-000000000005',
         makeProviderLaunch({
-          jobId: 'wrong-owner-child',
-          sessionId: 'session-wrong-owner',
-          parentWorkflowJobId: 'wf-owner',
-          workflowSlotId: 'wf-owner:0:0',
+          jobId: '91000000-0000-4000-8000-000000000005',
+          parentWorkflowJobId: '91000000-0000-4000-8000-000000000004',
+          workflowSlotId: '91000000-0000-4000-8000-000000000004:0:0',
         }),
       ),
-    ).toThrowError(expect.objectContaining({ code: 'job_binding_owner_mismatch' }));
+    ).toThrowError(expect.objectContaining({ code: 'job_execution_order_violation' }));
   });
 });

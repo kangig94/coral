@@ -54,16 +54,15 @@ function seedQueuedProviderJob(
   options: { jobId: string; sessionId: string; enqueueSequence: number },
 ): void {
   seedTestSessionProjection(progressStore.getDb(), {
-    sessionId: options.sessionId,
+    jobId: options.jobId,
     provider: 'codex',
     projectRoot: PROJECT_ROOT,
     backendNamespace: BACKEND_NAMESPACE,
-    activeJobId: options.jobId,
   });
   const launchRecord: JobLaunch = {
     jobId: options.jobId,
-    owner: { kind: 'provider-session', id: options.sessionId },
-    sessionId: options.sessionId,
+    owner: { kind: 'provider-session', id: options.jobId },
+    execution: 1,
     provider: 'codex',
     projectRoot: PROJECT_ROOT,
     backendNamespace: BACKEND_NAMESPACE,
@@ -77,12 +76,12 @@ function seedQueuedProviderJob(
   progressStore.appendLaunchRequested(options.jobId, launchRecord);
   progressStore.commit((commit) => {
     commit.append({
-      type: 'job.queue.queued',
+      type: 'job.execution.queued',
       stream: { kind: 'job', id: options.jobId },
       namespace: BACKEND_NAMESPACE,
       project: PROJECT_ROOT,
-      refs: { jobId: options.jobId, sessionId: options.sessionId },
-      body: { queuePosition: options.enqueueSequence, runningJobIds: [] },
+      refs: { jobId: options.jobId },
+      body: { execution: 1, queuePosition: options.enqueueSequence, runningJobIds: [] },
     });
     return undefined;
   });
@@ -101,16 +100,15 @@ function seedRunningAppServerJob(
   options: { jobId: string; sessionId: string; provider: string; proxyInstanceId: string },
 ): void {
   seedTestSessionProjection(progressStore.getDb(), {
-    sessionId: options.sessionId,
+    jobId: options.jobId,
     provider: options.provider,
     projectRoot: PROJECT_ROOT,
     backendNamespace: BACKEND_NAMESPACE,
-    activeJobId: options.jobId,
   });
   const launchRecord: JobLaunch = {
     jobId: options.jobId,
-    owner: { kind: 'provider-session', id: options.sessionId },
-    sessionId: options.sessionId,
+    owner: { kind: 'provider-session', id: options.jobId },
+    execution: 1,
     provider: options.provider,
     projectRoot: PROJECT_ROOT,
     backendNamespace: BACKEND_NAMESPACE,
@@ -173,7 +171,13 @@ function createFakeService(overrides: Partial<RecoveryCapableService> = {}): Rec
       ok: true,
       authority: {
         launchRecord,
-        session: { sessionId: launchRecord.sessionId, providerContinuity: null, projectRoot: PROJECT_ROOT, version: 1 },
+        session: {
+          jobId: launchRecord.jobId,
+          execution: launchRecord.execution,
+          providerContinuity: null,
+          artifactHandles: [],
+          projectRoot: PROJECT_ROOT,
+        },
         boundProvider: { name: launchRecord.provider },
       } as unknown as ProviderRecoveryAuthority,
     })),
@@ -429,6 +433,7 @@ describe('runStartupRecovery provider-operation ownership', () => {
     const saga = providerOperationRecordSchema.parse({
       ...fixture,
       operation: { ...fixture.operation, jobId: targetJobId },
+      jobLaunchEventSeq: progressStore.loadJobWaitDetail(targetJobId).requestedSeq,
     });
     if (saga.phase !== 'prestart-cleanup-pending') throw new Error('expected prestart cleanup saga');
     insertProviderOperation(progressStore.getDb(), saga);
@@ -634,7 +639,7 @@ describe('runStartupRecovery app-server aborts', () => {
       ok: true,
       authority: {
         launchRecord: capturedLaunch,
-        session: { sessionId, providerContinuity: null, projectRoot: PROJECT_ROOT, version: 1 },
+        session: { jobId, execution: 1, providerContinuity: null, artifactHandles: [], projectRoot: PROJECT_ROOT },
         boundProvider: { name: 'codex' },
       } as unknown as ProviderRecoveryAuthority,
     });

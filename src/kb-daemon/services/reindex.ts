@@ -1,3 +1,4 @@
+import type { ExecutionFinisher } from '../../jobs/finishing.js';
 import { reindex } from '../../kb/ops/reindex.js';
 import { kbSuccess, type KbToolResult } from '../../kb/result.js';
 import type { KnowledgeBaseRuntime } from '../../kb/runtime-contract.js';
@@ -11,6 +12,7 @@ import type { KbSourceImportReadinessWaiter } from './source-import.js';
 import { KbOperationJobShell, type KbOperationJobBodyContext, type KbOperationJobContext } from './shell.js';
 
 export interface KbReindexServiceDeps {
+  executionFinisher: ExecutionFinisher;
   runtime: Pick<Runtime, 'ids' | 'time' | 'storage'>;
   progressStore: JobProgressStore;
   backendNamespace: string;

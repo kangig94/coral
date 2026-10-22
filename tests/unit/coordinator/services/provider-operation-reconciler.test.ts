@@ -165,7 +165,7 @@ describe('provider proxy exactly-once containment schedules', () => {
 
     expect(harness.appended).toContainEqual(
       expect.objectContaining({
-        type: 'job.terminal.recorded',
+        type: 'job.execution.outcome.accepted',
         body: expect.objectContaining({
           terminal: expect.objectContaining({ outcome: { kind: 'aborted', reason: 'signal_abort' } }),
         }),
@@ -233,6 +233,7 @@ it('retains a settlement tombstone after a lost release reply and deletes it onl
   const settlement = providerOperationRecordSchema.parse({
     ...executing,
     phase: 'settlement-pending',
+    settlementFailure: { elapsedMs: 0, observedAtMs: 0, containmentRequested: false },
     committedThroughProviderSeq: 1,
     terminalProviderSeq: 1,
     settlementIntent: 'release-after-terminal',
@@ -252,11 +253,13 @@ it('retains a settlement tombstone after a lost release reply and deletes it onl
 
   expect(remoteLedgerPresent).toBe(false);
   expect(guardianMembershipPresent).toBe(false);
+  expect(harness.registry.settled).not.toHaveBeenCalled();
   harness.reconciler.onControlEstablished(harness.authority);
   await vi.waitFor(() => expect(readProviderOperation(harness.db, settlement.operation)).toBeNull());
 
   expect(settleCalls).toBe(2);
   expect(replayedAlreadyReleased).toBe(true);
+  expect(harness.registry.settled).toHaveBeenCalledWith(settlement.operation);
 });
 
 it.each(['prepare-pending', 'guardian-activation-pending', 'proxy-activation-pending'] as const)(
@@ -332,7 +335,7 @@ it.each(['executing', 'settlement-pending'] as const)(
       }
       expect(attempts).toBe(11);
       expect(contain).not.toHaveBeenCalled();
-      expect(harness.appended).not.toContainEqual(expect.objectContaining({ type: 'job.terminal.recorded' }));
+      expect(harness.appended).not.toContainEqual(expect.objectContaining({ type: 'job.execution.outcome.accepted' }));
       expect(readProviderOperation(harness.db, initial.operation)).toEqual(
         phase === 'executing' ? expect.objectContaining({ phase: 'executing', retryCount: 0, lastError: null }) : null,
       );
@@ -382,7 +385,7 @@ it.each(['started-awaiting-publication', 'released-activation-indeterminate'] as
       expect(stop).toHaveBeenCalledTimes(state === 'started-awaiting-publication' ? 1 : 0);
       expect(harness.appended).toContainEqual(
         expect.objectContaining({
-          type: 'job.terminal.recorded',
+          type: 'job.execution.outcome.accepted',
           body: expect.objectContaining({
             terminal: expect.objectContaining({ outcome: { kind: 'aborted', reason: 'signal_abort' } }),
           }),
@@ -497,7 +500,7 @@ it('releases only the unpublished operation after decisive failure time is exhau
     expect(readProviderOperation(harness.db, record.operation)).toBeNull();
     expect(harness.appended).toContainEqual(
       expect.objectContaining({
-        type: 'job.progress.emitted',
+        type: 'job.execution.progress',
         body: expect.objectContaining({ detail: { code: 'provider_operation_retries_exhausted' } }),
       }),
     );
@@ -537,7 +540,7 @@ it('releases an invalid activation ACK before terminalizing and lets a recorded 
     expect(readProviderOperation(harness.db, record.operation)).toBeNull();
     expect(harness.appended).toContainEqual(
       expect.objectContaining({
-        type: 'job.progress.emitted',
+        type: 'job.execution.progress',
         body: expect.objectContaining({ detail: { code: 'provider_activation_ack_invalid' } }),
       }),
     );
@@ -569,7 +572,7 @@ it('lets a recorded user abort win over permanent failure on ordinary containmen
     });
     expect(harness.appended).toContainEqual(
       expect.objectContaining({
-        type: 'job.terminal.recorded',
+        type: 'job.execution.outcome.accepted',
         body: expect.objectContaining({
           terminal: expect.objectContaining({ outcome: { kind: 'aborted', reason: 'user_abort' } }),
         }),
@@ -734,7 +737,7 @@ it.each(['proxy-activation-pending', 'activation-resolution-pending'] as const)(
       expect(readProviderOperation(harness.db, record.operation)).toMatchObject({
         lastError: { code: 'provider_activation_ack_invalid' },
       });
-      expect(harness.appended).not.toContainEqual(expect.objectContaining({ type: 'job.terminal.recorded' }));
+      expect(harness.appended).not.toContainEqual(expect.objectContaining({ type: 'job.execution.outcome.accepted' }));
     } finally {
       harness.reconciler.stop();
       harness.db.close();
@@ -828,19 +831,76 @@ it('waits for real lifecycle disappearance after a failed single-operation relea
     expect(stop).toHaveBeenCalledOnce();
     expect(JSON.stringify(lifecycle.snapshot())).toContain('operation-control-outcome-unknown');
     expect(readProviderOperation(harness.db, record.operation)).not.toBeNull();
-    expect(harness.appended).not.toContainEqual(expect.objectContaining({ type: 'job.terminal.recorded' }));
+    expect(harness.appended).not.toContainEqual(expect.objectContaining({ type: 'job.execution.outcome.accepted' }));
     emitFault(proxyHeartbeatFault(new Error('proxy teardown latched')));
     expect(lifecycle.authorityFor(harness.authority.setIdentity)).toBeNull();
     proof.resolve({ disappearanceReceipt: 'single-release-lifecycle-absence' });
     await vi.waitFor(() => expect(readProviderOperation(harness.db, record.operation)).toBeNull());
     expect(harness.appended).toContainEqual(
       expect.objectContaining({
-        type: 'job.progress.emitted',
+        type: 'job.execution.progress',
         body: expect.objectContaining({ detail: { code: 'provider_activation_ack_invalid' } }),
       }),
     );
   } finally {
     harness.reconciler.stop();
     harness.db.close();
+  }
+});
+
+it('counts settlement failure with the monotonic clock and excludes coordinator downtime', async () => {
+  let wall = 100;
+  let mono = 0n;
+  const requestContainment = vi.fn();
+  const h = createHarness({
+    time: { now: () => wall, monotonicNow: () => mono },
+    requestContainment,
+    settleOperation: async () => {
+      throw new Error('settlement unavailable');
+    },
+  });
+  try {
+    await h.begin();
+    const executing = readProviderOperation(h.db, h.record.operation);
+    if (executing?.phase !== 'executing') throw new Error('Expected executing operation');
+    const pending = providerOperationRecordSchema.parse({
+      ...executing,
+      phase: 'settlement-pending',
+      terminalProviderSeq: 1,
+      committedThroughProviderSeq: 1,
+      settlementIntent: 'release-after-terminal',
+      settlementFailure: { elapsedMs: 0, observedAtMs: wall, containmentRequested: false },
+      revision: executing.revision + 1,
+    });
+    expect(compareAndSwapProviderOperation(h.db, executing, pending).kind).toBe('updated');
+    h.reconciler.settlementPending(pending.operation);
+    await vi.waitFor(() => expect(readProviderOperation(h.db, pending.operation)?.retryCount).toBe(1));
+    wall += 1_000_000;
+    mono += 500n;
+    h.reconciler.onControlEstablished(h.authority);
+    await vi.waitFor(() => expect(readProviderOperation(h.db, pending.operation)?.retryCount).toBe(2));
+    expect(readProviderOperation(h.db, pending.operation)).toMatchObject({
+      settlementFailure: { elapsedMs: 500, containmentRequested: false },
+    });
+    h.reconciler.stop();
+    wall += 1_000_000;
+    mono += 1_000_000n;
+    const { acquireProviderOperationMutationAdmission } = await import('#src/store/provider-operation-journal.js');
+    expect(acquireProviderOperationMutationAdmission(h.db, 'monotonic-restart').kind).toBe('acquired');
+    const restarted = h.restart();
+    try {
+      restarted.onControlEstablished(h.authority);
+      restarted.settlementPending(pending.operation);
+      await vi.waitFor(() => expect(readProviderOperation(h.db, pending.operation)?.retryCount).toBe(3));
+      expect(readProviderOperation(h.db, pending.operation)).toMatchObject({
+        settlementFailure: { elapsedMs: 500, containmentRequested: false },
+      });
+      expect(requestContainment).not.toHaveBeenCalled();
+    } finally {
+      restarted.stop();
+    }
+  } finally {
+    h.reconciler.stop();
+    h.db.close();
   }
 });

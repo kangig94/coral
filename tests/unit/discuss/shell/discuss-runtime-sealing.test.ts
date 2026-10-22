@@ -1,3 +1,4 @@
+import { testConversationFacet } from '#tests/helpers/session.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { makeEvent, type DiscussDomainEvent, type PersistedDiscussSnapshot } from '#src/discuss/events.js';
@@ -9,7 +10,7 @@ import { JobStore } from '#src/jobs/store.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
-import { seedTestJobSession } from '#tests/helpers/session.js';
+import { openedJob } from '#tests/helpers/job-executions.js';
 import { RecoveryContainment } from '#src/recovery/containment.js';
 import { RecoveryQuarantineStore } from '#src/recovery/quarantine.js';
 import { discussionCandidateRecoverySource } from '#src/discuss/shell/discussion-candidate-recovery-source.js';
@@ -298,21 +299,26 @@ describe('runtime-sealed discuss behavior', () => {
       const attachSession = vi.spyOn(discussSessionRegistry, 'attachSession');
       const harness = createPersistedRecoveryHarness();
       const sessionId = `recovery-${state}`;
-      const jobId = `owned-job-${state}`;
+      const jobId = {
+        fresh: '031ec577-d514-44bc-a63d-c27f36e27cab',
+        'resume-pending': '028a7763-e71f-4d37-84b5-d63ac9ac4b42',
+        'resume-completed': '2e0f912b-01bb-46e5-910b-e607b8103909',
+      }[state];
       seedPersistedRecoveryDiscussion(harness, sessionId);
-      seedTestJobSession(harness.progressStore, {
-        jobId,
-        sessionId: `provider-${state}`,
-        provider: 'codex',
+      const opened = openedJob({
+        owner: { kind: 'discussion', id: sessionId },
         projectRoot: harness.projectRoot,
-        backendNamespace: 'runtime-only',
-        initialPhase: 'running',
+        conversation: testConversationFacet('codex', harness.projectRoot),
+      });
+      harness.progressStore.commit((commit) => {
+        commit.append({ ...opened, stream: { kind: 'job', id: jobId } });
+        return undefined;
       });
       harness.progressStore.appendLaunchRequested(jobId, {
         jobId,
+        execution: 1,
         owner: { kind: 'discussion', id: sessionId },
         discussionRun: { agent: 'bot', purpose: 'bid', attempt: 1 },
-        sessionId: `provider-${state}`,
         provider: 'codex',
         projectRoot: harness.projectRoot,
         backendNamespace: 'runtime-only',
@@ -370,7 +376,8 @@ describe('runtime-sealed discuss behavior', () => {
       expect(attachSession).toHaveBeenCalledTimes(1);
       const context = harness.services.getDiscussContext(harness.createInvocationContext(harness.projectRoot));
       expect(discussSessionRegistry.getSession(context, sessionId)?.snapshot.runtime.agentRuns.bot).toMatchObject({
-        executionSessionId: `provider-${state}`,
+        jobId,
+        currentExecution: 1,
         currentJobId: jobId,
       });
       expect(readSessionEvents(context, sessionId).filter((event) => event.kind === 'agent.job.started')).toHaveLength(
@@ -541,7 +548,7 @@ describe('runtime-sealed discuss behavior', () => {
       pluginRoot: PLUGIN_ROOT,
     });
     const created = await appendCreatedSession(harness, 'executor-recovery');
-    const jobId = 'runtime-only-job-ac7';
+    const jobId = '5f13c912-251f-57ee-830b-1a98fe752cca';
     const activeEvents: DiscussDomainEvent[] = [
       makeEvent(
         'executor-recovery',
@@ -550,7 +557,7 @@ describe('runtime-sealed discuss behavior', () => {
         created.lastAppliedSeq + 1,
         'agent.run.bound',
         '2035-04-15T01:02:04.000Z',
-        { agent: 'bot', executionSessionId: 'execution-session-1' },
+        { agent: 'bot', jobId },
       ),
       makeEvent(
         'executor-recovery',
@@ -562,24 +569,26 @@ describe('runtime-sealed discuss behavior', () => {
         {
           agent: 'bot',
           jobId,
+          execution: 1,
           purpose: 'bid',
           attempt: 1,
         },
       ),
     ];
-    seedTestJobSession(harness.progressStore, {
-      jobId,
-      sessionId: 'execution-session-1',
-      provider: 'codex',
+    const opened = openedJob({
+      owner: { kind: 'discussion', id: 'executor-recovery' },
       projectRoot: harness.projectRoot,
-      backendNamespace: 'runtime-only',
-      initialPhase: 'running',
+      conversation: testConversationFacet('codex', harness.projectRoot),
+    });
+    harness.progressStore.commit((commit) => {
+      commit.append({ ...opened, stream: { kind: 'job', id: jobId } });
+      return undefined;
     });
     harness.progressStore.appendLaunchRequested(jobId, {
       jobId,
+      execution: 1,
       owner: { kind: 'discussion', id: 'executor-recovery' },
       discussionRun: { agent: 'bot', purpose: 'bid', attempt: 1 },
-      sessionId: 'execution-session-1',
       provider: 'codex',
       projectRoot: harness.projectRoot,
       backendNamespace: 'runtime-only',
@@ -596,12 +605,13 @@ describe('runtime-sealed discuss behavior', () => {
       createdAt: '2035-04-15T01:02:05.000Z',
     });
     await harness.store.append('executor-recovery', created.lastAppliedSeq, activeEvents);
-    commitJobTerminal(harness.progressStore, jobId, 'execution-session-1', {
+    commitJobTerminal(harness.progressStore, jobId, 1, {
       content: 'Recovered content from runtime storage',
       durationMs: 1_000,
       outcome: { kind: 'completed' },
     });
     expect(harness.progressStore.readStatus(jobId)).toMatchObject({
+      execution: 1,
       owner: { kind: 'discussion', id: 'executor-recovery' },
       phase: 'completed',
       result: { content: 'Recovered content from runtime storage' },
@@ -640,8 +650,9 @@ describe('runtime-sealed discuss behavior', () => {
     vi.mocked(harness.service.start).mockResolvedValueOnce({
       kind: 'provider-session',
       status: 'running',
-      jobId: 'job-bot-bid',
-      sessionId: 'exec-bot',
+      jobId: '133ef842-c304-53e7-a299-15e02ff4168d',
+      requestedSeq: 1,
+      epochKey: 'test-epoch',
     });
     vi.mocked(harness.service.waitStreamOnce).mockResolvedValueOnce({
       content: '{"score": 12, "thought": "Let the manual observer lead."}',

@@ -17,7 +17,7 @@ export interface AbortHoldOwner {
 export type AbortRefusal = Readonly<{
   jobId: string;
   reason: string;
-  nextStep: AbortNextStep;
+  nextStep: AbortRefusalNextStep;
 }>;
 
 export type AbortHold = Readonly<{
@@ -61,3 +61,7 @@ export type AbortDecision =
 import type { JobOperatorRemedy } from './operator-remedy.js';
 
 export type AbortNextStep = string | Readonly<{ detail: string; remedy: JobOperatorRemedy }>;
+
+export type AbortRefusalNextStep =
+  | AbortNextStep
+  | Readonly<{ detail: string; remedy: Readonly<{ kind: 'wait-job'; jobId: string }> }>;

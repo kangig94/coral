@@ -1,3 +1,4 @@
+import { formatRecoveryQuarantineCommand } from './backend.js';
 import type { WaitExecutionSelection } from '../../jobs/wait/execution-selection.js';
 import { waitCommandPrefix } from '../../coordinator/handoff-routing/wait-command.js';
 export { waitCommandPrefix } from '../../coordinator/handoff-routing/wait-command.js';
@@ -79,7 +80,10 @@ export function waitContinuationCommand(
   mode: WaitContinuationMode,
   executionSelections: readonly WaitExecutionSelection[] = [],
 ): string {
-  const selection = executionSelections.length === 0 ? '' : ` --execution-selection '${JSON.stringify(executionSelections).replaceAll("'", "'\\''")}'`;
+  const selection =
+    executionSelections.length === 0
+      ? ''
+      : ` --execution-selection '${JSON.stringify(executionSelections).replaceAll("'", "'\\''")}'`;
   return `${waitCommandPrefix()} ${jobIds.join(' ')}${CONTINUATION_MODE_FLAG[mode]}${cursor === null ? '' : ` --cursor ${cursor}`}${selection}`;
 }
 
@@ -199,6 +203,10 @@ export function formatWaitSnapshot(snapshot: WaitSnapshot): string {
     const terminal = job.terminal;
     return joinLines([
       header,
+      job.finishingStatus === undefined
+        ? undefined
+        : `Finishing: ${job.finishingStatus.kind}; ${job.finishingStatus.reason}; successor=${job.finishingStatus.successor}.`,
+      job.finishingStatus?.kind === 'blocked' ? formatRecoveryQuarantineCommand({ kind: 'list' }) : undefined,
       ...job.progress.map(frameWaitContent),
       terminal
         ? `Outcome: ${terminal.outcomeKind}; exit ${terminal.exitCode}; duration ${terminal.durationMs} ms`

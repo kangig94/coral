@@ -1486,7 +1486,11 @@ export class ProviderOperationReconciler
       const key = operationKey(record.operation);
       let window = this.#failureWindows.get(key);
       if (window === undefined || window.phase !== record.phase) {
-        window = { phase: record.phase, elapsedMs: 0, observedAt: this.#deps.time.monotonicNow() };
+        window = {
+          phase: record.phase,
+          elapsedMs: record.phase === 'settlement-pending' ? record.settlementFailure.elapsedMs : 0,
+          observedAt: this.#deps.time.monotonicNow(),
+        };
         this.#failureWindows.set(key, window);
       }
       window.observedAt ??= this.#deps.time.monotonicNow();
@@ -2154,7 +2158,11 @@ export class ProviderOperationReconciler
         settledThroughProviderSeq: released.settledThroughProviderSeq,
       });
       if (verdict.kind !== 'released-after-terminal') {
-        await this.#recordSettlementFailure(record, authority, new Error('Settlement acknowledgement did not cover the terminal watermark.'));
+        await this.#recordSettlementFailure(
+          record,
+          authority,
+          new Error('Settlement acknowledgement did not cover the terminal watermark.'),
+        );
         return null;
       }
       const deleted = this.#deleteSettledOperation(record);
@@ -2174,16 +2182,32 @@ export class ProviderOperationReconciler
     error: unknown,
   ): Promise<void> {
     const now = this.#deps.time.now();
-    const elapsedMs = record.settlementFailure.elapsedMs + Math.max(0, now - record.settlementFailure.observedAtMs);
-    const containmentRequested = record.settlementFailure.containmentRequested || elapsedMs >= PRE_EXECUTION_FAILURE_BOUND_MS;
-    const next = this.#transition(record, providerOperationRecordSchema.parse({
-      ...record,
-      settlementFailure: { elapsedMs, observedAtMs: now, containmentRequested },
-      revision: record.revision + 1,
-      retryCount: record.retryCount + 1,
-      retryNotBeforeMs: now + retryDelayMs(record.retryCount),
-      lastError: { observedAtMs: now, code: providerOperationErrorCode(error), message: providerOperationErrorReason(error) },
-    }));
+    const window = this.#failureWindows.get(operationKey(record.operation));
+    const observedAt = this.#deps.time.monotonicNow();
+    const elapsedMs =
+      record.settlementFailure.elapsedMs +
+      (window?.observedAt === null || window === undefined ? 0 : Math.max(0, Number(observedAt - window.observedAt)));
+    if (window !== undefined) {
+      window.elapsedMs = elapsedMs;
+      window.observedAt = observedAt;
+    }
+    const containmentRequested =
+      record.settlementFailure.containmentRequested || elapsedMs >= PRE_EXECUTION_FAILURE_BOUND_MS;
+    const next = this.#transition(
+      record,
+      providerOperationRecordSchema.parse({
+        ...record,
+        settlementFailure: { elapsedMs, observedAtMs: now, containmentRequested },
+        revision: record.revision + 1,
+        retryCount: record.retryCount + 1,
+        retryNotBeforeMs: now + retryDelayMs(record.retryCount),
+        lastError: {
+          observedAtMs: now,
+          code: providerOperationErrorCode(error),
+          message: providerOperationErrorReason(error),
+        },
+      }),
+    );
     if (next !== null) this.#schedule(retryDelayMs(record.retryCount));
     if (next?.phase === 'settlement-pending' && containmentRequested)
       this.#deps.requestContainment(authority.setIdentity, 'provider_settlement_retries_exhausted');
@@ -2425,7 +2449,12 @@ export class ProviderOperationReconciler
     const progressStore = this.#deps.getProgressStore();
     const launch = readProviderOperationJobLaunch(progressStore, record.operation.jobId, record.jobLaunchEventSeq);
     const status = progressStore.readStatus(record.operation.jobId);
-    if (status === null || status.execution !== launch.execution || status.finishing === true || isTerminalPhase(status.phase)) {
+    if (
+      status === null ||
+      status.execution !== launch.execution ||
+      status.finishing === true ||
+      isTerminalPhase(status.phase)
+    ) {
       throw new Error('Provider operation runtime publication lacks matching durable job metadata.');
     }
     if (launch.provider !== activationAck.hostRef.provider) {
@@ -2441,9 +2470,9 @@ export class ProviderOperationReconciler
       commit.append({
         type: 'job.execution.started',
         stream: { kind: 'job', id: record.operation.jobId },
-        namespace: status.backendNamespace,
+        namespace: launch.backendNamespace,
         project: status.projectRoot,
-        refs: buildJobEventRefs({ jobId: record.operation.jobId, }),
+        refs: buildJobEventRefs({ jobId: record.operation.jobId }),
         body: {
           execution: launch.execution,
           transport: 'app-server',
@@ -2616,7 +2645,11 @@ export class ProviderOperationReconciler
     authority: DurableProviderProxyOperationAuthority,
   ): ExecutingRegistration {
     this.#assertActiveDrive();
-    const launch = readProviderOperationJobLaunch(this.#deps.getProgressStore(), record.operation.jobId, record.jobLaunchEventSeq);
+    const launch = readProviderOperationJobLaunch(
+      this.#deps.getProgressStore(),
+      record.operation.jobId,
+      record.jobLaunchEventSeq,
+    );
     const cleanup = providerOperationCleanupIdentity(launch);
     const control = authority.buildOperationControl(record.operation);
     const binding = this.#deps.binding.commitProviderOperationBinding(record.operation);
@@ -2891,6 +2924,7 @@ export class ProviderOperationReconciler
     if (settlement.kind === 'refused') {
       throw new Error(`Provider operation binding settlement was refused: ${settlement.reason}`);
     }
+    this.#deps.registry.settled(operation);
   }
 
   #retireBindingOrThrow(operation: ProviderOperationIdentity): void {

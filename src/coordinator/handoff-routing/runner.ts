@@ -853,7 +853,9 @@ function delegatedArguments(operation: HandoffOperation): readonly string[] {
         ...waitCommandPaths.current.split(' '),
         operation.jobId,
         ...(operation.serializedCursor === undefined ? [] : ['--cursor', operation.serializedCursor]),
-        ...(operation.serializedExecutionSelections === undefined ? [] : ['--execution-selection', operation.serializedExecutionSelections]),
+        ...(operation.serializedExecutionSelections === undefined
+          ? []
+          : ['--execution-selection', operation.serializedExecutionSelections]),
       ];
     case 'backend-startup':
       return [];

@@ -277,6 +277,7 @@ describe('session job guard', () => {
       if (predecessor === null) throw new Error('Expected a provider execution');
       const oldWait = f.ports.jobs.waitStream({
         jobIds: [jobId],
+        drainProgress: false,
         admissions: [{ jobId, disposition: 'admitted', detail: predecessor }],
       });
       if (firstPoll === 'before') {
@@ -293,6 +294,7 @@ describe('session job guard', () => {
       if (successor === null) throw new Error('Expected a queued continuation');
       const newWait = f.ports.jobs.waitStream({
         jobIds: [jobId],
+        drainProgress: false,
         admissions: [{ jobId, disposition: 'admitted', detail: successor }],
       });
       await newWait.next();
@@ -316,6 +318,27 @@ describe('session job guard', () => {
       expect(await stop()).toBeNull();
     },
   );
+
+  it('blocks the valid queued continuation in a mixed set with unrequested and malformed rows', async () => {
+    const f = attentionFixture();
+    f.ports.jobs.release([jobId]);
+    f.end(1);
+    f.request(2, 'queued');
+    const list = state.exec.getMockImplementation()!;
+    state.exec.mockImplementation(() =>
+      JSON.stringify([
+        { ...job('unrequested'), execution: null },
+        { ...job('malformed'), execution: '2' },
+        null,
+        ...JSON.parse(list()),
+      ]),
+    );
+    expect(await stop()).toEqual({
+      decision: 'block',
+      reason: `1 Coral job(s) launched in this session are still running with no wait attached. Run coral-cli jobs wait ${jobId} to wait for them.`,
+    });
+    expect(await stop()).toBeNull();
+  });
 
   it('session job guard: fails open if the list becomes unavailable after an ignored block', async () => {
     expect((await stop())?.decision).toBe('block');

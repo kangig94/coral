@@ -62,6 +62,71 @@ describe('post-compact.mjs', () => {
     expect(lines).toContain('- coral-cli jobs wait <job-id> --embed');
   });
 
+  it('recovers older live snapshots that omit resultPath', () => {
+    const fixture = createFixture();
+    const hooksDir = join(fixture.snapshotDir, 'hooks');
+    mkdirSync(hooksDir, { recursive: true });
+    writeFileSync(
+      join(hooksDir, `active-jobs-${Date.now()}-fixture.json`),
+      JSON.stringify({
+        version: 1,
+        projectDir: fixture.projectRoot,
+        capturedAtMs: Date.now(),
+        jobs: [{ jobId: 'job-live', phase: 'queued', hasResult: false }],
+      }),
+    );
+    const result = runHook(
+      POST_COMPACT_HOOK,
+      { cwd: fixture.projectRoot },
+      {
+        HOME: fixture.root,
+        CLAUDE_PROJECT_DIR: fixture.projectRoot,
+        TMPDIR: fixture.tmpRoot,
+      },
+    );
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout).hookSpecificOutput.additionalContext).toContain('coral-cli jobs wait job-live');
+  });
+
+  it.each(['outside', 'traversal', 'wrong-suffix', 'prefix-sibling'])(
+    'rejects a snapshot result path with %s',
+    (kind) => {
+      const fixture = createFixture();
+      const hooksDir = join(fixture.snapshotDir, 'hooks');
+      const jobsRoot = join(fixture.root, '.coral', buildFlavor() === 'dev' ? 'exports-dev' : 'exports', 'jobs');
+      const paths = {
+        outside: join(fixture.root, 'result.md'),
+        traversal: `${jobsRoot}/../../result.md`,
+        'wrong-suffix': `${jobsRoot}/job-1/native.jsonl`,
+        'prefix-sibling': `${jobsRoot}-other/result.md`,
+      };
+      mkdirSync(hooksDir, { recursive: true });
+      writeFileSync(
+        join(hooksDir, `active-jobs-${Date.now()}-fixture.json`),
+        JSON.stringify({
+          version: 1,
+          projectDir: fixture.projectRoot,
+          capturedAtMs: Date.now(),
+          jobs: [
+            { jobId: 'job-live', phase: 'running', hasResult: false, resultPath: paths[kind as keyof typeof paths] },
+          ],
+        }),
+      );
+      const result = runHook(
+        POST_COMPACT_HOOK,
+        { cwd: fixture.projectRoot },
+        {
+          HOME: fixture.root,
+          CLAUDE_PROJECT_DIR: fixture.projectRoot,
+          TMPDIR: fixture.tmpRoot,
+        },
+      );
+      expect(result.status).toBe(0);
+      expect(result.stdout).toBe('');
+      expect(result.stderr).toContain('rejected invalid compact snapshot');
+    },
+  );
+
   it('uses collision- and traversal-resistant keys for Coral-owned project paths', () => {
     expect(projectPathKey('/a-b/c')).not.toBe(projectPathKey('/a/b-c'));
     expect(projectPathKey('..\\..\\escape')).toMatch(/^[a-f0-9]{64}$/);

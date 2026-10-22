@@ -97,6 +97,7 @@ const TRANSPORT_ALLOWED = new Set([
   'src/jobs/records.ts',
   'src/jobs/scope.ts',
   'src/jobs/wait/contract.ts',
+  'src/jobs/wait/execution-selection.ts',
   'src/jobs/wait/cursor.ts',
   'src/jobs/wait/session.ts',
   'src/jobs/wait/snapshot.ts',

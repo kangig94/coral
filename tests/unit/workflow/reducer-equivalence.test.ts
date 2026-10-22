@@ -13,44 +13,9 @@ import { buildWorkflowPlan, compileWorkflowPlan } from '#src/workflow/plan.js';
 import { readWorkflowView } from '#src/workflow/read-queries.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { TEST_CODEX_BINDING, TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
-import type { JobConversation } from '#src/jobs/conversation/entry.js';
-import type { CoralEventInput } from '#src/store/envelope.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
 const NOW = new Date('2026-04-19T00:00:00.000Z');
-
-function jobConversationInputs(sessionId: string, jobId: string): CoralEventInput[] {
-  const opened: JobConversation = {
-    sessionId,
-    binding: TEST_CODEX_BINDING,
-    name: sessionId,
-    state: 'pending',
-    retention: 'retain',
-    artifactHandles: [],
-    retentionDiscard: { attempts: [] },
-    providerContinuity: null,
-    cwd: '/workspace/coral',
-    projectRoot: '/workspace/coral',
-    backendNamespace: 'tests',
-    createdAt: NOW.toISOString(),
-    lastUsedAt: NOW.toISOString(),
-    version: 1,
-  };
-  const claimed: JobConversation = { ...opened, activeJobId: jobId, version: 2 };
-  return [
-    {
-      type: 'session.opened',
-      stream: { kind: 'session', id: sessionId },
-      refs: { sessionId },
-      body: { entry: opened, controller: 'default', scope_key: `${sessionId}-scope` },
-    },
-    {
-      type: 'session.claimed',
-      stream: { kind: 'session', id: sessionId },
-      refs: { sessionId, jobId },
-      body: { entry: claimed, jobId },
-    },
-  ];
-}
 
 describe('workflow reducer equivalence', () => {
   it('builds WorkflowView slot outcomes from child job projections', () => {
@@ -64,8 +29,8 @@ describe('workflow reducer equivalence', () => {
       });
       const plannedSlots = compileWorkflowPlan(plan, {
         jobIds: new Map([
-          [plan.slots[0].slotId, 'job-1'],
-          [plan.slots[1].slotId, 'job-2'],
+          [plan.slots[0].slotId, '30000000-0000-4000-8000-000000000003'],
+          [plan.slots[1].slotId, '30000000-0000-4000-8000-000000000004'],
         ]),
       });
       const causeRef = { stream: { kind: 'workflow' as const, id: 'workflow-1' }, seq: 1 };
@@ -73,73 +38,95 @@ describe('workflow reducer equivalence', () => {
         db,
         [
           workflowPlanDeclaredEvent('workflow-1', plan, TEST_PROVIDER_SCOPE),
-          ...plannedSlots.flatMap((slot) => [
-            ...jobConversationInputs(`session-${slot.jobId}`, slot.jobId),
-            {
-              type: 'job.launch.requested' as const,
+          ...plannedSlots.flatMap((slot) => {
+            const metadata = {
               stream: { kind: 'job' as const, id: slot.jobId },
               refs: {
-                sessionId: `session-${slot.jobId}`,
+                jobId: slot.jobId,
                 parentJobId: 'workflow-1',
                 workflowId: 'workflow-1',
                 workflowSlotId: slot.slotId,
               },
-              body: {
-                owner: { kind: 'workflow' as const, id: 'workflow-1' },
-                sessionId: `session-${slot.jobId}`,
-                provider: slot.provider,
-                providerAction: 'exec' as const,
-                projectRoot: '/workspace/coral',
-                backendNamespace: 'tests',
-                jobKind: 'provider' as const,
-                workflowSlotGeneration: 0,
-                pool: 'default',
-                enqueueSequence: slot.stepIndex + 1,
-                request: {
-                  prompt: slot.instruction,
-                  cwd: '/workspace/coral',
-                  bypassPermissions: false,
-                  coralEnv: {},
+            };
+            return [
+              {
+                ...metadata,
+                type: 'job.opened',
+                body: {
+                  owner: { kind: 'workflow' as const, id: 'workflow-1' },
+                  projectRoot: '/workspace/coral',
+                  jobKind: 'provider' as const,
+                  workflowSlotId: slot.slotId,
+                  conversation: {
+                    provider: slot.provider,
+                    binding: TEST_CODEX_BINDING,
+                    name: slot.jobId,
+                    cwd: fixtureCanonicalWorkDir('/workspace/coral'),
+                    bypassPermissions: false,
+                    retention: 'retain' as const,
+                  },
+                  createdAt: NOW.toISOString(),
                 },
-                createdAt: '2026-04-19T00:00:00.000Z',
               },
-            },
-          ]),
+              {
+                ...metadata,
+                type: 'job.execution.requested',
+                body: {
+                  execution: 1,
+                  input: slot.instruction,
+                  action: 'exec',
+                  pool: 'default',
+                  enqueueSequence: slot.stepIndex + 1,
+                  coralEnv: {},
+                  backendNamespace: 'tests',
+                  createdAt: NOW.toISOString(),
+                },
+              },
+            ];
+          }),
         ],
         { now: () => NOW, reducers, bodyCodec, providers: permissiveProviderLookupPort },
       );
 
-      commitInputs(
-        db,
-        [
-          {
-            type: 'job.terminal.recorded',
-            stream: { kind: 'job' as const, id: 'job-1' },
-            refs: { sessionId: 'session-job-1', parentJobId: 'workflow-1', workflowSlotId: plan.slots[0].slotId },
-            body: {
-              terminal: {
-                outcome: { kind: 'completed' as const },
-                durationMs: 1,
-                content: 'done',
+      for (const [index, slot] of plannedSlots.entries()) {
+        const accepted = commitInputs(
+          db,
+          [
+            {
+              type: 'job.execution.outcome.accepted',
+              stream: { kind: 'job', id: slot.jobId },
+              refs: { jobId: slot.jobId, parentJobId: 'workflow-1', workflowSlotId: slot.slotId },
+              body: {
+                execution: 1,
+                terminal: {
+                  outcome: index === 0 ? { kind: 'completed' } : { kind: 'failed', causeRef },
+                  durationMs: index + 1,
+                  content: index === 0 ? 'done' : '',
+                },
               },
             },
-          },
-          {
-            type: 'job.terminal.recorded',
-            stream: { kind: 'job' as const, id: 'job-2' },
-            refs: { sessionId: 'session-job-2', parentJobId: 'workflow-1', workflowSlotId: plan.slots[1].slotId },
-            body: {
-              terminal: {
-                outcome: { kind: 'failed' as const, causeRef },
-                durationMs: 2,
-                content: '',
-              },
+          ],
+          { now: () => NOW, reducers, bodyCodec, providers: permissiveProviderLookupPort },
+        )[0];
+        commitInputs(
+          db,
+          [
+            {
+              type: 'job.execution.ended',
+              stream: { kind: 'job', id: slot.jobId },
+              refs: { jobId: slot.jobId },
+              body: { execution: 1, causeRef: { stream: { kind: 'job', id: slot.jobId }, seq: accepted.seq } },
             },
-          },
-          workflowCompletedEvent('workflow-1', { outcome: 'failed', causeRef, stepDetails: [] }),
-        ],
-        { now: () => NOW, reducers, bodyCodec, providers: permissiveProviderLookupPort },
-      );
+          ],
+          { now: () => NOW, reducers, bodyCodec, providers: permissiveProviderLookupPort },
+        );
+      }
+      commitInputs(db, [workflowCompletedEvent('workflow-1', { outcome: 'failed', causeRef, stepDetails: [] })], {
+        now: () => NOW,
+        reducers,
+        bodyCodec,
+        providers: permissiveProviderLookupPort,
+      });
 
       expect(
         readWorkflowView(db, 'workflow-1', {
@@ -152,8 +139,8 @@ describe('workflow reducer equivalence', () => {
         outcome: 'failed',
         causeRef,
         slotOutcomes: {
-          [plan.slots[0].slotId]: { jobId: 'job-1', phase: 'completed', causeRef: null },
-          [plan.slots[1].slotId]: { jobId: 'job-2', phase: 'error', causeRef },
+          [plan.slots[0].slotId]: { jobId: '30000000-0000-4000-8000-000000000003', phase: 'completed', causeRef: null },
+          [plan.slots[1].slotId]: { jobId: '30000000-0000-4000-8000-000000000004', phase: 'error', causeRef },
         },
       });
     } finally {

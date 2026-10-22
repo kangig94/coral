@@ -1,3 +1,4 @@
+import { testConversationFacet } from '#tests/helpers/session.js';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { HostRef } from '#src/providers/contract.js';
 import type * as ProviderHostsMod from '#src/coordinator/live/provider-hosts/index.js';
@@ -104,14 +105,12 @@ describe('provider host idle properties', () => {
       time: runtime.time,
     });
     const jobId = '00000000-0000-4000-8000-000000000601';
-    const sessionId = 'idle-recheck-session';
     const order: string[] = [];
 
     try {
       initTestJob(progressStore, {
         jobId,
-        sessionId,
-        provider: 'codex',
+        conversation: testConversationFacet('codex', '/workspace'),
         projectRoot: '/workspace',
         backendNamespace: 'idle-recheck-test',
         initialPhase: 'running',
@@ -144,11 +143,10 @@ describe('provider host idle properties', () => {
       })();
       const consumed = await consumeJobStream({
         jobId,
-        sessionId,
-        initialVersion: 1,
+        execution: 1,
         stream,
         decodeContinuity: () => ({ ok: true, value: undefined }),
-        sessionApi: {
+        conversationApi: {
           checkpointJobContinuityAtomic: vi.fn(),
           recordArtifactHandleAtomic: vi.fn(),
         },
@@ -163,7 +161,7 @@ describe('provider host idle properties', () => {
 
       order.push('terminal-commit');
       expect(() =>
-        commitJobTerminal(progressStore, jobId, sessionId, {
+        commitJobTerminal(progressStore, jobId, 1, {
           content: 'done',
           durationMs: 0,
           outcome: { kind: 'completed' },

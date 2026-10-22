@@ -101,6 +101,13 @@ describe('pre-compact.mjs', () => {
     mkdirSync(join(jobRoot, 'executions', '2'), { recursive: true });
     writeFileSync(join(jobRoot, 'executions', '1', 'result.md'), 'first execution');
     writeFileSync(resultPath, 'second execution');
+    writeFileSync(
+      join(fixture.pluginRoot, 'bridge', 'coral-cli'),
+      `#!/usr/bin/env node
+process.stdout.write(${JSON.stringify(JSON.stringify([{ jobId: 'job-continued', execution: 2, resultPath }]))});
+`,
+      { mode: 0o755 },
+    );
     const env = { HOME: fixture.root, CLAUDE_PROJECT_DIR: fixture.projectRoot, TMPDIR: fixture.tmpRoot };
     expect(runHook(hook, { cwd: fixture.projectRoot }, env).status).toBe(0);
     const snapshots = join(fixture.snapshotDir, 'hooks');

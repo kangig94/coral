@@ -1,3 +1,5 @@
+import type { RecoveryReport } from '../../recovery/containment.js';
+import type { ExecutionFinisher } from '../../jobs/finishing.js';
 import type { JobLocationIndex } from '../../jobs/location-index.js';
 import type { SettlePendingLaunchesFn, TerminateRegisteredChildrenFn } from '../shutdown.js';
 import type { SuccessionInterposition } from '../succession/interposition.js';
@@ -61,6 +63,7 @@ export type CreateServerFn = (handler: (req: IncomingMessage, res: ServerRespons
 export type FetchFn = (url: string, init?: RequestInit) => Promise<Response>;
 
 export type CoordinatorCoreOptions = {
+  executionFinisher: ExecutionFinisher;
   jobLocationIndex?: JobLocationIndex;
   runtime: Runtime;
   storeFormat: StoreFormatDescription;
@@ -83,7 +86,10 @@ export type CoordinatorCoreOptions = {
   removeBackendInfoIfOwnerFn?: (instanceId: string) => void | BackendInfoRemovalResult;
   closeServerFn?: (server: Server) => Promise<void>;
   cleanupStaleJobsFn?: (currentBundleHash: string) => void | Promise<void>;
-  markJobsAsErrorFn?: (message: string) => void | Promise<void>;
+  markJobsAsErrorFn?: (
+    message: string,
+    signal: AbortSignal,
+  ) => void | RecoveryReport<unknown> | Promise<void | RecoveryReport<unknown>>;
   createStoreServicesFromDbFn?: (storeDb: Database) => CoordinatorStoreServices;
   settlePendingLaunchesFn?: SettlePendingLaunchesFn;
   terminateRegisteredChildrenFn?: TerminateRegisteredChildrenFn;
@@ -136,7 +142,7 @@ export type CoordinatorCoreOptions = {
    * ends. Wired from the coordinator's lifecycle reactor; omitted in lightweight
    * harnesses (simulation, unit tests), where end-of-discussion cleanup is a no-op.
    */
-  discardSessionArtifacts?: (conversationJobId: string) => Promise<void>;
+  discardConversationArtifacts?: (jobId: string) => Promise<void>;
 };
 
 export type CoordinatorCoreResult = {
@@ -149,6 +155,7 @@ export type CoordinatorCoreResult = {
   runtimeState: MutableCoordinatorRuntimeState;
   storeServicesRef: StoreServicesRef;
   eventBus: TypedEventBus;
+  holdsInternalExecution(jobId: string, execution: number): boolean;
   launchCoordinator: LaunchCoordinator;
   providerRegistry: ProviderRegistry;
   systemProviderScope?: Extract<ProviderScope, { origin: 'system' }>;

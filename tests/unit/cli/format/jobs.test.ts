@@ -4,6 +4,9 @@ import {
   formatJobDetail,
   formatJobsList,
   formatLaunch,
+  formatLaunchWaitHint,
+  formatWorkflowSlot,
+  formatAbortResult,
   renderJobsList,
 } from '#src/cli/format/jobs.js';
 import { jobReadSurfaceFixture } from '#tests/helpers/job-read-surface.js';
@@ -57,6 +60,48 @@ describe('jobs list and detail formatting', () => {
     expect(second).toContain(`coral-cli jobs wait ${f.jobId}`);
     expect(second).not.toContain('Exit:');
     expect(second).not.toContain('result #1');
+    expect(second).not.toContain('Result path:');
+  });
+
+  it('pins queued detail and launch wait commands to the same committed execution', () => {
+    const f = fixture('queued');
+    const detail = f.store.loadJobDetailResponse(f.jobId)!;
+    detail.epochKey = 'epoch';
+    const second = detail.executions![1];
+    const hint = formatLaunchWaitHint({ jobId: f.jobId, epochKey: detail.epochKey, requestedSeq: second.requestedSeq });
+    const command = hint.split('\n')[1];
+    expect(command).toContain('--execution-selection');
+    const output = formatJobDetail(detail).split('Execution #2')[1];
+    expect(output).toContain(command);
+    expect(output).not.toContain('Result path:');
+  });
+
+  it('renders workflow slot lineage and execution ordinals in separate fields', () => {
+    const f = fixture('queued');
+    const detail = f.store.loadJobDetailResponse(f.jobId)!;
+    detail.status.parentWorkflowJobId = 'parent';
+    detail.status.workflowSlotId = 'parent:review';
+    expect(formatWorkflowSlot(detail.status)).toBe('review');
+    const output = renderJobsList(formatJobsList({ jobs: [{ jobId: f.jobId, status: detail.status }] }));
+    expect(output).toContain('review');
+    expect(output).toContain('#2');
+  });
+
+  it('renders a finishing abort refusal with a runnable wait remedy', () => {
+    const output = formatAbortResult({
+      aborted: [],
+      notFound: [],
+      refused: [
+        {
+          jobId: 'job-1',
+          reason: 'The execution has accepted its outcome and is finishing.',
+          nextStep: { detail: 'Wait for the execution to end.', remedy: { kind: 'wait-job', jobId: 'job-1' } },
+        },
+      ],
+    });
+    expect(output).toContain('Abort held for job-1: The execution has accepted its outcome and is finishing.');
+    expect(output).toContain('command=coral-cli jobs wait job-1');
+    expect(output.match(/coral-cli jobs wait/g)).toHaveLength(1);
   });
 
   it.each(['running', 'queued'] as const)('prints only the job id for a %s provider launch', (launchState) => {
@@ -67,4 +112,21 @@ describe('jobs list and detail formatting', () => {
     );
     expect(formatDetachedLaunchStatus(response)).toBe(`Provider job ${jobId} ${launchState}`);
   });
+});
+
+it('renders the durable finishing reason and a typed recovery inspection command', () => {
+  const f = fixture('queued');
+  const detail = f.store.loadJobDetailResponse(f.jobId)!;
+  detail.status.finishingStatus = {
+    stage: 'accept',
+    kind: 'blocked',
+    reason: 'disk unavailable',
+    successor: 'recovery-quarantine',
+  };
+  const text = formatJobDetail(detail);
+  expect(text).toContain('Finishing status: blocked; disk unavailable');
+  expect(text).toContain('command=coral-cli backend recovery-quarantine list');
+  expect(formatJobsList({ jobs: [{ jobId: f.jobId, status: detail.status }] })[0].phase).toContain(
+    'finishing blocked: disk unavailable',
+  );
 });

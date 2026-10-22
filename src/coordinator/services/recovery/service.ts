@@ -4,6 +4,7 @@ import type { ProviderContinuityBlob } from '../../../jobs/conversation/continui
 import { backendLog } from '../../../infra/backend-log.js';
 import { createMonotonicClock } from '../../../infra/monotonic-clock.js';
 import type { AppServerRuntime, JobLaunch, JobRuntime, JobTerminal } from '../../../jobs/records.js';
+import type { ExecutionFinisher } from '../../../jobs/finishing.js';
 import { isTerminalPhase } from '../../../jobs/phase.js';
 import { hasProviderOperationForJob, readProviderOperationForJob } from '../../../store/provider-operation-journal.js';
 import { isDurableCliRuntime } from '../../../runtime/durable-runtime.js';
@@ -62,6 +63,7 @@ function requireProviderLaunchRecord(
 
 export interface RecoveryServiceDeps {
   runtime: Runtime;
+  executionFinisher: ExecutionFinisher;
   conversationManager: ConversationRecoveryPort;
   abortRegistry: JobAbortRegistryPort;
   backendNamespace: string;
@@ -131,7 +133,7 @@ export class RecoveryService {
     if (provider === null || launchRecord.jobId === null) {
       return { ok: false, failure: { reason: 'invalid-persisted-binding', provider: provider ?? 'unknown' } };
     }
-    const session = this.deps.conversationManager.readById(launchRecord.jobId, { forceFresh: true });
+    const session = this.deps.conversationManager.readById(launchRecord.jobId);
     if (session === null) return { ok: false, failure: { reason: 'invalid-persisted-binding', provider } };
     if (jobConversationProvider(session) !== launchRecord.provider) {
       return { ok: false, failure: { reason: 'invalid-persisted-binding', provider } };
@@ -235,12 +237,22 @@ export class RecoveryService {
   ): Promise<void> {
     const { launchRecord, boundProvider } = authority;
     const status = this.deps.progressStore.readStatus(launchRecord.jobId);
-    if (!status || isTerminalPhase(status.phase)) {
+    if (!status || isTerminalPhase(status.phase) || status.execution !== launchRecord.execution) {
       if (status && options.reason === 'handoff') {
         backendLog.warn(`skipping finalize for already-terminal job ${launchRecord.jobId} during handoff recovery`);
       }
       return;
     }
+
+    if (status.finishing === true && status.execution === launchRecord.execution) {
+      options.signal.throwIfAborted();
+      options.onCommitStart();
+      this.deps.abortRegistry.remove(launchRecord.jobId, launchRecord.execution);
+      this.deps.executionFinisher.schedule({ jobId: launchRecord.jobId, execution: launchRecord.execution });
+      return;
+    }
+
+    if (this.deps.executionFinisher.owns({ jobId: launchRecord.jobId, execution: launchRecord.execution })) return;
 
     const providerOperation = readProviderOperationForJob(this.deps.progressStore.getDb(), launchRecord.jobId);
     if (
@@ -280,10 +292,10 @@ export class RecoveryService {
     await finalizeInterruptedAppServerRecovery(plan, performed, status, {
       runtime: this.deps.runtime,
       conversationManager: this.deps.conversationManager,
+      executionFinisher: this.deps.executionFinisher,
       abortRegistry: this.deps.abortRegistry,
       launchAdmission: this.deps.launchAdmission,
       launchPermit: null,
-      publishTerminalResult: (jobId) => this.deps.progressStore.ensureResultArtifact(jobId),
     });
   }
 
@@ -332,6 +344,15 @@ export class RecoveryService {
     if (status === null) {
       throw new Error(`Interrupted durable recovery lost job status for ${launchRecord.jobId}.`);
     }
+    if (status.finishing === true && status.execution === launchRecord.execution) {
+      fence.signal.throwIfAborted();
+      fence.onCommitStart();
+      this.deps.abortRegistry.remove(launchRecord.jobId, launchRecord.execution);
+      this.deps.executionFinisher.schedule({ jobId: launchRecord.jobId, execution: launchRecord.execution });
+      return;
+    }
+    if (isTerminalPhase(status.phase) || status.execution !== launchRecord.execution) return;
+    if (this.deps.executionFinisher.owns({ jobId: launchRecord.jobId, execution: launchRecord.execution })) return;
     const plan = planInterruptedDurableRecovery(authority, runtimeRecord, observation, {
       recovery: boundProvider.recovery !== undefined,
     });
@@ -345,10 +366,10 @@ export class RecoveryService {
     await finalizeInterruptedDurableRecovery(plan, performed, status, {
       runtime: this.deps.runtime,
       conversationManager: this.deps.conversationManager,
+      executionFinisher: this.deps.executionFinisher,
       abortRegistry: this.deps.abortRegistry,
       launchAdmission: this.deps.launchAdmission,
       launchPermit: null,
-      publishTerminalResult: (jobId) => this.deps.progressStore.ensureResultArtifact(jobId),
     });
   }
 

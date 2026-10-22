@@ -24,7 +24,8 @@ import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { TEST_CLAUDE_ACCESS } from '#tests/helpers/provider-credentials.js';
 import { JobStore } from '#src/jobs/store.js';
 import { ConversationManager } from '#src/jobs/conversation/shell.js';
-import { allocateTestSession } from '#tests/helpers/session.js';
+import { TEST_CLAUDE_BINDING } from '#tests/helpers/provider-credentials.js';
+import { ExecutionFinisher, readExecutionFinishingState } from '#src/jobs/finishing.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
@@ -50,7 +51,7 @@ it.each(['plugin-cache-only', 'unused-old-copy'] as const)(
     const runtime = createRealRuntime('prod', { baseDir: directory });
     const request = {
       action: 'exec' as const,
-      sessionId: '',
+      jobId: '',
       prompt: 'hello',
       cwd: fixtureCanonicalWorkDir(directory),
       bypassPermissions: false,
@@ -83,21 +84,26 @@ it.each(['plugin-cache-only', 'unused-old-copy'] as const)(
           providers: permissiveProviderLookupPort,
           reducers: composeReducers(jobsRegistry, discussRegistry, workflowRegistry),
         });
-        sessions = ConversationManager.forProduction(
-          directory,
-          runtime,
-          (cb) => store.commit(cb),
-          () => {},
-          { db },
-        );
-        const session = allocateTestSession(sessions, 'claude', 'test', undefined, directory, directory, 'tests');
-        request.sessionId = session.sessionId;
-        record.prepareSource.sessionId = session.sessionId;
-        sessions.claimForJobSync(session.sessionId, record.operation.jobId);
-        store.initJob({
+        sessions = new ConversationManager(directory, runtime, (cb) => store.commit(cb), db);
+        request.jobId = record.operation.jobId;
+        const conversation = sessions.prepare({
           jobId: record.operation.jobId,
-          sessionId: session.sessionId,
-          provider: 'claude',
+          binding: TEST_CLAUDE_BINDING,
+          name: 'test',
+          cwd: fixtureCanonicalWorkDir(directory),
+          projectRoot: directory,
+          backendNamespace: 'tests',
+        });
+        store.initJob({
+          jobId: conversation.jobId,
+          conversation: {
+            provider: conversation.provider,
+            binding: conversation.binding,
+            name: conversation.name,
+            cwd: conversation.cwd,
+            bypassPermissions: conversation.bypassPermissions,
+            retention: conversation.retention,
+          },
           projectRoot: directory,
           backendNamespace: 'tests',
         });
@@ -173,7 +179,26 @@ it.each(['plugin-cache-only', 'unused-old-copy'] as const)(
         }),
       },
     });
+    const reducers = composeReducers(jobsRegistry, discussRegistry, workflowRegistry);
+    const executionFinisher = new ExecutionFinisher({
+      time: runtime.time,
+      commit: (cb) => store.commit(cb),
+      read: (address) =>
+        readExecutionFinishingState(harness.db, address, {
+          schemas: reducers.schemas,
+          streamKinds: reducers.streamKinds,
+          bodyCodec: store.bodyCodec,
+        }),
+      quiesce: async () => readProviderOperation(harness.db, harness.record.operation) === null,
+      retentionAction: async () => {
+        throw new Error('Retained conversation requires no discard action');
+      },
+      settleRetention: async () => {
+        throw new Error('Retained conversation requires no discard settlement');
+      },
+    });
     const handler = createProviderEventHandler({
+      executionFinisher,
       db: harness.db,
       progressStore: store,
       appendContext: {
@@ -189,9 +214,7 @@ it.each(['plugin-cache-only', 'unused-old-copy'] as const)(
         renderBindingFailure: () => 'Invalid test binding',
       },
       runtime,
-      emitSessionReleased: () => {},
       recordedStopCauseFor: () => null,
-      operations: { settled: (identity) => harness.registry.settled(identity) },
       observeCommitted: () => {},
     });
     await proxy.listen();
@@ -253,15 +276,14 @@ it.each(['plugin-cache-only', 'unused-old-copy'] as const)(
               jobId: operation.jobId,
               operationId: operation.operationId,
               jobLaunchEventSeq: harness.record.prepareSource.jobLaunchEventSeq,
-              sessionId: request.sessionId,
-              sessionVersion: 1,
+              execution: 1,
               childAuthorization: {
                 ...harness.record.prepareSource.childAuthorization,
                 principalWire: canonicalizePrincipalWire(harness.record.prepareSource.childAuthorization.principalWire),
               },
               hostSpec: coordinatorSpec,
               provider: 'claude',
-              binding: sessions.get('claude', request.sessionId)!.binding,
+              binding: TEST_CLAUDE_BINDING,
               request,
               persistedContinuity: null,
               baseEnv: {},
@@ -279,7 +301,7 @@ it.each(['plugin-cache-only', 'unused-old-copy'] as const)(
       expect(
         harness.db
           .prepare('SELECT COUNT(*) AS count FROM events WHERE stream_id = ? AND type = ?')
-          .get(operation.jobId, 'job.runtime.started'),
+          .get(operation.jobId, 'job.execution.started'),
       ).toEqual({ count: 1 });
       proxy.emitProviderEvent(
         { jobId: operation.jobId, operationId: operation.operationId },
@@ -289,11 +311,12 @@ it.each(['plugin-cache-only', 'unused-old-copy'] as const)(
           diagnostics: {},
         },
       );
-      await vi.waitFor(() => expect(store.readStatus(operation.jobId)?.phase).toBe('completed'));
+      await vi.waitFor(() => expect(store.readStatus(operation.jobId)?.finishing).toBe(true));
       harness.reconciler.onControlEstablished(authority);
+      await vi.waitFor(() => expect(store.readStatus(operation.jobId)?.phase).toBe('completed'));
       await vi.waitFor(() => expect(readProviderOperation(harness.db, operation)).toBeNull());
-      expect(sessions.get('claude', request.sessionId)).not.toBeNull();
-      expect(sessions.get('claude', request.sessionId)?.activeJobId).toBeUndefined();
+      expect(sessions.get('claude', request.jobId)).not.toBeNull();
+      expect(sessions.get('claude', request.jobId)?.open).toBe(false);
       expect(harness.fatalErrors).toEqual([]);
     } finally {
       control.close();

@@ -1,3 +1,4 @@
+import { sameEpoch } from '../store/epoch/identity.js';
 import type { EnvPort } from '../infra/port-types.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import { assertNever, errorMessage } from '../infra/error-format.js';
@@ -84,7 +85,9 @@ export async function recoverStaleAtom(
     const abortTransitionedLiveJob = abortResult.aborted.includes(atom.jobId);
     if (!abortTransitionedLiveJob) return false;
     state.expectedStaleAborts.set(atom.jobId, {
-      execution: atom.execution, requestedSeq: atom.requestedSeq, epochKey: atom.epochKey,
+      execution: atom.execution,
+      requestedSeq: atom.requestedSeq,
+      epochKey: atom.epochKey,
     });
 
     let ended = false;
@@ -92,16 +95,22 @@ export async function recoverStaleAtom(
       for await (const event of executionSvc.waitStream({
         jobIds: [atom.jobId],
         timeoutSeconds: options.staleAbortTimeoutMs / 1_000,
-        executionSelections: [{ jobId: atom.jobId, requestedSeq: atom.requestedSeq,
-          epochKey: atom.epochKey, awaitingArtifact: false }],
+        executionSelections: [
+          { jobId: atom.jobId, requestedSeq: atom.requestedSeq, epochKey: atom.epochKey, awaitingArtifact: false },
+        ],
       })) {
         if (event.type !== 'terminal' || event.jobId !== atom.jobId) continue;
         const selection = event.executionSelections?.find((entry) => entry.jobId === atom.jobId);
-        if (selection?.requestedSeq !== atom.requestedSeq || selection.epochKey !== atom.epochKey ||
-            selection.deliveredEndSeq !== event.seq) continue;
+        if (
+          selection?.requestedSeq !== atom.requestedSeq ||
+          !sameEpoch(selection.epochKey, atom.epochKey) ||
+          selection.deliveredEndSeq !== event.seq
+        )
+          continue;
         if (event.result.outcome.kind !== 'aborted') return false;
         state.executionSelections = state.executionSelections.map((entry) =>
-          entry.jobId === atom.jobId ? { ...selection } : entry);
+          entry.jobId === atom.jobId ? { ...selection } : entry,
+        );
         state.cursor = advanceWaitRenderCursor(state.cursor, event).cursor;
         state.expectedStaleAborts.delete(atom.jobId);
         ended = true;
@@ -163,9 +172,11 @@ export async function recoverStaleAtom(
       requestedSeq: resumed.requestedSeq,
       epochKey: resumed.epochKey,
     });
-    state.executionSelections = state.executionSelections.map((entry) => entry.jobId === atom.jobId
-      ? { jobId: atom.jobId, requestedSeq: resumed.requestedSeq, epochKey: resumed.epochKey, awaitingArtifact: false }
-      : entry);
+    state.executionSelections = state.executionSelections.map((entry) =>
+      entry.jobId === atom.jobId
+        ? { jobId: atom.jobId, requestedSeq: resumed.requestedSeq, epochKey: resumed.epochKey, awaitingArtifact: false }
+        : entry,
+    );
     const launchState = await executionSvc.awaitLaunch(resumed.jobId, BOOTSTRAP_TIMEOUT_MS);
     if (launchState === 'error') {
       const message = await readLaunchFailureMessage(resumed.jobId, executionSvc, options.signal, resumed);

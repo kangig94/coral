@@ -19,13 +19,15 @@ export function markJobAsError(
   if (launch === null && fault.kind !== 'missing_launch_record') {
     throw new Error(`Cannot record recovery terminal for ${status.jobId} without its launch record.`);
   }
+  if (status.execution === null) throw new Error(`Job '${status.jobId}' has no requested execution.`);
+  const execution = status.execution;
   const durationMs = launch === null ? 0 : elapsedDurationMs(launch.createdAt, endTimeMs, `job ${status.jobId}`);
   progressStore.commit((c) => {
     const outcome = recoveryFaultOutcome(c, status, fault);
     appendJobExecutionOutcomeAccepted(c, {
       jobId: status.jobId,
-      execution: status.execution,
-      namespace: status.backendNamespace,
+      execution,
+      namespace: status.backendNamespace ?? undefined,
       project: status.projectRoot,
       terminal: { content: '', durationMs, outcome },
     });
@@ -49,9 +51,9 @@ function recoveryFaultOutcome<Scope>(
       const cause = c.append({
         type: 'job.execution.progress',
         stream: { kind: 'job', id: status.jobId },
-        namespace: status.backendNamespace,
+        namespace: status.backendNamespace ?? undefined,
         project: status.projectRoot,
-        refs: buildJobEventRefs({ jobId: status.jobId, }),
+        refs: buildJobEventRefs({ jobId: status.jobId }),
         body: { ...fault, execution: status.execution },
       });
       return failedTerminalOutcome(cause);

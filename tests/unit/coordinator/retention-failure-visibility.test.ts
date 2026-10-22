@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { afterEach, expect, it, vi } from 'vitest';
 
 import {
@@ -61,7 +62,12 @@ it.each([true, false])('reports owner failures after holds fill the report (fail
     getProgressStore: () => fixture.store,
     openEpoch: () => ({ storeRoot: fixture.runtime.paths.coral.store.dbDir, epoch: '1', path: '/tmp/red/store.db' }),
     activeEpochKey: () => 'active',
-    jobLocations: new JobLocationIndex(fixture.runtime, fixture.runtime.paths.coral.generation.dataRoot),
+    jobLocations: new JobLocationIndex(
+      fixture.runtime,
+      fixture.runtime.paths.coral.generation.dataRoot,
+      undefined,
+      currentCoralStoreFormat().fingerprint,
+    ),
     log: () => undefined,
     publish: (status) => statuses.push({ ...status, outcomes: [...status.outcomes] }),
     cleanupScratch: () => {

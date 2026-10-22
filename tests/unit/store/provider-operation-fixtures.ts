@@ -61,6 +61,7 @@ export function providerOperationRecord(
         kind: 'process-group',
       },
     },
+    jobLaunchEventSeq: 1,
     prepareAttemptNumber: 1,
     prepareAttemptKey: 'b'.repeat(64),
     revision: options.revision ?? 0,
@@ -99,8 +100,7 @@ export function providerOperationRecord(
         phase,
         prepareSource: {
           jobLaunchEventSeq: 1,
-
-          execution: 2,
+          execution: 1,
           platform: 'linux',
           childAuthorization: {
             principalWire: {
@@ -160,6 +160,7 @@ export function providerOperationRecord(
         controlIntent: { kind: 'run' },
         terminalProviderSeq: 4,
         settlementIntent: 'release-after-terminal',
+        settlementFailure: { elapsedMs: 0, observedAtMs: 100, containmentRequested: false },
       });
   }
 }

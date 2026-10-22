@@ -130,3 +130,42 @@ describe('additive provider-operation startup health', () => {
     expect(parsed?.health.diagnostics?.providerOperationStartupReconciliation).toBeUndefined();
   });
 });
+
+it('skips and reports settlement failures it cannot decode while retaining understood health', () => {
+  const known = { jobId: 'known', cause: 'terminal-persist-failed', error: 'disk full', observedAtMs: 1 };
+  const parsed = parseBackendHealth({
+    ...HEALTHY_BASE,
+    diagnostics: {
+      settlementRefusalRecordingFailures: [
+        known,
+        { jobId: 'unknown', cause: 'removed-by-this-build', error: 'unknown', observedAtMs: 2 },
+      ],
+    },
+  });
+  expect(parsed?.health.status).toBe('ok');
+  expect(parsed?.health.diagnostics?.settlementRefusalRecordingFailures).toEqual([known]);
+  expect(parsed?.skippedSettlementRefusalRecordingFailures).toBe(1);
+  const status = statusFromParsedHealth(parsed!);
+  const text = formatBackendStatus(status, { kind: 'absent' }, null);
+  expect(text).toContain('Settlement refusal recording failures skipped: 1');
+  expect(text).toContain('disk full');
+  expect(text).not.toContain('removed-by-this-build');
+});
+
+it('shows durable execution finishing holds in backend status', () => {
+  const parsed = parseBackendHealth({
+    ...HEALTHY_BASE,
+    diagnostics: {
+      executionFinishing: [
+        {
+          jobId: 'job',
+          execution: 2,
+          status: { stage: 'finish', kind: 'blocked', reason: 'disk full', successor: 'recovery-quarantine' },
+        },
+      ],
+    },
+  });
+  expect(parsed).not.toBeNull();
+  const text = formatBackendStatus(statusFromParsedHealth(parsed!), { kind: 'absent' }, null);
+  expect(text).toContain('Execution finishing: job#2 blocked (finish); disk full; successor=recovery-quarantine');
+});

@@ -1,3 +1,4 @@
+import { executionRetryStatusSchema } from '../records.js';
 import { type WaitExecutionSelection, waitExecutionSelectionsSchema } from './execution-selection.js';
 import assert from 'node:assert/strict';
 import { z } from 'zod';
@@ -64,7 +65,9 @@ function snapshotJob(session: WaitSession, admission: WaitAdmission): WaitSnapsh
   const row: WaitSnapshotJob = { jobId, disposition, ...(message === undefined ? {} : { message }), progress: [] };
   if (disposition !== 'admitted') return row;
   row.phase = detail?.status.phase ?? 'unresolved';
-  if (!detail?.exit || !session.terminalDeliverable(admission) || session.terminalDelivery(admission) === null) return row;
+  row.finishingStatus = detail?.status.finishingStatus;
+  if (!detail?.exit || !session.terminalDeliverable(admission) || session.terminalDelivery(admission) === null)
+    return row;
   row.availability = availability;
   row.terminal = terminalSummary(detail, detail.exit);
   session.deliverTerminal(admission);
@@ -129,9 +132,14 @@ function snapshotEnvelopeBytes(snapshot: unknown): number {
 }
 
 /** An oversized snapshot never advances the input cursor; each subset retry repeats that unchanged cursor. */
-export function waitSnapshotTooLarge(jobIds: readonly string[], input: WaitCursor | undefined, selections: readonly WaitExecutionSelection[] = []): WaitSessionError {
+export function waitSnapshotTooLarge(
+  jobIds: readonly string[],
+  input: WaitCursor | undefined,
+  selections: readonly WaitExecutionSelection[] = [],
+): WaitSessionError {
   const retries = jobIds.map(
-    (jobId) => `coral-cli jobs wait '${jobId.replaceAll("'", "'\\''")}' --snapshot${input ? ` --cursor ${input}` : ''}${selections.length === 0 ? '' : ` --execution-selection '${JSON.stringify(selections).replaceAll("'", "'\\''")}'`}`,
+    (jobId) =>
+      `coral-cli jobs wait '${jobId.replaceAll("'", "'\\''")}' --snapshot${input ? ` --cursor ${input}` : ''}${selections.length === 0 ? '' : ` --execution-selection '${JSON.stringify(selections).replaceAll("'", "'\\''")}'`}`,
   );
   return new WaitSessionError(
     'wait_snapshot_too_large',
@@ -173,6 +181,7 @@ const waitSnapshotSchema = z
             disposition: z.enum(['admitted', 'missing', 'scope-mismatch', 'unknown', 'unreadable']),
             message: z.string().optional(),
             phase: z.string().optional(),
+            finishingStatus: executionRetryStatusSchema.optional(),
             progress: z.array(z.string()),
             terminal: z
               .object({

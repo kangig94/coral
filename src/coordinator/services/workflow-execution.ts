@@ -1,4 +1,4 @@
-import { committedExecutionRequest } from '../../jobs/wait/execution-detail.js';
+import { committedExecutionRequest } from '../../jobs/execution-journal.js';
 import { backendLog } from '../../infra/backend-log.js';
 import { errorMessage } from '../../infra/error-format.js';
 import { nowIsoString } from '../../infra/time.js';
@@ -97,42 +97,66 @@ export class WorkflowExecutionService {
         );
       }
       throwIfRequestAborted(signal);
-      this.deps.progressStore.withExecutionAdmission(jobId, 1, {
-        projectRoot: boundCtx.projectRoot, workDir, jobKind: 'workflow',
-      }, () => {
-      this.deps.progressStore.commit((c) => {
-        c.append(workflowPlanDeclaredEvent(jobId, plan, decodedScope.value));
-        c.append({
-          type: 'job.opened', stream: { kind: 'job', id: jobId },
-          namespace: this.deps.backendNamespace, project: ctx.projectRoot,
-          refs: { jobId, workflowId: jobId },
-          body: { jobKind: 'workflow', owner: { kind: 'workflow', id: jobId }, projectRoot: boundCtx.projectRoot,
-            cwd: workDir, bypassPermissions: false, createdAt: nowIsoString(this.deps.runtime.time) },
-        });
-        c.append({
-          type: 'job.execution.requested', stream: { kind: 'job', id: jobId },
-          namespace: this.deps.backendNamespace, project: ctx.projectRoot,
-          refs: { jobId, workflowId: jobId },
-          body: { execution: 1, input: input.startPrompt, action: 'exec', pool: 'default',
-            enqueueSequence: this.deps.progressStore.nextEnqueueSequence(), coralEnv: { ...boundCtx.coralEnv },
-            backendNamespace: this.deps.backendNamespace, bundleHash: this.deps.bundleHash,
-            createdAt: nowIsoString(this.deps.runtime.time) },
-        });
-        c.append({
-          type: 'job.execution.started',
-          stream: { kind: 'job', id: jobId },
-          namespace: this.deps.backendNamespace,
-          project: ctx.projectRoot,
-          refs: { jobId, workflowId: jobId },
-          body: {
-            execution: 1,
-            transport: 'workflow',
-            startedAt: nowIsoString(this.deps.runtime.time),
-          },
-        });
-        return undefined;
-      });
-      });
+      this.deps.progressStore.withExecutionAdmission(
+        jobId,
+        1,
+        {
+          projectRoot: boundCtx.projectRoot,
+          workDir,
+          jobKind: 'workflow',
+        },
+        () => {
+          this.deps.progressStore.commit((c) => {
+            c.append(workflowPlanDeclaredEvent(jobId, plan, decodedScope.value));
+            c.append({
+              type: 'job.opened',
+              stream: { kind: 'job', id: jobId },
+              namespace: this.deps.backendNamespace,
+              project: ctx.projectRoot,
+              refs: { jobId, workflowId: jobId },
+              body: {
+                jobKind: 'workflow',
+                owner: { kind: 'workflow', id: jobId },
+                projectRoot: boundCtx.projectRoot,
+                cwd: workDir,
+                bypassPermissions: false,
+                createdAt: nowIsoString(this.deps.runtime.time),
+              },
+            });
+            c.append({
+              type: 'job.execution.requested',
+              stream: { kind: 'job', id: jobId },
+              namespace: this.deps.backendNamespace,
+              project: ctx.projectRoot,
+              refs: { jobId, workflowId: jobId },
+              body: {
+                execution: 1,
+                input: input.startPrompt,
+                action: 'exec',
+                pool: 'default',
+                enqueueSequence: this.deps.progressStore.nextEnqueueSequence(),
+                coralEnv: { ...boundCtx.coralEnv },
+                backendNamespace: this.deps.backendNamespace,
+                bundleHash: this.deps.bundleHash,
+                createdAt: nowIsoString(this.deps.runtime.time),
+              },
+            });
+            c.append({
+              type: 'job.execution.started',
+              stream: { kind: 'job', id: jobId },
+              namespace: this.deps.backendNamespace,
+              project: ctx.projectRoot,
+              refs: { jobId, workflowId: jobId },
+              body: {
+                execution: 1,
+                transport: 'workflow',
+                startedAt: nowIsoString(this.deps.runtime.time),
+              },
+            });
+            return undefined;
+          });
+        },
+      );
     } catch (error: unknown) {
       this.deps.abortRegistry.remove(jobId, 1);
       throw error;
@@ -141,13 +165,22 @@ export class WorkflowExecutionService {
     this.deps.launchOrchestrator.markJobRunning(jobId);
 
     this.runWorkflowAsync(jobId, providerName, ast, input, boundCtx, plan, workDir);
-    return { kind: 'workflow', status: 'running', jobId, workflowId: jobId,
-      ...committedExecutionRequest(this.deps.progressStore.getDb(), jobId, 1, this.deps.currentJobEpochKey?.() ?? ':memory:') };
+    return {
+      kind: 'workflow',
+      status: 'running',
+      jobId,
+      workflowId: jobId,
+      epochKey: this.deps.currentJobEpochKey?.() ?? ':memory:',
+      ...committedExecutionRequest(this.deps.progressStore.getDb(), jobId, 1),
+    };
   }
 
   private commitWorkflowJobTerminal(jobId: string, intent: WorkflowFinalizationIntent): void {
     const status = this.deps.progressStore.readStatus(jobId);
-    const namespace = status?.backendNamespace ?? this.deps.backendNamespace;
+    if (status === null || status.execution === null)
+      throw new Error(`Workflow '${jobId}' has no requested execution.`);
+    const execution = status.execution;
+    const namespace = status.backendNamespace ?? this.deps.backendNamespace;
     const project = status?.projectRoot;
     const runtime = this.deps.progressStore.readRuntimeProjection(jobId);
     if (runtime?.transport !== 'workflow') {
@@ -160,7 +193,7 @@ export class WorkflowExecutionService {
     const durationMs = Math.max(0, this.deps.runtime.time.now() - startedAt);
 
     this.deps.coordinatorCommit((c) => {
-      composeWorkflowFinalization(c, jobId, intent, { namespace, project, durationMs });
+      composeWorkflowFinalization(c, jobId, intent, { execution, namespace, project, durationMs });
       return undefined;
     });
   }
@@ -194,7 +227,7 @@ export class WorkflowExecutionService {
       workDir,
       signal,
       onProgress: (message: string) => {
-        this.deps.progressStore.appendProgress(jobId, null, message);
+        this.deps.progressStore.appendProgress(jobId, message);
       },
       workflowJobId: jobId,
       declaredPlan,

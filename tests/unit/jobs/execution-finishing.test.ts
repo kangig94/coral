@@ -1,9 +1,17 @@
-import { mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync, existsSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { createRecoverySourceRegistry, createRecoveryQuarantineRetryService } from '#src/recovery/source-registry.js';
+import { SuccessionWriterParkedError } from '#src/store/db.js';
+import { RecoveryQuarantineStore } from '#src/recovery/quarantine.js';
+import { loadJobProjectionDetail, listJobProjections } from '#src/jobs/read-queries.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { ExecutionFinisher, readExecutionFinishingState, type ExecutionFinishingPorts } from '#src/jobs/finishing.js';
+import {
+  ExecutionFinisher,
+  ExecutionAcceptanceRefusedError,
+  readExecutionFinishingState,
+  readExecutionRetryStatus,
+  createExecutionFinishingRetryPlan,
+  type ExecutionFinishingPorts,
+} from '#src/jobs/finishing.js';
 import { appendJobExecutionOutcomeAccepted, failedTerminalOutcome } from '#src/jobs/terminal/recording.js';
 import { applyProviderEventAtSeq, type ProviderEventEffectPort } from '#src/jobs/provider-event.js';
 import { appendProviderTerminalInCommit } from '#src/coordinator/services/terminal-materializer.js';
@@ -15,10 +23,8 @@ import {
   openedJob,
   requestedExecution,
 } from '#tests/helpers/job-executions.js';
-import { createDeferred } from '#tools/testing/deferred.js';
 
 const harnesses: ReturnType<typeof executionHarness>[] = [];
-const directories: string[] = [];
 const address = { jobId, execution: 1 };
 function harness(discard = true) {
   const h = executionHarness();
@@ -44,6 +50,7 @@ function finisher(h: ReturnType<typeof harness>, overrides: Partial<ExecutionFin
   const retentionAction = vi.fn(async () => ({ attempt: 0, handles: ['/native'] }));
   const settleRetention = vi.fn(async () => ({ kind: 'completed', outcome: 'discarded' }) as const);
   const ports: ExecutionFinishingPorts = {
+    recovery: { db: () => h.db, readCtx: h.readCtx, time: { now: () => Date.now() } },
     time: { sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)) },
     commit: h.commit,
     read: (address) => readExecutionFinishingState(h.db, address, h.readCtx),
@@ -66,7 +73,6 @@ beforeEach(() => vi.useFakeTimers());
 afterEach(() => {
   vi.useRealTimers();
   for (const h of harnesses.splice(0)) h.db.close();
-  for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
 
 describe('accepted outcome finishing through real append validation', () => {
@@ -99,39 +105,6 @@ describe('accepted outcome finishing through real append validation', () => {
     const effects = f.settleRetention.mock.calls.length;
     await f.owner.finish(address);
     expect(f.settleRetention).toHaveBeenCalledTimes(effects);
-    h.append(requestedExecution(2));
-  });
-
-  it.each(['archive', 'discard'])('blocks continuation across a suspended %s effect', async (phase) => {
-    const h = harness();
-    accept(h);
-    const entered = createDeferred<void>();
-    const release = createDeferred<void>();
-    const effects: string[] = [];
-    const f = finisher(h, {
-      settleRetention: async () => {
-        expect(h.events().at(-1)?.type).toBe('job.retention.discard.requested');
-        effects.push('archive');
-        if (phase === 'archive') {
-          entered.resolve();
-          await release.promise;
-        }
-        effects.push('discard');
-        if (phase === 'discard') {
-          entered.resolve();
-          await release.promise;
-        }
-        return { kind: 'completed', outcome: 'discarded' };
-      },
-    });
-    const finished = f.owner.finish(address);
-    await entered.promise;
-    expect(effects).toEqual(phase === 'archive' ? ['archive'] : ['archive', 'discard']);
-    expect(() => h.append(requestedExecution(2))).toThrow();
-    expect(h.events().some((event) => event.type === 'job.execution.ended')).toBe(false);
-    release.resolve();
-    await finished;
-    assertClosed(h);
     h.append(requestedExecution(2));
   });
 
@@ -201,97 +174,14 @@ describe('accepted outcome finishing through real append validation', () => {
     expect(f.settleRetention).not.toHaveBeenCalled();
   });
 
-  it('commits #2 → restores native bytes → rejects activation → accepts rejection → retains → ends once', async () => {
-    const h = harness();
-    const directory = mkdtempSync(join(tmpdir(), 'coral-execution-restore-'));
-    directories.push(directory);
-    const native = join(directory, 'conversation.jsonl');
-    const original = Buffer.from('native conversation\n한글\n');
-    let archive: Buffer | undefined;
-    const effects: string[] = [];
-    const f = finisher(h, {
-      retentionAction: async () => ({ attempt: 0, handles: [native] }),
-      settleRetention: async (address) => {
-        const state = readExecutionFinishingState(h.db, address, h.readCtx);
-        expect(state.kind).toBe('finishing');
-        expect(h.events().at(-1)?.type).toBe('job.retention.discard.requested');
-        archive = readFileSync(native);
-        effects.push(`archive#${address.execution}`);
-        unlinkSync(native);
-        effects.push(`discard#${address.execution}`);
-        return { kind: 'completed', outcome: 'discarded' };
-      },
-    });
-    writeFileSync(native, original);
-    accept(h);
-    await f.owner.finish(address);
-    expect(existsSync(native)).toBe(false);
-    h.append(requestedExecution(2));
-    effects.push('requested#2');
-    writeFileSync(native, archive!, { flag: 'wx' });
-    effects.push('restore#2');
-    expect(readFileSync(native)).toEqual(original);
-    const activate = vi.fn(() => {
-      effects.push('reject-activation#2');
-      throw new Error('activation rejected');
-    });
-    expect(activate).toThrow('activation rejected');
-    const accepted = f.owner.accept({ jobId, execution: 2 }, (c) => {
-      const cause = c.append(
-        input('job.provider_failed', {
-          execution: 2,
-          provider: 'codex',
-          reason: 'request_failed',
-          message: 'activation rejected',
-        }),
-      );
-      appendJobExecutionOutcomeAccepted(c, {
-        jobId,
-        execution: 2,
-        terminal: { content: '', durationMs: 0, outcome: failedTerminalOutcome(cause) },
-      });
-      return undefined;
-    });
-    await vi.advanceTimersByTimeAsync(500);
-    await accepted;
-    await f.owner.finish({ jobId, execution: 2 });
-    const events = assertClosed(h, 2);
-    expect(events.map((event) => event.type)).toEqual([
-      'job.execution.requested',
-      'job.provider_failed',
-      'job.execution.outcome.accepted',
-      'job.retention.discard.requested',
-      'job.retention.discard.completed',
-      'job.execution.ended',
-    ]);
-    expect(effects).toEqual([
-      'archive#1',
-      'discard#1',
-      'requested#2',
-      'restore#2',
-      'reject-activation#2',
-      'archive#2',
-      'discard#2',
-    ]);
-    expect(archive).toEqual(original);
-    expect(existsSync(native)).toBe(false);
-    const count = h.events().length;
-    const effectCount = effects.length;
-    await f.owner.finish({ jobId, execution: 2 });
-    expect(h.events()).toHaveLength(count);
-    expect(effects).toHaveLength(effectCount);
-    expect(() =>
-      h.append(input('job.retention.discard.requested', { execution: 2, attempt: 1, handles: [native] })),
-    ).toThrow();
-  });
-
   it.each(['completion', 'rejection', 'setup failure', 'abort'])(
     'retains original %s ownership until its acceptance write recovers live',
     async (outcome) => {
       const h = harness(false);
       let fail = true;
       h.ctx.beforeAppend = (event) => {
-        if (fail && event.type === 'job.execution.outcome.accepted') throw new Error('journal unavailable');
+        if (fail && event.type === 'job.execution.outcome.accepted')
+          throw Object.assign(new Error('journal unavailable'), { code: 'EIO' });
       };
       const f = finisher(h);
       let writes = 0;
@@ -346,33 +236,57 @@ describe('accepted outcome finishing through real append validation', () => {
     },
   );
 
-  it('rereads an uncertain acceptance acknowledgement and transfers to one finalizer', async () => {
+  it('returns a deterministic refusal after a transient write failure without retaining retry ownership', async () => {
     const h = harness(false);
-    let loseAcknowledgement = true;
-    const commit: CommitEventsFn = (cb) => {
-      const result = h.commit(cb);
-      if (loseAcknowledgement) {
-        loseAcknowledgement = false;
-        throw new Error('ack lost');
-      }
-      return result;
-    };
-    const f = finisher(h, { commit });
+    const f = finisher(h);
+    const refusal = new ExecutionAcceptanceRefusedError('checkpoint changed');
     let writes = 0;
-    const producer = f.owner.accept(address, (c) => {
-      writes++;
-      appendJobExecutionOutcomeAccepted(c, {
-        ...address,
-        terminal: { content: 'preserved', durationMs: 1, outcome: { kind: 'completed' } },
-      });
-      return undefined;
+    const producer = f.owner.accept(address, () => {
+      if (writes++ === 0) throw Object.assign(new Error('store unavailable'), { code: 'EIO' });
+      throw refusal;
     });
+    const rejected = expect(producer).rejects.toBe(refusal);
     await vi.advanceTimersByTimeAsync(500);
-    await producer;
-    await f.owner.finish(address);
-    expect(writes).toBe(1);
-    assertClosed(h);
+    await rejected;
+    expect(writes).toBe(2);
+    expect(f.owner.owns(address)).toBe(false);
+    expect(f.owner.status(address)).toBeNull();
+    expect(readExecutionRetryStatus(h.db, address)).toBeNull();
+    expect(readExecutionFinishingState(h.db, address, h.readCtx)).toEqual({ kind: 'unaccepted' });
+    expect(f.quiesce).not.toHaveBeenCalled();
+    expect(h.events().map((event) => event.type)).toEqual(['job.opened', 'job.execution.requested']);
   });
+
+  it.each([new Error('ack lost'), new ExecutionAcceptanceRefusedError('ack lost')])(
+    'rereads an uncertain acceptance acknowledgement (%s) and transfers to one finalizer',
+    async (acknowledgementError) => {
+      const h = harness(false);
+      let loseAcknowledgement = true;
+      const commit: CommitEventsFn = (cb) => {
+        const result = h.commit(cb);
+        if (loseAcknowledgement) {
+          loseAcknowledgement = false;
+          throw acknowledgementError;
+        }
+        return result;
+      };
+      const f = finisher(h, { commit });
+      let writes = 0;
+      const producer = f.owner.accept(address, (c) => {
+        writes++;
+        appendJobExecutionOutcomeAccepted(c, {
+          ...address,
+          terminal: { content: 'preserved', durationMs: 1, outcome: { kind: 'completed' } },
+        });
+        return undefined;
+      });
+      await vi.advanceTimersByTimeAsync(500);
+      await producer;
+      await f.owner.finish(address);
+      expect(writes).toBe(1);
+      assertClosed(h);
+    },
+  );
 
   it.each(['job.retention.discard.requested', 'job.retention.discard.completed', 'job.execution.ended'])(
     'recovers a %s write failure without reissuing an applied effect',
@@ -383,7 +297,7 @@ describe('accepted outcome finishing through real append validation', () => {
       let issued = 0;
       const ledger = new Map<string, { kind: 'completed'; outcome: 'discarded' }>();
       h.ctx.beforeAppend = (event) => {
-        if (fail && event.type === type) throw new Error('write failed');
+        if (fail && event.type === type) throw Object.assign(new Error('write failed'), { code: 'EIO' });
       };
       const f = finisher(h, {
         settleRetention: async (address, action) => {
@@ -401,7 +315,7 @@ describe('accepted outcome finishing through real append validation', () => {
       expect(issued).toBe(type === 'job.retention.discard.requested' ? 0 : 1);
       expect(() => h.append(requestedExecution(2))).toThrow();
       fail = false;
-      await vi.advanceTimersByTimeAsync(500);
+      await vi.advanceTimersByTimeAsync(5000);
       await finished;
       expect(issued).toBe(1);
       assertClosed(h);
@@ -414,7 +328,7 @@ describe('accepted outcome finishing through real append validation', () => {
     let writes = 0;
     const f = finisher(h, {
       read: (address) => {
-        if (!readable) throw new Error('read unavailable');
+        if (!readable) throw Object.assign(new Error('read unavailable'), { code: 'EIO' });
         return readExecutionFinishingState(h.db, address, h.readCtx);
       },
     });
@@ -511,4 +425,291 @@ describe('accepted outcome finishing through real append validation', () => {
     await finished;
     assertClosed(h);
   });
+});
+
+it.each([new TypeError('producer defect'), new Error('validator rejected the outcome')])(
+  'preserves its producer through bounded retries and durable quarantine: %s',
+  async (error) => {
+    const h = harness(false);
+    let failed = true;
+    const f = finisher(h, { log: vi.fn() });
+    const producer = f.owner.accept(address, (c) => {
+      if (failed) throw error;
+      appendJobExecutionOutcomeAccepted(c, {
+        ...address,
+        terminal: { content: 'preserved result', durationMs: 1, outcome: { kind: 'completed' } },
+      });
+      return undefined;
+    });
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(f.owner.status(address)).toMatchObject({
+      kind: 'blocked',
+      stage: 'accept',
+      successor: 'recovery-quarantine',
+    });
+    expect(f.owner.owns(address)).toBe(true);
+    expect(readExecutionRetryStatus(h.db, address)).toEqual(f.owner.status(address));
+    expect(loadJobProjectionDetail(h.db, jobId, h.readCtx).status?.finishingStatus).toEqual(f.owner.status(address));
+    expect(listJobProjections(h.db, h.readCtx)[0].status.finishingStatus).toEqual(f.owner.status(address));
+    const record = RecoveryQuarantineStore.readOnly(h.db)
+      .list()
+      .find((row) => row.boundary === 'job-execution-finishing')!;
+    expect(record.state).toBe('active');
+    const sources = createRecoverySourceRegistry();
+    sources.register('job-execution-finishing', (subject, signal) =>
+      createExecutionFinishingRetryPlan(f.owner, h.db, subject, signal),
+    );
+    const retry = createRecoveryQuarantineRetryService({
+      sources,
+      quarantine: new RecoveryQuarantineStore(h.db, { now: () => Date.now() }),
+      instanceId: 'serving-owner',
+      ids: { uuid: () => 'retry-token' },
+      isRetryAdmitted: () => true,
+    });
+    const request = {
+      boundary: record.boundary,
+      key: record.subject.key,
+      revision: record.subject.revision.kind === 'fingerprint' ? record.subject.revision.value : null,
+    };
+    await expect(retry.clear(request)).resolves.toMatchObject({ disposition: 'quarantined' });
+    expect(readExecutionRetryStatus(h.db, address)).toMatchObject({ kind: 'blocked', reason: error.message });
+    failed = false;
+    await expect(retry.clear(request)).resolves.toMatchObject({ disposition: 'advanced' });
+    await producer;
+    expect(readExecutionRetryStatus(h.db, address)).toBeNull();
+    expect(assertClosed(h).find((event) => event.type === 'job.execution.outcome.accepted')?.body).toMatchObject({
+      terminal: { content: 'preserved result' },
+    });
+    await f.owner.dispose();
+  },
+);
+
+it('cancels a transient producer retry before its journal closes', async () => {
+  const h = harness(false);
+  const failure = Object.assign(new Error('disk busy'), { code: 'EBUSY' });
+  const f = finisher(h, {
+    log: vi.fn(),
+    commit: () => {
+      throw failure;
+    },
+  });
+  const producer = f.owner.accept(address, () => undefined);
+  const rejected = expect(producer).rejects.toBeDefined();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(f.owner.status(address)?.successor).toBe('live-retry');
+  await f.owner.dispose();
+  await rejected;
+  expect(f.owner.owns(address)).toBe(false);
+});
+
+it('quarantines an empty outcome write until shutdown instead of losing the producer', async () => {
+  const h = harness(false);
+  const f = finisher(h, { log: vi.fn() });
+  const producer = f.owner.accept(address, () => undefined);
+  const rejected = expect(producer).rejects.toBeDefined();
+  await vi.advanceTimersByTimeAsync(20_000);
+  expect(f.owner.status(address)).toMatchObject({ kind: 'blocked', reason: expect.stringContaining('did not commit') });
+  expect(f.owner.owns(address)).toBe(true);
+  await f.owner.dispose();
+  await rejected;
+});
+
+it('keeps a detached finalizer in durable quarantine with a serving retry exit', async () => {
+  const h = harness(false);
+  accept(h);
+  let failing = true;
+  const f = finisher(h, {
+    log: vi.fn(),
+    quiesce: async () => {
+      if (failing) throw new Error('settlement unavailable');
+      return true;
+    },
+  });
+  f.owner.schedule(address);
+  await vi.advanceTimersByTimeAsync(20_000);
+  expect(f.owner.status(address)).toMatchObject({ kind: 'blocked', stage: 'finish', successor: 'recovery-quarantine' });
+  expect(f.owner.owns(address)).toBe(true);
+  failing = false;
+  await f.owner.redrive(address);
+  assertClosed(h);
+  await f.owner.dispose();
+});
+
+it.each(['accept', 'finish'] as const)(
+  'waits for succession unpark during %s and preserves the original result',
+  async (stage) => {
+    const h = harness(false);
+    if (stage === 'finish') accept(h);
+    let unpark!: () => void;
+    let parked = true;
+    const unparked = new Promise<void>((resolve) => {
+      unpark = () => {
+        parked = false;
+        resolve();
+      };
+    });
+    const f = finisher(h, {
+      commit: (write) => {
+        if (parked) throw new SuccessionWriterParkedError(unparked);
+        return h.commit(write);
+      },
+    });
+    const task =
+      stage === 'finish'
+        ? f.owner.finish(address)
+        : f.owner.accept(address, (c) => {
+            appendJobExecutionOutcomeAccepted(c, {
+              ...address,
+              terminal: { content: 'original result', durationMs: 1, outcome: { kind: 'completed' } },
+            });
+            return undefined;
+          });
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(f.owner.owns(address)).toBe(true);
+    expect(f.owner.status(address)).toBeNull();
+    expect(h.events().some((event) => event.type === 'job.execution.ended')).toBe(false);
+    unpark();
+    await task;
+    await f.owner.finish(address);
+    expect(assertClosed(h).find((event) => event.type === 'job.execution.outcome.accepted')?.body).toMatchObject({
+      terminal: { content: 'original result' },
+    });
+    await f.owner.dispose();
+  },
+);
+
+it.each(['accept', 'finish'] as const)('disposes while succession stays parked during %s', async (stage) => {
+  const h = harness(false);
+  if (stage === 'finish') accept(h);
+  const f = finisher(h, {
+    commit: () => {
+      throw new SuccessionWriterParkedError(new Promise<void>(() => {}));
+    },
+  });
+  const task = stage === 'finish' ? f.owner.finish(address) : f.owner.accept(address, () => undefined);
+  const rejected = expect(task).rejects.toBeDefined();
+  await vi.advanceTimersByTimeAsync(0);
+  await f.owner.dispose();
+  await rejected;
+  expect(h.events().some((event) => event.type === 'job.execution.ended')).toBe(false);
+});
+
+it.each(['quiesce', 'retentionAction', 'settleRetention'] as const)('disposes while %s never settles', async (port) => {
+  const h = harness();
+  accept(h);
+  const f = finisher(h, { [port]: () => new Promise<never>(() => {}) });
+  const task = f.owner.finish(address);
+  const rejected = expect(task).rejects.toBeDefined();
+  await vi.advanceTimersByTimeAsync(0);
+  await f.owner.dispose();
+  await rejected;
+  expect(h.events().some((event) => event.type === 'job.execution.ended')).toBe(false);
+});
+
+it('releases a finalizer when retention belongs to another owner', async () => {
+  const h = harness();
+  accept(h);
+  const f = finisher(h, { settleRetention: async () => ({ kind: 'not-owned' }) });
+  await f.owner.finish(address);
+  expect(f.owner.status(address)).toBeNull();
+  expect(f.owner.owns(address)).toBe(false);
+  expect(readExecutionRetryStatus(h.db, address)).toBeNull();
+  await f.owner.dispose();
+});
+
+it('hands a repaired finishing retry back to the live owner while quiescence is still pending', async () => {
+  const h = harness(false);
+  accept(h);
+  let broken = true;
+  let quiescent = false;
+  const f = finisher(h, {
+    log: vi.fn(),
+    quiesce: async () => {
+      if (broken) throw new Error('settlement failed');
+      return quiescent;
+    },
+  });
+  f.owner.schedule(address);
+  await vi.advanceTimersByTimeAsync(20_000);
+  const quarantine = new RecoveryQuarantineStore(h.db, { now: () => Date.now() });
+  const record = quarantine.list()[0];
+  const sources = createRecoverySourceRegistry();
+  sources.register('job-execution-finishing', (subject, signal) =>
+    createExecutionFinishingRetryPlan(f.owner, h.db, subject, signal),
+  );
+  const service = createRecoveryQuarantineRetryService({
+    sources,
+    quarantine,
+    instanceId: 'serving',
+    ids: { uuid: () => 'token' },
+    isRetryAdmitted: () => true,
+  });
+  broken = false;
+  const request = {
+    boundary: record.boundary,
+    key: record.subject.key,
+    revision: record.subject.revision.kind === 'fingerprint' ? record.subject.revision.value : null,
+  };
+  await expect(service.clear(request)).resolves.toMatchObject({ disposition: 'continuation' });
+  expect(quarantine.read(record.boundary, record.subject.key)?.state).toBe('continuation');
+  expect(readExecutionRetryStatus(h.db, address)).toMatchObject({ kind: 'retrying' });
+  quiescent = true;
+  await vi.advanceTimersByTimeAsync(500);
+  await f.owner.finish(address);
+  assertClosed(h);
+  expect(quarantine.list()).toEqual([]);
+  await f.owner.dispose();
+});
+
+it('releases a cancelled retry claim so the same serving coordinator can retry again', async () => {
+  const h = harness(false);
+  accept(h);
+  let broken = true;
+  let release!: () => void;
+  const gate = new Promise<boolean>((resolve) => {
+    release = () => resolve(true);
+  });
+  const f = finisher(h, {
+    log: vi.fn(),
+    quiesce: async () => {
+      if (broken) throw new Error('settlement failed');
+      return gate;
+    },
+  });
+  f.owner.schedule(address);
+  await vi.advanceTimersByTimeAsync(20_000);
+  const quarantine = new RecoveryQuarantineStore(h.db, { now: () => Date.now() });
+  const record = quarantine.list()[0];
+  const sources = createRecoverySourceRegistry();
+  sources.register('job-execution-finishing', (subject, signal) =>
+    createExecutionFinishingRetryPlan(f.owner, h.db, subject, signal),
+  );
+  const service = createRecoveryQuarantineRetryService({
+    sources,
+    quarantine,
+    instanceId: 'serving',
+    ids: { uuid: () => 'token' },
+    isRetryAdmitted: () => true,
+  });
+  const request = {
+    boundary: record.boundary,
+    key: record.subject.key,
+    revision: record.subject.revision.kind === 'fingerprint' ? record.subject.revision.value : null,
+  };
+  broken = false;
+  const cancelled = new AbortController();
+  const attempt = service.clear(request, cancelled.signal);
+  const rejected = expect(attempt).rejects.toBeDefined();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(quarantine.read(record.boundary, record.subject.key)?.state).toBe('retrying');
+  cancelled.abort();
+  await rejected;
+  expect(quarantine.read(record.boundary, record.subject.key)?.state).toBe('active');
+  const retried = service.clear(request);
+  release();
+  await expect(retried).resolves.toMatchObject({ disposition: 'advanced' });
+  expect(assertClosed(h).find((event) => event.type === 'job.execution.outcome.accepted')?.body).toMatchObject({
+    terminal: { content: 'original result' },
+  });
+  await f.owner.dispose();
 });

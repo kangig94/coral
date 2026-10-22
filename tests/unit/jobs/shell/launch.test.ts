@@ -1,3 +1,6 @@
+import { appendJobExecutionOutcomeAccepted } from '#src/jobs/terminal/recording.js';
+import { ExecutionFinisher, readExecutionFinishingState } from '#src/jobs/finishing.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { recordProviderTerminal } from '#src/coordinator/services/terminal-materializer.js';
@@ -10,7 +13,6 @@ import { JobStore } from '#src/jobs/store.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { composeReducers } from '#src/store/reducers.js';
 import type { BoundProvider, BoundProviderStandaloneExecutionRuntime } from '#src/providers/bound-provider-contract.js';
-import type { ProviderRequest } from '#src/providers/contract.js';
 import type { ProviderDurableSpawner } from '#src/providers/cli-runner.js';
 import { ConversationManager } from '#src/jobs/conversation/shell.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
@@ -18,6 +20,7 @@ import { applyBundledStoreSchema } from '#src/store/db.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { commitJobTerminal } from '#tests/helpers/job-commits.js';
+import { requestedExecution } from '#tests/helpers/job-executions.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { TEST_CODEX_BINDING } from '#tests/helpers/provider-credentials.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
@@ -41,16 +44,17 @@ function fixture(options: { route?: AppServerProxyRoute; durableSpawner?: Provid
     providers: permissiveProviderLookupPort,
     reducers: composeReducers(jobsRegistry),
   });
-  const sessions = new ConversationManager('/project', runtime, undefined, undefined, db, permissiveProviderLookupPort);
+  const sessions = new ConversationManager('/project', runtime, (cb) => store.commit(cb), db);
   const session = sessions.prepare({
+    jobId: JOB_ID,
     binding: TEST_CODEX_BINDING,
     name: 'test',
-    cwd: '/project',
+    cwd: fixtureCanonicalWorkDir('/project'),
     projectRoot: '/project',
     backendNamespace: 'test',
   });
   const admission = new LaunchCoordinator({ runtime });
-  const registry = new AbortRegistry(runtime.ids);
+  const registry = new AbortRegistry();
   const completed = createDeferred<void>();
   const release = admission.releaseLaunch.bind(admission);
   admission.releaseLaunch = (permit) => {
@@ -63,12 +67,22 @@ function fixture(options: { route?: AppServerProxyRoute; durableSpawner?: Provid
     name: 'codex',
     envelope: TEST_CODEX_BINDING,
     appServer: {},
+    artifacts: { kind: 'none', reason: 'fixture' },
     compareIdentity: () => ({ ok: true }),
     decodeContinuity: () => ({ ok: true, value: undefined }),
     readiness: async () => ({ ok: true }),
     prepareExecution: () => ({ kind: 'app-server', hostSpec: {}, execute }),
   } as unknown as BoundProvider;
+  const executionFinisher = new ExecutionFinisher({
+    time: { sleep: async () => {} },
+    commit: (cb) => store.commit(cb),
+    read: (address) => readExecutionFinishingState(db, address, store),
+    quiesce: async () => true,
+    retentionAction: async () => ({ attempt: 0, handles: [] }),
+    settleRetention: async () => ({ kind: 'completed', outcome: 'skipped_no_handles' }),
+  });
   const orchestrator = new LaunchOrchestrator({
+    executionFinisher,
     runtime,
     progressStore: store,
     conversationManager: sessions,
@@ -90,6 +104,7 @@ function fixture(options: { route?: AppServerProxyRoute; durableSpawner?: Provid
     store,
     sessions,
     session,
+    executionFinisher,
     admission,
     registry,
     provider,
@@ -97,20 +112,19 @@ function fixture(options: { route?: AppServerProxyRoute; durableSpawner?: Provid
     execute,
     completed: completed.promise,
     launch: () =>
-      orchestrator.launchInitialProviderJob(
+      orchestrator.launchExecution(
         provider,
         session,
         {
           action: 'exec',
-          sessionId: session.sessionId,
+          jobId: session.jobId,
           prompt: 'run',
-          cwd: '/project',
+          cwd: fixtureCanonicalWorkDir('/project'),
           coralEnv: {},
           bypassPermissions: false,
-        } as ProviderRequest,
+        },
         {
-          requestedJobId: JOB_ID,
-          owner: { kind: 'provider-session', id: session.sessionId },
+          owner: { kind: 'provider-session', id: session.jobId },
           mintProtectedEnv: () => ({ env: {}, childAuthorization: {} as never }),
         },
       ),
@@ -118,25 +132,171 @@ function fixture(options: { route?: AppServerProxyRoute; durableSpawner?: Provid
 }
 
 describe('LaunchOrchestrator', () => {
-  it('terminalizes and releases a committed launch when synchronous setup fails', () => {
+  it('keeps a late producer on its committed execution while the successor is current', async () => {
     const f = fixture();
-    vi.spyOn(f.runtime.storage, 'mkdirSync').mockImplementationOnce(() => {
-      throw new Error('setup failed');
+    f.store.initJob({
+      jobId: JOB_ID,
+      conversation: {
+        provider: 'codex',
+        binding: TEST_CODEX_BINDING,
+        name: 'test',
+        cwd: fixtureCanonicalWorkDir('/project'),
+        bypassPermissions: false,
+        retention: 'retain',
+      },
+      projectRoot: '/project',
+      backendNamespace: 'test',
     });
-    expect(() => f.launch()).toThrow('setup failed');
+    commitJobTerminal(f.store, JOB_ID, 1, {
+      content: 'original result',
+      durationMs: 1,
+      outcome: { kind: 'completed' },
+    });
+    f.store.commit(
+      (c) => {
+        c.append({ ...requestedExecution(2), stream: { kind: 'job', id: JOB_ID } });
+        return undefined;
+      },
+      { admittingJobs: [JOB_ID] },
+    );
+    const before = f.db.prepare('SELECT COUNT(*) AS n FROM events').get();
+
+    await f.orchestrator.writeJobTerminal(
+      JOB_ID,
+      1,
+      {
+        content: 'late result',
+        durationMs: 1,
+        outcome: { kind: 'completed' },
+      },
+      'completed',
+    );
+
+    expect(f.db.prepare('SELECT COUNT(*) AS n FROM events').get()).toEqual(before);
+    expect(f.store.readStatus(JOB_ID)).toMatchObject({ execution: 2, phase: 'launching', finishing: false });
+    expect(readExecutionFinishingState(f.db, { jobId: JOB_ID, execution: 1 }, f.store)).toMatchObject({
+      kind: 'ended',
+      accepted: { terminal: { content: 'original result' } },
+    });
+  });
+
+  it('refuses a running predecessor with the busy code and a runnable wait', async () => {
+    const f = fixture();
+    f.store.initJob({
+      jobId: JOB_ID,
+      conversation: {
+        provider: 'codex',
+        binding: TEST_CODEX_BINDING,
+        name: 'test',
+        cwd: fixtureCanonicalWorkDir('/project'),
+        bypassPermissions: false,
+        retention: 'retain',
+      },
+      projectRoot: '/project',
+      backendNamespace: 'test',
+    });
+    const current = f.sessions.readById(JOB_ID)!;
+    const decision = await f.orchestrator.launchExecution(
+      f.provider,
+      current,
+      {
+        action: 'resume',
+        jobId: JOB_ID,
+        prompt: 'continue',
+        cwd: fixtureCanonicalWorkDir('/project'),
+        coralEnv: {},
+        bypassPermissions: false,
+      },
+      { owner: { kind: 'provider-session', id: JOB_ID }, mintProtectedEnv: () => ({}) },
+    );
+    expect(decision).toMatchObject({
+      status: 'refused',
+      code: 'session_busy',
+      message: expect.stringContaining(`coral-cli jobs wait ${JOB_ID}`),
+    });
+    await f.executionFinisher.dispose();
+  });
+
+  it('returns a finishing decision when disposal interrupts continuation admission', async () => {
+    const f = fixture();
+    f.store.initJob({
+      jobId: JOB_ID,
+      conversation: {
+        provider: 'codex',
+        binding: TEST_CODEX_BINDING,
+        name: 'test',
+        cwd: fixtureCanonicalWorkDir('/project'),
+        bypassPermissions: false,
+        retention: 'retain',
+      },
+      projectRoot: '/project',
+      backendNamespace: 'test',
+    });
+    await f.executionFinisher.accept({ jobId: JOB_ID, execution: 1 }, (c) => {
+      appendJobExecutionOutcomeAccepted(c, {
+        jobId: JOB_ID,
+        execution: 1,
+        terminal: { content: 'done', durationMs: 1, outcome: { kind: 'completed' } },
+      });
+      return undefined;
+    });
+    await f.executionFinisher.finish({ jobId: JOB_ID, execution: 1 });
+    const current = f.sessions.readById(JOB_ID)!;
+    vi.spyOn(f.admission, 'reservationFor').mockReturnValue({} as never);
+    const sleeping = createDeferred<void>();
+    vi.spyOn(f.runtime.time, 'sleep').mockImplementation(() => {
+      sleeping.resolve();
+      return new Promise<never>(() => {});
+    });
+    const decision = f.orchestrator.launchExecution(
+      f.provider,
+      current,
+      {
+        action: 'resume',
+        jobId: JOB_ID,
+        prompt: 'continue',
+        cwd: fixtureCanonicalWorkDir('/project'),
+        coralEnv: {},
+        bypassPermissions: false,
+      },
+      { owner: { kind: 'provider-session', id: JOB_ID }, mintProtectedEnv: () => ({}) },
+    );
+    await sleeping.promise;
+    await f.executionFinisher.dispose();
+    await expect(decision).resolves.toMatchObject({
+      status: 'refused',
+      code: 'execution_finishing',
+      message: expect.stringContaining(`coral-cli jobs wait ${JOB_ID}`),
+    });
+  });
+
+  it('terminalizes and releases a committed launch when synchronous setup fails', async () => {
+    const f = fixture();
+    const mkdir = f.runtime.storage.mkdirSync.bind(f.runtime.storage);
+    vi.spyOn(f.runtime.storage, 'mkdirSync').mockImplementation((path, options) => {
+      if (String(path) === f.store.jobDir(JOB_ID) && f.store.readStatus(JOB_ID) !== null)
+        throw new Error('setup failed');
+      return mkdir(path, options);
+    });
+    await expect(f.launch()).resolves.toMatchObject({
+      kind: 'provider-session',
+      jobId: JOB_ID,
+      requestedSeq: expect.any(Number),
+    });
+    await f.completed;
     expect(f.store.readStatus(JOB_ID)).toMatchObject({ phase: 'error', result: { outcome: { kind: 'job_fault' } } });
-    expect(f.sessions.get('codex', f.session.sessionId)?.activeJobId).toBeUndefined();
+    expect(f.sessions.get('codex', f.session.jobId)?.open).toBe(false);
     expect(f.admission.reservationFor(JOB_ID)).toBeNull();
     expect(f.registry.has(JOB_ID)).toBe(false);
   });
 
-  it('rolls back the session claim and job when the launch commit fails', () => {
+  it('rolls back the provider job when the launch commit fails', async () => {
     const f = fixture();
     f.db.exec(`CREATE TRIGGER reject_launch BEFORE INSERT ON events
-      WHEN NEW.type = 'job.launch.requested' BEGIN SELECT RAISE(ABORT, 'launch unavailable'); END`);
-    expect(() => f.launch()).toThrow('launch unavailable');
+      WHEN NEW.type = 'job.execution.requested' BEGIN SELECT RAISE(ABORT, 'launch unavailable'); END`);
+    await expect(f.launch()).rejects.toThrow('launch unavailable');
     expect(f.store.readStatus(JOB_ID)).toBeNull();
-    expect(f.sessions.get('codex', f.session.sessionId)).toBeNull();
+    expect(f.sessions.get('codex', f.session.jobId)).toBeNull();
     expect(f.db.prepare('SELECT COUNT(*) AS count FROM events').get()).toEqual({ count: 0 });
     expect(f.admission.reservationFor(JOB_ID)).toBeNull();
     expect(f.registry.has(JOB_ID)).toBe(false);
@@ -147,7 +307,7 @@ describe('LaunchOrchestrator', () => {
       route: {
         hostRoot: () => '/test/plugin',
         activate: async () => {
-          commitJobTerminal(f.store, JOB_ID, f.session.sessionId, {
+          commitJobTerminal(f.store, JOB_ID, 1, {
             content: 'done',
             durationMs: 0,
             outcome: { kind: 'completed' },
@@ -156,11 +316,11 @@ describe('LaunchOrchestrator', () => {
         },
       } as AppServerProxyRoute,
     });
-    f.launch();
+    await f.launch();
     await f.completed;
     expect(f.store.readJobEvents(JOB_ID).filter((event) => event.type === 'terminal')).toHaveLength(1);
     expect(f.execute).not.toHaveBeenCalled();
-    expect(f.sessions.get('codex', f.session.sessionId)?.activeJobId).toBeUndefined();
+    expect(f.sessions.get('codex', f.session.jobId)?.open).toBe(false);
   });
 
   it('preserves durable abandonment when its progress diagnostic fails', async () => {
@@ -195,7 +355,7 @@ describe('LaunchOrchestrator', () => {
     vi.spyOn(f.store, 'appendProgress').mockImplementation(() => {
       throw new Error('diagnostic unavailable');
     });
-    f.launch();
+    await f.launch();
     await published.promise;
     expect(readDurableCliContainmentStatus(f.db, JOB_ID)).toMatchObject({
       kind: 'valid',
@@ -214,11 +374,11 @@ describe('LaunchOrchestrator', () => {
         },
       } as AppServerProxyRoute,
     });
-    f.launch();
+    await f.launch();
     await placed.promise;
     await f.orchestrator.quiesceAppServerJobsForHandoff();
     expect(f.execute).not.toHaveBeenCalled();
     expect(f.store.readJobEvents(JOB_ID).filter((event) => event.type === 'terminal')).toEqual([]);
-    expect(f.sessions.get('codex', f.session.sessionId)?.activeJobId).toBe(JOB_ID);
+    expect(f.sessions.get('codex', f.session.jobId)?.open).toBe(true);
   });
 });

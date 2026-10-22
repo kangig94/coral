@@ -1,3 +1,5 @@
+import { z } from 'zod';
+import { executionRetryStatusSchema, type ExecutionRetryStatus } from '../../../jobs/records.js';
 import { retentionRunStatusSchema, type RetentionRunStatus } from '../../../store/retention-outcome.js';
 import { parseLaunchStatus, type LaunchStatus } from '../../../infra/launch-status.js';
 import { isProcessIncarnation, type ProcessIncarnation } from '../../../infra/node-process.js';
@@ -158,6 +160,8 @@ export interface BackendHealth {
   launchStatus?: LaunchStatus;
   listCounts?: Readonly<Record<string, number>>;
   diagnostics?: LaunchPermitDiagnostics & {
+    executionFinishing?: Array<{ jobId: string; execution: number; status: ExecutionRetryStatus }>;
+    skippedExecutionFinishingStatuses?: number;
     providerOperationStartupReconciliation?: ProviderOperationStartupStatus;
     carriers?: {
       coverage: 'complete' | 'unknown';
@@ -193,6 +197,7 @@ export type ProviderProxySetRowSkip = Readonly<{
 
 export type BackendHealthParseResult = Readonly<{
   health: BackendHealth;
+  skippedSettlementRefusalRecordingFailures?: number;
   skippedProviderProxySetRows: number;
   skippedProviderProxySetTokens: readonly string[];
 }>;
@@ -735,6 +740,7 @@ function isKernel(value: unknown): value is BackendHealth['kernel'] {
 
 type DiagnosticsParseResult = Readonly<{
   diagnostics: NonNullable<BackendHealth['diagnostics']>;
+  skippedSettlementRefusalRecordingFailures?: number;
   skippedProviderProxySetRows: number;
   skippedProviderProxySetTokens: readonly string[];
 }>;
@@ -755,10 +761,12 @@ function parseDiagnostics(value: unknown): DiagnosticsParseResult | null {
   }
   if (
     value.settlementRefusalRecordingFailures !== undefined &&
-    !isSettlementRefusalRecordingFailures(value.settlementRefusalRecordingFailures)
-  ) {
+    !Array.isArray(value.settlementRefusalRecordingFailures)
+  )
     return null;
-  }
+  const settlementRows = value.settlementRefusalRecordingFailures ?? [];
+  const understoodSettlementRows = settlementRows.filter((row: unknown) => isSettlementRefusalRecordingFailures([row]));
+  const skippedSettlementRefusalRecordingFailures = settlementRows.length - understoodSettlementRows.length;
   if (value.launchReleaseDispositions !== undefined && !isLaunchReleaseDispositions(value.launchReleaseDispositions)) {
     return null;
   }
@@ -795,7 +803,11 @@ function parseDiagnostics(value: unknown): DiagnosticsParseResult | null {
     ...(value.launchPermits === undefined ? {} : { launchPermits: value.launchPermits }),
     ...(value.settlementRefusalRecordingFailures === undefined
       ? {}
-      : { settlementRefusalRecordingFailures: value.settlementRefusalRecordingFailures }),
+      : {
+          settlementRefusalRecordingFailures: launchPermitDiagnosticsSchema.parse({
+            settlementRefusalRecordingFailures: understoodSettlementRows,
+          }).settlementRefusalRecordingFailures,
+        }),
     ...(value.launchReleaseDispositions === undefined
       ? {}
       : { launchReleaseDispositions: value.launchReleaseDispositions }),
@@ -804,7 +816,21 @@ function parseDiagnostics(value: unknown): DiagnosticsParseResult | null {
       : { providerOperationAdoptionRefusals: value.providerOperationAdoptionRefusals }),
     ...(value.launchReclamations === undefined ? {} : { launchReclamations: value.launchReclamations }),
   };
+  const finishingRows = Array.isArray(value.executionFinishing) ? value.executionFinishing : [];
+  const finishingSchema = z
+    .object({
+      jobId: z.string().min(1),
+      execution: z.number().int().positive().safe(),
+      status: executionRetryStatusSchema,
+    })
+    .passthrough();
+  const executionFinishing = finishingRows.flatMap((row: unknown) => {
+    const parsed = finishingSchema.safeParse(row);
+    return parsed.success ? [parsed.data] : [];
+  });
   const diagnostics = { ...value };
+  delete diagnostics.executionFinishing;
+  delete diagnostics.skippedExecutionFinishingStatuses;
   delete diagnostics.providerOperationStartupReconciliation;
   delete diagnostics.providerProxySetRowSkips;
   delete diagnostics.launchPermits;
@@ -813,9 +839,15 @@ function parseDiagnostics(value: unknown): DiagnosticsParseResult | null {
   delete diagnostics.providerOperationAdoptionRefusals;
   delete diagnostics.launchReclamations;
   return {
+    skippedSettlementRefusalRecordingFailures,
     diagnostics: {
       ...diagnostics,
       ...launchPermitDiagnostics,
+      executionFinishing,
+      skippedExecutionFinishingStatuses:
+        finishingRows.length -
+        executionFinishing.length +
+        (isNonNegativeInteger(value.skippedExecutionFinishingStatuses) ? value.skippedExecutionFinishingStatuses : 0),
       ...(startupStatus.success ? { providerOperationStartupReconciliation: startupStatus.data } : {}),
       ...(providerProxySets === null
         ? {}
@@ -922,6 +954,7 @@ export function parseBackendHealth(value: unknown): BackendHealthParseResult | n
       ...(succession === null ? {} : { succession }),
       ...(successionProblem === null ? {} : { successionProblem }),
     } as BackendHealth,
+    skippedSettlementRefusalRecordingFailures: diagnostics?.skippedSettlementRefusalRecordingFailures ?? 0,
     skippedProviderProxySetRows: diagnostics?.skippedProviderProxySetRows ?? 0,
     skippedProviderProxySetTokens: diagnostics?.skippedProviderProxySetTokens ?? [],
   };

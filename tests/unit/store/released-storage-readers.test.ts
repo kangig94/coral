@@ -3,11 +3,7 @@ import { join } from 'node:path';
 import { readdirSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { afterEach, expect, it } from 'vitest';
-import { JobLocationIndex } from '#src/jobs/location-index.js';
-import { recoverJobLocations } from '#src/jobs/location-recovery.js';
 import { createRetentionFixture } from '#tests/helpers/storage-retention.js';
-import { initTestJob } from '#tests/helpers/session.js';
-import { commitJobTerminal } from '#tests/helpers/job-commits.js';
 import { buildReleasedStorageReader } from '#tests/helpers/released-storage-reader.js';
 import {
   bindCustodyIdentity,
@@ -29,17 +25,43 @@ it.each(['v0.10.16', 'v0.10.17'])(
     fixtures.push(f);
     const outfile = join(f.baseDir, 'reader.mjs');
     await buildReleasedStorageReader(tag, outfile);
-    const index = new JobLocationIndex(f.runtime, f.runtime.paths.coral.generation.dataRoot);
-    initTestJob(f.store, {
+    const terminal = { content: 'done', outcome: { kind: 'completed' }, durationMs: 1 };
+    const ts = '2026-10-20T00:00:00.000Z';
+    const location = {
+      version: 'v1',
       jobId: 'job',
-      sessionId: 'session',
-      provider: 'codex',
-      projectRoot: '/workspace',
-      backendNamespace: 'test',
-    });
-    f.store.appendProgress('job', 'session', 'progress');
-    commitJobTerminal(f.store, 'job', 'session', { content: 'done', outcome: { kind: 'completed' }, durationMs: 1 });
-    recoverJobLocations(index, 'epoch', f.store);
+      epochKey: 'epoch',
+      subject: { projectRoot: '/workspace', workDir: '/workspace', jobKind: 'provider' },
+      disposition: 'terminal',
+      terminalSeq: 2,
+      resultPath: join(f.baseDir, 'result.md'),
+      detail: {
+        status: {
+          jobId: 'job',
+          sessionId: 'session',
+          owner: { kind: 'provider-session', id: 'session' },
+          provider: 'codex',
+          projectRoot: '/workspace',
+          workDir: '/workspace',
+          backendNamespace: 'test',
+          jobKind: 'provider',
+          phase: 'completed',
+          updatedAt: ts,
+          result: terminal,
+        },
+        events: [{ type: 'terminal', jobId: 'job', ...{ sessionId: 'session' }, seq: 2, ts, result: terminal }],
+        readiness: 'ready',
+        exit: { ...terminal, diagnostics: { progressFaults: [] }, endTime: ts },
+      },
+    };
+    const locationsDir = join(f.runtime.paths.coral.generation.dataRoot, 'job-locations.v1', 'jobs');
+    f.runtime.storage.mkdirSync(locationsDir, { recursive: true });
+    expect(
+      f.runtime.storage.writeAtomicDurableSync(
+        join(locationsDir, `${Buffer.from('job').toString('base64url')}.json`),
+        JSON.stringify(location),
+      ),
+    ).toBe(true);
     const runDir = f.runtime.paths.coral.coordinator.runDir;
     for (const operationId of ['finished', 'live']) {
       const intent = recordCustodyIntent(f.runtime, runDir, {
@@ -63,8 +85,8 @@ it.each(['v0.10.16', 'v0.10.17'])(
       if (operationId === 'finished') {
         const entry = readCustodyLedger(f.runtime, runDir).find(
           (entry) => entry.kind !== 'unreadable' && entry.intent.id === intent.id,
-        )!;
-        if (entry.kind !== 'bound') throw new Error('bound fixture expected');
+        );
+        if (entry === undefined || entry.kind !== 'bound') throw new Error('bound fixture expected');
         dischargeCustodyEntry(f.runtime, runDir, entry, 1000, 'exact discharge', (operation) => operation());
       }
     }

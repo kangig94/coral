@@ -2456,6 +2456,18 @@ function formatRunningStatus(health: RunningHealth, liveShutdownGuidance: readon
             .filter((outcome) => outcome.kind !== 'deleted')
             .map((outcome) => `    ${outcome.subject}: ${outcome.reason}`),
         ]),
+    ...(health.diagnostics?.executionFinishing ?? []).map(
+      ({ jobId, execution, status }) =>
+        `  Execution finishing: ${jobId}#${execution} ${status.kind} (${status.stage}); ${status.reason}; successor=${status.successor}.`,
+    ),
+    ...((health.diagnostics?.executionFinishing ?? []).some(({ status }) => status.kind === 'blocked')
+      ? [formatRecoveryQuarantineCommand({ kind: 'list' })]
+      : []),
+    ...((health.diagnostics?.skippedExecutionFinishingStatuses ?? 0) === 0
+      ? []
+      : [
+          `  Execution finishing statuses skipped: ${health.diagnostics?.skippedExecutionFinishingStatuses}; this build cannot decode these entries.`,
+        ]),
     ...formatLaunchPermitLines(health.diagnostics?.launchPermits ?? []),
     ...formatLaunchReleaseDispositionLines(health.diagnostics?.launchReleaseDispositions ?? []),
     ...formatProviderOperationAdoptionRefusalLines(
@@ -2463,6 +2475,11 @@ function formatRunningStatus(health: RunningHealth, liveShutdownGuidance: readon
       showOperatorCommands,
     ),
     ...formatLaunchReclamationLines(health.diagnostics?.launchReclamations ?? []),
+    ...((health.skippedSettlementRefusalRecordingFailures ?? 0) === 0
+      ? []
+      : [
+          `  Settlement refusal recording failures skipped: ${health.skippedSettlementRefusalRecordingFailures}; this build cannot decode these entries and is not showing their dispositions.`,
+        ]),
     ...formatSettlementRefusalRecordingFailureLines(
       health.diagnostics?.settlementRefusalRecordingFailures ?? [],
       showOperatorCommands,

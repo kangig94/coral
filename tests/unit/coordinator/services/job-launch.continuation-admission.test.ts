@@ -93,6 +93,7 @@ describe('JobLaunchService continuation retention admission', () => {
     ).resolves.toMatchObject({
       status: 'refused',
       code: 'retention_discard_in_flight',
+      message: expect.stringContaining('Run coral-cli jobs wait 10000000-0000-4000-8000-000000000001'),
     });
     expect(launchOrchestrator.launchExecution).not.toHaveBeenCalled();
   });

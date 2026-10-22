@@ -58,7 +58,7 @@ it.each([
         tryGet: () => ({
           progressStore: {
             listStoredNonterminalJobIds: () => [],
-            getDb: () => ({ prepare: () => ({ get: () => ({ seq: 0 }) }) }),
+            getDb: () => ({ prepare: () => ({ get: () => ({ seq: 0 }), all: () => [] }) }),
           },
         }),
       },

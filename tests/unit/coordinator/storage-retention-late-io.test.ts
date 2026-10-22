@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { afterEach, expect, it, vi } from 'vitest';
 import { join } from 'node:path';
 
@@ -53,7 +54,12 @@ it.each(['deadline', 'stop', 'on-time'] as const)(
         path: '/tmp/red-retention/epoch-1/store.db',
       }),
       activeEpochKey: () => 'active',
-      jobLocations: new JobLocationIndex(fixture.runtime, fixture.runtime.paths.coral.generation.dataRoot),
+      jobLocations: new JobLocationIndex(
+        fixture.runtime,
+        fixture.runtime.paths.coral.generation.dataRoot,
+        undefined,
+        currentCoralStoreFormat().fingerprint,
+      ),
       log: (line) => logs.push(line),
       publish: (status) => statuses.push(status.phase),
       cleanupScratch: () => undefined,

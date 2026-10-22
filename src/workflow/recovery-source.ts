@@ -18,7 +18,7 @@ import {
   projectionJobRevisionFields,
   withConsistentRead,
 } from '../recovery/row-revision-fields.js';
-import type { ConversationEvidence } from '../jobs/conversation/projections.js';
+import type { ConversationEvidence } from '../jobs/conversation/read-queries.js';
 import type { RawWorkflowProjectionRow } from './read-queries.js';
 
 const WORKFLOW_RECOVERY_BOUNDARY = 'workflow-recovery';
@@ -115,7 +115,7 @@ function readWorkflowEnvelope(db: Database, projection: ProjectionJobStoredRow):
     projection: child,
     events: eventsByJob.get(child.job_id) ?? [],
   }));
-  const jobConversations = children.filter(child => child.projection.job_kind === 'provider');
+  const jobConversations = children.filter((child) => child.projection.job_kind === 'provider');
   const continuation =
     db
       .prepare<[string, string], RawWorkflowRecoveryContinuationRow>(

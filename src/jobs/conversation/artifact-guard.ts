@@ -12,7 +12,9 @@ export async function withJobArtifactGuard<T>(
   const key = join(runtime.paths.coral.exports.jobsRoot, jobId);
   const previous = artifacts.get(key) ?? Promise.resolve();
   let release!: () => void;
-  const turn = new Promise<void>(resolve => { release = resolve; });
+  const turn = new Promise<void>((resolve) => {
+    release = resolve;
+  });
   artifacts.set(key, turn);
   await previous;
   try {

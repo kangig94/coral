@@ -1,3 +1,4 @@
+import { sameEpoch } from '../store/epoch/identity.js';
 import { setImmediate } from 'node:timers/promises';
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
@@ -127,10 +128,15 @@ function createAwaitStepState(
     lastActivityAt,
     staleRetries,
     expectedStaleAborts: cloneMap(initialState.expectedStaleAborts),
-    executionSelections: [...pending.values()].map((atom) =>
-      initialState.executionSelections?.find((selection) => selection.jobId === atom.jobId &&
-        selection.requestedSeq === atom.requestedSeq && selection.epochKey === atom.epochKey) ??
-      { jobId: atom.jobId, epochKey: atom.epochKey, requestedSeq: atom.requestedSeq, awaitingArtifact: false }),
+    executionSelections: [...pending.values()].map(
+      (atom) =>
+        initialState.executionSelections?.find(
+          (selection) =>
+            selection.jobId === atom.jobId &&
+            selection.requestedSeq === atom.requestedSeq &&
+            sameEpoch(selection.epochKey, atom.epochKey),
+        ) ?? { jobId: atom.jobId, epochKey: atom.epochKey, requestedSeq: atom.requestedSeq, awaitingArtifact: false },
+    ),
     observedIdleMs: new Map([...pending.values()].map((atom) => [atom.atomKey, 0])),
     lastObservedAtMonotonicMs: time.monotonicNow(),
     observedDrainMs: 0,
@@ -267,12 +273,18 @@ function handleWaitEvent(
       const atom = state.pending.get(event.jobId);
       if (!atom) return 'handled';
       const selection = event.executionSelections?.find((entry) => entry.jobId === event.jobId);
-      if (selection?.requestedSeq !== atom.requestedSeq || selection.epochKey !== atom.epochKey ||
-          selection.deliveredEndSeq !== event.seq) return 'handled';
+      if (
+        selection?.requestedSeq !== atom.requestedSeq ||
+        !sameEpoch(selection.epochKey, atom.epochKey) ||
+        selection.deliveredEndSeq !== event.seq
+      )
+        return 'handled';
       const previous = state.executionSelections.find((entry) => entry.jobId === event.jobId);
       if (previous?.deliveredEndSeq === event.seq) return 'handled';
 
-      state.executionSelections = state.executionSelections.map((entry) => entry.jobId === event.jobId ? { ...selection } : entry);
+      state.executionSelections = state.executionSelections.map((entry) =>
+        entry.jobId === event.jobId ? { ...selection } : entry,
+      );
       state.cursor = advanceWaitRenderCursor(state.cursor, event).cursor;
       state.pending.delete(event.jobId);
       state.observedIdleMs.delete(atom.atomKey);
@@ -282,8 +294,11 @@ function handleWaitEvent(
       options.onProgress(formatAtomProgress(atom, terminalState));
 
       const expectedAbort = state.expectedStaleAborts.get(event.jobId);
-      if (expectedAbort?.execution === atom.execution && expectedAbort.requestedSeq === atom.requestedSeq &&
-          expectedAbort.epochKey === atom.epochKey) {
+      if (
+        expectedAbort?.execution === atom.execution &&
+        expectedAbort.requestedSeq === atom.requestedSeq &&
+        sameEpoch(expectedAbort.epochKey, atom.epochKey)
+      ) {
         state.expectedStaleAborts.delete(event.jobId);
         if (event.result.outcome.kind === 'aborted') {
           return 'handled';

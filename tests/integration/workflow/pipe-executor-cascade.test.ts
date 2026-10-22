@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
 import { JobStore } from '#src/jobs/store.js';
+import { ExecutionFinisher, readExecutionFinishingState } from '#src/jobs/finishing.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { ExecutionService } from '#src/coordinator/execution-service.js';
 import { testChildPrincipalRegistry } from '#tests/helpers/child-principal-registry.js';
@@ -97,6 +98,8 @@ describe('pipe executor coral cascade invariant', () => {
       const reducers = composeReducers(jobsRegistry, workflowRegistry);
       const bodyCodec = createEventBodyCodec();
       const db = openTestStoreDb(runtime, join(runtime.paths.coral.store.dbDir, 'store.db'));
+      const launchCoordinator = new LaunchCoordinator({ runtime });
+      const finisherRef: { current?: ExecutionFinisher } = {};
       const reactorRef: { current?: ReturnType<typeof createLifecycleReactor> } = {};
       const progressStore = new JobStore('test-ns', runtime, bodyCodec, {
         db,
@@ -107,6 +110,10 @@ describe('pipe executor coral cascade invariant', () => {
           if (reactorRef.current === undefined) {
             throw new Error('Lifecycle reactor observed events before initialization');
           }
+          if (finisherRef.current === undefined) {
+            throw new Error('Execution finisher observed events before initialization');
+          }
+          finisherRef.current.observeCommitted(appended);
           reactorRef.current.observe(appended);
         },
       });
@@ -120,6 +127,28 @@ describe('pipe executor coral cascade invariant', () => {
         commitEvents: coordinatorCommit,
         signal: new AbortController().signal,
       });
+      const executionFinisher = new ExecutionFinisher({
+        time: runtime.time,
+        commit: coordinatorCommit,
+        read: (address) =>
+          readExecutionFinishingState(db, address, {
+            schemas: reducers.schemas,
+            streamKinds: reducers.streamKinds,
+            bodyCodec,
+          }),
+        quiesce: async ({ jobId }) => launchCoordinator.reservationFor(jobId) === null,
+        retentionAction: (address) => {
+          const reactor = reactorRef.current;
+          if (reactor === undefined) throw new Error('Lifecycle reactor is not initialized');
+          return reactor.retentionAction(address);
+        },
+        settleRetention: (address, action) => {
+          const reactor = reactorRef.current;
+          if (reactor === undefined) throw new Error('Lifecycle reactor is not initialized');
+          return reactor.settleRetention(address, action);
+        },
+      });
+      finisherRef.current = executionFinisher;
       const executionSvc = new ExecutionService(
         {
           projectRoot,
@@ -135,7 +164,8 @@ describe('pipe executor coral cascade invariant', () => {
           progressStore,
           bundleHash: 'pipe-executor-cascade-test',
           backendNamespace: pluginRootNamespace(coralPluginRoot),
-          launchCoordinator: new LaunchCoordinator({ runtime }),
+          launchCoordinator,
+          executionFinisher,
           settlementRefusalRecorder: { record: () => true },
           eventBus,
           providerRegistry,
@@ -241,6 +271,8 @@ describe('pipe executor coral cascade invariant', () => {
       const reducers = composeReducers(jobsRegistry, workflowRegistry);
       const bodyCodec = createEventBodyCodec();
       const db = openTestStoreDb(runtime, join(runtime.paths.coral.store.dbDir, 'store.db'));
+      const launchCoordinator = new LaunchCoordinator({ runtime });
+      const finisherRef: { current?: ExecutionFinisher } = {};
       const reactorRef: { current?: ReturnType<typeof createLifecycleReactor> } = {};
       const progressStore = new JobStore('test-ns', runtime, bodyCodec, {
         db,
@@ -251,6 +283,10 @@ describe('pipe executor coral cascade invariant', () => {
           if (reactorRef.current === undefined) {
             throw new Error('Lifecycle reactor observed events before initialization');
           }
+          if (finisherRef.current === undefined) {
+            throw new Error('Execution finisher observed events before initialization');
+          }
+          finisherRef.current.observeCommitted(appended);
           reactorRef.current.observe(appended);
         },
       });
@@ -266,6 +302,28 @@ describe('pipe executor coral cascade invariant', () => {
       });
       reactorRef.current = reactor;
       reactor.admitRetention();
+      const executionFinisher = new ExecutionFinisher({
+        time: runtime.time,
+        commit: coordinatorCommit,
+        read: (address) =>
+          readExecutionFinishingState(db, address, {
+            schemas: reducers.schemas,
+            streamKinds: reducers.streamKinds,
+            bodyCodec,
+          }),
+        quiesce: async ({ jobId }) => launchCoordinator.reservationFor(jobId) === null,
+        retentionAction: (address) => {
+          const reactor = reactorRef.current;
+          if (reactor === undefined) throw new Error('Lifecycle reactor is not initialized');
+          return reactor.retentionAction(address);
+        },
+        settleRetention: (address, action) => {
+          const reactor = reactorRef.current;
+          if (reactor === undefined) throw new Error('Lifecycle reactor is not initialized');
+          return reactor.settleRetention(address, action);
+        },
+      });
+      finisherRef.current = executionFinisher;
       const executionSvc = new ExecutionService(
         {
           projectRoot,
@@ -281,7 +339,8 @@ describe('pipe executor coral cascade invariant', () => {
           progressStore,
           bundleHash: 'pipe-executor-retention-test',
           backendNamespace: pluginRootNamespace(coralPluginRoot),
-          launchCoordinator: new LaunchCoordinator({ runtime }),
+          launchCoordinator,
+          executionFinisher,
           settlementRefusalRecorder: { record: () => true },
           eventBus,
           providerRegistry,

@@ -99,7 +99,9 @@ function evidenceFor(jobId: string, detail: JobProjectionDetail, registries: Loc
         : {
             carrierClass: 'app-server-acquired',
             registryState: registries.registryStateForJob(jobId) ?? 'inherited',
-            ...(registries.holdsLocalAppServerExecution?.(jobId, detail.status?.execution ?? 0) === true ? { localExecutionHeld: true } : {}),
+            ...(registries.holdsLocalAppServerExecution?.(jobId, detail.status?.execution ?? 0) === true
+              ? { localExecutionHeld: true }
+              : {}),
           };
     case 'workflow':
       return { carrierClass: 'workflow', ownedByThisCoordinator: registries.isWorkflowOwnedByThisCoordinator(jobId) };
