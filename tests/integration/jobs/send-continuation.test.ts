@@ -125,6 +125,26 @@ describe('jobs send continuation through the execution owner', () => {
     },
   );
 
+  it.each(['codex', 'claude'])(
+    'archives a finished %s continuation again, so the next continuation restores the whole conversation',
+    async (provider) => {
+      const f = conversationIdentityFixture({ managedArtifacts: true });
+      try {
+        const initial = await first(f, provider);
+        const second = launched(await f.drive(f.service.send(attempt(f, initial, 1, 'second'), f.ctx)));
+        await f.drive(f.service.waitForJobTerminal(initial.jobId, 10_000));
+        expect(f.runtime.storage.existsSync(f.nativePath(initial.jobId, provider))).toBe(false);
+
+        launched(await f.drive(f.service.send(attempt(f, second, 2, 'third'), f.ctx)));
+        await f.drive(f.service.waitForJobTerminal(initial.jobId, 10_000));
+        expect(f.restored).toEqual(['first\n', 'first\nsecond\n']);
+        expect(f.runtime.storage.existsSync(f.nativePath(initial.jobId, provider))).toBe(false);
+      } finally {
+        await f.dispose();
+      }
+    },
+  );
+
   it('rereads a committed request after losing its commit acknowledgement, then replays across restart', async () => {
     const f = conversationIdentityFixture({ managedArtifacts: true });
     try {
