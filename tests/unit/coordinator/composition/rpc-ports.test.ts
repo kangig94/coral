@@ -23,6 +23,7 @@ describe('coordinator RPC ports', () => {
       projectRoot,
       jobId: 'job-1',
       input: 'Keep the API.',
+      target: { mode: 'steer' as const, execution: 1, requestedSeq: 2, sourceEpoch: 'epoch' },
       clientMessageId: '11111111-1111-4111-8111-111111111111',
     };
     const send = vi.fn<ProjectRequestPort['send']>(async () => ({
@@ -39,6 +40,6 @@ describe('coordinator RPC ports', () => {
       providerTurnId: 'turn-1',
     });
     expect(getExecutionService).toHaveBeenCalledExactlyOnceWith(ctx);
-    expect(send).toHaveBeenCalledExactlyOnceWith(request);
+    expect(send).toHaveBeenCalledExactlyOnceWith(request, ctx);
   });
 });

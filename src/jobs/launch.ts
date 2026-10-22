@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { JobSendTarget } from './send.js';
 
 import { providerBindingEnvelopeSchema } from '../infra/provider-binding-envelope.js';
 import { providerInstructionSchema, type ProviderInstruction } from '../providers/contract.js';
@@ -103,6 +104,7 @@ export interface JobResumeRequest extends Omit<JobLaunchRequest, 'retention' | '
   jobId: string;
   originatingClientMessageId?: string;
   provider?: string;
+  continuationTarget?: JobSendTarget;
 }
 
 export const executionOrdinalSchema = z.number().int().positive().safe();

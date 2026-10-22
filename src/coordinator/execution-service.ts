@@ -30,7 +30,7 @@ import { JobLaunchService } from './services/job-launch.js';
 import { WorkflowExecutionService } from './services/workflow-execution.js';
 import { JobAbortService } from './services/job-abort.js';
 import { JobSendService, type JobSendRequest } from './services/job-send.js';
-import type { ProxyOperationSendResult } from '../provider-proxy/protocol.js';
+import type { JobSendResult } from '../jobs/send.js';
 import { JobWaitService } from './services/job-wait.js';
 import { RecoveryService } from './services/recovery/service.js';
 import { recordProviderTerminal } from './services/terminal-materializer.js';
@@ -198,6 +198,26 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     });
     this.sendService = new JobSendService({
       progressStore: this.progressStore,
+      currentJobEpochKey: () => deps.currentJobEpochKey?.() ?? ':memory:',
+      resume: (request, requestCtx) => {
+        const status = this.progressStore.readStatus(request.jobId);
+        if (status?.provider === null || status?.provider === undefined)
+          return Promise.resolve({
+            status: 'refused' as const,
+            code: 'transport_unsupported',
+            message: 'The job has no provider.',
+          });
+        return this.launchService.resume(
+          status.provider,
+          {
+            jobId: request.jobId,
+            prompt: request.input,
+            originatingClientMessageId: request.clientMessageId,
+            continuationTarget: request.target,
+          },
+          requestCtx,
+        );
+      },
       authorityFor: (identity) => deps.providerProxyAuthorityFor?.(identity) ?? null,
     });
   }
@@ -273,8 +293,8 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     return this.abortService.abort(jobIds);
   }
 
-  send(request: JobSendRequest): Promise<ProxyOperationSendResult> {
-    return this.sendService.send(request);
+  send(request: JobSendRequest, ctx: InvocationContext): Promise<JobSendResult> {
+    return this.runWithInvocationScope(ctx, () => this.sendService.send(request, ctx));
   }
 
   async waitForJobTerminal(jobId: string, timeoutMs?: number): Promise<void> {

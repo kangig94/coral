@@ -1,3 +1,4 @@
+import type { JobSendTarget } from '../send.js';
 import type { ProviderRequest } from '../../providers/contract.js';
 import type { BoundProvider } from '../../providers/bound-provider-contract.js';
 import type { RetentionPolicy, JobConversation } from '../conversation/entry.js';
@@ -23,6 +24,7 @@ export interface ProviderJobLaunchPort {
       retention?: RetentionPolicy;
       discussionRun?: DiscussionRunDescriptor;
       originatingClientMessageId?: string;
+      continuationTarget?: JobSendTarget;
       mintProtectedEnv: (jobId: string, execution: number) => ProviderOperationEnvironmentInput;
     },
   ): Promise<ProviderJobLaunchDecision>;

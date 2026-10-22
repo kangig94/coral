@@ -400,6 +400,7 @@ export class JobLaunchService {
         workflowSlotId: input.workflowSlotId,
         discussionRun: input.discussionRun,
         originatingClientMessageId: input.originatingClientMessageId,
+        continuationTarget: input.continuationTarget,
         mintProtectedEnv: (jobId, execution) =>
           this.mintChildPrincipalSecretEnv(ctx, jobId, execution, 'job-launch:resume'),
       }),

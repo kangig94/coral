@@ -10,7 +10,7 @@ import type { AbortRefusalNextStep } from '../../jobs/contracts/abort-registry.j
 import type { JobOperatorRemedy } from '../../jobs/contracts/operator-remedy.js';
 import type { JobDetailResponse, JobStatus, JobTerminal, JobsListResponse } from '../../jobs/records.js';
 import type { AcceptedLaunchResponse } from '../../jobs/launch.js';
-import type { ProviderSendOutcome } from '../../providers/contract.js';
+import type { JobSendOutcome } from '../../jobs/send.js';
 import { formatTable, joinLines } from './text.js';
 import { formatUsageSegment } from './usage.js';
 
@@ -59,10 +59,15 @@ export function formatUnknownLaunchOutcome(_outcome: UnknownLaunchOutcome): stri
 
 export function formatJobSendResult(
   jobId: string,
-  result: ProviderSendOutcome,
+  result: JobSendOutcome,
   context?: JobSendOutputContext,
 ): { text: string; exitCode: number } {
   switch (result.state) {
+    case 'launched':
+      return {
+        text: `${formatDetachedLaunchStatus(result.launch)}\n${formatLaunchWaitHint(result.launch)}`,
+        exitCode: 0,
+      };
     case 'delivered':
       return {
         text: "Message delivered to the running turn. Whether the agent acts on it is the agent's decision.",
@@ -72,7 +77,12 @@ export function formatJobSendResult(
       return {
         text: [
           `Message refused (${result.code}): ${result.reason.replace(/\r\n|[\r\n\u2028\u2029]/gu, '\n  ')}`,
-          ...jobSendRefusalRemedy(jobId, result.code, context),
+          ...(result.priorDeliveryUncertain === true
+            ? [
+                'An earlier invocation may have delivered this message. This refusal does not resolve that uncertainty.',
+                formatJobsOperatorCommand({ kind: 'wait-job', jobId, grammar: 'current' }),
+              ]
+            : jobSendRefusalRemedy(jobId, result.code, context)),
         ].join('\n'),
         exitCode: 1,
       };
@@ -87,7 +97,7 @@ export function formatJobSendResult(
   }
 }
 
-type JobSendRefusalCode = Extract<ProviderSendOutcome, { state: 'refused' }>['code'];
+type JobSendRefusalCode = Extract<JobSendOutcome, { state: 'refused' }>['code'];
 
 function jobSendRefusalRemedy(
   jobId: string,
@@ -95,6 +105,17 @@ function jobSendRefusalRemedy(
   context: JobSendOutputContext | undefined,
 ): readonly string[] {
   switch (code) {
+    case 'execution_finishing':
+      return [
+        'This invocation wrote nothing; an earlier invocation with this message identity may have delivered it.',
+        formatJobsOperatorCommand({ kind: 'wait-job', jobId, grammar: 'current' }),
+        'After the wait, a new intentional send reads a fresh target and uses a new message ID.',
+      ];
+    case 'continuation_target_changed':
+      return [
+        'Read job detail before a new intentional send attempt.',
+        formatJobsOperatorCommand({ kind: 'jobs-detail', jobId }),
+      ];
     case 'turn_not_started':
     case 'control_unavailable':
       return jobSendRetryRemedy(jobId, context);
@@ -134,13 +155,18 @@ function jobSendTerminalRemedy(jobId: string, context: JobSendOutputContext | un
 
 function jobSendReadOnlyRemedy(
   jobId: string,
-  code: Exclude<JobSendRefusalCode, 'turn_not_started' | 'control_unavailable' | 'turn_ended'>,
+  code: Exclude<
+    JobSendRefusalCode,
+    'turn_not_started' | 'control_unavailable' | 'turn_ended' | 'execution_finishing' | 'continuation_target_changed'
+  >,
 ): readonly string[] {
   switch (code) {
     case 'job_not_running':
     case 'provider_rejected':
     case 'transport_unsupported':
       return ["Read the job's result.", formatJobsOperatorCommand({ kind: 'wait-job', jobId, grammar: 'current' })];
+    case 'invalid_request':
+      return ['This invocation was rejected before delivery. Check the request parameters.'];
     case 'not_found':
       return ['List the available jobs.', formatJobsOperatorCommand({ kind: 'jobs-list' })];
     case 'scope_mismatch':

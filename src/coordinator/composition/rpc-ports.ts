@@ -168,7 +168,7 @@ export function createCoordinatorRpcPorts({
       snapshot: (request) => jobAddressing.snapshot(request),
       scopeCheck: (jobIds, callerRoot, relation) => jobAddressing.scopeCheck(jobIds, callerRoot, relation),
       abort: (jobIds) => jobAddressing.abort(jobIds),
-      send: (request, ctx) => services.getExecutionService(ctx).send(request),
+      send: (request, ctx) => services.getExecutionService(ctx).send(request, ctx),
       release: (jobIds) => {
         const result: JobsReleaseResult = { released: [], unknown: [], terminal: [] };
         for (const jobId of jobIds) {

@@ -1,3 +1,4 @@
+import { jobSendOutcomeSchema } from '../../jobs/send.js';
 import { z, type ZodType } from 'zod';
 import type { Capability } from '../../security/capability.js';
 import {
@@ -19,7 +20,6 @@ import {
 } from './discuss.js';
 import {
   jobAbortSchema,
-  jobSendResponseSchema,
   jobSendSchema,
   jobsReleaseRequestSchema,
   jobDetailRequestSchema,
@@ -638,7 +638,7 @@ export const jobsSendRpcSpec = {
   kind: 'unary',
   requires: 'jobs:control',
   requestSchema: jobSendSchema,
-  responseSchema: jobSendResponseSchema,
+  responseSchema: jobSendOutcomeSchema,
   responseKind: 'json',
   portKey: 'jobs',
   http: { method: 'POST', path: '/jobs/send' },

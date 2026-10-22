@@ -22,7 +22,7 @@ import { waitCommandPaths } from '../../coordinator/handoff-routing/wait-command
 import type { AbortResult } from '../../jobs/contracts/abort-registry.js';
 import type { ProviderRegistry } from '../../providers/registry.js';
 import { getProviderNames, makeClient } from '../dispatch.js';
-import { emitError, getTerminalContext } from '../emit.js';
+import { emitError, getTerminalContext, handleLaunchResult } from '../emit.js';
 import { parseJobIds, resolveInput } from '../flags.js';
 import { flushPendingReadStoreNote, getSharedReadCoralStore } from '../read-store.js';
 import { UsageError, WaitOutputError, WaitSnapshotResponseError, normalizeUsageError } from '../errors.js';
@@ -283,18 +283,23 @@ function registerJobsSendCommand(jobsCommand: Command): void {
   const sendCommand = jobsCommand.command('send');
   const inputUsage = 'Input is required. Use -i <text>, -i <file>, or -i - (stdin).';
   sendCommand
-    .description('Deliver a user message to a running provider turn. An ended turn is not resumed.')
+    .description('Steer a running provider turn or continue its ended conversation.')
     .argument('<jobId>', 'Job ID')
     .option(
       '-i, --input <text-or-file...>',
       'Message input (required; tokens are joined with single spaces; the whole input is read if it names an existing regular file, or stdin if exactly -; otherwise literal text)',
     )
-    .action(async (jobId: string, opts: { input?: string[] }) => {
+    .option('-d, --detach', 'Return immediately after launching a continuation')
+    .action(async (jobId: string, opts: { input?: string[]; detach?: boolean }) => {
       try {
         if (opts.input === undefined) throw new UsageError(inputUsage);
         const input = resolveInput(opts.input);
         if (input.trim().length === 0) throw new UsageError(inputUsage);
         const result = await makeClient(process.cwd(), sendCommand).sendJob(jobId, input);
+        if (result.state === 'launched') {
+          await handleLaunchResult(result.launch, opts.detach);
+          return;
+        }
         const launch =
           result.state === 'refused' && result.code === 'turn_ended' && opts.input.join(' ') !== '-'
             ? readJobSendLaunch(jobId)

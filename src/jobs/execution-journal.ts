@@ -2,12 +2,13 @@ import { jobExecutionOutcomeAcceptedBodySchema } from './terminal/result.js';
 import type { ExecutionAddress } from './execution-address.js';
 import type { EventsRow } from '../store/schema.js';
 import type { Database } from '../store/db.js';
-import { decodeBody, type StoreReadContext } from '../store/body-codec.js';
+import { decodeBody, decodeEventBody, type StoreReadContext } from '../store/body-codec.js';
 import {
   jobExecutionRequestedBodySchema,
   jobOpenedBodySchema,
   type JobExecutionRequestedBody,
   type JobOpenedBody,
+  type AcceptedProviderJobLaunchDecision,
 } from './launch.js';
 
 export interface CommittedExecutionRequest {
@@ -25,7 +26,7 @@ export function findCommittedExecutionRequest(
   db: Database,
   jobId: string,
   clientMessageId: string,
-  ctx: StoreReadContext,
+  ctx?: StoreReadContext,
 ): CommittedExecutionRequest | null {
   const rows = db
     .prepare<
@@ -34,7 +35,10 @@ export function findCommittedExecutionRequest(
     >("SELECT seq, type, stream_kind, body FROM events WHERE stream_kind = 'job' AND stream_id = ? AND type = 'job.execution.requested' ORDER BY seq")
     .all(jobId);
   for (const row of rows) {
-    const request = decodeBody(row, jobExecutionRequestedBodySchema, ctx);
+    const request =
+      ctx === undefined
+        ? jobExecutionRequestedBodySchema.parse(decodeEventBody(row.body))
+        : decodeBody(row, jobExecutionRequestedBodySchema, ctx);
     if (request.originatingClientMessageId === clientMessageId) return { jobId, requestedSeq: row.seq, request };
   }
   return null;
@@ -103,4 +107,26 @@ export function readExecutionAcceptedOutcomeEvent(
     throw new Error(`Job ${address.jobId} execution #${address.execution} has no accepted outcome.`);
   decodeBody(row, jobExecutionOutcomeAcceptedBodySchema, readCtx);
   return row;
+}
+
+export function committedProviderLaunchDecision(
+  db: Database,
+  committed: CommittedExecutionRequest,
+  epochKey: string,
+): AcceptedProviderJobLaunchDecision {
+  const admission = db
+    .prepare<
+      [string, number],
+      { type: string }
+    >("SELECT type FROM events WHERE stream_kind = 'job' AND stream_id = ? AND type IN ('job.execution.queued', 'job.execution.admitted') AND json_extract(CAST(body AS TEXT), '$.execution') = ? ORDER BY seq LIMIT 1")
+    .get(committed.jobId, committed.request.execution);
+  if (admission === undefined)
+    throw new Error(`Committed execution admission is missing: ${committed.jobId}#${committed.request.execution}`);
+  return {
+    kind: 'provider-session',
+    status: admission.type === 'job.execution.queued' ? 'queued' : 'running',
+    jobId: committed.jobId,
+    requestedSeq: committed.requestedSeq,
+    epochKey,
+  };
 }

@@ -22,13 +22,17 @@ import { testChildPrincipalRegistry } from '#tests/helpers/child-principal-regis
 import { executionHarness } from '#tests/helpers/job-executions.js';
 import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
-import { TEST_CODEX_ACCESS, TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
+import { TEST_CLAUDE_ACCESS, TEST_CODEX_ACCESS, TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
 import { toProviderDefinition, type StandaloneTestProvider } from '#tests/helpers/scripted-provider.js';
 import { flushMicrotasks } from '#tools/simulation/core/virtual-time.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 
 export function conversationIdentityFixture(
-  options: { stall?: boolean; managedArtifacts?: boolean; failOnResume?: boolean } = {},
+  options: {
+    stall?: boolean;
+    managedArtifacts?: boolean;
+    failOnResume?: boolean | ((request: ProviderRequest) => boolean);
+  } = {},
 ) {
   const runtime = new SimulationRuntime();
   const epochDir = join(runtime.paths.coral.store.dbDir, 'epoch-1');
@@ -73,10 +77,15 @@ export function conversationIdentityFixture(
     commitEvents: (write) => commit(write),
     signal: retentionAbort.signal,
   });
+  let loseRequestAcknowledgement = false;
   const commit: CommitEventsFn = (write) => {
     const appended = journalDeps.coordinatorCommit(write);
     finisher.observeCommitted(appended);
     reactor.observe(appended);
+    if (loseRequestAcknowledgement && appended.some((event) => event.type === 'job.execution.requested')) {
+      loseRequestAcknowledgement = false;
+      throw new Error('Committed request acknowledgement lost');
+    }
     return appended;
   };
   const finisher = new ExecutionFinisher({
@@ -88,7 +97,10 @@ export function conversationIdentityFixture(
     settleRetention: (address, action) => reactor.settleRetention(address, action),
   });
   const requests: ProviderRequest[] = [];
-  const nativePath = (jobId: string) => `${TEST_CODEX_ACCESS.home}/sessions/rollout-thread-${jobId}.jsonl`;
+  const nativePath = (jobId: string, provider = 'codex') =>
+    provider === 'claude'
+      ? `${TEST_CLAUDE_ACCESS.projectsRoot}/workspace/thread-${jobId}.jsonl`
+      : `${TEST_CODEX_ACCESS.home}/sessions/rollout-thread-${jobId}.jsonl`;
   const restored: string[] = [];
   const discarded: string[][] = [];
   const completions = new Map<string, () => void>();
@@ -104,7 +116,7 @@ export function conversationIdentityFixture(
                 for (const handle of handles) runtime.storage.unlinkSync(handle);
                 return { kind: 'discarded' };
               },
-              locateArtifact: ({ conversationRef }) => nativePath(conversationRef.slice('thread-'.length)),
+              locateArtifact: ({ conversationRef }) => nativePath(conversationRef.slice('thread-'.length), name),
             }),
           }
         : {}),
@@ -117,7 +129,7 @@ export function conversationIdentityFixture(
           providerContinuity: null,
         };
         if (options.managedArtifacts) {
-          const path = nativePath(request.jobId);
+          const path = nativePath(request.jobId, name);
           const previous = request.action === 'resume' ? runtime.storage.readFileSync(path, 'utf-8') : '';
           if (request.action === 'resume') restored.push(previous);
           runtime.storage.mkdirSync(dirname(path), { recursive: true });
@@ -137,6 +149,9 @@ export function conversationIdentityFixture(
           });
           completions.delete(request.jobId);
         }
+        const failOnResume =
+          request.action === 'resume' &&
+          (typeof options.failOnResume === 'function' ? options.failOnResume(request) : options.failOnResume === true);
         yield {
           kind: 'terminal',
           terminal: {
@@ -145,7 +160,7 @@ export function conversationIdentityFixture(
             ...(options.managedArtifacts ? { usage: { inputTokens: 10, outputTokens: 5, costUsd: 0.25 } } : {}),
             outcome: providerRuntime.signal.aborted
               ? { kind: 'aborted', reason: 'signal_abort' }
-              : options.failOnResume && request.action === 'resume'
+              : failOnResume
                 ? { kind: 'provider_exit', code: 7, note: 'replacement failed' }
                 : { kind: 'completed' },
           },
@@ -162,22 +177,25 @@ export function conversationIdentityFixture(
     principal: testProjectPrincipal(projectRoot),
     providerScope: TEST_PROVIDER_SCOPE,
   };
-  const service = new ExecutionService(ctx, {
-    ...journalDeps,
-    runtime,
-    progressStore: store,
-    executionFinisher: finisher,
-    coordinatorCommit: commit,
-    launchCoordinator: admission,
-    runningWorkflowJobs: new Set(),
-    backendNamespace: 'identity-test',
-    bundleHash: 'identity-test',
-    eventBus,
-    providerRegistry: providers,
-    pluginRegistry: { discoverPluginRoot: () => null },
-    childPrincipalRegistry: testChildPrincipalRegistry(runtime.ids, { db: journal.db }),
-    settlementRefusalRecorder: { record: () => true },
-  });
+  const createService = () =>
+    new ExecutionService(ctx, {
+      ...journalDeps,
+      runtime,
+      progressStore: store,
+      executionFinisher: finisher,
+      coordinatorCommit: commit,
+      launchCoordinator: admission,
+      runningWorkflowJobs: new Set(),
+      backendNamespace: 'identity-test',
+      bundleHash: 'identity-test',
+      eventBus,
+      providerRegistry: providers,
+      pluginRegistry: { discoverPluginRoot: () => null },
+      childPrincipalRegistry: testChildPrincipalRegistry(runtime.ids, { db: journal.db }),
+      settlementRefusalRecorder: { record: () => true },
+    });
+
+  let service = createService();
 
   async function drive<T>(work: Promise<T>): Promise<T> {
     let settled = false;
@@ -252,6 +270,13 @@ export function conversationIdentityFixture(
     store,
     admission,
     service,
+    restartCoordinator: () => {
+      service = createService();
+      return service;
+    },
+    loseNextRequestCommitAcknowledgement: () => {
+      loseRequestAcknowledgement = true;
+    },
     providers,
     ctx,
     commit,

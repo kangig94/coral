@@ -14,16 +14,16 @@ import { createBuiltInProviderRegistry } from '#src/providers/bootstrap.js';
 import type { JobsListResponse } from '#src/jobs/records.js';
 import { selectWaitSnapshot } from '#tests/helpers/wait-progress.js';
 import { admitted, testSession } from '#tests/helpers/wait-session.js';
-import type { ProviderSendOutcome } from '#src/providers/contract.js';
+import type { JobSendOutcome } from '#src/jobs/send.js';
 import { registerProviderCommands } from '#src/cli/commands/provider.js';
 import { formatJobSendResult } from '#src/cli/format/jobs.js';
-import { followJobs } from '#src/cli/follow.js';
+import { followJobs, launchAndFollow } from '#src/cli/follow.js';
 
 const client = vi.hoisted(() => ({
   listJobs: vi.fn<() => Promise<JobsListResponse>>(async () => ({ jobs: [] })),
   abortJobs: vi.fn(async () => ({ aborted: ['a'], notFound: [] })),
   snapshotJobsWait: vi.fn(),
-  sendJob: vi.fn<() => Promise<ProviderSendOutcome>>(async () => ({ state: 'delivered' })),
+  sendJob: vi.fn<() => Promise<JobSendOutcome>>(async () => ({ state: 'delivered' })),
   createSession: vi.fn(async () => ({
     kind: 'provider-session',
     jobId: 'p',
@@ -62,6 +62,7 @@ vi.mock('#src/cli/dispatch.js', async (importOriginal) => ({
 vi.mock('#src/cli/follow.js', async (importOriginal) => ({
   ...(await importOriginal<typeof FollowMod>()),
   followJobs: vi.fn(async () => 0),
+  launchAndFollow: vi.fn(async () => 7),
 }));
 
 afterEach(() => {
@@ -117,7 +118,8 @@ it('explains required send input resolution and ended-turn behavior in help', ()
   expect(help).toContain('tokens are joined with single spaces');
   expect(help).toContain('the whole input is read if it names an existing regular file');
   expect(help).toContain('stdin if exactly -');
-  expect(help).toContain('An ended turn is not resumed');
+  expect(help).toContain('continue its ended conversation');
+  expect(help).toContain('--detach');
 });
 
 it.each([
@@ -288,7 +290,7 @@ it.each([
     75,
     "Unknown: message may have been delivered. Check the job's progress for evidence.\ncommand=coral-cli jobs wait job-1",
   ],
-] satisfies [ProviderSendOutcome, number, string][])('renders %j with exit %i', async (result, exitCode, expected) => {
+] satisfies [JobSendOutcome, number, string][])('renders %j with exit %i', async (result, exitCode, expected) => {
   const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
   const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
   client.sendJob.mockResolvedValueOnce(result);
@@ -378,6 +380,36 @@ it.each([
     expect(process.exitCode).toBe(0);
   },
 );
+it.each([false, true])('follows a launched continuation by default and detaches=%s', async (detach) => {
+  const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+  vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+  const launch = {
+    kind: 'provider-session' as const,
+    jobId: 'job-1',
+    requestedSeq: 100,
+    epochKey: 'epoch',
+    launchState: 'queued' as const,
+  };
+  client.sendJob.mockResolvedValueOnce({ state: 'launched', launch });
+  await program().parseAsync(['jobs', 'send', 'job-1', ...(detach ? ['-d'] : []), '-i', 'continue'], { from: 'user' });
+  if (detach) {
+    expect(launchAndFollow).not.toHaveBeenCalled();
+    const text = stdout.mock.calls.map(([chunk]) => String(chunk)).join('');
+    expect(text).toContain('job-1');
+    expect(text).toContain('--execution-selection');
+    expect(text).toContain('100');
+  } else {
+    expect(launchAndFollow).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ launchResult: launch }));
+    expect(process.exitCode).toBe(7);
+  }
+});
+
+it.each([false, true])('returns a steer immediately with detach=%s', async (detach) => {
+  vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+  await program().parseAsync(['jobs', 'send', 'job-1', ...(detach ? ['-d'] : []), '-i', 'steer'], { from: 'user' });
+  expect(launchAndFollow).not.toHaveBeenCalled();
+  expect(followJobs).not.toHaveBeenCalled();
+});
 
 it('keeps option-looking input tokens as message text in the runnable retry command', async () => {
   vi.spyOn(process.stdout, 'write').mockImplementation(() => true);

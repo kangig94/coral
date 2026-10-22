@@ -3,7 +3,7 @@ import type { ExecutionWaitDetail } from '../jobs/wait/execution-detail.js';
 import type { ExecutionFinisher } from '../jobs/finishing.js';
 import type { JobAttention } from './services/job-attention.js';
 import type { JobSendRequest, JobSendServiceDeps } from './services/job-send.js';
-import type { ProxyOperationSendResult } from '../provider-proxy/protocol.js';
+import type { JobSendResult } from '../jobs/send.js';
 import type { ProgressVisit } from '../jobs/wait/contract.js';
 import type { WaitAdmission } from '../jobs/wait/session.js';
 import type { ResultAvailability } from '../jobs/terminal/export.js';
@@ -60,7 +60,7 @@ interface CoordinatorJobOps {
   readWaitAdmission?(jobId: string, epochKey: string, session?: object): WaitAdmission | null;
   holdsLocalAppServerExecution?(jobId: string, execution: number): boolean;
   abort(jobIds: string[]): AbortResult;
-  send(request: JobSendRequest): Promise<ProxyOperationSendResult>;
+  send(request: JobSendRequest, ctx: InvocationContext): Promise<JobSendResult>;
   waitStream(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent>;
   waitStreamOnce(jobId: string, timeoutMs?: number): Promise<WaitStreamOnceResult>;
   awaitLaunch(jobId: string, timeoutMs: number): Promise<LaunchReadiness>;

@@ -1,3 +1,6 @@
+import { z } from 'zod';
+import { jobSendOutcomeSchema, type JobSendOutcome } from '../jobs/send.js';
+import { isTerminalPhase, jobPhaseSchema } from '../jobs/phase.js';
 import { isRecord } from '../infra/json.js';
 import type { WaitSnapshotRequest } from '../jobs/wait/contract.js';
 import type { WaitSnapshot } from '../jobs/wait/session.js';
@@ -66,7 +69,6 @@ import type {
   KbWikiUnlinkInput,
 } from '../kb/entry-types.js';
 import type { ProviderRegistry } from '../providers/registry.js';
-import { providerSendOutcomeSchema, type ProviderSendOutcome } from '../providers/contract.js';
 import { createBuiltInProviderRegistry } from '../providers/bootstrap.js';
 import { providerBindingFailureCode } from '../providers/contracts/binding.js';
 import { discussProviderNames } from '../discuss/execution-policy.js';
@@ -143,7 +145,7 @@ type DiscussSeedArgs = {
 type CliCommandClient = {
   releaseJobs(jobIds: string[]): Promise<JobsReleaseResult>;
   abortJobs(jobIds: string[]): Promise<AbortResult>;
-  sendJob(jobId: string, input: string): Promise<ProviderSendOutcome>;
+  sendJob(jobId: string, input: string): Promise<JobSendOutcome>;
   createSession(
     provider: string,
     prompt: string,
@@ -886,21 +888,53 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
 
   const reconcileKbBoot = createKbBootReconciler(path, ipcAuth);
 
-  const sendJob = async (jobId: string, input: string): Promise<ProviderSendOutcome> => {
+  const sendJob = async (jobId: string, input: string): Promise<JobSendOutcome> => {
+    const clientMessageId = randomUUID();
+    jobSendSchema.shape.input.parse(input);
+    const detail = z
+      .object({
+        requestedSeq: z.number().int().positive().safe(),
+        epochKey: z.string().min(1),
+        status: z
+          .object({
+            execution: z.number().int().positive().safe(),
+            phase: jobPhaseSchema,
+            finishing: z.boolean().optional(),
+            provider: z.string().min(1).nullable(),
+          })
+          .passthrough(),
+      })
+      .passthrough()
+      .parse(getSharedReadCoralStore(canonicalProjectRoot).jobs.detail(jobId));
+    const context = await buildProviderTransportContextBody(
+      {},
+      defaultContext,
+      providerRegistry,
+      detail.status.provider === null ? [] : [detail.status.provider],
+    );
     const params = jobSendSchema.parse({
       projectRoot: canonicalProjectRoot,
       jobId,
       input,
-      clientMessageId: randomUUID(),
+      clientMessageId,
+      target: {
+        mode: isTerminalPhase(detail.status.phase) ? 'continue' : 'steer',
+        execution: detail.status.execution,
+        requestedSeq: detail.requestedSeq,
+        sourceEpoch: detail.epochKey,
+      },
+      providerScope: context.providerScope,
+      coralEnv: context.coralEnv,
+      networkEnv: context.networkEnv,
+      owner: context.owner,
     });
     const authOptions = ipcAuthOptions();
     await reconcileKbBoot();
     let issued = false;
+    let priorDeliveryUncertain = false;
     try {
-      const result = await issueWithSuccessorAfterLifecycleRefusal<unknown>(
-        'jobs.send',
-        resolvePluginRoot(),
-        async (client) => {
+      const issue = () =>
+        issueWithSuccessorAfterLifecycleRefusal<unknown>('jobs.send', resolvePluginRoot(), async (client) => {
           issued = true;
           try {
             return await client.request<unknown>('jobs.send', params, { timeoutMs: 20_000, ...authOptions });
@@ -908,22 +942,54 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
             if (error instanceof IpcLifecycleRefusal) issued = false;
             throw error;
           }
-        },
-      );
-      const parsed = providerSendOutcomeSchema.safeParse(result);
-      return parsed.success
-        ? parsed.data
-        : { state: 'unknown', reason: 'The coordinator returned no valid send outcome.' };
+        });
+      let result: unknown;
+      try {
+        result = await issue();
+      } catch (error: unknown) {
+        if (!issued || error instanceof IpcLifecycleRefusal || error instanceof IpcRpcError) throw error;
+        priorDeliveryUncertain = true;
+        result = await issue();
+      }
+      const parsed = jobSendOutcomeSchema.safeParse(result);
+      if (!parsed.success) return { state: 'unknown', reason: 'The coordinator returned no valid send outcome.' };
+      return parsed.data.state === 'refused' && priorDeliveryUncertain
+        ? { ...parsed.data, priorDeliveryUncertain: true }
+        : parsed.data;
     } catch (error) {
-      if (!issued || error instanceof IpcLifecycleRefusal) throw error;
-      if (error instanceof IpcRpcError && error.rpcCode === -32601) {
+      if (!issued || error instanceof IpcLifecycleRefusal) {
+        if (priorDeliveryUncertain)
+          return {
+            state: 'unknown',
+            reason:
+              'An earlier invocation may have delivered this message; its retry could not obtain a decisive response.',
+          };
+        throw error;
+      }
+      const unrecognizedKeys =
+        error instanceof IpcRpcError &&
+        error.rpcCode === -32602 &&
+        (/unrecognized\s+key/i.test(error.message) ||
+          (isRecord(error.data) &&
+            ((typeof error.data.message === 'string' && /unrecognized\s+key/i.test(error.data.message)) ||
+              (Array.isArray(error.data.issues) &&
+                error.data.issues.some((issue) => isRecord(issue) && issue.code === 'unrecognized_keys')))));
+      if (error instanceof IpcRpcError && (error.rpcCode === -32601 || unrecognizedKeys)) {
         return {
           state: 'refused',
           code: 'unsupported_by_running_build',
+          ...(priorDeliveryUncertain ? { priorDeliveryUncertain: true as const } : {}),
           reason:
             'The running Coral build predates jobs send. Restart the session so the current Coral plugin loads; the coordinator follows the installed build.',
         };
       }
+      if (error instanceof IpcRpcError && error.rpcCode === -32602)
+        return {
+          state: 'refused',
+          code: 'invalid_request',
+          reason: error.message,
+          ...(priorDeliveryUncertain ? { priorDeliveryUncertain: true as const } : {}),
+        };
       return { state: 'unknown', reason: 'The coordinator did not return a decisive send response.' };
     }
   };

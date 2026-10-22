@@ -14,6 +14,7 @@ const mockState = vi.hoisted(() => ({
   subscribe: vi.fn(),
   health: vi.fn(async () => ({ components: [] as Array<Record<string, unknown>> })),
   readStore: {
+    jobs: { detail: vi.fn() },
     kb: { listMemos: vi.fn(() => []) },
     discuss: {
       watch: vi.fn(),
@@ -138,10 +139,17 @@ describe('command client routing', () => {
     }
   });
   beforeEach(() => {
+    mockState.request.mockReset();
+    mockState.readStore.jobs.detail.mockReturnValue({
+      requestedSeq: 2,
+      epochKey: 'epoch',
+      status: { execution: 1, phase: 'running', finishing: false, provider: 'claude' },
+    });
     stubNonChildInvocationEnv();
     mockState.discovery.mockReturnValue({ kind: 'missing' });
     mockState.createLiveClient.mockReturnValue({ request: mockState.liveRequest });
     projectRoot = makeTempDir();
+    vi.stubEnv('CLAUDE_CONFIG_DIR', makeTempDir());
   });
 
   afterEach(() => {
@@ -253,16 +261,17 @@ describe('command client routing', () => {
       'succession pause',
       new IpcRpcError({ code: -32000, message: 'Paused', data: { code: 'succession_admission_paused' } }),
     ],
-  ])('reports post-issue %s as unknown/75 without reconnecting or replaying', async (_name, error) => {
-    mockState.request.mockRejectedValueOnce(error);
+  ])('reports post-issue %s as unknown/75 after at most one bound retry', async (_name, error) => {
+    mockState.request.mockRejectedValue(error);
     const client = makeClient(projectRoot, findCommand(buildProgram(), 'jobs', 'send'));
     const outcome = await client.sendJob('job-1', 'message');
     expect(outcome).toMatchObject({ state: 'unknown' });
     const output = formatJobSendResult('job-1', outcome);
     expect(output.exitCode).toBe(75);
     expect(output.text).not.toMatch(/retry|resend|jobs send|backend status/i);
-    expect(mockState.request).toHaveBeenCalledOnce();
-    expect(ensure).toHaveBeenCalledOnce();
+    const calls = error instanceof IpcRpcError ? 1 : 2;
+    expect(mockState.request).toHaveBeenCalledTimes(calls);
+    expect(ensure).toHaveBeenCalledTimes(calls);
   });
 
   it('reports an older coordinator as refused/1 with restart guidance and no retry remedy', async () => {
@@ -465,5 +474,172 @@ describe('command client routing', () => {
     expect(ensure).not.toHaveBeenCalled();
     expect(mockState.health).not.toHaveBeenCalled();
     expect(mockState.request).not.toHaveBeenCalled();
+  });
+});
+
+describe('jobs send immutable attempt envelope', () => {
+  beforeEach(() => {
+    mockState.request.mockReset();
+    mockState.readStore.jobs.detail.mockReset();
+    mockState.discovery.mockReturnValue({ kind: 'missing' });
+    stubNonChildInvocationEnv();
+    projectRoot = makeTempDir();
+    vi.stubEnv('CLAUDE_CONFIG_DIR', makeTempDir());
+  });
+  afterEach(() => {
+    vi.clearAllMocks();
+    vi.unstubAllEnvs();
+    for (const root of tempDirs.splice(0)) rmSync(root, { recursive: true, force: true });
+  });
+
+  it.each(['steer', 'continue'] as const)(
+    'retains the complete %s envelope after a lost response and successor handoff',
+    async (mode) => {
+      const detail = {
+        requestedSeq: 20,
+        epochKey: 'epoch-original',
+        status: {
+          provider: 'claude',
+          execution: 2,
+          phase: mode === 'continue' ? 'completed' : 'running',
+          finishing: false,
+        },
+      };
+      mockState.readStore.jobs.detail
+        .mockReturnValueOnce(detail)
+        .mockReturnValue({ ...detail, requestedSeq: 90, status: { ...detail.status, execution: 3, phase: 'running' } });
+      vi.stubEnv('CORAL_OWNER', 'caller');
+      vi.stubEnv('HTTPS_PROXY', 'http://caller-proxy:1234');
+      mockState.request
+        .mockImplementationOnce(async () => {
+          throw new Error('response lost');
+        })
+        .mockRejectedValueOnce(new IpcLifecycleRefusal('/incumbent', 'jobs.send'))
+        .mockResolvedValueOnce(
+          mode === 'continue'
+            ? {
+                state: 'launched',
+                launch: {
+                  kind: 'provider-session',
+                  launchState: 'queued',
+                  jobId: 'job-1',
+                  requestedSeq: 30,
+                  epochKey: 'epoch-original',
+                },
+              }
+            : { state: 'unknown', reason: 'Original operation has closed; prior delivery remains unknown.' },
+        );
+      const reached = { request: mockState.request } as unknown as Awaited<ReturnType<typeof ensure>>;
+      vi.mocked(issueWithSuccessorAfterLifecycleRefusal)
+        .mockImplementationOnce(async (_method, _pluginRoot, issue) => issue(reached))
+        .mockImplementationOnce(async (_method, _pluginRoot, issue) => {
+          try {
+            return await issue(reached);
+          } catch (error: unknown) {
+            if (!(error instanceof IpcLifecycleRefusal)) throw error;
+            return issue(reached);
+          }
+        });
+      const outcome = await makeClient(projectRoot, findCommand(buildProgram(), 'jobs', 'send')).sendJob(
+        'job-1',
+        'immutable input',
+      );
+      expect(outcome.state).toBe(mode === 'continue' ? 'launched' : 'unknown');
+      expect(mockState.readStore.jobs.detail).toHaveBeenCalledTimes(1);
+      expect(mockState.request).toHaveBeenCalledTimes(3);
+      const [first, second, successor] = mockState.request.mock.calls;
+      expect(first[1]).toEqual(second[1]);
+      expect(first[1]).toBe(second[1]);
+      expect(successor[1]).toBe(first[1]);
+      expect(first[1]).toMatchObject({
+        target: { mode, execution: 2, requestedSeq: 20, sourceEpoch: 'epoch-original' },
+        input: 'immutable input',
+        clientMessageId: expect.any(String),
+        owner: 'caller',
+        providerScope: { origin: 'caller' },
+        coralEnv: expect.any(Object),
+        networkEnv: { HTTPS_PROXY: 'http://caller-proxy:1234' },
+      });
+      expect(jobSendSchema.parse(first[1])).toEqual(first[1]);
+    },
+  );
+
+  it.each([null, {}, { requestedSeq: 2, status: { execution: 1, phase: 'running' } }])(
+    'does not send when detail cannot bind the attempt: %j',
+    async (detail) => {
+      mockState.readStore.jobs.detail.mockReturnValue(detail);
+      await expect(
+        makeClient(projectRoot, findCommand(buildProgram(), 'jobs', 'send')).sendJob('job-1', 'input'),
+      ).rejects.toThrow();
+      expect(mockState.request).not.toHaveBeenCalled();
+    },
+  );
+
+  it('does not send after a detail read failure', async () => {
+    mockState.readStore.jobs.detail.mockImplementation(() => {
+      throw new Error('read unavailable');
+    });
+    await expect(
+      makeClient(projectRoot, findCommand(buildProgram(), 'jobs', 'send')).sendJob('job-1', 'input'),
+    ).rejects.toThrow('read unavailable');
+    expect(mockState.request).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['Unrecognized key(s) in object: target, providerScope', 'unsupported_by_running_build'],
+    ['Invalid input: target', 'invalid_request'],
+  ])('maps strict-schema rejection to decisive %s / %s', async (message, code) => {
+    mockState.readStore.jobs.detail.mockReturnValue({
+      requestedSeq: 2,
+      epochKey: 'epoch',
+      status: { execution: 1, phase: 'running', provider: 'claude' },
+    });
+    mockState.request.mockRejectedValueOnce(new IpcRpcError({ code: -32602, message }));
+    const result = await makeClient(projectRoot, findCommand(buildProgram(), 'jobs', 'send')).sendJob('job-1', 'input');
+    expect(result).toMatchObject({ state: 'refused', code });
+    expect(mockState.request).toHaveBeenCalledTimes(1);
+  });
+
+  it('recognizes an older coordinator strict-schema rejection in server validation data', async () => {
+    mockState.readStore.jobs.detail.mockReturnValue({
+      requestedSeq: 2,
+      epochKey: 'epoch',
+      status: { execution: 1, phase: 'running', provider: 'claude' },
+    });
+    mockState.request.mockRejectedValueOnce(
+      new IpcRpcError({
+        code: -32602,
+        message: 'Invalid params',
+        data: {
+          issues: [
+            {
+              code: 'unrecognized_keys',
+              keys: ['target', 'providerScope', 'coralEnv'],
+              path: [],
+              message: 'Unrecognized keys',
+            },
+          ],
+          message: 'Unrecognized keys: target, providerScope, coralEnv',
+        },
+      }),
+    );
+    expect(
+      await makeClient(projectRoot, findCommand(buildProgram(), 'jobs', 'send')).sendJob('job-1', 'input'),
+    ).toMatchObject({ state: 'refused', code: 'unsupported_by_running_build' });
+    expect(mockState.request).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves uncertainty when a lost response is followed by a finishing refusal', async () => {
+    mockState.readStore.jobs.detail.mockReturnValue({
+      requestedSeq: 2,
+      epochKey: 'epoch',
+      status: { execution: 1, phase: 'running', provider: 'claude' },
+    });
+    mockState.request
+      .mockRejectedValueOnce(new Error('response lost'))
+      .mockResolvedValueOnce({ state: 'refused', code: 'execution_finishing', reason: 'Finishing.' });
+    const result = await makeClient(projectRoot, findCommand(buildProgram(), 'jobs', 'send')).sendJob('job-1', 'input');
+    expect(result).toMatchObject({ state: 'refused', code: 'execution_finishing', priorDeliveryUncertain: true });
+    expect(formatJobSendResult('job-1', result).text).toContain('earlier invocation may have delivered');
   });
 });

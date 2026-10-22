@@ -1,3 +1,5 @@
+import { jobSendOutcomeSchema } from '../jobs/send.js';
+import { proxyOperationSendResultSchema } from '../provider-proxy/protocol.js';
 import { WaitSessionError } from '../jobs/wait/session.js';
 import { waitExecutionSelectionsSchema } from '../jobs/wait/execution-selection.js';
 import type { WaitCursor, WaitSnapshotRequest, CanonicalWaitStreamRequest } from '../jobs/wait/contract.js';
@@ -56,7 +58,6 @@ import {
   type ProviderHostAdministrationErrorCode,
 } from '../providers/host-administration-vocabulary.js';
 import { encodeHostRef } from '../providers/host-ref-codec.js';
-import { proxyOperationSendResultSchema } from '../provider-proxy/protocol.js';
 import type { z } from 'zod';
 
 type RetentionPolicy = NonNullable<JobLaunchRequest['retention']>;
@@ -1057,12 +1058,16 @@ async function executeJobsSendCatalogRequest({
   const parsed = request as z.infer<typeof jobSendSchema>;
   const callerRoot = canonicalRequest.projectRoot;
   if (callerRoot === undefined) return unaryHttp(domainResultToHttp(invalidRequestResult()));
-  const ctx = buildQueryContext(callerRoot, rpcPorts, principal);
+  const ctx = buildBodyInvocationContext(parsed, callerRoot, rpcPorts, principal);
+  if (ctx === null) return unaryHttp(domainResultToHttp(invalidRequestResult()));
   try {
-    const result = proxyOperationSendResultSchema.parse(
-      await rpcPorts.jobs.send({ ...parsed, projectRoot: callerRoot }, ctx),
-    );
-    return unary(result.state === 'delivered' ? { state: 'delivered' } : result);
+    const raw = await rpcPorts.jobs.send({ ...parsed, projectRoot: callerRoot }, ctx);
+    if (raw.state === 'delivered') {
+      proxyOperationSendResultSchema.parse(raw);
+      return unary({ state: 'delivered' });
+    }
+    const result = jobSendOutcomeSchema.parse(raw);
+    return unary(result);
   } catch (error: unknown) {
     // Once issued, a send failure cannot prove that the input was not delivered or authorize a retry.
     const reason = error instanceof Error ? error.message : String(error);

@@ -71,7 +71,8 @@ export function createTestJobJournalDeps(progressStore: JobStore, runtime: Pick<
     readJobLastSeq: (jobId: string) => progressStore.readJobLastSeq(jobId),
 
     visitProgress: <T>(_epoch: string, read: (source: ProgressSource) => T) => progressStore.visitProgress(read),
-    observeResultAvailability: (jobId: string) => progressStore.getResultExportOwner().observeResultAvailability(jobId),
+    observeResultAvailability: (jobId: string, execution?: number) =>
+      progressStore.getResultExportOwner().observeResultAvailability(jobId, undefined, execution),
     aggregateWorkflowUsage: (workflowJobId: string) => aggregateWorkflowUsage(progressStore.getDb(), workflowJobId),
     subscribeJobEvents,
     getCurrentJournalSeq,
