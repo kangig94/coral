@@ -96,12 +96,11 @@ export type ProviderJobLaunchDecision =
 export type WorkflowLaunchDecision = AcceptedWorkflowLaunchDecision | RefusedLaunchDecision;
 export type LaunchDecision = ProviderJobLaunchDecision | AcceptedWorkflowLaunchDecision;
 
-/**
- * Coordinator response shape when a launch request is accepted (running or queued).
- * Returned over IPC and HTTP for sessions.create / workflow.run.
- */
+export const executionOrdinalSchema = z.number().int().positive().safe();
+
 const acceptedLaunchFields = {
   jobId: z.string().min(1),
+  execution: executionOrdinalSchema.optional(),
   requestedSeq: z.number().int().positive().safe(),
   epochKey: z.string().min(1),
   launchState: z.enum(['running', 'queued']),
@@ -155,8 +154,6 @@ export interface JobResumeRequest extends Omit<JobLaunchRequest, 'retention' | '
   provider?: string;
   continuationTarget?: JobSendTarget;
 }
-
-export const executionOrdinalSchema = z.number().int().positive().safe();
 
 const controllerProfileSchema = z
   .object({ owner: z.string().optional(), effort: z.string().optional(), claudeModelCap: z.string().optional() })

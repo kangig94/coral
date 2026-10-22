@@ -178,7 +178,62 @@ describe('discussion turns as job executions', () => {
   );
 
   it.each(['live', 'startup'] as const)(
-    'does not restart an ended turn whose started event was lost during %s recovery',
+    'recovers an ended first turn before binding and continues the same job with %s recovery',
+    async (mode) => {
+      const f = fixture();
+      const jobId = PARTICIPANT_JOBS.alpha;
+      f.request(jobId, { agent: 'alpha', purpose: 'bid', attempt: 1 });
+      f.complete(jobId, 1);
+      const count = f.events().length;
+      const services = mode === 'startup' ? f.reopen() : f.services;
+      const recover = () =>
+        mode === 'live'
+          ? reconcileDiscussionOwnedJobs(f.context, DISCUSSION_ID)
+          : runStartup({
+              getDiscussContext: services.getDiscussContext,
+              createInvocationContext: () => f.invocation,
+              signal: new AbortController().signal,
+            });
+      await recover();
+      await recover();
+      expect(
+        f
+          .events()
+          .slice(count)
+          .map((event) => ({ kind: event.kind, payload: event.payload })),
+      ).toEqual([
+        { kind: 'agent.run.bound', payload: { agent: 'alpha', jobId } },
+        {
+          kind: 'agent.job.started',
+          payload: { agent: 'alpha', jobId, execution: 1, purpose: 'bid', attempt: 1 },
+        },
+        {
+          kind: 'agent.job.finished',
+          payload: { agent: 'alpha', jobId, execution: 1, attempt: 1, outcome: 'completed' },
+        },
+      ]);
+      expect(f.snapshot().runtime.agentRuns.alpha).toMatchObject({ jobId, lastAttemptOutcome: 'completed' });
+      expect(f.snapshot().runtime.agentRuns.alpha.currentJobId).toBeUndefined();
+
+      await runPlainTurn(services.getDiscussContext(f.invocation), turn(f, 'alpha', 'speech'));
+      expect(f.service.start).not.toHaveBeenCalled();
+      expect(f.service.resume).toHaveBeenCalledExactlyOnceWith(
+        'codex',
+        expect.objectContaining({ jobId, discussionRun: { agent: 'alpha', purpose: 'speech', attempt: 1 } }),
+        f.invocation,
+      );
+      expect(
+        f
+          .events()
+          .filter((event) => event.kind === 'agent.job.started')
+          .map((event) => event.payload.execution),
+      ).toEqual([1, 2]);
+      expect(f.journal.events().filter((event) => event.type === 'job.opened')).toHaveLength(1);
+    },
+  );
+
+  it.each(['live', 'startup'] as const)(
+    'recovers an ended turn whose started event was lost before a pending turn during %s recovery',
     async (mode) => {
       const f = fixture();
       const jobId = PARTICIPANT_JOBS.alpha;
@@ -198,7 +253,13 @@ describe('discussion turns as job executions', () => {
           .events()
           .filter((event) => event.kind === 'agent.job.started')
           .map((event) => event.payload.execution),
-      ).toEqual([2]);
+      ).toEqual([1, 2]);
+      expect(
+        f
+          .events()
+          .filter((event) => event.kind === 'agent.job.finished')
+          .map((event) => event.payload.execution),
+      ).toEqual([1]);
       expect(f.snapshot().runtime.agentRuns.alpha).toMatchObject({ jobId, currentJobId: jobId, currentExecution: 2 });
       expect(f.service.start).not.toHaveBeenCalled();
       expect(f.service.resume).not.toHaveBeenCalled();
@@ -226,4 +287,38 @@ describe('discussion turns as job executions', () => {
       });
     }
   });
+
+  it.each(['live', 'startup'] as const)(
+    'preserves a newer active and then finished turn when an older start is missing during %s recovery',
+    async (mode) => {
+      const f = fixture();
+      const jobId = PARTICIPANT_JOBS.alpha;
+      f.request(jobId, { agent: 'alpha', purpose: 'bid', attempt: 1 });
+      f.complete(jobId, 1);
+      f.append('agent.run.bound', { agent: 'alpha', jobId });
+      f.request(jobId, { agent: 'alpha', purpose: 'speech', attempt: 1 });
+      f.append('agent.job.started', { agent: 'alpha', jobId, execution: 2, purpose: 'speech', attempt: 1 });
+      const services = mode === 'startup' ? f.reopen() : f.services;
+      const recover = () =>
+        mode === 'live'
+          ? reconcileDiscussionOwnedJobs(f.context, DISCUSSION_ID)
+          : runStartup({
+              getDiscussContext: services.getDiscussContext,
+              createInvocationContext: () => f.invocation,
+              signal: new AbortController().signal,
+            });
+      const active = f.snapshot();
+      await recover();
+      expect(f.snapshot()).toEqual(active);
+
+      f.complete(jobId, 2);
+      f.append('agent.job.finished', { agent: 'alpha', jobId, execution: 2, attempt: 1, outcome: 'completed' });
+      const finished = f.snapshot();
+      await recover();
+      await recover();
+      expect(f.snapshot()).toEqual(finished);
+      expect(f.service.start).not.toHaveBeenCalled();
+      expect(f.service.resume).not.toHaveBeenCalled();
+    },
+  );
 });

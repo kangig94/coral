@@ -15,6 +15,9 @@ import type { AcceptedProviderJobLaunchDecision } from '#src/jobs/launch.js';
 import type { JobSendResult } from '#src/jobs/send.js';
 import { conversationIdentityFixture } from '#tests/integration/jobs/conversation-identity-fixture.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
+import { testProjectPrincipal } from '#tests/helpers/principal.js';
+import * as workDirectories from '#src/runtime/canonical-work-dir.js';
+import { LaunchOrchestrator } from '#src/jobs/shell/launch.js';
 import { flushMicrotasks } from '#tools/simulation/core/virtual-time.js';
 
 afterEach(() => {
@@ -50,6 +53,131 @@ async function first(f: ReturnType<typeof conversationIdentityFixture>, provider
 }
 
 describe('jobs send continuation through the execution owner', () => {
+  it.each(['/workspace/child', '/workspace', '/', '/unrelated'])(
+    'authorizes continuation from %s against the work directory',
+    async (root) => {
+      const f = conversationIdentityFixture({ managedArtifacts: true });
+      const cwd = fixtureCanonicalWorkDir('/workspace/child');
+      f.runtime.storage.mkdirSync(cwd, { recursive: true });
+      try {
+        const initial = await f.drive(
+          f.service.start(
+            'codex',
+            { prompt: 'first', cwd, retention: 'discard_provider_artifacts_on_terminal' },
+            f.ctx,
+          ),
+        );
+        if (initial.status !== 'running' && initial.status !== 'queued') throw new Error(initial.message);
+        await f.drive(f.service.waitForJobTerminal(initial.jobId, 10_000));
+        const projectRoot = fixtureCanonicalWorkDir(root);
+        const ctx = { ...f.ctx, projectRoot, principal: testProjectPrincipal(projectRoot) };
+        const service = f.serviceForContext(ctx);
+        const request = { ...attempt(f, initial, 1, 'second'), projectRoot };
+        const result = await f.drive(service.send(request, ctx));
+        if (root === '/unrelated') {
+          expect(result).toMatchObject({ state: 'refused', code: 'scope_mismatch' });
+          expect(f.requests.map((entry) => entry.prompt)).toEqual(['first']);
+          expect(f.events(initial.jobId).filter((event) => event.type === 'job.execution.requested')).toHaveLength(1);
+        } else {
+          expect(launched(result)).toMatchObject({ jobId: initial.jobId });
+          await f.drive(service.waitForJobTerminal(initial.jobId, 10_000));
+          f.assertIdentity(initial.jobId, [1, 2]);
+          expect(f.requests[1]).toMatchObject({ action: 'resume', cwd });
+          expect(f.restored).toEqual(['first\n']);
+          expect(readProjectionJobConversation(f.db, initial.jobId)).toMatchObject({
+            cwd,
+            projectRoot: f.ctx.projectRoot,
+            artifactHandles: expect.arrayContaining([expect.objectContaining({ execution: 2 })]),
+          });
+        }
+      } finally {
+        await f.dispose();
+      }
+    },
+  );
+
+  it.each(['valid', 'missing', 'corrupt', 'publication_failed'] as const)(
+    'recovers a queued continuation after a crash before restore with a %s archive',
+    async (archive) => {
+      const f = conversationIdentityFixture({ managedArtifacts: true });
+      try {
+        const initial = await first(f);
+        vi.spyOn(workDirectories, 'canonicalizeWorkDir').mockImplementation((path) => fixtureCanonicalWorkDir(path));
+        const request = attempt(f, initial, 1, 'second');
+        const env = f.runtime.env.get.bind(f.runtime.env);
+        vi.spyOn(f.runtime.env, 'get').mockImplementation((key) => (key === 'CORAL_MAX_WORKERS' ? '1' : env(key)));
+        f.admission.restoreActiveLaunch(
+          'blocking-sibling',
+          'codex',
+          { kind: 'provider-session', id: 'blocking-sibling' },
+          'default',
+        );
+        const crashedActivation = vi
+          .spyOn(LaunchOrchestrator.prototype, 'runAsync')
+          .mockImplementationOnce(() => undefined);
+        const queued = launched(await f.drive(f.service.send(request, f.ctx)));
+        expect(queued).toMatchObject({ jobId: initial.jobId, launchState: 'queued' });
+        crashedActivation.mockRestore();
+        expect(f.runtime.storage.existsSync(f.nativePath(initial.jobId))).toBe(false);
+        const directory = conversationArchiveDirectory(f.runtime, initial.jobId);
+        if (archive === 'missing') f.runtime.storage.rmSync(directory, { recursive: true, force: true });
+        if (archive === 'corrupt') {
+          const manifest = JSON.parse(f.runtime.storage.readFileSync(join(directory, 'manifest.json'), 'utf-8')) as {
+            artifacts: Array<{ archivePath: string }>;
+          };
+          f.runtime.storage.writeFileSync(join(directory, manifest.artifacts[0].archivePath), 'corrupt');
+        }
+        const publication = vi.spyOn(f.runtime.storage, 'publishFileNoReplaceSync');
+        if (archive === 'publication_failed')
+          publication.mockReturnValue({ kind: 'failed', reason: 'restore publication failed', linked: false });
+        const restarted = await f.restartProcess();
+        const sibling = f.admission.restoreActiveLaunch(
+          'recovered-sibling',
+          'codex',
+          { kind: 'provider-session', id: 'recovered-sibling' },
+          'default',
+        );
+        expect(f.admission.releaseLaunch(sibling)).toMatchObject({ kind: 'released', admittedNext: true });
+        await f.drive(restarted.waitForJobTerminal(initial.jobId, 10_000));
+        if (archive === 'valid') {
+          expect(f.requests).toHaveLength(2);
+          expect(f.restored).toEqual(['first\n']);
+          expect(publication).toHaveBeenCalledTimes(1);
+          f.assertIdentity(initial.jobId, [1, 2]);
+        } else {
+          expect(f.requests.map((entry) => entry.prompt)).toEqual(['first']);
+          expect(f.restored).toEqual([]);
+          expect(f.store.readStatus(initial.jobId)).toMatchObject({ execution: 2, phase: 'error' });
+          const events = f
+            .events(initial.jobId)
+            .filter((event) => (event.body as { execution?: number }).execution === 2);
+          expect(events.filter((event) => event.type === 'job.execution.started')).toEqual([]);
+          expect(events.filter((event) => event.type === 'job.execution.outcome.accepted')).toHaveLength(1);
+          expect(events.find((event) => event.type === 'job.execution.outcome.accepted')?.body).toMatchObject({
+            terminal: {
+              outcome: {
+                kind: 'job_fault',
+                fault: { cause: { message: expect.stringContaining('Committed conversation restore failed:') } },
+              },
+            },
+          });
+          expect(publication).toHaveBeenCalledTimes(archive === 'publication_failed' ? 1 : 0);
+          expect(events.filter((event) => event.type === 'job.execution.ended')).toHaveLength(1);
+          expect(events.at(-1)?.type).toBe('job.execution.ended');
+        }
+        expect(f.admission.reservationFor(initial.jobId)).toBeNull();
+        const before = f.events(initial.jobId);
+        const replay = await f.drive(restarted.send(request, f.ctx));
+        expect(launched(replay)).toMatchObject({ jobId: initial.jobId });
+        expect(f.events(initial.jobId)).toEqual(before);
+        expect(f.requests).toHaveLength(archive === 'valid' ? 2 : 1);
+      } finally {
+        vi.restoreAllMocks();
+        await f.dispose();
+      }
+    },
+  );
+
   it.each(['codex', 'claude'].flatMap((provider) => [false, true].map((agent) => ({ provider, agent }))))(
     'restores and resumes the $provider conversation with agent=$agent and its original facet',
     async ({ provider, agent }) => {
@@ -152,13 +280,17 @@ describe('jobs send continuation through the execution owner', () => {
       f.loseNextRequestCommitAcknowledgement();
       const request = attempt(f, initial, 1, 'second');
       const second = launched(await f.drive(f.service.send(request, f.ctx)));
+      expect(second.execution).toBe(2);
+      await f.drive(f.service.waitForJobTerminal(initial.jobId, 10_000));
+      const third = launched(await f.drive(f.service.send(attempt(f, second, 2, 'third'), f.ctx)));
+      expect(third.execution).toBe(3);
       await f.drive(f.service.waitForJobTerminal(initial.jobId, 10_000));
       const restarted = f.restartCoordinator();
       for (let n = 0; n < 2; n++)
         expect(await f.drive(restarted.send(request, f.ctx))).toEqual({ state: 'launched', launch: second });
-      expect(f.requests.map((request) => request.prompt)).toEqual(['first', 'second']);
-      expect(f.restored).toEqual(['first\n']);
-      f.assertIdentity(initial.jobId, [1, 2]);
+      expect(f.requests.map((request) => request.prompt)).toEqual(['first', 'second', 'third']);
+      expect(f.restored).toEqual(['first\n', 'first\nsecond\n']);
+      f.assertIdentity(initial.jobId, [1, 2, 3]);
     } finally {
       await f.dispose();
     }
@@ -229,6 +361,8 @@ describe('jobs send continuation through the execution owner', () => {
           },
         ]);
       const text = output.mock.calls.map(([chunk]) => String(chunk)).join('');
+      expect(text).toContain(`Job ${second.jobId} execution #2 provider exited 7`);
+      expect(text).not.toContain('execution #3');
       expect(text).toContain('second result');
       expect(text).toContain(`/executions/2/result.md`);
       expect(text).not.toContain(`/executions/3/result.md`);
@@ -404,13 +538,32 @@ describe('jobs send continuation through the execution owner', () => {
           throw new Error('Finalization status temporarily unreadable');
         });
         if (redrive === 'explicit') await f.drive(f.finisher.redrive(address));
+        else {
+          f.runtime.time.tick(5000);
+          await flushMicrotasks(100);
+        }
+        expect(f.finisher.status(address)).toMatchObject({
+          kind: 'blocked',
+          reason: 'Finalization status temporarily unreadable',
+          successor: 'live-retry',
+        });
+        expect(f.finisher.owns(address)).toBe(true);
+        expect(f.admission.reservationFor(initial.jobId)).not.toBeNull();
+        expect(f.events(initial.jobId).filter((event) => event.type === 'job.execution.outcome.accepted')).toHaveLength(
+          1,
+        );
         await f.drive(f.service.waitForJobTerminal(initial.jobId, 10_000));
         expect(
           RecoveryQuarantineStore.readOnly(f.db).readEntry('job-execution-finishing', executionKey(initial.jobId, 2)),
         ).toBeNull();
         expect(f.admission.reservationFor(initial.jobId)).toBeNull();
+        expect(f.finisher.owns(address)).toBe(false);
         expect(f.requests.map((request) => request.prompt)).toEqual(['first']);
         expect(f.events(initial.jobId).filter((event) => event.type === 'job.execution.requested')).toHaveLength(2);
+        expect(f.events(initial.jobId).filter((event) => event.type === 'job.execution.outcome.accepted')).toHaveLength(
+          2,
+        );
+        expect(f.events(initial.jobId).filter((event) => event.type === 'job.execution.ended')).toHaveLength(2);
         expect(f.store.readStatus(initial.jobId)).toMatchObject({ execution: 2, phase: 'error' });
       } finally {
         await f.dispose();

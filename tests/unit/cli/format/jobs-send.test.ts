@@ -250,6 +250,23 @@ it.each(['session_busy', 'execution_finishing'] as const)(
   },
 );
 
+it.each(['running', 'queued'] as const)('identifies execution #2 in a %s detached continuation', (launchState) => {
+  const output = formatJobSendResult('job-1', {
+    state: 'launched',
+    launch: {
+      kind: 'provider-session',
+      jobId: 'job-1',
+      execution: 2,
+      requestedSeq: 10,
+      epochKey: 'epoch',
+      launchState,
+    },
+  });
+  expect(output.exitCode).toBe(0);
+  expect(output.text.split('\n')[0]).toBe(`Provider job job-1 execution #2 ${launchState}`);
+  expect(output.text).toContain('--execution-selection');
+});
+
 it('pins an uncertain continuation wait and forbids another send until its outcome is visible', () => {
   const selection = { jobId: 'job-1', epochKey: 'epoch', requestedSeq: 2, deliveredEndSeq: 5, awaitingArtifact: false };
   const output = formatJobSendResult('job-1', {

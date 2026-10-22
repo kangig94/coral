@@ -153,6 +153,46 @@ describe('truthful provider discard evidence', () => {
     expect(await capability.reconcileDiscard(f.options)).toMatchObject({ kind: 'applied' });
   });
 
+  it.each(['false', 'throw'] as const)('closes an initial intent published before a durability %s', async (failure) => {
+    const f = fixture();
+    const write = f.runtime.storage.writeAtomicDurableSync.bind(f.runtime.storage);
+    const publication = vi
+      .spyOn(f.runtime.storage, 'writeAtomicDurableSync')
+      .mockImplementation((path, data, options) => {
+        write(path, data, options);
+        if (failure === 'throw') throw new Error('directory fsync failed');
+        return false;
+      });
+    const effect = vi.fn(async () => ({ kind: 'discarded' }) as const);
+    const capability = managed({ discardArtifacts: effect });
+    await expect(capability.discardArtifacts(f.options)).rejects.toThrow();
+    expect(f.ledger()).toMatchObject({ issuerStopped: false, state: { kind: 'pending' } });
+    publication.mockRestore();
+
+    expect(await capability.reconcileDiscard(f.options)).toMatchObject({ kind: 'definitive-failure' });
+    expect(await sealProviderArtifactDiscard(f.options, 'Issuance never started.')).toEqual({ kind: 'sealed' });
+    expect(f.ledger()).toMatchObject({ issuerStopped: true, state: { kind: 'definitive-failure' } });
+    await expect(capability.discardArtifacts(f.options)).rejects.toThrow('Native removal failed');
+    expect(effect).not.toHaveBeenCalled();
+    expect(f.runtime.storage.readFileSync('/native/one.jsonl', 'utf-8')).toBe('native');
+  });
+
+  it('keeps a retried issuer live after an initial intent failed without publication', async () => {
+    const f = fixture();
+    const capability = managed({
+      discardArtifacts: async ({ handles, runtime }) => {
+        expect(await capability.reconcileDiscard(f.options)).toEqual({ kind: 'unknown' });
+        runtime.storage.unlinkSync(handles[0]);
+        return { kind: 'discarded' };
+      },
+    });
+    const write = vi.spyOn(f.runtime.storage, 'writeAtomicDurableSync').mockReturnValueOnce(false);
+    await expect(capability.discardArtifacts(f.options)).rejects.toThrow('Failed to persist');
+    expect(await capability.reconcileDiscard(f.options)).toEqual({ kind: 'not-applied' });
+    write.mockRestore();
+    expect(await capability.discardArtifacts(f.options)).toMatchObject({ kind: 'discarded' });
+  });
+
   it('recovers pending discard by existence after a crash before the applied ledger write', async () => {
     const f = fixture();
     const write = f.runtime.storage.writeAtomicDurableSync.bind(f.runtime.storage);

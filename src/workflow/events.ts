@@ -98,12 +98,6 @@ export const workflowLifecycleFaultBodySchema = z.discriminatedUnion('kind', [
     .strict(),
 ]);
 
-/**
- * Stores only `firstFailureSlotId`; `stepIndex` is derived from
- * `projection_workflows.plan.slots`, while `jobId` is selected from the
- * current execution in the workflow child rows joined by workflow and slot
- * (see `validateAndReadCurrentSlotJobIds` in `src/workflow/recover.ts`).
- */
 export const workflowDrainEnteredBodySchema = z
   .object({
     firstFailureSlotId: z.string(),

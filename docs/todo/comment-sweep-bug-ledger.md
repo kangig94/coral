@@ -18,26 +18,6 @@ The latter two are module-private, so there is no runtime collision, but a symbo
 same-named predicates whose names do not say which identity they establish. Rename the private predicates so
 the narrower device-and-inode contract is visible at the call site.
 
-## Make the sessions-shell boundary true or narrow it
-
-`releaseSessionJobClaim` (`src/sessions/job-release.ts`) says coordinator services use this sessions-domain
-port instead of importing `sessions/shell`. `sessionManagerWithinTx`
-(`src/coordinator/services/provider-event-application.ts`) nevertheless imports and constructs
-`SessionManager` directly. Decide whether the service needs a wider sessions-owned contract and route it
-through that contract, or narrow the stated boundary to the operation it actually governs. Do not leave a
-layering rule that the tree already contradicts.
-
-## Preserve fatal artifact invariants at discuss finalization
-
-`LifecycleReactor.discardSessionArtifacts` (`src/sessions/lifecycle-reactor.ts`) rethrows
-`ProviderArtifactArchiveInvariantError` and `ProviderArtifactProtocolInvariantError`, and its recovery policy
-classifies those same errors as fatal. `finalizeSynthesizedSession`
-(`src/discuss/shell/flow/synthesis.ts`) catches every rejection from the wired discard callback and reduces it
-to a warning.
-
-Choose the on-demand discuss disposition for those invariant failures — propagation, quarantine, or another
-named fatal path — and preserve it instead of treating it as ordinary best-effort cleanup failure.
-
 ## Replace unresolvable specification labels
 
 Comments across `src/` still cite labels such as `W2.3`, `W2.5`, `Spec §7.1`, `spec §6.4`, and

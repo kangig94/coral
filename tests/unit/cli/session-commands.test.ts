@@ -15,6 +15,7 @@ import type { JobsListResponse } from '#src/jobs/records.js';
 import { selectWaitSnapshot } from '#tests/helpers/wait-progress.js';
 import { admitted, testSession } from '#tests/helpers/wait-session.js';
 import type { JobSendOutcome } from '#src/jobs/send.js';
+import type { CliJobSendOutcome } from '#src/cli/dispatch.js';
 import { registerProviderCommands } from '#src/cli/commands/provider.js';
 import { formatJobSendResult } from '#src/cli/format/jobs.js';
 import { followJobs, launchAndFollow } from '#src/cli/follow.js';
@@ -23,7 +24,7 @@ const client = vi.hoisted(() => ({
   listJobs: vi.fn<() => Promise<JobsListResponse>>(async () => ({ jobs: [] })),
   abortJobs: vi.fn(async () => ({ aborted: ['a'], notFound: [] })),
   snapshotJobsWait: vi.fn(),
-  sendJob: vi.fn<() => Promise<JobSendOutcome>>(async () => ({ state: 'delivered' })),
+  sendJob: vi.fn<() => Promise<CliJobSendOutcome>>(async () => ({ state: 'delivered' })),
   createSession: vi.fn(async () => ({
     kind: 'provider-session',
     jobId: 'p',
@@ -375,6 +376,7 @@ it.each([false, true])('follows a launched continuation by default and detaches=
   const launch = {
     kind: 'provider-session' as const,
     jobId: 'job-1',
+    execution: 2,
     requestedSeq: 100,
     epochKey: 'epoch',
     launchState: 'queued' as const,
@@ -384,6 +386,7 @@ it.each([false, true])('follows a launched continuation by default and detaches=
   if (detach) {
     expect(launchAndFollow).not.toHaveBeenCalled();
     const text = stdout.mock.calls.map(([chunk]) => String(chunk)).join('');
+    expect(text).toContain('Provider job job-1 execution #2 queued');
     expect(text).toContain('job-1');
     expect(text).toContain('--execution-selection');
     expect(text).toContain('100');

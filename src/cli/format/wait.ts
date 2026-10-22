@@ -130,7 +130,11 @@ export function formatWaitTerminal(
   } = {},
 ): string {
   const header = [
-    terminalOutcomeHeader(options.label ?? event.jobId, event.result, options.describeCauseRef),
+    terminalOutcomeHeader(
+      `${options.label ?? event.jobId}${event.execution === undefined ? '' : ` execution #${event.execution}`}`,
+      event.result,
+      options.describeCauseRef,
+    ),
     formatUsageSegment(event.usage, options),
   ]
     .filter((segment): segment is string => segment !== undefined)
@@ -199,7 +203,7 @@ export function formatWaitSnapshot(snapshot: WaitSnapshot): string {
     const header =
       job.disposition !== 'admitted'
         ? `Job ${job.jobId}: ${job.disposition}${job.message ? ` — ${job.message}` : ''}`
-        : `Job ${job.jobId}: ${job.terminal ? 'terminal' : (job.phase ?? 'nonterminal')}`;
+        : `Job ${job.jobId}${job.execution === undefined ? '' : ` execution #${job.execution}`}: ${job.terminal ? 'terminal' : (job.phase ?? 'nonterminal')}`;
     const terminal = job.terminal;
     return joinLines([
       header,

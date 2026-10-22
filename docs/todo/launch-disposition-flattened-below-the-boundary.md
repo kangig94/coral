@@ -72,8 +72,10 @@ it calls into the coordinator. The preflight budget `PROVIDER_PREFLIGHT_ANSWER_B
 different boundaries and nothing enforces their ordering: if the work before preflight takes more than the
 3 s between them, the outer timer fires first. The wrapper then resolves `undetermined`, the attempt returns
 `consumedAttempt: false`, and its `settled` latch discards whatever the launch returns afterwards — while
-`JobLaunchService.start` goes on to `sessionManager.prepare` and commit a job whose id nobody holds. A retry
-then meets `discussion_job_launch_conflict`.
+`JobLaunchService.start` (`src/coordinator/services/job-launch.ts`) goes on to
+`ConversationManager.prepare` (`src/jobs/conversation/shell.ts`) and
+`LaunchOrchestrator.launchExecution` (`src/jobs/shell/launch.ts`), which can commit a job whose id nobody holds.
+A retry then meets `discussion_job_launch_conflict`.
 
 This is §11's successor clause: local ownership was released with no successor named, and the abandoned work
 can still produce the thing that was abandoned. It is pre-existing — the wrapper previously resolved

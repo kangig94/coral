@@ -123,15 +123,16 @@ export class JobSendService {
         code: 'continuation_target_changed',
         reason: 'This message identity belongs to a different continuation envelope.',
       };
-    return this.launched(committedProviderLaunchDecision(db, replay, epochKey));
+    return this.launched(committedProviderLaunchDecision(db, replay, epochKey), replay.request.execution);
   }
 
-  private launched(decision: AcceptedProviderJobLaunchDecision): JobSendResult {
+  private launched(decision: AcceptedProviderJobLaunchDecision, execution: number): JobSendResult {
     return {
       state: 'launched',
       launch: {
         kind: 'provider-session',
         jobId: decision.jobId,
+        execution,
         requestedSeq: decision.requestedSeq,
         epochKey: decision.epochKey,
         launchState: decision.status,
@@ -168,7 +169,7 @@ export class JobSendService {
     switch (decision.status) {
       case 'running':
       case 'queued':
-        return this.launched(decision);
+        return this.launched(decision, request.target.execution + 1);
       case 'refused':
         return { state: 'refused', code: continuationRefusalCodes[decision.code], reason: decision.message };
       case 'undetermined':

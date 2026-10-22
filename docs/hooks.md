@@ -159,10 +159,10 @@ Evidence whose filename and decoded target do not agree is moved to `~/.coral/st
 
 ## Compact Recovery
 
-Two hooks run after compaction:
+Compaction recovery uses three hooks:
 
 - `kb-promote-gate.mjs` restores memo-review and KB-promotion guidance
-- `pre-compact.mjs` snapshots recent jobs for the current project from `projection_jobs`
+- `pre-compact.mjs` snapshots recent jobs for the current project from `projection_jobs` before compaction
 - `post-compact.mjs` reads that snapshot and tells the user how to recover work
 
 `post-compact.mjs` now describes recovery in CLI terms:
@@ -176,9 +176,9 @@ Two hooks run after compaction:
 Implementation notes:
 
 - snapshots are written under the project temp directory (`/tmp/claude-<uid>/coral/<project-slug>/hooks/active-jobs-*.json`)
-- terminal recovery uses the durable artifact path under `~/.coral/exports/jobs/<jobId>/result.md` in prod or `~/.coral/exports-dev/jobs/<jobId>/result.md` in dev
+- terminal recovery uses `~/.coral/exports/jobs/<jobId>/executions/<n>/result.md` in prod or `~/.coral/exports-dev/jobs/<jobId>/executions/<n>/result.md` in dev; the hook derives the path locally from the validated job ID and execution ordinal and includes an ended execution only if its result exists
 - `<os-tmpdir>/coral-jobs/<jobId>/` contains live scratch artifacts such as stdout/stderr/intermediates only
-- hook recovery reads CLI-visible job state and durable result artifacts, not file-backed job status records
+- the pre-compaction hook reads the current-generation store and checks local result artifacts without launching the CLI or running handoff routing
 
 The wait guidance matches the current CLI contract: terminal text always includes `Result path: <path>`, may include a terminal-line usage segment from job diagnostics, and `--embed` preview text is only a convenience layer. Read the printed result path for the durable artifact.
 

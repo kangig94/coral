@@ -61,6 +61,7 @@ type ProgressWaitEvent = {
 type TerminalWaitEvent = {
   type: 'terminal';
   jobId: string;
+  execution?: number;
   seq: number;
   remainingJobIds: string[];
   executionSelections?: WaitExecutionSelection[];

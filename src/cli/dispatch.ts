@@ -103,6 +103,7 @@ import { normalizeAst, workflowProviderNames } from '../workflow/normalize.js';
 
 export type CliJobSendOutcome = JobSendOutcome &
   Readonly<{
+    execution?: number;
     priorDeliveryUncertain?: true;
     executionSelection?: WaitExecutionSelection;
   }>;
@@ -142,6 +143,7 @@ function interpretJobSendOutcome(result: unknown, priorDeliveryUncertain: boolea
 }
 
 function selectJobSendOutcome(binding: BoundJobSendTarget, outcome: CliJobSendOutcome): CliJobSendOutcome {
+  if (outcome.state === 'launched') return { ...outcome, execution: binding.target.execution + 1 };
   return outcome.state === 'unknown' || outcome.priorDeliveryUncertain === true
     ? { ...outcome, executionSelection: binding.executionSelection }
     : outcome;

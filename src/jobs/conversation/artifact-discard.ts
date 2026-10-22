@@ -2,10 +2,6 @@ import type { ArtifactCleanupRuntime } from '../../providers/contract.js';
 import type { BoundProvider } from '../../providers/bound-provider-contract.js';
 import type { JobConversation } from './entry.js';
 
-/**
- * Returns handles only; invoking `discardArtifacts` is reserved for the
- * lifecycle reactor (see `tests/invariants/architecture-boundary.test.ts`).
- */
 export function collectArtifactHandles(
   entry: JobConversation,
   bound: BoundProvider,

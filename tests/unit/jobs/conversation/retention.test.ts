@@ -181,7 +181,11 @@ function launcher(f: ReturnType<typeof fixture>) {
   const execute = vi.fn(() => {
     throw new Error('provider must not activate');
   });
-  Object.assign(f.bound, { compareIdentity: () => ({ ok: true, value: true }), prepareExecution: execute });
+  Object.assign(f.bound, {
+    compareIdentity: () => ({ ok: true, value: true }),
+    decodeContinuity: () => ({ ok: true, value: undefined }),
+    prepareExecution: execute,
+  });
   const orchestrator = new LaunchOrchestrator({
     runtime: f.runtime,
     progressStore: store,
@@ -291,14 +295,19 @@ describe('conversation retention belongs to every committed execution', () => {
     const f = fixture({ workflow: true });
     await f.finish();
     const l = launcher(f);
-    await expect(
-      l.launch(() => {
-        expect(f.runtime.storage.readFileBytesSync(native)).toEqual(content);
-        const events = f.h.events().filter((event) => (event.body as { execution?: number }).execution === 2);
-        expect(events.map((event) => event.type)).toEqual(['job.execution.requested', 'job.execution.admitted']);
-        throw new Error('activation refused');
-      }),
-    ).resolves.toMatchObject({ kind: 'provider-session', status: 'running', jobId, requestedSeq: expect.any(Number) });
+    vi.spyOn(f.bound, 'readiness').mockImplementationOnce(async () => {
+      expect(f.runtime.storage.readFileBytesSync(native)).toEqual(content);
+      const events = f.h.events().filter((event) => (event.body as { execution?: number }).execution === 2);
+      expect(events.map((event) => event.type)).toEqual(['job.execution.requested', 'job.execution.admitted']);
+      throw new Error('activation refused');
+    });
+    await expect(l.launch()).resolves.toMatchObject({
+      kind: 'provider-session',
+      status: 'running',
+      jobId,
+      requestedSeq: expect.any(Number),
+    });
+    await flushMicrotasks(100);
     await l.finisher.finish({ jobId, execution: 2 });
     assertEnd(f, 2);
     expect(f.manifest().execution).toBe(2);
@@ -325,6 +334,7 @@ describe('conversation retention belongs to every committed execution', () => {
       requestedSeq: expect.any(Number),
       epochKey: ':memory:',
     });
+    await flushMicrotasks(100);
     await l.finisher.finish({ jobId, execution: 2 });
     assertEnd(f, 2);
     expect(l.execute).not.toHaveBeenCalled();
@@ -492,6 +502,39 @@ describe('conversation retention belongs to every committed execution', () => {
     expect(reconcile).toHaveBeenCalledTimes(6);
     expect(new Set(reconcile.mock.calls.map(([call]) => `${call.actionId}:${call.payloadHash}`)).size).toBe(1);
     expect(f.issuer).not.toHaveBeenCalled();
+  });
+
+  it('finishes automatically after an initial discard intent rename succeeds but directory sync fails', async () => {
+    const f = fixture();
+    const sync = f.runtime.storage.syncDirectoryDurableSync.bind(f.runtime.storage);
+    const write = f.runtime.storage.writeAtomicDurableSync.bind(f.runtime.storage);
+    let publishedIntent: unknown;
+    let uncertain = false;
+    let recovered = false;
+    vi.spyOn(f.runtime.storage, 'writeAtomicDurableSync').mockImplementation((path, data, options) => {
+      const durable = write(path, data, options);
+      if (!durable && publishedIntent === undefined && path.includes('.provider-artifact-discard.v2/'))
+        publishedIntent = JSON.parse(f.runtime.storage.readFileSync(path, 'utf-8')) as unknown;
+      return durable;
+    });
+    vi.spyOn(f.runtime.storage, 'syncDirectoryDurableSync').mockImplementation((path) => {
+      if (recovered || !path.endsWith('.provider-artifact-discard.v2')) return sync(path);
+      uncertain = true;
+      return false;
+    });
+    let retries = 0;
+    vi.spyOn(f.runtime.time, 'sleep').mockImplementation(async (ms) => {
+      f.runtime.time.tick(ms);
+      if (uncertain) recovered = true;
+      if (++retries > 10) throw new Error('Finishing did not recover after storage returned.');
+    });
+    await f.finish();
+    expect(uncertain).toBe(true);
+    expect(recovered).toBe(true);
+    expect(publishedIntent).toMatchObject({ issuerStopped: false, state: { kind: 'pending' } });
+    assertEnd(f, 1, 'failed');
+    expect(f.issuer).not.toHaveBeenCalled();
+    expect(f.runtime.storage.readFileBytesSync(native)).toEqual(content);
   });
 
   it('serializes export pruning with artifact readers and rechecks the open execution after acquiring the guard', async () => {

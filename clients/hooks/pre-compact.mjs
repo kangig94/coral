@@ -1,9 +1,7 @@
 #!/usr/bin/env node
 
-import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join, resolve } from 'node:path';
 
 import {
   buildFlavor,
@@ -27,7 +25,6 @@ import {
 exitIfChildProcess();
 exitIfWrongFlavor();
 
-// Self-contained mirror of the path authority in src/infra/path/store.ts.
 function storeDbDir(flavor = buildFlavor(), stateRoot = coralStateRoot()) {
   const dataDir = flavor === 'dev' ? 'data-dev' : 'data';
   return join(stateRoot, 'gen2', dataDir, 'store');
@@ -53,9 +50,6 @@ function logSnapshotSkipped(projectDir, reason, remediation) {
 
 const SAFE_JOB_ID = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
 const SQLITE_WAIT_DEADLINE_MS = performance.now() + 2000;
-// The PreCompact hook is killed at 3 s; every blocking step must finish inside this deadline.
-const HOOK_WORK_DEADLINE_MS = performance.now() + 2500;
-const MIN_RESULT_LOOKUP_MS = 250;
 
 await failOpen(async () => {
   const input = JSON.parse((await readStdin()) || '{}');
@@ -133,28 +127,7 @@ await failOpen(async () => {
       return;
     }
 
-    let resultRows = [];
-    const lookupBudgetMs = Math.floor(HOOK_WORK_DEADLINE_MS - performance.now());
-    if (rows.some((row) => !isLivePhase(row.phase)) && lookupBudgetMs < MIN_RESULT_LOOKUP_MS) {
-      logHookLine('pre-compact', 'terminal result paths omitted', { projectDir, reason: 'hook time budget exhausted' });
-    } else if (rows.some((row) => !isLivePhase(row.phase))) {
-      try {
-        const bridgeDir = join(dirname(dirname(fileURLToPath(import.meta.url))), 'bridge');
-        const listed = JSON.parse(execFileSync(join(bridgeDir, 'coral-cli'), ['jobs', 'list', '--all', '--json'], {
-          cwd: projectDir,
-          encoding: 'utf8',
-          timeout: lookupBudgetMs,
-          stdio: ['ignore', 'pipe', 'ignore'],
-        }));
-        if (Array.isArray(listed)) resultRows = listed;
-      } catch {
-        logHookLine('pre-compact', 'terminal result paths omitted', {
-          projectDir,
-          reason: 'terminal result paths are unavailable',
-        });
-      }
-    }
-
+    const exportsDir = join(coralStateRoot(), buildFlavor() === 'dev' ? 'exports-dev' : 'exports', 'jobs');
     const jobs = rows.flatMap((row) => {
       if (
         typeof row.jobId !== 'string' ||
@@ -170,8 +143,9 @@ await failOpen(async () => {
         return [];
       }
 
-      const resultPath = resultRows.find((result) => result?.jobId === row.jobId && result.execution === row.execution)?.resultPath ?? null;
-      const hasArtifact = typeof resultPath === 'string' && existsSync(resultPath);
+      const resultPath =
+        row.execution === null ? null : join(exportsDir, row.jobId, 'executions', String(row.execution), 'result.md');
+      const hasArtifact = resultPath !== null && existsSync(resultPath);
       if (!isLivePhase(row.phase) && !hasArtifact) {
         return [];
       }

@@ -104,13 +104,42 @@ describe('jobs list and detail formatting', () => {
     expect(output.match(/coral-cli jobs wait/g)).toHaveLength(1);
   });
 
-  it.each(['running', 'queued'] as const)('prints only the job id for a %s provider launch', (launchState) => {
+  it.each(['running', 'queued'] as const)('identifies execution #1 for a %s provider launch', (launchState) => {
     const jobId = '10000000-0000-4000-8000-000000000001';
     const response = { kind: 'provider-session', jobId, launchState, requestedSeq: 2, epochKey: ':memory:' } as const;
     expect(formatLaunch(response)).toBe(
       `Provider job ${jobId} ${launchState === 'running' ? 'launch accepted' : 'queued'}`,
     );
-    expect(formatDetachedLaunchStatus(response)).toBe(`Provider job ${jobId} ${launchState}`);
+    expect(formatDetachedLaunchStatus(response)).toBe(`Provider job ${jobId} execution #1 ${launchState}`);
+  });
+
+  it.each(['running', 'queued'] as const)(
+    'identifies the response execution for a %s detached launch',
+    (launchState) => {
+      const response = {
+        kind: 'provider-session',
+        jobId: 'job-1',
+        execution: 2,
+        launchState,
+        requestedSeq: 10,
+        epochKey: 'epoch',
+      } as const;
+      expect(formatDetachedLaunchStatus(response)).toBe(`Provider job job-1 execution #2 ${launchState}`);
+    },
+  );
+
+  it('identifies the execution in a detached workflow launch', () => {
+    expect(
+      formatDetachedLaunchStatus({
+        kind: 'workflow',
+        workflowId: 'workflow-1',
+        jobId: 'job-1',
+        execution: 1,
+        launchState: 'queued',
+        requestedSeq: 10,
+        epochKey: 'epoch',
+      }),
+    ).toBe('Workflow workflow-1 queued (job job-1 execution #1)');
   });
 });
 

@@ -3,6 +3,7 @@ import { SuccessionWriterParkedError } from '#src/store/db.js';
 import { RecoveryQuarantineStore } from '#src/recovery/quarantine.js';
 import { loadJobProjectionDetail, listJobProjections } from '#src/jobs/read-queries.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createRealTimePort } from '#src/infra/time.js';
 
 import {
   ExecutionFinisher,
@@ -51,7 +52,7 @@ function finisher(h: ReturnType<typeof harness>, overrides: Partial<ExecutionFin
   const settleRetention = vi.fn(async () => ({ kind: 'completed', outcome: 'discarded' }) as const);
   const ports: ExecutionFinishingPorts = {
     recovery: { db: () => h.db, readCtx: h.readCtx, time: { now: () => Date.now() } },
-    time: { sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)) },
+    time: createRealTimePort(),
     commit: h.commit,
     read: (address) => readExecutionFinishingState(h.db, address, h.readCtx),
     quiesce,
@@ -172,6 +173,39 @@ describe('accepted outcome finishing through real append validation', () => {
     await expect(f.owner.finish(address)).rejects.toThrow(/committed accepted outcome/);
     expect(f.quiesce).not.toHaveBeenCalled();
     expect(f.settleRetention).not.toHaveBeenCalled();
+  });
+
+  it('releases finishing ownership at a confirmed end without rereading the journal', async () => {
+    const h = harness(false);
+    accept(h);
+    let ended = false;
+    const read = vi.fn(() => {
+      if (ended) throw new Error('Journal released by the execution completion listener.');
+      return readExecutionFinishingState(h.db, address, h.readCtx);
+    });
+    const f = finisher(h, {
+      read,
+      commit: (write) => {
+        const result = h.commit(write);
+        ended = true;
+        return result;
+      },
+      log: vi.fn(),
+    });
+    const finished = f.owner.finish(address);
+    const settled = finished.catch(() => {});
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(f.owner.owns(address)).toBe(false);
+      expect(f.owner.status(address)).toBeNull();
+      expect(read).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(0);
+      await finished;
+      assertClosed(h);
+    } finally {
+      await f.owner.dispose();
+      await settled;
+    }
   });
 
   it.each(['completion', 'rejection', 'setup failure', 'abort'])(
@@ -427,6 +461,206 @@ describe('accepted outcome finishing through real append validation', () => {
   });
 });
 
+it('automatically accepts the original outcome after producer retries exhaust and storage recovers', async () => {
+  const h = harness(false);
+  let failing = true;
+  let writes = 0;
+  h.ctx.beforeAppend = (event) => {
+    if (event.type !== 'job.execution.outcome.accepted') return;
+    writes++;
+    if (failing) throw new Error('acceptance unavailable');
+  };
+  const f = finisher(h, { log: vi.fn() });
+  const producer = f.owner.accept(address, (c) => {
+    appendJobExecutionOutcomeAccepted(c, {
+      ...address,
+      terminal: { content: 'preserved result', durationMs: 1, outcome: { kind: 'completed' } },
+    });
+    return undefined;
+  });
+  try {
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(writes).toBe(7);
+    expect(f.owner.status(address)).toMatchObject({ kind: 'blocked', stage: 'accept' });
+    expect(readExecutionRetryStatus(h.db, address)).toEqual(f.owner.status(address));
+    expect(f.owner.owns(address)).toBe(true);
+    expect(() => h.append(requestedExecution(2))).toThrow();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(writes).toBe(9);
+    expect(f.owner.status(address)).toMatchObject({ kind: 'blocked', stage: 'accept' });
+    failing = false;
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(readExecutionFinishingState(h.db, address, h.readCtx).kind).toBe('ended');
+    await producer;
+    expect(assertClosed(h).find((event) => event.type === 'job.execution.outcome.accepted')?.body).toMatchObject({
+      terminal: { content: 'preserved result' },
+    });
+    expect(f.quiesce).toHaveBeenCalledTimes(1);
+    expect(f.owner.status(address)).toBeNull();
+    expect(readExecutionRetryStatus(h.db, address)).toBeNull();
+    expect(f.owner.owns(address)).toBe(false);
+  } finally {
+    await f.owner.dispose();
+  }
+});
+
+it.each(['job.retention.discard.requested', 'job.retention.discard.completed', 'job.execution.ended'])(
+  'automatically finishes after exhausted %s write retries without reissuing the original discard',
+  async (type) => {
+    const h = harness();
+    accept(h);
+    let failing = true;
+    let writes = 0;
+    let issued = 0;
+    const ledger = new Map<string, { kind: 'completed'; outcome: 'discarded' }>();
+    const actions: unknown[] = [];
+    h.ctx.beforeAppend = (event) => {
+      if (event.type !== type) return;
+      writes++;
+      if (failing) throw new Error('finishing write unavailable');
+    };
+    const f = finisher(h, {
+      log: vi.fn(),
+      settleRetention: async (address, action) => {
+        actions.push(action);
+        const key = `${address.jobId}:${address.execution}:${action.attempt}`;
+        if (!ledger.has(key)) {
+          issued++;
+          ledger.set(key, { kind: 'completed', outcome: 'discarded' });
+        }
+        return ledger.get(key)!;
+      },
+    });
+    f.owner.schedule(address);
+    try {
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(writes).toBe(7);
+      expect(f.owner.status(address)).toMatchObject({ kind: 'blocked', stage: 'finish' });
+      expect(readExecutionRetryStatus(h.db, address)).toEqual(f.owner.status(address));
+      expect(f.owner.owns(address)).toBe(true);
+      expect(issued).toBe(type === 'job.retention.discard.requested' ? 0 : 1);
+      expect(() => h.append(requestedExecution(2))).toThrow();
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(writes).toBe(9);
+      expect(f.owner.status(address)).toMatchObject({ kind: 'blocked', stage: 'finish' });
+      failing = false;
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(readExecutionFinishingState(h.db, address, h.readCtx).kind).toBe('ended');
+      assertClosed(h);
+      expect(issued).toBe(1);
+      expect(actions.every((action) => JSON.stringify(action) === JSON.stringify(actions[0]))).toBe(true);
+      expect(f.owner.status(address)).toBeNull();
+      expect(readExecutionRetryStatus(h.db, address)).toBeNull();
+      expect(f.owner.owns(address)).toBe(false);
+    } finally {
+      await f.owner.dispose();
+    }
+  },
+);
+
+it.each(['accept', 'finish'] as const)('keeps one retry timer across explicit %s redrives', async (stage) => {
+  const h = harness(false);
+  if (stage === 'finish') accept(h);
+  let failing = true;
+  let writes = 0;
+  h.ctx.beforeAppend = (event) => {
+    if (event.type !== (stage === 'accept' ? 'job.execution.outcome.accepted' : 'job.execution.ended')) return;
+    writes++;
+    if (failing) throw new Error('journal unavailable');
+  };
+  const f = finisher(h, { log: vi.fn() });
+  const task =
+    stage === 'finish'
+      ? f.owner.finish(address)
+      : f.owner.accept(address, (c) => {
+          appendJobExecutionOutcomeAccepted(c, {
+            ...address,
+            terminal: { content: 'original result', durationMs: 1, outcome: { kind: 'completed' } },
+          });
+          return undefined;
+        });
+  try {
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(f.owner.status(address)).toMatchObject({ kind: 'blocked', stage });
+    expect(vi.getTimerCount()).toBe(1);
+    await f.owner.redrive(address);
+    expect(writes).toBe(8);
+    expect(vi.getTimerCount()).toBe(1);
+    await f.owner.redrive(address);
+    expect(writes).toBe(9);
+    expect(vi.getTimerCount()).toBe(1);
+    failing = false;
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(readExecutionFinishingState(h.db, address, h.readCtx).kind).toBe('ended');
+    await task;
+    assertClosed(h);
+    expect(vi.getTimerCount()).toBe(0);
+  } finally {
+    await f.owner.dispose();
+  }
+});
+
+it('does not retain completed redrive callers behind a blocked producer', async () => {
+  const h = harness(false);
+  let failing = true;
+  const f = finisher(h, { log: vi.fn() });
+  const finish = vi.spyOn(f.owner, 'finish');
+  const producer = f.owner.accept(address, (c) => {
+    if (failing) throw new Error('acceptance unavailable');
+    appendJobExecutionOutcomeAccepted(c, {
+      ...address,
+      terminal: { content: 'original result', durationMs: 1, outcome: { kind: 'completed' } },
+    });
+    return undefined;
+  });
+  const settled = producer.catch(() => {});
+  try {
+    await vi.advanceTimersByTimeAsync(20_000);
+    for (let n = 0; n < 10; n++) await f.owner.redrive(address);
+    expect(finish).not.toHaveBeenCalled();
+    failing = false;
+    await vi.advanceTimersByTimeAsync(5000);
+    await producer;
+    assertClosed(h);
+    expect(finish).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  } finally {
+    await f.owner.dispose();
+    await settled;
+  }
+});
+
+it('keeps adopted admission retries at capped backoff after exhaustion until disposal', async () => {
+  const h = harness(false);
+  const sleep = vi.fn(createRealTimePort().sleep);
+  const log = vi.fn();
+  const f = finisher(h, { time: { sleep }, log });
+  const reconcile = vi.fn(async () => {
+    throw new Error('admission evidence unavailable');
+  });
+  const admission = f.owner.adoptAdmission(address, reconcile);
+  const stopped = expect(admission.completion).rejects.toBeDefined();
+  try {
+    await vi.advanceTimersByTimeAsync(40_000);
+    expect(sleep.mock.calls.map(([ms]) => ms)).toEqual([
+      500, 1000, 2000, 4000, 5000, 5000, 5000, 5000, 5000, 5000, 5000,
+    ]);
+    expect(f.owner.status(address)).toMatchObject({ stage: 'accept', kind: 'blocked' });
+    expect(log).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(1);
+    const attempts = reconcile.mock.calls.length;
+    await f.owner.dispose();
+    await stopped;
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(reconcile).toHaveBeenCalledTimes(attempts);
+    expect(f.owner.owns(address)).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+  } finally {
+    await f.owner.dispose();
+    await stopped;
+  }
+});
+
 it.each([new TypeError('producer defect'), new Error('validator rejected the outcome')])(
   'preserves its producer through bounded retries and durable quarantine: %s',
   async (error) => {
@@ -445,7 +679,7 @@ it.each([new TypeError('producer defect'), new Error('validator rejected the out
     expect(f.owner.status(address)).toMatchObject({
       kind: 'blocked',
       stage: 'accept',
-      successor: 'recovery-quarantine',
+      successor: 'live-retry',
     });
     expect(f.owner.owns(address)).toBe(true);
     expect(readExecutionRetryStatus(h.db, address)).toEqual(f.owner.status(address));
@@ -512,6 +746,7 @@ it('quarantines an empty outcome write until shutdown instead of losing the prod
   expect(f.owner.owns(address)).toBe(true);
   await f.owner.dispose();
   await rejected;
+  expect(vi.getTimerCount()).toBe(0);
 });
 
 it('keeps a detached finalizer in durable quarantine with a serving retry exit', async () => {
@@ -527,7 +762,7 @@ it('keeps a detached finalizer in durable quarantine with a serving retry exit',
   });
   f.owner.schedule(address);
   await vi.advanceTimersByTimeAsync(20_000);
-  expect(f.owner.status(address)).toMatchObject({ kind: 'blocked', stage: 'finish', successor: 'recovery-quarantine' });
+  expect(f.owner.status(address)).toMatchObject({ kind: 'blocked', stage: 'finish', successor: 'live-retry' });
   expect(f.owner.owns(address)).toBe(true);
   failing = false;
   await f.owner.redrive(address);
@@ -535,7 +770,7 @@ it('keeps a detached finalizer in durable quarantine with a serving retry exit',
   await f.owner.dispose();
 });
 
-it('gives an adopted admission a fresh bounded retry window after automatic redrive', async () => {
+it('recovers an adopted admission after automatic redrive and a subsequent transient failure', async () => {
   const h = harness(false);
   const f = finisher(h, { log: vi.fn() });
   let repaired = false;

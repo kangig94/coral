@@ -93,9 +93,11 @@ describe('wait snapshot', () => {
     for (const phase of ['running', 'queued'] as const) {
       const a = admitted('a', [], false);
       a.detail.status.phase = phase;
+      a.detail.status.execution = 1;
       const live = collect([a]);
+      expect(parseWaitSnapshot(live).jobs[0]).toMatchObject({ execution: 1 });
       expect(formatWaitSnapshot(live)).not.toContain('terminal');
-      expect(formatWaitSnapshot(live)).toContain(`Job a: ${phase}`);
+      expect(formatWaitSnapshot(live)).toContain(`Job a execution #1: ${phase}`);
       expect(formatWaitSnapshot(live)).toContain(' --snapshot --cursor ');
     }
     const a = admitted('a', [[1, 'line']], true, 'epoch-E', true);

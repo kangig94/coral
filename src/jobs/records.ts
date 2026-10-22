@@ -260,7 +260,6 @@ export type JobsListResponse = {
   }>;
 };
 
-/** Summary fields name the latest execution; durable single-execution details omit history. */
 export type JobDetailResponse = {
   executionAddressing?: 'lifetime';
   availability?: ResultAvailability;
@@ -274,7 +273,6 @@ export type JobDetailResponse = {
   exit: JobExit | null;
 };
 
-/** An execution is addressed by its job and ordinal, with its own request and result. */
 export type JobExecutionDetail = Pick<JobDetailResponse, 'status' | 'events' | 'readiness' | 'exit'> & {
   execution: number;
   requestedSeq: number;

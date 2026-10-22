@@ -45,6 +45,7 @@ import {
   type ProviderOperationMutationSetFence,
 } from '#src/store/provider-operation-journal.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
+import { providerOperationRecordSchema } from '#src/store/provider-operation-record.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
@@ -679,6 +680,159 @@ it('preserves all live claims when one operation requests containment and record
   expect(stopAndReap).not.toHaveBeenCalled();
   expect(lifecycle.authorityFor(authority.setIdentity)).toBe(authority);
   expect(JSON.stringify(lifecycle.snapshot())).toContain('operation-control-outcome-unknown');
+});
+
+it.each([
+  { timing: 'initial', phase: 'executing', exhausted: false },
+  { timing: 'initial', phase: 'settlement-pending', exhausted: false },
+  { timing: 'during-fence', phase: 'executing', exhausted: false },
+  { timing: 'during-fence', phase: 'settlement-pending', exhausted: false },
+  { timing: 'during-fence', phase: 'settlement-pending', exhausted: true },
+] as const)(
+  'protects another $phase claim present $timing (exhausted=$exhausted) and contains only after that claim leaves',
+  async ({ timing, phase, exhausted }) => {
+    const record = providerOperationRecordSchema.parse({
+      ...providerOperationRecord('settlement-pending'),
+      settlementFailure: { elapsedMs: 120_000, observedAtMs: 100, containmentRequested: true },
+    });
+    const otherRecord = providerOperationRecord(phase, { job: 9 });
+    const other =
+      otherRecord.phase === 'settlement-pending' && exhausted
+        ? { ...otherRecord, settlementFailure: { elapsedMs: 120_000, observedAtMs: 100, containmentRequested: true } }
+        : otherRecord;
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize(timing === 'initial' ? [record, other] : [record]);
+    const stopAndReap = vi.fn(async () => ({ unconfirmed: 'not yet absent' }) as const);
+    const authority = fakeAuthority({ record, stopAndReap });
+    const gate = deferred<void>();
+    const admission = new ProviderOperationMutationAdmission();
+    let fenceWaits = timing === 'during-fence';
+    const lifecycle = lifecycleFor({
+      claims,
+      time: new ManualClock(),
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: vi.fn() },
+      proveContainmentAbsent: noContainmentProof,
+      fenceProviderOperationMutations: (identity) => {
+        const fence = admission.closeSet(identity);
+        return fenceWaits
+          ? {
+              ...fence,
+              kind: 'holding',
+              pendingMutations: ['other-operation'],
+              exit: 'admitted-provider-operation-mutation-settlement',
+              retryAfter: gate.promise,
+            }
+          : fence;
+      },
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
+    const request = { kind: 'settlement-retries-exhausted', operation: record.operation } as const;
+    lifecycle.requestOperationContainment(authority.setIdentity, request);
+    if (timing === 'during-fence') {
+      claims.applyMutation({ kind: 'upserted', record: other });
+      fenceWaits = false;
+      gate.resolve();
+    }
+    await drainMicrotasks();
+    expect(stopAndReap).not.toHaveBeenCalled();
+    expect(claims.claimsFor(authority.setIdentity)).toHaveLength(2);
+    expect(lifecycle.authorityFor(authority.setIdentity)).toBe(authority);
+
+    claims.applyMutation({ kind: 'deleted', record: other });
+    lifecycle.requestOperationContainment(authority.setIdentity, request);
+    await vi.waitFor(() => expect(stopAndReap).toHaveBeenCalledOnce());
+    expect(claims.claimFor(record.operation)).not.toBeNull();
+    expect(lifecycle.authorityFor(authority.setIdentity)).toBeNull();
+  },
+);
+
+it('rechecks exact operation identities when an exhausted sibling is replaced under the fence', async () => {
+  const record = providerOperationRecordSchema.parse({
+    ...providerOperationRecord('settlement-pending'),
+    settlementFailure: { elapsedMs: 120_000, observedAtMs: 100, containmentRequested: true },
+  });
+  const sibling = { ...record, operation: { ...record.operation, jobId: randomUUID() } };
+  const replacement = { ...sibling, operation: { ...sibling.operation, operationId: randomUUID() } };
+  const claims = new ProviderProxySetClaimMirror();
+  claims.initialize([record, sibling]);
+  const stopAndReap = vi.fn(async () => ({ unconfirmed: 'not yet absent' }) as const);
+  const authority = fakeAuthority({ record, stopAndReap });
+  const gate = deferred<void>();
+  const admission = new ProviderOperationMutationAdmission();
+  let fenceWaits = true;
+  const lifecycle = lifecycleFor({
+    claims,
+    time: new ManualClock(),
+    controlEstablished: ignoreControlEstablished,
+    disappearanceConsumer: { containmentDisappeared: vi.fn() },
+    proveContainmentAbsent: noContainmentProof,
+    fenceProviderOperationMutations: (identity) => {
+      const fence = admission.closeSet(identity);
+      return fenceWaits
+        ? {
+            ...fence,
+            kind: 'holding',
+            pendingMutations: ['sibling-replacement'],
+            exit: 'admitted-provider-operation-mutation-settlement',
+            retryAfter: gate.promise,
+          }
+        : fence;
+    },
+  });
+  lifecycle.initializeClaimSlots();
+  lifecycle.completeStartupDiscovery();
+  lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
+  const request = { kind: 'settlement-retries-exhausted', operation: record.operation } as const;
+  lifecycle.requestOperationContainment(authority.setIdentity, request);
+  claims.applyMutation({ kind: 'deleted', record: sibling });
+  claims.applyMutation({ kind: 'upserted', record: replacement });
+  fenceWaits = false;
+  gate.resolve();
+  await drainMicrotasks();
+  expect(stopAndReap).not.toHaveBeenCalled();
+  expect(lifecycle.authorityFor(authority.setIdentity)).toBe(authority);
+
+  lifecycle.requestOperationContainment(authority.setIdentity, request);
+  await vi.waitFor(() => expect(stopAndReap).toHaveBeenCalledOnce());
+});
+
+it('requires the exact durable settlement escalation fact rather than trusting the request', async () => {
+  const record = providerOperationRecord('settlement-pending');
+  const claims = new ProviderProxySetClaimMirror();
+  claims.initialize([record]);
+  const stopAndReap = vi.fn(async () => ({ unconfirmed: 'not yet absent' }) as const);
+  const authority = fakeAuthority({ record, stopAndReap });
+  const lifecycle = lifecycleFor({
+    claims,
+    time: new ManualClock(),
+    controlEstablished: ignoreControlEstablished,
+    disappearanceConsumer: { containmentDisappeared: vi.fn() },
+    proveContainmentAbsent: noContainmentProof,
+  });
+  lifecycle.initializeClaimSlots();
+  lifecycle.completeStartupDiscovery();
+  lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
+  const request = { kind: 'settlement-retries-exhausted', operation: record.operation } as const;
+  lifecycle.requestOperationContainment(authority.setIdentity, request);
+  await drainMicrotasks();
+  expect(stopAndReap).not.toHaveBeenCalled();
+
+  const eligible = providerOperationRecordSchema.parse({
+    ...record,
+    settlementFailure: { elapsedMs: 120_000, observedAtMs: 100, containmentRequested: true },
+  });
+  claims.applyMutation({ kind: 'upserted', record: eligible });
+  lifecycle.requestOperationContainment(authority.setIdentity, {
+    ...request,
+    operation: { ...record.operation, operationId: randomUUID() },
+  });
+  await drainMicrotasks();
+  expect(stopAndReap).not.toHaveBeenCalled();
+  lifecycle.requestOperationContainment(authority.setIdentity, request);
+  await vi.waitFor(() => expect(stopAndReap).toHaveBeenCalledOnce());
 });
 
 it('delivers ordinary disappearance to live claims when an operation release failure meets teardown-latched authority', async () => {

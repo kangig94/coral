@@ -260,6 +260,7 @@ function terminalEvent(
     type: 'terminal' as const,
     cursor: session.cursor(),
     jobId: job.jobId,
+    ...(typeof job.detail?.status.execution === 'number' ? { execution: job.detail.status.execution } : {}),
     seq: job.detail?.terminalSeq ?? job.detail?.status.lastSeq ?? 0,
     result: { content, outcome, durationMs },
     usage: result.diagnostics.usage,

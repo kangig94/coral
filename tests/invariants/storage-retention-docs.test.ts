@@ -10,14 +10,16 @@ describe('storage retention documentation', () => {
   });
 
   it('records the settled lifetime and automatic conversation restore', () => {
-    const todo = readFileSync(new URL('../../docs/todo/export-lifetime.md', import.meta.url), 'utf-8');
-    expect(todo).toContain('retention and automatic conversation restore implemented');
-    expect(todo).toContain('hard link');
-    expect(todo).toContain('previous execution still owns settlement or retention work');
-    expect(todo).toContain('Expired exports');
-    expect(todo).toContain('collision rule');
-    expect(todo).toContain('top-level entries, including directories');
-    expect(todo).toContain('deletion admission persists the cutoff in meta');
+    const architecture = readFileSync(new URL('../../docs/architecture.md', import.meta.url), 'utf-8');
+    const configuration = readFileSync(new URL('../../docs/configuration.md', import.meta.url), 'utf-8');
+    expect(architecture).toContain('Restore targets the original native path');
+    expect(architecture).toContain('no-replace publication');
+    expect(architecture).toContain('settlement and any conversation retention complete before the execution ends');
+    expect(configuration).toContain('Pruned conversation archives cannot be restored');
+    expect(architecture).toContain('including one created concurrently');
+    expect(architecture).toContain('is never overwritten');
+    expect(architecture).toContain('top-level entries, including directories');
+    expect(configuration).toContain('deletion admission persists across partial cleanup');
   });
 
   it('has no unused exclusive connection option or fixed owner count after legacy removal', () => {

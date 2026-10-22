@@ -13,7 +13,12 @@ import {
 export type ProviderProxySetOperationClaim = Readonly<{
   operation: OperationIdentity;
   setIdentity: ProviderProxySetIdentity;
+  settlementContainmentRequested: boolean;
 }>;
+
+export type ProviderOperationContainmentRequest =
+  | string
+  | Readonly<{ kind: 'settlement-retries-exhausted'; operation: OperationIdentity }>;
 
 function operationKey(operation: OperationIdentity): string {
   return JSON.stringify([operation.jobId, operation.operationId, operation.proxyInstanceId, operation.buildSetId]);
@@ -72,7 +77,15 @@ export class ProviderProxySetClaimMirror {
     if (existing !== undefined && !providerProxySetIdentitiesEqual(existing.setIdentity, setIdentity)) {
       throw new Error('provider_proxy_claim_identity_changed');
     }
-    this.#claims.set(key, Object.freeze({ operation: record.operation, setIdentity }));
+    this.#claims.set(
+      key,
+      Object.freeze({
+        operation: record.operation,
+        setIdentity,
+        settlementContainmentRequested:
+          record.phase === 'settlement-pending' && record.settlementFailure.containmentRequested,
+      }),
+    );
   }
 
   #release(operation: OperationIdentity): void {

@@ -3,6 +3,8 @@ import type { CommitEventsFn } from '../../store/append.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { nowIsoString } from '../../infra/time.js';
 import { hashToken } from '../../infra/hash.js';
+import { canonicalWorkDirWireSchema, type CanonicalWorkDir } from '../../runtime/canonical-work-dir.js';
+import { jobInCallerScope } from '../scope.js';
 import { providerArtifactIdentityKey } from '../../providers/artifact-identity.js';
 import type { JobConversation } from './entry.js';
 import type {
@@ -14,7 +16,7 @@ import type { ProviderValidatedContinuitySnapshot } from './continuity.js';
 import { listProjectionConversationEntries, readProjectionJobConversation } from './read-queries.js';
 
 export class ConversationManager {
-  private readonly workingDirectory: string;
+  private readonly workingDirectory: CanonicalWorkDir;
   private readonly runtime: Pick<Runtime, 'time' | 'ids'>;
   private readonly commitEvents: CommitEventsFn;
   private readonly db: Database;
@@ -25,7 +27,7 @@ export class ConversationManager {
     commitEvents: CommitEventsFn,
     db: Database,
   ) {
-    this.workingDirectory = workingDirectory;
+    this.workingDirectory = canonicalWorkDirWireSchema.parse(workingDirectory);
     this.runtime = runtime;
     this.commitEvents = commitEvents;
     this.db = db;
@@ -62,7 +64,10 @@ export class ConversationManager {
 
   readById(jobId: string): JobConversation | null {
     const entry = readProjectionJobConversation(this.db, jobId);
-    return entry?.projectRoot === this.workingDirectory ? entry : null;
+    return entry !== null &&
+      jobInCallerScope({ jobKind: 'provider', workDir: entry.cwd }, this.workingDirectory, 'contains')
+      ? entry
+      : null;
   }
 
   get(provider: string, jobId: string): JobConversation | null {

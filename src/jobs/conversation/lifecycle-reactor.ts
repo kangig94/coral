@@ -81,6 +81,13 @@ interface RetentionWork {
   readonly remember: (outcome: RetentionOutcome) => RetentionSettlement;
 }
 
+interface RetentionDiscard {
+  readonly issued: boolean;
+  readonly artifacts: Extract<BoundProvider['artifacts'], { kind: 'managed' }> | null;
+  readonly discardOptions: Parameters<typeof reconcileProviderArtifactDiscard>[0];
+  readonly complete: (outcome: 'discarded' | 'skipped_no_handles') => Promise<RetentionSettlement>;
+}
+
 export class LifecycleReactor {
   private admitted = false;
   private readonly inFlight = new Map<string, Promise<RetentionSettlement>>();
@@ -409,83 +416,101 @@ export class LifecycleReactor {
     return this.observeDiscardRemoval(work, { issued, artifacts, discardOptions, complete });
   }
 
-  private observeDiscardRemoval(
-    work: RetentionWork,
-    discard: {
-      issued: boolean;
-      artifacts: Extract<BoundProvider['artifacts'], { kind: 'managed' }> | null;
-      discardOptions: Parameters<typeof reconcileProviderArtifactDiscard>[0];
-      complete: (outcome: 'discarded' | 'skipped_no_handles') => Promise<RetentionSettlement>;
-    },
-  ): Promise<RetentionSettlement> {
-    const { address, previousAttempts, subject, quarantine, remember } = work;
-    const { issued, artifacts, discardOptions, complete } = discard;
+  private observeDiscardRemoval(work: RetentionWork, discard: RetentionDiscard): Promise<RetentionSettlement> {
+    const { address } = work;
     return withJobArtifactGuard<RetentionSettlement>(this.options.runtime, address.jobId, async () => {
       this.checkActive();
       const current = readProjectionJobConversation(this.options.db(), address.jobId);
       if (current === null || current.execution !== address.execution || !current.finishing) {
         return { kind: 'not-owned' };
       }
-      const reconcile = async () => {
-        try {
-          return issued || artifacts === null
-            ? await reconcileProviderArtifactDiscard(discardOptions)
-            : await artifacts.reconcileDiscard(discardOptions);
-        } catch (error: unknown) {
-          this.options.log?.(
-            `Discard evidence unavailable for ${executionKey(address.jobId, address.execution)}: ${errorMessage(error)}; successor=bounded removal observation.\n`,
-          );
-          return { kind: 'unknown' } as const;
-        }
-      };
-      let attempts = previousAttempts ?? 0;
-      const observe = async () => {
-        this.checkActive();
-        if (attempts >= 6) return { kind: 'unknown' } as const;
-        attempts++;
-        const persisted = quarantine.upsert({
-          boundary: BOUNDARY,
-          subject,
-          state: 'continuation',
-          stage: 'settle',
-          errorMessage: 'Discard removal evidence is being observed.',
-          detail: `Removal observation ${attempts} of 6 for the original discard action.`,
-          continuation: { kind: 'job-retention-outcome.v1', key: JSON.stringify({ kind: 'observing', attempts }) },
-        });
-        if (!persisted) throw new Error(`Retention observation lost authority for ${subject.key}.`);
-        return reconcile();
-      };
-      let outcome = await observe();
-      this.checkActive();
-      if (outcome.kind === 'not-applied' && !issued && previousAttempts === null && artifacts !== null) {
-        try {
-          await artifacts.discardArtifacts(discardOptions);
-        } catch (error: unknown) {
-          this.options.log?.(`Retention discard observation failed: ${errorMessage(error)}\n`);
-        }
-        outcome = await observe();
-      }
-      while (outcome.kind === 'unknown' && attempts < 6) {
-        await this.options.runtime.time.sleep(EXECUTION_RETRY_MS, { signal: this.abort.signal });
-        outcome = await observe();
-      }
-      if (outcome.kind === 'applied')
-        return complete(outcome.outcome.kind === 'skipped_no_handles' ? 'skipped_no_handles' : 'discarded');
-      const reason =
-        outcome.kind === 'definitive-failure'
-          ? outcome.reason
-          : outcome.kind === 'unknown'
-            ? 'Discard removal evidence is unknown after six observations; native absence or kept bytes cannot be asserted.'
-            : 'Native removal was not applied; surviving native artifacts remain.';
-      const seal = await sealProviderArtifactDiscard(discardOptions, reason);
-      if (seal.kind === 'awaiting-issuer') {
-        this.options.log?.(
-          `Retention observation exhausted for ${subject.key}; successor=discard issuer release for ${seal.actionId}.\n`,
-        );
-        return seal;
-      }
-      return remember({ kind: 'failed', reason });
+      const outcome = await this.observeDiscardOutcome(work, discard);
+      return this.closeDiscardObservation(work, discard, outcome);
     });
+  }
+
+  private async reconcileDiscardRemoval(
+    address: ExecutionAddress,
+    discard: RetentionDiscard,
+  ): ReturnType<typeof reconcileProviderArtifactDiscard> {
+    const { issued, artifacts, discardOptions } = discard;
+    try {
+      return issued || artifacts === null
+        ? await reconcileProviderArtifactDiscard(discardOptions)
+        : await artifacts.reconcileDiscard(discardOptions);
+    } catch (error: unknown) {
+      this.options.log?.(
+        `Discard evidence unavailable for ${executionKey(address.jobId, address.execution)}: ${errorMessage(error)}; successor=bounded removal observation.\n`,
+      );
+      return { kind: 'unknown' };
+    }
+  }
+
+  private recordDiscardObservation(work: RetentionWork, attempts: number): void {
+    const { subject, quarantine } = work;
+    const persisted = quarantine.upsert({
+      boundary: BOUNDARY,
+      subject,
+      state: 'continuation',
+      stage: 'settle',
+      errorMessage: 'Discard removal evidence is being observed.',
+      detail: `Removal observation ${attempts} of 6 for the original discard action.`,
+      continuation: { kind: 'job-retention-outcome.v1', key: JSON.stringify({ kind: 'observing', attempts }) },
+    });
+    if (!persisted) throw new Error(`Retention observation lost authority for ${subject.key}.`);
+  }
+
+  private async observeDiscardOutcome(
+    work: RetentionWork,
+    discard: RetentionDiscard,
+  ): ReturnType<typeof reconcileProviderArtifactDiscard> {
+    const { address, previousAttempts } = work;
+    const { issued, artifacts, discardOptions } = discard;
+    let attempts = previousAttempts ?? 0;
+    const observe = async () => {
+      this.checkActive();
+      if (attempts >= 6) return { kind: 'unknown' } as const;
+      this.recordDiscardObservation(work, ++attempts);
+      return this.reconcileDiscardRemoval(address, discard);
+    };
+    let outcome = await observe();
+    this.checkActive();
+    if (outcome.kind === 'not-applied' && !issued && previousAttempts === null && artifacts !== null) {
+      try {
+        await artifacts.discardArtifacts(discardOptions);
+      } catch (error: unknown) {
+        this.options.log?.(`Retention discard observation failed: ${errorMessage(error)}\n`);
+      }
+      outcome = await observe();
+    }
+    while (outcome.kind === 'unknown' && attempts < 6) {
+      await this.options.runtime.time.sleep(EXECUTION_RETRY_MS, { signal: this.abort.signal });
+      outcome = await observe();
+    }
+    return outcome;
+  }
+
+  private async closeDiscardObservation(
+    work: RetentionWork,
+    discard: RetentionDiscard,
+    outcome: Awaited<ReturnType<typeof reconcileProviderArtifactDiscard>>,
+  ): Promise<RetentionSettlement> {
+    if (outcome.kind === 'applied')
+      return discard.complete(outcome.outcome.kind === 'skipped_no_handles' ? 'skipped_no_handles' : 'discarded');
+    const reason =
+      outcome.kind === 'definitive-failure'
+        ? outcome.reason
+        : outcome.kind === 'unknown'
+          ? 'Discard removal evidence is unknown after six observations; native absence or kept bytes cannot be asserted.'
+          : 'Native removal was not applied; surviving native artifacts remain.';
+    const seal = await sealProviderArtifactDiscard(discard.discardOptions, reason);
+    if (seal.kind === 'awaiting-issuer') {
+      this.options.log?.(
+        `Retention observation exhausted for ${work.subject.key}; successor=discard issuer release for ${seal.actionId}.\n`,
+      );
+      return seal;
+    }
+    return work.remember({ kind: 'failed', reason });
   }
 
   private async discardResidue(bound: BoundProvider, entry: JobConversation): Promise<void> {

@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { isRecord } from '../../infra/json.js';
 import { continuitySnapshotSchema } from '../conversation/continuity.js';
 import { jobPhaseSchema } from '../phase.js';
+import { executionOrdinalSchema } from '../launch.js';
 import { jobProgressTimingSchema } from '../event-bodies.js';
 import { jobTerminalSchema } from '../terminal/result.js';
 import { usageSummarySchema } from '../../providers/contract.js';
@@ -88,6 +89,7 @@ export const resultAvailabilitySchema = z.discriminatedUnion('kind', [
 
 const waitTerminalBlockSchema = z.object({
   type: z.literal('terminal'),
+  execution: executionOrdinalSchema.optional(),
   executionSelections: waitExecutionSelectionsSchema.optional(),
   jobId: z.string(),
   seq: z.number().int().nonnegative(),

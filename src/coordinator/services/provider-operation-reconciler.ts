@@ -63,6 +63,7 @@ import {
   type DurableProviderProxyOperationAuthority,
 } from '../live/provider-proxy/operation-route.js';
 import type { LocalOperationRegistry } from './operation-registry.js';
+import type { ProviderOperationContainmentRequest } from './provider-proxy-set/claim-mirror.js';
 import {
   providerOperationErrorCode,
   providerOperationErrorIsAmbiguous,
@@ -350,7 +351,7 @@ function isTemporarilyUnavailableAcquisition(
 
 type ProviderOperationReconcilerDeps = Readonly<{
   observation?: { bootId: string; log(message: string): void };
-  requestContainment(identity: ProviderProxySetIdentity, cause: string): void;
+  requestContainment(identity: ProviderProxySetIdentity, request: ProviderOperationContainmentRequest): void;
   getProgressStore: () => Pick<JobProgressStore, 'getDb' | 'commit' | 'readStatus' | 'readLaunchProjection'>;
   custody?: () => Readonly<{ runtime: Runtime; runDir: string; epoch: string; nowMs: number; bindWithinMs: number }>;
   authorityFor: (record: ProviderOperationRecord) => DurableProviderProxyOperationAuthority | null;
@@ -2149,7 +2150,10 @@ export class ProviderOperationReconciler
   ): Promise<ProviderOperationRecord | null> {
     try {
       if (record.settlementFailure.containmentRequested)
-        this.#deps.requestContainment(authority.setIdentity, 'provider_settlement_retries_exhausted');
+        this.#deps.requestContainment(authority.setIdentity, {
+          kind: 'settlement-retries-exhausted',
+          operation: record.operation,
+        });
       const released = await this.#awaitAuthority(
         authority.settleOperation(record.operation, record.terminalProviderSeq),
       );
@@ -2210,7 +2214,10 @@ export class ProviderOperationReconciler
     );
     if (next !== null) this.#schedule(retryDelayMs(record.retryCount));
     if (next?.phase === 'settlement-pending' && containmentRequested)
-      this.#deps.requestContainment(authority.setIdentity, 'provider_settlement_retries_exhausted');
+      this.#deps.requestContainment(authority.setIdentity, {
+        kind: 'settlement-retries-exhausted',
+        operation: next.operation,
+      });
   }
 
   async #consumeContainmentDisappearance(

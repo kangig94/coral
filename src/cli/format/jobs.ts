@@ -422,9 +422,10 @@ export function formatLaunch(result: AcceptedLaunchResponse): string {
 }
 
 export function formatDetachedLaunchStatus(result: AcceptedLaunchResponse): string {
+  const execution = result.execution ?? 1;
   return result.kind === 'provider-session'
-    ? `Provider job ${result.jobId} ${result.launchState}`
-    : `Workflow ${result.workflowId} ${result.launchState} (job ${result.jobId})`;
+    ? `Provider job ${result.jobId} execution #${execution} ${result.launchState}`
+    : `Workflow ${result.workflowId} ${result.launchState} (job ${result.jobId} execution #${execution})`;
 }
 
 export function formatLaunchWaitHint(

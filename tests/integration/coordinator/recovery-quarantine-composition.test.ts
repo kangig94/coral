@@ -27,6 +27,7 @@ describe('recovery quarantine composition', () => {
   let harness: HandoffCoresHarness | null = null;
 
   afterEach(async () => {
+    vi.useRealTimers();
     await harness?.cleanup();
     harness = null;
   });
@@ -53,7 +54,7 @@ describe('recovery quarantine composition', () => {
     const address = { jobId: EXECUTION_JOB_ID, execution: 1 };
     const previousFinisher = new ExecutionFinisher({
       recovery: { db: () => harness!.db, readCtx: fixture.readCtx, time: harness.runtime.time },
-      time: { sleep: async () => {} },
+      time: harness.runtime.time,
       log: vi.fn(),
       commit: () => {
         throw new Error('end write failed');
@@ -63,10 +64,16 @@ describe('recovery quarantine composition', () => {
       retentionAction: async () => ({ attempt: 0, handles: [] }),
       settleRetention: async () => ({ kind: 'completed', outcome: 'skipped_no_handles' }),
     });
-    const stopped = expect(previousFinisher.finish(address)).rejects.toBeDefined();
-    await vi.waitFor(() => expect(previousFinisher.status(address)).toMatchObject({ kind: 'blocked' }));
-    await previousFinisher.dispose();
-    await stopped;
+    vi.useFakeTimers();
+    try {
+      const stopped = expect(previousFinisher.finish(address)).rejects.toBeDefined();
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(previousFinisher.status(address)).toMatchObject({ kind: 'blocked' });
+      await previousFinisher.dispose();
+      await stopped;
+    } finally {
+      vi.useRealTimers();
+    }
     const quarantine = new RecoveryQuarantineStore(harness.db, harness.runtime.time);
     const subject = quarantine.list()[0].subject;
 

@@ -35,8 +35,8 @@ reasons it was wrong are the part that does not re-derive:
   while its `-shm` carried that same day's. Three files, three clocks, one store.
 - **The constant was borrowed from a different obligation.** `HANDOFF_ROUTING_COMPLETED_RETENTION_MS`
   answers how long a completed pair is worth keeping *inside a live store*. Address retention has a
-  different owner. [`export-lifetime.md`](./export-lifetime.md) exists because that substitution already
-  shipped once, with a doc comment naming the wrong root.
+  different owner. See [storage retention](../architecture.md#storage-retention) for the export
+  lifetime contract.
 
 ## The shape that fits
 
@@ -55,10 +55,10 @@ generation waits for a person who is not on the affected machine. Do not impleme
 the lifetime design must be re-decided under "No Operator Is Watching" in
 `.claude/rules/design-philosophy.md`.
 
-## Not `export-lifetime`'s shape
+## Export retention has a different obligation
 
-Worth stating because they look alike. That entry holds the user's content at 17 GB, where a retention
-decision changes what a person gets back, so it owes a product decision. This is the coordinator's own
+[Export retention](../configuration.md#storage-retention-and-store-modes) governs the user's content,
+where a retention decision changes what a person gets back. This is the coordinator's own
 bookkeeping, capped per address, and an operator surface for retained evidence already ships. No product
 decision is owed.
 

@@ -312,6 +312,7 @@ it('round-trips a committed continuation selection without discarding its epoch 
       launchState: 'queued' as const,
       jobId: request.jobId,
       requestedSeq: 100,
+      execution: 2,
       epochKey: 'epoch',
     },
   };

@@ -131,7 +131,7 @@ function canonicalHandles(
     .sort((left, right) => stableJson(left).localeCompare(stableJson(right)));
 }
 
-/** Derives stable archive/discard identities from the complete persisted action inputs. */
+/** A replay of the same persisted action must derive the same archive and discard identities. */
 export function deriveProviderArtifactActionDescriptor(options: {
   readonly entry: JobConversation;
   readonly jobId: string;
@@ -339,6 +339,113 @@ export async function cleanupConversationRestoreStages(
   });
 }
 
+function verifyArchiveReplay(
+  runtime: ArtifactCleanupRuntime,
+  directory: string,
+  existing: ArchiveManifest,
+  descriptor: ProviderArtifactActionDescriptor,
+): void {
+  if (
+    existing.archivePayloadHash !== descriptor.archivePayloadHash ||
+    existing.sourceRevision !== descriptor.sourceRevision ||
+    existing.jobId !== descriptor.jobId ||
+    existing.execution !== descriptor.execution ||
+    existing.provider !== descriptor.provider ||
+    stableJson(existing.canonicalHandles) !== stableJson(descriptor.handles)
+  ) {
+    throw new ProviderArtifactArchiveInvariantError('Archive action has conflicting inputs.');
+  }
+  for (const artifact of existing.artifacts)
+    if (artifact.status === 'archived') verifiedBytes(runtime, directory, artifact);
+  syncDirectory(runtime, directory);
+  removeUnreferencedBytes(runtime, directory, existing);
+}
+
+function readNativeBytes(runtime: ArtifactCleanupRuntime, handle: string): Uint8Array | null {
+  try {
+    if (!runtime.storage.statSync(handle).isFile()) throw new Error(`Native artifact is not a file: ${handle}`);
+    return runtime.storage.readFileBytesSync(handle);
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+function publishArchiveArtifacts(
+  runtime: ArtifactCleanupRuntime,
+  directory: string,
+  descriptor: ProviderArtifactActionDescriptor,
+  existing: ArchiveManifest | null,
+): { artifacts: ArchiveArtifactRecord[]; prepared: boolean } {
+  const artifacts: ArchiveArtifactRecord[] = [];
+  let prepared = false;
+  for (const [index, handle] of descriptor.handles.entries()) {
+    const source = {
+      sourceHandle: handle.handle,
+      sourceJobId: handle.sourceJobId,
+      ...(handle.identity === undefined ? {} : { identity: handle.identity }),
+    };
+    const bytes = readNativeBytes(runtime, handle.handle);
+    if (bytes === null) {
+      artifacts.push({ ...source, status: 'missing' });
+      continue;
+    }
+    if (!prepared) {
+      ensureDurableDirectory(runtime, directory);
+      removeUnreferencedBytes(runtime, directory, existing);
+      prepared = true;
+    }
+    const archivePath = `.${descriptor.archiveActionId}-${index}.bytes`;
+    const sourceSha256 = bytesHash(bytes);
+    const record: ArchiveArtifactRecord = {
+      ...source,
+      status: 'archived',
+      archivePath,
+      bytes: bytes.length,
+      sourceSha256,
+      archiveSha256: sourceSha256,
+    };
+    if (!runtime.storage.writeAtomicDurableSync(join(directory, archivePath), bytes, { mode: 0o600 })) {
+      throw new Error('Conversation bytes publication durability is unknown.');
+    }
+    verifiedBytes(runtime, directory, record);
+    artifacts.push(record);
+  }
+  return { artifacts, prepared };
+}
+
+function replaceArchiveManifest(
+  runtime: ArtifactCleanupRuntime,
+  directory: string,
+  descriptor: ProviderArtifactActionDescriptor,
+  artifacts: ArchiveArtifactRecord[],
+): ArchiveManifest {
+  const manifestPath = join(directory, 'manifest.json');
+  const manifest = archiveManifestSchema.parse({
+    schemaVersion: ARCHIVE_SCHEMA_VERSION,
+    archiveActionId: descriptor.archiveActionId,
+    archivePayloadHash: descriptor.archivePayloadHash,
+    sourceRevision: descriptor.sourceRevision,
+    canonicalHandles: descriptor.handles,
+    jobId: descriptor.jobId,
+    execution: descriptor.execution,
+    provider: descriptor.provider,
+    archivedAt: descriptor.archivedAt,
+    artifacts,
+  });
+  if (
+    !runtime.storage.writeAtomicDurableSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 })
+  ) {
+    throw new Error('Conversation manifest publication durability is unknown; native artifacts kept.');
+  }
+  const committed = readManifest(runtime, manifestPath);
+  if (committed === null || stableJson(committed) !== stableJson(manifest))
+    throw new Error('Conversation publication did not commit.');
+  for (const artifact of committed.artifacts)
+    if (artifact.status === 'archived') verifiedBytes(runtime, directory, artifact);
+  return committed;
+}
+
 export async function archiveProviderArtifactsForJob(options: {
   readonly runtime: ArtifactCleanupRuntime;
   readonly descriptor: ProviderArtifactActionDescriptor;
@@ -351,64 +458,13 @@ export async function archiveProviderArtifactsForJob(options: {
     const existing = readManifest(runtime, manifestPath);
     removeRestoreStages(runtime, descriptor, existing);
     if (existing?.archiveActionId === descriptor.archiveActionId) {
-      if (
-        existing.archivePayloadHash !== descriptor.archivePayloadHash ||
-        existing.sourceRevision !== descriptor.sourceRevision ||
-        existing.jobId !== descriptor.jobId ||
-        existing.execution !== descriptor.execution ||
-        existing.provider !== descriptor.provider ||
-        stableJson(existing.canonicalHandles) !== stableJson(descriptor.handles)
-      ) {
-        throw new ProviderArtifactArchiveInvariantError('Archive action has conflicting inputs.');
-      }
-      for (const artifact of existing.artifacts)
-        if (artifact.status === 'archived') verifiedBytes(runtime, directory, artifact);
-      syncDirectory(runtime, directory);
-      removeUnreferencedBytes(runtime, directory, existing);
+      verifyArchiveReplay(runtime, directory, existing, descriptor);
       return { manifestPath, artifacts: existing.artifacts };
     }
     if (existing !== null && existing.execution >= descriptor.execution) {
       throw new ProviderArtifactArchiveInvariantError('An older retention action cannot replace the current archive.');
     }
-    const artifacts: ArchiveArtifactRecord[] = [];
-    let prepared = false;
-    for (const [index, handle] of descriptor.handles.entries()) {
-      const source = {
-        sourceHandle: handle.handle,
-        sourceJobId: handle.sourceJobId,
-        ...(handle.identity === undefined ? {} : { identity: handle.identity }),
-      };
-      let bytes: Uint8Array;
-      try {
-        if (!runtime.storage.statSync(handle.handle).isFile())
-          throw new Error(`Native artifact is not a file: ${handle.handle}`);
-        bytes = runtime.storage.readFileBytesSync(handle.handle);
-      } catch (error: unknown) {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-        artifacts.push({ ...source, status: 'missing' });
-        continue;
-      }
-      if (!prepared) {
-        ensureDurableDirectory(runtime, directory);
-        removeUnreferencedBytes(runtime, directory, existing);
-        prepared = true;
-      }
-      const archivePath = `.${descriptor.archiveActionId}-${index}.bytes`;
-      const sourceSha256 = bytesHash(bytes);
-      const record: ArchiveArtifactRecord = {
-        ...source,
-        status: 'archived',
-        archivePath,
-        bytes: bytes.length,
-        sourceSha256,
-        archiveSha256: sourceSha256,
-      };
-      if (!runtime.storage.writeAtomicDurableSync(join(directory, archivePath), bytes, { mode: 0o600 })) {
-        throw new Error('Conversation bytes publication durability is unknown.');
-      }
-      verifiedBytes(runtime, directory, record);
-      artifacts.push(record);
-    }
+    const { artifacts, prepared } = publishArchiveArtifacts(runtime, directory, descriptor, existing);
     if (!prepared) {
       try {
         removeUnreferencedBytes(runtime, directory, existing);
@@ -417,28 +473,7 @@ export async function archiveProviderArtifactsForJob(options: {
       }
       return { manifestPath, artifacts };
     }
-    const manifest = archiveManifestSchema.parse({
-      schemaVersion: ARCHIVE_SCHEMA_VERSION,
-      archiveActionId: descriptor.archiveActionId,
-      archivePayloadHash: descriptor.archivePayloadHash,
-      sourceRevision: descriptor.sourceRevision,
-      canonicalHandles: descriptor.handles,
-      jobId: descriptor.jobId,
-      execution: descriptor.execution,
-      provider: descriptor.provider,
-      archivedAt: descriptor.archivedAt,
-      artifacts,
-    });
-    if (
-      !runtime.storage.writeAtomicDurableSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 })
-    ) {
-      throw new Error('Conversation manifest publication durability is unknown; native artifacts kept.');
-    }
-    const committed = readManifest(runtime, manifestPath);
-    if (committed === null || stableJson(committed) !== stableJson(manifest))
-      throw new Error('Conversation publication did not commit.');
-    for (const artifact of committed.artifacts)
-      if (artifact.status === 'archived') verifiedBytes(runtime, directory, artifact);
+    const committed = replaceArchiveManifest(runtime, directory, descriptor, artifacts);
     removeUnreferencedBytes(runtime, directory, committed);
     return { manifestPath, artifacts: committed.artifacts };
   });
@@ -489,6 +524,45 @@ function belongsToBoundProfile(conversation: JobConversation, handle: string): b
   return path !== '' && path !== '..' && !path.startsWith(`..${sep}`) && !isAbsolute(path);
 }
 
+function verifyArchivedConversation(
+  runtime: ArtifactCleanupRuntime,
+  conversation: JobConversation,
+  minimumExecution: number,
+): ConversationRestoreVerification {
+  const directory = conversationArchiveDirectory(runtime, conversation.jobId);
+  const manifest = readManifest(runtime, join(directory, 'manifest.json'));
+  if (manifest === null)
+    return {
+      kind: 'unrestorable',
+      reason: 'archive_missing',
+      message: 'The conversation archive is missing or expired.',
+    };
+  if (manifest.jobId !== conversation.jobId || manifest.provider !== jobConversationProvider(conversation)) {
+    throw new ProviderArtifactArchiveInvariantError('Archive belongs to a different conversation.');
+  }
+  const artifact = manifest.artifacts.find((record) => record.status === 'archived');
+  if (artifact === undefined)
+    return { kind: 'unrestorable', reason: 'archive_missing', message: 'No native bytes were archived.' };
+  if (!belongsToBoundProfile(conversation, artifact.sourceHandle)) {
+    return {
+      kind: 'unrestorable',
+      reason: 'profile_mismatch',
+      message: 'The native path lies outside the bound provider profile.',
+    };
+  }
+  if (nativePresent(runtime.storage, artifact.sourceHandle))
+    return { kind: 'present', sourceHandle: artifact.sourceHandle };
+  if (manifest.execution < minimumExecution || manifest.execution > conversation.execution) {
+    return {
+      kind: 'unrestorable',
+      reason: 'archive_stale',
+      message: 'The archive predates the latest native execution.',
+    };
+  }
+  const bytes = verifiedBytes(runtime, directory, artifact);
+  return { kind: 'verified', sourceHandle: artifact.sourceHandle, sourceSha256: bytesHash(bytes), bytes };
+}
+
 export async function verifyConversationRestore(options: {
   readonly runtime: ArtifactCleanupRuntime;
   readonly conversation: JobConversation;
@@ -507,38 +581,7 @@ export async function verifyConversationRestore(options: {
           };
         if (nativePresent(runtime.storage, nativeHandle)) return { kind: 'present', sourceHandle: nativeHandle };
       }
-      const directory = conversationArchiveDirectory(runtime, conversation.jobId);
-      const manifest = readManifest(runtime, join(directory, 'manifest.json'));
-      if (manifest === null)
-        return {
-          kind: 'unrestorable',
-          reason: 'archive_missing',
-          message: 'The conversation archive is missing or expired.',
-        };
-      if (manifest.jobId !== conversation.jobId || manifest.provider !== jobConversationProvider(conversation)) {
-        throw new ProviderArtifactArchiveInvariantError('Archive belongs to a different conversation.');
-      }
-      const artifact = manifest.artifacts.find((record) => record.status === 'archived');
-      if (artifact === undefined)
-        return { kind: 'unrestorable', reason: 'archive_missing', message: 'No native bytes were archived.' };
-      if (!belongsToBoundProfile(conversation, artifact.sourceHandle)) {
-        return {
-          kind: 'unrestorable',
-          reason: 'profile_mismatch',
-          message: 'The native path lies outside the bound provider profile.',
-        };
-      }
-      if (nativePresent(runtime.storage, artifact.sourceHandle))
-        return { kind: 'present', sourceHandle: artifact.sourceHandle };
-      if (manifest.execution < minimumExecution || manifest.execution > conversation.execution) {
-        return {
-          kind: 'unrestorable',
-          reason: 'archive_stale',
-          message: 'The archive predates the latest native execution.',
-        };
-      }
-      const bytes = verifiedBytes(runtime, directory, artifact);
-      return { kind: 'verified', sourceHandle: artifact.sourceHandle, sourceSha256: bytesHash(bytes), bytes };
+      return verifyArchivedConversation(runtime, conversation, minimumExecution);
     } catch (error: unknown) {
       return {
         kind: 'unrestorable',
@@ -547,6 +590,35 @@ export async function verifyConversationRestore(options: {
       };
     }
   });
+}
+
+function prepareRestoreStage(
+  runtime: ArtifactCleanupRuntime,
+  jobId: string,
+  execution: number,
+  verification: Extract<ConversationRestoreVerification, { kind: 'verified' }>,
+): string {
+  if (bytesHash(verification.bytes) !== verification.sourceSha256)
+    throw new Error('Restore bytes failed hash verification.');
+  const parent = dirname(verification.sourceHandle);
+  ensureDurableDirectory(runtime, parent);
+  const stage = restoreStagePath(verification.sourceHandle, jobId, execution);
+  try {
+    runtime.storage.unlinkSync(stage);
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+  runtime.storage.writeFileSync(stage, verification.bytes, { mode: 0o600, flag: 'wx' });
+  const fd = runtime.storage.openSync(stage, 'r+');
+  try {
+    runtime.storage.fdatasyncSync(fd);
+  } finally {
+    runtime.storage.closeSync(fd);
+  }
+  syncDirectory(runtime, parent);
+  if (bytesHash(runtime.storage.readFileBytesSync(stage)) !== verification.sourceSha256)
+    throw new Error('Restore stage failed hash verification.');
+  return stage;
 }
 
 export async function publishConversationRestore(options: {
@@ -567,26 +639,7 @@ export async function publishConversationRestore(options: {
           reason: 'publication_failed',
           message: 'The existing native file disappeared after verification.',
         };
-      if (bytesHash(verification.bytes) !== verification.sourceSha256)
-        throw new Error('Restore bytes failed hash verification.');
-      const parent = dirname(verification.sourceHandle);
-      ensureDurableDirectory(runtime, parent);
-      const stage = restoreStagePath(verification.sourceHandle, jobId, execution);
-      try {
-        runtime.storage.unlinkSync(stage);
-      } catch (error: unknown) {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-      }
-      runtime.storage.writeFileSync(stage, verification.bytes, { mode: 0o600, flag: 'wx' });
-      const fd = runtime.storage.openSync(stage, 'r+');
-      try {
-        runtime.storage.fdatasyncSync(fd);
-      } finally {
-        runtime.storage.closeSync(fd);
-      }
-      syncDirectory(runtime, parent);
-      if (bytesHash(runtime.storage.readFileBytesSync(stage)) !== verification.sourceSha256)
-        throw new Error('Restore stage failed hash verification.');
+      const stage = prepareRestoreStage(runtime, jobId, execution, verification);
       const publication = runtime.storage.publishFileNoReplaceSync(stage, verification.sourceHandle);
       if (publication.kind === 'exists') {
         if (!nativePresent(runtime.storage, verification.sourceHandle))

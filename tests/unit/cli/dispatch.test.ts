@@ -612,6 +612,7 @@ describe('jobs send immutable attempt envelope', () => {
         'immutable input',
       );
       expect(outcome.state).toBe(mode === 'continue' ? 'launched' : 'unknown');
+      if (mode === 'continue') expect(outcome).toMatchObject({ state: 'launched', execution: 3 });
       expect(mockState.detailRequest).toHaveBeenCalledTimes(1);
       expect(mockState.request).toHaveBeenCalledTimes(3);
       const [first, second, successor] = mockState.request.mock.calls;

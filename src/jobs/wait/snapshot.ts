@@ -1,4 +1,5 @@
 import { executionRetryStatusSchema } from '../records.js';
+import { executionOrdinalSchema } from '../launch.js';
 import { type WaitExecutionSelection, waitExecutionSelectionsSchema } from './execution-selection.js';
 import assert from 'node:assert/strict';
 import { z } from 'zod';
@@ -64,6 +65,7 @@ function snapshotJob(session: WaitSession, admission: WaitAdmission): WaitSnapsh
   const { jobId, disposition, message, detail, availability } = admission;
   const row: WaitSnapshotJob = { jobId, disposition, ...(message === undefined ? {} : { message }), progress: [] };
   if (disposition !== 'admitted') return row;
+  if (typeof detail?.status.execution === 'number') row.execution = detail.status.execution;
   row.phase = detail?.status.phase ?? 'unresolved';
   row.finishingStatus = detail?.status.finishingStatus;
   if (!detail?.exit || !session.terminalDeliverable(admission) || session.terminalDelivery(admission) === null)
@@ -178,6 +180,7 @@ const waitSnapshotSchema = z
         z
           .object({
             jobId: z.string().min(1),
+            execution: executionOrdinalSchema.optional(),
             disposition: z.enum(['admitted', 'missing', 'scope-mismatch', 'unknown', 'unreadable']),
             message: z.string().optional(),
             phase: z.string().optional(),

@@ -1051,6 +1051,246 @@ export function registerPresentHistoricalEpochs(
   }
 }
 
+interface HistoricalSeedContext {
+  index: JobLocationIndex;
+  source: HistoricalEpochSource;
+  seed: NonNullable<HistoricalEpochSource['seed']>;
+  epochKey: string;
+  fingerprint: string;
+  jobsRoot: string;
+  storage: StoragePort;
+  knownJobs: readonly KnownHistoricalJob[];
+  certifyRetiredEpoch: boolean;
+  budget?: { remaining: number };
+}
+
+interface HistoricalSeedResources {
+  db: SqliteDatabasePort | null;
+  releaseLock: (() => void) | null;
+}
+
+function settleHistoricalSeedFailure(
+  { index, source, epochKey }: HistoricalSeedContext,
+  error: unknown,
+  addressFailure?: 'protected-epoch-address-unreadable',
+): HistoricalSeedResult {
+  holdSourceFailure(index, epochKey, error, source.attempts, addressFailure === undefined);
+  for (const location of index.locationsFor(epochKey))
+    if (!hasReadableTerminalDetail(location)) index.markUnresolved(location.jobId);
+  return {
+    kind: 'unrecoverable-retained',
+    knownJobIds: index.locationsFor(epochKey).map((location) => location.jobId),
+    reason: addressFailure ?? index.unknownLocationHold(epochKey) ?? 'retained-store-unreadable',
+  };
+}
+
+function openHistoricalSeedSource(
+  context: HistoricalSeedContext,
+  addressedEpoch: ResolvedStoreEpoch,
+  resources: HistoricalSeedResources,
+): { db: SqliteDatabasePort; frontier: number } {
+  const { source, seed, epochKey } = context;
+  const { storage } = context;
+  const lockPath = join(dirname(addressedEpoch.path), STORE_LOCK_FILE_NAME);
+  if (storage.existsSync(lockPath)) {
+    const guard = storage.lstatSync(lockPath, { bigint: true });
+    if (!guard.isFile() || guard.nlink !== 1n) throw new Error('Source lock is malformed.');
+  }
+  resources.releaseLock = createSharedFileLockSync(lockPath);
+  verifyHistoricalIdentity(source, epochKey, addressedEpoch);
+  const db = storage.openSqliteDatabaseSync(addressedEpoch.path, { readOnly: true });
+  resources.db = db;
+  db.exec('BEGIN');
+  seed.frontier ??= (db.prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get() as { seq: number }).seq;
+  return { db, frontier: seed.frontier };
+}
+
+function repairHistoricalSeedResult(context: HistoricalSeedContext, db: SqliteDatabasePort, jobId: string): void {
+  const { index, source, fingerprint, jobsRoot, storage } = context;
+  if (
+    !requireRetainedSourceReader(index, fingerprint).terminalIsImmutable ||
+    !storage.existsSync(historicalResultPath(jobsRoot, jobId))
+  ) {
+    try {
+      repairRetainedResult(index, source, db, jobId);
+    } catch (error: unknown) {
+      if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT'))
+        backendLog.warn(`Retained job observation requires its existing recovery owner: ${String(error)}`);
+      /* Publication failure cannot hide the retained outcome. */
+    }
+  }
+}
+
+function observeHistoricalSeedRow(
+  context: HistoricalSeedContext,
+  db: SqliteDatabasePort,
+  jobId: string,
+): 'unreadable' | 'retained' | 'hydrate' {
+  const { index, epochKey } = context;
+  const retainedRead = readRetainedLocation(index, jobId);
+  if (retainedRead.kind === 'unreadable') return 'unreadable';
+  const retained = retainedRead.location;
+  if (retained && sameEpoch(retained.epochKey, epochKey) && hasReadableTerminalDetail(retained)) {
+    repairHistoricalSeedResult(context, db, jobId);
+    return 'retained';
+  }
+  return 'hydrate';
+}
+
+function recordHistoricalSeedRowFailure(
+  context: HistoricalSeedContext,
+  jobId: string,
+  offset: number,
+  error: unknown,
+): void {
+  const { index, seed } = context;
+  seed.recordingError ??= error instanceof Error ? error : new Error(String(error));
+  seed.failedRowOffset ??= offset;
+  try {
+    index.markUnresolved(jobId);
+  } catch (error: unknown) {
+    if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT'))
+      backendLog.warn(`Retained job observation requires its existing recovery owner: ${String(error)}`);
+    // A subject whose location cannot be marked is covered by the epoch hold; it must not stop later subjects.
+  }
+  index.resultRepairFailures.add(jobId);
+}
+
+function hydrateHistoricalSeedRow(
+  context: HistoricalSeedContext,
+  db: SqliteDatabasePort,
+  { jobId, launchSeq, offset }: { jobId: string; launchSeq: number | undefined; offset: number },
+  observed: Set<string>,
+): void {
+  const { index, seed, epochKey, knownJobs } = context;
+  const { fingerprint, jobsRoot } = context;
+  const retained = observeHistoricalSeedRow(context, db, jobId);
+  if (retained !== 'hydrate') {
+    if (retained === 'retained') observed.add(jobId);
+    seed.rowOffset = offset + 1;
+    return;
+  }
+  try {
+    hydrateHistoricalSeedJob(index, db, epochKey, jobId, launchSeq, knownJobs, fingerprint, jobsRoot, observed);
+  } catch (error) {
+    recordHistoricalSeedRowFailure(context, jobId, offset, error);
+  } finally {
+    seed.rowOffset = offset + 1;
+  }
+}
+
+function hydrateHistoricalSeedRows(
+  context: HistoricalSeedContext,
+  db: SqliteDatabasePort,
+  frontier: number,
+): HistoricalSeedResult {
+  const { index, source, seed, epochKey, knownJobs, certifyRetiredEpoch, budget } = context;
+  const observed = new Set<string>();
+  const {
+    subjects: sourceSubjects,
+    launchSeqs,
+    members,
+  } = historicalSeedSubjects(index, seed, db, context.fingerprint);
+  const pending = (): HistoricalSeedResult => {
+    source.attempts = 0;
+    index.holdUnknownLocations(
+      epochKey,
+      'Historical hydration is pending; epoch maintenance continues it every 5 s',
+      true,
+    );
+    return { kind: 'uncertified', knownJobIds: [...observed] };
+  };
+  const knownOnly = [...new Set(knownJobs.map((job) => job.jobId))].filter((jobId) => !members.has(jobId));
+  const subjectCount = sourceSubjects.length + knownOnly.length;
+  const subjectAt = (i: number): string =>
+    i < sourceSubjects.length ? sourceSubjects[i] : knownOnly[i - sourceSubjects.length];
+  for (let i = seed.rowOffset; i < subjectCount; i++) {
+    const jobId = subjectAt(i);
+    if (budget) {
+      if (budget.remaining <= 0) return pending();
+      budget.remaining--;
+    }
+    hydrateHistoricalSeedRow(context, db, { jobId, launchSeq: launchSeqs.get(jobId), offset: i }, observed);
+  }
+  for (let i = 0; i < subjectCount; i++) observed.add(subjectAt(i));
+  if (seed.recordingError !== undefined) {
+    if (seed.failedRowOffset !== undefined) seed.rowOffset = seed.failedRowOffset;
+    source.attempts = (seed.failures ?? 0) + 1;
+    seed.failures = source.attempts;
+    const error = seed.recordingError;
+    seed.recordingError = undefined;
+    seed.failedRowOffset = undefined;
+    throw error;
+  }
+  return completeHistoricalSeed(index, source, frontier, db, epochKey, observed, certifyRetiredEpoch);
+}
+
+function historicalSeedUnavailable(
+  context: HistoricalSeedContext,
+  addressedEpoch: ResolvedStoreEpoch,
+  reader: ReturnType<typeof retainedSourceReader>,
+): HistoricalSeedResult | null {
+  const { index, source, epochKey, knownJobs, fingerprint, budget } = context;
+  if (observeHistoricalPath(source, epochKey, addressedEpoch) === 'absent') {
+    registerKnownHistoricalJobs(index, epochKey, knownJobs, budget);
+    retireHistoricalSource(index, epochKey, source);
+    return {
+      kind: 'unrecoverable-retained',
+      knownJobIds: index.locationsFor(epochKey).map((location) => location.jobId),
+      reason: 'Source retired; no further source read is possible',
+    };
+  }
+  if (reader === undefined) {
+    index.holdUnknownLocations(
+      epochKey,
+      `Store fingerprint ${fingerprint} cannot be read by this build; this coordinator will not re-read it before its next start`,
+    );
+    for (const location of index.locationsFor(epochKey))
+      if (!hasReadableTerminalDetail(location)) index.markUnresolved(location.jobId);
+    return {
+      kind: 'unrecoverable-retained',
+      knownJobIds: index.locationsFor(epochKey).map((location) => location.jobId),
+      reason: `Store fingerprint ${fingerprint} cannot be read by this build; this coordinator will not re-read it before its next start`,
+    };
+  }
+  return null;
+}
+
+function runHistoricalSeed(context: HistoricalSeedContext): HistoricalSeedResult {
+  const { index, source, epochKey, knownJobs, budget } = context;
+  const { fingerprint } = context;
+  if (budget && budget.remaining <= 0) {
+    source.attempts--;
+    if (!index.unknownLocationHold(epochKey))
+      index.holdUnknownLocations(
+        epochKey,
+        'Historical hydration is pending; epoch maintenance continues every 5 s, with at most 16 jobs per slice and settlement after 3 consecutive failed observations',
+        true,
+      );
+    return { kind: 'uncertified', knownJobIds: [] };
+  }
+  let addressedEpoch: ResolvedStoreEpoch;
+  try {
+    addressedEpoch = resolveHistoricalAddress(source, epochKey);
+  } catch (error: unknown) {
+    registerKnownHistoricalJobs(index, epochKey, knownJobs, budget);
+    return settleHistoricalSeedFailure(context, error, 'protected-epoch-address-unreadable');
+  }
+  const reader = retainedSourceReader(index, fingerprint);
+  const resources: HistoricalSeedResources = { db: null, releaseLock: null };
+  try {
+    const unavailable = historicalSeedUnavailable(context, addressedEpoch, reader);
+    if (unavailable !== null) return unavailable;
+    const { db, frontier } = openHistoricalSeedSource(context, addressedEpoch, resources);
+    return hydrateHistoricalSeedRows(context, db, frontier);
+  } catch (error: unknown) {
+    return settleHistoricalSeedFailure(context, error);
+  } finally {
+    resources.db?.close();
+    resources.releaseLock?.();
+  }
+}
+
 export function seedHistoricalEpoch(
   runtime: Pick<Runtime, 'storage' | 'ids' | 'env'>,
   index: JobLocationIndex,
@@ -1084,163 +1324,18 @@ export function seedHistoricalEpoch(
   retiredHistoricalEpochs.get(index)?.delete(epochIdentity(epochKey));
   sources.set(epochIdentity(epochKey), source);
   historicalSources.set(index, sources);
-  if (budget && budget.remaining <= 0) {
-    source.attempts--;
-    if (!index.unknownLocationHold(epochKey))
-      index.holdUnknownLocations(
-        epochKey,
-        'Historical hydration is pending; epoch maintenance continues every 5 s, with at most 16 jobs per slice and settlement after 3 consecutive failed observations',
-        true,
-      );
-    return { kind: 'uncertified', knownJobIds: [] };
-  }
-  let addressedEpoch: ResolvedStoreEpoch;
-  try {
-    addressedEpoch = resolveHistoricalAddress(source, epochKey);
-  } catch (error: unknown) {
-    registerKnownHistoricalJobs(index, epochKey, knownJobs, budget);
-    holdSourceFailure(index, epochKey, error, source.attempts, false);
-    for (const location of index.locationsFor(epochKey))
-      if (!hasReadableTerminalDetail(location)) index.markUnresolved(location.jobId);
-    return {
-      kind: 'unrecoverable-retained',
-      knownJobIds: index.locationsFor(epochKey).map((location) => location.jobId),
-      reason: 'protected-epoch-address-unreadable',
-    };
-  }
-  const reader = retainedSourceReader(index, fingerprint);
-  const dbPath = addressedEpoch.path;
-  let releaseLock: (() => void) | null = null;
-  let db: SqliteDatabasePort | null = null;
-  try {
-    if (observeHistoricalPath(source, epochKey, addressedEpoch) === 'absent') {
-      registerKnownHistoricalJobs(index, epochKey, knownJobs, budget);
-      retireHistoricalSource(index, epochKey, source);
-      return {
-        kind: 'unrecoverable-retained',
-        knownJobIds: index.locationsFor(epochKey).map((location) => location.jobId),
-        reason: 'Source retired; no further source read is possible',
-      };
-    }
-    if (reader === undefined) {
-      index.holdUnknownLocations(
-        epochKey,
-        `Store fingerprint ${fingerprint} cannot be read by this build; this coordinator will not re-read it before its next start`,
-      );
-      for (const location of index.locationsFor(epochKey))
-        if (!hasReadableTerminalDetail(location)) index.markUnresolved(location.jobId);
-      return {
-        kind: 'unrecoverable-retained',
-        knownJobIds: index.locationsFor(epochKey).map((location) => location.jobId),
-        reason: `Store fingerprint ${fingerprint} cannot be read by this build; this coordinator will not re-read it before its next start`,
-      };
-    }
-    const lockPath = join(dirname(addressedEpoch.path), STORE_LOCK_FILE_NAME);
-    if (storage.existsSync(lockPath)) {
-      const guard = storage.lstatSync(lockPath, { bigint: true });
-      if (!guard.isFile() || guard.nlink !== 1n) throw new Error('Source lock is malformed.');
-    }
-    releaseLock = createSharedFileLockSync(lockPath);
-    verifyHistoricalIdentity(source, epochKey, addressedEpoch);
-    db = storage.openSqliteDatabaseSync(dbPath, { readOnly: true });
-    db.exec('BEGIN');
-    seed.frontier ??= (db.prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get() as { seq: number }).seq;
-    const observed = new Set<string>();
-
-    const { subjects: sourceSubjects, launchSeqs, members } = historicalSeedSubjects(index, seed, db, fingerprint);
-    const pending = (): HistoricalSeedResult => {
-      source.attempts = 0;
-      index.holdUnknownLocations(
-        epochKey,
-        'Historical hydration is pending; epoch maintenance continues it every 5 s',
-        true,
-      );
-      return { kind: 'uncertified', knownJobIds: [...observed] };
-    };
-    const knownOnly = [...new Set(knownJobs.map((job) => job.jobId))].filter((jobId) => !members.has(jobId));
-    const subjectCount = sourceSubjects.length + knownOnly.length;
-    const subjectAt = (i: number): string =>
-      i < sourceSubjects.length ? sourceSubjects[i] : knownOnly[i - sourceSubjects.length];
-    for (let i = seed.rowOffset; i < subjectCount; i++) {
-      const jobId = subjectAt(i);
-      if (budget) {
-        if (budget.remaining <= 0) return pending();
-        budget.remaining--;
-      }
-      const retainedRead = readRetainedLocation(index, jobId);
-      if (retainedRead.kind === 'unreadable') {
-        seed.rowOffset = i + 1;
-        continue;
-      }
-      const retained = retainedRead.location;
-      if (retained && sameEpoch(retained.epochKey, epochKey) && hasReadableTerminalDetail(retained)) {
-        if (
-          !requireRetainedSourceReader(index, fingerprint).terminalIsImmutable ||
-          !storage.existsSync(historicalResultPath(jobsRoot, jobId))
-        ) {
-          try {
-            repairRetainedResult(index, source, db, jobId);
-          } catch (error: unknown) {
-            if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT'))
-              backendLog.warn(`Retained job observation requires its existing recovery owner: ${String(error)}`);
-            /* Publication failure cannot hide the retained outcome. */
-          }
-        }
-        observed.add(jobId);
-        seed.rowOffset = i + 1;
-        continue;
-      }
-      try {
-        hydrateHistoricalSeedJob(
-          index,
-          db,
-          epochKey,
-          jobId,
-          launchSeqs.get(jobId),
-          knownJobs,
-          fingerprint,
-          jobsRoot,
-          observed,
-        );
-      } catch (error) {
-        seed.recordingError ??= error instanceof Error ? error : new Error(String(error));
-        seed.failedRowOffset ??= i;
-        try {
-          index.markUnresolved(jobId);
-        } catch (error: unknown) {
-          if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT'))
-            backendLog.warn(`Retained job observation requires its existing recovery owner: ${String(error)}`);
-          // A subject whose location cannot be marked is covered by the epoch hold; it must not stop later subjects.
-        }
-        index.resultRepairFailures.add(jobId);
-      } finally {
-        seed.rowOffset = i + 1;
-      }
-    }
-    for (let i = 0; i < subjectCount; i++) observed.add(subjectAt(i));
-    if (seed.recordingError !== undefined) {
-      if (seed.failedRowOffset !== undefined) seed.rowOffset = seed.failedRowOffset;
-      source.attempts = (seed.failures ?? 0) + 1;
-      seed.failures = source.attempts;
-      const error = seed.recordingError;
-      seed.recordingError = undefined;
-      seed.failedRowOffset = undefined;
-      throw error;
-    }
-    return completeHistoricalSeed(index, source, seed.frontier, db, epochKey, observed, certifyRetiredEpoch);
-  } catch (error: unknown) {
-    holdSourceFailure(index, epochKey, error, source.attempts);
-    for (const location of index.locationsFor(epochKey))
-      if (!hasReadableTerminalDetail(location)) index.markUnresolved(location.jobId);
-    return {
-      kind: 'unrecoverable-retained',
-      knownJobIds: index.locationsFor(epochKey).map((location) => location.jobId),
-      reason: index.unknownLocationHold(epochKey) ?? 'retained-store-unreadable',
-    };
-  } finally {
-    db?.close();
-    releaseLock?.();
-  }
+  return runHistoricalSeed({
+    index,
+    source,
+    seed,
+    epochKey,
+    fingerprint,
+    jobsRoot,
+    storage,
+    knownJobs,
+    certifyRetiredEpoch,
+    budget,
+  });
 }
 
 export function readHistoricalJobDetail(db: HistoricalDatabase, jobId: string): JobDetailResponse | null {

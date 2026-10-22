@@ -10,7 +10,7 @@ import {
 import { eventRevisionFields } from '../recovery/row-revision-fields.js';
 import type { RecoverySourceFactoryPlan } from '../recovery/source-registry.js';
 import type { EventsRow } from '../store/schema.js';
-import { raceWithSignal } from '../infra/promise-signal.js';
+import { raceObserved, raceWithSignal } from '../infra/promise-signal.js';
 import { backendLog } from '../infra/backend-log.js';
 import { errorMessage } from '../infra/error-format.js';
 import { executionAddressKey, type ExecutionAddress } from './execution-address.js';
@@ -277,7 +277,7 @@ export class ExecutionFinisher {
     const existing = this.#admissions.get(key);
     if (existing !== undefined) return { kind: 'adopted', completion: existing.completion };
     const completion = Promise.resolve().then(async () => {
-      for (let attempt = 0; ; attempt++) {
+      for (let attempt = 0; ; attempt = Math.min(attempt + 1, MAX_EXECUTION_RETRIES)) {
         this.signal.throwIfAborted();
         try {
           await reconcile();
@@ -285,7 +285,6 @@ export class ExecutionFinisher {
           return;
         } catch (error: unknown) {
           await this.#retry(address, 'accept', error, attempt);
-          if (attempt >= MAX_EXECUTION_RETRIES) attempt = -1;
         }
       }
     });
@@ -371,24 +370,33 @@ export class ExecutionFinisher {
 
   async redrive(address: ExecutionAddress, signal: AbortSignal = this.signal): Promise<void> {
     const key = executionAddressKey(address);
-    const reblocked = new Promise<void>((resolve) => this.#redriveResults.set(key, resolve));
+    let reblock!: () => void;
+    const reblocked = new Promise<void>((resolve) => {
+      reblock = resolve;
+    });
+    this.#redriveResults.set(key, reblock);
     this.#redrives.get(key)?.();
-    const complete = async () => {
+    try {
       const admission = this.#admissions.get(key);
       if (admission !== undefined) {
-        await admission.completion;
+        await raceWithSignal(raceObserved([admission.completion, reblocked]), signal, () => {
+          throw signal.reason;
+        });
         return;
       }
       const producer = this.#producers.get(key);
-      if (producer !== undefined) await producer;
+      if (producer !== undefined) {
+        const accepted = await raceWithSignal(raceObserved([producer, reblocked]), signal, () => {
+          throw signal.reason;
+        });
+        if (accepted === undefined) return;
+      }
       if (this.state(address).kind === 'unaccepted') return;
-      await this.finish(address);
-    };
-    try {
-      await raceWithSignal(Promise.race([complete(), reblocked]), signal, () => {
+      await raceWithSignal(raceObserved([this.finish(address), reblocked]), signal, () => {
         throw signal.reason;
       });
     } finally {
+      reblock();
       this.#redriveResults.delete(key);
     }
   }
@@ -410,8 +418,7 @@ export class ExecutionFinisher {
         stage,
         kind: exhausted ? 'blocked' : 'retrying',
         reason: errorMessage(error),
-        successor:
-          exhausted && !this.#admissions.has(executionAddressKey(address)) ? 'recovery-quarantine' : 'live-retry',
+        successor: 'live-retry',
       });
     } catch (statusError: unknown) {
       if (statusError instanceof SuccessionWriterParkedError) await this.#await(statusError.unparked);
@@ -419,18 +426,7 @@ export class ExecutionFinisher {
       return;
     }
     if (exhausted) {
-      const key = executionAddressKey(address);
-      this.#redriveResults.get(key)?.();
-      try {
-        const redrive = new Promise<void>((resolve) => this.#redrives.set(key, resolve));
-        await this.#await(
-          this.#admissions.has(key)
-            ? Promise.race([redrive, this.#ports.time.sleep(EXECUTION_REDRIVE_MS, { signal: this.signal })])
-            : redrive,
-        );
-      } finally {
-        this.#redrives.delete(key);
-      }
+      await this.#waitForRedrive(address);
       return;
     }
     await raceWithSignal(
@@ -442,6 +438,24 @@ export class ExecutionFinisher {
         throw this.signal.reason;
       },
     );
+  }
+
+  async #waitForRedrive(address: ExecutionAddress): Promise<void> {
+    const key = executionAddressKey(address);
+    const timer = new AbortController();
+    this.#redriveResults.get(key)?.();
+    try {
+      const redrive = new Promise<void>((resolve) => this.#redrives.set(key, resolve));
+      await this.#await(
+        Promise.race([
+          redrive,
+          this.#ports.time.sleep(EXECUTION_REDRIVE_MS, { signal: AbortSignal.any([this.signal, timer.signal]) }),
+        ]),
+      );
+    } finally {
+      timer.abort();
+      this.#redrives.delete(key);
+    }
   }
 
   async #accept(address: ExecutionAddress, writeOriginalOutcome: Parameters<CommitEventsFn>[0]): Promise<CauseRef> {
@@ -467,7 +481,8 @@ export class ExecutionFinisher {
         try {
           confirmed = this.#ports.read(address);
         } catch (readError: unknown) {
-          await this.#retry(address, 'accept', readError, attempts++);
+          await this.#retry(address, 'accept', readError, attempts);
+          attempts = Math.min(attempts + 1, MAX_EXECUTION_RETRIES);
           continue;
         }
         if (confirmed.kind !== 'unaccepted') {
@@ -479,7 +494,8 @@ export class ExecutionFinisher {
           this.#clearStatus(address);
           throw error;
         }
-        await this.#retry(address, 'accept', error, attempts++);
+        await this.#retry(address, 'accept', error, attempts);
+        attempts = Math.min(attempts + 1, MAX_EXECUTION_RETRIES);
       }
     }
   }
@@ -545,6 +561,33 @@ export class ExecutionFinisher {
     await this.#await(this.#ports.time.sleep(EXECUTION_RETRY_MS, { signal: this.signal }));
   }
 
+  async #advanceExecution(address: ExecutionAddress, state: AcceptedExecution): Promise<'released' | 'pending'> {
+    if (!(await this.#await(this.#ports.quiesce(address, state.accepted)))) {
+      await this.#hold(address, 'Awaiting authoritative operation release or retention settlement.', 'live-retry');
+      return 'pending';
+    }
+    if (await this.#requestRetention(address, state)) return 'pending';
+    const settlement = await this.#settleRetention(address, state);
+    if (settlement?.kind === 'not-owned') {
+      this.#clearStatus(address);
+      return 'released';
+    }
+    if (settlement?.kind === 'awaiting-issuer') {
+      await this.#hold(
+        address,
+        `Discard action ${settlement.actionId} requires authoritative issuer release before sealing.`,
+        'discard-issuer-release',
+      );
+    } else if (settlement?.kind === 'pending') {
+      await this.#hold(address, 'Awaiting authoritative operation release or retention settlement.', 'live-retry');
+    } else {
+      this.#closeExecution(address, state, settlement);
+      this.#clearStatus(address);
+      return 'released';
+    }
+    return 'pending';
+  }
+
   async #finish(address: ExecutionAddress): Promise<void> {
     let attempts = 0;
     for (;;) {
@@ -558,27 +601,7 @@ export class ExecutionFinisher {
           this.#clearStatus(address);
           return;
         }
-        if (await this.#await(this.#ports.quiesce(address, state.accepted))) {
-          if (await this.#requestRetention(address, state)) continue;
-          const settlement = await this.#settleRetention(address, state);
-          if (settlement?.kind === 'not-owned') {
-            this.#clearStatus(address);
-            return;
-          }
-          if (settlement?.kind === 'awaiting-issuer') {
-            await this.#hold(
-              address,
-              `Discard action ${settlement.actionId} requires authoritative issuer release before sealing.`,
-              'discard-issuer-release',
-            );
-            continue;
-          }
-          if (settlement === null || settlement.kind !== 'pending') {
-            this.#closeExecution(address, state, settlement);
-            continue;
-          }
-        }
-        await this.#hold(address, 'Awaiting authoritative operation release or retention settlement.', 'live-retry');
+        if ((await this.#advanceExecution(address, state)) === 'released') return;
       } catch (error: unknown) {
         this.signal.throwIfAborted();
         if (error instanceof SuccessionWriterParkedError) {
@@ -596,7 +619,8 @@ export class ExecutionFinisher {
         } catch (readError: unknown) {
           failure = readError;
         }
-        await this.#retry(address, 'finish', failure, attempts++);
+        await this.#retry(address, 'finish', failure, attempts);
+        attempts = Math.min(attempts + 1, MAX_EXECUTION_RETRIES);
       }
     }
   }

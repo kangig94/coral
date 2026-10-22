@@ -275,6 +275,7 @@ function buildOwnedJobReconciliationEvents(
   snapshot: PersistedDiscussSnapshot,
   launch: DiscussionOwnedLaunch,
   ctx: DiscussContext,
+  discussionEvents: readonly DiscussDomainEvent[],
 ): DiscussDomainEvent[] {
   if (launch.discussionRun === undefined) {
     throw new Error(`Discussion-owned job '${launch.jobId}' has no durable run descriptor.`);
@@ -287,35 +288,6 @@ function buildOwnedJobReconciliationEvents(
   if (run.jobId !== undefined && run.jobId !== launch.jobId) {
     throw new Error(`Discussion agent '${agent}' is already bound to another job.`);
   }
-  const exit = ctx.jobStatusReader.readExit(launch.jobId, launch.execution);
-  if (exit !== null) {
-    if (run.currentJobId !== launch.jobId || run.currentExecution !== launch.execution) return [];
-    return [
-      makeEvent(
-        snapshot.sessionId,
-        snapshot.projectRoot,
-        snapshot.state.topic,
-        snapshot.lastAppliedSeq + 1,
-        'agent.job.finished',
-        nowIsoString(ctx.runtime.time),
-        {
-          agent,
-          jobId: launch.jobId,
-          execution: launch.execution,
-          attempt,
-          outcome: exit.outcome.kind === 'completed' ? 'completed' : 'recovery_failed',
-        },
-      ),
-    ];
-  }
-  if (
-    run.currentJobId !== undefined &&
-    (run.currentJobId !== launch.jobId || run.currentExecution !== launch.execution)
-  ) {
-    throw new Error(`Discussion agent '${agent}' already has active job '${run.currentJobId}'.`);
-  }
-  if (run.currentJobId === launch.jobId && run.currentExecution === launch.execution) return [];
-
   let seq = snapshot.lastAppliedSeq + 1;
   const events: DiscussDomainEvent[] = [];
   if (run.jobId === undefined) {
@@ -331,17 +303,54 @@ function buildOwnedJobReconciliationEvents(
       ),
     );
   }
-  events.push(
-    makeEvent(
-      snapshot.sessionId,
-      snapshot.projectRoot,
-      snapshot.state.topic,
-      seq,
-      'agent.job.started',
-      nowIsoString(ctx.runtime.time),
-      { agent, jobId: launch.jobId, execution: launch.execution, purpose, attempt },
-    ),
-  );
+  const exit = ctx.jobStatusReader.readExit(launch.jobId, launch.execution);
+  const isCurrent = run.currentJobId === launch.jobId && run.currentExecution === launch.execution;
+  if (
+    exit !== null &&
+    !isCurrent &&
+    discussionEvents.some(
+      (event) =>
+        event.kind === 'agent.job.started' &&
+        event.payload.jobId === launch.jobId &&
+        event.payload.execution >= launch.execution,
+    )
+  )
+    return events;
+  if (run.currentJobId !== undefined && !isCurrent) {
+    throw new Error(`Discussion agent '${agent}' already has active job '${run.currentJobId}'.`);
+  }
+  if (!isCurrent) {
+    events.push(
+      makeEvent(
+        snapshot.sessionId,
+        snapshot.projectRoot,
+        snapshot.state.topic,
+        seq++,
+        'agent.job.started',
+        nowIsoString(ctx.runtime.time),
+        { agent, jobId: launch.jobId, execution: launch.execution, purpose, attempt },
+      ),
+    );
+  }
+  if (exit !== null) {
+    events.push(
+      makeEvent(
+        snapshot.sessionId,
+        snapshot.projectRoot,
+        snapshot.state.topic,
+        seq,
+        'agent.job.finished',
+        nowIsoString(ctx.runtime.time),
+        {
+          agent,
+          jobId: launch.jobId,
+          execution: launch.execution,
+          attempt,
+          outcome: exit.outcome.kind === 'completed' ? 'completed' : 'recovery_failed',
+        },
+      ),
+    );
+  }
   return events;
 }
 
@@ -369,7 +378,7 @@ export async function reconcileDiscussionOwnedJobs(
     )
       continue;
     const reconciled = await appendRuntimeEvents(ctx, sessionId, (current) =>
-      buildOwnedJobReconciliationEvents(current, launch, ctx),
+      buildOwnedJobReconciliationEvents(current, launch, ctx, readSessionEvents(ctx, sessionId)),
     );
     if (reconciled === null) {
       throw new Error(`Failed to reconcile discussion-owned job '${launch.jobId}'.`);
@@ -402,7 +411,7 @@ async function reconcileDiscussionOwnedJobsFromEnvelope(
       ctx.jobStatusReader.readExit(launch.jobId, launch.execution) === null
     )
       continue;
-    const events = buildOwnedJobReconciliationEvents(candidate.snapshot, launch, ctx);
+    const events = buildOwnedJobReconciliationEvents(candidate.snapshot, launch, ctx, candidate.discussionEvents);
     if (events.length > 0) {
       candidate.snapshot = await ctx.store.append(
         candidate.snapshot.sessionId,

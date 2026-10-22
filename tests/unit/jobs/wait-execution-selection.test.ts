@@ -5,8 +5,8 @@ import { TEST_EPOCH } from '#tests/helpers/wait-session.js';
 import { parseWaitStreamEventValue } from '#src/jobs/wait/stream-event.js';
 import { jobsWaitRequest, jobWaitSchema } from '#src/transport/rpc/jobs.js';
 import { waitExecutionSelectionsSchema } from '#src/jobs/wait/execution-selection.js';
-import { waitContinuationCommand } from '#src/cli/format/wait.js';
-import { selectWaitSnapshot } from '#src/jobs/wait/snapshot.js';
+import { formatWaitSnapshot, formatWaitTerminal, waitContinuationCommand } from '#src/cli/format/wait.js';
+import { parseWaitSnapshot, selectWaitSnapshot } from '#src/jobs/wait/snapshot.js';
 import { WaitSession } from '#src/jobs/wait/session.js';
 import type { WaitStreamEvent } from '#src/jobs/wait/contract.js';
 
@@ -24,6 +24,38 @@ const selected = (jobId: string, requestedSeq: number) => ({
 });
 
 describe('execution-addressed waits', () => {
+  it.each([1, 2])(
+    'identifies pinned execution #%s after #3 is latest without a retained result path',
+    async (execution) => {
+      const f = waitExecutions();
+      f.request('a', 10);
+      f.end('a', 20);
+      f.request('a', 30);
+      f.end('a', 40);
+      f.request('a', 50);
+      f.end('a', 60);
+      const selection = selected('a', execution === 1 ? 10 : 30);
+      const request = { jobIds: ['a'], executionSelections: [selection] };
+      const terminal = await nextOfType(f.stream(request), 'terminal');
+      terminal.availability = { kind: 'retained-away', retentionDays: 14 };
+      delete terminal.resultPath;
+      const decoded = parseWaitStreamEventValue(terminal);
+      expect(decoded).toMatchObject({ type: 'terminal', execution });
+      if (decoded?.type !== 'terminal') throw new Error('Expected terminal');
+      expect(formatWaitTerminal(decoded, null, false).split('\n')[0]).toBe(`Job a execution #${execution} completed`);
+
+      const session = new WaitSession(['a'], undefined, TEST_EPOCH, false, [selection]);
+      const admissions = f.coordinator.readWaitAdmissions(['a'], TEST_EPOCH, request);
+      admissions[0].availability = terminal.availability;
+      session.reconcile(admissions);
+      const snapshot = parseWaitSnapshot(selectWaitSnapshot(session, 20, f.visit));
+      expect(snapshot.jobs[0]).toMatchObject({ execution });
+      expect(formatWaitSnapshot(snapshot).split('\n')[0]).toBe(`Job a execution #${execution}: terminal`);
+      expect(() => parseWaitStreamEventValue({ ...terminal, execution: 0 })).toThrow();
+      expect(() => parseWaitSnapshot({ ...snapshot, jobs: [{ ...snapshot.jobs[0], execution: 0 }] })).toThrow();
+    },
+  );
+
   it.each([false, true])('keeps #n when #n+1 starts between polls (also ends: %s)', async (alsoEnds) => {
     const f = waitExecutions();
     f.request('a', 10);

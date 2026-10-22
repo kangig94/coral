@@ -54,10 +54,16 @@ export function managed<Access extends ProviderAccess>(
       );
       if (incarnation === null)
         throw new ProviderArtifactDefinitiveFailure('Discard issuer identity is unavailable; native artifacts kept.');
-      writeActionRecord(options, { kind: 'pending' }, undefined, {
-        issuer: { pid, incarnation },
-        issuerStopped: false,
-      });
+      stoppedIssuers.delete(key);
+      try {
+        writeActionRecord(options, { kind: 'pending' }, undefined, {
+          issuer: { pid, incarnation },
+          issuerStopped: false,
+        });
+      } catch (error: unknown) {
+        stoppedIssuers.add(key);
+        throw error;
+      }
       const task = (async () => {
         let providerFailure: unknown;
         if (options.handles.length > 0) {

@@ -497,7 +497,7 @@ function hydrateJobWaitDetail(
   };
 }
 
-/** Hydrates the projection's execution; absent execution evidence must stay absent. */
+/** Absent execution evidence must stay absent. */
 export function hydrateJobProjectionDetailFromEvents(
   projection: ProjectionRow,
   rows: readonly EventsRow[],
@@ -638,7 +638,6 @@ export function loadJobProjectionDetail(
   );
 }
 
-/** The job's own projection sequence: every event of that job moves it, and nothing else does. */
 export function readJobLastSeq(db: Database, jobId: string): number | null {
   return (
     prepareCached<[string], { last_seq: number }>(db, 'SELECT last_seq FROM projection_jobs WHERE job_id = ?').get(
@@ -647,7 +646,6 @@ export function readJobLastSeq(db: Database, jobId: string): number | null {
   );
 }
 
-/** A wait avoids loading the execution's input and the conversation facet. */
 export function loadJobWaitDetail(db: Database, jobId: string, ctx: StoreReadContext): JobWaitDetail {
   const projection = readProjectionRow(db, jobId);
   if (projection === null) return { finishing: false, status: null, runtime: null, exit: null };

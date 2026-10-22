@@ -192,8 +192,8 @@ export function conversationIdentityFixture(
     principal: testProjectPrincipal(projectRoot),
     providerScope: TEST_PROVIDER_SCOPE,
   };
-  const createService = () =>
-    new ExecutionService(ctx, {
+  const createService = (context: InvocationContext = ctx) =>
+    new ExecutionService(context, {
       ...journalDeps,
       runtime,
       progressStore: store,
@@ -291,6 +291,7 @@ export function conversationIdentityFixture(
       return finisher;
     },
     service,
+    serviceForContext: createService,
     restartCoordinator: () => {
       service = createService();
       return service;

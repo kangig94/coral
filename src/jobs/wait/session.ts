@@ -83,6 +83,7 @@ export type WaitTerminalSummary = {
 };
 export type WaitSnapshotJob = {
   jobId: string;
+  execution?: number;
   disposition: WaitDisposition;
   message?: string;
   phase?: string;

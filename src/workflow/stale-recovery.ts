@@ -53,6 +53,144 @@ function staleFailureMetadata(atom: LaunchedAtom, stepDetails: StepDetail[], mes
   });
 }
 
+interface StaleRecoveryContext {
+  state: AwaitStepState;
+  executionSvc: WorkflowExecutionPort;
+  ctx: InvocationContext;
+  options: RecoverStaleOptions;
+}
+
+async function observeStaleAbort(
+  { state, executionSvc, options }: StaleRecoveryContext,
+  atom: LaunchedAtom,
+): Promise<boolean> {
+  for await (const event of executionSvc.waitStream({
+    jobIds: [atom.jobId],
+    timeoutSeconds: options.staleAbortTimeoutMs / 1_000,
+    executionSelections: [
+      { jobId: atom.jobId, requestedSeq: atom.requestedSeq, epochKey: atom.epochKey, awaitingArtifact: false },
+    ],
+  })) {
+    if (event.type !== 'terminal' || event.jobId !== atom.jobId) continue;
+    const selection = event.executionSelections?.find((entry) => entry.jobId === atom.jobId);
+    if (
+      selection?.requestedSeq !== atom.requestedSeq ||
+      !sameEpoch(selection.epochKey, atom.epochKey) ||
+      selection.deliveredEndSeq !== event.seq
+    )
+      continue;
+    if (event.result.outcome.kind !== 'aborted') return false;
+    state.executionSelections = state.executionSelections.map((entry) =>
+      entry.jobId === atom.jobId ? { ...selection } : entry,
+    );
+    state.cursor = advanceWaitRenderCursor(state.cursor, event).cursor;
+    state.expectedStaleAborts.delete(atom.jobId);
+    return true;
+  }
+  throw new Error(`Timed out waiting for execution #${atom.execution} of ${atom.jobId} to end`);
+}
+
+async function abortAndObserveStaleExecution(recovery: StaleRecoveryContext, atom: LaunchedAtom): Promise<boolean> {
+  const { state, executionSvc, options } = recovery;
+  options.onProgress(formatAtomProgress(atom, 'stale, aborting'));
+  const abortResult = executionSvc.abort([atom.jobId]);
+  const abortTransitionedLiveJob = abortResult.aborted.includes(atom.jobId);
+  if (!abortTransitionedLiveJob) return false;
+  state.expectedStaleAborts.set(atom.jobId, {
+    execution: atom.execution,
+    requestedSeq: atom.requestedSeq,
+    epochKey: atom.epochKey,
+  });
+
+  try {
+    return await observeStaleAbort(recovery, atom);
+  } catch (error: unknown) {
+    staleFailureMetadata(
+      atom,
+      options.buildPartialStepDetails(),
+      `Step ${atom.stepIndex}, atom '${atom.agent}' stale recovery abort failed: ${errorMessage(error)}`,
+    );
+  }
+}
+
+async function resumeStaleExecution(
+  { executionSvc, ctx, options }: StaleRecoveryContext,
+  atom: LaunchedAtom,
+  workflowJobId: string,
+) {
+  if (options.signal?.aborted) {
+    throw createWorkflowExecutionError(
+      'Pipeline aborted (launched atoms may continue)',
+      true,
+      options.buildPartialStepDetails(),
+    );
+  }
+
+  const resumed = await executionSvc.resume(
+    atom.providerName,
+    {
+      jobId: atom.jobId,
+      prompt: STALE_RESUME_PROMPT,
+      cwd: options.workDir ?? ctx.projectRoot,
+      parentWorkflowJobId: workflowJobId,
+      workflowSlotId: atom.slotId,
+      owner: { kind: 'workflow', id: workflowJobId },
+    },
+    ctx,
+  );
+
+  switch (resumed.status) {
+    case 'refused':
+      return staleFailureMetadata(
+        atom,
+        options.buildPartialStepDetails(),
+        `Step ${atom.stepIndex}, atom '${atom.agent}' resume failed: ${resumed.message}`,
+      );
+    case 'undetermined':
+      return staleFailureMetadata(
+        atom,
+        options.buildPartialStepDetails(),
+        `Step ${atom.stepIndex}, atom '${atom.agent}' resume check established nothing: ${resumed.message}`,
+      );
+    case 'running':
+    case 'queued':
+      break;
+    default:
+      assertNever(resumed);
+  }
+
+  return resumed;
+}
+
+async function resumeAndReplaceStaleExecution(
+  recovery: StaleRecoveryContext,
+  atom: LaunchedAtom,
+  workflowJobId: string,
+): Promise<void> {
+  const { state, executionSvc, options } = recovery;
+  const resumed = await resumeStaleExecution(recovery, atom, workflowJobId);
+  state.pending.set(atom.jobId, {
+    ...atom,
+    execution: atom.execution + 1,
+    requestedSeq: resumed.requestedSeq,
+    epochKey: resumed.epochKey,
+  });
+  state.executionSelections = state.executionSelections.map((entry) =>
+    entry.jobId === atom.jobId
+      ? { jobId: atom.jobId, requestedSeq: resumed.requestedSeq, epochKey: resumed.epochKey, awaitingArtifact: false }
+      : entry,
+  );
+  const launchState = await executionSvc.awaitLaunch(resumed.jobId, BOOTSTRAP_TIMEOUT_MS);
+  if (launchState === 'error') {
+    const message = await readLaunchFailureMessage(resumed.jobId, executionSvc, options.signal, resumed);
+    staleFailureMetadata(
+      atom,
+      options.buildPartialStepDetails(),
+      `Step ${atom.stepIndex}, atom '${atom.agent}' resume failed: ${message ?? 'unknown error'}`,
+    );
+  }
+}
+
 export async function recoverStaleAtom(
   state: AwaitStepState,
   executionSvc: WorkflowExecutionPort,
@@ -80,112 +218,9 @@ export async function recoverStaleAtom(
       );
     }
 
-    options.onProgress(formatAtomProgress(atom, 'stale, aborting'));
-    const abortResult = executionSvc.abort([atom.jobId]);
-    const abortTransitionedLiveJob = abortResult.aborted.includes(atom.jobId);
-    if (!abortTransitionedLiveJob) return false;
-    state.expectedStaleAborts.set(atom.jobId, {
-      execution: atom.execution,
-      requestedSeq: atom.requestedSeq,
-      epochKey: atom.epochKey,
-    });
-
-    let ended = false;
-    try {
-      for await (const event of executionSvc.waitStream({
-        jobIds: [atom.jobId],
-        timeoutSeconds: options.staleAbortTimeoutMs / 1_000,
-        executionSelections: [
-          { jobId: atom.jobId, requestedSeq: atom.requestedSeq, epochKey: atom.epochKey, awaitingArtifact: false },
-        ],
-      })) {
-        if (event.type !== 'terminal' || event.jobId !== atom.jobId) continue;
-        const selection = event.executionSelections?.find((entry) => entry.jobId === atom.jobId);
-        if (
-          selection?.requestedSeq !== atom.requestedSeq ||
-          !sameEpoch(selection.epochKey, atom.epochKey) ||
-          selection.deliveredEndSeq !== event.seq
-        )
-          continue;
-        if (event.result.outcome.kind !== 'aborted') return false;
-        state.executionSelections = state.executionSelections.map((entry) =>
-          entry.jobId === atom.jobId ? { ...selection } : entry,
-        );
-        state.cursor = advanceWaitRenderCursor(state.cursor, event).cursor;
-        state.expectedStaleAborts.delete(atom.jobId);
-        ended = true;
-        break;
-      }
-      if (!ended) throw new Error(`Timed out waiting for execution #${atom.execution} of ${atom.jobId} to end`);
-    } catch (error: unknown) {
-      staleFailureMetadata(
-        atom,
-        options.buildPartialStepDetails(),
-        `Step ${atom.stepIndex}, atom '${atom.agent}' stale recovery abort failed: ${errorMessage(error)}`,
-      );
-    }
-
-    if (options.signal?.aborted) {
-      throw createWorkflowExecutionError(
-        'Pipeline aborted (launched atoms may continue)',
-        true,
-        options.buildPartialStepDetails(),
-      );
-    }
-
-    const resumed = await executionSvc.resume(
-      atom.providerName,
-      {
-        jobId: atom.jobId,
-        prompt: STALE_RESUME_PROMPT,
-        cwd: options.workDir ?? ctx.projectRoot,
-        parentWorkflowJobId: workflowJobId,
-        workflowSlotId: atom.slotId,
-        owner: { kind: 'workflow', id: workflowJobId },
-      },
-      ctx,
-    );
-
-    switch (resumed.status) {
-      case 'refused':
-        return staleFailureMetadata(
-          atom,
-          options.buildPartialStepDetails(),
-          `Step ${atom.stepIndex}, atom '${atom.agent}' resume failed: ${resumed.message}`,
-        );
-      case 'undetermined':
-        return staleFailureMetadata(
-          atom,
-          options.buildPartialStepDetails(),
-          `Step ${atom.stepIndex}, atom '${atom.agent}' resume check established nothing: ${resumed.message}`,
-        );
-      case 'running':
-      case 'queued':
-        break;
-      default:
-        assertNever(resumed);
-    }
-
-    state.pending.set(atom.jobId, {
-      ...atom,
-      execution: atom.execution + 1,
-      requestedSeq: resumed.requestedSeq,
-      epochKey: resumed.epochKey,
-    });
-    state.executionSelections = state.executionSelections.map((entry) =>
-      entry.jobId === atom.jobId
-        ? { jobId: atom.jobId, requestedSeq: resumed.requestedSeq, epochKey: resumed.epochKey, awaitingArtifact: false }
-        : entry,
-    );
-    const launchState = await executionSvc.awaitLaunch(resumed.jobId, BOOTSTRAP_TIMEOUT_MS);
-    if (launchState === 'error') {
-      const message = await readLaunchFailureMessage(resumed.jobId, executionSvc, options.signal, resumed);
-      staleFailureMetadata(
-        atom,
-        options.buildPartialStepDetails(),
-        `Step ${atom.stepIndex}, atom '${atom.agent}' resume failed: ${message ?? 'unknown error'}`,
-      );
-    }
+    const recovery = { state, executionSvc, ctx, options };
+    if (!(await abortAndObserveStaleExecution(recovery, atom))) return false;
+    await resumeAndReplaceStaleExecution(recovery, atom, workflowJobId);
 
     state.staleRetries.set(atom.atomKey, retries + 1);
 
