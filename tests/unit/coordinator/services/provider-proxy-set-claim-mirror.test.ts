@@ -19,7 +19,7 @@ function createDb(): Database {
 }
 
 describe('provider proxy durable claim mirror', () => {
-  it('retains settlement ownership and derives escalation eligibility only from committed records', () => {
+  it('releases retirement protection only on committed settlement exhaustion and retains receipt delivery across restart', () => {
     const db = createDb();
     try {
       const pending = providerOperationRecord('settlement-pending');
@@ -27,7 +27,9 @@ describe('provider proxy durable claim mirror', () => {
       const mirror = new ProviderProxySetClaimMirror();
       mirror.initialize([pending]);
       const unsubscribe = subscribeProviderOperationMutations(db, (mutation) => mirror.applyMutation(mutation));
-      expect(mirror.claimFor(pending.operation)).toMatchObject({ settlementContainmentRequested: false });
+      expect(mirror.claimFor(pending.operation)).toMatchObject({ retirementProtection: 'live' });
+      const identity = mirror.claimFor(pending.operation)!.setIdentity;
+      expect(mirror.claimsFor(identity)).toHaveLength(1);
       const eligible = providerOperationRecordSchema.parse({
         ...pending,
         revision: pending.revision + 1,
@@ -36,15 +38,23 @@ describe('provider proxy durable claim mirror', () => {
       expect(
         compareAndSwapProviderOperation(db, { ...pending, revision: 99 }, { ...eligible, revision: 100 }).kind,
       ).toBe('conflict');
-      expect(mirror.claimFor(pending.operation)).toMatchObject({ settlementContainmentRequested: false });
+      expect(mirror.claimFor(pending.operation)).toMatchObject({ retirementProtection: 'live' });
+      expect(mirror.claimsFor(identity)).toHaveLength(1);
       expect(compareAndSwapProviderOperation(db, pending, eligible).kind).toBe('updated');
       expect(mirror.size).toBe(1);
-      expect(mirror.claimFor(pending.operation)).toMatchObject({ settlementContainmentRequested: true });
+      expect(mirror.claimFor(pending.operation)).toMatchObject({
+        retirementProtection: 'released-after-settlement-exhaustion',
+      });
+      expect(mirror.claimsFor(identity)).toEqual([]);
+      expect(mirror.operationsFor(identity)).toEqual([pending.operation]);
       const restarted = new ProviderProxySetClaimMirror();
       restarted.initialize([eligible]);
       expect(restarted.claimFor(pending.operation)).toEqual(mirror.claimFor(pending.operation));
+      expect(restarted.claimsFor(identity)).toEqual([]);
+      expect(restarted.operationsFor(identity)).toEqual([pending.operation]);
       expect(deleteProviderOperation(db, eligible).kind).toBe('deleted');
       expect(mirror.size).toBe(0);
+      expect(mirror.operationsFor(identity)).toEqual([]);
       unsubscribe();
     } finally {
       db.close();

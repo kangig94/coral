@@ -101,7 +101,6 @@ export interface ProviderEventEffectPort<Tx> {
     seq: number,
     body: ProviderProgressEventBody,
   ) => Promise<void>;
-  /** Continuity and artifacts name this operation’s open execution. */
   readonly appendConversationEvent: (
     tx: Tx,
     identity: ProviderOperationEventIdentity,

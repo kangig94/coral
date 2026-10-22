@@ -130,6 +130,10 @@ declare const claimBearingRetirement: Readonly<{
 const invalidRetirementDecision: ProviderProxySetDecision = claimBearingRetirement;
 void invalidRetirementDecision;
 
+declare const faultlessStop: Exclude<Extract<ProviderProxySetDecision, { action: 'stop-and-reap' }>, { fault: string }>;
+const faultlessStopHasNoLiveClaims: 0 = faultlessStop.liveClaims;
+void faultlessStopHasNoLiveClaims;
+
 declare const fakeFaultRetirement: Readonly<{
   action: 'drain';
   reason: 'graceful_idle';

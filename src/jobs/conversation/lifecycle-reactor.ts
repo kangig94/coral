@@ -25,6 +25,7 @@ import {
   canonicalRecoveryRevision,
   type RecoverySubject,
   type RecoveryObligationId,
+  type RecoveryDisposition,
 } from '../../recovery/containment.js';
 import { eventRevisionFields } from '../../recovery/row-revision-fields.js';
 import type { RecoverySourceFactoryPlan } from '../../recovery/source-registry.js';
@@ -130,8 +131,8 @@ export class LifecycleReactor {
   }
 
   private scheduleRetention(address: ExecutionAddress, action: JobRetentionDiscardRequestedBody): void {
-    const entry = readProjectionJobConversation(this.options.db(), address.jobId);
-    if (entry === null || !entry.finishing || entry.execution !== address.execution) return;
+    const entry = readRetentionOwner(this.options.db(), address);
+    if (entry === null) return;
     void this.settleRetention(address, action).catch((error) => {
       this.options.log?.(
         `Retention remains owned by execution #${address.execution} of ${address.jobId}: ${errorMessage(error)}\n`,
@@ -245,23 +246,13 @@ export class LifecycleReactor {
     action: JobRetentionDiscardRequestedBody,
   ): Promise<RetentionSettlement> {
     this.checkActive();
-    const entry = readProjectionJobConversation(this.options.db(), address.jobId);
+    const entry = readRetentionOwner(this.options.db(), address);
     if (action.execution !== address.execution) {
       throw new Error(`Retention does not own job ${address.jobId} execution #${address.execution}.`);
     }
-    if (entry === null || !entry.finishing || entry.execution !== address.execution) {
-      return { kind: 'not-owned' };
-    }
-    const closed = entry.retentionDiscard.attempts.find(
-      (attempt) =>
-        attempt.execution === address.execution && attempt.attempt === action.attempt && attempt.status !== 'requested',
-    );
-    if (closed !== undefined)
-      return observedSettlementSchema.parse(
-        closed.status === 'failed'
-          ? { kind: 'failed', reason: closed.reason }
-          : { kind: 'completed', outcome: closed.outcome },
-      );
+    if (entry === null) return { kind: 'not-owned' };
+    const closed = readClosedRetentionSettlement(entry, address, action);
+    if (closed !== null) return closed;
     const accepted = readExecutionAcceptedOutcomeEvent(this.options.db(), this.options.readCtx, address);
     const subject: RecoverySubject = {
       key: retentionActionKey({ ...address, attempt: action.attempt }),
@@ -270,26 +261,31 @@ export class LifecycleReactor {
     const quarantine = new RecoveryQuarantineStore(this.options.db(), this.options.time);
     const { continuation, previousAttempts } = this.readRetentionContinuation(subject);
     if (continuation !== null) return continuation;
-    const remember = (
-      settlement: Extract<RetentionSettlement, { kind: 'completed' | 'failed' }>,
-    ): RetentionSettlement => {
-      this.checkActive();
-      this.observed.set(subject.key, settlement);
-      const persisted = quarantine.upsert({
-        boundary: BOUNDARY,
-        subject,
-        state: 'continuation',
-        stage: 'settle',
-        errorMessage: 'Retention outcome awaits its journal commit.',
-        detail: 'The observed retention outcome is preserved until execution finalization commits.',
-        continuation: { kind: 'job-retention-outcome.v1', key: JSON.stringify(settlement) },
-      });
-      if (!persisted) throw new Error(`Retention outcome lost authority for ${subject.key}.`);
-      return settlement;
-    };
+    const remember = (settlement: RetentionOutcome): RetentionSettlement =>
+      this.rememberRetentionOutcome(subject, quarantine, settlement);
     const observed = this.observed.get(subject.key);
     if (observed !== undefined) return remember(observed);
     return this.settleArtifacts({ address, action, entry, accepted, previousAttempts, subject, quarantine, remember });
+  }
+
+  private rememberRetentionOutcome(
+    subject: RecoverySubject,
+    quarantine: RecoveryQuarantineStore,
+    settlement: RetentionOutcome,
+  ): RetentionSettlement {
+    this.checkActive();
+    this.observed.set(subject.key, settlement);
+    const persisted = quarantine.upsert({
+      boundary: BOUNDARY,
+      subject,
+      state: 'continuation',
+      stage: 'settle',
+      errorMessage: 'Retention outcome awaits its journal commit.',
+      detail: 'The observed retention outcome is preserved until execution finalization commits.',
+      continuation: { kind: 'job-retention-outcome.v1', key: JSON.stringify(settlement) },
+    });
+    if (!persisted) throw new Error(`Retention outcome lost authority for ${subject.key}.`);
+    return settlement;
   }
 
   private readRetentionContinuation(subject: RecoverySubject): {
@@ -477,7 +473,7 @@ export class LifecycleReactor {
     this.checkActive();
     if (outcome.kind === 'not-applied' && !issued && previousAttempts === null && artifacts !== null) {
       try {
-        await artifacts.discardArtifacts(discardOptions);
+        void (await artifacts.discardArtifacts(discardOptions));
       } catch (error: unknown) {
         this.options.log?.(`Retention discard observation failed: ${errorMessage(error)}\n`);
       }
@@ -572,6 +568,47 @@ export function isLifecycleRetentionAdmitted(db: Database): boolean {
   return reactors.get(db)?.isRetentionAdmitted() === true;
 }
 
+function readRetentionOwner(db: Database, address: ExecutionAddress): JobConversation | null {
+  const entry = readProjectionJobConversation(db, address.jobId);
+  return entry?.finishing && entry.execution === address.execution ? entry : null;
+}
+
+function readClosedRetentionSettlement(
+  entry: JobConversation,
+  address: ExecutionAddress,
+  action: JobRetentionDiscardRequestedBody,
+): RetentionOutcome | null {
+  const closed = entry.retentionDiscard.attempts.find(
+    (attempt) =>
+      attempt.execution === address.execution && attempt.attempt === action.attempt && attempt.status !== 'requested',
+  );
+  return closed === undefined
+    ? null
+    : observedSettlementSchema.parse(
+        closed.status === 'failed'
+          ? { kind: 'failed', reason: closed.reason }
+          : { kind: 'completed', outcome: closed.outcome },
+      );
+}
+
+function retentionRecoveryDisposition(result: RetentionSettlement): RecoveryDisposition {
+  return result.kind === 'pending' || result.kind === 'awaiting-issuer'
+    ? {
+        kind: 'deferred',
+        authoritativeSource: { kind: 'unchanged-and-still-enumerable' },
+        detail:
+          result.kind === 'awaiting-issuer'
+            ? `Removal observation exhausted; successor=original discard issuer release for ${result.actionId}.`
+            : 'Retention outcome remains unknown.',
+      }
+    : {
+        kind: 'advanced',
+        outcome: 'settled',
+        facts: [{ obligation: RETENTION_OBLIGATION, outcome: 'done' }],
+        detail: 'Retention outcome reconciled.',
+      };
+}
+
 export function createRetentionWorkRetryPlan(
   db: Database,
   subject: RecoverySubject,
@@ -594,8 +631,8 @@ export function createRetentionWorkRetryPlan(
       },
       settle: async (item) => {
         signal.throwIfAborted();
-        const entry = readProjectionJobConversation(db, item.address.jobId);
-        if (entry === null || !entry.finishing || entry.execution !== item.address.execution) {
+        const entry = readRetentionOwner(db, item.address);
+        if (entry === null) {
           return {
             kind: 'advanced',
             outcome: 'settled',
@@ -604,21 +641,7 @@ export function createRetentionWorkRetryPlan(
           };
         }
         const result = await reactor.settleRetention(item.address, item.action);
-        return result.kind === 'pending' || result.kind === 'awaiting-issuer'
-          ? {
-              kind: 'deferred',
-              authoritativeSource: { kind: 'unchanged-and-still-enumerable' },
-              detail:
-                result.kind === 'awaiting-issuer'
-                  ? `Removal observation exhausted; successor=original discard issuer release for ${result.actionId}.`
-                  : 'Retention outcome remains unknown.',
-            }
-          : {
-              kind: 'advanced',
-              outcome: 'settled',
-              facts: [{ obligation: RETENTION_OBLIGATION, outcome: 'done' }],
-              detail: 'Retention outcome reconciled.',
-            };
+        return retentionRecoveryDisposition(result);
       },
       onFault: (fault) => ({ kind: 'quarantine', detail: errorMessage(fault.error) }),
     },

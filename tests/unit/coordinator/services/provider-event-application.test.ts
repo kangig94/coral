@@ -168,9 +168,6 @@ function readSession(sessionId: string): JobConversation | null {
   return conversationManager.get('codex', sessionId);
 }
 
-/** `JobStore.readJobEvents` only ever returns `job.execution.progress`/`job.terminal.recorded` (normalized to
- *  `'progress'`/`'terminal'`), so proving `session.interrupted` landed means reading the raw journal. Its
- *  stream is the *session*, not the job (`sessionFaultEvent`), so callers pass the session id. */
 function rawEventsByType(streamId: string, type: string): { body: unknown }[] {
   return (
     progressStore

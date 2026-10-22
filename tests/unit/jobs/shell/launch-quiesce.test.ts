@@ -62,7 +62,9 @@ function controlledStream() {
   };
 }
 
-function fixture(options: { checkpointGate?: Promise<void>; releaseGate?: Promise<void> } = {}) {
+function fixture(
+  options: { checkpointGate?: Promise<void>; releaseGate?: Promise<void>; finishingGate?: Promise<void> } = {},
+) {
   const runtime = new SimulationRuntime();
   const h = executionHarness();
   journals.push(h);
@@ -85,12 +87,17 @@ function fixture(options: { checkpointGate?: Promise<void>; releaseGate?: Promis
   const releaseStarted = createDeferred<void>();
   const completed = createDeferred<void>();
   const terminals: ProviderEventBody[] = [];
+  const releaseStates: Array<{ owned: boolean; state: string }> = [];
   let artifact = false;
   registry.register(jobId, 1);
   const accepted = admission.requestLaunch(jobId, 'codex', { kind: 'provider-session', id: jobId }, 'default');
   if (accepted === 'queue_full' || accepted.type !== 'immediate') throw new Error('expected permit');
   const release = admission.releaseLaunch.bind(admission);
   admission.releaseLaunch = (permit) => {
+    releaseStates.push({
+      owned: finisher.owns({ jobId, execution: 1 }),
+      state: finisher.state({ jobId, execution: 1 }).kind,
+    });
     const result = release(permit);
     completed.resolve();
     return result;
@@ -110,7 +117,10 @@ function fixture(options: { checkpointGate?: Promise<void>; releaseGate?: Promis
     time: { sleep: async () => {} },
     commit: (cb) => store.commit(cb),
     read: (address) => readExecutionFinishingState(h.db, address, store),
-    quiesce: async () => true,
+    quiesce: async () => {
+      await options.finishingGate;
+      return true;
+    },
     retentionAction: async () => ({ attempt: 0, handles: [] }),
     settleRetention: async () => ({ kind: 'completed', outcome: 'skipped_no_handles' }),
   });
@@ -180,6 +190,10 @@ function fixture(options: { checkpointGate?: Promise<void>; releaseGate?: Promis
     'default',
   );
   return {
+    runtime,
+    store,
+    events: h.events,
+    releaseStates,
     orchestrator,
     admission,
     registry,
@@ -201,6 +215,98 @@ const terminal: ProviderEventBody = {
 };
 
 describe('LaunchOrchestrator handoff quiesce', () => {
+  const persistenceEvents: ProviderEventBody[] = [
+    { kind: 'continuity', conversationRef: 'thread-retry', resumable: true, providerContinuity: null },
+    { kind: 'artifact_handle', handle: '/native/rollout.jsonl', identity: { kind: 'fixture', ref: 'thread-retry' } },
+  ];
+
+  it.each(persistenceEvents)(
+    'retains the local stream and permit until a failed $kind write recovers',
+    async (event) => {
+      const finishing = createDeferred<void>();
+      const retry = createDeferred<void>();
+      const f = fixture({ finishingGate: finishing.promise });
+      await f.stream.started;
+      let available = false;
+      const commit = f.store.commit.bind(f.store);
+      const writes = vi.spyOn(f.store, 'commit').mockImplementation((...args) => {
+        if (!available) throw new Error('storage unavailable');
+        return commit(...args);
+      });
+      const sleep = vi.spyOn(f.runtime.time, 'sleep').mockImplementation(() => retry.promise);
+      const receipt = { commit: vi.fn(), reject: vi.fn() };
+      const emitted = f.stream.emit(event.kind === 'continuity' ? attachContinuityCommit(event, receipt) : event);
+      try {
+        await vi.waitFor(() => expect(writes).toHaveBeenCalled());
+        expect(f.admission.reservationFor(jobId)).not.toBeNull();
+        expect(f.orchestrator.holdsLocalAppServerExecution(jobId, 1)).toBe(true);
+        expect(f.registry.has(jobId, 1)).toBe(true);
+        expect(f.events().filter((row) => row.type === 'job.execution.outcome.accepted')).toHaveLength(0);
+        expect(receipt.commit).not.toHaveBeenCalled();
+        expect(receipt.reject).not.toHaveBeenCalled();
+        expect(sleep).toHaveBeenCalledTimes(1);
+
+        available = true;
+        retry.resolve();
+        await emitted;
+        await f.stream.emit(terminal);
+        await f.completed;
+        expect(f.releaseStates).toEqual([{ owned: true, state: 'finishing' }]);
+        finishing.resolve();
+        await f.finisher.finish({ jobId, execution: 1 });
+        expect(f.terminals).toEqual([terminal]);
+        expect(f.events().filter((row) => row.type === 'job.execution.outcome.accepted')).toHaveLength(1);
+        expect(f.events().filter((row) => row.type === 'job.execution.ended')).toHaveLength(1);
+        expect(f.events().filter((row) => row.type === 'job.continuity.checkpointed')).toHaveLength(
+          event.kind === 'continuity' ? 1 : 0,
+        );
+        expect(f.events().filter((row) => row.type === 'job.artifact.recorded')).toHaveLength(
+          event.kind === 'artifact_handle' ? 1 : 0,
+        );
+        expect(receipt.commit).toHaveBeenCalledTimes(event.kind === 'continuity' ? 1 : 0);
+        expect(receipt.reject).not.toHaveBeenCalled();
+        expect(f.admission.reservationFor(jobId)).toBeNull();
+        expect(f.orchestrator.holdsLocalAppServerExecution(jobId, 1)).toBe(false);
+      } finally {
+        available = true;
+        retry.resolve();
+        finishing.resolve();
+        f.stream.end();
+        await f.finisher.dispose();
+      }
+    },
+  );
+
+  it.each(persistenceEvents)('fences a failed $kind write when handoff starts during retry sleep', async (event) => {
+    const retry = createDeferred<void>();
+    const f = fixture();
+    await f.stream.started;
+    const writes = vi.spyOn(f.store, 'commit').mockImplementation(() => {
+      throw new Error('storage unavailable');
+    });
+    const sleep = vi.spyOn(f.runtime.time, 'sleep').mockImplementation(() => retry.promise);
+    const receipt = { commit: vi.fn(), reject: vi.fn() };
+    const emitted = f.stream.emit(event.kind === 'continuity' ? attachContinuityCommit(event, receipt) : event);
+    try {
+      await vi.waitFor(() => expect(writes).toHaveBeenCalled());
+      expect(sleep).toHaveBeenCalledTimes(1);
+      await f.orchestrator.quiesceAppServerJobsForHandoff();
+      retry.resolve();
+      await emitted;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(writes).toHaveBeenCalledTimes(1);
+      expect(receipt.commit).not.toHaveBeenCalled();
+      expect(receipt.reject).toHaveBeenCalledTimes(event.kind === 'continuity' ? 1 : 0);
+      expect(f.releaseStates).toEqual([]);
+      expect(f.admission.reservationFor(jobId)).not.toBeNull();
+      expect(f.events().filter((row) => row.type === 'job.execution.outcome.accepted')).toHaveLength(0);
+    } finally {
+      retry.resolve();
+      f.stream.end();
+      await f.finisher.dispose();
+    }
+  });
+
   it('waits for an in-flight checkpoint and rejects its receipt after handoff', async () => {
     const checkpoint = createDeferred<void>();
     const f = fixture({ checkpointGate: checkpoint.promise });

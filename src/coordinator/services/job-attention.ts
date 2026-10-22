@@ -34,18 +34,23 @@ export class JobAttention {
     admit: (request: WaitStreamRequest) => WaitAdmission[],
     stream: (request: WaitStreamRequest) => AsyncIterable<WaitStreamEvent>,
   ): AsyncGenerator<WaitStreamEvent> {
-    const scoped = request;
-    scoped.admissions ??= admit(scoped);
-    const endWait = this.beginWait(
-      scoped.admissions.flatMap((admission) => {
-        const execution = admission.detail?.status.execution;
-        return execution === null || execution === undefined ? [] : [{ jobId: admission.jobId, execution }];
-      }),
-    );
+    const waits = new Map<string, () => void>();
+    const onAdmission = (admission: WaitAdmission): void => {
+      if (admission.disposition !== 'admitted' || admission.observationDeferred) return;
+      const execution = admission.detail?.status.execution;
+      if (execution === null || execution === undefined) return;
+      const key = this.key(admission.jobId, execution);
+      if (waits.has(key)) return;
+      waits.set(key, this.beginWait([{ jobId: admission.jobId, execution }]));
+      request.onAdmission?.(admission);
+    };
+    const scoped = { ...request, onAdmission };
     try {
+      scoped.admissions ??= admit(scoped);
+      for (const admission of scoped.admissions) onAdmission(admission);
       yield* stream(scoped);
     } finally {
-      endWait();
+      for (const endWait of waits.values()) endWait();
     }
   }
 

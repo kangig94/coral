@@ -99,6 +99,7 @@ describe('accepted provider terminal settlement escalation', () => {
         signalDelivered: false,
       };
       const reap = vi.fn(async () => reapResult);
+      const reportLifecycle = vi.fn();
       const prover = createProviderProxySetContainmentProver({
         ...runtime,
         process: { ...runtime.process, readProcessIncarnation: () => null, observeLiveness: () => 'absent' },
@@ -136,7 +137,7 @@ describe('accepted provider terminal settlement escalation', () => {
           'capsule-retirement': () => ({ kind: 'retired' }),
         }),
         reapRecordedContainment: reap,
-        reportLifecycle: () => undefined,
+        reportLifecycle,
         operatorDispositionStore: new ProviderProxySetOperatorDispositionStore(runtime.storage, '/coral/run'),
         writerIncarnation: 'settlement-test',
         collectOperatorDispositionContainmentProof: collectProof,
@@ -227,6 +228,13 @@ describe('accepted provider terminal settlement escalation', () => {
           await flushMicrotasks(100);
         }
         expect(reap).toHaveBeenCalled();
+        expect(claims.claimsFor(authority.setIdentity)).toEqual([]);
+        expect(reportLifecycle).toHaveBeenCalledWith(
+          'info',
+          expect.stringContaining(
+            'action=stop-and-reap reason=operation_release_failed fault=none subject=retirement liveClaims=0',
+          ),
+        );
         expect(settle.mock.calls.length).toBeGreaterThan(count);
         expect(waited.size).toBe(0);
         expect(retention).not.toHaveBeenCalled();

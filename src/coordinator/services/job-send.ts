@@ -16,7 +16,7 @@ import type {
   AcceptedProviderJobLaunchDecision,
 } from '../../jobs/launch.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
-import type { CanonicalWorkDir } from '../../runtime/canonical-work-dir.js';
+import { canonicalWorkDirWireSchema, type CanonicalWorkDir } from '../../runtime/canonical-work-dir.js';
 import { sameEpoch } from '../../store/epoch/identity.js';
 import { assertNever } from '../../infra/error-format.js';
 import type { JobStatus } from '../../jobs/records.js';
@@ -95,7 +95,23 @@ export class JobSendService {
 
   private async sendBound(request: JobSendRequest, ctx: InvocationContext): Promise<JobSendResult> {
     const status = this.deps.progressStore.readStatus(request.jobId);
-    if (status === null) return missingJobSendRefusal(this.deps.jobLocations.read(request.jobId));
+    if (status === null) {
+      const location = this.deps.jobLocations.read(request.jobId);
+      if (
+        location !== null &&
+        !jobInCallerScope(
+          {
+            jobKind: location.subject.jobKind,
+            workDir:
+              location.subject.workDir === null ? null : canonicalWorkDirWireSchema.parse(location.subject.workDir),
+          },
+          request.projectRoot,
+          'contains',
+        )
+      )
+        return { state: 'refused', code: 'scope_mismatch', reason: 'The job belongs to another project.' };
+      return missingJobSendRefusal(location);
+    }
     if (!jobInCallerScope(status, request.projectRoot, 'contains'))
       return { state: 'refused', code: 'scope_mismatch', reason: 'The job belongs to another project.' };
     if (status.jobKind !== 'provider')

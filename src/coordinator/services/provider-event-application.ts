@@ -59,15 +59,7 @@ export interface ProviderEventApplicationDeps {
   readonly appendContext: AppendContext;
   readonly providerRegistry: Pick<ProviderBindingCatalog, 'rehydrateBinding' | 'renderBindingFailure'>;
   readonly runtime: Runtime;
-  /**
-   * The stop cause the coordinator most recently sent as `operation.stop.v1` for this operation. The wire
-   * `suspended` event carries no cause of its own (`{ kind: 'suspended', reason: 'interrupt_unconfirmed' }`),
-   * so this is the only way a `suspended` event learns whether it followed a deliberate abort or a
-   * restart/handoff that owes the job a truthful `session.interrupted` — the caller that issues
-   * `operation.stop.v1` (the operation-activation orchestrator) is the one party that knows which. `null`
-   * means no stop was ever recorded for this operation, which is a protocol violation, not a default to guess
-   * through.
-   */
+  /** A suspended event must use the durably recorded stop cause and may not infer one. */
   readonly recordedStopCauseFor: (identity: ProviderOperationEventIdentity) => ProviderStopCause | null;
   /**
    * Receives the job-stream batches this handler commits, only after `COMMIT`. This handler commits on the

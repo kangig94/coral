@@ -1410,7 +1410,7 @@ export function readHistoricalSource(
       jobs: new Map<string, HistoricalReadFrontier>(),
     };
     if (session && source.readCache) source.readCache.set(session, readCache);
-    const result = readHistoricalLocations(view, source, db, epochKey, jobIds, frontier, readCache, fullHistory);
+    const result = readHistoricalLocations({ view, source, db, epochKey, frontier, readCache, fullHistory }, jobIds);
     if (session && !fullHistory)
       readCache.observed = stamp === null ? undefined : { path: epoch.path, stamp, frontier };
     return result;
@@ -1521,85 +1521,127 @@ export function refreshHistoricalEpoch(
   let releaseLock: (() => void) | null = null;
   let db: SqliteDatabasePort | null = null;
   try {
-    const lockPath = join(dirname(addressedEpoch.path), STORE_LOCK_FILE_NAME);
-    if (source.storage.existsSync(lockPath)) {
-      const guard = source.storage.lstatSync(lockPath, { bigint: true });
-      if (!guard.isFile() || guard.nlink !== 1n) throw new Error('Source lock is malformed.');
-    }
-    // A sweep runs on the event loop, so a contended guard defers the epoch to the next tick rather than block it.
-    try {
-      releaseLock = createSharedFileLockSync(lockPath, 0);
-    } catch (error) {
-      if (error instanceof Error && 'errcode' in error && error.errcode === SQLITE_BUSY_ERRCODE)
-        return { kind: 'contended' };
-      throw error;
-    }
+    const guard = acquireHistoricalRefreshGuard(source, addressedEpoch);
+    if (guard.kind === 'contended') return guard;
+    releaseLock = guard.release;
     verifyHistoricalIdentity(source, epochKey, addressedEpoch);
     db = source.storage.openSqliteDatabaseSync(dbPath, { readOnly: true });
     db.exec('BEGIN');
-    const frontier = (db.prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get() as { seq: number }).seq;
-    const revision = index.revision(epochKey);
-    if (jobIds.length === 0 && source.sweep?.revision === revision && source.sweep.frontier === frontier)
-      return { kind: 'read' };
-    const incremental = jobIds.length === 0 && source.sweep?.revision === revision;
-    const requested = new Set(
-      source.refreshPending?.jobIds ??
-        (jobIds.length
-          ? jobIds
-          : incremental
-            ? db
-                .prepare("SELECT DISTINCT stream_id FROM events WHERE stream_kind = 'job' AND seq > ?")
-                .all(source.sweep?.frontier ?? 0)
-                .map((row) => z.object({ stream_id: z.string() }).parse(row).stream_id)
-            : index.locationsFor(epochKey).map((location) => location.jobId)),
-    );
-    let failed = false;
-    for (const jobId of [...requested]) {
-      if (budget && budget.remaining <= 0) {
-        source.refreshPending = { jobIds: [...requested], frontier: source.refreshPending?.frontier ?? frontier };
-        return failed
-          ? { kind: 'unreadable', reason: 'Historical source could not be decoded or retained' }
-          : { kind: 'read' };
-      }
-      if (budget) budget.remaining--;
-      const retainedRead = readRetainedLocation(index, jobId);
-      if (retainedRead.kind === 'unreadable') {
-        requested.delete(jobId);
-        continue;
-      }
-      const location = retainedRead.location;
-      if (
-        location !== null &&
-        (!sameEpoch(location.epochKey, epochKey) ||
-          (requireRetainedSourceReader(index, source.fingerprint).terminalIsImmutable &&
-            location.disposition === 'terminal' &&
-            hasReadableTerminalDetail(location)))
-      ) {
-        requested.delete(jobId);
-        continue;
-      }
-      try {
-        const raw = db.prepare('SELECT * FROM projection_jobs WHERE job_id = ?').get(jobId);
-        if (raw === undefined) {
-          requested.delete(jobId);
-          continue;
-        }
-        requested.delete(jobId);
-        if (refreshHistoricalJob(index, source, db, epochKey, jobId, location, raw, requested)) failed = true;
-      } catch (error: unknown) {
-        if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT'))
-          backendLog.warn(`Retained job observation requires its existing recovery owner: ${String(error)}`);
-        failed = true;
-        requested.add(jobId);
-      }
-    }
-    return completeHistoricalRefresh(index, source, db, epochKey, requested, failed, frontier);
+    return refreshHistoricalBatch(index, source, db, epochKey, jobIds, budget);
   } catch (error) {
     // An unreadable refresh cannot certify absence or void an earlier terminal certificate.
     return { kind: 'unreadable', reason: error instanceof Error ? error.message : 'Historical source cannot be read' };
   } finally {
     db?.close();
     releaseLock?.();
+  }
+}
+
+function acquireHistoricalRefreshGuard(
+  source: HistoricalEpochSource,
+  addressedEpoch: ResolvedStoreEpoch,
+): { kind: 'acquired'; release: () => void } | { kind: 'contended' } {
+  const lockPath = join(dirname(addressedEpoch.path), STORE_LOCK_FILE_NAME);
+  if (source.storage.existsSync(lockPath)) {
+    const guard = source.storage.lstatSync(lockPath, { bigint: true });
+    if (!guard.isFile() || guard.nlink !== 1n) throw new Error('Source lock is malformed.');
+  }
+  // A sweep runs on the event loop, so a contended guard defers the epoch to the next tick rather than block it.
+  try {
+    return { kind: 'acquired', release: createSharedFileLockSync(lockPath, 0) };
+  } catch (error) {
+    if (error instanceof Error && 'errcode' in error && error.errcode === SQLITE_BUSY_ERRCODE)
+      return { kind: 'contended' };
+    throw error;
+  }
+}
+
+function refreshHistoricalBatch(
+  index: JobLocationIndex,
+  source: HistoricalEpochSource,
+  db: SqliteDatabasePort,
+  epochKey: string,
+  jobIds: readonly string[],
+  budget?: { remaining: number },
+): ReturnType<typeof refreshHistoricalEpoch> {
+  const frontier = (db.prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get() as { seq: number }).seq;
+  const revision = index.revision(epochKey);
+  if (jobIds.length === 0 && source.sweep?.revision === revision && source.sweep.frontier === frontier)
+    return { kind: 'read' };
+  const requested = historicalRefreshJobIds(index, source, db, epochKey, jobIds, revision);
+  let failed = false;
+  for (const jobId of [...requested]) {
+    if (budget && budget.remaining <= 0) {
+      source.refreshPending = { jobIds: [...requested], frontier: source.refreshPending?.frontier ?? frontier };
+      return failed
+        ? { kind: 'unreadable', reason: 'Historical source could not be decoded or retained' }
+        : { kind: 'read' };
+    }
+    if (budget) budget.remaining--;
+    if (refreshRequestedHistoricalJob(index, source, db, epochKey, jobId, requested)) failed = true;
+  }
+  return completeHistoricalRefresh(index, source, db, epochKey, requested, failed, frontier);
+}
+
+function historicalRefreshJobIds(
+  index: JobLocationIndex,
+  source: HistoricalEpochSource,
+  db: HistoricalDatabase,
+  epochKey: string,
+  jobIds: readonly string[],
+  revision: number,
+): Set<string> {
+  const incremental = jobIds.length === 0 && source.sweep?.revision === revision;
+  return new Set(
+    source.refreshPending?.jobIds ??
+      (jobIds.length
+        ? jobIds
+        : incremental
+          ? db
+              .prepare("SELECT DISTINCT stream_id FROM events WHERE stream_kind = 'job' AND seq > ?")
+              .all(source.sweep?.frontier ?? 0)
+              .map((row) => z.object({ stream_id: z.string() }).parse(row).stream_id)
+          : index.locationsFor(epochKey).map((location) => location.jobId)),
+  );
+}
+
+function refreshRequestedHistoricalJob(
+  index: JobLocationIndex,
+  source: HistoricalEpochSource,
+  db: HistoricalDatabase,
+  epochKey: string,
+  jobId: string,
+  requested: Set<string>,
+): boolean {
+  const retainedRead = readRetainedLocation(index, jobId);
+  if (retainedRead.kind === 'unreadable') {
+    requested.delete(jobId);
+    return false;
+  }
+  const location = retainedRead.location;
+  if (
+    location !== null &&
+    (!sameEpoch(location.epochKey, epochKey) ||
+      (requireRetainedSourceReader(index, source.fingerprint).terminalIsImmutable &&
+        location.disposition === 'terminal' &&
+        hasReadableTerminalDetail(location)))
+  ) {
+    requested.delete(jobId);
+    return false;
+  }
+  try {
+    const raw = db.prepare('SELECT * FROM projection_jobs WHERE job_id = ?').get(jobId);
+    if (raw === undefined) {
+      requested.delete(jobId);
+      return false;
+    }
+    requested.delete(jobId);
+    return refreshHistoricalJob(index, source, db, epochKey, jobId, location, raw, requested);
+  } catch (error: unknown) {
+    if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT'))
+      backendLog.warn(`Retained job observation requires its existing recovery owner: ${String(error)}`);
+    requested.add(jobId);
+    return true;
   }
 }
 
@@ -1794,16 +1836,21 @@ function readVouchedHistoricalCache(
   return null;
 }
 
+interface HistoricalLocationReadContext {
+  view: JobLocationView;
+  source: HistoricalEpochSource;
+  db: HistoricalDatabase;
+  epochKey: string;
+  frontier: number;
+  readCache: HistoricalReadCache;
+  fullHistory: boolean;
+}
+
 function readHistoricalLocations(
-  view: JobLocationView,
-  source: HistoricalEpochSource,
-  db: HistoricalDatabase,
-  epochKey: string,
+  context: HistoricalLocationReadContext,
   jobIds: readonly string[],
-  frontier: number,
-  readCache: HistoricalReadCache,
-  fullHistory: boolean,
 ): Extract<HistoricalSourceRead, { kind: 'read' }> {
+  const { view, epochKey, readCache } = context;
   const locations = new Map<string, JobLocation | null>();
   const unreadableJobs = new Set<string>();
   const absentJobs = new Set<string>();
@@ -1811,40 +1858,9 @@ function readHistoricalLocations(
   for (const jobId of jobIds) {
     try {
       dispositions.set(jobId, 'readable');
-      if (source.seed?.members && source.seed.frontier === frontier && !source.seed.members.has(jobId)) {
-        locations.set(jobId, null);
-        absentJobs.add(jobId);
-        continue;
-      }
-      const cached = fullHistory ? undefined : readCache.jobs.get(jobId);
-      if (
-        cached?.frontier === frontier ||
-        (requireRetainedSourceReader(view, source.fingerprint).terminalIsImmutable &&
-          cached?.location?.disposition === 'terminal')
-      ) {
-        locations.set(jobId, cached.location);
-        if (cached.absent) absentJobs.add(jobId);
-        continue;
-      }
-      const raw = db.prepare('SELECT * FROM projection_jobs WHERE job_id = ?').get(jobId);
-      // A running job's location changes only with its own events, so another job's append never decodes it again.
-      const jobSeq = typeof raw === 'object' && raw !== null && 'last_seq' in raw ? raw.last_seq : undefined;
-      if (cached?.jobSeq !== undefined && cached.jobSeq === jobSeq) {
-        readCache.jobs.set(jobId, { ...cached, frontier });
-        locations.set(jobId, cached.location);
-        continue;
-      }
-      const result = requireRetainedSourceReader(view, source.fingerprint).readLocation(
-        db,
-        source,
-        epochKey,
-        jobId,
-        raw,
-        fullHistory,
-      );
+      const result = readHistoricalLocation(context, jobId);
       locations.set(jobId, result.location);
       if (result.absent) absentJobs.add(jobId);
-      if (!fullHistory) readCache.jobs.set(jobId, { frontier, ...result });
     } catch (error) {
       if (isCodeDefect(error)) throw error;
       // The stamp published below certifies only answers this observation produced, so a failed read keeps none.
@@ -1859,6 +1875,49 @@ function readHistoricalLocations(
     }
   }
   return { kind: 'read', locations, dispositions, unreadableJobs, absentJobs };
+}
+
+function readHistoricalLocation(
+  context: HistoricalLocationReadContext,
+  jobId: string,
+): { location: JobLocation | null; absent?: boolean } {
+  const { view, source, frontier, readCache, fullHistory } = context;
+  if (source.seed?.members && source.seed.frontier === frontier && !source.seed.members.has(jobId)) {
+    return { location: null, absent: true };
+  }
+  const cached = fullHistory ? undefined : readCache.jobs.get(jobId);
+  if (
+    cached?.frontier === frontier ||
+    (requireRetainedSourceReader(view, source.fingerprint).terminalIsImmutable &&
+      cached?.location?.disposition === 'terminal')
+  ) {
+    return cached;
+  }
+  return readProjectedHistoricalLocation(context, jobId, cached);
+}
+
+function readProjectedHistoricalLocation(
+  context: HistoricalLocationReadContext,
+  jobId: string,
+  cached: HistoricalReadFrontier | undefined,
+): { location: JobLocation | null; absent?: boolean } {
+  const { view, source, db, epochKey, frontier, readCache, fullHistory } = context;
+  const raw = db.prepare('SELECT * FROM projection_jobs WHERE job_id = ?').get(jobId);
+  const jobSeq = typeof raw === 'object' && raw !== null && 'last_seq' in raw ? raw.last_seq : undefined;
+  if (cached?.jobSeq !== undefined && cached.jobSeq === jobSeq) {
+    readCache.jobs.set(jobId, { ...cached, frontier });
+    return { location: cached.location, absent: false };
+  }
+  const result = requireRetainedSourceReader(view, source.fingerprint).readLocation(
+    db,
+    source,
+    epochKey,
+    jobId,
+    raw,
+    fullHistory,
+  );
+  if (!fullHistory) readCache.jobs.set(jobId, { frontier, ...result });
+  return result;
 }
 
 function readFrozenLocation(

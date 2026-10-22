@@ -459,6 +459,32 @@ describe('JobSendService bound admission', () => {
 });
 
 describe('jobs send typed continuation refusals', () => {
+  it.each(['steer', 'continue'] as const)(
+    'refuses a direct %s RPC for another project before classifying its historical location',
+    async (mode) => {
+      const h = harness({ ended: true, record: null });
+      const request = h.request(mode);
+      h.readStatus.mockReturnValue(null);
+      const otherRoot = fixtureCanonicalWorkDir('/other');
+      const read = vi.fn(
+        (): JobLocation => ({
+          version: 'v1',
+          jobId: EXECUTION_JOB_ID,
+          epochKey: 'historical-epoch',
+          subject: { projectRoot: otherRoot, workDir: otherRoot, jobKind: 'provider' },
+          disposition: 'terminal',
+          detail: { kind: 'unreadable' },
+        }),
+      );
+      h.deps.jobLocations = { read };
+
+      expect(await h.service().send(request, ctx)).toMatchObject({ state: 'refused', code: 'scope_mismatch' });
+      expect(read).toHaveBeenCalledExactlyOnceWith(EXECUTION_JOB_ID);
+      expect(h.resume).not.toHaveBeenCalled();
+      expect(h.sendOperation).not.toHaveBeenCalled();
+    },
+  );
+
   it('distinguishes a pre-generation location from a job never recorded', async () => {
     const h = harness({ ended: true, record: null });
     const request = h.request();

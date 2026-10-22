@@ -65,7 +65,7 @@ export function formatJobSendResult(
   switch (result.state) {
     case 'launched':
       return {
-        text: `${formatDetachedLaunchStatus(result.launch)}\n${formatLaunchWaitHint(result.launch)}`,
+        text: `${formatLaunchStatus(result.launch, result.launch.execution ?? result.execution)}\n${formatLaunchWaitHint(result.launch)}`,
         exitCode: 0,
       };
     case 'delivered':
@@ -422,10 +422,14 @@ export function formatLaunch(result: AcceptedLaunchResponse): string {
 }
 
 export function formatDetachedLaunchStatus(result: AcceptedLaunchResponse): string {
-  const execution = result.execution ?? 1;
+  return formatLaunchStatus(result, result.execution ?? 1);
+}
+
+function formatLaunchStatus(result: AcceptedLaunchResponse, execution: number | undefined): string {
+  const ordinal = execution === undefined ? '' : ` execution #${execution}`;
   return result.kind === 'provider-session'
-    ? `Provider job ${result.jobId} execution #${execution} ${result.launchState}`
-    : `Workflow ${result.workflowId} ${result.launchState} (job ${result.jobId} execution #${execution})`;
+    ? `Provider job ${result.jobId}${ordinal} ${result.launchState}`
+    : `Workflow ${result.workflowId} ${result.launchState} (job ${result.jobId}${ordinal})`;
 }
 
 export function formatLaunchWaitHint(

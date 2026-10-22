@@ -388,3 +388,34 @@ it.each([
     expect(output.text).not.toMatch(/jobs detail|jobs send|new send/iu);
   }
 });
+
+it.each([
+  { embedded: undefined, derived: 3, expected: 3 },
+  { embedded: 3, derived: 3, expected: 3 },
+])(
+  'renders the successor ordinal from the launch or its binding: $embedded / $derived',
+  ({ embedded, derived, expected }) => {
+    const launch = jobSendOutcomeSchema.parse({
+      state: 'launched',
+      launch: {
+        kind: 'provider-session',
+        jobId: 'job-1',
+        requestedSeq: 10,
+        epochKey: 'epoch',
+        launchState: 'queued',
+        ...(embedded === undefined ? {} : { execution: embedded }),
+      },
+    });
+    const output = formatJobSendResult('job-1', { ...launch, execution: derived });
+    expect(output.text.split('\n')[0]).toBe(`Provider job job-1 execution #${expected} queued`);
+    expect(output.text).toContain('--execution-selection');
+  },
+);
+
+it('omits the ordinal when neither the launch nor its binding supplies one', () => {
+  const launch = jobSendOutcomeSchema.parse({
+    state: 'launched',
+    launch: { kind: 'provider-session', jobId: 'job-1', requestedSeq: 10, epochKey: 'epoch', launchState: 'queued' },
+  });
+  expect(formatJobSendResult('job-1', launch).text.split('\n')[0]).toBe('Provider job job-1 queued');
+});

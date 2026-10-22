@@ -689,7 +689,7 @@ it.each([
   { timing: 'during-fence', phase: 'settlement-pending', exhausted: false },
   { timing: 'during-fence', phase: 'settlement-pending', exhausted: true },
 ] as const)(
-  'protects another $phase claim present $timing (exhausted=$exhausted) and contains only after that claim leaves',
+  'defers retirement for another $phase operation present $timing (exhausted=$exhausted) until it leaves',
   async ({ timing, phase, exhausted }) => {
     const record = providerOperationRecordSchema.parse({
       ...providerOperationRecord('settlement-pending'),
@@ -738,10 +738,12 @@ it.each([
     }
     await drainMicrotasks();
     expect(stopAndReap).not.toHaveBeenCalled();
-    expect(claims.claimsFor(authority.setIdentity)).toHaveLength(2);
+    expect(claims.claimsFor(authority.setIdentity)).toHaveLength(exhausted ? 0 : 1);
+    expect(claims.operationsFor(authority.setIdentity)).toHaveLength(2);
     expect(lifecycle.authorityFor(authority.setIdentity)).toBe(authority);
 
     claims.applyMutation({ kind: 'deleted', record: other });
+    expect(claims.claimsFor(authority.setIdentity)).toEqual([]);
     lifecycle.requestOperationContainment(authority.setIdentity, request);
     await vi.waitFor(() => expect(stopAndReap).toHaveBeenCalledOnce());
     expect(claims.claimFor(record.operation)).not.toBeNull();
@@ -760,6 +762,7 @@ it('rechecks exact operation identities when an exhausted sibling is replaced un
   claims.initialize([record, sibling]);
   const stopAndReap = vi.fn(async () => ({ unconfirmed: 'not yet absent' }) as const);
   const authority = fakeAuthority({ record, stopAndReap });
+  const reportLifecycle = vi.fn();
   const gate = deferred<void>();
   const admission = new ProviderOperationMutationAdmission();
   let fenceWaits = true;
@@ -769,6 +772,7 @@ it('rechecks exact operation identities when an exhausted sibling is replaced un
     controlEstablished: ignoreControlEstablished,
     disappearanceConsumer: { containmentDisappeared: vi.fn() },
     proveContainmentAbsent: noContainmentProof,
+    reportLifecycle,
     fenceProviderOperationMutations: (identity) => {
       const fence = admission.closeSet(identity);
       return fenceWaits
@@ -797,6 +801,13 @@ it('rechecks exact operation identities when an exhausted sibling is replaced un
 
   lifecycle.requestOperationContainment(authority.setIdentity, request);
   await vi.waitFor(() => expect(stopAndReap).toHaveBeenCalledOnce());
+  expect(claims.claimsFor(authority.setIdentity)).toEqual([]);
+  expect(reportLifecycle).toHaveBeenCalledWith(
+    'info',
+    expect.stringContaining(
+      'action=stop-and-reap reason=operation_release_failed fault=none subject=retirement liveClaims=0',
+    ),
+  );
 });
 
 it('requires the exact durable settlement escalation fact rather than trusting the request', async () => {

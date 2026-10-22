@@ -566,6 +566,33 @@ describe('jobs send immutable attempt envelope', () => {
     for (const root of tempDirs.splice(0)) rmSync(root, { recursive: true, force: true });
   });
 
+  it.each([undefined, 3])(
+    'renders a continuation bound from execution #2 with launch ordinal %s',
+    async (execution) => {
+      mockState.detailRequest.mockReturnValue(realDetail('completed', 2));
+      mockState.request.mockResolvedValue({
+        state: 'launched',
+        launch: {
+          kind: 'provider-session',
+          jobId: 'job-1',
+          requestedSeq: 30,
+          epochKey: 'epoch',
+          launchState: 'queued',
+          ...(execution === undefined ? {} : { execution }),
+        },
+      });
+      const result = await makeClient(projectRoot, findCommand(buildProgram(), 'jobs', 'send')).sendJob(
+        'job-1',
+        'input',
+      );
+      expect(mockState.request.mock.calls[0][1]).toMatchObject({ target: { mode: 'continue', execution: 2 } });
+      expect(result).toMatchObject({ state: 'launched', execution: 3 });
+      expect(formatJobSendResult('job-1', result).text.split('\n')[0]).toBe(
+        `Provider job job-1 execution #${execution ?? 3} queued`,
+      );
+    },
+  );
+
   it.each(['steer', 'continue'] as const)(
     'retains the complete %s envelope after a lost response and successor handoff',
     async (mode) => {
@@ -656,6 +683,61 @@ describe('jobs send immutable attempt envelope', () => {
     expect(result).toMatchObject({ state: 'refused', code });
     expect(mockState.request).not.toHaveBeenCalled();
   });
+
+  it.each(['job_outcome_unrecoverable', 'job_outcome_unreadable', 'job_unresolved', 'job_detail_unreadable'])(
+    'consumes location-owned send admission despite %s',
+    async (code) => {
+      mockState.detailRequest.mockRejectedValue(
+        new IpcRpcError({
+          code: -32000,
+          message: 'The historical outcome cannot be hydrated.',
+          data: {
+            code,
+            detail: {
+              epochKey: 'old:7',
+              sendRefusal: {
+                state: 'refused',
+                code: 'pre_generation_job',
+                reason: 'The known location is historical.',
+              },
+            },
+          },
+        }),
+      );
+      const result = await makeClient(projectRoot, findCommand(buildProgram(), 'jobs', 'send')).sendJob(
+        'job-1',
+        'input',
+      );
+      expect(result).toEqual({
+        state: 'refused',
+        code: 'pre_generation_job',
+        reason: 'The known location is historical.',
+      });
+      expect(formatJobSendResult('job-1', result, { inputTokens: ['input'] }).text).toContain(
+        'command=coral-cli codex -i input',
+      );
+      expect(mockState.request).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([undefined, { state: 'refused', code: 'pre_generation_job' }, { state: 'delivered' }])(
+    'preserves outcome uncertainty when no valid location admission is supplied: %j',
+    async (sendRefusal) => {
+      const error = new IpcRpcError({
+        code: -32000,
+        message: 'Outcome unreadable.',
+        data: {
+          code: 'job_outcome_unreadable',
+          detail: { epochKey: 'old:7', sendRefusal },
+        },
+      });
+      mockState.detailRequest.mockRejectedValue(error);
+      await expect(
+        makeClient(projectRoot, findCommand(buildProgram(), 'jobs', 'send')).sendJob('job-1', 'input'),
+      ).rejects.toBe(error);
+      expect(mockState.request).not.toHaveBeenCalled();
+    },
+  );
 
   it('lets the coordinator decide non-provider refusals after binding real detail', async () => {
     const detail = realDetail('completed');

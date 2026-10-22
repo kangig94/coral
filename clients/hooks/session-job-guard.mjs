@@ -16,6 +16,16 @@ function jobInWaitScope(job, scopeRoot) {
   return descendant === '' || (!descendant.startsWith(`..${sep}`) && descendant !== '..' && !isAbsolute(descendant));
 }
 
+function waitCommand(jobs) {
+  const selections = jobs.map((job) => ({
+    jobId: job.jobId,
+    epochKey: job.executionSelection.epochKey,
+    requestedSeq: job.executionSelection.requestedSeq,
+    awaitingArtifact: false,
+  }));
+  return `coral-cli jobs wait ${jobs.map((job) => job.jobId).join(' ')} --execution-selection '${JSON.stringify(selections).replaceAll("'", "'\\''")}'`;
+}
+
 try {
   const input = JSON.parse(await readStdin());
   if (input.hook_event_name !== 'Stop' || typeof input.session_id !== 'string' || input.session_id.length === 0) {
@@ -33,25 +43,29 @@ try {
   if (!Array.isArray(rows)) process.exit(0);
   const jobs = rows.filter((job) => typeof job?.jobId === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(job.jobId) &&
     Number.isSafeInteger(job.execution) && job.execution >= 1 &&
+    job.executionSelection?.jobId === job.jobId &&
+    typeof job.executionSelection.epochKey === 'string' && job.executionSelection.epochKey.length > 0 &&
+    Number.isSafeInteger(job.executionSelection.requestedSeq) && job.executionSelection.requestedSeq >= 1 &&
+    job.executionSelection.awaitingArtifact === false && job.executionSelection.deliveredEndSeq === undefined &&
     (job.status?.jobKind === 'kb' || typeof job.status?.workDir === 'string'));
   if (jobs.length === 0) process.exit(0);
   if (jobGuardAlreadyBlocked(projectDir, input.session_id, jobs)) process.exit(0);
 
   const waitScope = realpathSync(input.cwd ?? projectDir);
-  const inScopeIds = [];
+  const inScopeJobs = [];
   const otherDirectories = new Map();
   for (const job of jobs) {
     if (jobInWaitScope(job, waitScope)) {
-      inScopeIds.push(job.jobId);
+      inScopeJobs.push(job);
     } else {
-      const ids = otherDirectories.get(job.status.workDir) ?? [];
-      ids.push(job.jobId);
-      otherDirectories.set(job.status.workDir, ids);
+      const group = otherDirectories.get(job.status.workDir) ?? [];
+      group.push(job);
+      otherDirectories.set(job.status.workDir, group);
     }
   }
-  const commands = inScopeIds.length > 0 ? [`coral-cli jobs wait ${inScopeIds.join(' ')}`] : [];
-  for (const [workDir, ids] of otherDirectories) {
-    commands.push(`cd '${workDir.replaceAll("'", "'\\''")}' && coral-cli jobs wait ${ids.join(' ')}`);
+  const commands = inScopeJobs.length > 0 ? [waitCommand(inScopeJobs)] : [];
+  for (const [workDir, group] of otherDirectories) {
+    commands.push(`cd '${workDir.replaceAll("'", "'\\''")}' && ${waitCommand(group)}`);
   }
   const waitInstruction = commands.length > 1
     ? `Run each command below separately to wait for them:\n${commands.join('\n')}`

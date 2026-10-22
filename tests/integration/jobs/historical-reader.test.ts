@@ -1642,7 +1642,6 @@ describe('frozen released-format readers', () => {
         const path = join(root, 'results', 'failed', 'result.md');
         expect(readFileSync(path, 'utf8')).toBe('Failed: session.provider_failed\n');
         rmSync(path);
-        // A second seed repairs from the same frozen format rather than the live execution selector.
         expect(
           seedHistoricalEpoch(local, index, epoch, epochKey, fingerprint, join(root, 'results'), storage, [], true)
             .kind,

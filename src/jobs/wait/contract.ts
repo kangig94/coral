@@ -30,6 +30,7 @@ export interface WaitStreamRequest extends WaitRequest {
   abortSignal?: AbortSignal;
   drainProgress?: boolean;
   admissions?: WaitAdmission[];
+  onAdmission?: (admission: WaitAdmission) => void;
 }
 
 export type CanonicalWaitStreamRequest = WaitStreamRequest & { drainProgress: boolean };

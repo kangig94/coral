@@ -7,7 +7,6 @@ import type {
   RetrySafeControlCallPolicy,
 } from '../provider-proxy-authority-fault.js';
 import type { ProviderProxyRoleOpenMethod } from '../../live/provider-proxy/role-control.js';
-import type { OperationIdentity } from '../../../provider-proxy/protocol.js';
 import { providerProxySetReference, type ProviderProxySetIdentity } from './identity.js';
 
 type FaultlessDecisionFields = Readonly<{
@@ -279,18 +278,8 @@ export type ProviderProxySetDrainDecision = FaultlessDecisionFields &
 export type ProviderProxySetRetirementStopDecision = FaultlessDecisionFields &
   Readonly<{
     action: 'stop-and-reap';
-    // Faultless destruction is safe only after every durable claim has left the set.
     reason: ProviderProxySetRetirementReason;
     liveClaims: 0;
-    setIdentity: ProviderProxySetIdentity;
-  }>;
-
-export type ProviderProxySetSettlementStopDecision = FaultlessDecisionFields &
-  Readonly<{
-    action: 'stop-and-reap';
-    reason: 'settlement_retries_exhausted';
-    operations: readonly OperationIdentity[];
-    liveClaims: number;
     setIdentity: ProviderProxySetIdentity;
   }>;
 
@@ -323,7 +312,6 @@ export type ProviderProxySetAuthorityStopDecision =
 export type ProviderProxySetContainmentDecision =
   | ProviderProxySetAuthorityStopDecision
   | ProviderProxySetRetirementStopDecision
-  | ProviderProxySetSettlementStopDecision
   | ProviderProxySetHeartbeatAwaitAbsenceDecision
   | ProviderProxySetControlReattachmentAwaitAbsenceDecision;
 
@@ -394,7 +382,6 @@ export function renderProviderProxySetDecision(
     case 'excess_capacity':
     case 'unclaimed_discovery':
     case 'operation_release_failed':
-    case 'settlement_retries_exhausted':
       fault = 'none';
       subject = 'retirement';
       error = 'none';

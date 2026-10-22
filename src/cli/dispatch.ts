@@ -982,156 +982,175 @@ function createKbBootReconciler(
   return reconcileKbBoot;
 }
 
-export function makeClient(projectRoot: string, command: Command): CliCommandClient {
-  const path = commandPath(command);
-  const resolution = classifyCommand(command);
+type CoordinatorRequest = <TResult>(method: string, params?: unknown) => Promise<TResult>;
 
-  if (resolution.kind === 'container') {
-    throw new Error(`makeClient() cannot dispatch a container command: ${path}`);
-  }
+type CliTransportContext = Readonly<{
+  commandClass: CommandClass;
+  path: string;
+  ipcAuthOptions: () => ReturnType<typeof childPrincipalAuthOptions>;
+  reconcileKbBoot: () => Promise<void>;
+}>;
 
-  if (resolution.kind === 'exempt') {
-    throw new Error(`makeClient() cannot dispatch exempt command "${path}": ${resolution.rationale}`);
-  }
+type JobSendClientContext = Pick<CliClientBindings, 'canonicalProjectRoot' | 'defaultContext' | 'providerRegistry'> &
+  Pick<CliTransportContext, 'ipcAuthOptions' | 'reconcileKbBoot'> &
+  Readonly<{ request: CoordinatorRequest }>;
 
-  if (resolution.kind === 'unclassified') {
-    throw new Error(`makeClient() cannot dispatch unclassified command "${path}"`);
-  }
+function readJobSendRefusal(value: unknown): Extract<JobSendOutcome, { state: 'refused' }> | null {
+  const parsed = jobSendOutcomeSchema.safeParse(value);
+  return parsed.success && parsed.data.state === 'refused' ? parsed.data : null;
+}
 
-  const commandClass = resolution.commandClass;
-  const canonicalProjectRoot = canonicalizeWorkDir(projectRoot, process.cwd());
-  const defaultContext = createDefaultInvocationContext(canonicalProjectRoot);
-  const providerRegistry = createBuiltInProviderRegistry();
-  const ipcAuth = childPrincipalAuthFromEnv();
-  const ipcAuthOptions = () => childPrincipalAuthOptions(ipcAuth);
-
-  const reconcileKbBoot = createKbBootReconciler(path, ipcAuth);
-
-  const bindJobSendTarget = async (jobId: string): Promise<JobSendBinding> => {
-    let observed: unknown;
-    try {
-      observed = await request<unknown>('jobs.detail', buildProjectScopedQuery({ jobId }, defaultContext));
-    } catch (error: unknown) {
-      if (!(error instanceof IpcRpcError)) throw error;
-      switch (error.code) {
-        case 'job_not_found':
-          return { kind: 'refused', outcome: { state: 'refused', code: 'not_found', reason: error.message } };
-        case 'job_pre_epoch_history':
-          return { kind: 'refused', outcome: { state: 'refused', code: 'pre_generation_job', reason: error.message } };
-        case 'scope_mismatch':
-          return { kind: 'refused', outcome: { state: 'refused', code: 'scope_mismatch', reason: error.message } };
-        default:
-          throw error;
-      }
-    }
-    if (isRecord(observed)) {
-      const refusal = jobSendOutcomeSchema.safeParse(observed.sendRefusal);
-      if (refusal.success && refusal.data.state === 'refused') return { kind: 'refused', outcome: refusal.data };
-    }
-    const parsedDetail = jobSendDetailSchema.safeParse(observed);
-    if (!parsedDetail.success) return { kind: 'refused', outcome: unsupportedJobSendBuild() };
-    return { kind: 'bound', binding: buildJobSendBinding(jobId, parsedDetail.data) };
-  };
-
-  const buildJobSendEnvelope = async (
-    binding: BoundJobSendTarget,
-    input: string,
-    clientMessageId: string,
-  ): Promise<z.infer<typeof jobSendSchema>> => {
-    const { jobId, detail, target } = binding;
-    const context =
-      target.mode === 'continue'
-        ? await buildProviderTransportContextBody(
-            {},
-            defaultContext,
-            providerRegistry,
-            detail.status.provider === null ? [] : [detail.status.provider],
-          )
-        : buildTransportContextBody({}, defaultContext);
-    return jobSendSchema.parse({
-      projectRoot: canonicalProjectRoot,
-      jobId,
-      input,
-      clientMessageId,
-      target,
-      providerScope: context.providerScope,
-      coralEnv: context.coralEnv,
-      networkEnv: context.networkEnv,
-      owner: context.owner,
-    });
-  };
-
-  const issueJobSend = (params: z.infer<typeof jobSendSchema>, delivery: { issued: boolean }): Promise<unknown> => {
-    const authOptions = ipcAuthOptions();
-    return retrySuccessionPausedRequest(
-      (remainingMs) =>
-        issueWithSuccessorAfterLifecycleRefusal<unknown>('jobs.send', resolvePluginRoot(), async (client) => {
-          delivery.issued = true;
-          try {
-            const result = await client.request<unknown>('jobs.send', params, {
-              timeoutMs: remainingMs,
-              ...authOptions,
-            });
-            if (isRecord(result) && result.state === 'refused' && result.code === 'succession_admission_paused')
-              throw new IpcRpcError({
-                code: -32000,
-                message: typeof result.reason === 'string' ? result.reason : 'Admission paused',
-                data: { code: 'succession_admission_paused' },
-              });
-            return result;
-          } catch (error) {
-            if (error instanceof IpcLifecycleRefusal) delivery.issued = false;
-            throw error;
-          }
-        }),
-      params.target.mode === 'steer' ? 20_000 : TOOL_TIMEOUT_MS,
-    );
-  };
-
-  const deliverJobSend = async (params: z.infer<typeof jobSendSchema>): Promise<CliJobSendOutcome> => {
-    await reconcileKbBoot();
-    const delivery = { issued: false };
-    let priorDeliveryUncertain = false;
-    try {
-      let result: unknown;
-      try {
-        result = await issueJobSend(params, delivery);
-      } catch (error: unknown) {
-        if (!delivery.issued || error instanceof IpcLifecycleRefusal || error instanceof IpcRpcError) throw error;
-        priorDeliveryUncertain = true;
-        result = await issueJobSend(params, delivery);
-      }
-      return interpretJobSendOutcome(result, priorDeliveryUncertain);
-    } catch (error) {
-      if (!delivery.issued || error instanceof IpcLifecycleRefusal) {
-        if (priorDeliveryUncertain)
-          return {
-            state: 'unknown',
-            reason:
-              'An earlier invocation may have delivered this message; its retry could not obtain a decisive response.',
-          };
+async function bindJobSendTarget(context: JobSendClientContext, jobId: string): Promise<JobSendBinding> {
+  const { request, defaultContext } = context;
+  let observed: unknown;
+  try {
+    observed = await request<unknown>('jobs.detail', buildProjectScopedQuery({ jobId }, defaultContext));
+  } catch (error: unknown) {
+    if (!(error instanceof IpcRpcError)) throw error;
+    const detail = isRecord(error.data) && isRecord(error.data.detail) ? error.data.detail : null;
+    const refusal = readJobSendRefusal(detail?.sendRefusal);
+    if (refusal !== null) return { kind: 'refused', outcome: refusal };
+    switch (error.code) {
+      case 'job_not_found':
+        return { kind: 'refused', outcome: { state: 'refused', code: 'not_found', reason: error.message } };
+      case 'job_pre_epoch_history':
+        return { kind: 'refused', outcome: { state: 'refused', code: 'pre_generation_job', reason: error.message } };
+      case 'scope_mismatch':
+        return { kind: 'refused', outcome: { state: 'refused', code: 'scope_mismatch', reason: error.message } };
+      default:
         throw error;
-      }
-      return interpretJobSendOutcome(jobSendDeliveryFailure(error), priorDeliveryUncertain);
     }
-  };
+  }
+  if (isRecord(observed)) {
+    const refusal = readJobSendRefusal(observed.sendRefusal);
+    if (refusal !== null) return { kind: 'refused', outcome: refusal };
+  }
+  const parsedDetail = jobSendDetailSchema.safeParse(observed);
+  if (!parsedDetail.success) return { kind: 'refused', outcome: unsupportedJobSendBuild() };
+  return { kind: 'bound', binding: buildJobSendBinding(jobId, parsedDetail.data) };
+}
 
-  const sendJob = async (jobId: string, input: string): Promise<CliJobSendOutcome> => {
-    const clientMessageId = randomUUID();
-    jobSendSchema.shape.input.parse(input);
-    const target = await bindJobSendTarget(jobId);
-    if (target.kind === 'refused') return target.outcome;
-    const envelope = await buildJobSendEnvelope(target.binding, input, clientMessageId);
-    const outcome = await deliverJobSend(envelope);
-    return selectJobSendOutcome(target.binding, outcome);
-  };
+async function buildJobSendEnvelope(
+  context: JobSendClientContext,
+  binding: BoundJobSendTarget,
+  input: string,
+  clientMessageId: string,
+): Promise<z.infer<typeof jobSendSchema>> {
+  const { defaultContext, providerRegistry, canonicalProjectRoot } = context;
+  const { jobId, detail, target } = binding;
+  const transport =
+    target.mode === 'continue'
+      ? await buildProviderTransportContextBody(
+          {},
+          defaultContext,
+          providerRegistry,
+          detail.status.provider === null ? [] : [detail.status.provider],
+        )
+      : buildTransportContextBody({}, defaultContext);
+  return jobSendSchema.parse({
+    projectRoot: canonicalProjectRoot,
+    jobId,
+    input,
+    clientMessageId,
+    target,
+    providerScope: transport.providerScope,
+    coralEnv: transport.coralEnv,
+    networkEnv: transport.networkEnv,
+    owner: transport.owner,
+  });
+}
 
-  const request = async <TResult>(method: string, params?: unknown): Promise<TResult> => {
+function issueJobSend(
+  context: JobSendClientContext,
+  params: z.infer<typeof jobSendSchema>,
+  delivery: { issued: boolean },
+): Promise<unknown> {
+  const authOptions = context.ipcAuthOptions();
+  return retrySuccessionPausedRequest(
+    (remainingMs) =>
+      issueWithSuccessorAfterLifecycleRefusal<unknown>('jobs.send', resolvePluginRoot(), async (client) => {
+        delivery.issued = true;
+        try {
+          const result = await client.request<unknown>('jobs.send', params, {
+            timeoutMs: remainingMs,
+            ...authOptions,
+          });
+          if (isRecord(result) && result.state === 'refused' && result.code === 'succession_admission_paused')
+            throw new IpcRpcError({
+              code: -32000,
+              message: typeof result.reason === 'string' ? result.reason : 'Admission paused',
+              data: { code: 'succession_admission_paused' },
+            });
+          return result;
+        } catch (error) {
+          if (error instanceof IpcLifecycleRefusal) delivery.issued = false;
+          throw error;
+        }
+      }),
+    params.target.mode === 'steer' ? 20_000 : TOOL_TIMEOUT_MS,
+  );
+}
+
+async function deliverJobSend(
+  context: JobSendClientContext,
+  params: z.infer<typeof jobSendSchema>,
+): Promise<CliJobSendOutcome> {
+  await context.reconcileKbBoot();
+  const delivery = { issued: false };
+  let priorDeliveryUncertain = false;
+  try {
+    let result: unknown;
+    try {
+      result = await issueJobSend(context, params, delivery);
+    } catch (error: unknown) {
+      if (!delivery.issued || error instanceof IpcLifecycleRefusal || error instanceof IpcRpcError) throw error;
+      priorDeliveryUncertain = true;
+      result = await issueJobSend(context, params, delivery);
+    }
+    return interpretJobSendOutcome(result, priorDeliveryUncertain);
+  } catch (error) {
+    if (!delivery.issued || error instanceof IpcLifecycleRefusal) {
+      if (priorDeliveryUncertain)
+        return {
+          state: 'unknown',
+          reason:
+            'An earlier invocation may have delivered this message; its retry could not obtain a decisive response.',
+        };
+      throw error;
+    }
+    return interpretJobSendOutcome(jobSendDeliveryFailure(error), priorDeliveryUncertain);
+  }
+}
+
+function createJobSendClient(context: JobSendClientContext): Pick<CliCommandClient, 'sendJob'> {
+  return {
+    sendJob: async (jobId, input) => {
+      const clientMessageId = randomUUID();
+      jobSendSchema.shape.input.parse(input);
+      const target = await bindJobSendTarget(context, jobId);
+      if (target.kind === 'refused') return target.outcome;
+      const envelope = await buildJobSendEnvelope(context, target.binding, input, clientMessageId);
+      const outcome = await deliverJobSend(context, envelope);
+      return selectJobSendOutcome(target.binding, outcome);
+    },
+  };
+}
+
+function createCoordinatorTransport(context: CliTransportContext) {
+  const request = createCoordinatorRequester(context);
+  const subscribeTo = createCoordinatorSubscriber(context);
+  const subscribe = <TResult>(method: string, params?: unknown, options?: IpcSubscriptionOptions) =>
+    subscribeTo<TResult>(method, () => params, options);
+  return { request, subscribe, subscribeTo };
+}
+
+function createCoordinatorRequester(context: CliTransportContext): CoordinatorRequest {
+  const { ipcAuthOptions, reconcileKbBoot } = context;
+  return async <TResult>(method: string, params?: unknown): Promise<TResult> => {
     const authOptions = ipcAuthOptions();
     await reconcileKbBoot();
     // A response envelope with no `result` key decodes rather than failing, so an absent result reaches this
     // as `undefined` as well as `null`, and both must refuse — neither is a value a caller may dereference.
-    // see jsonRpcResponseEnvelopeSchema in src/transport/ipc/json-rpc.ts
     const issue = (timeoutMs: number) =>
       issueWithSuccessorAfterLifecycleRefusal<TResult | null | undefined>(method, resolvePluginRoot(), (client) =>
         client.request<TResult | null | undefined>(method, params, { timeoutMs, ...authOptions }),
@@ -1150,8 +1169,11 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
     }
     return result;
   };
+}
 
-  const subscribeTo = async <TResult>(
+function createCoordinatorSubscriber(context: CliTransportContext) {
+  const { path, commandClass, ipcAuthOptions, reconcileKbBoot } = context;
+  return async <TResult>(
     method: string,
     paramsFor: (coordinator: EnsuredIpcClient) => unknown,
     options?: IpcSubscriptionOptions,
@@ -1183,39 +1205,23 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
       }),
     );
   };
-  const subscribe = <TResult>(
-    method: string,
-    params?: unknown,
-    options?: IpcSubscriptionOptions,
-  ): Promise<IpcSubscription<TResult>> => subscribeTo<TResult>(method, () => params, options);
+}
 
-  const readStore = () => getSharedReadCoralStore(canonicalProjectRoot);
-
-  const bindings: CliClientBindings = {
-    path,
-    commandClass,
-    canonicalProjectRoot,
-    defaultContext,
-    providerRegistry,
-    request,
-    readStore,
-  };
+function createJobsWaitClient(
+  context: Pick<CliTransportContext, 'ipcAuthOptions' | 'reconcileKbBoot'> & {
+    projectRoot: string;
+    subscribeTo: ReturnType<typeof createCoordinatorTransport>['subscribeTo'];
+  },
+): Pick<CliCommandClient, 'snapshotJobsWait' | 'subscribeJobsWait'> {
   return {
-    ...createSessionDiscussionClient(bindings),
-    sendJob,
-    ...createKbEntryClient(bindings),
-    ...createKbWikiClient(bindings),
-    ...createKbSourceCommunityClient(bindings),
-    ...createKbMemoClient(bindings),
-    subscribe,
     snapshotJobsWait: async (fields) => {
       const invocation = getWaitInvocation();
       const run = <T>(work: () => Promise<T>) => (invocation ? invocation.run(work) : work());
-      await run(reconcileKbBoot);
+      await run(context.reconcileKbBoot);
       const coordinator = await run(() => ensure('jobs.wait.snapshot', resolvePluginRoot()));
       const request = {
         jobIds: fields.jobIds,
-        projectRoot,
+        projectRoot: context.projectRoot,
         ...(fields.cursor === undefined ? {} : { cursor: fields.cursor }),
         ...(fields.executionSelections === undefined ? {} : { executionSelections: fields.executionSelections }),
         ...(fields.lines === undefined ? {} : { lines: fields.lines }),
@@ -1228,7 +1234,7 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
             (client) =>
               client.request<WaitSnapshot>('jobs.wait.snapshot', request, {
                 timeoutMs: Math.max(1, Math.ceil(invocation?.remainingMs() ?? 30_000)),
-                ...ipcAuthOptions(),
+                ...context.ipcAuthOptions(),
               }),
             undefined,
             coordinator,
@@ -1244,7 +1250,62 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
         throw error;
       }
     },
-    subscribeJobsWait: (fields, options) => subscribeTo('jobs.wait', () => jobsWaitRequest(fields), options),
+    subscribeJobsWait: (fields, options) => context.subscribeTo('jobs.wait', () => jobsWaitRequest(fields), options),
+  };
+}
+
+function requireDispatchableCommand(command: Command): CommandClass {
+  const path = commandPath(command);
+  const resolution = classifyCommand(command);
+
+  if (resolution.kind === 'container') {
+    throw new Error(`makeClient() cannot dispatch a container command: ${path}`);
+  }
+
+  if (resolution.kind === 'exempt') {
+    throw new Error(`makeClient() cannot dispatch exempt command "${path}": ${resolution.rationale}`);
+  }
+
+  if (resolution.kind === 'unclassified') {
+    throw new Error(`makeClient() cannot dispatch unclassified command "${path}"`);
+  }
+
+  return resolution.commandClass;
+}
+
+export function makeClient(projectRoot: string, command: Command): CliCommandClient {
+  const path = commandPath(command);
+  const commandClass = requireDispatchableCommand(command);
+  const canonicalProjectRoot = canonicalizeWorkDir(projectRoot, process.cwd());
+  const defaultContext = createDefaultInvocationContext(canonicalProjectRoot);
+  const providerRegistry = createBuiltInProviderRegistry();
+  const ipcAuth = childPrincipalAuthFromEnv();
+  const ipcAuthOptions = () => childPrincipalAuthOptions(ipcAuth);
+
+  const reconcileKbBoot = createKbBootReconciler(path, ipcAuth);
+
+  const transportContext = { path, commandClass, ipcAuthOptions, reconcileKbBoot };
+  const { request, subscribe, subscribeTo } = createCoordinatorTransport(transportContext);
+  const readStore = () => getSharedReadCoralStore(canonicalProjectRoot);
+
+  const bindings: CliClientBindings = {
+    path,
+    commandClass,
+    canonicalProjectRoot,
+    defaultContext,
+    providerRegistry,
+    request,
+    readStore,
+  };
+  return {
+    ...createSessionDiscussionClient(bindings),
+    ...createJobSendClient({ ...bindings, ...transportContext }),
+    ...createKbEntryClient(bindings),
+    ...createKbWikiClient(bindings),
+    ...createKbSourceCommunityClient(bindings),
+    ...createKbMemoClient(bindings),
+    subscribe,
+    ...createJobsWaitClient({ ...transportContext, projectRoot, subscribeTo }),
   };
 }
 

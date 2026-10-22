@@ -396,6 +396,22 @@ it.each([false, true])('follows a launched continuation by default and detaches=
   }
 });
 
+it('detaches a continuation using the ordinal derived by target binding when the launch omits it', async () => {
+  const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+  client.sendJob.mockResolvedValueOnce({
+    state: 'launched',
+    execution: 2,
+    launch: { kind: 'provider-session', jobId: 'job-1', requestedSeq: 100, epochKey: 'epoch', launchState: 'queued' },
+  });
+  await program().parseAsync(['jobs', 'send', 'job-1', '-d', '-i', 'continue'], { from: 'user' });
+  const text = stdout.mock.calls.map(([chunk]) => String(chunk)).join('');
+  expect(text).toContain('Provider job job-1 execution #2 queued');
+  expect(text).toContain('--execution-selection');
+  expect(text).toContain('100');
+  expect(launchAndFollow).not.toHaveBeenCalled();
+  expect(process.exitCode).toBe(0);
+});
+
 it.each([false, true])('returns a steer immediately with detach=%s', async (detach) => {
   vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
   await program().parseAsync(['jobs', 'send', 'job-1', ...(detach ? ['-d'] : []), '-i', 'steer'], { from: 'user' });

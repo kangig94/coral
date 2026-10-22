@@ -3,8 +3,7 @@ import type { WaitSnapshotRequest } from '../../jobs/wait/contract.js';
 import type { DiscussDetailResponse, DiscussSummaryDto, DiscussView } from '../../discuss/read-contract.js';
 import type { ExpansionRequestPort } from '../../expansion/rpc-contract.js';
 import type { JobLaunchRequest, ProviderJobLaunchDecision, WorkflowLaunchDecision } from '../../jobs/launch.js';
-import type { JobsReleaseResult } from '../../jobs/records.js';
-import type { JobStatus } from '../../jobs/records.js';
+import type { JobsReleaseResult, JobsListResponse } from '../../jobs/records.js';
 import type { WaitStreamEvent, CanonicalWaitStreamRequest } from '../../jobs/wait/contract.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type { Principal } from '../../security/principal.js';
@@ -79,7 +78,7 @@ interface JobsRequestPort {
   waitStream(req: CanonicalWaitStreamRequest): AsyncGenerator<WaitStreamEvent>;
 
   waitHandoverSignal(): AbortSignal;
-  list(filters: JobsListFilters): Array<{ jobId: string; status: JobStatus; released?: boolean }>;
+  list(filters: JobsListFilters): JobsListResponse['jobs'];
   detail(jobId: string): JobDetailLookup;
   unknownJobDisposition(): 'pre-epoch-history' | 'not-found' | 'discovery-unknown' | 'discovery-unreadable';
   unknownJobCaveat?(): string;

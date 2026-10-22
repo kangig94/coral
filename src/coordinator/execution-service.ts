@@ -168,6 +168,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
       getCurrentJournalSeq: deps.getCurrentJournalSeq,
     });
     this.workflowService = new WorkflowExecutionService({
+      executionFinisher: deps.executionFinisher,
       currentJobEpochKey: deps.currentJobEpochKey,
       runningJobs: deps.runningWorkflowJobs,
       runtime: this.runtime,
@@ -283,7 +284,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     workDir: CanonicalWorkDir,
     signal?: AbortSignal,
   ): Promise<WorkflowLaunchDecision> {
-    return this.workflowService.executeWorkflow(providerName, ast, input, ctx, workDir, signal);
+    return this.workflowService.executeWorkflow({ providerName, ast, input, ctx, workDir, signal });
   }
 
   list(providerName: string): ListResult {

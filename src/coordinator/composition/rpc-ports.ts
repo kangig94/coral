@@ -89,6 +89,7 @@ function providerProxySetContainBooleanResponse(
 function createCoordinatorJobLister(
   getProgressStore: () => JobStore,
   attention: JobAttention,
+  admitWait: JobAddressing['admitWait'],
 ): RpcPorts['jobs']['list'] {
   return (filters) => {
     const progressStore = getProgressStore();
@@ -124,6 +125,19 @@ function createCoordinatorJobLister(
       });
     }
 
+    if (filters.unwaited === true && jobs.length > 0) {
+      const admissions = admitWait({ jobIds: jobs.map(({ jobId }) => jobId) });
+      for (const job of jobs) {
+        const admission = admissions.find((admission) => admission.jobId === job.jobId);
+        if (
+          admission?.disposition === 'admitted' &&
+          !admission.observationDeferred &&
+          admission.detail?.status.execution === job.execution &&
+          admission.selection !== undefined
+        )
+          job.executionSelection = admission.selection;
+      }
+    }
     return jobs;
   };
 }
@@ -189,7 +203,9 @@ export function createCoordinatorRpcPorts({
           (scoped) => jobAddressing.waitStream(scoped),
         ),
       waitHandoverSignal,
-      list: createCoordinatorJobLister(getProgressStore, services.jobAttention),
+      list: createCoordinatorJobLister(getProgressStore, services.jobAttention, (request) =>
+        jobAddressing.admitWait(request),
+      ),
       detail: (jobId) => jobAddressing.detail(jobId),
       unknownJobDisposition: () => jobAddressing.unknownJobDisposition(),
       unknownJobCaveat: () => jobAddressing.unknownJobCaveat(),

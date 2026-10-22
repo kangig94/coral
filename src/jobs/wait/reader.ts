@@ -99,6 +99,8 @@ export async function* readWaitSession(input: WaitReadInput): AsyncGenerator<Wai
       const admissions = read();
       const deferred = new Set(admissions.filter((job) => job.observationDeferred).map((job) => job.jobId));
       session.reconcile(admissions);
+      for (const admission of session.admissions)
+        if (admission.disposition === 'admitted' && !admission.observationDeferred) request.onAdmission?.(admission);
       // A bounded read spends one budget over the whole request; drain and internal reads spend one per poll.
       const progress = session.withProgress(input.visit, (source) =>
         session.select(

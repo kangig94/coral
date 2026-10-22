@@ -1147,12 +1147,16 @@ async function executeJobsDetailCatalogRequest({
   if ('kind' in detail && detail.kind === 'pre-epoch-history') {
     return unknownJobsAnswer(rpcPorts, [parsed.jobId]);
   }
+  const errorDetail = {
+    epochKey: detail.epochKey,
+    ...(detail.sendRefusal === undefined ? {} : { sendRefusal: detail.sendRefusal }),
+  };
   if ('kind' in detail && detail.kind === 'outcome-unreadable')
     return unary(
       {
         code: 'job_outcome_unreadable',
         message: `Job ${parsed.jobId}: outcome-unreadable. ${detail.message ?? 'The source cannot be read; this coordinator will not re-read it before its next start.'}`,
-        detail: { epochKey: detail.epochKey },
+        detail: errorDetail,
       },
       409,
     );
@@ -1161,7 +1165,7 @@ async function executeJobsDetailCatalogRequest({
       {
         code: 'job_outcome_unrecoverable',
         message: `Job ${parsed.jobId} never reached a recorded outcome in a superseded store epoch that nothing will write again, so no outcome will ever be recorded; retrying will not change that.`,
-        detail: { epochKey: detail.epochKey },
+        detail: errorDetail,
       },
       409,
     );
@@ -1171,7 +1175,7 @@ async function executeJobsDetailCatalogRequest({
       {
         code: 'job_unresolved',
         message: `Job ${parsed.jobId} remains unresolved; a scheduled maintenance retry or the next coordinator start will re-read its epoch.`,
-        detail: { epochKey: detail.epochKey },
+        detail: errorDetail,
       },
       409,
     );
@@ -1181,7 +1185,7 @@ async function executeJobsDetailCatalogRequest({
       {
         code: 'job_detail_unreadable',
         message: `Job ${parsed.jobId} has a recorded detail in a form this Coral build cannot read, so this build cannot show its outcome; retrying with this build will not change that.`,
-        detail: { epochKey: detail.epochKey },
+        detail: errorDetail,
       },
       409,
     );

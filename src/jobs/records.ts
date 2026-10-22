@@ -11,6 +11,7 @@ import type { JobProgressTiming } from './event-bodies.js';
 import type { ExecutionOwner } from '../runtime/execution-owner.js';
 import type { CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
 import type { LaunchPool } from './contracts/admission.js';
+import type { WaitExecutionSelection } from './wait/execution-selection.js';
 
 /**
  * Derived launch-readiness view of a job — a 4-way coarsening of `phase` +
@@ -254,6 +255,7 @@ export type JobsListResponse = {
   jobs: Array<{
     jobId: string;
     execution?: number | null;
+    executionSelection?: WaitExecutionSelection;
     resultPath?: string | null;
     status: JobStatus;
     released?: boolean;

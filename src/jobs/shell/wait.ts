@@ -158,6 +158,17 @@ export function planCarrierWaitEvents(
   return { interrupted, unknownJobIds: unknownJobIds.sort() };
 }
 
+type AdmittedWaitDetail = ExecutionWaitDetail & { status: JobStatus };
+
+interface WaitAdmissionContext {
+  jobId: string;
+  epochKey: string;
+  session?: WaitStreamRequest;
+  cached?: WaitAdmission;
+  supplied?: WaitExecutionSelection;
+  selected?: WaitExecutionSelection;
+}
+
 export class WaitCoordinator {
   private readonly deps: WaitCoordinatorDeps;
   constructor(deps: WaitCoordinatorDeps) {
@@ -334,32 +345,57 @@ export class WaitCoordinator {
     if (session) this.metadataAdmissions.set(session, cache);
     const saved = cache.get(jobId);
     const cached = saved && sameEpoch(saved.epochKey, epochKey) ? saved : undefined;
-    if (cached?.detail && !cached.detail.exit && cached.detail.status.lastSeq === this.deps.readJobLastSeq(jobId)) {
-      const execution = cached.detail.status.execution;
-      const finishingStatus =
-        execution === null ? null : this.deps.readExecutionFinishingStatus?.({ jobId, execution });
-      const current =
-        finishingStatus === undefined
-          ? cached
-          : {
-              ...cached,
-              detail: {
-                ...cached.detail,
-                status: { ...cached.detail.status, finishingStatus: finishingStatus ?? undefined },
-              },
-            };
-      return cached.queued ? { ...current, queued: this.queuedWaitEvent(cached.detail.status) } : current;
+    const refreshed = cached === undefined ? undefined : this.refreshCachedAdmission(jobId, cached);
+    if (refreshed !== undefined) return refreshed;
+    const request = session as WaitStreamRequest | undefined;
+    const supplied = request?.executionSelections?.find((selection) => selection.jobId === jobId);
+    const admission = this.readSelectedAdmission({
+      jobId,
+      epochKey,
+      session: request,
+      cached,
+      supplied,
+      selected: cached?.selection ?? supplied,
+    });
+    if (admission.disposition === 'admitted') cache.set(jobId, admission);
+    return admission;
+  }
+
+  private refreshCachedAdmission(jobId: string, cached: WaitAdmission): WaitAdmission | undefined {
+    if (cached.detail && !cached.detail.exit && cached.detail.status.lastSeq === this.deps.readJobLastSeq(jobId)) {
+      return this.refreshPendingAdmission(jobId, cached, cached.detail);
     }
-    if (cached?.detail?.exit) {
+    if (cached.detail?.exit) {
       const availability = this.deps.observeResultAvailability(jobId, cached.detail.status.execution ?? undefined);
       if (availability.kind === 'pending')
         this.deps.hintResultRepair?.(jobId, cached.detail.status.execution ?? undefined);
       return { ...cached, availability };
     }
-    const supplied = (session as WaitStreamRequest | undefined)?.executionSelections?.find(
-      (selection) => selection.jobId === jobId,
-    );
-    const selected = cached?.selection ?? supplied;
+    return undefined;
+  }
+
+  private refreshPendingAdmission(
+    jobId: string,
+    cached: WaitAdmission,
+    detail: NonNullable<WaitAdmission['detail']>,
+  ): WaitAdmission {
+    const execution = detail.status.execution;
+    const finishingStatus = execution === null ? null : this.deps.readExecutionFinishingStatus?.({ jobId, execution });
+    const current =
+      finishingStatus === undefined
+        ? cached
+        : {
+            ...cached,
+            detail: {
+              ...detail,
+              status: { ...detail.status, finishingStatus: finishingStatus ?? undefined },
+            },
+          };
+    return cached.queued ? { ...current, queued: this.queuedWaitEvent(detail.status) } : current;
+  }
+
+  private readSelectedAdmission(context: WaitAdmissionContext): WaitAdmission {
+    const { jobId, epochKey, session, selected } = context;
     if (selected && !sameEpoch(selected.epochKey, epochKey))
       return {
         jobId,
@@ -367,11 +403,7 @@ export class WaitCoordinator {
         epochKey: selected.epochKey,
         message: 'The selected request belongs to another epoch; its evidence must be reopened there.',
       };
-    let projected = this.deps.loadJobWaitDetail(
-      jobId,
-      selected?.requestedSeq,
-      (session as WaitStreamRequest | undefined)?.jobIds,
-    );
+    let projected = this.deps.loadJobWaitDetail(jobId, selected?.requestedSeq, session?.jobIds);
     if (
       selected &&
       (projected.requestedSeq !== selected.requestedSeq || !projected.status) &&
@@ -383,30 +415,7 @@ export class WaitCoordinator {
         epochKey,
         message: 'The selected request is not readable; no other execution was selected.',
       };
-    const deliveredEndSeq = supplied?.deliveredEndSeq;
-    if (!cached && supplied && deliveredEndSeq !== undefined) {
-      if (projected.terminalSeq !== deliveredEndSeq)
-        throw new WaitSessionError(
-          'wait_selection_invalid',
-          'Delivered-end evidence does not match the selected execution.',
-          (session as WaitStreamRequest | undefined)?.jobIds ?? [jobId],
-        );
-      if (!supplied.awaitingArtifact && (session as WaitStreamRequest | undefined)?.jobIds?.includes(jobId) !== false) {
-        const next = projected.requestSeqs?.find((seq) => seq > deliveredEndSeq);
-        if (next !== undefined)
-          projected = this.deps.loadJobWaitDetail(jobId, next, (session as WaitStreamRequest | undefined)?.jobIds);
-      }
-    }
-    if (
-      !selected &&
-      (session as WaitStreamRequest | undefined)?.cursor !== undefined &&
-      (projected.requestSeqs?.length ?? 0) > 1
-    )
-      throw new WaitSessionError(
-        'wait_admission_required',
-        'A seq cursor cannot identify the admitted execution. Start a fresh wait without a cursor.',
-        (session as WaitStreamRequest | undefined)?.jobIds ?? [jobId],
-      );
+    projected = this.advanceWaitSelection(context, projected);
     if (!projected.status)
       return this.deps.observeJobAbsence?.(jobId) === true
         ? { jobId, disposition: 'missing' }
@@ -416,6 +425,40 @@ export class WaitCoordinator {
             epochKey,
             message: 'The job is not yet readable in the active journal; this wait reads it again on its next poll',
           };
+    return this.buildWaitAdmission(context, { ...projected, status: projected.status });
+  }
+
+  private advanceWaitSelection(context: WaitAdmissionContext, projected: ExecutionWaitDetail): ExecutionWaitDetail {
+    const { jobId, session, selected, cached } = context;
+    if (!cached) projected = this.advanceDeliveredExecution(context, projected);
+    if (!selected && session?.cursor !== undefined && (projected.requestSeqs?.length ?? 0) > 1)
+      throw new WaitSessionError(
+        'wait_admission_required',
+        'A seq cursor cannot identify the admitted execution. Start a fresh wait without a cursor.',
+        session?.jobIds ?? [jobId],
+      );
+    return projected;
+  }
+
+  private advanceDeliveredExecution(
+    context: WaitAdmissionContext,
+    projected: ExecutionWaitDetail,
+  ): ExecutionWaitDetail {
+    const { jobId, session, supplied } = context;
+    const deliveredEndSeq = supplied?.deliveredEndSeq;
+    if (!supplied || deliveredEndSeq === undefined) return projected;
+    if (projected.terminalSeq !== deliveredEndSeq)
+      throw new WaitSessionError(
+        'wait_selection_invalid',
+        'Delivered-end evidence does not match the selected execution.',
+        session?.jobIds ?? [jobId],
+      );
+    if (supplied.awaitingArtifact || session?.jobIds?.includes(jobId) === false) return projected;
+    const next = projected.requestSeqs?.find((seq) => seq > deliveredEndSeq);
+    return next === undefined ? projected : this.deps.loadJobWaitDetail(jobId, next, session?.jobIds);
+  }
+
+  private readAdmissionExit(jobId: string, projected: AdmittedWaitDetail): ExecutionWaitDetail['exit'] {
     const terminal: JobTerminalEvent | undefined = projected.exit
       ? {
           type: 'terminal',
@@ -434,42 +477,54 @@ export class WaitCoordinator {
             diagnostics: { ...projected.exit.diagnostics, usage: this.readTerminalUsage(terminal, projected.status) },
           }
         : null;
+    return exit;
+  }
+
+  private buildWaitAdmission(context: WaitAdmissionContext, projected: AdmittedWaitDetail): WaitAdmission {
+    const { jobId, epochKey } = context;
+    const status = projected.status;
+    const exit = this.readAdmissionExit(jobId, projected);
     const availability = exit
       ? this.deps.observeResultAvailability(jobId, projected.status.execution ?? undefined)
       : undefined;
     if (availability?.kind === 'pending') this.deps.hintResultRepair?.(jobId, projected.status.execution ?? undefined);
-    const cursor = (session as WaitStreamRequest | undefined)?.cursor;
+    const selection = this.selectWaitExecution(context, projected, availability);
+    return {
+      jobId,
+      disposition: 'admitted',
+      epochKey,
+      ...(selection === undefined ? {} : { selection }),
+      detail: { status, terminalSeq: projected.terminalSeq, readiness: 'ready', exit },
+      availability,
+      continuity: this.readQueryContinuity(jobId, status),
+      ...(status.phase === 'queued' && !exit ? { queued: this.queuedWaitEvent(status) } : {}),
+    };
+  }
+
+  private selectWaitExecution(
+    context: WaitAdmissionContext,
+    projected: ExecutionWaitDetail,
+    availability: ResultAvailability | undefined,
+  ): WaitExecutionSelection | undefined {
+    const { jobId, epochKey, session, selected } = context;
+    const cursor = session?.cursor;
     const decoded = cursor === undefined ? undefined : decodeWaitCursor(cursor);
     const previouslyDelivered =
       selected === undefined &&
       decoded?.kind === 'decoded' &&
       projected.terminalSeq !== undefined &&
       projected.terminalSeq <= decoded.watermark;
-    const admission: WaitAdmission = {
+    if (projected.requestedSeq === undefined) return undefined;
+    return {
       jobId,
-      disposition: 'admitted',
       epochKey,
-      ...(projected.requestedSeq === undefined
-        ? {}
-        : {
-            selection: {
-              jobId,
-              epochKey,
-              requestedSeq: projected.requestedSeq,
-              ...(selected?.requestedSeq === projected.requestedSeq
-                ? { deliveredEndSeq: selected.deliveredEndSeq, awaitingArtifact: selected.awaitingArtifact }
-                : previouslyDelivered
-                  ? { deliveredEndSeq: projected.terminalSeq, awaitingArtifact: availability?.kind === 'pending' }
-                  : { awaitingArtifact: false }),
-            } satisfies WaitExecutionSelection,
-          }),
-      detail: { status: projected.status, terminalSeq: projected.terminalSeq, readiness: 'ready', exit },
-      availability,
-      continuity: this.readQueryContinuity(jobId, projected.status),
-      ...(projected.status.phase === 'queued' && !exit ? { queued: this.queuedWaitEvent(projected.status) } : {}),
+      requestedSeq: projected.requestedSeq,
+      ...(selected?.requestedSeq === projected.requestedSeq
+        ? { deliveredEndSeq: selected.deliveredEndSeq, awaitingArtifact: selected.awaitingArtifact }
+        : previouslyDelivered
+          ? { deliveredEndSeq: projected.terminalSeq, awaitingArtifact: availability?.kind === 'pending' }
+          : { awaitingArtifact: false }),
     };
-    cache.set(jobId, admission);
-    return admission;
   }
 
   admitWait(request: WaitStreamRequest): WaitAdmission[] {

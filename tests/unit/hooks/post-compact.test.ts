@@ -41,7 +41,13 @@ describe('post-compact.mjs', () => {
         jobs: [
           { jobId: 'job-live', phase: 'running', hasResult: false, resultPath: null },
           { jobId: 'job-queued', phase: 'queued', hasResult: false, resultPath: null },
-          { jobId: 'job-done', phase: 'completed', hasResult: true, resultPath: join(resultDir, 'result.md') },
+          {
+            jobId: 'job-done',
+            execution: 2,
+            phase: 'completed',
+            hasResult: true,
+            resultPath: join(resultDir, 'result.md'),
+          },
         ],
       }),
       'utf8',
@@ -108,7 +114,13 @@ describe('post-compact.mjs', () => {
           projectDir: fixture.projectRoot,
           capturedAtMs: Date.now(),
           jobs: [
-            { jobId: 'job-live', phase: 'running', hasResult: false, resultPath: paths[kind as keyof typeof paths] },
+            {
+              jobId: 'job-live',
+              execution: 1,
+              phase: 'running',
+              hasResult: false,
+              resultPath: paths[kind as keyof typeof paths],
+            },
           ],
         }),
       );
@@ -126,6 +138,84 @@ describe('post-compact.mjs', () => {
       expect(result.stderr).toContain('rejected invalid compact snapshot');
     },
   );
+
+  it.each([
+    ['another job', 'job-other', 2, 2],
+    ['another execution', 'job-done', 3, 2],
+    ['missing execution', 'job-done', 2, undefined],
+    ['null execution', 'job-done', 2, null],
+    ['zero execution', 'job-done', 2, 0],
+    ['negative execution', 'job-done', 2, -1],
+    ['fractional execution', 'job-done', 2, 1.5],
+    ['string execution', 'job-done', 2, '2'],
+    ['unsafe execution', 'job-done', 2, Number.MAX_SAFE_INTEGER + 1],
+  ])('rejects a terminal snapshot pointing to %s', (_name, artifactJob, artifactExecution, execution) => {
+    const fixture = createFixture();
+    const hooksDir = join(fixture.snapshotDir, 'hooks');
+    const resultDir = join(
+      fixture.root,
+      '.coral',
+      buildFlavor() === 'dev' ? 'exports-dev' : 'exports',
+      'jobs',
+      String(artifactJob),
+      'executions',
+      String(artifactExecution),
+    );
+    mkdirSync(hooksDir, { recursive: true });
+    mkdirSync(resultDir, { recursive: true });
+    writeFileSync(join(resultDir, 'result.md'), 'A readable result');
+    writeFileSync(
+      join(hooksDir, `active-jobs-${Date.now()}-fixture.json`),
+      JSON.stringify({
+        version: 1,
+        projectDir: fixture.projectRoot,
+        capturedAtMs: Date.now(),
+        jobs: [
+          {
+            jobId: 'job-done',
+            execution,
+            phase: 'completed',
+            hasResult: true,
+            resultPath: join(resultDir, 'result.md'),
+          },
+        ],
+      }),
+    );
+    const result = runHook(
+      POST_COMPACT_HOOK,
+      { cwd: fixture.projectRoot },
+      { HOME: fixture.root, CLAUDE_PROJECT_DIR: fixture.projectRoot, TMPDIR: fixture.tmpRoot },
+    );
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toContain('rejected invalid compact snapshot');
+  });
+
+  it('rejects a terminal row without an execution even when no artifact path is supplied', () => {
+    const fixture = createFixture();
+    const hooksDir = join(fixture.snapshotDir, 'hooks');
+    mkdirSync(hooksDir, { recursive: true });
+    writeFileSync(
+      join(hooksDir, `active-jobs-${Date.now()}-fixture.json`),
+      JSON.stringify({
+        version: 1,
+        projectDir: fixture.projectRoot,
+        capturedAtMs: Date.now(),
+        jobs: [
+          { jobId: 'job-live', execution: 1, phase: 'running', hasResult: false, resultPath: null },
+          { jobId: 'job-done', phase: 'completed', hasResult: false, resultPath: null },
+        ],
+      }),
+    );
+    const result = runHook(
+      POST_COMPACT_HOOK,
+      { cwd: fixture.projectRoot },
+      { HOME: fixture.root, CLAUDE_PROJECT_DIR: fixture.projectRoot, TMPDIR: fixture.tmpRoot },
+    );
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toContain('rejected invalid compact snapshot');
+  });
 
   it('uses collision- and traversal-resistant keys for Coral-owned project paths', () => {
     expect(projectPathKey('/a-b/c')).not.toBe(projectPathKey('/a/b-c'));

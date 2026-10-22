@@ -3338,16 +3338,16 @@ export class ProviderProxySetLifecycle {
         );
       return;
     }
-    const operationKeys = new Set(claims.map(({ operation }) => operationKey(operation)));
+    const operationKeys = new Set(this.#deps.claims.operationsFor(identity).map(operationKey));
     const fence = this.#deps.fenceProviderOperationMutations?.(identity);
     if (fence === undefined) throw new Error('provider_proxy_operation_containment_mutation_fence_unavailable');
     const begin = (): void => {
       try {
         if (this.#slots.get(slot.key) !== slot || (slot.kind !== 'available' && slot.kind !== 'draining')) return;
-        const currentClaims = this.#deps.claims.claimsFor(identity);
+        const currentOperations = this.#deps.claims.operationsFor(identity);
         if (
-          currentClaims.length !== operationKeys.size ||
-          currentClaims.some(({ operation }) => !operationKeys.has(operationKey(operation)))
+          currentOperations.length !== operationKeys.size ||
+          currentOperations.some((operation) => !operationKeys.has(operationKey(operation)))
         )
           return;
         const decision = this.#operationContainmentDecision(identity, request);
@@ -3363,23 +3363,16 @@ export class ProviderProxySetLifecycle {
   #operationContainmentDecision(
     identity: ProviderProxySetIdentity,
     request: ProviderOperationContainmentRequest,
-  ): Extract<ProviderProxySetContainmentDecision, { action: 'stop-and-reap' }> | null {
+  ): ProviderProxySetRetirementStopDecision | null {
     const claims = this.#deps.claims.claimsFor(identity);
     if (typeof request !== 'string') {
       const claim = this.#deps.claims.claimFor(request.operation);
       if (
         claim === null ||
-        claims.some((claim) => !claim.settlementContainmentRequested) ||
+        claim.retirementProtection !== 'released-after-settlement-exhaustion' ||
         !providerProxySetIdentitiesEqual(claim.setIdentity, identity)
       )
         return null;
-      return {
-        action: 'stop-and-reap',
-        reason: 'settlement_retries_exhausted',
-        operations: claims.map(({ operation }) => operation),
-        liveClaims: claims.length,
-        setIdentity: identity,
-      };
     }
     return claims.length === 0
       ? { action: 'stop-and-reap', reason: 'operation_release_failed', liveClaims: 0, setIdentity: identity }
@@ -3516,7 +3509,7 @@ export class ProviderProxySetLifecycle {
       | Extract<ProviderProxySetSlot, { kind: 'recovering' }>,
     mutationProof: ProviderProxySetFencedContainmentProof | null,
   ): Omit<ReleaseDeliveryPendingSlot, 'kind' | 'releaseEvidence' | 'routeKey'> {
-    const claimOperations = this.#deps.claims.claimsFor(slot.identity).map((claim) => claim.operation);
+    const claimOperations = this.#deps.claims.operationsFor(slot.identity);
     const pendingOperations = new Map(claimOperations.map((operation) => [operationKey(operation), operation]));
     let settleRepresentationRelease!: (disposition: ProviderProxyRepresentationReleaseSettlement) => void;
     const representationReleaseSettlement = new Promise<ProviderProxyRepresentationReleaseSettlement>((resolve) => {

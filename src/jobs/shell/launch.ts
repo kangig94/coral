@@ -116,7 +116,11 @@ import type {
   DurableProvisionalProcessSubject,
   Runtime,
 } from '../../runtime/ports.js';
-import type { ConversationInitialLaunchPort, ConversationContinuityPort } from '../conversation/contracts.js';
+import type {
+  ConversationInitialLaunchPort,
+  ConversationContinuityPort,
+  ConversationWriteResult,
+} from '../conversation/contracts.js';
 import type { CoralEventInput } from '../../store/envelope.js';
 import type { ExecutionFinisher } from '../finishing.js';
 import type { CommitContext, CommitEventsFn } from '../../store/append.js';
@@ -1546,27 +1550,42 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
     jobId: string,
     execution: number,
   ): Pick<ConversationContinuityPort, 'checkpointJobContinuityAtomic' | 'recordArtifactHandleAtomic'> {
+    const persist = async (write: () => Promise<ConversationWriteResult>): Promise<ConversationWriteResult> => {
+      let reported = false;
+      for (;;) {
+        if (this.quiescedAppServerJobs.has(executionKey(jobId, execution))) {
+          return { ok: false as const };
+        }
+        try {
+          const result = await this.trackAppServerWrite(jobId, execution, write);
+          if (this.quiescedAppServerJobs.has(executionKey(jobId, execution))) return { ok: false as const };
+          return result;
+        } catch (error: unknown) {
+          if (this.quiescedAppServerJobs.has(executionKey(jobId, execution))) return { ok: false as const };
+          if (!reported) {
+            backendLog.warn(
+              `Conversation write failed for job ${jobId} execution #${execution}; retaining local stream ownership and retrying: ${errorMessage(error)}`,
+            );
+            reported = true;
+          }
+          const signal = this.deps.executionFinisher.signal;
+          await raceWithSignal(
+            error instanceof SuccessionWriterParkedError
+              ? error.unparked
+              : this.deps.runtime.time.sleep(EXECUTION_RETRY_MS, { signal }),
+            signal,
+            () => {
+              throw signal.reason;
+            },
+          );
+        }
+      }
+    };
     return {
-      checkpointJobContinuityAtomic: async (claimedJobId, options) => {
-        if (this.quiescedAppServerJobs.has(executionKey(jobId, execution))) {
-          return { ok: false as const };
-        }
-        const result = await this.trackAppServerWrite(jobId, execution, () =>
-          this.deps.conversationManager.checkpointJobContinuityAtomic(claimedJobId, options),
-        );
-        if (this.quiescedAppServerJobs.has(executionKey(jobId, execution))) return { ok: false as const };
-        return result;
-      },
-      recordArtifactHandleAtomic: async (claimedJobId, options) => {
-        if (this.quiescedAppServerJobs.has(executionKey(jobId, execution))) {
-          return { ok: false as const };
-        }
-        const result = await this.trackAppServerWrite(jobId, execution, () =>
-          this.deps.conversationManager.recordArtifactHandleAtomic(claimedJobId, options),
-        );
-        if (this.quiescedAppServerJobs.has(executionKey(jobId, execution))) return { ok: false as const };
-        return result;
-      },
+      checkpointJobContinuityAtomic: (claimedJobId, options) =>
+        persist(() => this.deps.conversationManager.checkpointJobContinuityAtomic(claimedJobId, options)),
+      recordArtifactHandleAtomic: (claimedJobId, options) =>
+        persist(() => this.deps.conversationManager.recordArtifactHandleAtomic(claimedJobId, options)),
     };
   }
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { existsSync, readFileSync, readdirSync, unlinkSync } from 'node:fs';
-import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 
 import {
   exitIfChildProcess,
@@ -35,10 +35,11 @@ function readLatestSnapshotPath(snapshotDir) {
   return entries.length > 0 ? join(snapshotDir, entries[0]) : null;
 }
 
-function isResultPath(value) {
-  if (typeof value !== 'string' || !isAbsolute(value) || !value.endsWith('/result.md')) return false;
-  const descendant = relative(exportsJobsDir(buildFlavor()), value);
-  return descendant !== '' && descendant !== '..' && !descendant.startsWith(`..${sep}`) && !isAbsolute(descendant);
+function isResultPath(job) {
+  if (typeof job.resultPath !== 'string' || !isAbsolute(job.resultPath)) return false;
+  if (!Number.isSafeInteger(job.execution) || job.execution < 1) return false;
+  const canonicalPath = join(exportsJobsDir(buildFlavor()), job.jobId, 'executions', String(job.execution), 'result.md');
+  return resolve(job.resultPath) === canonicalPath;
 }
 
 function isSnapshotJob(value) {
@@ -49,7 +50,8 @@ function isSnapshotJob(value) {
     /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(value.jobId) &&
     typeof value.phase === 'string' &&
     typeof value.hasResult === 'boolean' &&
-    (value.resultPath == null || isResultPath(value.resultPath))
+    (isLivePhase(value.phase) || (Number.isSafeInteger(value.execution) && value.execution >= 1)) &&
+    (value.resultPath == null || isResultPath(value))
   );
 }
 
