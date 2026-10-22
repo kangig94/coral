@@ -67,6 +67,7 @@ export interface JobExit extends JobTerminal {
 
 export interface JobStatus {
   jobId: string;
+  execution: number;
   owner: ExecutionOwner;
   sessionId: string | null;
   provider: string | null;

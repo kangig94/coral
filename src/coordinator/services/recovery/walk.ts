@@ -6,7 +6,7 @@ import { StoreDecodeError } from '../../../store/body-codec.js';
 import { elapsedDurationMs } from '../../../jobs/duration.js';
 import { isTerminalPhase } from '../../../jobs/phase.js';
 import type { JobTerminalInput } from '../../../jobs/records.js';
-import { appendJobTerminalRecorded } from '../../../jobs/terminal/recording.js';
+import { appendJobExecutionOutcomeAccepted } from '../../../jobs/terminal/recording.js';
 import type { JobLifecycleFault, JobProgressFault } from '../../../jobs/outcome.js';
 import type { JobStore } from '../../../jobs/store.js';
 import type { Runtime } from '../../../runtime/ports.js';
@@ -169,16 +169,16 @@ export function settleCoordinatorRecoveryItemWithProvenance(
               options.terminal.fault,
               {
                 jobId: options.jobId,
-                sessionId: status.sessionId,
+                execution: status.execution,
                 namespace: provenance.fault(status).namespace,
                 project: status.projectRoot,
               },
               { content: options.terminal.content, durationMs },
             );
           } else if (options.terminal.kind === 'terminal') {
-            appendJobTerminalRecorded(commit, {
+            appendJobExecutionOutcomeAccepted(commit, {
               jobId: options.jobId,
-              sessionId: status.sessionId,
+              execution: status.execution,
               namespace: provenance.terminal(status).namespace,
               project: status.projectRoot,
               terminal: options.terminal.terminal,

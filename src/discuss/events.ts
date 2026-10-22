@@ -34,9 +34,7 @@ export const discussionAgentExecutionConfigSchema = z.discriminatedUnion('manual
 const discussAgentJobPurposes = discussionJobPurposes;
 export type DiscussAgentJobPurpose = (typeof discussAgentJobPurposes)[number];
 
-export const discussRunBindingSchema = z
-  .object({ agent: z.string().min(1), executionSessionId: z.string().min(1) })
-  .strict();
+export const discussRunBindingSchema = z.object({ agent: z.string().min(1), jobId: z.string().uuid() }).strict();
 
 export type DiscussEventKind = (typeof discussEventKinds)[number];
 const discussEventKindSet = new Set<string>(discussEventKinds);
@@ -205,7 +203,8 @@ const agentRunBoundPayloadSchema = discussRunBindingSchema;
 const agentJobStartedPayloadSchema = z
   .object({
     agent: z.string(),
-    jobId: z.string(),
+    jobId: z.string().uuid(),
+    execution: z.number().int().positive().safe(),
     purpose: z.enum(discussAgentJobPurposes),
     attempt: z.number().int().positive(),
   })
@@ -214,7 +213,8 @@ const agentJobStartedPayloadSchema = z
 const agentJobFinishedPayloadSchema = z
   .object({
     agent: z.string(),
-    jobId: z.string(),
+    jobId: z.string().uuid(),
+    execution: z.number().int().positive().safe(),
     outcome: z.enum(discussAgentJobOutcomes),
     attempt: z.number().int().positive(),
   })
@@ -433,8 +433,9 @@ export type DiscussDomainEvent =
 export interface PersistedDiscussAgentRun {
   provider: string;
   model: string;
-  executionSessionId?: string;
+  jobId?: string;
   currentJobId?: string;
+  currentExecution?: number;
   currentJobPurpose?: DiscussAgentJobPurpose;
   currentAttempt?: number;
   lastAttemptOutcome?: DiscussAgentJobOutcome;
@@ -451,8 +452,9 @@ const persistedDiscussAgentRunSchema = z
   .object({
     provider: z.string(),
     model: z.string(),
-    executionSessionId: z.string().optional(),
+    jobId: z.string().optional(),
     currentJobId: z.string().optional(),
+    currentExecution: z.number().int().positive().safe().optional(),
     currentJobPurpose: z.enum(discussAgentJobPurposes).optional(),
     currentAttempt: z.number().int().positive().optional(),
     lastAttemptOutcome: z.enum(discussAgentJobOutcomes).optional(),

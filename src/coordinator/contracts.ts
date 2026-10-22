@@ -1,3 +1,4 @@
+import type { ExecutionFinisher } from '../jobs/finishing.js';
 import type { JobAttention } from './services/job-attention.js';
 import type { JobSendRequest, JobSendServiceDeps } from './services/job-send.js';
 import type { ProxyOperationSendResult } from '../provider-proxy/protocol.js';
@@ -87,6 +88,7 @@ type CoordinatorLaunchCoordinator = LaunchCoordinatorPort &
   ProviderDurableSpawner & { admitTopLevelLaunch?: () => boolean };
 
 export type ExecutionServiceDeps = {
+  readonly executionFinisher: ExecutionFinisher;
   runningWorkflowJobs: Set<string>;
   runtime: Runtime;
   progressStore: JobProgressStore;

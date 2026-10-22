@@ -2,7 +2,7 @@ import { type JobLifecycleFault, type JobProgressFault, type TerminalOutcomeInpu
 import type { JobStatus } from '../records.js';
 import { buildJobEventRefs } from '../refs.js';
 import type { JobStore } from '../store.js';
-import { appendJobTerminalRecorded, failedTerminalOutcome } from '../terminal/recording.js';
+import { appendJobExecutionOutcomeAccepted, failedTerminalOutcome } from '../terminal/recording.js';
 import type { CommitContext } from '../../store/append.js';
 import { elapsedDurationMs } from '../duration.js';
 
@@ -22,9 +22,9 @@ export function markJobAsError(
   const durationMs = launch === null ? 0 : elapsedDurationMs(launch.createdAt, endTimeMs, `job ${status.jobId}`);
   progressStore.commit((c) => {
     const outcome = recoveryFaultOutcome(c, status, fault);
-    appendJobTerminalRecorded(c, {
+    appendJobExecutionOutcomeAccepted(c, {
       jobId: status.jobId,
-      sessionId: status.sessionId,
+      execution: status.execution,
       namespace: status.backendNamespace,
       project: status.projectRoot,
       terminal: { content: '', durationMs, outcome },
@@ -47,12 +47,12 @@ function recoveryFaultOutcome<Scope>(
     case 'missing_launch_record':
     case 'recovery_parse_failed': {
       const cause = c.append({
-        type: 'job.progress.emitted',
+        type: 'job.execution.progress',
         stream: { kind: 'job', id: status.jobId },
         namespace: status.backendNamespace,
         project: status.projectRoot,
         refs: buildJobEventRefs({ jobId: status.jobId, sessionId: status.sessionId }),
-        body: fault,
+        body: { ...fault, execution: status.execution },
       });
       return failedTerminalOutcome(cause);
     }

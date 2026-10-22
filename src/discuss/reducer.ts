@@ -328,7 +328,7 @@ function reduceSessionSynthesized(
 function reduceAgentRunBound(snapshot: PersistedDiscussSnapshot, event: AgentRunBoundEvent): PersistedDiscussSnapshot {
   return withAgentRunState(snapshot, event.payload.agent, event.ts, event.seq, (existing) => ({
     ...existing,
-    executionSessionId: event.payload.executionSessionId,
+    jobId: event.payload.jobId,
   }));
 }
 
@@ -339,6 +339,7 @@ function reduceAgentJobStarted(
   return withAgentRunState(snapshot, event.payload.agent, event.ts, event.seq, (existing) => ({
     ...existing,
     currentJobId: event.payload.jobId,
+    currentExecution: event.payload.execution,
     currentJobPurpose: event.payload.purpose,
     currentAttempt: event.payload.attempt,
   }));
@@ -351,6 +352,7 @@ function reduceAgentJobFinished(
   return withAgentRunState(snapshot, event.payload.agent, event.ts, event.seq, (existing) => ({
     ...existing,
     currentJobId: undefined,
+    currentExecution: undefined,
     currentJobPurpose: undefined,
     currentAttempt: event.payload.attempt,
     lastAttemptOutcome: event.payload.outcome,

@@ -24,6 +24,7 @@ const COMMIT_CAUSE_REF_TOKEN: unique symbol = Symbol('CommitCauseRefToken');
 type RuntimeCauseRefToken = {
   readonly [COMMIT_CAUSE_REF_TOKEN]: {
     readonly slot: number;
+    readonly commit: object;
   };
 };
 
@@ -96,27 +97,19 @@ export interface CommitContext<Scope> {
 export type CommitEventsFn = (
   cb: <Scope>(c: CommitContext<Scope>) => CommitClosureResult,
 ) => readonly AppendedEvent[] | void;
-export type UnreadableJobStatusRecoveryCommitFn = (
-  jobId: string,
-  cb: <Scope>(c: CommitContext<Scope>) => CommitClosureResult,
-) => readonly AppendedEvent[];
 
 function toTimestamp(value: Date): string {
   return value.toISOString();
 }
 
-function makeCauseRefToken<Scope>(slot: number): CauseRefToken<Scope> {
+function makeCauseRefToken<Scope>(slot: number, commit: object): CauseRefToken<Scope> {
   return {
-    [COMMIT_CAUSE_REF_TOKEN]: { slot },
+    [COMMIT_CAUSE_REF_TOKEN]: { slot, commit },
   } as unknown as CauseRefToken<Scope>;
 }
 
 function isCauseRefToken(value: unknown): value is CauseRefToken<unknown> & RuntimeCauseRefToken {
   return typeof value === 'object' && value !== null && COMMIT_CAUSE_REF_TOKEN in value;
-}
-
-function causeRefTokenSlot(token: CauseRefToken<unknown> & RuntimeCauseRefToken): number {
-  return token[COMMIT_CAUSE_REF_TOKEN].slot;
 }
 
 // `seq` is coordinator-reserved here by `MAX(seq)+1..N` and inserted explicitly
@@ -137,8 +130,14 @@ function resolveToken(
   ownerSlot: number,
   reservedSeqs: readonly number[],
   collectedInputs: readonly ResolvableCoralEventInput<unknown, unknown>[],
+  commit: object,
 ): CauseRef {
-  const tokenSlot = causeRefTokenSlot(token);
+  const marker = token[COMMIT_CAUSE_REF_TOKEN];
+  if (!isRecord(marker)) throw new Error('CauseRefToken has an invalid commit marker.');
+  const tokenSlot = marker.slot;
+  if (marker.commit !== commit || !Number.isSafeInteger(tokenSlot) || tokenSlot < 0) {
+    throw new Error(`CauseRefToken references an invalid or foreign commit slot ${tokenSlot}.`);
+  }
   if (tokenSlot >= ownerSlot) {
     throw new Error(`CauseRefToken at slot ${tokenSlot} cannot be referenced by owner slot ${ownerSlot}.`);
   }
@@ -160,6 +159,7 @@ function resolveDirectCauseRef(
   ownerSlot: number,
   reservedSeqs: readonly number[],
   collectedInputs: readonly ResolvableCoralEventInput<unknown, unknown>[],
+  commit: object,
 ): unknown {
   if (!isRecord(body) || !isCauseRefToken(body.causeRef)) {
     return body;
@@ -167,7 +167,7 @@ function resolveDirectCauseRef(
 
   return {
     ...body,
-    causeRef: resolveToken(body.causeRef, ownerSlot, reservedSeqs, collectedInputs),
+    causeRef: resolveToken(body.causeRef, ownerSlot, reservedSeqs, collectedInputs, commit),
   };
 }
 
@@ -176,6 +176,7 @@ function resolveJobTerminalCauseRef(
   ownerSlot: number,
   reservedSeqs: readonly number[],
   collectedInputs: readonly ResolvableCoralEventInput<unknown, unknown>[],
+  commit: object,
 ): unknown {
   if (!isRecord(body) || !isRecord(body.terminal) || !isRecord(body.terminal.outcome)) {
     return body;
@@ -192,7 +193,7 @@ function resolveJobTerminalCauseRef(
       ...body.terminal,
       outcome: {
         ...outcome,
-        causeRef: resolveToken(outcome.causeRef, ownerSlot, reservedSeqs, collectedInputs),
+        causeRef: resolveToken(outcome.causeRef, ownerSlot, reservedSeqs, collectedInputs, commit),
       },
     },
   };
@@ -203,7 +204,7 @@ function rejectResidualTokens(value: unknown, path: readonly string[] = ['body']
     throw new Error(
       `CauseRefToken is not allowed at ${tokenPath(path)}. Tokens may appear only at: ` +
         'workflow.completed:body.causeRef, ' +
-        'job.terminal.recorded:body.terminal.outcome.causeRef. ' +
+        'job.execution.outcome.accepted:body.terminal.outcome.causeRef, job.execution.ended:body.causeRef. ' +
         'Move the token to a pinned path or pass a resolved CauseRef instead.',
     );
   }
@@ -266,12 +267,13 @@ function resolveTokensInInput(
   ownerSlot: number,
   reservedSeqs: readonly number[],
   collectedInputs: readonly ResolvableCoralEventInput<unknown, unknown>[],
+  commit: object,
 ): CoralEventInput {
   let body = input.body;
-  if (input.type === 'workflow.completed') {
-    body = resolveDirectCauseRef(body, ownerSlot, reservedSeqs, collectedInputs);
-  } else if (input.type === 'job.terminal.recorded') {
-    body = resolveJobTerminalCauseRef(body, ownerSlot, reservedSeqs, collectedInputs);
+  if (input.type === 'workflow.completed' || input.type === 'job.execution.ended') {
+    body = resolveDirectCauseRef(body, ownerSlot, reservedSeqs, collectedInputs, commit);
+  } else if (input.type === 'job.execution.outcome.accepted') {
+    body = resolveJobTerminalCauseRef(body, ownerSlot, reservedSeqs, collectedInputs, commit);
   }
 
   rejectResidualTokens(body);
@@ -318,7 +320,7 @@ function commitCollectedInputs(
   db: Database,
   collectedInputs: readonly ResolvableCoralEventInput<unknown, unknown>[],
   ctx: AppendContext,
-  terminalOrderExemptInputIndex?: number,
+  commit: object,
 ): AppendedEvent[] {
   if (collectedInputs.length === 0) {
     return [];
@@ -328,7 +330,7 @@ function commitCollectedInputs(
   const reservedSeqs = collectedInputs.map((_, slot) => baseSeq + slot + 1);
   const ts = toTimestamp(ctx.now());
   const resolvedInputs = collectedInputs.map((input, slot) =>
-    resolveTokensInInput(input, slot, reservedSeqs, collectedInputs),
+    resolveTokensInInput(input, slot, reservedSeqs, collectedInputs, commit),
   );
   const prepared = resolvedInputs.map((input) => prepareInput(input, ctx));
   const validationInputs: CoralEventInput[] = prepared.map(({ input, parsedBody }) => ({
@@ -337,6 +339,7 @@ function commitCollectedInputs(
   }));
   const validationCtx: DomainAppendValidationContext = {
     db,
+    sequences: reservedSeqs,
     providers: ctx.providers,
     readCtx: {
       schemas: ctx.reducers.schemas,
@@ -345,13 +348,8 @@ function commitCollectedInputs(
     },
   };
 
-  for (const [index, validateAppend] of ctx.reducers.appendValidators.entries()) {
-    const contract = ctx.reducers.appendValidatorContracts[index];
-    const inputs =
-      contract === 'jobs:terminal-order-and-single-terminal' && terminalOrderExemptInputIndex !== undefined
-        ? validationInputs.filter((_input, inputIndex) => inputIndex !== terminalOrderExemptInputIndex)
-        : validationInputs;
-    validateAppend(validationCtx, inputs);
+  for (const validateAppend of ctx.reducers.appendValidators) {
+    validateAppend(validationCtx, validationInputs);
   }
 
   const insertStmt = db.prepare<
@@ -427,51 +425,19 @@ export function commitWithinOpenTransaction(
   ctx: AppendContext,
 ): AppendedEvent[] {
   const collectedInputs: Array<ResolvableCoralEventInput<unknown, unknown>> = [];
+  const commitIdentity = {};
   const c: CommitContext<unknown> = {
     append(input) {
       ctx.beforeAppend?.(input);
       const slot = collectedInputs.length;
-      const token = makeCauseRefToken<unknown>(slot);
+      const token = makeCauseRefToken<unknown>(slot, commitIdentity);
       collectedInputs.push(input);
       return token;
     },
   };
 
   cb(c);
-  return commitCollectedInputs(db, collectedInputs, ctx);
-}
-
-export function commitUnreadableJobStatusRecovery(
-  db: Database,
-  jobId: string,
-  cb: <Scope>(c: CommitContext<Scope>) => CommitClosureResult,
-  ctx: AppendContext,
-): AppendedEvent[] {
-  return withImmediate(db, () => {
-    const collectedInputs: Array<ResolvableCoralEventInput<unknown, unknown>> = [];
-    const commit: CommitContext<unknown> = {
-      append(input) {
-        ctx.beforeAppend?.(input);
-        const slot = collectedInputs.length;
-        collectedInputs.push(input);
-        return makeCauseRefToken(slot);
-      },
-    };
-    cb(commit);
-
-    const exemptInputIndexes = collectedInputs.flatMap((input, index) =>
-      input.type === 'job.progress.emitted' && input.stream.kind === 'job' && input.stream.id === jobId ? [index] : [],
-    );
-    if (exemptInputIndexes.length !== 1) {
-      throw new TypeError(
-        `Unreadable job-status recovery requires exactly one job.progress.emitted event for job '${jobId}'.`,
-      );
-    }
-    if (collectedInputs.some((input, index) => index !== exemptInputIndexes[0] && input.stream.kind !== 'session')) {
-      throw new TypeError('Unreadable job-status recovery permits only its progress event and session events.');
-    }
-    return commitCollectedInputs(db, collectedInputs, ctx, exemptInputIndexes[0]);
-  });
+  return commitCollectedInputs(db, collectedInputs, ctx, commitIdentity);
 }
 
 export function commit(

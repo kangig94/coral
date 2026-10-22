@@ -1,5 +1,5 @@
 import type { CauseRef, CauseRefToken } from '../../causality/cause-ref.js';
-import { appendJobTerminalRecorded, failedTerminalOutcome } from '../../jobs/terminal/recording.js';
+import { appendJobExecutionOutcomeAccepted, failedTerminalOutcome } from '../../jobs/terminal/recording.js';
 import type { CommitContext } from '../../store/append.js';
 import { workflowCompletedEvent, workflowLifecycleFaultEvent } from '../../workflow/events.js';
 import type { WorkflowFinalizationIntent } from '../../workflow/finalization.js';
@@ -8,6 +8,7 @@ export interface WorkflowFinalizationRecording {
   readonly namespace?: string;
   readonly project?: string;
   readonly durationMs: number;
+  readonly execution: number;
 }
 
 /**
@@ -36,8 +37,9 @@ export function composeWorkflowFinalization<Scope>(
 
   if (intent.outcome === 'completed') {
     c.append(workflowCompletedEvent(workflowJobId, { outcome: 'completed', stepDetails: intent.stepDetails }));
-    appendJobTerminalRecorded(c, {
+    appendJobExecutionOutcomeAccepted(c, {
       jobId: workflowJobId,
+      execution: recording.execution,
       namespace: recording.namespace,
       project: recording.project,
       terminal: {
@@ -51,8 +53,9 @@ export function composeWorkflowFinalization<Scope>(
 
   if (intent.outcome === 'aborted') {
     c.append(workflowCompletedEvent(workflowJobId, { outcome: 'aborted', stepDetails: intent.stepDetails }));
-    appendJobTerminalRecorded(c, {
+    appendJobExecutionOutcomeAccepted(c, {
       jobId: workflowJobId,
+      execution: recording.execution,
       namespace: recording.namespace,
       project: recording.project,
       terminal: {
@@ -73,8 +76,9 @@ export function composeWorkflowFinalization<Scope>(
       ...(intent.failureLocation === undefined ? {} : { failureLocation: intent.failureLocation }),
     }),
   );
-  appendJobTerminalRecorded(c, {
+  appendJobExecutionOutcomeAccepted(c, {
     jobId: workflowJobId,
+    execution: recording.execution,
     namespace: recording.namespace,
     project: recording.project,
     terminal: {

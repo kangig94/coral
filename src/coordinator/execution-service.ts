@@ -109,6 +109,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
         }
       },
       terminalMaterializer: { recordProviderTerminal },
+      executionFinisher: deps.executionFinisher,
       ...(deps.operations === undefined ? {} : { operations: deps.operations }),
       ...(deps.appServerProxyRoute === undefined ? {} : { appServerProxyRoute: deps.appServerProxyRoute }),
     });

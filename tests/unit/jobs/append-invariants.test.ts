@@ -1,331 +1,490 @@
-import { currentCoralStoreFormat } from '#src/store-format.js';
-import type { Database } from '#src/store/db.js';
-import { newRawDatabase } from '#tests/helpers/test-db.js';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import { jobsRegistry } from '#src/jobs/events.js';
-import type { JobLaunchRequestBody } from '#src/jobs/launch.js';
-import { commitInputs } from '#tests/helpers/commit-inputs.js';
-import { TEST_CODEX_SCOPE } from '#tests/helpers/provider-credentials.js';
-import { commit } from '#src/store/append.js';
+import { providerArtifactIdentityKey } from '#src/providers/artifact-identity.js';
+import {
+  appendJobExecutionOutcomeAccepted,
+  appendJobExecutionEnded,
+  failedTerminalOutcome,
+} from '#src/jobs/terminal/recording.js';
+import {
+  jobExecutionOutcomeAcceptedBodySchema,
+  jobExecutionEndedBodySchema,
+  jobTerminalSchema,
+} from '#src/jobs/terminal/result.js';
+import { findCommittedExecutionRequest } from '#src/jobs/execution-state.js';
+import { refuseLaunch } from '#src/jobs/launch.js';
+import { jobsEventDescribers } from '#src/jobs/event-describers.js';
 import type { CoralEventInput } from '#src/store/envelope.js';
-import { createEventBodyCodec } from '#src/store/event-body-codec.js';
-import { composeReducers } from '#src/store/reducers.js';
-import { applyBundledStoreSchema } from '#src/store/db.js';
-import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
+import {
+  EXECUTION_JOB_ID as jobId,
+  OTHER_EXECUTION_JOB_ID as otherJobId,
+  EXECUTION_NOW as now,
+  executionHarness,
+  executionInput as input,
+  openedJob,
+  requestedExecution,
+} from '#tests/helpers/job-executions.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
-import { seedTestSessionProjection } from '#tests/helpers/session.js';
-import { workflowRegistry } from '#src/workflow/events.js';
-import { readJobLaunchOriginNamespace } from '#src/jobs/succession-coverage.js';
-import { createDefaultStoreReadContext } from '#src/read-model/read-context.js';
 
-const NOW = new Date('2026-04-19T00:00:00.000Z');
-
-function createDb(): Database {
-  const db = newRawDatabase(':memory:');
-  applyBundledStoreSchema(db, currentCoralStoreFormat());
-  return db;
+const harnesses: ReturnType<typeof executionHarness>[] = [];
+function harness() {
+  const h = executionHarness();
+  harnesses.push(h);
+  return h;
 }
+afterEach(() => {
+  for (const h of harnesses.splice(0)) h.db.close();
+});
 
-function appendJobEvents(db: Database, inputs: readonly CoralEventInput[]) {
-  return commitInputs(db, inputs, {
-    now: () => NOW,
-    reducers: composeReducers(jobsRegistry, workflowRegistry),
-    bodyCodec: createEventBodyCodec(),
-    providers: permissiveProviderLookupPort,
+const accepted = (execution = 1) =>
+  input('job.execution.outcome.accepted', {
+    execution,
+    terminal: { content: 'done', outcome: { kind: 'completed' }, durationMs: 1 },
   });
-}
+const end = (execution = 1, seq = 3, id = jobId) =>
+  input('job.execution.ended', { execution, causeRef: { stream: { kind: 'job', id }, seq } });
+const retention = (execution = 1) =>
+  input('job.retention.discard.requested', { execution, attempt: 0, handles: ['/native'] });
+const retained = (execution = 1) =>
+  input('job.retention.discard.completed', { execution, attempt: 0, handles: ['/native'], outcome: 'discarded' });
+const failedRetention = (execution = 1) =>
+  input('job.retention.discard.failed', {
+    execution,
+    attempt: 0,
+    handles: ['/native'],
+    reason: 'native file kept: archive unavailable',
+  });
+const progress = (execution = 1) =>
+  input('job.execution.progress', { execution, kind: 'domain', stage: 'working', message: 'work' });
 
-function launchBody(jobId: string): Extract<JobLaunchRequestBody, { jobKind: 'provider' }> {
-  return {
-    owner: { kind: 'provider-session', id: `session-${jobId}` },
-    sessionId: `session-${jobId}`,
+const executionEvents: CoralEventInput[] = [
+  requestedExecution(),
+  input('job.execution.queued', { execution: 1, queuePosition: 0, runningJobIds: [] }),
+  input('job.execution.admitted', { execution: 1 }),
+  input('job.execution.started', {
+    execution: 1,
+    transport: 'app-server',
+    startedAt: now,
+    providerMeta: { provider: 'codex', leaseState: 'waiting' },
+  }),
+  progress(),
+  input('job.execution.aborted', { execution: 1, reason: 'user_abort' }),
+  accepted(),
+  end(),
+  input('job.continuity.checkpointed', {
+    execution: 1,
+    snapshot: { conversationRef: 'conversation', resumable: true, providerContinuity: null },
+  }),
+  input('job.artifact.recorded', {
+    execution: 1,
     provider: 'codex',
-    providerAction: 'exec',
-    projectRoot: fixtureCanonicalWorkDir(`/workspace/${jobId}`),
-    backendNamespace: 'tests',
-    jobKind: 'provider',
-    pool: 'default',
-    enqueueSequence: 0,
-    request: {
-      prompt: `prompt for ${jobId}`,
-      cwd: fixtureCanonicalWorkDir(`/workspace/${jobId}`),
+    handle: '/native',
+    identity: { kind: 'native' },
+    identityKey: providerArtifactIdentityKey('codex', { kind: 'native' }),
+  }),
+  retention(),
+  retained(),
+  failedRetention(),
+  input('job.interrupted', { execution: 1, trigger: 'restart', continuity: 'unavailable' }),
+  input('job.provider_failed', { execution: 1, provider: 'codex', reason: 'request_failed', message: 'rejected' }),
+  input('job.adapter_unparseable', {
+    execution: 1,
+    provider: 'codex',
+    exitCode: 0,
+    stdout: '',
+    stderr: '',
+    parseError: 'invalid output',
+  }),
+];
+
+function expectOrderFailure(run: () => unknown) {
+  expect(run).toThrowError(expect.objectContaining({ code: 'job_execution_order_violation' }));
+}
+
+function withExecution(event: CoralEventInput, execution: unknown): CoralEventInput {
+  return { ...event, body: { ...(event.body as Record<string, unknown>), execution } };
+}
+
+describe('jobs:execution-order', () => {
+  it('registers exactly the new vocabulary, one order validator, and all describers', () => {
+    expect(jobsRegistry.entries.map((entry) => entry.type).sort()).toEqual(
+      ['job.opened', ...executionEvents.map((event) => event.type)].sort(),
+    );
+    expect(jobsRegistry.appendValidators?.map((entry) => entry.contract)).toEqual(['jobs:execution-order']);
+    for (const entry of jobsRegistry.entries) expect(jobsEventDescribers.has(`job:${entry.type}`)).toBe(true);
+  });
+
+  it.each(executionEvents.map((event) => [event.type, event] as const))('requires an ordinal for %s', (type, event) => {
+    const schema = jobsRegistry.entries.find((entry) => entry.type === type)!.schema;
+    for (const execution of [undefined, 0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1])
+      expect(schema.safeParse(withExecution(event, execution).body).success).toBe(false);
+    expect(schema.safeParse(event.body).success).toBe(true);
+  });
+
+  it.each(executionEvents.map((event) => [event.type, event] as const))('requires opened before %s', (_type, event) => {
+    const h = harness();
+    expectOrderFailure(() => h.append(event));
+    expect(h.events()).toEqual([]);
+  });
+
+  it('opens workflow and KB jobs without a conversation facet', () => {
+    const h = harness();
+    const workflow = {
+      jobKind: 'workflow',
+      owner: { kind: 'workflow', id: jobId },
+      projectRoot: '/workspace',
+      cwd: fixtureCanonicalWorkDir('/workspace'),
       bypassPermissions: false,
-      coralEnv: {},
-    },
-    createdAt: NOW.toISOString(),
-  };
-}
-
-function launchInput(jobId: string): CoralEventInput<JobLaunchRequestBody> {
-  return {
-    type: 'job.launch.requested',
-    stream: { kind: 'job', id: jobId },
-    refs: { jobId, sessionId: `session-${jobId}` },
-    body: launchBody(jobId),
-  };
-}
-
-function terminalInput(jobId: string, content = 'done'): CoralEventInput {
-  return {
-    type: 'job.terminal.recorded',
-    stream: { kind: 'job', id: jobId },
-    refs: { jobId, sessionId: `session-${jobId}` },
-    body: {
-      terminal: {
-        outcome: { kind: 'completed' },
-        durationMs: 1,
-        content,
-      },
-    },
-  };
-}
-
-function seedWorkflow(
-  db: Database,
-  workflowId: string,
-  lifecycle: 'active' | 'draining' | 'faulted' | 'completed' | 'failed' | 'aborted' = 'active',
-): void {
-  const plan = {
-    slots: [
+      createdAt: now,
+    };
+    h.append(input('job.opened', workflow), requestedExecution());
+    h.complete();
+    h.append(
+      input(
+        'job.opened',
+        { jobKind: 'kb', owner: { kind: 'system-task', id: 'kb' }, projectRoot: '/workspace', createdAt: now },
+        otherJobId,
+      ),
       {
-        slotId: `${workflowId}:0:0`,
-        dependencies: [],
-        provider: 'codex',
-        instruction: 'test workflow child',
+        ...requestedExecution(1, { input: { operation: 'kb.reindex', request: {} } }),
+        stream: { kind: 'job', id: otherJobId },
       },
-    ],
-  };
-  db.prepare(
-    `INSERT INTO projection_workflows (workflow_id, plan, provider_scope, lifecycle, last_seq)
-     VALUES (?, ?, ?, ?, 1)`,
-  ).run(workflowId, JSON.stringify(plan), JSON.stringify(TEST_CODEX_SCOPE), lifecycle);
-}
-
-function workflowChildInput(options: {
-  jobId: string;
-  workflowId: string;
-  slotId: string;
-  sessionId: string;
-  generation: number;
-  replaces?: string;
-}): CoralEventInput<JobLaunchRequestBody> {
-  return {
-    type: 'job.launch.requested',
-    stream: { kind: 'job', id: options.jobId },
-    refs: {
-      jobId: options.jobId,
-      sessionId: options.sessionId,
-      parentJobId: options.workflowId,
-      workflowId: options.workflowId,
-      workflowSlotId: options.slotId,
-    },
-    body: {
-      ...launchBody(options.jobId),
-      owner: { kind: 'workflow', id: options.workflowId },
-      sessionId: options.sessionId,
-      projectRoot: fixtureCanonicalWorkDir('/workspace'),
-      request: { ...launchBody(options.jobId).request, cwd: fixtureCanonicalWorkDir('/workspace') },
-      workflowSlotGeneration: options.generation,
-      ...(options.replaces === undefined ? {} : { replacesWorkflowJobId: options.replaces }),
-    },
-  };
-}
-
-function progressInput(jobId: string): CoralEventInput {
-  return {
-    type: 'job.progress.emitted',
-    stream: { kind: 'job', id: jobId },
-    refs: { jobId, sessionId: `session-${jobId}` },
-    body: {
-      kind: 'message',
-      message: 'late progress',
-      timing: {
-        origin: 'launch',
-        originAt: NOW.toISOString(),
-        emittedAt: '2026-04-19T00:00:01.000Z',
-        elapsedMs: 1000,
-      },
-    },
-  };
-}
-
-function expectTerminalOrderViolation(run: () => unknown, jobId: string, type: string): void {
-  expect(run).toThrowError(
-    expect.objectContaining({
-      code: 'job_terminal_order_violation',
-      context: expect.objectContaining({ jobId, type }),
-    }),
-  );
-}
-
-describe('jobs append invariants', () => {
-  it('requires a provider job to hold the current ProviderSession claim', () => {
-    const db = createDb();
-    try {
-      const jobId = 'claimed-job';
-      const input = launchInput(jobId);
-      const launch = input.body as Extract<JobLaunchRequestBody, { jobKind: 'provider' }>;
-      seedTestSessionProjection(db, {
-        sessionId: launch.sessionId,
-        provider: launch.provider,
-        projectRoot: launch.projectRoot,
-        backendNamespace: launch.backendNamespace,
-        activeJobId: 'different-job',
-      });
-
-      expect(() =>
-        commit(
-          db,
-          (c) => {
-            c.append(input);
-            return undefined;
-          },
-          {
-            now: () => NOW,
-            reducers: composeReducers(jobsRegistry, workflowRegistry),
-            bodyCodec: createEventBodyCodec(),
-            providers: permissiveProviderLookupPort,
-          },
-        ),
-      ).toThrowError(expect.objectContaining({ code: 'job_binding_owner_mismatch' }));
-      expect((db.prepare('SELECT COUNT(*) AS count FROM events').get() as { count: number }).count).toBe(0);
-    } finally {
-      db.close();
-    }
-  });
-
-  it('accepts a resumed session claim from an earlier coordinator namespace', () => {
-    const db = createDb();
-    try {
-      const jobId = 'cross-build-resume';
-      const input = launchInput(jobId);
-      const launch = input.body as Extract<JobLaunchRequestBody, { jobKind: 'provider' }>;
-      seedTestSessionProjection(db, {
-        sessionId: launch.sessionId,
-        provider: launch.provider,
-        projectRoot: launch.projectRoot,
-        backendNamespace: 'incumbent-namespace',
-        activeJobId: jobId,
-      });
-
-      expect(() => appendJobEvents(db, [input])).not.toThrow();
-      expect(
-        (
-          db.prepare("SELECT COUNT(*) AS count FROM events WHERE type = 'job.launch.requested'").get() as {
-            count: number;
-          }
-        ).count,
-      ).toBe(1);
-      db.prepare('UPDATE projection_jobs SET backend_namespace = ? WHERE job_id = ?').run(
-        'successor-projection',
-        jobId,
-      );
-      expect(readJobLaunchOriginNamespace(db, jobId, createDefaultStoreReadContext())).toBe(launch.backendNamespace);
-    } finally {
-      db.close();
-    }
-  });
-
-  it('rejects a workflow child launch fenced by a terminal lifecycle in the same commit', () => {
-    const db = createDb();
-    try {
-      seedWorkflow(db, 'workflow-same-batch-terminal', 'active');
-      seedTestSessionProjection(db, {
-        sessionId: 'same-batch-terminal-session',
-        provider: 'codex',
-        projectRoot: '/workspace',
-        activeJobId: 'same-batch-terminal-child',
-      });
-      const launch = workflowChildInput({
-        jobId: 'same-batch-terminal-child',
-        workflowId: 'workflow-same-batch-terminal',
-        slotId: 'workflow-same-batch-terminal:0:0',
-        sessionId: 'same-batch-terminal-session',
-        generation: 0,
-      });
-
-      expect(() =>
-        commitInputs(
-          db,
-          [
-            launch,
-            {
-              type: 'workflow.completed',
-              stream: { kind: 'workflow', id: 'workflow-same-batch-terminal' },
-              refs: { workflowId: 'workflow-same-batch-terminal' },
-              body: { outcome: 'completed', stepDetails: [] },
-            },
-          ],
-          {
-            now: () => NOW,
-            reducers: composeReducers(jobsRegistry, workflowRegistry),
-            bodyCodec: createEventBodyCodec(),
-            providers: permissiveProviderLookupPort,
-          },
-        ),
-      ).toThrowError(expect.objectContaining({ code: 'workflow_owner_terminal' }));
-      expect((db.prepare('SELECT COUNT(*) AS count FROM events').get() as { count: number }).count).toBe(0);
-    } finally {
-      db.close();
-    }
-  });
-
-  it('rejects a replacement launch without the exact claimed continuation intent in the same commit', () => {
-    const db = createDb();
-    try {
-      seedWorkflow(db, 'workflow-1');
-      seedTestSessionProjection(db, {
-        sessionId: 'session-child',
-        provider: 'codex',
-        projectRoot: '/workspace',
-      });
-      appendJobEvents(db, [
-        workflowChildInput({
-          jobId: 'child-0',
-          workflowId: 'workflow-1',
-          slotId: 'workflow-1:0:0',
-          sessionId: 'session-child',
-          generation: 0,
+    );
+    expect(h.events()).toHaveLength(6);
+    expect(() => harness().append(input('job.opened', { ...workflow, conversation: {} }))).toThrow();
+    expect(() =>
+      harness().append(
+        input('job.opened', {
+          jobKind: 'provider',
+          owner: { kind: 'provider-session', id: jobId },
+          projectRoot: '/workspace',
+          createdAt: now,
         }),
-        terminalInput('child-0'),
-      ]);
+      ),
+    ).toThrow();
+  });
 
-      expect(() =>
-        appendJobEvents(db, [
-          workflowChildInput({
-            jobId: 'child-1',
-            workflowId: 'workflow-1',
-            slotId: 'workflow-1:0:0',
-            sessionId: 'session-child',
-            generation: 1,
-            replaces: 'child-0',
+  it('requires opened once, both in the same batch and across commits', () => {
+    expectOrderFailure(() => harness().append(openedJob(), openedJob()));
+    const h = harness();
+    h.append(openedJob());
+    expectOrderFailure(() => h.append(openedJob()));
+  });
+
+  it('starts at 1 and refuses overlapping, repeated or skipped ordinals', () => {
+    expectOrderFailure(() => harness().append(openedJob(), requestedExecution(2)));
+    expectOrderFailure(() => harness().append(openedJob(), requestedExecution(), requestedExecution(2)));
+    const h = harness();
+    h.append(openedJob(), requestedExecution());
+    h.complete();
+    for (const execution of [1, 3]) expectOrderFailure(() => h.append(requestedExecution(execution)));
+    h.append(requestedExecution(2));
+    expectOrderFailure(() => h.append(requestedExecution(3)));
+  });
+
+  it('admits consecutive requests, acceptance and end in one batch', () => {
+    const h = harness();
+    h.commit((c) => {
+      c.append(openedJob());
+      for (let execution = 1; execution <= 3; execution++) {
+        c.append(requestedExecution(execution));
+        const causeRef = appendJobExecutionOutcomeAccepted(c, {
+          jobId,
+          execution,
+          terminal: { content: 'done', durationMs: 0, outcome: { kind: 'completed' } },
+        });
+        appendJobExecutionEnded(c, { jobId, execution, causeRef });
+      }
+      return undefined;
+    });
+    expect(h.events().filter((event) => event.type === 'job.execution.ended')).toHaveLength(3);
+  });
+
+  it.each(
+    executionEvents
+      .filter((event) => event.type !== 'job.execution.requested')
+      .map((event) => [event.type, event] as const),
+  )('%s must name the open execution', (_type, event) => {
+    const h = harness();
+    h.append(openedJob(), requestedExecution());
+    expectOrderFailure(() => h.append(withExecution(event, 2)));
+    h.complete();
+    expectOrderFailure(() => h.append(event));
+    h.append(requestedExecution(2));
+    expectOrderFailure(() => h.append(event));
+  });
+
+  it('accepts an outcome at most once in a batch or persisted execution', () => {
+    expectOrderFailure(() => harness().append(openedJob(), requestedExecution(), accepted(), accepted()));
+    const h = harness();
+    h.append(openedJob(), requestedExecution(), accepted());
+    expectOrderFailure(() => h.append(accepted()));
+    h.append(end());
+  });
+
+  it.each(
+    executionEvents
+      .filter((event) => !event.type.startsWith('job.retention.') && event.type !== 'job.execution.ended')
+      .map((event) => [event.type, event] as const),
+  )('refuses %s after acceptance', (_type, event) => {
+    const h = harness();
+    h.append(openedJob(), requestedExecution(), accepted());
+    expectOrderFailure(() => h.append(event));
+    expectOrderFailure(() => harness().append(openedJob(), requestedExecution(), accepted(), event));
+  });
+
+  it('requires the exact accepted outcome and one sole end', () => {
+    expectOrderFailure(() => harness().append(openedJob(), requestedExecution(), end()));
+    const h = harness();
+    h.append(openedJob(), requestedExecution(), accepted());
+    for (const event of [
+      end(1, 1),
+      end(1, 2),
+      end(1, 4),
+      end(1, 3, otherJobId),
+      input('job.execution.ended', { execution: 1, causeRef: { stream: { kind: 'workflow', id: jobId }, seq: 3 } }),
+    ])
+      expectOrderFailure(() => h.append(event));
+    expectOrderFailure(() => h.append(end(), end()));
+    h.append(end());
+    expectOrderFailure(() => h.append(end()));
+    h.append(requestedExecution(2), accepted(2));
+    expectOrderFailure(() => h.append(end(2, 3)));
+    h.append(end(2, 6));
+  });
+
+  it('rejects same-batch cross-execution end citations atomically', () => {
+    const h = harness();
+    expect(() =>
+      h.commit((c) => {
+        c.append(openedJob());
+        c.append(requestedExecution());
+        const first = appendJobExecutionOutcomeAccepted(c, {
+          jobId,
+          execution: 1,
+          terminal: { content: 'one', durationMs: 0, outcome: { kind: 'completed' } },
+        });
+        appendJobExecutionEnded(c, { jobId, execution: 1, causeRef: first });
+        c.append(requestedExecution(2));
+        appendJobExecutionOutcomeAccepted(c, {
+          jobId,
+          execution: 2,
+          terminal: { content: 'two', durationMs: 0, outcome: { kind: 'completed' } },
+        });
+        appendJobExecutionEnded(c, { jobId, execution: 2, causeRef: first });
+        return undefined;
+      }),
+    ).toThrowError(expect.objectContaining({ code: 'job_execution_order_violation' }));
+    expect(h.events()).toEqual([]);
+  });
+
+  it.each([retained, failedRetention])('requires retention before the sole end for a discard execution', (close) => {
+    const h = harness();
+    const opened = openedJob();
+    if (opened.body.jobKind !== 'provider') throw new Error('provider fixture');
+    opened.body.conversation.retention = 'discard_provider_artifacts_on_terminal';
+    h.append(opened, requestedExecution(), accepted());
+    expectOrderFailure(() => h.append(end()));
+    h.append(retention());
+    expectOrderFailure(() => h.append(end()));
+    h.append(close(), end());
+    expectOrderFailure(() => h.append(retention()));
+    expect(h.events().at(-1)?.type).toBe('job.execution.ended');
+  });
+
+  it('requires one original retention request and matching outcome', () => {
+    const h = harness();
+    h.append(openedJob(), requestedExecution());
+    expectOrderFailure(() => h.append(retention()));
+    h.append(accepted());
+    expectOrderFailure(() => h.append(retained()));
+    h.append(retention());
+    expectOrderFailure(() => h.append(retention()));
+    expectOrderFailure(() =>
+      h.append(
+        input('job.retention.discard.completed', {
+          execution: 1,
+          attempt: 1,
+          handles: ['/native'],
+          outcome: 'discarded',
+        }),
+      ),
+    );
+    expectOrderFailure(() =>
+      h.append(
+        input('job.retention.discard.failed', { execution: 1, attempt: 0, handles: ['/other'], reason: 'failed' }),
+      ),
+    );
+    h.append(retained());
+    expectOrderFailure(() => h.append(failedRetention()));
+    h.append(end());
+  });
+
+  it('creates no execution for a refusal before requested commits', () => {
+    const h = harness();
+    expect(refuseLaunch('unrestorable', 'archive unavailable').status).toBe('refused');
+    expect(h.events()).toEqual([]);
+  });
+
+  it('stores message identity with the input and forbids replay as another execution', () => {
+    const h = harness();
+    h.append(openedJob(), requestedExecution());
+    h.complete();
+    h.append(requestedExecution(2, { input: 'durable input', originatingClientMessageId: 'same-message' }));
+    const request = findCommittedExecutionRequest(h.db, jobId, 'same-message', h.readCtx);
+    expect(request).toEqual({
+      jobId,
+      requestedSeq: 5,
+      request: expect.objectContaining({
+        execution: 2,
+        input: 'durable input',
+        originatingClientMessageId: 'same-message',
+      }),
+    });
+    h.complete(2);
+    expectOrderFailure(() => h.append(requestedExecution(3, { originatingClientMessageId: 'same-message' })));
+    expect(findCommittedExecutionRequest(h.db, jobId, 'same-message', h.readCtx)).toEqual(request);
+    expect(findCommittedExecutionRequest(h.db, otherJobId, 'same-message', h.readCtx)).toBeNull();
+  });
+
+  it('preserves durable historical session causes while refusing fresh acceptance with one', () => {
+    const terminal = {
+      content: '',
+      durationMs: 0,
+      outcome: { kind: 'failed', causeRef: { stream: { kind: 'session', id: 'old-session' }, seq: 1 } },
+    };
+    expect(jobTerminalSchema.safeParse(terminal).success).toBe(true);
+    expect(jobExecutionOutcomeAcceptedBodySchema.safeParse({ execution: 1, terminal }).success).toBe(false);
+    expect(jobExecutionEndedBodySchema.safeParse({ execution: 1, causeRef: terminal.outcome.causeRef }).success).toBe(
+      false,
+    );
+  });
+
+  it('resolves fault → accepted outcome → end references in one real commit', () => {
+    const h = harness();
+    h.append(openedJob(), requestedExecution());
+    h.commit((c) => {
+      const fault = c.append(
+        input('job.provider_failed', {
+          execution: 1,
+          provider: 'codex',
+          reason: 'request_failed',
+          message: 'activation rejected',
+        }),
+      );
+      const accepted = appendJobExecutionOutcomeAccepted(c, {
+        jobId,
+        execution: 1,
+        terminal: { content: '', durationMs: 0, outcome: failedTerminalOutcome(fault) },
+      });
+      appendJobExecutionEnded(c, { jobId, execution: 1, causeRef: accepted });
+      return undefined;
+    });
+    expect(
+      h
+        .events()
+        .slice(-3)
+        .map((event) => event.body),
+    ).toEqual([
+      expect.objectContaining({ execution: 1, message: 'activation rejected' }),
+      {
+        execution: 1,
+        terminal: {
+          content: '',
+          durationMs: 0,
+          outcome: { kind: 'failed', causeRef: { stream: { kind: 'job', id: jobId }, seq: 3 } },
+        },
+      },
+      { execution: 1, causeRef: { stream: { kind: 'job', id: jobId }, seq: 4 } },
+    ]);
+  });
+
+  it('rejects forward, malformed, foreign and unsupported-path tokens with atomic rollback', () => {
+    const h = harness();
+    h.append(openedJob(), requestedExecution());
+    let foreign: unknown;
+    h.commit((c) => {
+      foreign = c.append(progress());
+      return undefined;
+    });
+    const before = h.events();
+    expect(() =>
+      h.commit((c) => {
+        const self = c.append(progress());
+        const symbol = Object.getOwnPropertySymbols(self)[0]!;
+        const forward = {
+          [symbol]: { slot: 2, commit: (self as unknown as Record<symbol, { commit: object }>)[symbol]!.commit },
+        };
+        c.append(
+          input('job.execution.outcome.accepted', {
+            execution: 1,
+            terminal: { content: '', durationMs: 0, outcome: { kind: 'failed', causeRef: forward } },
           }),
-        ]),
-      ).toThrowError(
-        expect.objectContaining({
-          code: 'workflow_slot_chain_invalid',
-          message: expect.stringContaining('claimed continuation intent'),
+        );
+        return undefined;
+      }),
+    ).toThrow(/cannot be referenced/);
+    for (const slot of [-1, 0.5, NaN, 999]) {
+      expect(() =>
+        h.commit((c) => {
+          const token = c.append(progress());
+          const symbol = Object.getOwnPropertySymbols(token)[0]!;
+          const invalid = {
+            [symbol]: { slot, commit: (token as unknown as Record<symbol, { commit: object }>)[symbol]!.commit },
+          };
+          c.append(input('job.execution.ended', { execution: 1, causeRef: invalid }));
+          return undefined;
         }),
-      );
-    } finally {
-      db.close();
+      ).toThrow(/invalid|cannot be referenced/);
     }
-  });
-
-  it('rejects job events after terminal in the same raw append batch', () => {
-    const db = createDb();
-    try {
-      const jobId = 'job-terminal-not-last';
-
-      expectTerminalOrderViolation(
-        () => appendJobEvents(db, [launchInput(jobId), terminalInput(jobId), progressInput(jobId)]),
-        jobId,
-        'job.progress.emitted',
-      );
-      expect((db.prepare('SELECT COUNT(*) AS n FROM events').get() as { n: number }).n).toBe(0);
-    } finally {
-      db.close();
+    expect(() =>
+      h.commit((c) => {
+        c.append(progress());
+        c.append(input('job.execution.ended', { execution: 1, causeRef: foreign }));
+        return undefined;
+      }),
+    ).toThrow(/foreign/);
+    for (const path of ['detail', 'causeRef', 'terminal']) {
+      expect(() =>
+        h.commit((c) => {
+          const token = c.append(progress());
+          c.append(
+            input('job.execution.progress', {
+              execution: 1,
+              kind: 'domain',
+              stage: 'bad',
+              message: 'bad',
+              [path]: token,
+            }),
+          );
+          return undefined;
+        }),
+      ).toThrow(/Tokens may appear only at/);
     }
+    expect(() =>
+      h.commit((c) => {
+        const token = c.append(progress());
+        c.append(
+          input('job.terminal.recorded', {
+            terminal: { content: '', durationMs: 0, outcome: { kind: 'failed', causeRef: token } },
+          }),
+        );
+        return undefined;
+      }),
+    ).toThrow(/Tokens may appear only at/);
+    expect(() =>
+      h.commit((c) => {
+        const token = c.append(progress());
+        c.append(
+          input('job.execution.outcome.accepted', {
+            execution: 1,
+            terminal: { content: '', durationMs: 0, outcome: { kind: 'completed', causeRef: token } },
+          }),
+        );
+        return undefined;
+      }),
+    ).toThrow(/Tokens may appear only at/);
+    expect(h.events()).toEqual(before);
   });
 });

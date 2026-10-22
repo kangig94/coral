@@ -1,6 +1,14 @@
 import { z } from 'zod';
 
-import { jobProgressFaultSchema, terminalOutcomeSchema } from '../outcome.js';
+import { executionOrdinalSchema } from '../launch.js';
+import type { ResolvableCauseRef } from '../../causality/cause-ref.js';
+
+import {
+  executionCauseRefSchema,
+  executionOutcomeSchema,
+  jobProgressFaultSchema,
+  terminalOutcomeSchema,
+} from '../outcome.js';
 import { usageSummarySchema } from '../../providers/contract.js';
 import type { JobTerminal, JobTerminalDiagnostics, JobTerminalInput } from '../records.js';
 
@@ -49,16 +57,28 @@ export function normalizeJobTerminal<Scope>(input: JobTerminalInput<Scope>): Job
   };
 }
 
-export const jobTerminalRecordedBodySchema = z
+export const jobExecutionOutcomeAcceptedBodySchema = z
   .object({
-    terminal: jobTerminalSchema,
+    execution: executionOrdinalSchema,
+    terminal: jobTerminalSchema.extend({ outcome: executionOutcomeSchema }),
     diagnostics: jobTerminalDiagnosticsSchema.optional(),
   })
   .strict();
 
-export type JobTerminaledBody = z.infer<typeof jobTerminalRecordedBodySchema>;
+export const jobExecutionEndedBodySchema = z
+  .object({ execution: executionOrdinalSchema, causeRef: executionCauseRefSchema })
+  .strict();
 
-export interface JobTerminalRecordedInputBody<Scope = never> {
+export type JobExecutionOutcomeAcceptedBody = z.infer<typeof jobExecutionOutcomeAcceptedBodySchema>;
+export type JobExecutionEndedBody = z.infer<typeof jobExecutionEndedBodySchema>;
+
+export interface JobExecutionOutcomeAcceptedInputBody<Scope = never> {
+  execution: number;
   terminal: JobTerminalInput<Scope>;
   diagnostics?: JobTerminalDiagnostics;
+}
+
+export interface JobExecutionEndedInputBody<Scope = never> {
+  execution: number;
+  causeRef: ResolvableCauseRef<Scope>;
 }

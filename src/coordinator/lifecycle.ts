@@ -37,7 +37,7 @@ import type { JobStore } from '../jobs/store.js';
 import type { JobStatus } from '../jobs/records.js';
 import { jobLaunchRequestBodySchema } from '../jobs/launch.js';
 import { decodeProjectionJobExecutionOwner, decodeProjectionJobStoredRow } from '../jobs/projection-row.js';
-import { appendJobTerminalRecorded } from '../jobs/terminal/recording.js';
+import { appendJobExecutionOutcomeAccepted } from '../jobs/terminal/recording.js';
 import { deleteDurableCliProcessRuntimeMeta } from '../jobs/runtime-meta-store.js';
 import { elapsedDurationMs } from '../jobs/duration.js';
 import type { ProviderHostManager } from './live/provider-hosts/index.js';
@@ -653,9 +653,9 @@ function createCrashedJobTerminalizationPolicy(
 
       const durationMs = elapsedDurationMs(item.launchCreatedAt, endTimeMs, `job ${status.jobId}`);
       coordinatorCommit((c) => {
-        appendJobTerminalRecorded(c, {
+        appendJobExecutionOutcomeAccepted(c, {
           jobId: status.jobId,
-          sessionId: status.sessionId,
+          execution: status.execution,
           namespace: status.backendNamespace,
           project: status.projectRoot,
           terminal: {

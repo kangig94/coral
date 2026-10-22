@@ -1,17 +1,18 @@
-// Job event body schemas + types for events whose bodies have no natural
-// domain-companion home (queue/runtime/progress lifecycle phases — distinct
-// from launch/outcome/result which carry substantive helpers in their own
-// files). Exists as a cycle-break sibling: keeping these inline in events.ts
-// would force projections.ts to either type-only-import them (creating the
-// runtime↔type cycle) or redeclare structural duplicates. A cycle-break split
-// like this mirrors `kb/corpus/manifest-types.ts`.
-
 import { z } from 'zod';
 
-import { externalErrorSchema, jobDomainProgressSchema } from './outcome.js';
+import { executionOrdinalSchema } from './launch.js';
+import { providerArtifactIdentityKey, providerArtifactIdentitySchema } from '../providers/artifact-identity.js';
+import { continuitySnapshotSchema } from '../sessions/continuity.js';
+import {
+  sessionInterruptedFaultSchema,
+  sessionProviderFailedFaultSchema,
+  sessionAdapterUnparseableFaultSchema,
+} from '../sessions/fault.js';
+import { executionCauseRefSchema, externalErrorSchema, jobDomainProgressSchema } from './outcome.js';
 
 export const jobQueueQueuedBodySchema = z
   .object({
+    execution: executionOrdinalSchema,
     queuePosition: z.number().int().nonnegative(),
     runningJobIds: z.array(z.string()),
   })
@@ -19,6 +20,7 @@ export const jobQueueQueuedBodySchema = z
 
 export const jobQueueAdmittedBodySchema = z
   .object({
+    execution: executionOrdinalSchema,
     queuePosition: z.number().int().nonnegative().optional(),
   })
   .strict();
@@ -49,6 +51,7 @@ export const providerHostRefSchema = z.discriminatedUnion('leaseMode', [
 
 const durableCliRuntimeStartedBodySchema = z
   .object({
+    execution: executionOrdinalSchema,
     transport: z.literal('durable-cli'),
     pid: z.number().int().positive(),
     stdoutPath: z.string().min(1),
@@ -60,6 +63,7 @@ const durableCliRuntimeStartedBodySchema = z
 
 const appServerRuntimeStartedBodySchema = z
   .object({
+    execution: executionOrdinalSchema,
     transport: z.literal('app-server'),
     startedAt: runtimeStartedAtSchema,
     providerMeta: z.discriminatedUnion('leaseState', [
@@ -82,6 +86,7 @@ const appServerRuntimeStartedBodySchema = z
 
 const internalRuntimeStartedBodySchema = z
   .object({
+    execution: executionOrdinalSchema,
     transport: z.literal('internal'),
     operation: z.enum(['kb.source_import', 'kb.reindex', 'kb.community_summary']),
     owner: z.enum(['parent', 'kb-daemon']).optional(),
@@ -91,6 +96,7 @@ const internalRuntimeStartedBodySchema = z
 
 const workflowRuntimeStartedBodySchema = z
   .object({
+    execution: executionOrdinalSchema,
     transport: z.literal('workflow'),
     startedAt: runtimeStartedAtSchema,
   })
@@ -115,10 +121,19 @@ export const jobProgressTimingSchema = z
   .strict();
 
 export const jobProgressBodySchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('message'), message: z.string(), timing: jobProgressTimingSchema }).strict(),
-  jobDomainProgressSchema,
-  z.object({ kind: z.literal('missing_launch_record') }).strict(),
-  z.object({ kind: z.literal('recovery_parse_failed'), cause: externalErrorSchema }).strict(),
+  z
+    .object({
+      execution: executionOrdinalSchema,
+      kind: z.literal('message'),
+      message: z.string(),
+      timing: jobProgressTimingSchema,
+    })
+    .strict(),
+  jobDomainProgressSchema.extend({ execution: executionOrdinalSchema }),
+  z.object({ execution: executionOrdinalSchema, kind: z.literal('missing_launch_record') }).strict(),
+  z
+    .object({ execution: executionOrdinalSchema, kind: z.literal('recovery_parse_failed'), cause: externalErrorSchema })
+    .strict(),
 ]);
 
 export type JobQueueQueuedBody = z.infer<typeof jobQueueQueuedBodySchema>;
@@ -126,3 +141,67 @@ export type JobQueueAdmittedBody = z.infer<typeof jobQueueAdmittedBodySchema>;
 export type JobRuntimeStartedBody = z.infer<typeof jobRuntimeStartedBodySchema>;
 export type JobProgressTiming = z.infer<typeof jobProgressTimingSchema>;
 export type JobProgressBody = z.infer<typeof jobProgressBodySchema>;
+
+export const jobContinuityCheckpointedBodySchema = z
+  .object({
+    execution: executionOrdinalSchema,
+    snapshot: continuitySnapshotSchema,
+  })
+  .strict();
+
+export const jobArtifactRecordedBodySchema = z
+  .object({
+    execution: executionOrdinalSchema,
+    provider: z.string().min(1),
+    handle: z.string().min(1),
+    identity: providerArtifactIdentitySchema,
+    identityKey: z.string().min(1),
+  })
+  .strict()
+  .superRefine((body, ctx) => {
+    if (body.identityKey !== providerArtifactIdentityKey(body.provider, body.identity)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['identityKey'],
+        message: 'Artifact identityKey must match its provider and identity.',
+      });
+    }
+  });
+
+const retentionDiscardFields = {
+  execution: executionOrdinalSchema,
+  attempt: z.number().int().nonnegative().safe(),
+  handles: z.array(z.string().min(1)).readonly(),
+};
+
+export const jobRetentionDiscardRequestedBodySchema = z.object(retentionDiscardFields).strict();
+export const jobRetentionDiscardCompletedBodySchema = z
+  .object({
+    ...retentionDiscardFields,
+    outcome: z.enum(['discarded', 'skipped_no_handles', 'provider_declares_none']),
+  })
+  .strict();
+export const jobRetentionDiscardFailedBodySchema = z
+  .object({
+    ...retentionDiscardFields,
+    reason: z.string().min(1),
+    causeRef: executionCauseRefSchema.optional(),
+  })
+  .strict();
+
+export const jobInterruptedBodySchema = sessionInterruptedFaultSchema.extend({ execution: executionOrdinalSchema });
+export const jobProviderFailedBodySchema = sessionProviderFailedFaultSchema.extend({
+  execution: executionOrdinalSchema,
+});
+export const jobAdapterUnparseableBodySchema = sessionAdapterUnparseableFaultSchema.extend({
+  execution: executionOrdinalSchema,
+});
+
+export type JobContinuityCheckpointedBody = z.infer<typeof jobContinuityCheckpointedBodySchema>;
+export type JobArtifactRecordedBody = z.infer<typeof jobArtifactRecordedBodySchema>;
+export type JobRetentionDiscardRequestedBody = z.infer<typeof jobRetentionDiscardRequestedBodySchema>;
+export type JobRetentionDiscardCompletedBody = z.infer<typeof jobRetentionDiscardCompletedBodySchema>;
+export type JobRetentionDiscardFailedBody = z.infer<typeof jobRetentionDiscardFailedBodySchema>;
+export type JobInterruptedBody = z.infer<typeof jobInterruptedBodySchema>;
+export type JobProviderFailedBody = z.infer<typeof jobProviderFailedBodySchema>;
+export type JobAdapterUnparseableBody = z.infer<typeof jobAdapterUnparseableBodySchema>;

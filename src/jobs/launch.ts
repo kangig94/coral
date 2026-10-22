@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { providerBindingEnvelopeSchema } from '../infra/provider-binding-envelope.js';
 import { providerInstructionSchema, type ProviderInstruction } from '../providers/contract.js';
 import { retentionPolicySchema, type RetentionPolicy } from '../sessions/entry.js';
 import { LAUNCH_POOLS, type LaunchPool } from './contracts/admission.js';
@@ -105,77 +106,63 @@ export interface JobResumeRequest extends Omit<JobLaunchRequest, 'retention'> {
   provider?: string;
 }
 
-const providerLaunchRequestSchema = z
+export const executionOrdinalSchema = z.number().int().positive().safe();
+
+const controllerProfileSchema = z
+  .object({ owner: z.string().optional(), effort: z.string().optional(), claudeModelCap: z.string().optional() })
+  .strict();
+
+export const jobConversationFacetSchema = z
   .object({
-    prompt: z.string(),
-    name: z.string().optional(),
-    model: z.string().optional(),
+    provider: z.string().min(1),
+    binding: providerBindingEnvelopeSchema,
     cwd: canonicalWorkDirWireSchema,
+    name: z.string().min(1),
+    model: z.string().optional(),
     effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']).optional(),
+    agent: z.string().optional(),
+    instruction: providerInstructionSchema.optional(),
     bypassPermissions: z.boolean(),
     systemPrompt: z.string().optional(),
-    instruction: providerInstructionSchema.optional(),
-    retention: retentionPolicySchema.optional(),
-    coralEnv: z.record(z.string()),
+    retention: retentionPolicySchema,
+    controllerProfile: controllerProfileSchema.optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((facet, ctx) => {
+    if (facet.provider !== facet.binding.provider) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['binding', 'provider'],
+        message: 'Binding provider must match the conversation provider.',
+      });
+    }
+  });
 
-const workflowLaunchRequestSchema = z
-  .object({
-    prompt: z.string(),
-    cwd: canonicalWorkDirWireSchema,
-    bypassPermissions: z.boolean(),
-    coralEnv: z.record(z.string()),
-  })
-  .strict();
-
-const providerJobLaunchBaseSchema = z
-  .object({
-    owner: executionOwnerSchema,
-    discussionRun: discussionRunDescriptorSchema.optional(),
-    sessionId: z.string().min(1),
-    provider: z.string().min(1),
-    providerAction: z.enum(['exec', 'resume']),
-    projectRoot: z.string(),
-    backendNamespace: z.string(),
-    bundleHash: z.string().optional(),
-    pool: z.enum(LAUNCH_POOLS),
-    enqueueSequence: z.number().int().nonnegative(),
-    createdAt: z.string(),
-    workflowSlotGeneration: z.number().int().nonnegative().optional(),
-    replacesWorkflowJobId: z.string().min(1).optional(),
-  })
-  .strict();
-
-const providerJobLaunchRequestBodySchema = providerJobLaunchBaseSchema.extend({
-  jobKind: z.literal('provider'),
-  request: providerLaunchRequestSchema,
-});
-
-const workflowJobLaunchRequestBodySchema = z
-  .object({
-    owner: executionOwnerSchema,
-    projectRoot: z.string(),
-    backendNamespace: z.string(),
-    bundleHash: z.string().optional(),
-    jobKind: z.literal('workflow'),
-    pool: z.enum(LAUNCH_POOLS),
-    enqueueSequence: z.number().int().nonnegative(),
-    request: workflowLaunchRequestSchema,
-    createdAt: z.string(),
-  })
-  .strict();
-
-const kbJobLaunchBaseSchema = z.object({
+const jobOpenedBase = {
   owner: executionOwnerSchema,
-  projectRoot: z.string(),
-  backendNamespace: z.string(),
-  bundleHash: z.string().optional(),
-  jobKind: z.literal('kb'),
-  pool: z.enum(LAUNCH_POOLS),
-  enqueueSequence: z.number().int().nonnegative(),
-  createdAt: z.string(),
-});
+  projectRoot: z.string().min(1),
+  createdAt: z.string().datetime(),
+};
+
+export const jobOpenedBodySchema = z.discriminatedUnion('jobKind', [
+  z
+    .object({
+      ...jobOpenedBase,
+      jobKind: z.literal('provider'),
+      conversation: jobConversationFacetSchema,
+      workflowSlotId: z.string().min(1).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      ...jobOpenedBase,
+      jobKind: z.literal('workflow'),
+      cwd: canonicalWorkDirWireSchema,
+      bypassPermissions: z.boolean(),
+    })
+    .strict(),
+  z.object({ ...jobOpenedBase, jobKind: z.literal('kb') }).strict(),
+]);
 
 const kbSourceImportJobRequestSchema = z
   .object({
@@ -191,34 +178,23 @@ export const kbJobLaunchPayloadSchema = z.discriminatedUnion('operation', [
   z.object({ operation: z.literal('kb.community_summary'), request: z.object({}).strict() }).strict(),
 ]);
 
-const kbSourceImportJobLaunchRequestBodySchema = kbJobLaunchBaseSchema
-  .extend({
-    operation: z.literal('kb.source_import'),
-    request: kbSourceImportJobRequestSchema,
+export const jobExecutionRequestedBodySchema = z
+  .object({
+    execution: executionOrdinalSchema,
+    input: z.union([z.string(), kbJobLaunchPayloadSchema]),
+    action: z.enum(['exec', 'resume']),
+    pool: z.enum(LAUNCH_POOLS),
+    enqueueSequence: z.number().int().nonnegative().safe(),
+    coralEnv: z.record(z.string()),
+    createdAt: z.string().datetime(),
+    backendNamespace: z.string().min(1),
+    bundleHash: z.string().optional(),
+    discussionRun: discussionRunDescriptorSchema.optional(),
+    originatingClientMessageId: z.string().min(1).optional(),
   })
   .strict();
-
-const kbReindexJobLaunchRequestBodySchema = kbJobLaunchBaseSchema
-  .extend({
-    operation: z.literal('kb.reindex'),
-    request: z.object({}).strict(),
-  })
-  .strict();
-
-const kbCommunitySummaryJobLaunchRequestBodySchema = kbJobLaunchBaseSchema
-  .extend({
-    operation: z.literal('kb.community_summary'),
-    request: z.object({}).strict(),
-  })
-  .strict();
-
-export const jobLaunchRequestBodySchema = z.union([
-  providerJobLaunchRequestBodySchema,
-  workflowJobLaunchRequestBodySchema,
-  kbSourceImportJobLaunchRequestBodySchema,
-  kbReindexJobLaunchRequestBodySchema,
-  kbCommunitySummaryJobLaunchRequestBodySchema,
-]);
 
 export type KbSourceImportJobRequest = z.infer<typeof kbSourceImportJobRequestSchema>;
-export type JobLaunchRequestBody = z.infer<typeof jobLaunchRequestBodySchema>;
+export type JobConversationFacet = z.infer<typeof jobConversationFacetSchema>;
+export type JobOpenedBody = z.infer<typeof jobOpenedBodySchema>;
+export type JobExecutionRequestedBody = z.infer<typeof jobExecutionRequestedBodySchema>;

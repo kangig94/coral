@@ -1,27 +1,27 @@
-// Per-event describers for the `job/*` stream. Owned by the jobs domain and
-// composed by `read-model/event-describers.ts` into the default
-// `EventDescriberMap` consumed by `causality/render.ts`.
-
 import { typedDescriber, type EventDescriber, type EventDescriberMap } from '../causality/render.js';
-import { jobLaunchRequestBodySchema } from './launch.js';
-import {
-  describeJobProgressFault,
-  describeLaunchRejected,
-  describeTerminalOutcome,
-  jobAbortedBodySchema,
-  jobLaunchRejectedSchema,
-} from './outcome.js';
-import { jobTerminalRecordedBodySchema } from './terminal/result.js';
+import { jobOpenedBodySchema, jobExecutionRequestedBodySchema } from './launch.js';
+import { describeJobProgressFault, describeTerminalOutcome, jobAbortedBodySchema } from './outcome.js';
+import { jobExecutionOutcomeAcceptedBodySchema, jobExecutionEndedBodySchema } from './terminal/result.js';
 import {
   jobProgressBodySchema,
+  jobContinuityCheckpointedBodySchema,
+  jobArtifactRecordedBodySchema,
+  jobRetentionDiscardRequestedBodySchema,
+  jobRetentionDiscardCompletedBodySchema,
+  jobRetentionDiscardFailedBodySchema,
+  jobInterruptedBodySchema,
+  jobProviderFailedBodySchema,
+  jobAdapterUnparseableBodySchema,
   jobQueueAdmittedBodySchema,
   jobQueueQueuedBodySchema,
   jobRuntimeStartedBodySchema,
 } from './event-bodies.js';
 
-const launchRequested = typedDescriber(jobLaunchRequestBodySchema, () => 'Job launch requested.');
-
-const launchRejected = typedDescriber(jobLaunchRejectedSchema, (body) => describeLaunchRejected(body));
+const opened = typedDescriber(jobOpenedBodySchema, () => 'Job opened.');
+const executionRequested = typedDescriber(
+  jobExecutionRequestedBodySchema,
+  (body) => `Execution #${body.execution} requested.`,
+);
 
 const queueQueued = typedDescriber(jobQueueQueuedBodySchema, (body) => `Job queued at position ${body.queuePosition}.`);
 
@@ -53,9 +53,7 @@ const progressEmitted = typedDescriber(jobProgressBodySchema, (body, event) => {
   }
 });
 
-const terminalRecorded = typedDescriber(jobTerminalRecordedBodySchema, (body) =>
-  // Causality recurses on the next causeRef via extractCauseRef; here we
-  // render only the local terminal sentence with a stable causeRef sketch.
+const outcomeAccepted = typedDescriber(jobExecutionOutcomeAcceptedBodySchema, (body) =>
   describeTerminalOutcome(body.terminal.outcome, {
     describeCauseRef: (ref) => `${ref.stream.kind}/${ref.stream.id}#${ref.seq}`,
   }),
@@ -64,12 +62,57 @@ const terminalRecorded = typedDescriber(jobTerminalRecordedBodySchema, (body) =>
 const aborted = typedDescriber(jobAbortedBodySchema, (body) => `Job aborted: ${body.reason}.`);
 
 export const jobsEventDescribers: EventDescriberMap = new Map<string, EventDescriber>([
-  ['job:job.launch.requested', launchRequested],
-  ['job:job.launch.rejected', launchRejected],
-  ['job:job.queue.queued', queueQueued],
-  ['job:job.queue.admitted', queueAdmitted],
-  ['job:job.runtime.started', runtimeStarted],
-  ['job:job.progress.emitted', progressEmitted],
-  ['job:job.terminal.recorded', terminalRecorded],
-  ['job:job.aborted', aborted],
+  ['job:job.opened', opened],
+  ['job:job.execution.requested', executionRequested],
+  ['job:job.execution.queued', queueQueued],
+  ['job:job.execution.admitted', queueAdmitted],
+  ['job:job.execution.started', runtimeStarted],
+  ['job:job.execution.progress', progressEmitted],
+  ['job:job.execution.outcome.accepted', outcomeAccepted],
+  ['job:job.execution.aborted', aborted],
+  [
+    'job:job.execution.ended',
+    typedDescriber(jobExecutionEndedBodySchema, (body) => `Execution #${body.execution} ended.`),
+  ],
+  [
+    'job:job.continuity.checkpointed',
+    typedDescriber(jobContinuityCheckpointedBodySchema, () => 'Conversation continuity checkpointed.'),
+  ],
+  [
+    'job:job.artifact.recorded',
+    typedDescriber(jobArtifactRecordedBodySchema, (body) => `Provider artifact recorded: ${body.handle}.`),
+  ],
+  [
+    'job:job.retention.discard.requested',
+    typedDescriber(jobRetentionDiscardRequestedBodySchema, () => 'Conversation retention requested.'),
+  ],
+  [
+    'job:job.retention.discard.completed',
+    typedDescriber(
+      jobRetentionDiscardCompletedBodySchema,
+      (body) => `Conversation retention completed: ${body.outcome}.`,
+    ),
+  ],
+  [
+    'job:job.retention.discard.failed',
+    typedDescriber(jobRetentionDiscardFailedBodySchema, (body) => `Conversation retention failed: ${body.reason}`),
+  ],
+  [
+    'job:job.interrupted',
+    typedDescriber(
+      jobInterruptedBodySchema,
+      (body) => `Execution interrupted by ${body.trigger}; continuity ${body.continuity}.`,
+    ),
+  ],
+  [
+    'job:job.provider_failed',
+    typedDescriber(jobProviderFailedBodySchema, (body) => `${body.provider} request failed: ${body.message}`),
+  ],
+  [
+    'job:job.adapter_unparseable',
+    typedDescriber(
+      jobAdapterUnparseableBodySchema,
+      (body) => `${body.provider} output could not be parsed: ${body.parseError}`,
+    ),
+  ],
 ]);

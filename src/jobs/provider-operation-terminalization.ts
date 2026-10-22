@@ -4,7 +4,7 @@ import { errorMessage } from '../infra/error-format.js';
 import type { JobProgressStore } from './contracts/job-store.js';
 import { elapsedDurationMs } from './duration.js';
 import { buildJobEventRefs } from './refs.js';
-import { appendJobTerminalRecorded, failedTerminalOutcome } from './terminal/recording.js';
+import { appendJobExecutionOutcomeAccepted, failedTerminalOutcome } from './terminal/recording.js';
 import { deleteProviderOperation, ProviderOperationJournalError } from '../store/provider-operation-journal.js';
 import type {
   ProviderOperationIdentity,
@@ -131,12 +131,12 @@ export function terminalizeProviderOperation(
 
       const options = {
         jobId: record.operation.jobId,
-        sessionId: status.sessionId,
+        execution: status.execution,
         namespace: status.backendNamespace,
         project: status.projectRoot,
       } as const;
       if (directive.kind === 'terminal-aborted') {
-        appendJobTerminalRecorded(commit, {
+        appendJobExecutionOutcomeAccepted(commit, {
           ...options,
           terminal: {
             content: '',
@@ -150,19 +150,20 @@ export function terminalizeProviderOperation(
             ? readProviderHostUnserviceableEvidence(record.lastError)
             : null;
         const cause = commit.append({
-          type: 'job.progress.emitted',
+          type: 'job.execution.progress',
           stream: { kind: 'job', id: record.operation.jobId },
           namespace: status.backendNamespace,
           project: status.projectRoot,
           refs: buildJobEventRefs({ jobId: record.operation.jobId, sessionId: status.sessionId }),
           body: {
+            execution: status.execution,
             kind: 'domain',
             stage: 'provider_operation_failed',
             message: directive.reason,
             detail: hostEvidence === null ? { code: directive.code } : { code: directive.code, ...hostEvidence },
           },
         });
-        appendJobTerminalRecorded(commit, {
+        appendJobExecutionOutcomeAccepted(commit, {
           ...options,
           terminal: { content: '', durationMs, outcome: failedTerminalOutcome(cause) },
         });

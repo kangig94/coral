@@ -6,11 +6,9 @@
 import type { Database } from '../store/db.js';
 
 import { CoralSetupError } from '../runtime/errors.js';
-import { decodeStoredBody, type StoreReadContext } from '../store/body-codec.js';
-import type { CoralEvent, CoralEventInput } from '../store/envelope.js';
-import type { EventsRow } from '../store/schema.js';
+import type { CoralEvent } from '../store/envelope.js';
 import { upsertProjection } from '../store/projection-upsert.js';
-import type { DomainAppendValidator, Reducer } from '../store/reducers.js';
+import type { Reducer } from '../store/reducers.js';
 import type { JobLaunchRequestBody } from './launch.js';
 import type { ExecutionOwner } from '../runtime/execution-owner.js';
 import type { CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
@@ -79,68 +77,6 @@ function prematureProjectionJobEvent(event: CoralEvent): CoralSetupError {
     },
   });
 }
-
-type JobTerminalOrderState = { kind: 'existing'; seq: number } | { kind: 'batch' };
-
-function jobTerminalOrderViolation(input: CoralEventInput, state: JobTerminalOrderState): CoralSetupError {
-  const reason =
-    state.kind === 'existing'
-      ? `terminal already recorded at seq ${state.seq}`
-      : 'terminal already recorded in this append batch';
-  return new CoralSetupError({
-    code: 'job_terminal_order_violation',
-    userMessage: `Job event '${input.type}' cannot be appended for '${input.stream.id}' after job.terminal.recorded.`,
-    remediation: 'Append exactly one job.terminal.recorded event, and keep it as the last event on each job stream.',
-    context: {
-      jobId: input.stream.id,
-      type: input.type,
-      reason,
-    },
-  });
-}
-
-function readLatestTerminalSeq(db: Database, jobId: string, readCtx: StoreReadContext): number | null {
-  const row = db
-    .prepare<[string], EventsRow>(
-      `SELECT *
-         FROM events
-        WHERE stream_id = ?
-          AND type = 'job.terminal.recorded'
-        ORDER BY seq DESC
-        LIMIT 1`,
-    )
-    .get(jobId);
-
-  if (row === undefined) return null;
-  decodeStoredBody(row, readCtx);
-  return row.seq;
-}
-
-export const validateJobTerminalOrder: DomainAppendValidator = (ctx, inputs) => {
-  const terminalByJob = new Map<string, JobTerminalOrderState | null>();
-
-  for (const input of inputs) {
-    if (input.stream.kind !== 'job') {
-      continue;
-    }
-
-    const jobId = input.stream.id;
-    let terminalState = terminalByJob.get(jobId);
-    if (terminalState === undefined) {
-      const seq = readLatestTerminalSeq(ctx.db, jobId, ctx.readCtx);
-      terminalState = seq === null ? null : { kind: 'existing', seq };
-      terminalByJob.set(jobId, terminalState);
-    }
-
-    if (terminalState !== null) {
-      throw jobTerminalOrderViolation(input, terminalState);
-    }
-
-    if (input.type === 'job.terminal.recorded') {
-      terminalByJob.set(jobId, { kind: 'batch' });
-    }
-  }
-};
 
 function createInitialProjectionJobState(event: CoralEvent, patch: Partial<ProjectedJobState>): ProjectedJobState {
   if (

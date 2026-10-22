@@ -9,6 +9,7 @@ import type { StoreReadContext } from './body-codec.js';
 export type Reducer<T = unknown> = (db: Database, event: CoralEvent<T>) => void;
 export interface DomainAppendValidationContext {
   readonly db: Database;
+  readonly sequences: readonly number[];
   readonly providers: ProviderLookupPort;
   readonly readCtx: StoreReadContext;
 }

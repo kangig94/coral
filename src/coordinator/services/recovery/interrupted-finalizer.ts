@@ -14,7 +14,7 @@ import {
   appendProviderTerminalInCommit,
   appendSessionInterruptedTerminalInCommit,
 } from '../terminal-materializer.js';
-import { appendJobTerminalRecorded } from '../../../jobs/terminal/recording.js';
+import { appendJobExecutionOutcomeAccepted } from '../../../jobs/terminal/recording.js';
 import type { JobAdmissionPort, LaunchPermit } from '../../../jobs/contracts/admission.js';
 import type { AppServerInterruptedRecoveryPlan, DurableInterruptedRecoveryPlan } from './interrupted-plan.js';
 import type { PerformedDurableRecovery, PerformedInterruptedRecovery } from './interrupted-performer.js';
@@ -140,7 +140,7 @@ export async function finalizeInterruptedAppServerRecovery(
 ): Promise<void> {
   const terminalOptions = {
     jobId: plan.launchRecord.jobId,
-    sessionId: plan.session.sessionId,
+    execution: status.execution,
     namespace: status.backendNamespace,
     project: status.projectRoot,
   };
@@ -200,9 +200,9 @@ export async function finalizeInterruptedAppServerRecovery(
 
 function directTerminalAppender(status: JobStatus, terminal: JobTerminalInput): TerminalAppender {
   return <Scope>(commit: CommitContext<Scope>): void => {
-    appendJobTerminalRecorded(commit, {
+    appendJobExecutionOutcomeAccepted(commit, {
       jobId: status.jobId,
-      sessionId: status.sessionId,
+      execution: status.execution,
       namespace: status.backendNamespace,
       project: status.projectRoot,
       terminal,
@@ -220,7 +220,7 @@ export async function finalizeInterruptedDurableRecovery(
   const expectedVersion = await recordArtifactHandlesExact(plan, performed.artifactHandles, deps);
   const terminalOptions = {
     jobId: plan.launchRecord.jobId,
-    sessionId: plan.session.sessionId,
+    execution: status.execution,
     namespace: status.backendNamespace,
     project: status.projectRoot,
   };

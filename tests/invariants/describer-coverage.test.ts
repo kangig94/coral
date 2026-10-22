@@ -6,6 +6,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { discussRegistry } from '#src/discuss/event-registry.js';
+import { jobsEventDescribers } from '#src/jobs/event-describers.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
 import { workflowRegistry } from '#src/workflow/events.js';
@@ -13,6 +14,15 @@ import { composeReducers } from '#src/store/reducers.js';
 import { defaultEventDescribers } from '#src/read-model/event-describers.js';
 
 describe('describer coverage invariant', () => {
+  it('covers every execution, continuity, artifact, retention and fault event on the job stream', () => {
+    expect([...jobsEventDescribers.keys()].sort()).toEqual(
+      jobsRegistry.entries.map((entry) => `job:${entry.type}`).sort(),
+    );
+    expect([...jobsEventDescribers.keys()].some((key) => /job\.(launch|queue|runtime|terminal)\./.test(key))).toBe(
+      false,
+    );
+  });
+
   it('every registered Journal event type has a default describer', () => {
     const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
     const missing = reducers.describerKeys.filter((key) => !defaultEventDescribers.has(key));
