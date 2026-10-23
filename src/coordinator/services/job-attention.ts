@@ -35,6 +35,7 @@ export class JobAttention {
     stream: (request: WaitStreamRequest) => AsyncIterable<WaitStreamEvent>,
   ): AsyncGenerator<WaitStreamEvent> {
     const waits = new Map<string, () => void>();
+    const previousOnAdmission = request.onAdmission;
     const onAdmission = (admission: WaitAdmission): void => {
       if (admission.disposition !== 'admitted' || admission.observationDeferred) return;
       const execution = admission.detail?.status.execution;
@@ -42,14 +43,16 @@ export class JobAttention {
       const key = this.key(admission.jobId, execution);
       if (waits.has(key)) return;
       waits.set(key, this.beginWait([{ jobId: admission.jobId, execution }]));
-      request.onAdmission?.(admission);
+      previousOnAdmission?.(admission);
     };
-    const scoped = { ...request, onAdmission };
+    request.onAdmission = onAdmission;
     try {
-      scoped.admissions ??= admit(scoped);
-      for (const admission of scoped.admissions) onAdmission(admission);
-      yield* stream(scoped);
+      request.admissions ??= admit(request);
+      for (const admission of request.admissions) onAdmission(admission);
+      yield* stream(request);
     } finally {
+      if (previousOnAdmission === undefined) delete request.onAdmission;
+      else request.onAdmission = previousOnAdmission;
       for (const endWait of waits.values()) endWait();
     }
   }

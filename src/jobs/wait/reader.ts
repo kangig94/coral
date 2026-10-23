@@ -63,9 +63,57 @@ function resumableCut(session: WaitSession, cut: 'deadline' | 'progress-budget')
   return session.remaining().some((jobId) => session.unknown(jobId)) ? 'unanswered' : cut;
 }
 
+type WaitReadContext = {
+  input: WaitReadInput;
+  session: WaitSession;
+  delivery: DeliveryState;
+  signal: AbortSignal;
+  internal: boolean;
+  bounded: boolean;
+  deadline: number;
+  observing: boolean;
+  observation?: Promise<void>;
+  lastObservation: number;
+  deadlineObserved: boolean;
+  crossedTimer: boolean;
+  unknownReadAttempts: number;
+};
+
+const UNKNOWN_READ_RETRY_DELAYS = [250, 1000, 5000];
+
 /** Unknown coverage cannot authorize finalization, even when the observer outlives the read. */
 export async function* readWaitSession(input: WaitReadInput): AsyncGenerator<WaitStreamEvent> {
-  const { request, time, read } = input;
+  const controller = new AbortController();
+  const signal = input.request.abortSignal
+    ? AbortSignal.any([controller.signal, input.request.abortSignal])
+    : controller.signal;
+  const context = createWaitReadContext(input, signal);
+  const { session, delivery, bounded, internal, deadline } = context;
+  try {
+    while (!signal.aborted) {
+      const deferred = reconcileWaitAdmissions(input, session);
+      const progress = selectWaitProgress(context);
+      refreshCarrierObservation(context);
+      if (yield* pollEvents(session, delivery, progress, bounded)) return;
+      // A backlog is read page by page after a macrotask; a client read still stops at its deadline.
+      if (session.hasProgress() && (internal || Number(input.time.monotonicNow()) < deadline)) {
+        await setImmediate();
+        continue;
+      }
+      const observedUnknown = classifyUnknownRead(context, deferred);
+      if (waitReadLimitReached(context, observedUnknown)) {
+        yield await finishWaitRead(context);
+        return;
+      }
+      await sleepBeforeNextRead(context, observedUnknown);
+    }
+  } finally {
+    controller.abort();
+  }
+}
+
+function createWaitReadContext(input: WaitReadInput, signal: AbortSignal): WaitReadContext {
+  const { request } = input;
   const internal = input.internal === true;
   const session = new WaitSession(
     request.jobIds,
@@ -74,109 +122,124 @@ export async function* readWaitSession(input: WaitReadInput): AsyncGenerator<Wai
     internal,
     request.executionSelections,
   );
-  const deadline = Number(time.monotonicNow()) + (request.timeoutSeconds ?? 600) * 1000;
-  const controller = new AbortController();
-  const signal = request.abortSignal ? AbortSignal.any([controller.signal, request.abortSignal]) : controller.signal;
-  const bounded = request.drainProgress !== true && !internal;
-  const state: DeliveryState = {
-    cursor: request.cursor ?? null,
-    progressLines: 0,
-    progressBytes: 0,
-    dispositions: new Map(),
-    queuedReported: new Set(),
-    notices: new Set(),
-    absentReported: new Set(),
+  return {
+    input,
+    session,
+    signal,
+    internal,
+    bounded: request.drainProgress !== true && !internal,
+    deadline: Number(input.time.monotonicNow()) + (request.timeoutSeconds ?? 600) * 1000,
+    delivery: {
+      cursor: request.cursor ?? null,
+      progressLines: 0,
+      progressBytes: 0,
+      dispositions: new Map(),
+      queuedReported: new Set(),
+      notices: new Set(),
+      absentReported: new Set(),
+    },
+    observing: false,
+    lastObservation: -Infinity,
+    deadlineObserved: false,
+    crossedTimer: false,
+    unknownReadAttempts: 0,
   };
-  let observing = false;
-  let observation: Promise<void> | undefined;
-  let lastObservation = -Infinity;
-  let deadlineObserved = false;
-  let crossedTimer = false;
-  let unknownReadAttempts = 0;
-  const retryDelays = [250, 1000, 5000];
-  try {
-    while (!signal.aborted) {
-      const admissions = read();
-      const deferred = new Set(admissions.filter((job) => job.observationDeferred).map((job) => job.jobId));
-      session.reconcile(admissions);
-      for (const admission of session.admissions)
-        if (admission.disposition === 'admitted' && !admission.observationDeferred) request.onAdmission?.(admission);
-      // A bounded read spends one budget over the whole request; drain and internal reads spend one per poll.
-      const progress = session.withProgress(input.visit, (source) =>
-        session.select(
-          source,
-          bounded
-            ? { lines: WAIT_PROGRESS_LINES - state.progressLines, bytes: WAIT_PROGRESS_BYTES - state.progressBytes }
-            : { lines: WAIT_PROGRESS_LINES, bytes: WAIT_PROGRESS_BYTES },
-          bounded ? 20 : null,
-        ),
-      );
-      const now = Number(time.monotonicNow());
-      const nearDeadline: boolean = now >= deadline - 250 && !deadlineObserved;
-      if (!observing && (now - lastObservation >= 5000 || nearDeadline) && now < deadline) {
-        observing = true;
-        lastObservation = now;
-        deadlineObserved ||= nearDeadline;
-        observation = observeCarriers(input, session, signal).finally(() => {
-          observing = false;
-        });
-      }
-      if (yield* pollEvents(session, state, progress, bounded)) return;
-      if (session.remaining().length === 0) {
-        yield waitingEvent(session, 'settled');
-        return;
-      }
-      if (session.hasProgress()) {
-        if (bounded && progress.full) {
-          yield waitingEvent(session, resumableCut(session, 'progress-budget'));
-          return;
-        }
-        // A backlog is read page by page after a macrotask; a client read still stops at its deadline.
-        if (internal || Number(time.monotonicNow()) < deadline) {
-          await setImmediate();
-          continue;
-        }
-      }
-      const unknownRead = session.remaining().every((id) => session.unknown(id));
-      const observedUnknown = unknownRead && session.remaining().some((jobId) => !deferred.has(jobId));
-      if (!unknownRead) unknownReadAttempts = 0;
-      if (
-        (!internal && observedUnknown && unknownReadAttempts === retryDelays.length) ||
-        Number(time.monotonicNow()) >= deadline
-      ) {
-        const timedOut = Number(time.monotonicNow()) >= deadline;
-        if (internal && !crossedTimer) await time.sleep(0, { signal });
-        if (observing && observation && Number(time.monotonicNow()) < deadline) {
-          const observationDeadline = new AbortController();
-          const stop = new AbortController();
-          const timeout = time.sleep(Math.max(0, deadline - Number(time.monotonicNow())), { signal: stop.signal }).then(
-            () => observationDeadline.abort(),
-            () => undefined,
-          );
-          try {
-            await raceWithSignal(observation, AbortSignal.any([signal, observationDeadline.signal]), () => undefined);
-          } finally {
-            stop.abort();
-            void timeout;
-          }
-        }
-        yield waitingEvent(session, timedOut ? resumableCut(session, 'deadline') : 'unanswered');
-        return;
-      }
-      await time
-        .sleep(
-          Math.min(
-            observedUnknown ? retryDelays[Math.min(unknownReadAttempts++, retryDelays.length - 1)] : 250,
-            Math.max(0, deadline - Number(time.monotonicNow())),
-          ),
-          { signal },
-        )
-        .catch(() => undefined);
-      crossedTimer = true;
-    }
-  } finally {
-    controller.abort();
+}
+
+function reconcileWaitAdmissions(input: WaitReadInput, session: WaitSession): Set<string> {
+  const admissions = input.read();
+  const deferred = new Set(admissions.filter((job) => job.observationDeferred).map((job) => job.jobId));
+  session.reconcile(admissions);
+  for (const admission of session.admissions)
+    if (admission.disposition === 'admitted' && !admission.observationDeferred) input.request.onAdmission?.(admission);
+  return deferred;
+}
+
+function selectWaitProgress({ input, session, delivery, bounded }: WaitReadContext): WaitSelection {
+  // A bounded read spends one budget over the whole request; drain and internal reads spend one per poll.
+  return session.withProgress(input.visit, (source) =>
+    session.select(
+      source,
+      bounded
+        ? { lines: WAIT_PROGRESS_LINES - delivery.progressLines, bytes: WAIT_PROGRESS_BYTES - delivery.progressBytes }
+        : { lines: WAIT_PROGRESS_LINES, bytes: WAIT_PROGRESS_BYTES },
+      bounded ? 20 : null,
+    ),
+  );
+}
+
+function refreshCarrierObservation(context: WaitReadContext): void {
+  const { input, session, signal, deadline } = context;
+  const now = Number(input.time.monotonicNow());
+  const nearDeadline = now >= deadline - 250 && !context.deadlineObserved;
+  if (!context.observing && (now - context.lastObservation >= 5000 || nearDeadline) && now < deadline) {
+    context.observing = true;
+    context.lastObservation = now;
+    context.deadlineObserved ||= nearDeadline;
+    context.observation = observeCarriers(input, session, signal).finally(() => {
+      context.observing = false;
+    });
   }
+}
+
+function classifyUnknownRead(context: WaitReadContext, deferred: Set<string>): boolean {
+  const { session } = context;
+  const unknownRead = session.remaining().every((id) => session.unknown(id));
+  const observedUnknown = unknownRead && session.remaining().some((jobId) => !deferred.has(jobId));
+  if (!unknownRead) context.unknownReadAttempts = 0;
+  return observedUnknown;
+}
+
+function waitReadLimitReached(context: WaitReadContext, observedUnknown: boolean): boolean {
+  return (
+    (!context.internal && observedUnknown && context.unknownReadAttempts === UNKNOWN_READ_RETRY_DELAYS.length) ||
+    Number(context.input.time.monotonicNow()) >= context.deadline
+  );
+}
+
+async function finishWaitRead(context: WaitReadContext): Promise<WaitStreamEvent> {
+  const { input, session, signal, internal, deadline } = context;
+  const timedOut = Number(input.time.monotonicNow()) >= deadline;
+  if (internal && !context.crossedTimer) await input.time.sleep(0, { signal });
+  if (context.observing && context.observation && Number(input.time.monotonicNow()) < deadline)
+    await waitForCarrierObservation(context, context.observation);
+  return waitingEvent(session, timedOut ? resumableCut(session, 'deadline') : 'unanswered');
+}
+
+async function waitForCarrierObservation(
+  { input, signal, deadline }: WaitReadContext,
+  observation: Promise<void>,
+): Promise<void> {
+  const observationDeadline = new AbortController();
+  const stop = new AbortController();
+  const timeout = input.time
+    .sleep(Math.max(0, deadline - Number(input.time.monotonicNow())), { signal: stop.signal })
+    .then(
+      () => observationDeadline.abort(),
+      () => undefined,
+    );
+  try {
+    await raceWithSignal(observation, AbortSignal.any([signal, observationDeadline.signal]), () => undefined);
+  } finally {
+    stop.abort();
+    void timeout;
+  }
+}
+
+async function sleepBeforeNextRead(context: WaitReadContext, observedUnknown: boolean): Promise<void> {
+  const { input, signal, deadline } = context;
+  await input.time
+    .sleep(
+      Math.min(
+        observedUnknown
+          ? UNKNOWN_READ_RETRY_DELAYS[Math.min(context.unknownReadAttempts++, UNKNOWN_READ_RETRY_DELAYS.length - 1)]
+          : 250,
+        Math.max(0, deadline - Number(input.time.monotonicNow())),
+      ),
+      { signal },
+    )
+    .catch(() => undefined);
+  context.crossedTimer = true;
 }
 
 async function observeCarriers(input: WaitReadInput, session: WaitSession, signal: AbortSignal): Promise<void> {
@@ -332,5 +395,13 @@ function* pollEvents(
   if (terminals === 'final') return true;
   if (progress.rows.length > 0 || terminals === 'repeated') yield* cursorFrame(session, state);
   yield* carrierEvents(session, state.absentReported);
+  if (session.remaining().length === 0) {
+    yield waitingEvent(session, 'settled');
+    return true;
+  }
+  if (session.hasProgress() && bounded && progress.full) {
+    yield waitingEvent(session, resumableCut(session, 'progress-budget'));
+    return true;
+  }
   return false;
 }

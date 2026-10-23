@@ -459,6 +459,37 @@ describe('JobSendService bound admission', () => {
 });
 
 describe('jobs send typed continuation refusals', () => {
+  it.each([
+    'provider_binding_missing_profile',
+    'provider_binding_profile_unavailable',
+    'provider_binding_identity_unavailable',
+    'provider_binding_unsupported_selection',
+    'provider_binding_invalid_persisted_binding',
+  ] as const)('preserves the cause and profile remedy for %s before launch', async (code) => {
+    const h = harness({ ended: true, record: null });
+    const before = h.events();
+    const reason = `Binding refused: ${code}`;
+    h.resume.mockResolvedValue({ status: 'refused', code, message: reason });
+    const result = await h.service().send(h.request(), ctx);
+    expect(result).toEqual({ state: 'refused', code: 'profile_mismatch', reason });
+    for (const inputTokens of [['original input'], ['-']]) {
+      const output = formatJobSendResult(EXECUTION_JOB_ID, result, { inputTokens });
+      expect(output.exitCode).toBe(1);
+      expect(output.text).toContain(reason);
+      expect(output.text).toContain('CODEX_HOME (Codex) or CLAUDE_CONFIG_DIR (Claude)');
+      expect(output.text).toContain('This does not continue this conversation');
+      expect(output.text).not.toContain('jobs wait');
+      expect(output.text.split('\n').filter((line) => line.startsWith('command='))).toEqual([
+        `command=coral-cli codex -i ${inputTokens[0] === '-' ? '-' : "'original input'"}`,
+        `command=coral-cli claude -i ${inputTokens[0] === '-' ? '-' : "'original input'"}`,
+      ]);
+    }
+    expect(h.events()).toEqual(before);
+    expect(h.restore).not.toHaveBeenCalled();
+    expect(h.activate).not.toHaveBeenCalled();
+    expect(h.sendOperation).not.toHaveBeenCalled();
+  });
+
   it.each(['steer', 'continue'] as const)(
     'refuses a direct %s RPC for another project before classifying its historical location',
     async (mode) => {

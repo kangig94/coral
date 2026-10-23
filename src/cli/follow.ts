@@ -28,6 +28,7 @@ import {
   consumeHandoffRunResult,
   runHandoff,
   type HandoffOutcome,
+  type HandoffOperation,
 } from '../coordinator/handoff-routing/runner.js';
 import { formatLaunch, formatWorkflowSlot } from './format/jobs.js';
 import { openCliCauseRefRenderer } from './cause-renderer.js';
@@ -807,8 +808,6 @@ export async function followJobs(options: FollowJobsOptions): Promise<number> {
 }
 
 export async function launchAndFollow(options: FollowOptions): Promise<number> {
-  const ipcAuthOptions = childPrincipalAuthOptions(childPrincipalAuthFromEnv());
-
   return followJobs({
     start: { kind: 'launch', launchResult: options.launchResult },
     reconnectPolicy: 'until-terminal',
@@ -820,76 +819,80 @@ export async function launchAndFollow(options: FollowOptions): Promise<number> {
       embed: false,
       verbose: false,
     },
-    connect: async ({
-      jobIds,
-      cursor,
-      executionSelections,
-      timeoutSeconds,
-      signal,
-      drainProgress,
-      onDelegatedChild,
-    }) => {
-      const probeStarted = performance.now();
-      let backend;
-      try {
-        backend = await raceWithSignal(ensure('jobs.wait', options.pluginRoot), signal, () => {
-          throw signal.reason;
-        });
-        const result = await runHandoff(
-          {
-            kind: 'wait-jobs',
-            jobId: options.launchResult.jobId,
-            ...(executionSelections.length === 0
-              ? {}
-              : { serializedExecutionSelections: JSON.stringify(executionSelections) }),
-            ...(cursor === undefined ? {} : { serializedCursor: cursor }),
-          },
-          {
-            pluginRoot: options.pluginRoot,
-            signal,
-            onDelegatedChild,
-            waitProbeRemainingMs: () => Math.max(0, timeoutSeconds * 1000 - (performance.now() - probeStarted)),
-            onSelectionPublicationIncident: (incident) => renderHandoffPublicationIncidents([incident]),
-          },
-        );
-        const continuation = consumeHandoffRunResult(result, (incidents) =>
-          renderHandoffPublicationIncidents(incidents.filter((incident) => incident.phase === 'terminal')),
-        );
-        if (continuation.kind === 'delegated') {
-          return continuation;
-        }
-      } catch (error) {
-        if (error instanceof HandoffRunError) {
-          renderHandoffPublicationIncidents(error.incidents.filter((incident) => incident.phase === 'terminal'));
-          return { kind: 'fatal-error', error: error.originalError };
-        }
-        return { kind: 'fatal-error', error };
-      }
-
-      return {
-        kind: 'subscription',
-        // Wire boundary: see `WaitSubscription`'s definition — validation happens once the item is pulled
-        // from the iterator, not here.
-        subscription: await backend.subscribe<unknown>(
-          'jobs.wait',
-          jobsWaitRequest({
-            jobIds,
-            executionSelections,
-            timeoutSeconds,
-            drainProgress,
-            projectRoot: options.projectRoot,
-            ...(cursor ? { cursor } : {}),
-          }),
-          {
-            timeoutMs: HEALTH_TIMEOUT_MS,
-            signal,
-            ...ipcAuthOptions,
-          },
-        ),
-      };
-    },
+    connect: createLaunchFollowConnection(options),
     ...(options.backoffScheduler ? { backoffScheduler: options.backoffScheduler } : {}),
   });
+}
+
+function launchFollowHandoffOperation(
+  jobId: string,
+  request: FollowConnectionRequest,
+): Extract<HandoffOperation, { kind: 'wait-jobs' }> {
+  const { cursor, executionSelections } = request;
+  return {
+    kind: 'wait-jobs',
+    jobId,
+    ...(executionSelections.length === 0 ? {} : { serializedExecutionSelections: JSON.stringify(executionSelections) }),
+    ...(cursor === undefined ? {} : { serializedCursor: cursor }),
+  };
+}
+
+function followSubscriptionRequest(
+  projectRoot: string,
+  request: FollowConnectionRequest,
+): ReturnType<typeof jobsWaitRequest> {
+  const { jobIds, executionSelections, timeoutSeconds, drainProgress, cursor } = request;
+  return jobsWaitRequest({
+    jobIds,
+    executionSelections,
+    timeoutSeconds,
+    drainProgress,
+    projectRoot,
+    ...(cursor ? { cursor } : {}),
+  });
+}
+
+function createLaunchFollowConnection(options: FollowOptions): FollowJobsOptions['connect'] {
+  const ipcAuthOptions = childPrincipalAuthOptions(childPrincipalAuthFromEnv());
+  return async (request) => {
+    const { signal, timeoutSeconds, onDelegatedChild } = request;
+    const probeStarted = performance.now();
+    let backend;
+    try {
+      backend = await raceWithSignal(ensure('jobs.wait', options.pluginRoot), signal, () => {
+        throw signal.reason;
+      });
+      const result = await runHandoff(launchFollowHandoffOperation(options.launchResult.jobId, request), {
+        pluginRoot: options.pluginRoot,
+        signal,
+        onDelegatedChild,
+        waitProbeRemainingMs: () => Math.max(0, timeoutSeconds * 1000 - (performance.now() - probeStarted)),
+        onSelectionPublicationIncident: (incident) => renderHandoffPublicationIncidents([incident]),
+      });
+      const continuation = consumeHandoffRunResult(result, (incidents) =>
+        renderHandoffPublicationIncidents(incidents.filter((incident) => incident.phase === 'terminal')),
+      );
+      if (continuation.kind === 'delegated') return continuation;
+    } catch (error) {
+      if (error instanceof HandoffRunError) {
+        renderHandoffPublicationIncidents(error.incidents.filter((incident) => incident.phase === 'terminal'));
+        return { kind: 'fatal-error', error: error.originalError };
+      }
+      return { kind: 'fatal-error', error };
+    }
+    return {
+      kind: 'subscription',
+      subscription: await backend.subscribe<unknown>(
+        'jobs.wait',
+        followSubscriptionRequest(options.projectRoot, request),
+        {
+          timeoutMs: HEALTH_TIMEOUT_MS,
+          signal,
+          ...ipcAuthOptions,
+        },
+      ),
+    };
+  };
 }
 
 async function openFollowConnection(
@@ -937,48 +940,51 @@ async function recoverFollowConnection(
     return { kind: 'exit', code: finishInterruptedFollow(state) };
   }
   const handledError = mapWaitSubscriptionError(error, state.continuationMode);
-  if (
-    handledError instanceof BackendToolHttpError &&
-    isRecord(handledError.body) &&
-    SOFT_CURSOR_REFUSALS.includes(String(handledError.body.code))
-  ) {
-    if (!state.sendCursor) {
-      options.emitError(withWaitRecovery(handledError, state));
-      return { kind: 'exit', code: fallbackExitCode() };
-    }
-    writeStdout(`${WAIT_CURSOR_REPLAY_NOTICE}\n`);
-    state.currentCursor = undefined;
-    state.sendCursor = false;
-    return { kind: 'retry' };
-  }
+  const cursorRecovery = recoverFollowCursor(handledError, options, state);
+  if (cursorRecovery !== null) return cursorRecovery;
   if (!(handledError instanceof Error) || !isTransientStreamError(handledError)) {
     options.emitError(withWaitRecovery(handledError, state));
     return { kind: 'exit', code: fallbackExitCode() };
   }
-  if (state.retriesLeft === 0) {
-    if (
-      state.hasOpenedSubscription ||
-      handledError instanceof TransientHttpError ||
-      handledError instanceof IpcRequestTimeout
-    ) {
-      options.emitError(
-        new WaitResumeError(
-          handledError.message,
-          state.remainingJobIds,
-          state.currentCursor,
-          state.continuationMode,
-          state.executionSelections,
-        ),
-      );
-      return { kind: 'exit', code: errorCodeToExit('transient') };
-    }
-    options.emitError(withWaitRecovery(handledError, state));
-    return { kind: 'exit', code: fallbackExitCode() };
-  }
+  if (state.retriesLeft === 0) return exhaustedFollowConnection(handledError, options, state);
   state.retriesLeft -= 1;
   const shouldRetry = await waitForRetry(controller.signal, options.backoffScheduler);
   if (state.interrupted) {
     return { kind: 'exit', code: finishInterruptedFollow(state) };
   }
   return shouldRetry ? { kind: 'retry' } : { kind: 'exit', code: 1 };
+}
+
+function recoverFollowCursor(error: unknown, options: FollowJobsOptions, state: FollowSessionState): FollowStep | null {
+  if (
+    !(error instanceof BackendToolHttpError) ||
+    !isRecord(error.body) ||
+    !SOFT_CURSOR_REFUSALS.includes(String(error.body.code))
+  )
+    return null;
+  if (!state.sendCursor) {
+    options.emitError(withWaitRecovery(error, state));
+    return { kind: 'exit', code: fallbackExitCode() };
+  }
+  writeStdout(`${WAIT_CURSOR_REPLAY_NOTICE}\n`);
+  state.currentCursor = undefined;
+  state.sendCursor = false;
+  return { kind: 'retry' };
+}
+
+function exhaustedFollowConnection(error: Error, options: FollowJobsOptions, state: FollowSessionState): FollowStep {
+  if (state.hasOpenedSubscription || error instanceof TransientHttpError || error instanceof IpcRequestTimeout) {
+    options.emitError(
+      new WaitResumeError(
+        error.message,
+        state.remainingJobIds,
+        state.currentCursor,
+        state.continuationMode,
+        state.executionSelections,
+      ),
+    );
+    return { kind: 'exit', code: errorCodeToExit('transient') };
+  }
+  options.emitError(withWaitRecovery(error, state));
+  return { kind: 'exit', code: fallbackExitCode() };
 }

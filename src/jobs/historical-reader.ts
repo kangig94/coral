@@ -1546,7 +1546,7 @@ function acquireHistoricalRefreshGuard(
     const guard = source.storage.lstatSync(lockPath, { bigint: true });
     if (!guard.isFile() || guard.nlink !== 1n) throw new Error('Source lock is malformed.');
   }
-  // A sweep runs on the event loop, so a contended guard defers the epoch to the next tick rather than block it.
+  // A contended guard must defer rather than block the sweep.
   try {
     return { kind: 'acquired', release: createSharedFileLockSync(lockPath, 0) };
   } catch (error) {

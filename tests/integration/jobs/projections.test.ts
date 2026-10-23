@@ -18,9 +18,11 @@ import {
   loadJobProjectionDetail,
   loadJobProjectionDetails,
   loadJobWaitDetail,
+  loadJobExecutionDetails,
   readJobEvents,
 } from '#src/jobs/read-queries.js';
 import { hydrateJobRecoveryProjection } from '#src/jobs/store.js';
+import { loadExecutionWaitDetail } from '#src/jobs/wait/execution-detail.js';
 import {
   appendJobExecutionOutcomeAccepted,
   appendJobExecutionEnded,
@@ -143,6 +145,109 @@ afterEach(() => {
 });
 
 describe('latest execution job projection', () => {
+  it('preserves retention failure diagnostics alongside the accepted outcome across projection rebuild', () => {
+    const h = harness();
+    const opened = openedJob();
+    if (opened.body.jobKind !== 'provider') throw new Error('Expected provider job');
+    opened.body.conversation.retention = 'discard_provider_artifacts_on_terminal';
+    h.append(opened, requestedExecution());
+    start(h, 1);
+    accept(h, 1);
+    h.append(
+      input('job.retention.discard.requested', { execution: 1, attempt: 0, handles: ['/native'] }),
+      input('job.retention.discard.failed', {
+        execution: 1,
+        attempt: 0,
+        handles: ['/native'],
+        reason: 'Archive failed: EACCES',
+      }),
+    );
+    expect(JSON.parse(h.row().diagnostics).warnings).toEqual([
+      'warning #1',
+      'Conversation retention failed: Archive failed: EACCES',
+    ]);
+    end(h, 1);
+    const verify = () => {
+      expect(readJobEvents(h.db, jobId, h.readCtx)).toContainEqual(
+        expect.objectContaining({
+          type: 'progress',
+          execution: 1,
+          message: 'Conversation retention failed: Archive failed: EACCES',
+        }),
+      );
+      expect(readJobEvents(h.db, jobId, h.readCtx, true).map((event) => event.type)).toEqual(['terminal']);
+      for (const detail of allDetails(h)) {
+        expect(detail.status).toMatchObject({ execution: 1, phase: 'completed' });
+        expect(detail.exit).toMatchObject({
+          outcome: { kind: 'completed' },
+          diagnostics: { warnings: ['warning #1', 'Conversation retention failed: Archive failed: EACCES'] },
+        });
+      }
+    };
+    verify();
+    const before = h.row();
+    rebuildProjections({
+      db: h.db,
+      cutoffSeq: before.last_seq,
+      reducers: h.reducers,
+      bodyCodec: h.bodyCodec,
+      batchSize: 1,
+    });
+    expect(h.row()).toEqual(before);
+    verify();
+  });
+
+  it('derives earlier execution retention diagnostics from events after continuation', () => {
+    const h = harness();
+    const opened = openedJob();
+    if (opened.body.jobKind !== 'provider') throw new Error('Expected provider job');
+    opened.body.conversation.retention = 'discard_provider_artifacts_on_terminal';
+    h.append(opened, requestedExecution());
+    start(h, 1);
+    accept(h, 1);
+    h.append(
+      input('job.retention.discard.requested', { execution: 1, attempt: 0, handles: ['/native'] }),
+      input('job.retention.discard.failed', {
+        execution: 1,
+        attempt: 0,
+        handles: ['/native'],
+        reason: 'Archive failed: EACCES',
+      }),
+    );
+    end(h, 1);
+    h.append(requestedExecution(2));
+    start(h, 2);
+    accept(h, 2);
+    h.append(
+      input('job.retention.discard.requested', { execution: 2, attempt: 0, handles: ['/native'] }),
+      input('job.retention.discard.completed', {
+        execution: 2,
+        attempt: 0,
+        handles: ['/native'],
+        outcome: 'discarded',
+      }),
+    );
+    end(h, 2);
+    const executions = loadJobExecutionDetails(h.db, jobId, h.readCtx);
+    const previous = executions[0];
+    expect(previous.detail.events).toContainEqual(
+      expect.objectContaining({
+        type: 'progress',
+        execution: 1,
+        message: 'Conversation retention failed: Archive failed: EACCES',
+      }),
+    );
+    expect(executions[1].detail.events.filter((event) => event.type === 'progress')).toEqual([]);
+    for (const detail of [previous.detail, loadExecutionWaitDetail(h.db, jobId, h.readCtx, previous.requestedSeq)]) {
+      expect(detail.exit).toMatchObject({
+        outcome: { kind: 'completed' },
+        diagnostics: { warnings: ['warning #1', 'Conversation retention failed: Archive failed: EACCES'] },
+      });
+    }
+    expect(executions[1].detail.exit?.diagnostics.warnings).toEqual(['warning #2']);
+    for (const detail of allDetails(h)) expect(detail.exit?.diagnostics.warnings).toEqual(['warning #2']);
+  });
+
   it('folds conversation columns and removes the independent session and replacement schema', () => {
     const h = harness();
     const columns = h.db

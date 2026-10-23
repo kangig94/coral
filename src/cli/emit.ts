@@ -86,8 +86,6 @@ export async function handleLaunchResult(result: unknown, detach: boolean | unde
     return;
   }
 
-  // Successful follow returns the terminal job exit code (0-255).
-  // Follow-level failures route through emitError and return the envelope exit code instead.
   process.exitCode = await launchAndFollow({
     launchResult: result,
     pluginRoot: getPluginRoot(),

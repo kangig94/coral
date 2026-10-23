@@ -275,7 +275,10 @@ export type JobDetailResponse = {
   exit: JobExit | null;
 };
 
-export type JobExecutionDetail = Pick<JobDetailResponse, 'status' | 'events' | 'readiness' | 'exit'> & {
+export type JobExecutionDetail = Pick<
+  JobDetailResponse,
+  'status' | 'events' | 'readiness' | 'exit' | 'availability'
+> & {
   execution: number;
   requestedSeq: number;
   resultPath: string;

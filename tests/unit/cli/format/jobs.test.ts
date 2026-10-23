@@ -10,6 +10,7 @@ import {
   renderJobsList,
 } from '#src/cli/format/jobs.js';
 import { jobReadSurfaceFixture } from '#tests/helpers/job-read-surface.js';
+import type { ResultAvailability } from '#src/jobs/terminal/export.js';
 
 const fixtures: ReturnType<typeof jobReadSurfaceFixture>[] = [];
 afterEach(() => {
@@ -36,6 +37,10 @@ describe('jobs list and detail formatting', () => {
   it('renders every execution with its own result, diagnostics and result path', () => {
     const f = fixture();
     const response = f.store.loadJobDetailResponse(f.jobId)!;
+    response.executions = response.executions!.map((execution) => ({
+      ...execution,
+      availability: { kind: 'available', resultPath: execution.resultPath },
+    }));
     const output = formatJobDetail(response, undefined, [], true);
     const first = output.slice(output.indexOf('Execution #1'), output.indexOf('Execution #2'));
     const second = output.slice(output.indexOf('Execution #2'));
@@ -49,6 +54,36 @@ describe('jobs list and detail formatting', () => {
     expect(second).toContain('provider exited 7');
     expect(second).not.toContain('warning #1');
   });
+
+  it.each([
+    [{ kind: 'retained-away', retentionDays: 7 }, 'no longer kept: past the 7-day retention window'],
+    [{ kind: 'pending' }, 'Result file pending'],
+    [
+      { kind: 'failed', reason: 'Retained source is unreadable' },
+      'Result file unavailable: Retained source is unreadable',
+    ],
+  ] satisfies [ResultAvailability, string][])(
+    'reports unavailable execution artifacts independently: %j',
+    (availability, message) => {
+      const f = fixture();
+      const response = f.store.loadJobDetailResponse(f.jobId)!;
+      response.executions = response.executions!.map((execution) => ({
+        ...execution,
+        availability:
+          execution.execution === 1 ? availability : { kind: 'available', resultPath: execution.resultPath },
+      }));
+      response.availability = { kind: 'available', resultPath: f.store.resultPathFor(f.jobId, 2) };
+
+      const output = formatJobDetail(response);
+      const first = output.slice(output.indexOf('Execution #1'), output.indexOf('Execution #2'));
+      const second = output.slice(output.indexOf('Execution #2'));
+      expect(first).toContain(message);
+      expect(first).toContain(`Result location: ${f.store.resultPathFor(f.jobId, 1)}`);
+      expect(first).not.toContain('Result path:');
+      expect(second).toContain(`Result path: ${f.store.resultPathFor(f.jobId, 2)}`);
+      expect(output.match(/Result path:/g)).toHaveLength(1);
+    },
+  );
 
   it('shows finishing without borrowing the prior execution result', () => {
     const f = fixture('finishing');
@@ -104,17 +139,20 @@ describe('jobs list and detail formatting', () => {
     expect(output.match(/coral-cli jobs wait/g)).toHaveLength(1);
   });
 
-  it.each(['running', 'queued'] as const)('identifies execution #1 for a %s provider launch', (launchState) => {
-    const jobId = '10000000-0000-4000-8000-000000000001';
-    const response = { kind: 'provider-session', jobId, launchState, requestedSeq: 2, epochKey: ':memory:' } as const;
-    expect(formatLaunch(response)).toBe(
-      `Provider job ${jobId} ${launchState === 'running' ? 'launch accepted' : 'queued'}`,
-    );
-    expect(formatDetachedLaunchStatus(response)).toBe(`Provider job ${jobId} execution #1 ${launchState}`);
-  });
+  it.each(['running', 'queued'] as const)(
+    'omits an unknown execution in a %s foreground provider launch',
+    (launchState) => {
+      const jobId = '10000000-0000-4000-8000-000000000001';
+      const response = { kind: 'provider-session', jobId, launchState, requestedSeq: 2, epochKey: ':memory:' } as const;
+      expect(formatLaunch(response)).toBe(
+        `Provider job ${jobId} ${launchState === 'running' ? 'launch accepted' : 'queued'}`,
+      );
+      expect(formatDetachedLaunchStatus(response)).toBe(`Provider job ${jobId} execution #1 ${launchState}`);
+    },
+  );
 
   it.each(['running', 'queued'] as const)(
-    'identifies the response execution for a %s detached launch',
+    'identifies the response execution for a %s provider launch',
     (launchState) => {
       const response = {
         kind: 'provider-session',
@@ -124,6 +162,9 @@ describe('jobs list and detail formatting', () => {
         requestedSeq: 10,
         epochKey: 'epoch',
       } as const;
+      expect(formatLaunch(response)).toBe(
+        `Provider job job-1 execution #2 ${launchState === 'running' ? 'launch accepted' : 'queued'}`,
+      );
       expect(formatDetachedLaunchStatus(response)).toBe(`Provider job job-1 execution #2 ${launchState}`);
     },
   );
@@ -141,6 +182,23 @@ describe('jobs list and detail formatting', () => {
       }),
     ).toBe('Workflow workflow-1 queued (job job-1 execution #1)');
   });
+
+  it.each(['running', 'queued'] as const)(
+    'identifies only known executions in a %s foreground workflow launch',
+    (launchState) => {
+      const response = {
+        kind: 'workflow',
+        workflowId: 'workflow-1',
+        jobId: 'job-1',
+        launchState,
+        requestedSeq: 10,
+        epochKey: 'epoch',
+      } as const;
+      const state = launchState === 'running' ? 'launch accepted' : 'queued';
+      expect(formatLaunch({ ...response, execution: 2 })).toBe(`Workflow workflow-1 ${state} (job job-1 execution #2)`);
+      expect(formatLaunch(response)).toBe(`Workflow workflow-1 ${state} (job job-1)`);
+    },
+  );
 });
 
 it.each(['live-retry', 'recovery-quarantine'] as const)(

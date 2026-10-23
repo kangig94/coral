@@ -566,9 +566,13 @@ describe('jobs send immutable attempt envelope', () => {
     for (const root of tempDirs.splice(0)) rmSync(root, { recursive: true, force: true });
   });
 
-  it.each([undefined, 3])(
-    'renders a continuation bound from execution #2 with launch ordinal %s',
-    async (execution) => {
+  it.each([
+    { launchState: 'queued', execution: undefined },
+    { launchState: 'running', execution: undefined },
+    { launchState: 'queued', execution: 3 },
+  ] as const)(
+    'renders a $launchState continuation bound from execution #2 with launch ordinal $execution',
+    async ({ launchState, execution }) => {
       mockState.detailRequest.mockReturnValue(realDetail('completed', 2));
       mockState.request.mockResolvedValue({
         state: 'launched',
@@ -577,7 +581,7 @@ describe('jobs send immutable attempt envelope', () => {
           jobId: 'job-1',
           requestedSeq: 30,
           epochKey: 'epoch',
-          launchState: 'queued',
+          launchState,
           ...(execution === undefined ? {} : { execution }),
         },
       });
@@ -587,9 +591,14 @@ describe('jobs send immutable attempt envelope', () => {
       );
       expect(mockState.request.mock.calls[0][1]).toMatchObject({ target: { mode: 'continue', execution: 2 } });
       expect(result).toMatchObject({ state: 'launched', execution: 3 });
-      expect(formatJobSendResult('job-1', result).text.split('\n')[0]).toBe(
-        `Provider job job-1 execution #${execution ?? 3} queued`,
-      );
+      const output = formatJobSendResult('job-1', result);
+      expect(output.exitCode).toBe(0);
+      expect(output.text.split('\n')[0]).toBe(`Provider job job-1 execution #3 ${launchState}`);
+      const selection = output.text.match(/--execution-selection '(.*)'/)?.[1];
+      expect(selection).toBeDefined();
+      expect(waitExecutionSelectionsSchema.parse(JSON.parse(selection!))).toEqual([
+        { jobId: 'job-1', requestedSeq: 30, epochKey: 'epoch', awaitingArtifact: false },
+      ]);
     },
   );
 

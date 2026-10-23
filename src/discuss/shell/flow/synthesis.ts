@@ -22,10 +22,7 @@ async function finalizeSynthesizedSession(
   sessionId: string,
   snapshot: PersistedDiscussSnapshot,
 ): Promise<void> {
-  // Materialize the completed discussion as a markdown record in the project
-  // data dir. Best-effort export of the journal's discuss stream — a write
-  // failure must never break the discussion (the authoritative record lives
-  // in the journal).
+  // Export must not break the discussion.
   let exportedRecord = false;
   try {
     writeDiscussRecord(ctx.runtime, snapshot);

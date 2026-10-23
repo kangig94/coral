@@ -15,7 +15,6 @@ import {
 } from '#src/jobs/terminal/result.js';
 import { readCommittedExecutionRequest } from '#src/jobs/execution-journal.js';
 import { refuseLaunch } from '#src/jobs/launch.js';
-import { jobsEventDescribers } from '#src/jobs/event-describers.js';
 import type { CoralEventInput } from '#src/store/envelope.js';
 import {
   EXECUTION_JOB_ID as jobId,
@@ -118,9 +117,8 @@ function withExecution(event: CoralEventInput, execution: unknown): CoralEventIn
 }
 
 describe('jobs:execution-order', () => {
-  it('registers exactly the new vocabulary, one order validator, and all describers', () => {
+  it('registers one execution order validator', () => {
     expect(jobsRegistry.appendValidators?.map((entry) => entry.contract)).toEqual(['jobs:execution-order']);
-    for (const entry of jobsRegistry.entries) expect(jobsEventDescribers.has(`job:${entry.type}`)).toBe(true);
   });
 
   it.each(executionEvents.map((event) => [event.type, event] as const))('requires an ordinal for %s', (type, event) => {

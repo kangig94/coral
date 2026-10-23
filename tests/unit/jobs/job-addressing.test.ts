@@ -6,6 +6,8 @@ import { join } from 'node:path';
 import { VirtualTime, flushMicrotasks } from '#tools/simulation/core/virtual-time.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { backendLog } from '#src/infra/backend-log.js';
+import { jobReadSurfaceFixture } from '#tests/helpers/job-read-surface.js';
+import type { ResultAvailability } from '#src/jobs/terminal/export.js';
 
 import { JobAddressing } from '../../../src/jobs/addressing.js';
 import { createRealRuntime } from '../../../src/runtime/real.js';
@@ -83,6 +85,72 @@ it('classifies a location read failure as retryable discovery uncertainty, never
     throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
   };
   expect(historicalAddressing(index).admitWait({ jobIds: ['job'] })[0].disposition).toBe('unknown');
+});
+
+it.each(
+  (['active', 'retained'] as const).flatMap((source) =>
+    (
+      [
+        { kind: 'retained-away', retentionDays: 7 },
+        { kind: 'pending' },
+        { kind: 'failed', reason: 'Retained source is unreadable' },
+      ] satisfies ResultAvailability[]
+    ).map((availability) => ({ source, availability })),
+  ),
+)('observes each $source execution result independently when #1 is $availability.kind', ({ source, availability }) => {
+  const f = jobReadSurfaceFixture();
+  try {
+    const { index } = fixture();
+    const latest = f.store.loadJobDetailResponse(f.jobId)!;
+    const epochKey = source === 'active' ? 'lineage-new:8' : 'lineage-old:7';
+    index.register(f.jobId, epochKey, {
+      projectRoot: f.projectRoot,
+      workDir: f.projectRoot,
+      jobKind: 'provider',
+    });
+    index.recordExecutionDetails(
+      f.jobId,
+      latest.executions!.map((execution) => ({
+        execution: execution.execution,
+        requestedSeq: execution.requestedSeq,
+        seq: execution.events.find((event) => event.type === 'terminal')!.seq,
+        resultPath: execution.resultPath,
+        detail: execution,
+      })),
+      latest,
+    );
+    const available = { kind: 'available', resultPath: f.store.resultPathFor(f.jobId, 2) } as const;
+    const observe = vi.fn((_jobId: string, execution?: number) => (execution === 1 ? availability : available));
+    const repair = vi.fn();
+    const addressing = new JobAddressing(
+      index,
+      {
+        epochKey: () => 'lineage-new:8',
+        detail: () => (source === 'active' ? latest : null),
+        abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
+      },
+      () => false,
+      () => 'decided',
+      undefined,
+      observe,
+      repair,
+    );
+
+    expect(addressing.detail(f.jobId)).toMatchObject({
+      availability: available,
+      executions: [
+        { execution: 1, availability },
+        { execution: 2, availability: available },
+      ],
+    });
+    expect(observe.mock.calls).toEqual([
+      [f.jobId, 1],
+      [f.jobId, 2],
+    ]);
+    expect(repair.mock.calls).toEqual(availability.kind === 'pending' ? [[f.jobId, 1]] : []);
+  } finally {
+    f.close();
+  }
 });
 
 it('admits a job its location record cannot decode when the active journal answers for it', () => {

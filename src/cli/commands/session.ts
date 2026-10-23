@@ -385,7 +385,10 @@ function configureWaitJobsCommand(command: Command): Command {
     )
     .argument('<jobIds...>', 'Job IDs')
     .option('--cursor <cursor>', 'Progress seq cursor (from previous wait output)')
-    .option('--execution-selection <JSON>', 'Execution admission and delivery state from a continuation')
+    .option(
+      '--execution-selection <JSON>',
+      'Optional complete opaque JSON from a printed continuation; copy it unchanged',
+    )
     .option(
       '--snapshot',
       'Read an immediate snapshot; continuations keep --snapshot; drop it explicitly to switch to a blocking wait',

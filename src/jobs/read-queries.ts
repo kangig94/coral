@@ -11,7 +11,13 @@ import {
   jobDiagnosticsSchema,
   normalizeJobTerminal,
 } from './terminal/result.js';
-import { jobProgressBodySchema, jobRuntimeStartedBodySchema } from './event-bodies.js';
+import {
+  jobProgressBodySchema,
+  jobRuntimeStartedBodySchema,
+  jobRetentionDiscardFailedBodySchema,
+} from './event-bodies.js';
+import { retentionFailureWarning, withRetentionFailure } from './projections.js';
+import { progressTimingFromProjection } from './progress-timing.js';
 import { executionOrdinalSchema, jobOpenedBodySchema, jobExecutionRequestedBodySchema } from './launch.js';
 import { isLivePhase, type JobPhase } from './phase.js';
 import {
@@ -205,6 +211,7 @@ const EXECUTION_DETAIL_TYPES = [
   'job.execution.started',
   'job.execution.outcome.accepted',
   'job.execution.ended',
+  'job.retention.discard.failed',
 ] as const;
 
 function readExecutionDetailEvents(db: Database, jobIds: string[], waitOnly = false): EventsRow[] {
@@ -481,10 +488,15 @@ function hydrateJobWaitDetail(
     projection.job_id,
     ctx,
   );
-  const terminalDiagnostics =
+  let terminalDiagnostics =
     terminalRecord === null
       ? decodeProjectionDiagnostics(projection)
       : mergeDiagnostics(decodeProjectionDiagnostics(projection), terminalRecord.diagnostics);
+  const retentionFailure = events.get('job.retention.discard.failed');
+  if (retentionFailure !== undefined) {
+    const failure = decodeBody(retentionFailure, jobRetentionDiscardFailedBodySchema, ctx);
+    terminalDiagnostics = withRetentionFailure(terminalDiagnostics, failure.reason);
+  }
   const diagnostics = isWorkflowJobKind(projection.job_kind)
     ? applyWorkflowUsage(terminalDiagnostics, workflowUsage)
     : terminalDiagnostics;
@@ -772,7 +784,7 @@ export function readJobEvents(
   const rows = prepareCached<[string, number], EventsRow>(
     db,
     `SELECT * FROM events WHERE stream_id = ? AND seq > ?
-      AND ${terminalOnly ? "type = 'job.execution.ended'" : "type IN ('job.execution.progress', 'job.execution.ended')"}
+      AND ${terminalOnly ? "type = 'job.execution.ended'" : "type IN ('job.execution.progress', 'job.execution.ended', 'job.retention.discard.failed')"}
       ORDER BY seq ASC`,
   ).all(jobId, afterSeq);
 
@@ -782,6 +794,32 @@ export function readJobEvents(
   const events: JobEvent[] = [];
   for (const row of rows) {
     rowToCoralEvent(row, null);
+    if (row.type === 'job.retention.discard.failed') {
+      const failure = decodeBody(row, jobRetentionDiscardFailedBodySchema, ctx);
+      const origin = prepareCached<[string, number, number], EventsRow>(
+        db,
+        `SELECT * FROM events WHERE stream_kind = 'job' AND stream_id = ? AND seq < ?
+          AND type IN ('job.execution.requested', 'job.execution.started')
+          AND json_extract(CAST(body AS TEXT), '$.execution') = ? ORDER BY seq DESC LIMIT 1`,
+      ).get(jobId, row.seq, failure.execution);
+      if (origin === undefined) throw new JobEvidenceDecodeError('Retention failure has no execution request.');
+      rowToCoralEvent(origin, null);
+      const runtime = origin.type === 'job.execution.started' ? jobRuntimeBodyFromEvent(origin, ctx) : null;
+      const launch =
+        origin.type === 'job.execution.requested'
+          ? { createdAt: decodeBody(origin, jobExecutionRequestedBodySchema, ctx).createdAt }
+          : null;
+      events.push({
+        jobId,
+        execution: failure.execution,
+        seq: row.seq,
+        type: 'progress',
+        ts: row.ts,
+        message: retentionFailureWarning(failure.reason),
+        timing: progressTimingFromProjection({ status: null, runtime, launch }, Date.parse(row.ts)),
+      });
+      continue;
+    }
     if (row.type === 'job.execution.progress') {
       const body = decodeBody(row, jobProgressBodySchema, ctx);
       if (body.kind !== 'message') {

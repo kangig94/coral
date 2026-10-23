@@ -21,6 +21,7 @@ import { sameEpoch } from '../../store/epoch/identity.js';
 import { assertNever } from '../../infra/error-format.js';
 import type { JobStatus } from '../../jobs/records.js';
 import { readProviderOperationForJob } from '../../store/provider-operation-journal.js';
+import type { ProviderOperationRecord } from '../../store/provider-operation-record.js';
 import {
   ProviderProxyOperationControlHeldError,
   type DurableProviderProxyOperationAuthority,
@@ -157,6 +158,13 @@ export class JobSendService {
   }
 
   private async continue(request: JobSendRequest, status: JobStatus, ctx: InvocationContext): Promise<JobSendResult> {
+    const refusal = this.validateContinuationTarget(request, status);
+    if (refusal !== null) return refusal;
+    const decision = await this.deps.resume(request, ctx);
+    return this.continuationResult(decision, request.target.execution + 1);
+  }
+
+  private validateContinuationTarget(request: JobSendRequest, status: JobStatus): JobSendResult | null {
     const requestedSeq =
       status.execution === null
         ? null
@@ -181,11 +189,14 @@ export class JobSendService {
         code: 'owner_not_provider_session',
         reason: 'Only provider-session owners accept a jobs send continuation.',
       };
-    const decision = await this.deps.resume(request, ctx);
+    return null;
+  }
+
+  private continuationResult(decision: ProviderJobLaunchDecision, execution: number): JobSendResult {
     switch (decision.status) {
       case 'running':
       case 'queued':
-        return this.launched(decision, request.target.execution + 1);
+        return this.launched(decision, execution);
       case 'refused':
         return { state: 'refused', code: continuationRefusalCodes[decision.code], reason: decision.message };
       case 'undetermined':
@@ -204,6 +215,14 @@ export class JobSendService {
   }
 
   private async steer(request: JobSendRequest, status: JobStatus): Promise<JobSendResult> {
+    const refusal = this.validateSteerTarget(request, status);
+    if (refusal !== null) return refusal;
+    const operation = this.steerableOperation(request.jobId);
+    if (operation.state === 'refused') return operation;
+    return this.deliverSteer(request, operation.record);
+  }
+
+  private validateSteerTarget(request: JobSendRequest, status: JobStatus): JobSendResult | null {
     const db = this.deps.progressStore.getDb();
     if (status.execution === null || request.target.execution > status.execution)
       return { state: 'refused', code: 'execution_superseded', reason: 'The bound execution does not exist.' };
@@ -226,7 +245,15 @@ export class JobSendService {
           'This invocation wrote nothing because the execution is finishing. Any earlier invocation with this message identity may have been delivered.',
       };
 
-    const record = readProviderOperationForJob(db, request.jobId);
+    return null;
+  }
+
+  private steerableOperation(
+    jobId: string,
+  ):
+    | { state: 'executing'; record: Extract<ProviderOperationRecord, { phase: 'executing' }> }
+    | Extract<JobSendResult, { state: 'refused' }> {
+    const record = readProviderOperationForJob(this.deps.progressStore.getDb(), jobId);
     if (
       (record !== null && 'controlIntent' in record && record.controlIntent.kind !== 'run') ||
       (record?.phase === 'prestart-cleanup-pending' && record.afterRelease.kind === 'terminal-aborted') ||
@@ -235,6 +262,13 @@ export class JobSendService {
       return { state: 'refused', code: 'job_not_running', reason: 'The job is being stopped.' };
     if (record === null || record.phase !== 'executing')
       return { state: 'refused', code: 'turn_not_started', reason: 'The job turn has not started.' };
+    return { state: 'executing', record };
+  }
+
+  private async deliverSteer(
+    request: JobSendRequest,
+    record: Extract<ProviderOperationRecord, { phase: 'executing' }>,
+  ): Promise<JobSendResult> {
     const authority = this.deps.authorityFor(providerProxySetIdentityFromRecord(record));
     if (authority === null)
       return { state: 'refused', code: 'control_unavailable', reason: 'Provider proxy control is unavailable.' };
@@ -293,9 +327,9 @@ const continuationRefusalCodes = {
   provider_execution_environment_invalid: 'provider_rejected',
   publication_failed: 'provider_rejected',
   launch_failed: 'provider_rejected',
-  provider_binding_missing_profile: 'provider_rejected',
-  provider_binding_profile_unavailable: 'provider_rejected',
-  provider_binding_identity_unavailable: 'provider_rejected',
-  provider_binding_unsupported_selection: 'provider_rejected',
-  provider_binding_invalid_persisted_binding: 'provider_rejected',
+  provider_binding_missing_profile: 'profile_mismatch',
+  provider_binding_profile_unavailable: 'profile_mismatch',
+  provider_binding_identity_unavailable: 'profile_mismatch',
+  provider_binding_unsupported_selection: 'profile_mismatch',
+  provider_binding_invalid_persisted_binding: 'profile_mismatch',
 } satisfies Record<LaunchRefusalCode, Extract<JobSendResult, { state: 'refused' }>['code']>;

@@ -44,6 +44,7 @@ import {
   reduceJobOutcomeAccepted,
   reduceJobExecutionEnded,
   reduceJobContinuityCheckpointed,
+  reduceJobRetentionDiscardFailed,
   reduceJobObservation,
 } from './projections.js';
 
@@ -433,7 +434,7 @@ export const jobsRegistry: DomainEventRegistry = {
     defineDomainEvent({
       type: 'job.retention.discard.failed',
       schema: jobRetentionDiscardFailedBodySchema,
-      reducer: reduceJobObservation,
+      reducer: reduceJobRetentionDiscardFailed,
       materializerContract: 'projection_jobs:job.retention.discard.failed',
     }),
     defineDomainEvent({

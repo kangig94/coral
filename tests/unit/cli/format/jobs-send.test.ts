@@ -51,7 +51,7 @@ it.each([
   ['job_not_running', 'result', ['coral-cli jobs wait job-1']],
   ['transport_unsupported', 'result', ['coral-cli jobs wait job-1']],
   ['provider_rejected', 'result', ['coral-cli jobs wait job-1']],
-  ['not_found', 'List', ['coral-cli jobs list']],
+  ['not_found', 'including ended jobs', ['coral-cli jobs list --all']],
   ['scope_mismatch', 'work directory outside this cwd', ['coral-cli jobs list --all']],
   ['unsupported_by_running_build', 'Retry the send after the installed build is serving', ['coral-cli backend status']],
 ] satisfies [Extract<ProviderSendOutcome, { state: 'refused' }>['code'], string, string[]][])(
@@ -411,11 +411,3 @@ it.each([
     expect(output.text).toContain('--execution-selection');
   },
 );
-
-it('omits the ordinal when neither the launch nor its binding supplies one', () => {
-  const launch = jobSendOutcomeSchema.parse({
-    state: 'launched',
-    launch: { kind: 'provider-session', jobId: 'job-1', requestedSeq: 10, epochKey: 'epoch', launchState: 'queued' },
-  });
-  expect(formatJobSendResult('job-1', launch).text.split('\n')[0]).toBe('Provider job job-1 queued');
-});

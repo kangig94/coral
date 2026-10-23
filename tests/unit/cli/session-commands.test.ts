@@ -440,7 +440,7 @@ it('executes the exact not-found list remedy under the current program', async (
   vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
   const output = formatJobSendResult('missing', { state: 'refused', code: 'not_found', reason: 'Missing.' });
   const commands = printedCommands(output.text);
-  expect(commands).toEqual([['jobs', 'list']]);
+  expect(commands).toEqual([['jobs', 'list', '--all']]);
   await program().parseAsync(commands[0], { from: 'user' });
   expect(client.listJobs).toHaveBeenCalledOnce();
 });

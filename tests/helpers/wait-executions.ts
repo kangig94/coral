@@ -102,5 +102,5 @@ export function waitExecutions() {
       read: () => coordinator.readWaitAdmissions(input.jobIds, TEST_EPOCH, input),
       observe: (session) => session.observeCoverage(input.jobIds, [], frontier),
     });
-  return { request, end, addProgress, histories, progress, coordinator, stream, load, pendingArtifacts, visit };
+  return { request, end, addProgress, histories, progress, coordinator, stream, load, pendingArtifacts, visit, time };
 }

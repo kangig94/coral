@@ -287,11 +287,10 @@ export class JobAddressing {
     if (!historical) {
       const active = this.active.detail(jobId);
       if (active !== null)
-        return {
+        return this.withResultAvailability({
           ...active,
           epochKey: location.epochKey,
-          ...(active.exit === null ? {} : { availability: this.availability(jobId) }),
-        };
+        });
     }
     const observed = historical
       ? this.historicalLocation(location, true)
@@ -336,12 +335,29 @@ export class JobAddressing {
       });
     }
     const selected = executions?.find((entry) => entry.execution === detail.status.execution);
-    return {
+    return this.withResultAvailability({
       ...detail,
       ...(executions === undefined ? {} : { executions }),
       ...(selected === undefined ? {} : { requestedSeq: selected.requestedSeq, resultPath: selected.resultPath }),
       epochKey: latest.epochKey,
-      ...(detail.exit === null ? {} : { availability: this.availability(latest.jobId) }),
+    });
+  }
+
+  private withResultAvailability(detail: JobDetailResponse): JobDetailResponse {
+    const executions = detail.executions?.map((entry) => ({
+      ...entry,
+      ...(entry.exit === null ? {} : { availability: this.availability(detail.status.jobId, entry.execution) }),
+    }));
+    const latest = executions?.find((entry) => entry.execution === detail.status.execution);
+    return {
+      ...detail,
+      ...(executions === undefined ? {} : { executions }),
+      ...(detail.exit === null
+        ? {}
+        : {
+            availability:
+              latest?.availability ?? this.availability(detail.status.jobId, detail.status.execution ?? undefined),
+          }),
     };
   }
 

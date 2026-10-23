@@ -135,7 +135,12 @@ const jobSendRemedyPolicies = {
   job_not_running: { kind: 'inspect', message: "Read the job's result.", command: 'wait-job' },
   provider_rejected: { kind: 'inspect', message: "Read the job's result.", command: 'wait-job' },
   transport_unsupported: { kind: 'inspect', message: "Read the job's result.", command: 'wait-job' },
-  not_found: { kind: 'inspect', message: 'List the available jobs.', command: 'jobs-list' },
+  not_found: {
+    kind: 'inspect',
+    message: 'List the available jobs, including ended jobs.',
+    command: 'jobs-list',
+    all: true,
+  },
   scope_mismatch: {
     kind: 'inspect',
     message:
@@ -416,9 +421,10 @@ function describeJobsMatch(filters: JobsListDisplayFilters): string {
 
 export function formatLaunch(result: AcceptedLaunchResponse): string {
   const launchState = result.launchState === 'running' ? 'launch accepted' : result.launchState;
+  const ordinal = result.execution === undefined ? '' : ` execution #${result.execution}`;
   return result.kind === 'provider-session'
-    ? `Provider job ${result.jobId} ${launchState}`
-    : `Workflow ${result.workflowId} ${launchState} (job ${result.jobId})`;
+    ? `Provider job ${result.jobId}${ordinal} ${launchState}`
+    : `Workflow ${result.workflowId} ${launchState} (job ${result.jobId}${ordinal})`;
 }
 
 export function formatDetachedLaunchStatus(result: AcceptedLaunchResponse): string {
@@ -579,7 +585,9 @@ export function formatJobDetail(
     status.workDir === null ? undefined : `Work dir: ${status.workDir}`,
     `Updated: ${status.updatedAt}`,
     status.lastSeq === undefined ? undefined : `Last seq: ${status.lastSeq}`,
-    response.availability === undefined ? undefined : formatResultAvailability(response.availability),
+    response.executions === undefined && response.availability !== undefined
+      ? formatResultAvailability(response.availability)
+      : undefined,
     ...(response.executions === undefined
       ? [formatExecutionResult(response, describeCauseRef, full, response.epochKey)]
       : response.executions.map((execution) =>
@@ -589,7 +597,12 @@ export function formatJobDetail(
             execution.status.finishing === true ? 'Finishing: true' : undefined,
             `Readiness: ${execution.readiness}`,
             `Requested seq: ${execution.requestedSeq}`,
-            execution.exit === null ? undefined : `Result path: ${execution.resultPath}`,
+            execution.exit === null
+              ? undefined
+              : joinLines([
+                  execution.availability?.kind === 'available' ? undefined : `Result location: ${execution.resultPath}`,
+                  execution.availability === undefined ? undefined : formatResultAvailability(execution.availability),
+                ]),
             formatExecutionResult(execution, describeCauseRef, full, response.epochKey),
           ]),
         )),

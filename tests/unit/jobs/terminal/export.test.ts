@@ -251,15 +251,44 @@ describe('terminal export owner', () => {
     expect(f.index.read(f.jobId)?.detail.kind).toBe('recorded');
   });
 
-  it('reports an unexpired missing artifact after source retirement as failed without a retry', () => {
+  it('automatically repairs an unexpired missing artifact after source retirement', async () => {
     const f = fixture();
     f.complete();
     f.removeSource();
-    expect(f.store.getResultExportOwner().observeResultAvailability(f.jobId)).toEqual({
+    const owner = f.store.getResultExportOwner();
+    expect(owner.observeResultAvailability(f.jobId)).toEqual({ kind: 'pending' });
+    await owner.repairPass([f.jobId], { canContinue: () => true, record: () => {} });
+    expect(readFileSync(f.resultPath, 'utf8')).toBe('canonical result\n');
+    expect(owner.observeResultAvailability(f.jobId)).toEqual({ kind: 'available', resultPath: f.resultPath });
+    expect(f.index.resultDurable(f.jobId)).toBe(true);
+  });
+
+  it('does not recreate expired retained executions after source retirement', async () => {
+    const f = fixture();
+    f.complete({ terminalAt: TERMINAL_EXPORT_CUTOFF - 1 });
+    f.removeSource();
+    const owner = f.store.getResultExportOwner();
+    owner.hintRepair(f.jobId, 1);
+    await owner.repairPass([f.jobId], { canContinue: () => true, record: () => {} });
+    expect(owner.observeResultAvailability(f.jobId)).toEqual({ kind: 'retained-away', retentionDays: 14 });
+    expect(existsSync(f.resultPath)).toBe(false);
+  });
+
+  it('reports a retired source without retained execution data as unrecoverable', () => {
+    const f = fixture();
+    f.complete();
+    const retained = f.index.read(f.jobId)!;
+    f.removeSource();
+    const owner = new TerminalResultExportOwner({
+      runtime: f.runtime,
+      jobsRoot: f.runtime.paths.coral.exports.jobsRoot,
+      location: () => ({ ...retained, executions: undefined, latestExecution: undefined }),
+      withSource: () => null,
+    });
+    expect(owner.observeResultAvailability(f.jobId)).toEqual({
       kind: 'failed',
       reason: 'the source journal is no longer retained',
     });
-    expect(f.index.resultDurable(f.jobId)).toBe(false);
   });
 
   it('repeated observation makes no write, fsync or terminal body parse', () => {

@@ -18,7 +18,7 @@ import { errorMessage } from '../../infra/error-format.js';
 import { setImmediate } from 'node:timers/promises';
 import type { Runtime } from '../../runtime/ports.js';
 import type { JobTerminal } from '../records.js';
-import type { JobLocation } from '../location-index.js';
+import type { JobExecutionLocation, JobLocation } from '../location-index.js';
 import { hasReadableTerminalDetail, retainedTerminal, sameTerminal, validatedTerminal } from './identity.js';
 import { sourceReadFailureDisposition } from '../source-read.js';
 import { readAcceptedTerminal } from './source.js';
@@ -162,6 +162,10 @@ export class TerminalResultExportOwner {
     return execution === undefined ? jobId : `${jobId}:${execution}`;
   }
 
+  private retainedExecution(location: JobLocation | null): JobExecutionLocation | undefined {
+    return location?.executions?.find((entry) => entry.execution === location.latestExecution);
+  }
+
   private eligibility(
     jobId: string,
     location = this.input.location(jobId),
@@ -267,10 +271,11 @@ export class TerminalResultExportOwner {
       case 'unusable':
         return { kind: 'failed', reason: 'the retained terminal does not match its source journal' };
       case 'absent':
-        // A retired source leaves the retained terminal's own timestamp, which may choose this label but never deletes.
-        return Date.parse(retainedTerminal(location)?.ts ?? '') < jobRetentionCutoff(this.input.runtime)
-          ? { kind: 'retained-away', retentionDays }
-          : { kind: 'failed', reason: 'the source journal is no longer retained' };
+        if (Date.parse(retainedTerminal(location)?.ts ?? '') < jobRetentionCutoff(this.input.runtime))
+          return { kind: 'retained-away', retentionDays };
+        return this.retainedExecution(location) === undefined
+          ? { kind: 'failed', reason: 'the source journal is no longer retained' }
+          : { kind: 'pending' };
       case 'readable':
         if (eligibility.age === 'expired') return { kind: 'retained-away', retentionDays };
         return this.unrenderable.has(jobId)
@@ -291,10 +296,7 @@ export class TerminalResultExportOwner {
   private publish(jobId: string, repair: boolean, observation?: RecoveryObservation, execution?: number): string {
     const location = this.location(jobId, execution, observation);
     const stored = this.input.location(jobId, observation);
-    const entry =
-      location === null
-        ? undefined
-        : stored?.executions?.find((entry) => entry.execution === (execution ?? stored.latestExecution));
+    const entry = this.retainedExecution(location);
     const workKey = this.workKey(jobId, execution ?? stored?.latestExecution);
     if (entry !== undefined) {
       if (this.readableFile(entry.resultPath)) {

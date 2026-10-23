@@ -1,4 +1,5 @@
 import { hashToken } from '../infra/hash.js';
+import type { z } from 'zod';
 import { conversationControllerFromProfile } from './conversation/entry.js';
 import type { Database } from '../store/db.js';
 import { decodeEventBody } from '../store/body-codec.js';
@@ -21,6 +22,7 @@ import type {
   JobQueueAdmittedBody,
   JobQueueQueuedBody,
   JobRuntimeStartedBody,
+  jobRetentionDiscardFailedBodySchema,
 } from './event-bodies.js';
 import { decodeProjectionJobStoredRow, readProjectionJobRow, type ProjectionJobStoredRow } from './projection-row.js';
 
@@ -51,6 +53,16 @@ function writeProjectionJob(db: Database, event: CoralEvent, patch: JobProjectio
 
 function mergeDiagnostics(current: JobDiagnostics, patch: JobTerminalDiagnostics): JobDiagnostics {
   return jobDiagnosticsSchema.parse({ ...current, ...patch });
+}
+
+export function retentionFailureWarning(reason: string): string {
+  return `Conversation retention failed: ${reason}`;
+}
+
+export function withRetentionFailure(diagnostics: JobDiagnostics, reason: string): JobDiagnostics {
+  const warning = retentionFailureWarning(reason);
+  if (diagnostics.warnings?.includes(warning)) return diagnostics;
+  return { ...diagnostics, warnings: [...(diagnostics.warnings ?? []), warning] };
 }
 
 export const reduceJobOpened: Reducer<JobOpenedBody> = (db, event) => {
@@ -151,6 +163,18 @@ export const reduceJobContinuityCheckpointed: Reducer<JobContinuityCheckpointedB
   writeProjectionJob(db, event, {
     resumable: event.body.snapshot.resumable ? 1 : 0,
     conversation_ref: event.body.snapshot.conversationRef,
+  });
+};
+
+export const reduceJobRetentionDiscardFailed: Reducer<z.infer<typeof jobRetentionDiscardFailedBodySchema>> = (
+  db,
+  event,
+) => {
+  const previous = readProjectionJobRow(db, event.stream.id);
+  if (previous === null) throw new TypeError(`Job '${event.stream.id}' is not opened.`);
+  const diagnostics = jobDiagnosticsSchema.parse(JSON.parse(previous.diagnostics));
+  writeProjectionJob(db, event, {
+    diagnostics: JSON.stringify(withRetentionFailure(diagnostics, event.body.reason)),
   });
 };
 

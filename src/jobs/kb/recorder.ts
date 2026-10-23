@@ -97,10 +97,6 @@ export class KbJobRecorder {
       startTime: nowIsoString(this.deps.runtime.time),
     });
 
-    // The callback owns the `'user_abort'` reason because
-    // `AbortRegistry.abort()` calls `controller.abort()` without a reason —
-    // setting it here is what lets downstream `AbortError.reason` map to
-    // `terminal { outcome: aborted, reason: 'user_abort' }`.
     const controller = new AbortController();
     this.deps.abortRegistry.register(jobId, 1, () => controller.abort('user_abort'));
 

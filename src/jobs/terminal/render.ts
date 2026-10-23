@@ -3,7 +3,7 @@ import { readJobOpened, readJobOpenedEvent } from '../execution-journal.js';
 import type { Database } from '../../store/db.js';
 import type { StoreReadContext } from '../../store/body-codec.js';
 import type { EventsRow } from '../../store/schema.js';
-import type { CoralEvent } from '../../store/envelope.js';
+import { rowToCoralEvent, type CoralEvent } from '../../store/envelope.js';
 import { extractCauseRef, renderCauseRefFallback, type CauseRef } from '../../causality/cause-ref.js';
 import { isRecord } from '../../infra/json.js';
 import { backendLog } from '../../infra/backend-log.js';
@@ -56,7 +56,7 @@ function describeCauseRefChain(
   }
 
   const body: unknown = JSON.parse(Buffer.from(row.body).toString('utf8'));
-  const event = { type: row.type, body } as CoralEvent;
+  const event = rowToCoralEvent(row, body);
   const localDescription = describeKnownEvent(event);
   const nextRef = extractCauseRef(body);
   if (!nextRef) {

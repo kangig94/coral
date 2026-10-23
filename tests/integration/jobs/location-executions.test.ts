@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { JobLocationIndex } from '#src/jobs/location-index.js';
+import { JobAddressing } from '#src/jobs/addressing.js';
 import { loadRetainedCurrentJob } from '#src/jobs/retained-current.js';
 import { TerminalResultExportOwner } from '#src/jobs/terminal/export.js';
 import { commit } from '#src/store/append.js';
@@ -58,6 +59,58 @@ function admission(f: ReturnType<typeof fixture>, afterRequest?: () => void) {
 }
 
 describe('durable execution locations', () => {
+  it.each(['missing', 'empty'] as const)(
+    'automatically repairs %s retained results after source retirement',
+    async (state) => {
+      const f = fixture();
+      for (const entry of f.entries) writeResult(entry.resultPath);
+      expect(f.index.certify(f.epochKey, f.ends.at(-1)!)).not.toBeNull();
+      expect(f.index.resultsReleased(f.epochKey)).toBe(true);
+      f.db.close();
+      rmSync(dirname(f.epoch.path), { recursive: true });
+      for (const entry of f.entries) {
+        if (state === 'missing') rmSync(entry.resultPath);
+        else writeFileSync(entry.resultPath, '');
+      }
+      const owner = new TerminalResultExportOwner({
+        runtime: f.runtime,
+        jobsRoot: f.jobsRoot,
+        location: (id) => f.index.read(id),
+        withSource: () => null,
+      });
+      const hint = vi.fn((id: string, execution?: number) => owner.hintRepair(id, execution));
+      const addressing = new JobAddressing(
+        f.index.readOnlyView(),
+        {
+          epochKey: () => 'another-epoch',
+          detail: () => null,
+          abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
+        },
+        () => false,
+        () => 'decided',
+        undefined,
+        (id, execution) => owner.observeResultAvailability(id, undefined, execution),
+        hint,
+      );
+      expect(addressing.snapshot({ jobIds: [f.jobId] }).jobs[0]).toMatchObject({
+        terminal: { outcomeKind: 'failed' },
+        availability: { kind: 'pending' },
+      });
+      expect(hint).toHaveBeenCalledWith(f.jobId, 2);
+      await owner.repairPass([], { canContinue: () => true, record: () => {} }, true);
+      expect(readFileSync(f.entries[1].resultPath, 'utf8')).toBe('result #2\n');
+      expect(owner.observeResultAvailability(f.jobId, undefined, 1)).toEqual({ kind: 'pending' });
+      await owner.repairPass([f.jobId], { canContinue: () => true, record: () => {} });
+      expect(readFileSync(f.entries[0].resultPath, 'utf8')).toBe('result #1\n');
+      expect(f.index.resultsReleased(f.epochKey)).toBe(true);
+      for (const entry of f.entries)
+        expect(owner.observeResultAvailability(f.jobId, undefined, entry.execution)).toEqual({
+          kind: 'available',
+          resultPath: entry.resultPath,
+        });
+    },
+  );
+
   it('requires every execution result before resultsReleased, including after source removal', () => {
     const f = fixture();
     expect(f.index.certify(f.epochKey, f.ends.at(-1)!)).not.toBeNull();
