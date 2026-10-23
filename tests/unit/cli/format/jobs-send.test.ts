@@ -20,10 +20,10 @@ it.each([
   expect(output.text).not.toContain('coral-cli wait jobs');
 });
 
-it('reports delivery without claiming the agent followed or applied the message', () => {
+it('reports provider input delivery without claiming consumption before an abort', () => {
   const output = formatJobSendResult('job-1', { state: 'delivered' }, context);
   expect(output).toEqual({
-    text: "Message delivered to the running turn. Whether the agent acts on it is the agent's decision.",
+    text: 'Message delivered to the provider input. This does not confirm it was read or recorded in the conversation; aborting the turn can discard unread input. Check job progress for consumption.',
     exitCode: 0,
   });
   expect(output.text).not.toMatch(/follow|obey|compl|appl/i);

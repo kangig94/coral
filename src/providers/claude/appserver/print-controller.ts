@@ -116,6 +116,7 @@ type ActiveTurnState = {
   interruptSent: boolean;
   model: string | null;
   initialPromptId: string;
+  initialPromptObserved: boolean;
   pendingSends: Map<string, { text: string; state: 'pending' | 'cancellation-pending' | 'consumed' }>;
   phase: 'active' | 'awaiting-follow-on' | 'stopping';
   segments: ResultSegment[];
@@ -267,6 +268,7 @@ export class PrintSessionController implements BrokerSessionController {
       interruptSent: false,
       model: this.defaultModel,
       initialPromptId: this.ids.uuid(),
+      initialPromptObserved: false,
       pendingSends: new Map(),
       phase: 'active',
       segments: [],
@@ -356,7 +358,7 @@ export class PrintSessionController implements BrokerSessionController {
     turn.interruptRequested = true;
     turn.phase = 'stopping';
     this.clearFollowOnDeadline(turn);
-    if (this.unreadSendIds(turn).length > 0 || turn.cleanupReason !== null) {
+    if (!turn.initialPromptObserved || this.unreadSendIds(turn).length > 0 || turn.cleanupReason !== null) {
       this.stopAggregate(turn, 'cancelled');
     } else if (turn.userMessageSent) {
       await this.issueInterrupt(turn);
@@ -517,7 +519,7 @@ export class PrintSessionController implements BrokerSessionController {
       return;
     }
 
-    if (message.type === 'result' && this.activeTurn !== null) {
+    if (message.type === 'result' && this.activeTurn?.initialPromptObserved) {
       this.clearFollowOnDeadline(this.activeTurn);
       if (this.activeTurn.phase !== 'stopping') this.activeTurn.phase = 'awaiting-follow-on';
     }
@@ -640,7 +642,7 @@ export class PrintSessionController implements BrokerSessionController {
       }
     }
 
-    if (this.activeTurn === null || !this.bootstrapSignature) {
+    if (this.activeTurn === null || !this.activeTurn.initialPromptObserved || !this.bootstrapSignature) {
       return;
     }
 
@@ -678,7 +680,11 @@ export class PrintSessionController implements BrokerSessionController {
 
   private handleReplayUserMessage(message: SDKReplayUserMessage): void {
     const turn = this.activeTurn;
-    if (turn === null || message.uuid === turn.initialPromptId) return;
+    if (turn === null) return;
+    if (message.uuid === turn.initialPromptId) {
+      turn.initialPromptObserved = true;
+      return;
+    }
     const sent = turn.pendingSends.get(message.uuid);
     if (sent === undefined || sent.state === 'consumed') return;
     sent.state = 'consumed';
@@ -688,7 +694,7 @@ export class PrintSessionController implements BrokerSessionController {
 
   private handleResultMessage(message: SDKResultMessage): void {
     const turn = this.activeTurn;
-    if (turn === null) {
+    if (turn === null || !turn.initialPromptObserved) {
       return;
     }
 
