@@ -125,6 +125,7 @@ type ActiveTurnState = {
   errors: string[];
   promptText: string;
   promptTextHash: string;
+  promptObserved: boolean;
   lastPromptSentAt: number;
   promptSendAttempts: number;
   replacementAttempts: number;
@@ -328,6 +329,7 @@ export class SingleSessionController {
       errors: [],
       promptText: params.prompt,
       promptTextHash: hashPromptText(params.prompt),
+      promptObserved: false,
       lastPromptSentAt: 0,
       promptSendAttempts: 0,
       replacementAttempts: 0,
@@ -762,16 +764,21 @@ export class SingleSessionController {
         );
         return false;
       }
+      this.readTranscriptAppend(turn);
       if (this.activeTurn !== turn) {
         return true;
       }
-      this.sendTuiPrompt(this.continuationPromptForPhase(phase));
-      this.markContinuationSent(turn, phase);
+      if (turn.phase === 'ending') return false;
+      const recoveryPhase = turn.phase === 'responding' ? 'responding' : 'registered';
+      this.sendTuiPrompt(this.recoveryPromptForTurn(turn));
+      this.markContinuationSent(turn, recoveryPhase);
       this.emitTurnProgress(
         turn.brokerTurnId,
-        phase === 'registered'
-          ? 'Claude child resumed; requested continuation for the unanswered user message.'
-          : 'Claude child resumed; requested continuation of the partial assistant response.',
+        !turn.promptObserved
+          ? 'Claude child resumed; resent the prompt that had not entered the conversation.'
+          : recoveryPhase === 'registered'
+            ? 'Claude child resumed; requested continuation for the unanswered user message.'
+            : 'Claude child resumed; requested continuation of the partial assistant response.',
       );
       return false;
     } catch (error) {
@@ -881,9 +888,11 @@ export class SingleSessionController {
           this.deferRecoveryUntilChildSettles(turn, phase, conversationRef, nextHold);
           return;
         }
-        if (this.activeTurn !== turn) return;
-        this.sendTuiPrompt(this.continuationPromptForPhase(phase));
-        this.markContinuationSent(turn, phase);
+        this.readTranscriptAppend(turn);
+        if (this.activeTurn !== turn || turn.phase === 'ending') return;
+        const recoveryPhase = turn.phase === 'responding' ? 'responding' : 'registered';
+        this.sendTuiPrompt(this.recoveryPromptForTurn(turn));
+        this.markContinuationSent(turn, recoveryPhase);
         this.emitTurnProgress(turn.brokerTurnId, 'Claude child resumed after the prior child was observed absent.');
       })
       .catch((error: unknown) => {
@@ -926,8 +935,9 @@ export class SingleSessionController {
     });
   }
 
-  private continuationPromptForPhase(phase: 'registered' | 'responding'): string {
-    if (phase === 'registered') {
+  private recoveryPromptForTurn(turn: ActiveTurnState): string {
+    if (!turn.promptObserved) return turn.promptText;
+    if (turn.phase === 'registered') {
       return 'Continue the unanswered user message from the resumed transcript. Do not restate or re-paste the original prompt; produce the assistant response now.';
     }
     return 'Continue the partial assistant response from the resumed transcript. Do not restart the answer, repeat prior assistant text, or re-paste the original prompt; continue from where the transcript stopped.';
@@ -1069,7 +1079,7 @@ export class SingleSessionController {
     } catch {
       return;
     }
-    if (!isRecord(row)) {
+    if (!isRecord(row) || row.isSidechain === true) {
       return;
     }
 
@@ -1103,7 +1113,9 @@ export class SingleSessionController {
     if (!this.isCurrentTurnPromptRegistration(turn, row, lineStartOffset, sessionId)) {
       return;
     }
+    turn.promptObserved = true;
     this.transitionTurnPhase(turn, 'registered');
+    this.recordSemanticProgress(turn);
   }
 
   private handleQueueOperationTranscriptRow(
@@ -1124,7 +1136,7 @@ export class SingleSessionController {
     lineStartOffset: number,
     sessionId: string | null,
   ): boolean {
-    if (turn.phase !== 'sent') {
+    if (turn.promptObserved || (turn.phase !== 'sent' && turn.phase !== 'registered')) {
       return false;
     }
     if (lineStartOffset < turn.promptTranscriptOffset) {
@@ -1174,16 +1186,15 @@ export class SingleSessionController {
     row: Record<string, unknown>,
     sessionId: string | null,
   ): void {
-    if (turn.phase === 'terminal') {
+    if (!turn.promptObserved || turn.phase === 'terminal') {
+      return;
+    }
+    if (sessionId !== null && sessionId !== this.currentConversationRef()) {
       return;
     }
     const wasEnding = turn.phase === 'ending';
     if (wasEnding) {
       if (turn.lastAssistantText.length > 0) {
-        return;
-      }
-      const conversationRef = this.currentConversationRef();
-      if (sessionId !== null && conversationRef !== null && sessionId !== conversationRef) {
         return;
       }
     }
@@ -1193,7 +1204,7 @@ export class SingleSessionController {
     if (message === null) {
       return;
     }
-    if (!wasEnding && (turn.phase === 'sent' || turn.phase === 'registered' || turn.phase === 'responding')) {
+    if (!wasEnding && (turn.phase === 'registered' || turn.phase === 'responding')) {
       this.transitionTurnPhase(turn, 'responding');
     }
 
@@ -1241,7 +1252,11 @@ export class SingleSessionController {
       this.emitTurnProgress(turn.brokerTurnId, progressMessage);
     }
 
-    if (row.subtype === 'turn_duration') {
+    if (
+      row.subtype === 'turn_duration' &&
+      turn.promptObserved &&
+      (turn.phase === 'responding' || turn.phase === 'ending')
+    ) {
       const durationMs = readNumber(row.durationMs) ?? readNumber(row.duration_ms);
       if (durationMs !== undefined) {
         turn.durationMs = durationMs;

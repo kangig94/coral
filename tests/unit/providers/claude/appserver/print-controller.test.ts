@@ -37,6 +37,7 @@ class FakeClaudePrintChild implements ClaudePrintChild {
   readonly writes: string[] = [];
   readonly killedSignals: Array<NodeJS.Signals | undefined> = [];
   readonly failOnWriteIndexes = new Set<number>();
+  replayInitialPrompt = true;
   exitOnKill = true;
   private readonly stdoutHandlers = new Set<(line: string) => void>();
   private readonly stderrHandlers = new Set<(chunk: string) => void>();
@@ -49,6 +50,10 @@ class FakeClaudePrintChild implements ClaudePrintChild {
       throw new Error(`write ${this.writes.length} failed`);
     }
     this.writes.push(line);
+    const message = JSON.parse(line) as Record<string, unknown>;
+    if (this.replayInitialPrompt && message.type === 'user' && message.session_id !== undefined) {
+      this.emitStdout({ ...message, isReplay: true });
+    }
   }
 
   kill(signal?: NodeJS.Signals): void {
@@ -334,6 +339,64 @@ describe('PrintSessionController', () => {
     total_cost_usd: 0.01,
     usage: { input_tokens: 10, output_tokens: 2 },
   };
+
+  it('ignores a resumed dangling result until its own initial prompt UUID is replayed', async () => {
+    const child = new FakeClaudePrintChild();
+    child.replayInitialPrompt = false;
+    const notifications: ControllerNotification[] = [];
+    const controller = createController(child, notifications);
+    try {
+      await ensureController(controller, child, 'default', { conversationRef: TEST_SESSION_ID, resumeExisting: true });
+      await controller.turnStart({ brokerTurnId: 'turn-2', prompt: 'Skip the sleep' });
+      child.emitStdout(replay(firstSendId, 'Skip the sleep'));
+      child.emitStdout({ type: 'assistant', message: { content: [{ type: 'text', text: 'No response requested.' }] } });
+      child.emitStdout({ ...result, result: 'No response requested.', usage: { output_tokens: 99 } });
+      expect(controller.hasActiveTurn()).toBe(true);
+      expect(notifications.filter((n) => n.method === 'turn/completed')).toEqual([]);
+      child.emitStdout(replay(parseWrite(child, 1).uuid, 'Skip the sleep'));
+      child.emitStdout(result);
+      const completed = notifications.filter((n) => n.method === 'turn/completed');
+      expect(completed).toHaveLength(1);
+      expect(completed[0].params).toMatchObject({ brokerTurnId: 'turn-2', result: 'DONE', usage: result.usage });
+      expect(
+        notifications.some((n) => n.method === 'turn/progress' && n.params.message.includes('No response requested.')),
+      ).toBe(false);
+    } finally {
+      await controller.shutdown();
+    }
+  });
+
+  it('cancels before prompt consumption only after child absence, ignoring a dangling result', async () => {
+    const child = new FakeClaudePrintChild();
+    child.replayInitialPrompt = false;
+    child.exitOnKill = false;
+    const notifications: ControllerNotification[] = [];
+    const controller = createController(child, notifications);
+    try {
+      await ensureController(controller, child);
+      await controller.turnStart({ brokerTurnId: 'turn-1', prompt: 'Skip the sleep' });
+      const interrupt = controller.turnInterrupt({ brokerTurnId: 'turn-1' });
+      const write = child.writes[2] === undefined ? null : parseWrite(child, 2);
+      if (write?.type === 'control_request') {
+        child.emitStdout({
+          type: 'control_response',
+          response: { subtype: 'success', request_id: write.request_id, response: {} },
+        });
+      }
+      await interrupt;
+      child.emitStdout({ ...result, result: 'No response requested.' });
+      expect(notifications.filter((n) => n.method === 'turn/completed')).toEqual([]);
+      expect(child.killedSignals).toEqual(['SIGTERM']);
+      child.emitExit({ code: null, signal: 'SIGTERM' });
+      for (let i = 0; i < 20; i++) await Promise.resolve();
+      const completed = notifications.filter((n) => n.method === 'turn/completed');
+      expect(completed).toHaveLength(1);
+      expect(completed[0].params).toMatchObject({ brokerTurnId: 'turn-1', result: '', cancelled: true });
+    } finally {
+      child.emitExit({ code: null, signal: 'SIGTERM' });
+      await controller.shutdown();
+    }
+  });
 
   it('refuses sends to either of two completed turns and unknown IDs as turn_ended without writing', async () => {
     const child = new FakeClaudePrintChild();

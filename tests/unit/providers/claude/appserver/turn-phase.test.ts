@@ -106,6 +106,46 @@ function observedPhase(harness: Awaited<ReturnType<typeof startController>>) {
 }
 
 describe('Claude turn phase state machine', () => {
+  it.each([false, true])('waits for its user row before accepting a dangling answer (queued=%s)', async (queued) => {
+    const prompt = 'Skip the sleep. What command did I ask you to run?';
+    const harness = await startController(prompt);
+    if (queued) await appendRows(harness.path, queueRow(prompt));
+    await appendRows(
+      harness.path,
+      { ...userRow(prompt), isSidechain: true },
+      {
+        type: 'user',
+        session_id: TEST_SESSION_ID,
+        message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'sleep', content: 'Exit code 137' }] },
+      },
+      {
+        ...assistantRow('end_turn'),
+        message: {
+          ...assistantRow().message,
+          content: [{ type: 'text', text: 'No response requested.' }],
+          stop_reason: 'end_turn',
+          usage: { output_tokens: 99 },
+        },
+      },
+      { type: 'system', subtype: 'turn_duration', session_id: TEST_SESSION_ID, durationMs: 999 },
+    );
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(harness.controller.hasActiveTurn()).toBe(true);
+    expect(harness.notifications.filter((n) => n.method === 'turn/completed')).toEqual([]);
+
+    await appendRows(harness.path, userRow(prompt), assistantRow('end_turn'));
+    await vi.advanceTimersByTimeAsync(2_000);
+    const completed = harness.notifications.filter((n) => n.method === 'turn/completed');
+    expect(completed).toHaveLength(1);
+    expect(completed[0].params).toMatchObject({ brokerTurnId: 'turn-1', result: 'response' });
+    expect(completed[0].params).not.toMatchObject({ durationMs: 999 });
+    expect(
+      harness.notifications.some(
+        (n) => n.method === 'turn/progress' && n.params.message.includes('No response requested.'),
+      ),
+    ).toBe(false);
+  });
+
   it('advances responding to ending on an end-turn assistant row', async () => {
     const harness = await startController();
     await appendRows(harness.path, userRow('hello'), assistantRow('end_turn'));
@@ -123,7 +163,11 @@ describe('Claude turn phase state machine', () => {
       session_id: nextSessionId,
       durationMs: 25,
     });
-    await appendRows(fixture.pathFor(nextSessionId), assistantRow(undefined, nextSessionId));
+    await appendRows(
+      fixture.pathFor(nextSessionId),
+      userRow('hello', nextSessionId),
+      assistantRow(undefined, nextSessionId),
+    );
     expect(observedPhase(harness)).toBe('responding');
   });
 

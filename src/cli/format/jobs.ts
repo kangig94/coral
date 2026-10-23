@@ -71,7 +71,7 @@ export function formatJobSendResult(
       };
     case 'delivered':
       return {
-        text: "Message delivered to the running turn. Whether the agent acts on it is the agent's decision.",
+        text: 'Message delivered to the provider input. This does not confirm it was read or recorded in the conversation; aborting the turn can discard unread input. Check job progress for consumption.',
         exitCode: 0,
       };
     case 'refused':

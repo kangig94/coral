@@ -137,6 +137,10 @@ async function startUsageController(): Promise<UsageControllerHarness> {
     permissionMode: 'default',
   });
   await controller.turnStart({ brokerTurnId: 'turn-usage', prompt: 'hello' });
+  appendFileSync(
+    fixture.transcriptPath,
+    JSON.stringify({ type: 'user', session_id: TEST_SESSION_ID, message: { role: 'user', content: 'hello' } }) + '\n',
+  );
 
   return { controller, notifications, transcriptPath: fixture.transcriptPath };
 }
@@ -335,6 +339,11 @@ describe('SingleSessionController PTY lifecycle', () => {
       await controller.turnStart({ brokerTurnId: 'turn-1', prompt: 'hello' });
 
       const assistantLine = assistantTranscriptLine('split transcript ok');
+      appendFileSync(
+        fixture.transcriptPath,
+        JSON.stringify({ type: 'user', session_id: TEST_SESSION_ID, message: { role: 'user', content: 'hello' } }) +
+          '\n',
+      );
       const splitAt = Math.floor(assistantLine.length / 2);
       appendFileSync(fixture.transcriptPath, assistantLine.slice(0, splitAt));
       await vi.advanceTimersByTimeAsync(150);

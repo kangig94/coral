@@ -196,6 +196,80 @@ describe('Claude phase-specific turn-stall recovery', () => {
     );
   });
 
+  it.each([false, true])('recovers an unconsumed queued prompt after child absence (held=%s)', async (held) => {
+    const prompt = 'queued original prompt';
+    const harness = await startController(prompt);
+    harness.children[0].exitOnKill = !held;
+    await appendRows(harness.path, {
+      type: 'queue-operation',
+      operation: 'enqueue',
+      sessionId: TEST_SESSION_ID,
+      content: prompt,
+    });
+    await vi.advanceTimersByTimeAsync(DEFAULT_TURN_RECOVERY_BUDGET['assistant-start'].assistantStartIdleMs + 100);
+    if (held) {
+      await vi.advanceTimersByTimeAsync(DEFAULT_TURN_RECOVERY_BUDGET.replacement.replacementShutdownMs + 100);
+      expect(harness.children).toHaveLength(1);
+      harness.children[0].emitExit({ code: null, signal: 'SIGTERM' });
+      await vi.advanceTimersByTimeAsync(100);
+    }
+    expect(harness.children).toHaveLength(2);
+    expect(pastedPrompts(harness.children[1])).toEqual([prompt]);
+    await appendRows(harness.path, promptRow(prompt), assistantRow('queued answer', 'end_turn'), durationRow(25));
+    expect(harness.notifications.filter((n) => n.method === 'turn/completed')).toMatchObject([
+      { params: { brokerTurnId: 'turn-1', result: 'queued answer' } },
+    ]);
+  });
+
+  it.each([
+    [false, false],
+    [false, true],
+    [true, false],
+    [true, true],
+  ])(
+    'observes final transcript writes before choosing recovery input (held=%s, finished=%s)',
+    async (held, finished) => {
+      const prompt = 'prompt consumed just before child exit';
+      const harness = await startController(prompt);
+      harness.children[0].exitOnKill = !held;
+      const finalRows = [
+        promptRow(prompt),
+        ...(finished ? [assistantRow('continued answer', 'end_turn'), durationRow(25)] : []),
+      ];
+      const finalTranscript = finalRows.map((row) => JSON.stringify(row)).join('\n') + '\n';
+      const kill = harness.children[0].kill.bind(harness.children[0]);
+      vi.spyOn(harness.children[0], 'kill').mockImplementationOnce((signal) => {
+        if (!held) appendFileSync(harness.path, finalTranscript);
+        kill(signal);
+      });
+      await appendRows(harness.path, {
+        type: 'queue-operation',
+        operation: 'enqueue',
+        sessionId: TEST_SESSION_ID,
+        content: prompt,
+      });
+      await vi.advanceTimersByTimeAsync(DEFAULT_TURN_RECOVERY_BUDGET['assistant-start'].assistantStartIdleMs + 100);
+      if (held) {
+        await vi.advanceTimersByTimeAsync(DEFAULT_TURN_RECOVERY_BUDGET.replacement.replacementShutdownMs + 100);
+        appendFileSync(harness.path, finalTranscript);
+        harness.children[0].emitExit({ code: null, signal: 'SIGTERM' });
+        await vi.advanceTimersByTimeAsync(100);
+      }
+      expect(harness.children).toHaveLength(2);
+      if (finished) {
+        expect(pastedPrompts(harness.children[1])).toEqual([]);
+        await vi.advanceTimersByTimeAsync(100);
+      } else {
+        expect(pastedPrompts(harness.children[1])[0]).toContain('unanswered user message');
+        expect(pastedPrompts(harness.children[1])).not.toContain(prompt);
+        await appendRows(harness.path, assistantRow('continued answer', 'end_turn'), durationRow(25));
+      }
+      expect(harness.notifications.filter((n) => n.method === 'turn/completed')).toMatchObject([
+        { params: { brokerTurnId: 'turn-1', result: 'continued answer' } },
+      ]);
+    },
+  );
+
   it('recovers a responding stall with a partial-response continuation and never re-pastes the original prompt', async () => {
     const prompt = 'ORIGINAL_PROMPT_SHOULD_NOT_REAPPEAR';
     const harness = await startController(prompt);

@@ -43,7 +43,6 @@ export type ClaudeBootstrapSignature = z.infer<typeof claudeBootstrapSignatureSc
 
 export type ClaudeBootstrapConfiguration = Readonly<{
   conversationRef?: string;
-  resumeExisting?: boolean;
   projectsRoot: string;
   model?: string;
   effort?: EffortLevel;
@@ -96,7 +95,6 @@ export function sameBootstrapSignature(a: ClaudeBootstrapSignature, b: ClaudeBoo
 export function hashClaudeBootstrapConfiguration(configuration: ClaudeBootstrapConfiguration): string {
   const normalized = {
     conversationRef: configuration.conversationRef ?? null,
-    resumeExisting: configuration.resumeExisting ?? false,
     projectsRoot: configuration.projectsRoot,
     model: configuration.model ?? null,
     effort: configuration.effort ?? null,
