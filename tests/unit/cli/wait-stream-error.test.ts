@@ -6,6 +6,10 @@ import { BackendToolHttpError } from '#src/transport/http/errors.js';
 import { TransientHttpError } from '#src/infra/http-errors.js';
 import { WaitBuildMismatchError } from '#src/coordinator/handoff-routing/wait-invocation.js';
 import { IpcRpcError } from '#src/transport/ipc/client.js';
+import { executeCatalogRequest } from '#src/transport/dispatch.js';
+import { rpcCatalog } from '#src/transport/rpc/catalog.js';
+import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
+import { testProjectPrincipal } from '#tests/helpers/principal.js';
 
 function subscriptionError(code: string, detail?: unknown): Error {
   return new Error('wire message', { cause: { code, message: 'wire message', detail } });
@@ -78,5 +82,66 @@ describe('mapWaitSubscriptionError', () => {
     });
     const refused = new IpcRpcError({ code: -32000, message: 'refused', data: { code: 'wait_build_mismatch' } });
     expect(mapWaitSubscriptionError(refused)).toBeInstanceOf(WaitBuildMismatchError);
+  });
+});
+
+it('renders a typed fresh-wait remedy through the final CLI error envelope', async () => {
+  const { buildErrorEnvelope } = await import('#src/cli/errors.js');
+  const error = mapWaitSubscriptionError(
+    new Error('wire', {
+      cause: {
+        code: 'wait_admission_required',
+        message: 'Execution admission evidence is required.',
+        remedy: { kind: 'fresh-wait', jobIds: ['a', 'b'] },
+      },
+    }),
+  );
+  expect(buildErrorEnvelope(error)).toMatchObject({
+    envelope: {
+      code: 'wait_admission_required',
+      message: 'Execution admission evidence is required.',
+      remediation: 'Run coral-cli jobs wait a b to admit a fresh wait. Already-delivered results may print again.',
+    },
+    exitCode: 1,
+  });
+});
+
+it.each(['snapshot', 'unbounded'] as const)(
+  'keeps %s in fresh-wait remedies for HTTP and subscription refusals',
+  async (mode) => {
+    const { buildErrorEnvelope } = await import('#src/cli/errors.js');
+    const body = {
+      code: 'wait_selection_invalid',
+      message: 'Malformed selection.',
+      remedy: { kind: 'fresh-wait', jobIds: ['a'] },
+    };
+    for (const raw of [new BackendToolHttpError(body.message, 400, body), new Error('wire', { cause: body })]) {
+      const { envelope } = buildErrorEnvelope(mapWaitSubscriptionError(raw, mode));
+      expect(envelope.message).toBe(body.message);
+      expect(envelope.remediation).toBe(
+        `Run coral-cli jobs wait a --${mode}${mode === 'unbounded' ? ' in a background shell' : ''} to admit a fresh wait. Already-delivered results may print again.`,
+      );
+    }
+  },
+);
+
+it('returns a typed fresh-wait remedy for malformed snapshot selection before reading jobs', async () => {
+  const spec = rpcCatalog.find((entry) => entry.name === 'jobs.wait.snapshot')!;
+  const projectRoot = process.cwd();
+  const result = await executeCatalogRequest(
+    spec,
+    spec.requestSchema.parse({ jobIds: ['a', 'b'], projectRoot, executionSelections: [{ jobId: 'a' }] }),
+    {
+      identity: { pluginRoot: '/plugin' },
+      coralEnvSnapshot: {},
+      admin: { isLaunchFenceActive: () => false },
+      jobs: {},
+    } as unknown as HttpHandlerPorts,
+    testProjectPrincipal(projectRoot),
+  );
+  expect(result).toMatchObject({
+    kind: 'unary',
+    statusCode: 400,
+    body: { code: 'wait_selection_invalid', remedy: { kind: 'fresh-wait', jobIds: ['a', 'b'] } },
   });
 });

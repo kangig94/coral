@@ -1,7 +1,10 @@
 import { z } from 'zod';
+import type { ProviderBindingFailureCode } from '../providers/contracts/binding.js';
+import type { JobSendTarget } from './send-target.js';
 
+import { providerBindingEnvelopeSchema } from '../infra/provider-binding-envelope.js';
 import { providerInstructionSchema, type ProviderInstruction } from '../providers/contract.js';
-import { retentionPolicySchema, type RetentionPolicy } from '../sessions/entry.js';
+import { retentionPolicySchema, type RetentionPolicy } from './conversation/entry.js';
 import { LAUNCH_POOLS, type LaunchPool } from './contracts/admission.js';
 import { discussionRunDescriptorSchema, type DiscussionRunDescriptor } from './discussion-run.js';
 import { executionOwnerSchema, type ExecutionOwner } from '../runtime/execution-owner.js';
@@ -12,52 +15,105 @@ const sourceImportReadinessSchema = z.enum(sourceImportReadinessValues);
 export type SourceImportReadiness = z.infer<typeof sourceImportReadinessSchema>;
 export type KbJobOperation = 'kb.source_import' | 'kb.reindex' | 'kb.community_summary';
 
-export type AcceptedProviderSessionLaunchDecision =
-  | { kind: 'provider-session'; status: 'running'; jobId: string; sessionId: string }
-  | { kind: 'provider-session'; status: 'queued'; jobId: string; sessionId: string; message?: undefined };
+export type CommittedExecutionRequest = { requestedSeq: number; epochKey: string };
 
-export type AcceptedWorkflowLaunchDecision =
-  | { kind: 'workflow'; status: 'running'; jobId: string; workflowId: string }
-  | { kind: 'workflow'; status: 'queued'; jobId: string; workflowId: string; message?: undefined };
+export type AcceptedProviderJobLaunchDecision = CommittedExecutionRequest &
+  (
+    | { kind: 'provider-session'; status: 'running'; jobId: string }
+    | { kind: 'provider-session'; status: 'queued'; jobId: string; message?: undefined }
+  );
+
+export type AcceptedWorkflowLaunchDecision = CommittedExecutionRequest &
+  (
+    | { kind: 'workflow'; status: 'running'; jobId: string; workflowId: string }
+    | { kind: 'workflow'; status: 'queued'; jobId: string; workflowId: string; message?: undefined }
+  );
+
+export type LaunchRefusalCode =
+  | ProviderBindingFailureCode
+  | 'unknown_provider'
+  | 'invalid_agent'
+  | 'agent_not_found'
+  | 'agent_namespace_not_found'
+  | 'invalid_request'
+  | 'job_launch_duplicate'
+  | 'job_owner_mismatch'
+  | 'job_owner_missing'
+  | 'job_provider_session_missing'
+  | 'job_binding_owner_mismatch'
+  | 'discussion_job_launch_conflict'
+  | 'workflow_owner_terminal'
+  | 'workflow_slot_job_conflict'
+  | 'workflow_slot_job_mismatch'
+  | 'provider_scope_missing'
+  | 'provider_execution_environment_invalid'
+  | 'provider_preflight_failed'
+  | 'session_not_found'
+  | 'non_resumable'
+  | 'session_busy'
+  | 'retention_discard_in_flight'
+  | 'work_directory_missing'
+  | 'continuation_target_changed'
+  | 'execution_admission_in_flight'
+  | 'execution_finishing'
+  | 'execution_superseded'
+  | 'profile_mismatch'
+  | 'native_unobservable'
+  | 'archive_missing'
+  | 'archive_stale'
+  | 'archive_invalid'
+  | 'archive_hash_mismatch'
+  | 'publication_failed'
+  | 'busy'
+  | 'succession_admission_paused'
+  | 'transport_unsupported'
+  | 'scope_mismatch'
+  | 'provider_mismatch'
+  | 'launch_failed';
+
+export type LaunchUndeterminedCode =
+  | 'work_directory_unobservable'
+  | 'provider_preflight_undetermined'
+  | 'discuss_launch_undetermined'
+  | 'continuation_commit_uncertain';
 
 export type RefusedLaunchDecision = {
   status: 'refused';
-  code: string;
+  code: LaunchRefusalCode;
   message: string;
 };
 
 export type UndeterminedLaunchDecision = {
   status: 'undetermined';
-  code: string;
+  code: LaunchUndeterminedCode;
   message: string;
 };
 
-export type ProviderSessionLaunchDecision =
-  | AcceptedProviderSessionLaunchDecision
+export type ProviderJobLaunchDecision =
+  | AcceptedProviderJobLaunchDecision
   | RefusedLaunchDecision
   | UndeterminedLaunchDecision;
 export type WorkflowLaunchDecision = AcceptedWorkflowLaunchDecision | RefusedLaunchDecision;
-export type LaunchDecision = ProviderSessionLaunchDecision | AcceptedWorkflowLaunchDecision;
+export type LaunchDecision = ProviderJobLaunchDecision | AcceptedWorkflowLaunchDecision;
 
-/**
- * Coordinator response shape when a launch request is accepted (running or queued).
- * Returned over IPC and HTTP for sessions.create / workflow.run.
- */
-export type AcceptedLaunchResponse =
-  | {
-      kind: 'provider-session';
-      sessionId: string;
-      jobId: string;
-      launchState: 'running' | 'queued';
-    }
-  | {
-      kind: 'workflow';
-      workflowId: string;
-      jobId: string;
-      launchState: 'running' | 'queued';
-    };
+export const executionOrdinalSchema = z.number().int().positive().safe();
 
-export function refuseLaunch(code: string, message: string): RefusedLaunchDecision {
+const acceptedLaunchFields = {
+  jobId: z.string().min(1),
+  execution: executionOrdinalSchema.optional(),
+  requestedSeq: z.number().int().positive().safe(),
+  epochKey: z.string().min(1),
+  launchState: z.enum(['running', 'queued']),
+};
+
+export const acceptedLaunchResponseSchema = z.discriminatedUnion('kind', [
+  z.object({ ...acceptedLaunchFields, kind: z.literal('provider-session') }).strict(),
+  z.object({ ...acceptedLaunchFields, kind: z.literal('workflow'), workflowId: z.string().min(1) }).strict(),
+]);
+
+export type AcceptedLaunchResponse = z.infer<typeof acceptedLaunchResponseSchema>;
+
+export function refuseLaunch(code: LaunchRefusalCode, message: string): RefusedLaunchDecision {
   return {
     status: 'refused',
     code,
@@ -65,7 +121,7 @@ export function refuseLaunch(code: string, message: string): RefusedLaunchDecisi
   };
 }
 
-export function undeterminedLaunch(code: string, message: string): UndeterminedLaunchDecision {
+export function undeterminedLaunch(code: LaunchUndeterminedCode, message: string): UndeterminedLaunchDecision {
   return {
     status: 'undetermined',
     code,
@@ -80,18 +136,10 @@ export interface JobLaunchRequest {
   cwd?: CanonicalWorkDir;
   jobId?: string;
   workflowSlotId?: string;
-  workflowSlotGeneration?: number;
-  replacesWorkflowJobId?: string;
   effort?: string;
   bypassPermissions?: boolean;
   systemPrompt?: string;
   instruction?: ProviderInstruction;
-  /**
-   * The workflow job that owns the plan slot this child is filling. By spec
-   * §6.1 line 813 convention `workflowJobId === workflowId`, so this value
-   * also becomes `refs.workflowId` on the resulting `job.launch.requested`
-   * envelope — the launch path in `store.ts` is the producer.
-   */
   parentWorkflowJobId?: string;
   agent?: string;
   pool?: LaunchPool;
@@ -100,82 +148,69 @@ export interface JobLaunchRequest {
   discussionRun?: DiscussionRunDescriptor;
 }
 
-export interface JobResumeRequest extends Omit<JobLaunchRequest, 'retention'> {
-  sessionId: string;
+export interface JobResumeRequest extends Omit<JobLaunchRequest, 'retention' | 'cwd' | 'model'> {
+  jobId: string;
+  originatingClientMessageId?: string;
   provider?: string;
+  continuationTarget?: JobSendTarget;
 }
 
-const providerLaunchRequestSchema = z
+const controllerProfileSchema = z
+  .object({ owner: z.string().optional(), effort: z.string().optional(), claudeModelCap: z.string().optional() })
+  .strict();
+
+export const jobConversationFacetSchema = z
   .object({
-    prompt: z.string(),
-    name: z.string().optional(),
-    model: z.string().optional(),
+    provider: z.string().min(1),
+    binding: providerBindingEnvelopeSchema,
     cwd: canonicalWorkDirWireSchema,
+    name: z.string().min(1),
+    model: z.string().optional(),
     effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']).optional(),
+    agent: z.string().optional(),
+    instruction: providerInstructionSchema.optional(),
     bypassPermissions: z.boolean(),
     systemPrompt: z.string().optional(),
-    instruction: providerInstructionSchema.optional(),
-    retention: retentionPolicySchema.optional(),
-    coralEnv: z.record(z.string()),
+    retention: retentionPolicySchema,
+    controllerProfile: controllerProfileSchema.optional(),
   })
-  .strict();
-
-const workflowLaunchRequestSchema = z
-  .object({
-    prompt: z.string(),
-    cwd: canonicalWorkDirWireSchema,
-    bypassPermissions: z.boolean(),
-    coralEnv: z.record(z.string()),
+  .strict()
+  .superRefine((facet, ctx) => {
+    if (facet.provider !== facet.binding.provider) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['binding', 'provider'],
+        message: 'Binding provider must match the conversation provider.',
+      });
+    }
   })
-  .strict();
+  .describe('job-conversation-provider-binding-match-v1');
 
-const providerJobLaunchBaseSchema = z
-  .object({
-    owner: executionOwnerSchema,
-    discussionRun: discussionRunDescriptorSchema.optional(),
-    sessionId: z.string().min(1),
-    provider: z.string().min(1),
-    providerAction: z.enum(['exec', 'resume']),
-    projectRoot: z.string(),
-    backendNamespace: z.string(),
-    bundleHash: z.string().optional(),
-    pool: z.enum(LAUNCH_POOLS),
-    enqueueSequence: z.number().int().nonnegative(),
-    createdAt: z.string(),
-    workflowSlotGeneration: z.number().int().nonnegative().optional(),
-    replacesWorkflowJobId: z.string().min(1).optional(),
-  })
-  .strict();
-
-const providerJobLaunchRequestBodySchema = providerJobLaunchBaseSchema.extend({
-  jobKind: z.literal('provider'),
-  request: providerLaunchRequestSchema,
-});
-
-const workflowJobLaunchRequestBodySchema = z
-  .object({
-    owner: executionOwnerSchema,
-    projectRoot: z.string(),
-    backendNamespace: z.string(),
-    bundleHash: z.string().optional(),
-    jobKind: z.literal('workflow'),
-    pool: z.enum(LAUNCH_POOLS),
-    enqueueSequence: z.number().int().nonnegative(),
-    request: workflowLaunchRequestSchema,
-    createdAt: z.string(),
-  })
-  .strict();
-
-const kbJobLaunchBaseSchema = z.object({
+const jobOpenedBase = {
   owner: executionOwnerSchema,
-  projectRoot: z.string(),
-  backendNamespace: z.string(),
-  bundleHash: z.string().optional(),
-  jobKind: z.literal('kb'),
-  pool: z.enum(LAUNCH_POOLS),
-  enqueueSequence: z.number().int().nonnegative(),
-  createdAt: z.string(),
-});
+  projectRoot: z.string().min(1),
+  createdAt: z.string().datetime(),
+};
+
+export const jobOpenedBodySchema = z.discriminatedUnion('jobKind', [
+  z
+    .object({
+      ...jobOpenedBase,
+      jobKind: z.literal('provider'),
+      conversation: jobConversationFacetSchema,
+      workflowSlotId: z.string().min(1).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      ...jobOpenedBase,
+      jobKind: z.literal('workflow'),
+      cwd: canonicalWorkDirWireSchema,
+      bypassPermissions: z.boolean(),
+    })
+    .strict(),
+  z.object({ ...jobOpenedBase, jobKind: z.literal('kb') }).strict(),
+]);
 
 const kbSourceImportJobRequestSchema = z
   .object({
@@ -191,34 +226,23 @@ export const kbJobLaunchPayloadSchema = z.discriminatedUnion('operation', [
   z.object({ operation: z.literal('kb.community_summary'), request: z.object({}).strict() }).strict(),
 ]);
 
-const kbSourceImportJobLaunchRequestBodySchema = kbJobLaunchBaseSchema
-  .extend({
-    operation: z.literal('kb.source_import'),
-    request: kbSourceImportJobRequestSchema,
+export const jobExecutionRequestedBodySchema = z
+  .object({
+    execution: executionOrdinalSchema,
+    input: z.union([z.string(), kbJobLaunchPayloadSchema]),
+    action: z.enum(['exec', 'resume']),
+    pool: z.enum(LAUNCH_POOLS),
+    enqueueSequence: z.number().int().nonnegative().safe(),
+    coralEnv: z.record(z.string()),
+    createdAt: z.string().datetime(),
+    backendNamespace: z.string().min(1),
+    bundleHash: z.string().optional(),
+    discussionRun: discussionRunDescriptorSchema.optional(),
+    originatingClientMessageId: z.string().min(1).optional(),
   })
   .strict();
-
-const kbReindexJobLaunchRequestBodySchema = kbJobLaunchBaseSchema
-  .extend({
-    operation: z.literal('kb.reindex'),
-    request: z.object({}).strict(),
-  })
-  .strict();
-
-const kbCommunitySummaryJobLaunchRequestBodySchema = kbJobLaunchBaseSchema
-  .extend({
-    operation: z.literal('kb.community_summary'),
-    request: z.object({}).strict(),
-  })
-  .strict();
-
-export const jobLaunchRequestBodySchema = z.union([
-  providerJobLaunchRequestBodySchema,
-  workflowJobLaunchRequestBodySchema,
-  kbSourceImportJobLaunchRequestBodySchema,
-  kbReindexJobLaunchRequestBodySchema,
-  kbCommunitySummaryJobLaunchRequestBodySchema,
-]);
 
 export type KbSourceImportJobRequest = z.infer<typeof kbSourceImportJobRequestSchema>;
-export type JobLaunchRequestBody = z.infer<typeof jobLaunchRequestBodySchema>;
+export type JobConversationFacet = z.infer<typeof jobConversationFacetSchema>;
+export type JobOpenedBody = z.infer<typeof jobOpenedBodySchema>;
+export type JobExecutionRequestedBody = z.infer<typeof jobExecutionRequestedBodySchema>;

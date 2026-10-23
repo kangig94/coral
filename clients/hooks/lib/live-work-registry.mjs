@@ -26,7 +26,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 
 import { claudeConfigDir, isValidSessionId, STANDING_PROBE_ERRNOS } from './hook-utils.mjs';
@@ -73,24 +73,42 @@ function readJobGuard(projectDir, sessionId) {
   }
 }
 
-export function jobGuardAlreadyBlocked(projectDir, sessionId) {
-  if (!isValidSessionId(sessionId)) return false;
-  return readJobGuard(projectDir, sessionId).blockedAt !== undefined;
-}
-
-export function recordJobGuardBlock(projectDir, sessionId) {
-  if (!isValidSessionId(sessionId)) return;
-  const state = readJobGuard(projectDir, sessionId);
+function writeJobGuard(projectDir, sessionId, state) {
   const root = sessionRoot(projectDir, sessionId);
   mkdirSync(root, { recursive: true });
-  writeFileSync(join(root, JOB_GUARD_FILE), JSON.stringify({ ...state, blockedAt: Date.now() }));
+  const path = join(root, JOB_GUARD_FILE);
+  const temporary = `${path}.${randomBytes(6).toString('hex')}.tmp`;
+  try {
+    writeFileSync(temporary, JSON.stringify(state));
+    renameSync(temporary, path);
+  } finally {
+    try {
+      unlinkSync(temporary);
+    } catch {}
+  }
+}
+
+export function jobGuardAlreadyBlocked(projectDir, sessionId, executions) {
+  if (!isValidSessionId(sessionId)) return false;
+  const recorded = readJobGuard(projectDir, sessionId).blockedExecutions;
+  if (!Array.isArray(recorded)) return false;
+  const blocked = new Set(recorded.map(({ jobId, execution }) => `${jobId}:${execution}`));
+  return executions.every(({ jobId, execution }) => blocked.has(`${jobId}:${execution}`));
+}
+
+export function recordJobGuardBlock(projectDir, sessionId, executions) {
+  if (!isValidSessionId(sessionId)) return;
+  const state = readJobGuard(projectDir, sessionId);
+  writeJobGuard(projectDir, sessionId, {
+    ...state,
+    blockedAt: Date.now(),
+    blockedExecutions: executions.map(({ jobId, execution }) => ({ jobId, execution })),
+  });
 }
 
 export function recordCoralWait(projectDir, sessionId) {
   if (!isValidSessionId(sessionId)) return;
-  const root = sessionRoot(projectDir, sessionId);
-  mkdirSync(root, { recursive: true });
-  writeFileSync(join(root, JOB_GUARD_FILE), JSON.stringify({ waitedAt: Date.now() }));
+  writeJobGuard(projectDir, sessionId, { waitedAt: Date.now() });
 }
 
 // === Subagent recording (SubagentStart / SubagentStop hooks) ===

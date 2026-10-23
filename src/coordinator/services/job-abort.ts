@@ -1,7 +1,9 @@
+import type { JobStatus } from '../../jobs/records.js';
 import type { JobAbortRegistryPort, AbortResult } from '../../jobs/contracts/abort-registry.js';
 
 export interface JobAbortServiceDeps {
   abortRegistry: JobAbortRegistryPort;
+  readStatus(jobId: string): JobStatus | null;
 }
 
 export class JobAbortService {
@@ -18,6 +20,14 @@ export class JobAbortService {
     const abandoned: NonNullable<AbortResult['abandoned']> = [];
 
     for (const jobId of jobIds) {
+      if (this.deps.readStatus(jobId)?.finishing === true) {
+        refused.push({
+          jobId,
+          reason: 'The execution has accepted its outcome and is finishing.',
+          nextStep: { detail: 'Wait for the execution to end.', remedy: { kind: 'wait-job', jobId } },
+        });
+        continue;
+      }
       if (!this.deps.abortRegistry.has(jobId)) {
         notFound.push(jobId);
         continue;

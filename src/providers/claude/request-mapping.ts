@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 import type { IdPort } from '../../runtime/ports.js';
 import type { ProviderRequest, ProviderServerSpec } from '../contract.js';
-import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
+import type { ProviderContinuityBlob } from '../../jobs/conversation/continuity.js';
 import type { SessionEnsureParams, TurnInterruptParams, TurnStartParams } from './appserver/protocol.js';
 import {
   hashSortedEnv,
@@ -102,7 +102,7 @@ export function buildClaudeProviderServerSpec(host: ClaudeBrokerHostPlan): Provi
 export function mapSessionEnsureParams(
   request: Pick<
     ProviderRequest,
-    'action' | 'sessionId' | 'cwd' | 'bypassPermissions' | 'conversationRef' | 'coralEnv' | 'model' | 'effort'
+    'action' | 'jobId' | 'cwd' | 'bypassPermissions' | 'conversationRef' | 'coralEnv' | 'model' | 'effort'
   >,
   ids: Pick<IdPort, 'sha256'>,
   options: {
@@ -135,9 +135,9 @@ export function mapSessionEnsureParams(
 }
 
 export function claudeConversationRef(
-  request: Pick<ProviderRequest, 'action' | 'sessionId' | 'conversationRef'>,
+  request: Pick<ProviderRequest, 'action' | 'jobId' | 'conversationRef'>,
 ): string | undefined {
-  return request.conversationRef ?? (request.action === 'exec' ? request.sessionId : undefined);
+  return request.conversationRef ?? (request.action === 'exec' ? request.jobId : undefined);
 }
 
 export function mapTurnStartParams(

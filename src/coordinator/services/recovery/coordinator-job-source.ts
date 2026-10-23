@@ -14,23 +14,16 @@ import {
 } from '../../../recovery/containment.js';
 import {
   EVENT_COLUMNS,
-  PROJECTION_SESSION_COLUMNS,
   eventRevisionFields,
   projectionJobRevisionFields,
-  projectionSessionRevisionFields,
   withConsistentRead,
 } from '../../../recovery/row-revision-fields.js';
 import { COORDINATOR_JOB_RECOVERY_BOUNDARY } from '../../../recovery/source-registry.js';
 
-export type RawCoordinatorSessionRow = {
-  readonly session_id: string;
-  readonly controller: string;
-  readonly resumable: number;
-  readonly conversation_ref: string | null;
-  readonly scope_key: string;
-  readonly entry: string;
-  readonly last_seq: number;
-};
+export type RawCoordinatorConversationRow = Readonly<{
+  projection: ProjectionJobStoredRow;
+  events: readonly EventsRow[];
+}>;
 
 /** One canonical provider-operation saga row from the generic `meta` keyspace. */
 type RawProviderOperationSagaRow = {
@@ -42,7 +35,7 @@ type CoordinatorJobRecoveryFacts = {
   readonly jobId: string;
   readonly projection: ProjectionJobStoredRow | null;
   readonly statusEvents: readonly EventsRow[];
-  readonly claimedSession: RawCoordinatorSessionRow | null;
+  readonly conversation: RawCoordinatorConversationRow | null;
   readonly providerOperations: readonly RawProviderOperationSagaRow[];
 };
 
@@ -73,23 +66,18 @@ function scanCoordinatorJobRecoveryEnvelopes(
               ORDER BY job_id ASC`,
             )
             .all(subjectKey);
-    const readStatusEvents = db.prepare<[string], EventsRow>(
+    const readStatusEvents = db.prepare<[string, number | null], EventsRow>(
       `SELECT ${EVENT_COLUMNS}
          FROM events
         WHERE stream_kind = 'job'
           AND stream_id = ?
-          AND type IN (
-            'job.launch.requested',
-            'job.launch.rejected',
-            'job.runtime.started',
-            'job.terminal.recorded'
-          )
+          AND (type = 'job.opened' OR json_extract(CAST(body AS TEXT), '$.execution') = ?)
         ORDER BY seq ASC`,
     );
-    const readClaimedSession = db.prepare<[string], RawCoordinatorSessionRow>(
-      `SELECT ${PROJECTION_SESSION_COLUMNS}
-         FROM projection_sessions
-        WHERE session_id = ?`,
+    const readConversationEvents = db.prepare<[string], EventsRow>(
+      `SELECT ${EVENT_COLUMNS} FROM events WHERE stream_kind = 'job' AND stream_id = ?
+        AND type IN ('job.continuity.checkpointed', 'job.artifact.recorded', 'job.retention.discard.requested',
+          'job.retention.discard.completed', 'job.retention.discard.failed') ORDER BY seq`,
     );
     const readProviderOperations = db.prepare<[string], RawProviderOperationSagaRow>(
       `SELECT key, value
@@ -102,51 +90,23 @@ function scanCoordinatorJobRecoveryEnvelopes(
       const facts = {
         jobId: projection.job_id,
         projection,
-        statusEvents: readStatusEvents.all(projection.job_id),
-        claimedSession: projection.session_id === null ? null : (readClaimedSession.get(projection.session_id) ?? null),
+        statusEvents: readStatusEvents.all(projection.job_id, projection.execution),
+        conversation:
+          projection.job_kind === 'provider'
+            ? { projection, events: readConversationEvents.all(projection.job_id) }
+            : null,
         providerOperations: readProviderOperations.all(`${providerOperationRecordKeyPrefix(projection.job_id)}%`),
       };
       return facts;
     });
-    const orphanedClaimRows = db
-      .prepare<[], RawCoordinatorSessionRow & { active_job_id: string }>(
-        `SELECT ${PROJECTION_SESSION_COLUMNS}, json_extract(entry, '$.activeJobId') AS active_job_id
-           FROM projection_sessions AS sessions
-          WHERE json_valid(entry)
-            AND typeof(json_extract(entry, '$.activeJobId')) = 'text'
-            AND length(json_extract(entry, '$.activeJobId')) > 0
-            AND NOT EXISTS (
-              SELECT 1
-                FROM projection_jobs AS jobs
-               WHERE jobs.job_id = json_extract(sessions.entry, '$.activeJobId')
-            )
-          ORDER BY active_job_id ASC`,
-      )
-      .all();
-    const orphanedClaims = orphanedClaimRows
-      .filter((row) => subjectKey === undefined || row.active_job_id === subjectKey)
-      .map(({ active_job_id: jobId, ...claimedSession }) => ({
-        jobId,
-        projection: null,
-        statusEvents: Object.freeze([]),
-        claimedSession,
-        providerOperations: readProviderOperations.all(`${providerOperationRecordKeyPrefix(jobId)}%`),
-      }));
     observation?.record(COORDINATOR_JOB_RECOVERY_BOUNDARY, {
-      subjects: jobEnvelopes.length + orphanedClaims.length,
+      subjects: jobEnvelopes.length,
     });
-    return [...jobEnvelopes, ...orphanedClaims].map((facts) => ({
+    return jobEnvelopes.map((facts) => ({
       ...facts,
       subject: coordinatorJobRecoverySubject(facts),
     }));
   });
-}
-
-function sessionRevisionFields(jobId: string, row: RawCoordinatorSessionRow | null): RecoveryRevisionField[] {
-  if (row === null) {
-    return [{ table: 'projection_sessions', key: jobId, field: 'claimed_session', value: null }];
-  }
-  return projectionSessionRevisionFields(row);
 }
 
 /** Folds each canonical saga row's key and a digest of its value into the revision, so a
@@ -161,8 +121,8 @@ function coordinatorJobRecoverySubject(raw: CoordinatorJobRecoveryFacts): Recove
     raw.projection === null
       ? [{ table: 'projection_jobs', key: raw.jobId, field: 'projection', value: null }]
       : projectionJobRevisionFields(raw.projection);
-  for (const event of raw.statusEvents) fields.push(...eventRevisionFields(event));
-  fields.push(...sessionRevisionFields(raw.jobId, raw.claimedSession));
+  const events = new Map([...raw.statusEvents, ...(raw.conversation?.events ?? [])].map((event) => [event.seq, event]));
+  for (const event of events.values()) fields.push(...eventRevisionFields(event));
   fields.push(...providerOperationRevisionFields(raw.providerOperations));
   return {
     key: raw.jobId,

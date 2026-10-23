@@ -29,15 +29,18 @@ export function launchToHttp(
           decision.kind === 'provider-session'
             ? {
                 kind: decision.kind,
-                sessionId: decision.sessionId,
                 jobId: decision.jobId,
                 launchState: decision.status,
+                requestedSeq: decision.requestedSeq,
+                epochKey: decision.epochKey,
               }
             : {
                 kind: decision.kind,
                 workflowId: decision.workflowId,
                 jobId: decision.jobId,
                 launchState: decision.status,
+                requestedSeq: decision.requestedSeq,
+                epochKey: decision.epochKey,
               },
       };
     case 'undetermined':
@@ -72,7 +75,8 @@ export function launchToHttp(
         case 'job_binding_owner_mismatch':
         case 'discussion_job_launch_conflict':
         case 'workflow_owner_terminal':
-        case 'workflow_slot_chain_invalid':
+        case 'workflow_slot_job_conflict':
+        case 'workflow_slot_job_mismatch':
           statusCode = 409;
           break;
       }

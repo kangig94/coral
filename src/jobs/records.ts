@@ -1,7 +1,8 @@
+import { z } from 'zod';
 import type { ResultAvailability } from './terminal/export.js';
 import type { JobProgressFault, TerminalOutcome, TerminalOutcomeInput } from './outcome.js';
 import type { HostRef, UsageSummary, ProviderAction, ProviderInstruction } from '../providers/contract.js';
-import type { RetentionPolicy } from '../sessions/entry.js';
+import type { RetentionPolicy } from './conversation/entry.js';
 import type { DurableCliRuntimeRecord } from '../runtime/durable-runtime.js';
 import type { JobPhase } from './phase.js';
 import type { SourceImportReadiness } from './launch.js';
@@ -10,6 +11,7 @@ import type { JobProgressTiming } from './event-bodies.js';
 import type { ExecutionOwner } from '../runtime/execution-owner.js';
 import type { CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
 import type { LaunchPool } from './contracts/admission.js';
+import type { WaitExecutionSelection } from './wait/execution-selection.js';
 
 /**
  * Derived launch-readiness view of a job — a 4-way coarsening of `phase` +
@@ -65,20 +67,31 @@ export interface JobExit extends JobTerminal {
   endTime: string;
 }
 
+export const executionRetryStatusSchema = z
+  .object({
+    stage: z.enum(['accept', 'finish']),
+    kind: z.enum(['retrying', 'blocked']),
+    reason: z.string(),
+    successor: z.enum(['live-retry', 'recovery-quarantine', 'discard-issuer-release']),
+  })
+  .passthrough();
+export type ExecutionRetryStatus = Readonly<z.infer<typeof executionRetryStatusSchema>>;
+
 export interface JobStatus {
   jobId: string;
+  execution: number | null;
+  finishing?: boolean;
+  finishingStatus?: ExecutionRetryStatus;
   owner: ExecutionOwner;
   sessionId: string | null;
   provider: string | null;
   projectRoot: string;
   workDir: CanonicalWorkDir | null;
-  backendNamespace: string;
+  backendNamespace: string | null;
   bundleHash?: string;
   jobKind: JobKind;
   parentWorkflowJobId?: string;
   workflowSlotId?: string;
-  workflowSlotGeneration?: number;
-  replacesWorkflowJobId?: string;
   phase: JobPhase;
   updatedAt: string;
   lastSeq?: number;
@@ -87,8 +100,8 @@ export interface JobStatus {
 
 interface JobLaunchBase {
   jobId: string;
+  execution: number;
   owner: ExecutionOwner;
-  sessionId: string | null;
   provider: string | null;
   projectRoot: string;
   backendNamespace: string;
@@ -101,8 +114,6 @@ interface JobLaunchBase {
   operation?: 'kb.source_import' | 'kb.reindex' | 'kb.community_summary';
   parentWorkflowJobId?: string;
   workflowSlotId?: string;
-  workflowSlotGeneration?: number;
-  replacesWorkflowJobId?: string;
 }
 
 interface ProviderLaunchRequestRecord {
@@ -121,41 +132,32 @@ interface ProviderLaunchRequestRecord {
 export interface ProviderJobLaunch extends JobLaunchBase {
   jobKind: 'provider';
   discussionRun?: DiscussionRunDescriptor;
-  sessionId: string;
   provider: string;
   providerAction: ProviderAction;
   operation?: never;
   request: ProviderLaunchRequestRecord;
   parentWorkflowJobId?: string;
   workflowSlotId?: string;
-  workflowSlotGeneration?: number;
-  replacesWorkflowJobId?: string;
 }
 
 export interface WorkflowJobLaunch extends JobLaunchBase {
   jobKind: 'workflow';
-  sessionId: null;
   provider: null;
   discussionRun?: never;
   providerAction?: never;
   operation?: never;
   parentWorkflowJobId?: never;
   workflowSlotId?: never;
-  workflowSlotGeneration?: never;
-  replacesWorkflowJobId?: never;
   request: Pick<ProviderLaunchRequestRecord, 'prompt' | 'cwd' | 'bypassPermissions' | 'coralEnv'>;
 }
 
 interface KbJobLaunchBase extends JobLaunchBase {
   jobKind: 'kb';
-  sessionId: null;
   provider: null;
   discussionRun?: never;
   providerAction?: never;
   parentWorkflowJobId?: never;
   workflowSlotId?: never;
-  workflowSlotGeneration?: never;
-  replacesWorkflowJobId?: never;
 }
 
 export interface KbSourceImportJobLaunch extends KbJobLaunchBase {
@@ -223,7 +225,7 @@ export function isAppServerRuntime(record: JobRuntime | null | undefined): recor
 
 interface JobEventBase {
   jobId: string;
-  sessionId: string | null;
+  execution?: number;
   seq: number;
   ts: string;
 }
@@ -250,26 +252,34 @@ export type JobsReleaseResult = {
 
 /** Response shape for jobs.list. */
 export type JobsListResponse = {
-  jobs: Array<{ jobId: string; status: JobStatus; released?: boolean }>;
+  jobs: Array<{
+    jobId: string;
+    execution?: number | null;
+    executionSelection?: WaitExecutionSelection;
+    resultPath?: string | null;
+    status: JobStatus;
+    released?: boolean;
+  }>;
 };
 
-/** Response shape for jobs.detail. Includes:
- *
- * - `status`: stable launch identity + lifecycle summary (phase, lastSeq, etc.)
- * - `events`: progress + terminal events for chain-walk rendering
- * - `readiness`: derived 4-way launch-readiness view (`'pending' | 'queued'
- *   | 'ready' | 'error'`) so callers can see whether a job has settled past
- *   its launch boundary without re-deriving from `phase` + `runtime`
- * - `exit`: the terminal record + per-job diagnostics (byteCounts, warnings,
- *   usage, processExit, progressFaults) when the job has terminated. `null`
- *   while the job is still live.
- */
 export type JobDetailResponse = {
+  executionAddressing?: 'lifetime';
   availability?: ResultAvailability;
   epochKey?: string;
+  requestedSeq?: number;
+  resultPath?: string;
+  executions?: JobExecutionDetail[];
   status: JobStatus;
   events: JobEvent[];
   readiness: LaunchReadiness;
   exit: JobExit | null;
 };
-import { z } from 'zod';
+
+export type JobExecutionDetail = Pick<
+  JobDetailResponse,
+  'status' | 'events' | 'readiness' | 'exit' | 'availability'
+> & {
+  execution: number;
+  requestedSeq: number;
+  resultPath: string;
+};

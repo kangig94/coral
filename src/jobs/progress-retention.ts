@@ -8,8 +8,10 @@ import type { EventsRow } from '../store/schema.js';
 import type { RetentionRunBudget } from '../store/retention-outcome.js';
 import { retentionCausePaths, unknownRetentionCause } from '../store/retention-indexes.js';
 import { jobProgressBodySchema } from './event-bodies.js';
-import { jobTerminalRecordedBodySchema } from './terminal/result.js';
+import { jobExecutionEndedBodySchema } from './terminal/result.js';
+import { jobExecutionRequestedBodySchema } from './launch.js';
 import { errorMessage } from '../infra/error-format.js';
+import { readEndedExecutionOutcome } from './terminal/source.js';
 
 const CURSOR_KEY = 'storage-retention.progress.v1';
 const PAGE_SIZE = 64;
@@ -79,7 +81,7 @@ export async function pruneJobProgress(input: {
         .prepare<
           [],
           { seq: number }
-        >("SELECT COALESCE(MAX(seq), 0) AS seq FROM events WHERE type = 'job.terminal.recorded'")
+        >("SELECT COALESCE(MAX(seq), 0) AS seq FROM events WHERE type = 'job.execution.ended'")
         .get()?.seq ?? 0;
   }
   const finish = (): number => {
@@ -93,7 +95,7 @@ export async function pruneJobProgress(input: {
       .prepare<
         [number, number, number],
         EventsRow
-      >("SELECT * FROM events WHERE type = 'job.terminal.recorded' AND seq > ? AND seq <= ? ORDER BY seq LIMIT ?")
+      >("SELECT * FROM events WHERE type = 'job.execution.ended' AND seq > ? AND seq <= ? ORDER BY seq LIMIT ?")
       .all(cursor.afterSeq, cursor.ceiling, Math.min(PAGE_SIZE, 1000 - scanned));
     if (terminals.length === 0) {
       return finish();
@@ -103,21 +105,23 @@ export async function pruneJobProgress(input: {
         save();
         return cursor.afterSeq || terminal.seq;
       }
-      const subject = `progress:${terminal.stream_id}`;
+      const subject = `progress:${terminal.stream_id}:${terminal.seq}`;
       budget.observation?.record('journal-progress', { subjects: 1 });
       let deleted = 0;
       let kept = 0;
       let unknownEvidence = false;
       try {
-        decodeBody(terminal, jobTerminalRecordedBodySchema, readCtx);
-        const latest = db
+        const ended = decodeBody(terminal, jobExecutionEndedBodySchema, readCtx);
+        readEndedExecutionOutcome(db, terminal, readCtx);
+        const request = db
           .prepare<
-            [string],
-            { seq: number }
-          >("SELECT seq FROM events INDEXED BY events_retention_stream WHERE stream_kind = 'job' AND stream_id = ? ORDER BY seq DESC LIMIT 1")
-          .get(terminal.stream_id);
+            [string, number],
+            EventsRow
+          >("SELECT * FROM events WHERE stream_kind = 'job' AND stream_id = ? AND type = 'job.execution.requested' AND seq < ? ORDER BY seq DESC LIMIT 1")
+          .get(terminal.stream_id, terminal.seq);
+        const requested = request === undefined ? null : decodeBody(request, jobExecutionRequestedBodySchema, readCtx);
         const terminalAt = readJobTerminalAge(db, terminal);
-        if (latest?.seq !== terminal.seq) {
+        if (request === undefined || requested?.execution !== ended.execution) {
           budget.record({ kind: 'kept', subject, reason: 'terminal-state-unproven' });
         } else if (terminalAt === 'regression') {
           budget.record({ kind: 'kept', subject, reason: 'terminal-clock-regression' });
@@ -127,14 +131,15 @@ export async function pruneJobProgress(input: {
           while (budget.canContinue()) {
             const rows = db
               .prepare<
-                [string, number],
+                [string, number, number],
                 EventsRow
-              >("SELECT * FROM events WHERE type = 'job.progress.emitted' AND stream_id = ? AND seq > ? ORDER BY seq LIMIT 64")
-              .all(terminal.stream_id, cursor.progressSeq);
+              >("SELECT * FROM events WHERE type = 'job.execution.progress' AND stream_kind = 'job' AND stream_id = ? AND seq > ? AND seq < ? ORDER BY seq LIMIT 64")
+              .all(terminal.stream_id, Math.max(cursor.progressSeq, request.seq), terminal.seq);
             if (rows.length === 0) break;
             const candidates = rows.filter((row) => {
               const body = decodeBody(row, jobProgressBodySchema, readCtx);
               return (
+                body.execution === ended.execution &&
                 row.stream_kind === 'job' &&
                 row.seq < terminal.seq &&
                 (body.kind === 'message' || body.kind === 'domain')

@@ -63,7 +63,7 @@ function callerOwnership(runtime: Runtime, pool: LaunchPool) {
       holder: { kind: 'local-execution' as const },
       acquiredAt: 0,
     },
-    abortRegistry: new AbortRegistry(runtime.ids),
+    abortRegistry: new AbortRegistry(),
   };
 }
 

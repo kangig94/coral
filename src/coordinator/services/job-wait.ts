@@ -1,4 +1,4 @@
-import type { JobAttention } from './job-attention.js';
+import type { AttentionExecution, JobAttention } from './job-attention.js';
 import type { ProgressVisit } from '../../jobs/wait/contract.js';
 import { raceObserved } from '../../infra/promise-signal.js';
 import type { Runtime } from '../../runtime/ports.js';
@@ -31,8 +31,24 @@ export class JobWaitService {
     this.deps = deps;
   }
 
+  private attentionExecutions(jobIds: readonly string[], req?: WaitStreamRequest): AttentionExecution[] {
+    return jobIds.flatMap((jobId) => {
+      const selected = req?.executionSelections?.find((entry) => entry.jobId === jobId);
+      const admission =
+        req?.admissions?.find((entry) => entry.jobId === jobId) ??
+        (selected === undefined
+          ? undefined
+          : this.deps.waitCoordinator.readWaitAdmission?.(jobId, selected.epochKey, req));
+      const execution =
+        admission === undefined && selected === undefined
+          ? this.deps.loadJobProjectionDetail(jobId).status?.execution
+          : admission?.detail?.status.execution;
+      return execution === null || execution === undefined ? [] : [{ jobId, execution }];
+    });
+  }
+
   async waitForJobTerminal(jobId: string, timeoutMs?: number): Promise<void> {
-    const endWait = this.deps.jobAttention?.beginWait([jobId]);
+    const endWait = this.deps.jobAttention?.beginWait(this.attentionExecutions([jobId]));
     try {
       return await this.deps.waitCoordinator.waitForJobTerminal(jobId, timeoutMs);
     } finally {
@@ -95,16 +111,19 @@ export class JobWaitService {
   }
 
   async *waitStream(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent> {
-    const endWait = this.deps.jobAttention?.beginWait(req.jobIds);
-    try {
+    if (this.deps.jobAttention === undefined) {
       yield* this.deps.waitCoordinator.waitForOutcomes(req);
-    } finally {
-      endWait?.();
+      return;
     }
+    yield* this.deps.jobAttention.waitStream(
+      req,
+      (scoped) => this.deps.waitCoordinator.admitWait(scoped),
+      (scoped) => this.deps.waitCoordinator.waitForOutcomes(scoped),
+    );
   }
 
   async waitStreamOnce(jobId: string, timeoutMs?: number): Promise<WaitStreamOnceResult> {
-    const endWait = this.deps.jobAttention?.beginWait([jobId]);
+    const endWait = this.deps.jobAttention?.beginWait(this.attentionExecutions([jobId]));
     try {
       return await this.deps.waitCoordinator.waitStreamOnce(jobId, timeoutMs);
     } finally {

@@ -1,4 +1,4 @@
-import type { SessionContinuityMutation } from '#src/sessions/continuity-mutation.js';
+import type { SessionContinuityMutation } from '#src/jobs/conversation/continuity-mutation.js';
 import { none } from '#src/providers/capability.js';
 import type {
   PreflightRuntime,
@@ -27,7 +27,7 @@ import {
   type ProviderExecutionPlan,
 } from '#src/providers/execution-plan.js';
 import { defineProvider, type ProviderDefinition } from '#src/providers/registry.js';
-import type { ProviderContinuityBlob } from '#src/sessions/continuity.js';
+import type { ProviderContinuityBlob } from '#src/jobs/conversation/continuity.js';
 import type { ProviderCliRequest } from '#src/providers/protocol.js';
 import { fixtureProviderBindingCodec } from '#tests/helpers/provider-binding.js';
 import type { FixtureProviderAccess } from '#tests/helpers/provider-binding.js';
@@ -41,7 +41,7 @@ export type FixtureExecutionPlan = ProviderExecutionPlan<
     environment: readonly EnvironmentLayer[];
     serverSpec: ProviderServerSpec;
   }>,
-  Readonly<{ sessionId: string }>,
+  Readonly<{ jobId: string }>,
   Readonly<{ environment: readonly EnvironmentLayer[] }>
 >;
 
@@ -109,7 +109,7 @@ export function prepareFixtureAppServerExecutionPlan(input: {
   readonly session: FixtureExecutionPlan['session'];
   readonly turn: FixtureExecutionPlan['turn'];
 } {
-  const authority = { CORAL_CHILD: '1', CORAL_SESSION_ID: input.request.sessionId, ...(input.protectedEnv ?? {}) };
+  const authority = { CORAL_CHILD: '1', CORAL_JOB_ID: input.request.jobId, ...(input.protectedEnv ?? {}) };
   const turnEnvironment = [
     environmentLayer(
       {
@@ -138,7 +138,7 @@ export function prepareFixtureAppServerExecutionPlan(input: {
       input.platform,
     ),
   ];
-  const session = Object.freeze({ sessionId: input.request.sessionId });
+  const session = Object.freeze({ jobId: input.request.jobId });
   const turn = Object.freeze({ environment: Object.freeze(turnEnvironment) });
   return {
     session,

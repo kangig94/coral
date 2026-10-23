@@ -1,5 +1,4 @@
 import { errorMessage, formatError } from '../../../infra/error-format.js';
-import { isTerminalPhase } from '../../../jobs/phase.js';
 import { isAppServerRuntime, type JobRuntime } from '../../../jobs/records.js';
 import type { DurableCliRuntimeRecord } from '../../../runtime/durable-runtime.js';
 import { isDurableCliRuntime } from '../../../runtime/durable-runtime.js';
@@ -37,7 +36,6 @@ import type {
 } from '../../../recovery/containment.js';
 
 export const COORDINATOR_TERMINAL_OBLIGATION = 'coordinator-job-terminal' as RecoveryObligationId;
-export const COORDINATOR_CLAIM_RELEASE_OBLIGATION = 'coordinator-session-claim-release' as RecoveryObligationId;
 const durableRecoveryClockScope = Symbol('durable-recovery');
 const DURABLE_RECOVERY_REAP_DEADLINE_MS =
   SIGTERM_GRACE_MS +
@@ -47,7 +45,6 @@ const DURABLE_RECOVERY_REAP_DEADLINE_MS =
 
 export const COORDINATOR_NOT_APPLICABLE_FACTS: readonly RecoverySettlementFact[] = Object.freeze([
   Object.freeze({ obligation: COORDINATOR_TERMINAL_OBLIGATION, outcome: 'not-applicable' as const }),
-  Object.freeze({ obligation: COORDINATOR_CLAIM_RELEASE_OBLIGATION, outcome: 'not-applicable' as const }),
 ]);
 
 export type QueuedRecoverableJob = { jobId: string; authority: ProviderRecoveryAuthority };
@@ -163,7 +160,6 @@ type RecoveryActionContext = {
   getRecoveryService: (ctx: InvocationContext) => RecoveryCapableService;
   signal: AbortSignal;
   settleFault(fault: JobLifecycleFault | JobProgressFault, content?: string): readonly RecoverySettlementFact[];
-  settleClaim(jobId: string): readonly RecoverySettlementFact[];
   setProcessLocalCleanup(cleanup: () => void): void;
   clearProcessLocalCleanup(): void;
   abandonHeldJob?(jobId: string): RecoveryAbortDisposition;
@@ -184,8 +180,6 @@ export async function applyRecoveryAction(
       return registerQueuedRecovery(action, ctx);
     case 'registerRunning':
       return registerRunningRecovery(action, ctx);
-    case 'releaseSessionClaim':
-      return releaseSessionClaim(action, ctx);
   }
 }
 
@@ -549,21 +543,6 @@ async function registerRunningRecovery(
   return completed(COORDINATOR_NOT_APPLICABLE_FACTS, 'running recovery registered');
 }
 
-function releaseSessionClaim(
-  action: Extract<RecoveryAction, { type: 'releaseSessionClaim' }>,
-  ctx: RecoveryActionContext,
-): RecoveryDisposition {
-  const { progressStore, log, settleClaim } = ctx;
-  const facts = settleClaim(action.jobId);
-  const status = progressStore.readStatus(action.jobId);
-  if (status && isTerminalPhase(status.phase)) {
-    log(`Terminal session claim ${action.sessionId} settled.\n`);
-  } else {
-    log(`Orphaned session claim ${action.sessionId} settled.\n`);
-  }
-  return completed(facts, 'session claim released');
-}
-
 function completed(facts: readonly RecoverySettlementFact[], detail: string): RecoveryDisposition {
   return { kind: 'advanced', outcome: 'settled', facts, detail };
 }
@@ -594,9 +573,6 @@ export function logRecoveryActionFailure(action: RecoveryAction, error: unknown,
       return;
     case 'registerRunning':
       log(`Failed to register running recovery job ${action.jobId}: ${formatError(error)}\n`);
-      return;
-    case 'releaseSessionClaim':
-      log(`Failed to release session claim ${action.sessionId}: ${formatError(error)}\n`);
       return;
   }
 }

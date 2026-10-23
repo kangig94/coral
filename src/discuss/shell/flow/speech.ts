@@ -64,6 +64,7 @@ export async function collectSpeech(
           agentName: winnerName,
           purpose: PURPOSE_SPEECH,
           jobId: attempt.jobId,
+          execution: attempt.execution,
           attempt: attempt.attempt,
           outcome: 'non_resumable',
         });
@@ -89,6 +90,7 @@ export async function collectSpeech(
         agentName: winnerName,
         purpose: PURPOSE_SPEECH,
         jobId: attempt.jobId,
+        execution: attempt.execution,
         attempt: attempt.attempt,
         outcome: 'retryable_parse_error',
       });
@@ -115,6 +117,7 @@ export async function collectSpeech(
       agentName: winnerName,
       purpose: PURPOSE_SPEECH,
       jobId: attempt.jobId,
+      execution: attempt.execution,
       attempt: attempt.attempt,
       outcome: 'completed',
     });

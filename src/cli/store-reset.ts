@@ -162,7 +162,12 @@ export function listStoreResetIncidentsLocal(
       expectedBuild: manifest,
     });
     const runtime = dependencies.runtime?.(manifest) ?? createRealRuntime(manifest.flavor);
-    const index = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
+    const index = new JobLocationIndex(
+      runtime,
+      runtime.paths.coral.generation.dataRoot,
+      undefined,
+      currentCoralStoreFormat().fingerprint,
+    );
     const upgradeRead = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
     const upgrade = upgradeRead.kind === 'readable' ? visibleUpgradeIntent(upgradeRead.intent) : null;
     const upgradeProblem = upgradeIntentProblem(upgradeRead);

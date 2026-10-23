@@ -1,3 +1,4 @@
+import type { WaitExecutionSelection } from '../jobs/wait/execution-selection.js';
 import {
   WaitBuildMismatchError,
   WaitInvocationReadinessError,
@@ -150,10 +151,11 @@ export class WaitResumeError extends Error {
     jobIds: readonly string[],
     serializedCursor: string | undefined,
     continuationMode: WaitContinuationMode,
+    executionSelections: readonly WaitExecutionSelection[] = [],
   ) {
     super(message);
     this.name = 'WaitResumeError';
-    this.remediation = `Rerun \`${waitContinuationCommand(jobIds, serializedCursor ?? null, continuationMode)}\`${waitContinuationShell(continuationMode)} to continue waiting.`;
+    this.remediation = `Rerun \`${waitContinuationCommand(jobIds, serializedCursor ?? null, continuationMode, executionSelections)}\`${waitContinuationShell(continuationMode)} to continue waiting.`;
   }
 }
 

@@ -30,7 +30,6 @@ const JOBS_SHELL_ROOT = 'src/jobs/shell';
 const KB_ROOT = 'src/kb';
 const COORDINATOR_ROOT = 'src/coordinator';
 const COORDINATOR_SERVICES_ROOT = 'src/coordinator/services';
-const RUNTIME_ROOT = 'src/runtime';
 const SECURITY_POLICY_ROOT = 'src/security/policy';
 const EXECUTION_ROOT = ['src', 'execution'].join('/');
 const CLIENT_ROOT = ['src', 'client'].join('/');
@@ -46,11 +45,9 @@ const RETIRED_KB_DAEMON_ARG = '--kb-daemon';
 const RETIRED_KB_DAEMON_PLAINTEXT_SHUTDOWN = 'Plain-text shutdown remains supported';
 const RETIRED_KB_DAEMON_OLD_SUPERVISORS = 'old supervisors';
 const PROVIDERS_ROOT = 'src/providers';
-const SESSIONS_SHELL_ROOT = 'src/sessions/shell';
+const CONVERSATION_SHELL_ROOT = 'src/jobs/conversation/shell';
 const WORKFLOW_PROVIDER_ALLOWLIST_TARGET = 'src/providers/catalog.ts';
-const SESSION_FAULT_EVENTS = 'src/sessions/event-builders.ts';
 const COORDINATOR_TERMINAL_MATERIALIZER = 'src/coordinator/services/terminal-materializer.ts';
-const JOBS_TERMINAL_RECORDING = 'src/jobs/terminal/recording.ts';
 const KB_PATHS_MODULE = 'src/kb/paths.ts';
 const KB_JOB_RECORDER = 'src/jobs/kb/recorder.ts';
 
@@ -227,8 +224,6 @@ function collectDomainAmbientRuntimeAccess(): string[] {
   // src/kb/ops/memo.ts uses `new Date(mtimeMs)` to convert disk-sourced mtime
   // millis to ISO; the millis come from `storage.statSync` (port-routed), not
   // from ambient time, so the construction is a deterministic format step.
-  // src/workflow/stale-recovery.ts formats a continuation-lease expiry from
-  // `options.time.now()`; the clock value is injected through the workflow port.
   // src/kb/curate/community/generated-projection-store.ts formats a port-sourced
   // clock (`new Date(this.time.now())`) to an ISO date; the millis come from the
   // injected TimePort, not ambient time — the same deterministic format step as memo.ts.
@@ -238,7 +233,6 @@ function collectDomainAmbientRuntimeAccess(): string[] {
     'src/kb/paths.ts',
     'src/kb/ops/memo.ts',
     'src/kb/curate/community/generated-projection-store.ts',
-    'src/workflow/stale-recovery.ts',
     'src/providers/claude/appserver/controller.ts',
   ]);
   const ambientPattern =
@@ -299,11 +293,11 @@ describe('architecture boundary guard', () => {
     const violations = collectViolations(
       JOBS_RECONCILE_ROOT,
       'jobs/reconcile plans recovery but coordinator owns session execution',
-      'pass minimal session facts into the planner and keep SessionManager/SessionLookup usage under coordinator.',
+      'pass minimal session facts into the planner and keep ConversationManager/SessionLookup usage under coordinator.',
       (target) =>
-        isWithinPath(target, SESSIONS_SHELL_ROOT) ||
-        target === 'src/sessions/lookup.ts' ||
-        target === 'src/sessions/entry.ts',
+        isWithinPath(target, CONVERSATION_SHELL_ROOT) ||
+        target === 'src/jobs/conversation/lookup.ts' ||
+        target === 'src/jobs/conversation/entry.ts',
     );
 
     assertNoViolations(violations);
@@ -325,24 +319,11 @@ describe('architecture boundary guard', () => {
       'move the service dependency to a domain-owned contract or inject the shell implementation from the composition root.',
       (target) =>
         isWithinPath(target, JOBS_SHELL_ROOT) ||
-        isWithinPath(target, SESSIONS_SHELL_ROOT) ||
+        isWithinPath(target, CONVERSATION_SHELL_ROOT) ||
         target.startsWith('src/discuss/shell/'),
     );
 
     assertNoViolations(violations);
-  });
-  it('session fault event builders are import-pure', () => {
-    const violations = collectViolations(
-      SESSION_FAULT_EVENTS,
-      'session fault event builders own only session event vocabulary',
-      'keep runtime access and cross-domain orchestration outside sessions/event-builders.ts.',
-      (target) =>
-        isWithinPath(target, COORDINATOR_ROOT) || isWithinPath(target, JOBS_ROOT) || isWithinPath(target, RUNTIME_ROOT),
-    );
-    const runtimeEdges = (PARSED_IMPORT_EDGES_BY_SOURCE.get(SESSION_FAULT_EVENTS) ?? []).filter((edge) => edge.runtime);
-
-    assertNoViolations(violations);
-    expect(runtimeEdges).toEqual([]);
   });
   it('coordinator terminal materializer avoids shell and live implementation imports', () => {
     const violations = collectViolations(
@@ -351,14 +332,14 @@ describe('architecture boundary guard', () => {
       'depend on pure event builders, jobs-owned recording helpers, or lower-level contracts.',
       (target) =>
         isWithinPath(target, JOBS_SHELL_ROOT) ||
-        isWithinPath(target, SESSIONS_SHELL_ROOT) ||
+        isWithinPath(target, CONVERSATION_SHELL_ROOT) ||
         target.startsWith('src/coordinator/live/'),
     );
 
     assertNoViolations(violations);
   });
-  it('raw job.terminal.recorded writes stay owned by jobs terminal recording', () => {
-    expect(collectRawTerminalRecordedWriters()).toEqual([JOBS_TERMINAL_RECORDING]);
+  it('keeps retired job.terminal.recorded writers absent', () => {
+    expect(collectRawTerminalRecordedWriters()).toEqual([]);
   });
   it('launch/admission vocabulary has a single jobs-owned type authority', () => {
     // `LaunchPool` is conceptually owned by the admission contract — it
@@ -394,7 +375,7 @@ describe('architecture boundary guard', () => {
         target === 'src/infra/port-types.ts' ||
         target === 'src/runtime/ports.ts' ||
         target.startsWith('src/jobs/') ||
-        target.startsWith('src/sessions/') ||
+        target.startsWith('src/jobs/conversation/') ||
         target.startsWith('src/discuss/') ||
         target.startsWith('src/workflow/') ||
         target.startsWith('src/kb/') ||
@@ -443,14 +424,14 @@ describe('architecture boundary guard', () => {
 
     assertNoViolations(violations);
   });
-  it('session continuity mutation contracts stay under the session owner', () => {
+  it('conversation continuity mutation contracts stay under jobs', () => {
     const providerShimExists =
       PRODUCTION_SOURCE_FILES.includes(RETIRED_PROVIDERS_CONTINUITY_MUTATION) ||
       existsSync(resolve(REPO_ROOT, RETIRED_PROVIDERS_CONTINUITY_MUTATION));
     const violations = collectViolations(
-      SESSIONS_SHELL_ROOT,
-      'sessions/shell must not import provider-owned continuity mutation types',
-      'keep session continuity mutation contracts under src/sessions.',
+      CONVERSATION_SHELL_ROOT,
+      'conversation shell must not import provider-owned continuity mutation types',
+      'keep conversation continuity contracts under src/jobs/conversation.',
       (target) => target === RETIRED_PROVIDERS_CONTINUITY_MUTATION,
     );
 
@@ -1103,12 +1084,9 @@ const RECOVERY_STARTUP_BOUNDARIES: readonly RecoveryStartupBoundary[] = [
     compositionSite: 'src/discuss/shell/recovery.ts',
   },
   {
-    boundary: 'P4 session retention',
-    startupRoot: {
-      file: 'src/sessions/startup-recovery.ts',
-      symbol: 'runSessionStartupRecovery',
-    },
-    compositionSite: 'src/sessions/lifecycle-reactor.ts',
+    boundary: 'P4 conversation retention',
+    startupRoot: { file: 'src/jobs/conversation/lifecycle-reactor.ts', symbol: 'scanStartup' },
+    compositionSite: 'src/jobs/conversation/lifecycle-reactor.ts',
   },
   {
     boundary: 'P6/P7 workflow',
@@ -1129,6 +1107,7 @@ const RECOVERY_STARTUP_BOUNDARIES: readonly RecoveryStartupBoundary[] = [
 ];
 
 const RECOVERY_RETRY_BOUNDARIES = [
+  { boundary: 'execution finishing retry', compositionSite: 'src/jobs/finishing.ts' },
   { boundary: 'epoch closure retry', compositionSite: 'src/coordinator/services/recovery/epoch-closure-retry-plan.ts' },
   { boundary: 'job location recovery retry', compositionSite: 'src/jobs/location-recovery.ts' },
 ] as const;
@@ -1155,10 +1134,6 @@ const RECOVERY_STARTUP_CAPABILITIES = [
     file: 'src/discuss/shell/startup-recovery.ts',
     symbol: 'DiscussionCandidateSettlement',
   },
-  {
-    file: 'src/sessions/startup-recovery.ts',
-    symbol: 'SessionRetentionWorkSettlement',
-  },
 ] as const;
 
 type RecoverySourceMatrixRow = {
@@ -1173,6 +1148,12 @@ type RecoverySourceMatrixRow = {
 // Both inverse manifests below are derived from it so legacy decoded/aggregate symbols cannot
 // accidentally become granted authorities.
 const RECOVERY_SOURCE_MATRIX: readonly RecoverySourceMatrixRow[] = [
+  {
+    boundary: 'execution finishing retry',
+    factory: 'executionFinishingRecoverySource',
+    sourceModule: 'src/jobs/execution-finishing-recovery-source.ts',
+    rawAuthorities: [],
+  },
   {
     boundary: 'epoch closure retry',
     factory: 'epochClosureRecoverySource',
@@ -1216,35 +1197,10 @@ const RECOVERY_SOURCE_MATRIX: readonly RecoverySourceMatrixRow[] = [
     rawAuthorities: ['scanDiscussionCandidateEnvelopes'],
   },
   {
-    boundary: 'P4 session retention',
-    factory: 'sessionProjectionRecoverySource',
-    sourceModule: 'src/sessions/projection-recovery-source.ts',
-    rawAuthorities: ['scanSessionProjectionRows'],
-  },
-  {
-    boundary: 'P4 session retention',
-    factory: 'sessionContinuationLeaseRecoverySource',
-    sourceModule: 'src/sessions/continuation-lease-recovery-source.ts',
-    rawAuthorities: ['scanPendingContinuationLeaseRows'],
-  },
-  {
-    boundary: 'P4 session retention',
-    factory: 'terminalRetentionOutcomeRecoverySource',
-    sourceModule: 'src/sessions/terminal-retention-outcome-recovery-source.ts',
-    rawAuthorities: ['scanTerminalRetentionOutcomeRows'],
-  },
-  {
-    boundary: 'P4 session retention',
-    factory: 'retentionReleasePairComponentSource',
-    sourceModule: 'src/sessions/retention-release-pair-recovery-source.ts',
-    rawAuthorities: ['scanRetentionReleaseAndTerminalRows'],
-  },
-  {
-    boundary: 'P4 session retention',
-    factory: 'retentionWorkItemRecoverySource',
-    sourceModule: 'src/sessions/retention-work-item-recovery-source.ts',
-    rawAuthorities: ['scanRetentionWorkRows', 'composeRetentionWorkItemReceipts'],
-    composite: true,
+    boundary: 'P4 conversation retention',
+    factory: 'retentionRecoverySource',
+    sourceModule: 'src/jobs/conversation/retention-recovery-source.ts',
+    rawAuthorities: ['scanRetentionRequests'],
   },
   {
     boundary: 'P6/P7 workflow',
@@ -2606,4 +2562,74 @@ it('keeps the wait invocation handoff contract out of infra', () => {
       ),
   );
   expect(contracts).toEqual([]);
+});
+
+describe('provider conversations belong to jobs', () => {
+  it('keeps the retired provider-session aggregate absent', () => {
+    expect(existsSync(join(SRC_ROOT, 'sessions'))).toBe(false);
+  });
+
+  it('has no live Coral provider-conversation session identity', () => {
+    const discussionSurfaces = new Set([
+      'src/read-model/coral-store.ts',
+      'src/coordinator/composition/rpc-ports.ts',
+      'src/transport/dispatch.ts',
+      'src/transport/rpc/discuss.ts',
+      'src/transport/rpc/ports.ts',
+      'src/transport/server-ports.ts',
+      'src/cli/dispatch.ts',
+    ]);
+    const nativeProviderSurfaces = new Set([
+      'src/providers/claude/appserver/protocol.ts',
+      'src/providers/claude/appserver/controller.ts',
+      'src/providers/claude/appserver/print-controller.ts',
+      'src/providers/claude/appserver/print-control-protocol.ts',
+      'src/providers/claude/appserver/broker-pool.ts',
+      'src/providers/claude/one-shot.ts',
+      'src/providers/claude/request-prep.ts',
+      'src/providers/turn-failure-diagnostic.ts',
+    ]);
+    const durableSurfaces = new Set([
+      'src/jobs/records.ts',
+      'src/jobs/location-index.ts',
+      'src/jobs/terminal/identity.ts',
+      'src/jobs/historical-reader.ts',
+      'src/jobs/read-queries.ts',
+      'src/coordinator/lifecycle.ts',
+    ]);
+    const violations: string[] = [];
+    for (const path of PRODUCTION_FILE_PATHS) {
+      const canonical = toCanonicalSrcPath(REPO_ROOT, path);
+      const source = ts.createSourceFile(path, readFileSync(path, 'utf8'), ts.ScriptTarget.Latest, true);
+      const visit = (node: ts.Node): void => {
+        if (
+          (ts.isIdentifier(node) || ts.isStringLiteral(node)) &&
+          (node.text === 'CORAL_SESSION_ID' || node.text === 'parentSessionId')
+        ) {
+          violations.push(`${canonical}: ${node.text}`);
+        }
+        if (
+          ts.isIdentifier(node) &&
+          node.text === 'sessionId' &&
+          !canonical.startsWith('src/discuss/') &&
+          !discussionSurfaces.has(canonical) &&
+          !nativeProviderSurfaces.has(canonical) &&
+          !durableSurfaces.has(canonical)
+        ) {
+          violations.push(`${canonical}: sessionId`);
+        }
+        if (
+          ts.isPropertyAccessExpression(node) &&
+          node.name.text === 'sessionId' &&
+          ['refs', 'request', 'launch', 'launchRecord', 'preparedSession'].includes(node.expression.getText(source)) &&
+          !canonical.startsWith('src/jobs/historical-reader')
+        ) {
+          violations.push(`${canonical}: ${node.getText(source)}`);
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(source);
+    }
+    expect(violations).toEqual([]);
+  });
 });

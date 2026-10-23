@@ -32,7 +32,7 @@ export type ChildPrincipalCredential = {
   readonly credentialId: string;
   readonly privateKey: string;
   readonly parentJobId: string;
-  readonly parentSessionId: string;
+  readonly execution: number;
   readonly expiresAt: number;
   readonly authorization: ChildPrincipalAuthorization;
 };
@@ -54,7 +54,7 @@ export type ChildPrincipalRegistration = {
   readonly parentPrincipal: Principal;
   readonly namespace: string;
   readonly parentJobId: string;
-  readonly parentSessionId: string;
+  readonly execution: number;
   readonly nowMs: number;
   readonly ttlMs?: number;
   readonly childCaps?: readonly Capability[];
@@ -64,7 +64,7 @@ export type PersistedChildPrincipalRegistration = Readonly<{
   issuer: string;
   authorization: PersistedChildPrincipalAuthorization;
   parentJobId: string;
-  parentSessionId: string;
+  execution: number;
   nowMs: number;
 }>;
 
@@ -72,7 +72,6 @@ type ChildProofClaim = Readonly<{
   kind: 'child-proof';
   credentialId: string;
   jobId: string;
-  sessionId: string;
   proof: string;
 }>;
 
@@ -80,7 +79,7 @@ export class ChildPrincipalRegistry {
   private readonly ids: Pick<IdPort, 'randomBytes'>;
   private readonly credentials: ChildPrincipalCredentialStore;
   private readonly namespace: string;
-  private readonly activeJobOrigin: (jobId: string) => string | null;
+  private readonly openJobExecution: (jobId: string) => { namespace: string; execution: number } | null;
   private readonly incarnation: string;
   private readonly reportedUnreadable = new Set<string>();
   private readonly log: (message: string) => void;
@@ -91,14 +90,14 @@ export class ChildPrincipalRegistry {
     options: {
       namespace: string;
 
-      activeJobOrigin: (jobId: string) => string | null;
+      openJobExecution: (jobId: string) => { namespace: string; execution: number } | null;
       log?: (message: string) => void;
     },
   ) {
     this.ids = ids;
     this.credentials = credentials;
     this.namespace = options.namespace;
-    this.activeJobOrigin = options.activeJobOrigin;
+    this.openJobExecution = options.openJobExecution;
     this.log = options.log ?? (() => undefined);
     this.incarnation = ids.randomBytes(16).toString('hex');
   }
@@ -125,7 +124,7 @@ export class ChildPrincipalRegistry {
         expiresAtMs: registration.nowMs + ttlMs,
       },
       parentJobId: registration.parentJobId,
-      parentSessionId: registration.parentSessionId,
+      execution: registration.execution,
       nowMs: registration.nowMs,
     });
   }
@@ -155,7 +154,7 @@ export class ChildPrincipalRegistry {
       credentialId,
       issuer: registration.issuer,
       parentJobId: registration.parentJobId,
-      parentSessionId: registration.parentSessionId,
+      execution: registration.execution,
       namespace: registration.authorization.namespace,
       principalWire: registration.authorization.principalWire,
       expiresAtMs: registration.authorization.expiresAtMs,
@@ -165,7 +164,7 @@ export class ChildPrincipalRegistry {
       credentialId,
       privateKey: keys.privateKey,
       parentJobId: registration.parentJobId,
-      parentSessionId: registration.parentSessionId,
+      execution: registration.execution,
       expiresAt: registration.authorization.expiresAtMs,
       authorization: registration.authorization,
     };
@@ -184,11 +183,13 @@ export class ChildPrincipalRegistry {
     if (read.kind === 'absent') return { kind: 'refused' };
     if (read.kind === 'unreadable') return this.unreadable(claim.credentialId);
     const record = read.record;
+    const open = this.readOpenJobExecution(record.parentJobId);
     if (
       record.expiresAtMs <= nowMs ||
       record.parentJobId !== claim.jobId ||
-      record.parentSessionId !== claim.sessionId ||
-      this.readActiveJobOrigin(record.parentJobId) !== record.namespace ||
+      open === null ||
+      open.namespace !== record.namespace ||
+      open.execution !== record.execution ||
       !verifyChildProof(record.publicKey, childProofSubject(challenge, claim, request), claim.proof)
     ) {
       return { kind: 'refused' };
@@ -205,7 +206,7 @@ export class ChildPrincipalRegistry {
         transport: 'ipc',
         credential: {
           kind: 'child-principal',
-          id: `${record.parentJobId}:${record.parentSessionId}`,
+          id: `${record.parentJobId}:${record.execution}`,
         },
       }),
     };
@@ -219,20 +220,16 @@ export class ChildPrincipalRegistry {
     return { kind: 'credential-unreadable', credentialId };
   }
 
-  private readActiveJobOrigin(jobId: string): string | null {
+  private readOpenJobExecution(jobId: string): { namespace: string; execution: number } | null {
     try {
-      return this.activeJobOrigin(jobId);
+      return this.openJobExecution(jobId);
     } catch {
       return null;
     }
   }
 
-  revokeParentJob(parentJobId: string): void {
-    this.forget((record) => record.parentJobId === parentJobId);
-  }
-
-  revokeParentSession(parentSessionId: string): void {
-    this.forget((record) => record.parentSessionId === parentSessionId);
+  revokeParentJob(parentJobId: string, execution: number): void {
+    this.forget((record) => record.parentJobId === parentJobId && record.execution === execution);
   }
 
   pruneExpired(nowMs: number): void {

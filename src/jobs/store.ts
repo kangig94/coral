@@ -1,3 +1,7 @@
+import type { AppendContext } from '../store/append.js';
+import { loadExecutionWaitDetail, type ExecutionWaitDetail } from './wait/execution-detail.js';
+import { currentResultInput, loadRetainedCurrentJob } from './retained-current.js';
+import { retainedResultInput } from './historical-reader.js';
 import type { RecoveryObservation } from '../recovery/phase-observation.js';
 import type { ProgressSource, ProgressVisitResult } from './wait/contract.js';
 import { visitJobProgress } from './read-queries.js';
@@ -10,14 +14,12 @@ import type { CauseRefToken } from '../causality/cause-ref.js';
 import type { ProviderLookupPort } from '../providers/catalog.js';
 import {
   commit as commitJournalEvents,
-  commitUnreadableJobStatusRecovery,
   type AppendedEvent,
   type CommitAppendInput,
   type CommitClosureResult,
   type CommitContext,
   type CommitEventsFn,
   type PostCommitObserver,
-  type UnreadableJobStatusRecoveryCommitFn,
 } from '../store/append.js';
 import type { ResolvableCoralEventInput } from '../store/envelope.js';
 import type { EventBodyCodec } from '../store/event-body-codec.js';
@@ -25,52 +27,53 @@ import { composeReducers, type ComposedReducers } from '../store/reducers.js';
 import {
   listJobProjections,
   loadJobProjectionDetail,
-  loadJobWaitDetail,
+  loadJobExecutionDetails,
+  hydrateJobProjectionDetailFromEvents,
   readJobEvents,
   readJobLastSeq,
-  type JobWaitDetail,
 } from './read-queries.js';
 import type { Runtime } from '../runtime/ports.js';
 import { jobsDir } from './paths.js';
-import { TerminalResultExportOwner, resultPathFor, type WorkflowReportPort } from './terminal/export.js';
-import { type JobLocationIndex, type JobLocation } from './location-index.js';
-import { readAcceptedTerminal, withTerminalSource } from './terminal/source.js';
+import { TerminalResultExportOwner } from './terminal/export.js';
+import { resultPathFor } from './paths.js';
+import { type WorkflowReportPort } from './terminal/render.js';
+import { type JobLocationIndex, type JobLocation, type JobLocationSubject } from './location-index.js';
+import { withTerminalSource } from './terminal/source.js';
 import { deriveLaunchReadiness } from './launch-readiness.js';
 import type { DurableProcessExit } from '../runtime/durable-runtime.js';
 import { nowDate, nowIsoString } from '../infra/time.js';
 import { createNoopJobEventBus, jobCreatedEvent, type JobEventBus } from './event-bus.js';
-import { jobLaunchRequestBodySchema } from './launch.js';
+import { jobOpenedBodySchema, jobExecutionRequestedBodySchema } from './launch.js';
+import { jobExecutionEndedBodySchema, jobExecutionOutcomeAcceptedBodySchema } from './terminal/result.js';
+import { decodeBody } from '../store/body-codec.js';
 import { jobsRegistry } from './events.js';
 import { isLivePhase } from './phase.js';
 import type { InitJobOptions, JobProgressStore } from './contracts/job-store.js';
-import { jobRuntimeStartedBodySchema, type JobProgressTiming, type JobRuntimeStartedBody } from './event-bodies.js';
+import { type JobProgressTiming, type JobRuntimeStartedBody } from './event-bodies.js';
 import {
-  emptyJobDiagnostics,
-  type JobDiagnostics,
   type JobLaunch,
   type JobRuntime,
   type JobStatus,
   type JobTerminal,
-  type JobTerminalDiagnostics,
+  type JobDetailResponse,
+  type ExecutionRetryStatus,
 } from './records.js';
 import { progressTimingFromProjection } from './progress-timing.js';
 import { buildJobEventRefs } from './refs.js';
 import {
   countProjectedLiveJobRows,
-  decodeProjectionJobExecutionOwner,
   decodeProjectionJobStoredRow,
   readStoredNonterminalProjectionJobIds,
   type ProjectionJobStoredRow,
 } from './projection-row.js';
-import { decodeBody, type StoreReadContext } from '../store/body-codec.js';
-import { decodeEventRefs, rowToCoralEvent } from '../store/envelope.js';
+import type { StoreReadContext } from '../store/body-codec.js';
 import type { EventsRow } from '../store/schema.js';
-import { jobDiagnosticsSchema, jobTerminalRecordedBodySchema, normalizeJobTerminal } from './terminal/result.js';
 import type { JobProjectionDetail } from './read-queries.js';
 import { writeDurableCliProvisionalProcessRuntimeMeta } from './runtime-meta-store.js';
 import type { DurableCliProvisionalProcessRuntimeMeta } from './runtime-meta.js';
 
 export type JobStoreOptions = {
+  readAdmissionStatus?: (jobId: string) => ExecutionRetryStatus | null;
   eventBus?: JobEventBus;
   db: Database;
   reducers?: ComposedReducers;
@@ -84,6 +87,8 @@ export type JobStoreOptions = {
   providers: ProviderLookupPort;
   observer?: PostCommitObserver;
   beforeAppend?: (input: ResolvableCoralEventInput<unknown, unknown>) => void;
+  withCommitGuard?: AppendContext['withCommitGuard'];
+  withExecutionAdmission?: (jobId: string, execution: number, subject: JobLocationSubject, action: () => void) => void;
 };
 
 export type RawJobRecoveryProjection = {
@@ -91,195 +96,12 @@ export type RawJobRecoveryProjection = {
   readonly events: readonly EventsRow[];
 };
 
-function latestRecoveryEvent(events: readonly EventsRow[], type: string): EventsRow | null {
-  let latest: EventsRow | null = null;
-  for (const event of events) {
-    if (event.type === type && (latest === null || event.seq > latest.seq)) latest = event;
-  }
-  return latest;
-}
-
-function decodeRecoveryLaunch(jobId: string, row: EventsRow | null, ctx: StoreReadContext): JobLaunch | null {
-  if (row === null) return null;
-  const body = decodeBody(row, jobLaunchRequestBodySchema, ctx);
-  if (body.jobKind === 'kb') {
-    throw new TypeError(`Workflow recovery received KB launch '${jobId}'.`);
-  }
-  if (body.jobKind === 'workflow') {
-    return {
-      jobId,
-      owner: body.owner,
-      sessionId: null,
-      provider: null,
-      projectRoot: body.projectRoot,
-      backendNamespace: body.backendNamespace,
-      bundleHash: body.bundleHash,
-      jobKind: 'workflow',
-      pool: body.pool,
-      enqueueSequence: body.enqueueSequence,
-      request: {
-        prompt: body.request.prompt,
-        cwd: body.request.cwd,
-        bypassPermissions: body.request.bypassPermissions,
-        coralEnv: { ...body.request.coralEnv },
-      },
-      createdAt: body.createdAt,
-    };
-  }
-
-  const refs = row.refs === null ? null : decodeEventRefs(row);
-  return {
-    jobId,
-    owner: body.owner,
-    ...(body.discussionRun === undefined ? {} : { discussionRun: body.discussionRun }),
-    sessionId: body.sessionId,
-    provider: body.provider,
-    projectRoot: body.projectRoot,
-    backendNamespace: body.backendNamespace,
-    bundleHash: body.bundleHash,
-    jobKind: body.jobKind,
-    pool: body.pool,
-    enqueueSequence: body.enqueueSequence,
-    providerAction: body.providerAction,
-    workflowSlotGeneration: body.workflowSlotGeneration,
-    replacesWorkflowJobId: body.replacesWorkflowJobId,
-    request: {
-      prompt: body.request.prompt,
-      name: body.request.name,
-      model: body.request.model,
-      cwd: body.request.cwd,
-      effort: body.request.effort,
-      bypassPermissions: body.request.bypassPermissions,
-      systemPrompt: body.request.systemPrompt,
-      instruction: body.request.instruction,
-      retention: body.request.retention,
-      coralEnv: { ...body.request.coralEnv },
-    },
-    ...(refs?.parentJobId === undefined ? {} : { parentWorkflowJobId: refs.parentJobId }),
-    ...(refs?.workflowSlotId === undefined ? {} : { workflowSlotId: refs.workflowSlotId }),
-    createdAt: body.createdAt,
-  };
-}
-
-function decodeRecoveryRuntime(row: EventsRow | null, ctx: StoreReadContext): JobRuntime | null {
-  if (row === null) return null;
-  const body = decodeBody(row, jobRuntimeStartedBodySchema, ctx);
-  if (body.transport === 'workflow') {
-    return { transport: 'workflow', startTime: body.startedAt };
-  }
-  if (body.transport === 'app-server') {
-    return body.providerMeta.leaseState === 'waiting'
-      ? {
-          transport: 'app-server',
-          startTime: body.startedAt,
-          providerMeta: { provider: body.providerMeta.provider, leaseState: 'waiting' },
-        }
-      : {
-          transport: 'app-server',
-          startTime: body.startedAt,
-          providerMeta: {
-            provider: body.providerMeta.provider,
-            leaseState: 'acquired',
-            hostRef: body.providerMeta.hostRef,
-          },
-        };
-  }
-  if (body.transport === 'internal') {
-    if (
-      body.operation !== 'kb.source_import' &&
-      body.operation !== 'kb.reindex' &&
-      body.operation !== 'kb.community_summary'
-    ) {
-      throw new TypeError('Internal job runtime requires a KB operation.');
-    }
-    return {
-      transport: 'internal',
-      operation: body.operation,
-      owner: body.owner,
-      startTime: body.startedAt,
-    };
-  }
-  return {
-    transport: 'durable-cli',
-    pid: body.pid,
-    stdoutPath: body.stdoutPath,
-    stderrPath: body.stderrPath,
-    startTime: body.startedAt,
-    tailWatermark: body.tailWatermark,
-  };
-}
-
-function mergeRecoveryDiagnostics(base: JobDiagnostics, patch: JobTerminalDiagnostics): JobDiagnostics {
-  const warnings = patch.warnings ?? base.warnings;
-  const usage = patch.usage ?? base.usage;
-  const processExit = patch.processExit ?? base.processExit;
-  const byteCounts = patch.byteCounts ?? base.byteCounts;
-  return {
-    progressFaults: base.progressFaults.map((fault) => ({ ...fault })),
-    ...(warnings === undefined ? {} : { warnings: [...warnings] }),
-    ...(usage === undefined ? {} : { usage: { ...usage } }),
-    ...(processExit === undefined ? {} : { processExit: { ...processExit } }),
-    ...(byteCounts === undefined ? {} : { byteCounts: { ...byteCounts } }),
-  };
-}
-
 /** Hydrates one complete raw job projection without consulting persisted state again. */
 export function hydrateJobRecoveryProjection(
   raw: RawJobRecoveryProjection,
   ctx: StoreReadContext,
 ): JobProjectionDetail {
-  const projection = decodeProjectionJobStoredRow(raw.projection);
-  for (const event of raw.events) {
-    if (event.stream_kind !== 'job' || event.stream_id !== projection.job_id) {
-      throw new TypeError(`Workflow recovery job event '${event.seq}' names another stream.`);
-    }
-    rowToCoralEvent(event, null);
-  }
-
-  const requested = latestRecoveryEvent(raw.events, 'job.launch.requested');
-  const rejected = latestRecoveryEvent(raw.events, 'job.launch.rejected');
-  const runtimeRow = latestRecoveryEvent(raw.events, 'job.runtime.started');
-  const terminalRow = latestRecoveryEvent(raw.events, 'job.terminal.recorded');
-  const launch = decodeRecoveryLaunch(projection.job_id, requested, ctx);
-  const runtime = decodeRecoveryRuntime(runtimeRow, ctx);
-  const baseDiagnostics =
-    projection.diagnostics.length === 0
-      ? emptyJobDiagnostics()
-      : jobDiagnosticsSchema.parse(JSON.parse(projection.diagnostics) as unknown);
-  const terminalBody = terminalRow === null ? null : decodeBody(terminalRow, jobTerminalRecordedBodySchema, ctx);
-  const terminal = terminalBody === null ? null : normalizeJobTerminal(terminalBody.terminal);
-  const diagnostics =
-    terminalBody?.diagnostics === undefined
-      ? baseDiagnostics
-      : mergeRecoveryDiagnostics(baseDiagnostics, terminalBody.diagnostics);
-
-  return {
-    status: {
-      jobId: projection.job_id,
-      owner: decodeProjectionJobExecutionOwner(projection),
-      sessionId: projection.session_id,
-      provider: projection.provider,
-      projectRoot: projection.project_root,
-      workDir: projection.work_dir,
-      backendNamespace: projection.backend_namespace,
-      ...(projection.bundle_hash === null ? {} : { bundleHash: projection.bundle_hash }),
-      jobKind: projection.job_kind,
-      phase: projection.phase,
-      updatedAt: terminalRow?.ts ?? runtimeRow?.ts ?? rejected?.ts ?? requested?.ts ?? projection.created_at,
-      lastSeq: projection.last_seq,
-      ...(terminal === null ? {} : { result: terminal }),
-    },
-    launch,
-    runtime,
-    exit:
-      terminalRow === null || terminal === null
-        ? null
-        : {
-            ...terminal,
-            diagnostics,
-            endTime: terminalRow.ts,
-          },
-  };
+  return hydrateJobProjectionDetailFromEvents(decodeProjectionJobStoredRow(raw.projection), raw.events, ctx);
 }
 
 function toTerminalPayload(detail: ReturnType<typeof loadJobProjectionDetail>): JobTerminal | null {
@@ -295,9 +117,10 @@ function toTerminalPayload(detail: ReturnType<typeof loadJobProjectionDetail>): 
   };
 }
 
-function jobRuntimeStartedBody(runtime: JobRuntime): JobRuntimeStartedBody {
+function jobRuntimeStartedBody(runtime: JobRuntime, execution: number): JobRuntimeStartedBody {
   if (runtime.transport === 'internal') {
     return {
+      execution,
       transport: 'internal',
       operation: runtime.operation,
       ...(runtime.owner === undefined ? {} : { owner: runtime.owner }),
@@ -307,6 +130,7 @@ function jobRuntimeStartedBody(runtime: JobRuntime): JobRuntimeStartedBody {
 
   if (runtime.transport === 'app-server') {
     return {
+      execution,
       transport: 'app-server',
       startedAt: runtime.startTime,
       providerMeta: runtime.providerMeta,
@@ -315,12 +139,14 @@ function jobRuntimeStartedBody(runtime: JobRuntime): JobRuntimeStartedBody {
 
   if (runtime.transport === 'workflow') {
     return {
+      execution,
       transport: 'workflow',
       startedAt: runtime.startTime,
     };
   }
 
   return {
+    execution,
     transport: runtime.transport,
     pid: runtime.pid,
     stdoutPath: runtime.stdoutPath,
@@ -331,78 +157,28 @@ function jobRuntimeStartedBody(runtime: JobRuntime): JobRuntimeStartedBody {
 }
 
 export function jobLaunchRequestedEvent(jobId: string, launch: JobLaunch) {
-  // Spec §6.1 line 813 + §13.1 worked example: every job whose lifetime
-  // belongs to a workflow carries `refs.workflowId` (the workflow stream
-  // that owns the plan). Convention: `workflowJobId === workflowId` — the
-  // workflow's own job IS its workflow stream, so its launch carries
-  // `refs.workflowId = jobId`. Workflow children carry
-  // `refs.workflowId = parentWorkflowJobId` plus `refs.parentJobId` and
-  // `refs.workflowSlotId`. Non-workflow jobs omit the field.
   const workflowId = launch.jobKind === 'workflow' ? jobId : launch.parentWorkflowJobId;
   const refs = buildJobEventRefs({
     jobId,
-    sessionId: launch.sessionId,
     parentJobId: launch.parentWorkflowJobId,
     workflowId,
     workflowSlotId: launch.workflowSlotId,
   });
-  const body =
-    launch.jobKind === 'kb'
-      ? {
-          owner: launch.owner,
-          projectRoot: launch.projectRoot,
-          backendNamespace: launch.backendNamespace,
-          bundleHash: launch.bundleHash,
-          jobKind: launch.jobKind,
-          pool: launch.pool,
-          enqueueSequence: launch.enqueueSequence,
-          operation: launch.operation,
-          request: { ...launch.request },
-          createdAt: launch.createdAt,
-        }
-      : launch.jobKind === 'workflow'
-        ? {
-            owner: launch.owner,
-            projectRoot: launch.projectRoot,
-            backendNamespace: launch.backendNamespace,
-            bundleHash: launch.bundleHash,
-            jobKind: 'workflow' as const,
-            pool: launch.pool,
-            enqueueSequence: launch.enqueueSequence,
-            request: {
-              prompt: launch.request.prompt,
-              cwd: launch.request.cwd,
-              bypassPermissions: launch.request.bypassPermissions,
-              coralEnv: { ...launch.request.coralEnv },
-            },
-            createdAt: launch.createdAt,
-          }
-        : {
-            owner: launch.owner,
-            ...(launch.discussionRun === undefined ? {} : { discussionRun: launch.discussionRun }),
-            sessionId: launch.sessionId,
-            provider: launch.provider,
-            projectRoot: launch.projectRoot,
-            backendNamespace: launch.backendNamespace,
-            bundleHash: launch.bundleHash,
-            jobKind: launch.jobKind,
-            pool: launch.pool,
-            enqueueSequence: launch.enqueueSequence,
-            providerAction: launch.providerAction,
-            workflowSlotGeneration: launch.workflowSlotGeneration,
-            replacesWorkflowJobId: launch.replacesWorkflowJobId,
-            request: {
-              ...launch.request,
-              prompt: launch.request.prompt,
-              cwd: launch.request.cwd,
-              bypassPermissions: launch.request.bypassPermissions,
-              coralEnv: { ...launch.request.coralEnv },
-            },
-            createdAt: launch.createdAt,
-          };
+  const body = jobExecutionRequestedBodySchema.parse({
+    execution: launch.execution,
+    input: launch.jobKind === 'kb' ? { operation: launch.operation, request: launch.request } : launch.request.prompt,
+    action: launch.jobKind === 'provider' ? launch.providerAction : 'exec',
+    pool: launch.pool,
+    enqueueSequence: launch.enqueueSequence,
+    coralEnv: launch.jobKind === 'kb' ? {} : launch.request.coralEnv,
+    createdAt: launch.createdAt,
+    backendNamespace: launch.backendNamespace,
+    bundleHash: launch.bundleHash,
+    discussionRun: launch.discussionRun,
+  });
 
   return {
-    type: 'job.launch.requested' as const,
+    type: 'job.execution.requested' as const,
     stream: { kind: 'job' as const, id: jobId },
     namespace: launch.backendNamespace,
     project: launch.projectRoot,
@@ -412,10 +188,11 @@ export function jobLaunchRequestedEvent(jobId: string, launch: JobLaunch) {
 }
 
 export class JobStore implements JobProgressStore {
+  private readonly admissionGuard: JobStoreOptions['withExecutionAdmission'];
+  private readonly readAdmissionStatus: JobStoreOptions['readAdmissionStatus'];
   private readonly eventBus: JobEventBus;
   private readonly db: Database;
   private readonly commitEvents: CommitEventsFn;
-  private readonly commitUnreadableStatusRecoveryEvents: UnreadableJobStatusRecoveryCommitFn;
   private readonly observer?: PostCommitObserver;
   private readonly namespaceOverrides = new Map<string, { backendNamespace: string; bundleHash?: string }>();
   private changeSeq = 0;
@@ -438,6 +215,8 @@ export class JobStore implements JobProgressStore {
     this.runtime = runtime;
     const { eventBus = createNoopJobEventBus(), db, reducers = composeReducers(jobsRegistry) } = options;
 
+    this.admissionGuard = options.withExecutionAdmission;
+    this.readAdmissionStatus = options.readAdmissionStatus;
     this.eventBus = eventBus;
     this.observer = options.observer;
     this.schemas = reducers.schemas;
@@ -450,10 +229,14 @@ export class JobStore implements JobProgressStore {
       bodyCodec: this.bodyCodec,
       providers: options.providers,
       beforeAppend: options.beforeAppend,
+      withCommitGuard: options.withCommitGuard,
     };
-    this.commitEvents = (cb) => commitJournalEvents(this.db, cb, appendContext);
-    this.commitUnreadableStatusRecoveryEvents = (jobId, cb) =>
-      commitUnreadableJobStatusRecovery(this.db, jobId, cb, appendContext);
+    this.commitEvents = (cb, options) => commitJournalEvents(this.db, cb, appendContext, options);
+  }
+
+  withExecutionAdmission(jobId: string, execution: number, subject: JobLocationSubject, action: () => void): void {
+    if (this.admissionGuard === undefined) action();
+    else this.admissionGuard(jobId, execution, subject, action);
   }
 
   getNamespace(): string {
@@ -506,7 +289,13 @@ export class JobStore implements JobProgressStore {
   }
 
   private detail(jobId: string, observation?: RecoveryObservation) {
-    return this.applyNamespaceOverride(loadJobProjectionDetail(this.db, jobId, this, observation), jobId);
+    const detail = this.applyNamespaceOverride(loadJobProjectionDetail(this.db, jobId, this, observation), jobId);
+    return detail.status === null ? detail : { ...detail, status: this.withAdmissionStatus(detail.status) };
+  }
+
+  private withAdmissionStatus(status: JobStatus): JobStatus {
+    const admissionStatus = this.readAdmissionStatus?.(status.jobId) ?? null;
+    return admissionStatus === null ? status : { ...status, finishingStatus: admissionStatus };
   }
 
   private applyNamespaceOverrideToStatus(jobId: string, status: JobStatus): JobStatus {
@@ -553,8 +342,33 @@ export class JobStore implements JobProgressStore {
     return this.detail(jobId, observation);
   }
 
-  loadJobWaitDetail(jobId: string): JobWaitDetail {
-    const detail = loadJobWaitDetail(this.db, jobId, this);
+  resultPathFor(jobId: string, execution: number): string {
+    return resultPathFor(this.runtime.paths.coral.exports.jobsRoot, jobId, execution);
+  }
+
+  loadJobDetailResponse(jobId: string): JobDetailResponse | null {
+    const latest = this.detail(jobId);
+    if (latest.status === null) return null;
+    const executions = loadJobExecutionDetails(this.db, jobId, this).map(({ execution, requestedSeq, detail }) => ({
+      ...detail,
+      status: this.applyNamespaceOverrideToStatus(jobId, detail.status),
+      execution,
+      requestedSeq,
+      resultPath: this.resultPathFor(jobId, execution),
+    }));
+    const selected = executions.at(-1);
+    return {
+      status: latest.status,
+      events: selected?.events ?? [],
+      readiness: deriveLaunchReadiness(latest),
+      exit: latest.exit,
+      executions,
+      ...(selected === undefined ? {} : { requestedSeq: selected.requestedSeq, resultPath: selected.resultPath }),
+    };
+  }
+
+  loadJobWaitDetail(jobId: string, requestedSeq?: number, jobIds?: readonly string[]): ExecutionWaitDetail {
+    const detail = loadExecutionWaitDetail(this.db, jobId, this, requestedSeq, jobIds);
     return detail.status === null
       ? detail
       : { ...detail, status: this.applyNamespaceOverrideToStatus(jobId, detail.status) };
@@ -597,6 +411,13 @@ export class JobStore implements JobProgressStore {
       runtime: this.runtime,
       jobsRoot: this.runtime.paths.coral.exports.jobsRoot,
       workflowReport: this.workflowReport,
+      readTerminalInput: (db, jobId, execution) => {
+        const index = this.exportLocations;
+        const location = index?.read(jobId);
+        return index && location
+          ? retainedResultInput(index, location.epochKey, db, jobId, execution)
+          : currentResultInput(db, ':memory:', jobId, execution, this.workflowReport);
+      },
       failures: this.exportLocations?.resultRepairFailures,
       repairScope: this.exportLocations ?? undefined,
       hydrationRetry: (jobId) => {
@@ -614,32 +435,13 @@ export class JobStore implements JobProgressStore {
       },
       location: (jobId, observation): JobLocation | null => {
         if (this.exportLocations) return this.exportLocations.read(jobId, observation);
-        const detail = this.loadJobProjectionDetail(jobId, observation);
-        if (!detail.status || !detail.exit) return null;
-        const accepted = readAcceptedTerminal(this.db, jobId);
-        if (!accepted) return null;
-        return {
-          version: 'v1',
+        return loadRetainedCurrentJob(
+          this.db,
+          ':memory:',
           jobId,
-          epochKey: ':memory:',
-          disposition: 'terminal',
-          terminalSeq: accepted.seq,
-          subject: {
-            projectRoot: detail.status.projectRoot,
-            workDir: detail.status.workDir,
-            jobKind: detail.status.jobKind,
-          },
-          resultPath: resultPathFor(this.runtime.paths.coral.exports.jobsRoot, jobId),
-          detail: {
-            kind: 'recorded',
-            value: {
-              status: detail.status,
-              events: this.readJobEvents(jobId, true),
-              exit: detail.exit,
-              readiness: deriveLaunchReadiness(detail),
-            },
-          },
-        };
+          this.runtime.paths.coral.exports.jobsRoot,
+          this.workflowReport,
+        );
       },
       withSource: (jobId, read, snapshot) => {
         if (!this.exportLocations) return read(this.db, this);
@@ -650,18 +452,20 @@ export class JobStore implements JobProgressStore {
     return this.resultExports;
   }
 
-  publishTerminalResult(jobId: string): string {
-    return this.getResultExportOwner().publishTerminalResult(jobId);
+  publishTerminalResult(jobId: string, execution?: number): string {
+    return this.getResultExportOwner().publishTerminalResult(jobId, execution);
   }
 
-  ensureResultArtifact(jobId: string, observation?: RecoveryObservation): string {
-    return this.getResultExportOwner().ensureResultMarkdownArtifact(jobId, observation);
+  ensureResultArtifact(jobId: string, observation?: RecoveryObservation, execution?: number): string {
+    return this.getResultExportOwner().ensureResultMarkdownArtifact(jobId, observation, execution);
   }
 
   listJobProjections() {
     return listJobProjections(this.db, this).map(({ jobId, status }) => ({
       jobId,
-      status: this.applyNamespaceOverrideToStatus(jobId, status),
+      execution: status.execution,
+      resultPath: status.execution === null ? null : this.resultPathFor(jobId, status.execution),
+      status: this.withAdmissionStatus(this.applyNamespaceOverrideToStatus(jobId, status)),
     }));
   }
 
@@ -674,14 +478,21 @@ export class JobStore implements JobProgressStore {
         continue;
       }
 
-      if (event.type === 'job.launch.requested') {
-        const launch = jobLaunchRequestBodySchema.parse(event.body);
+      if (event.type === 'job.opened') {
+        const launch = jobOpenedBodySchema.parse(event.body);
         this.namespaceOverrides.delete(event.stream.id);
         this.eventBus.emit('job:created', jobCreatedEvent(event.stream.id, launch));
         continue;
       }
 
-      if (event.type === 'job.progress.emitted') {
+      if (event.type === 'job.execution.requested') {
+        this.namespaceOverrides.delete(event.stream.id);
+        const { execution } = jobExecutionRequestedBodySchema.parse(event.body);
+        this.eventBus.emit('job:requested', { jobId: event.stream.id, execution });
+        continue;
+      }
+
+      if (event.type === 'job.execution.progress') {
         const body = event.body as { kind?: string; message?: string; timing?: JobProgressTiming };
         if (body.kind === 'message' && typeof body.message === 'string') {
           this.eventBus.emit('job:progress', {
@@ -694,11 +505,18 @@ export class JobStore implements JobProgressStore {
         continue;
       }
 
-      if (event.type === 'job.terminal.recorded') {
-        const result = this.readTerminalProjection(event.stream.id);
-        if (result !== null) {
-          this.eventBus.emit('job:completed', { jobId: event.stream.id, result });
-        }
+      if (event.type === 'job.execution.ended') {
+        const ended = jobExecutionEndedBodySchema.parse(event.body);
+        const row = this.db.prepare<[number], EventsRow>('SELECT * FROM events WHERE seq = ?').get(ended.causeRef.seq);
+        if (row === undefined || row.stream_kind !== 'job' || row.stream_id !== event.stream.id)
+          throw new Error('Execution end has no accepted outcome.');
+        const accepted = decodeBody(row, jobExecutionOutcomeAcceptedBodySchema, this);
+        if (accepted.execution !== ended.execution) throw new Error('Execution end cites another execution.');
+        this.eventBus.emit('job:completed', {
+          jobId: event.stream.id,
+          execution: ended.execution,
+          result: accepted.terminal,
+        });
       }
     }
 
@@ -711,7 +529,10 @@ export class JobStore implements JobProgressStore {
     return [...appended];
   }
 
-  commit(cb: <Scope>(c: CommitContext<Scope>) => CommitClosureResult): AppendedEvent[] {
+  commit(
+    cb: <Scope>(c: CommitContext<Scope>) => CommitClosureResult,
+    options?: Parameters<CommitEventsFn>[1],
+  ): AppendedEvent[] {
     const previousByJob = new Map<string, JobStatus | null>();
     const appended =
       this.commitEvents(<Scope>(c: CommitContext<Scope>) => {
@@ -728,7 +549,7 @@ export class JobStore implements JobProgressStore {
         };
 
         return cb(tracked);
-      }) ?? [];
+      }, options) ?? [];
 
     const published = this.publishAppendedEvents(appended, previousByJob);
     if (published.length > 0) {
@@ -738,68 +559,74 @@ export class JobStore implements JobProgressStore {
   }
 
   initJob(opts: InitJobOptions): void {
-    const dir = this.jobDir(opts.jobId);
-    this.runtime.storage.mkdirSync(dir, { recursive: true });
+    this.runtime.storage.mkdirSync(this.jobDir(opts.jobId), { recursive: true });
     const createdAt = nowIsoString(this.runtime.time);
-    this.appendLaunchRequested(opts.jobId, {
-      jobId: opts.jobId,
-      owner: { kind: 'provider-session', id: opts.sessionId },
-      sessionId: opts.sessionId,
-      provider: opts.provider,
-      projectRoot: opts.projectRoot,
-      backendNamespace: opts.backendNamespace,
-      ...(opts.bundleHash === undefined ? {} : { bundleHash: opts.bundleHash }),
-      jobKind: 'provider',
-      pool: 'default',
-      enqueueSequence: 0,
-      providerAction: 'exec',
-      request: {
-        prompt: '',
-        cwd: opts.projectRoot,
-        bypassPermissions: false,
-        coralEnv: {},
+    this.withExecutionAdmission(
+      opts.jobId,
+      1,
+      {
+        projectRoot: opts.projectRoot,
+        workDir: opts.conversation.cwd,
+        jobKind: 'provider',
       },
-      createdAt,
-    });
-
-    if (opts.initialPhase === 'queued') {
-      this.commit((c) => {
-        c.append({
-          type: 'job.queue.queued',
-          stream: { kind: 'job', id: opts.jobId },
-          namespace: opts.backendNamespace,
-          project: opts.projectRoot,
-          refs: buildJobEventRefs({ jobId: opts.jobId, sessionId: opts.sessionId }),
-          body: {
-            queuePosition: 0,
-            runningJobIds: [],
-          },
-        });
-        return undefined;
-      });
-      return;
-    }
-
-    if (opts.initialPhase === 'running') {
-      this.commit((c) => {
-        c.append({
-          type: 'job.runtime.started',
-          stream: { kind: 'job', id: opts.jobId },
-          namespace: opts.backendNamespace,
-          project: opts.projectRoot,
-          refs: buildJobEventRefs({ jobId: opts.jobId, sessionId: opts.sessionId }),
-          body: {
-            transport: 'app-server',
-            startedAt: createdAt,
-            providerMeta: {
-              provider: opts.provider,
-              leaseState: 'waiting',
+      () =>
+        this.commit((c) => {
+          const metadata = {
+            namespace: opts.backendNamespace,
+            project: opts.projectRoot,
+            stream: { kind: 'job' as const, id: opts.jobId },
+            refs: buildJobEventRefs({ jobId: opts.jobId }),
+          };
+          c.append({
+            ...metadata,
+            type: 'job.opened',
+            body: {
+              owner: { kind: 'provider-session', id: opts.jobId },
+              projectRoot: opts.projectRoot,
+              createdAt,
+              jobKind: 'provider',
+              conversation: opts.conversation,
             },
-          },
-        });
-        return undefined;
-      });
-    }
+          });
+          c.append({
+            ...metadata,
+            type: 'job.execution.requested',
+            body: {
+              execution: 1,
+              input: '',
+              action: 'exec',
+              pool: 'default',
+              enqueueSequence: 0,
+              coralEnv: {},
+              createdAt,
+              backendNamespace: opts.backendNamespace,
+              bundleHash: opts.bundleHash,
+            },
+          });
+          if (opts.initialPhase === 'queued')
+            c.append({
+              ...metadata,
+              type: 'job.execution.queued',
+              body: {
+                execution: 1,
+                queuePosition: 0,
+                runningJobIds: [],
+              },
+            });
+          if (opts.initialPhase === 'running')
+            c.append({
+              ...metadata,
+              type: 'job.execution.started',
+              body: {
+                execution: 1,
+                transport: 'app-server',
+                startedAt: createdAt,
+                providerMeta: { provider: opts.conversation.provider, leaseState: 'waiting' },
+              },
+            });
+          return undefined;
+        }),
+    );
   }
 
   rollbackJob(jobId: string): void {
@@ -829,10 +656,40 @@ export class JobStore implements JobProgressStore {
 
   appendLaunchRequested(jobId: string, launch: JobLaunch): void {
     this.runtime.storage.mkdirSync(this.jobDir(jobId), { recursive: true });
-    this.commit((c) => {
-      c.append(jobLaunchRequestedEvent(jobId, launch));
-      return undefined;
-    });
+    this.withExecutionAdmission(
+      jobId,
+      launch.execution,
+      {
+        projectRoot: launch.projectRoot,
+        workDir: launch.jobKind === 'kb' ? null : launch.request.cwd,
+        jobKind: launch.jobKind,
+      },
+      () =>
+        this.commit((c) => {
+          if (this.readStatus(jobId) === null) {
+            if (launch.jobKind === 'provider')
+              throw new Error('Provider jobs must be opened through their conversation facet.');
+            c.append({
+              type: 'job.opened',
+              stream: { kind: 'job', id: jobId },
+              namespace: launch.backendNamespace,
+              project: launch.projectRoot,
+              refs: buildJobEventRefs({ jobId, workflowId: launch.jobKind === 'workflow' ? jobId : undefined }),
+              body: jobOpenedBodySchema.parse({
+                owner: launch.owner,
+                projectRoot: launch.projectRoot,
+                createdAt: launch.createdAt,
+                jobKind: launch.jobKind,
+                ...(launch.jobKind === 'workflow'
+                  ? { cwd: launch.request.cwd, bypassPermissions: launch.request.bypassPermissions }
+                  : {}),
+              }),
+            });
+          }
+          c.append(jobLaunchRequestedEvent(jobId, launch));
+          return undefined;
+        }),
+    );
   }
 
   readLaunchProjection(jobId: string): JobLaunch | null {
@@ -846,14 +703,16 @@ export class JobStore implements JobProgressStore {
   ): void {
     const detail = this.detail(jobId);
     const status = detail.status;
+    if (status === null || status.execution === null) throw new Error(`Job '${jobId}' has no requested execution.`);
+    const execution = status.execution;
     this.commit((c) => {
       c.append({
-        type: 'job.runtime.started',
+        type: 'job.execution.started',
         stream: { kind: 'job', id: jobId },
         namespace: status?.backendNamespace ?? this.namespace,
         project: status?.projectRoot,
-        refs: buildJobEventRefs({ jobId, sessionId: status?.sessionId ?? null }),
-        body: jobRuntimeStartedBody(runtime),
+        refs: buildJobEventRefs({ jobId }),
+        body: jobRuntimeStartedBody(runtime, execution),
       });
       if (provisionalProcess !== undefined) {
         writeDurableCliProvisionalProcessRuntimeMeta(this.db, { jobId, ...provisionalProcess });
@@ -910,19 +769,22 @@ export class JobStore implements JobProgressStore {
     return this.countProjectedLiveJobs() + this.countLiveOverrideJobs();
   }
 
-  appendProgress(jobId: string, sessionId: string | null, message: string): number {
+  appendProgress(jobId: string, message: string): number {
     const nowMs = this.runtime.time.now();
     const detail = this.detail(jobId);
     const status = detail.status;
+    if (status === null || status.execution === null) throw new Error(`Job '${jobId}' has no requested execution.`);
+    const execution = status.execution;
     const timing = progressTimingFromProjection(detail, nowMs);
     const [appended] = this.commit((c) => {
       c.append({
-        type: 'job.progress.emitted',
+        type: 'job.execution.progress',
         stream: { kind: 'job', id: jobId },
         namespace: status?.backendNamespace ?? this.namespace,
         project: status?.projectRoot,
-        refs: buildJobEventRefs({ jobId, sessionId }),
+        refs: buildJobEventRefs({ jobId }),
         body: {
+          execution,
           kind: 'message',
           message,
           timing,
@@ -933,47 +795,9 @@ export class JobStore implements JobProgressStore {
     return appended?.seq ?? 0;
   }
 
-  appendUnreadableStatusProgress(jobId: string, sessionId: string, message: string): number {
-    const appended = this.commitUnreadableStatusRecovery(jobId, (commit) => {
-      this.appendUnreadableStatusProgressInCommit(commit, jobId, sessionId, message);
-      return undefined;
-    });
-    return appended[0]?.seq ?? 0;
-  }
-
   /** Only durable job-stream events may be announced to in-process listeners and waiters. */
   announceCommitted(appended: readonly AppendedEvent[]): void {
     this.publishAppendedEvents(appended, new Map());
-  }
-
-  commitUnreadableStatusRecovery(
-    jobId: string,
-    cb: <Scope>(commit: CommitContext<Scope>) => CommitClosureResult,
-  ): readonly AppendedEvent[] {
-    const appended = this.commitUnreadableStatusRecoveryEvents(jobId, cb);
-    const published = this.publishAppendedEvents(appended, new Map());
-    if (published.length > 0) this.observer?.(published);
-    return published;
-  }
-
-  appendUnreadableStatusProgressInCommit<Scope>(
-    commit: CommitContext<Scope>,
-    jobId: string,
-    sessionId: string,
-    message: string,
-  ): void {
-    const emittedAt = nowIsoString(this.runtime.time);
-    commit.append({
-      type: 'job.progress.emitted',
-      stream: { kind: 'job', id: jobId },
-      namespace: this.namespace,
-      refs: buildJobEventRefs({ jobId, sessionId }),
-      body: {
-        kind: 'message',
-        message,
-        timing: { origin: 'runtime', originAt: emittedAt, emittedAt, elapsedMs: 0 },
-      },
-    });
   }
 
   private countLiveOverrideJobs(): number {

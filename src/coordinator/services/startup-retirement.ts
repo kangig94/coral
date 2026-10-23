@@ -59,7 +59,7 @@ function seedUnprovenIncumbentJobs(
     db = runtime.storage.openSqliteDatabaseSync(incumbent.path, { readOnly: true });
     const projections = db.prepare('SELECT job_id, project_root, job_kind FROM projection_jobs').all();
     const launches = db
-      .prepare("SELECT stream_id, body FROM events WHERE stream_kind = 'job' AND type = 'job.launch.requested'")
+      .prepare("SELECT stream_id, body FROM events WHERE stream_kind = 'job' AND type = 'job.opened'")
       .all();
     const subjects = new Map<
       string,
@@ -85,7 +85,7 @@ function seedUnprovenIncumbentJobs(
         .object({
           projectRoot: z.string().min(1),
           jobKind: z.enum(['provider', 'workflow', 'kb']),
-          request: z
+          conversation: z
             .object({ cwd: z.string().min(1).optional() })
             .passthrough()
             .optional(),
@@ -93,7 +93,7 @@ function seedUnprovenIncumbentJobs(
         .parse(JSON.parse(Buffer.from(parsed.body).toString('utf8')) as unknown);
       subjects.set(parsed.stream_id, {
         projectRoot: body.projectRoot,
-        workDir: body.jobKind === 'kb' ? null : (body.request?.cwd ?? body.projectRoot),
+        workDir: body.jobKind === 'kb' ? null : (body.conversation?.cwd ?? body.projectRoot),
         jobKind: body.jobKind,
       });
     }

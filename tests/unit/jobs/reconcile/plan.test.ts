@@ -7,7 +7,7 @@ function recoveryPlan(parentWorkflowJobId?: string, runtimeRecord: JobRuntime | 
   const launchRecord: JobLaunch = {
     jobId: 'queued-job',
     owner: { kind: 'provider-session', id: 'session' },
-    sessionId: 'session',
+    execution: 1,
     provider: 'codex',
     projectRoot: '/project',
     backendNamespace: 'test',
@@ -22,7 +22,8 @@ function recoveryPlan(parentWorkflowJobId?: string, runtimeRecord: JobRuntime | 
   const status: JobStatus = {
     jobId: launchRecord.jobId,
     owner: launchRecord.owner,
-    sessionId: launchRecord.sessionId,
+    execution: launchRecord.execution,
+    sessionId: null,
     provider: launchRecord.provider,
     projectRoot: launchRecord.projectRoot,
     workDir: null,
@@ -42,8 +43,6 @@ function recoveryPlan(parentWorkflowJobId?: string, runtimeRecord: JobRuntime | 
       launchRecord,
       runtimeRecord,
     }),
-    listSessionRefs: () => [],
-    readSession: () => null,
     isPidAlive: () => true,
   });
 }

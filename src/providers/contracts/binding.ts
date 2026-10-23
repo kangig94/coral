@@ -75,9 +75,19 @@ export function bindingFailure<Value = never>(failure: ProviderBindingFailure): 
   return Object.freeze({ ok: false, failure: Object.freeze(failure) });
 }
 
-/** Stable public error code for a typed provider-binding failure. */
-export function providerBindingFailureCode(failure: ProviderBindingFailure): string {
-  return `provider_binding_${failure.reason.replaceAll('-', '_')}`;
+const providerBindingFailureCodes = {
+  'missing-profile': 'provider_binding_missing_profile',
+  'profile-unavailable': 'provider_binding_profile_unavailable',
+  'identity-unavailable': 'provider_binding_identity_unavailable',
+  'profile-mismatch': 'provider_binding_profile_mismatch',
+  'subject-mismatch': 'provider_binding_subject_mismatch',
+  'unsupported-selection': 'provider_binding_unsupported_selection',
+  'invalid-persisted-binding': 'provider_binding_invalid_persisted_binding',
+} as const satisfies Record<ProviderBindingFailure['reason'], string>;
+export type ProviderBindingFailureCode = (typeof providerBindingFailureCodes)[ProviderBindingFailure['reason']];
+
+export function providerBindingFailureCode(failure: ProviderBindingFailure): ProviderBindingFailureCode {
+  return providerBindingFailureCodes[failure.reason];
 }
 
 export class ProviderBindingRuntimeError extends Error {

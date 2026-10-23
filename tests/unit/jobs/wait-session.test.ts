@@ -156,7 +156,6 @@ it('delivers a retained terminal from a previous store epoch without its progres
   detail.exit!.endTime = detail.status.updatedAt;
   for (const event of detail.events) {
     event.ts = detail.status.updatedAt;
-    event.sessionId = detail.status.sessionId;
   }
   const location = {
     version: 'v1',

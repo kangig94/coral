@@ -1,3 +1,4 @@
+import { JOB_SEND_MAX_INPUT_LENGTH, jobSendOutcomeSchema } from '#src/jobs/send.js';
 import { EventEmitter } from 'node:events';
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
 import type { Socket } from 'node:net';
@@ -11,7 +12,7 @@ import type { Principal } from '#src/security/principal.js';
 import { executeCatalogRequest } from '#src/transport/dispatch.js';
 import { createIpcServer } from '#src/transport/ipc/server.js';
 import { jobsSendRpcSpec, rpcCatalog } from '#src/transport/rpc/catalog.js';
-import { JOB_SEND_MAX_INPUT_LENGTH, jobSendSchema, jobSendResponseSchema } from '#src/transport/rpc/jobs.js';
+import { jobSendSchema } from '#src/transport/rpc/jobs.js';
 import {
   ipcRouteLifecycleAdmission,
   ipcRouteRefusalDisposition,
@@ -24,6 +25,7 @@ const request = {
   projectRoot,
   jobId: 'job-1',
   input: 'Keep the public API unchanged.',
+  target: { mode: 'steer' as const, execution: 1, requestedSeq: 2, sourceEpoch: 'epoch' },
   clientMessageId: '11111111-1111-4111-8111-111111111111',
 };
 const operator: Principal = {
@@ -108,11 +110,16 @@ describe('jobs.send', () => {
   it('should reject a proxy delivered response that leaks the provider turn id at the public boundary', () => {
     const proxyResponse = { state: 'delivered', providerTurnId: 'turn-private' };
     expect(proxyOperationSendResultSchema.safeParse(proxyResponse).success).toBe(true);
-    expect(jobSendResponseSchema.safeParse(proxyResponse).success).toBe(false);
-    expect(jobSendResponseSchema.parse({ state: 'delivered' })).toEqual({ state: 'delivered' });
+    expect(jobSendOutcomeSchema.safeParse(proxyResponse).success).toBe(false);
+    expect(jobSendOutcomeSchema.parse({ state: 'delivered' })).toEqual({ state: 'delivered' });
   });
 
   it.each([
+    ['missing target', { target: undefined }],
+    ['incomplete target', { target: { mode: 'steer' } }],
+    ['invalid mode', { target: { ...request.target, mode: 'auto' } }],
+    ['non-positive execution', { target: { ...request.target, execution: 0 } }],
+    ['missing source epoch', { target: { ...request.target, sourceEpoch: undefined } }],
     ['empty input', { input: '' }],
     ['whitespace-only input', { input: ' \n\t' }],
     ['oversized input', { input: 'x'.repeat(JOB_SEND_MAX_INPUT_LENGTH + 1) }],
@@ -268,5 +275,51 @@ describe('jobs.send', () => {
       result: { state: 'unknown', reason: expect.any(String) },
     });
     expect(send).toHaveBeenCalledOnce();
+  });
+});
+
+it('passes launch context through the same body invocation boundary as sessions.create', async () => {
+  const { ports, send } = fixture();
+  const { TEST_PROVIDER_SCOPE } = await import('#tests/helpers/provider-credentials.js');
+  const params = {
+    ...request,
+    owner: 'caller',
+    coralEnv: { CORAL_EFFORT: 'high' },
+    networkEnv: { HTTPS_PROXY: 'http://proxy:1234' },
+    providerScope: TEST_PROVIDER_SCOPE,
+  };
+  expect(await issue(ports, params)).toMatchObject({ result: { state: 'delivered' } });
+  expect(send).toHaveBeenCalledWith(
+    params,
+    expect.objectContaining({
+      projectRoot,
+      providerScope: TEST_PROVIDER_SCOPE,
+      coralEnv: expect.objectContaining({
+        CORAL_OWNER: 'caller',
+        CORAL_EFFORT: 'high',
+        HTTPS_PROXY: 'http://proxy:1234',
+      }),
+    }),
+  );
+});
+
+it('round-trips a committed continuation selection without discarding its epoch or request boundary', async () => {
+  const { ports, send } = fixture();
+  const result = {
+    state: 'launched' as const,
+    launch: {
+      kind: 'provider-session' as const,
+      launchState: 'queued' as const,
+      jobId: request.jobId,
+      requestedSeq: 100,
+      execution: 2,
+      epochKey: 'epoch',
+    },
+  };
+  send.mockResolvedValueOnce(result);
+  expect(await issue(ports, { ...request, target: { ...request.target, mode: 'continue' } })).toEqual({
+    kind: 'response',
+    id: 1,
+    result,
   });
 });

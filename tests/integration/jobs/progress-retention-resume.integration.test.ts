@@ -1,3 +1,4 @@
+import { testConversationFacet } from '#tests/helpers/session.js';
 import { expect, it, vi } from 'vitest';
 import { rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -16,15 +17,14 @@ it.each(['shutdown', 'park', 'crash'] as const)(
     try {
       f.setNow(1);
       initTestJob(f.store, {
-        jobId: 'large',
-        sessionId: 'session-large',
-        provider: 'codex',
+        jobId: '93000000-0000-4000-8002-000000000001',
         projectRoot: '/workspace',
         backendNamespace: 'test-ns',
+        conversation: testConversationFacet('codex', '/workspace'),
       });
-      f.store.appendProgress('large', 'session-large', 'progress');
-      for (let i = 0; i < 130; i += 1) f.store.appendProgress('large', 'session-large', 'message');
-      const ceiling = commitJobTerminal(f.store, 'large', 'session-large', {
+      f.store.appendProgress('93000000-0000-4000-8002-000000000001', 'progress');
+      for (let i = 0; i < 130; i += 1) f.store.appendProgress('93000000-0000-4000-8002-000000000001', 'message');
+      const ceiling = commitJobTerminal(f.store, '93000000-0000-4000-8002-000000000001', 1, {
         content: 'done',
         outcome: { kind: 'completed' },
         durationMs: 1,
@@ -51,7 +51,7 @@ it.each(['shutdown', 'park', 'crash'] as const)(
       };
       expect(JSON.parse(saved.value)).toMatchObject({ afterSeq: 0, ceiling });
       expect(JSON.parse(saved.value).progressSeq).toBeGreaterThan(0);
-      expect(f.db.prepare("SELECT COUNT(*) AS n FROM events WHERE type = 'job.progress.emitted'").get()).toEqual({
+      expect(f.db.prepare("SELECT COUNT(*) AS n FROM events WHERE type = 'job.execution.progress'").get()).toEqual({
         n: 67,
       });
       f.db.close();
@@ -67,7 +67,7 @@ it.each(['shutdown', 'park', 'crash'] as const)(
         afterSeq: 0,
         budget: f.budget,
       });
-      expect(resumed.prepare("SELECT COUNT(*) AS n FROM events WHERE type = 'job.progress.emitted'").get()).toEqual({
+      expect(resumed.prepare("SELECT COUNT(*) AS n FROM events WHERE type = 'job.execution.progress'").get()).toEqual({
         n: 0,
       });
     } finally {

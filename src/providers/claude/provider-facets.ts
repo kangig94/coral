@@ -14,7 +14,7 @@ import type {
   ProviderRecoveryContract,
   ProviderSendOutcome,
 } from '../contract.js';
-import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
+import type { ProviderContinuityBlob } from '../../jobs/conversation/continuity.js';
 import { isRecord, readString } from '../../infra/json.js';
 import { mapInterruptParams } from './request-mapping.js';
 import {
@@ -172,7 +172,12 @@ export const claudeAppServerLifecycle: ProviderAppServerCapability<ClaudeExecuti
       baseEnv: input.baseEnv,
       platform: input.platform,
       hostRoot: input.hostRoot,
-      transportMode: input.purpose === 'curation' ? 'print' : resolveClaudeTransportMode(input.request.coralEnv),
+      transportMode:
+        input.purpose === 'curation'
+          ? 'print'
+          : input.request.action === 'resume'
+            ? 'tui'
+            : resolveClaudeTransportMode(input.request.coralEnv),
     }),
   compileStableHost: (host) =>
     buildClaudeProviderServerSpec(compileClaudeBrokerHost({ platform: host.platform, broker: host.broker })),

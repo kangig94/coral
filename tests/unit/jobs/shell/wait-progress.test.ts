@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { progressVisitFromEvents, progressVisitFromDetails } from '#tests/helpers/wait-progress.js';
 import { expect, it } from 'vitest';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
@@ -14,6 +15,7 @@ it('cursorless bounded wait: progress appended between polls beyond the tail win
   const runtime = new SimulationRuntime();
   const status: JobStatus = {
     jobId: 'job-1',
+    execution: 1,
     owner: { kind: 'provider-session', id: 's' },
     sessionId: 's',
     provider: 'codex',
@@ -32,7 +34,7 @@ it('cursorless bounded wait: progress appended between polls beyond the tail win
       journal.push({
         type: 'progress',
         jobId: 'job-1',
-        sessionId: 's',
+        ...{ sessionId: 's' },
         seq,
         ts: '',
         message: `line ${seq}`,
@@ -46,7 +48,7 @@ it('cursorless bounded wait: progress appended between polls beyond the tail win
     visitProgress: progressVisitFromEvents(readJobEvents),
     time: runtime.time,
     eventBus: new TypedEventBus(),
-    sessionManager: { get: () => null } as never,
+    conversationManager: { get: () => null } as never,
     launchQueue: { reservationFor: () => null, getActiveJobIds: () => [] } as never,
     readJobLastSeq: () => null,
     loadJobWaitDetail: () => {
@@ -66,7 +68,7 @@ it('cursorless bounded wait: progress appended between polls beyond the tail win
   };
   const wait = new WaitCoordinator(deps);
   push(5);
-  const index = new JobLocationIndex(runtime, '/coral');
+  const index = new JobLocationIndex(runtime, '/coral', undefined, currentCoralStoreFormat().fingerprint);
   index.register('job-1', 'epoch', { projectRoot: '/project', workDir: '/project', jobKind: 'provider' });
   const addressing = new JobAddressing(
     index.readOnlyView(),

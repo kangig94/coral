@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createStorageRetentionScheduler } from '#src/coordinator/composition/storage-retention-scheduler.js';
 import { JobLocationIndex } from '#src/jobs/location-index.js';
@@ -79,7 +80,12 @@ function fixture(f = createRetentionFixture(), getProgressStore: () => typeof f.
       path: '/tmp/fixture/epoch-1/store.db',
     }),
     activeEpochKey: () => 'active',
-    jobLocations: new JobLocationIndex(f.runtime, f.runtime.paths.coral.generation.dataRoot),
+    jobLocations: new JobLocationIndex(
+      f.runtime,
+      f.runtime.paths.coral.generation.dataRoot,
+      undefined,
+      currentCoralStoreFormat().fingerprint,
+    ),
     log: vi.fn(),
     publish: (status) => statuses.push({ ...status, outcomes: [...status.outcomes] }),
     cleanupScratch: owners.scratch,

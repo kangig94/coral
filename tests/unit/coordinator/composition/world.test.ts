@@ -1,3 +1,4 @@
+import { ExecutionFinisher } from '#src/jobs/finishing.js';
 import { describe, expect, it } from 'vitest';
 
 import { createCoordinatorWorld } from '#src/coordinator/composition/world.js';
@@ -6,6 +7,27 @@ import { CoralSetupError } from '#src/runtime/errors.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-supervisor.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
+
+function idleExecutionFinisher(runtime: Pick<Runtime, 'time'>): ExecutionFinisher {
+  return new ExecutionFinisher({
+    time: runtime.time,
+    commit: () => {
+      throw new Error('Execution writes are unexpected before store services start');
+    },
+    read: () => {
+      throw new Error('Execution reads are unexpected before store services start');
+    },
+    quiesce: async () => {
+      throw new Error('Execution settlement is unexpected before store services start');
+    },
+    retentionAction: async () => {
+      throw new Error('Retention is unexpected before store services start');
+    },
+    settleRetention: async () => {
+      throw new Error('Retention is unexpected before store services start');
+    },
+  });
+}
 
 const REMOTE_BIND_OPT_IN_ENV = 'CORAL_BACKEND_ALLOW_REMOTE';
 const REMOTE_BIND_ADDRESS_ALLOWLIST_ENV = 'CORAL_BACKEND_REMOTE_ADDR_ALLOWLIST';
@@ -88,6 +110,7 @@ function createWorld(
   return createCoordinatorWorld(
     {
       runtime,
+      executionFinisher: idleExecutionFinisher(runtime),
       storeFormat: currentCoralStoreFormat(),
       bootSnapshot: {
         version: 'world-test-version',

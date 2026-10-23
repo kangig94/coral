@@ -1,12 +1,12 @@
 export type AbortSettledCallback = () => void;
 
 export interface JobAbortRegistryPort {
-  register(jobId?: string, onAbort?: () => void, onAbortSettled?: AbortSettledCallback): string;
-  getSignal(jobId: string): AbortSignal | null;
-  has(jobId: string): boolean;
+  register(jobId: string, execution: number, onAbort?: () => void, onAbortSettled?: AbortSettledCallback): string;
+  getSignal(jobId: string, execution?: number): AbortSignal | null;
+  has(jobId: string, execution?: number): boolean;
   listActive(): string[];
   abort(jobIds: string[]): AbortResult;
-  remove(jobId: string): void;
+  remove(jobId: string, execution: number): void;
 }
 
 export interface AbortHoldOwner {
@@ -17,7 +17,7 @@ export interface AbortHoldOwner {
 export type AbortRefusal = Readonly<{
   jobId: string;
   reason: string;
-  nextStep: AbortNextStep;
+  nextStep: AbortRefusalNextStep;
 }>;
 
 export type AbortHold = Readonly<{
@@ -61,3 +61,7 @@ export type AbortDecision =
 import type { JobOperatorRemedy } from './operator-remedy.js';
 
 export type AbortNextStep = string | Readonly<{ detail: string; remedy: JobOperatorRemedy }>;
+
+export type AbortRefusalNextStep =
+  | AbortNextStep
+  | Readonly<{ detail: string; remedy: Readonly<{ kind: 'wait-job'; jobId: string }> }>;

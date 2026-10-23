@@ -55,7 +55,7 @@ export function runRetainedEpochCommand(
   const runtime = createRuntime(identity.manifest.flavor);
   return command.kind === 'probe'
     ? probeRetainedEpochOpen(runtime, identity.manifest, command.epochKey, storeFormat, command.instanceId)
-    : recoverRetainedEpoch(runtime, identity.manifest, command.epochKey);
+    : recoverRetainedEpoch(runtime, identity.manifest, command.epochKey, storeFormat);
 }
 
 function retainedEpochOpenProof(epochKey: string, opened: ControllerOpen): string {
@@ -96,7 +96,12 @@ function probeRetainedEpochOpen(
   }
 }
 
-function recoverRetainedEpoch(runtime: Runtime, manifest: StrictBundleManifest, epochKey: string): number {
+function recoverRetainedEpoch(
+  runtime: Runtime,
+  manifest: StrictBundleManifest,
+  epochKey: string,
+  storeFormat: StoreFormatDescription,
+): number {
   const coordinator = probeCoordinator(runtime);
   if (
     coordinator.kind !== 'absent' &&
@@ -114,7 +119,12 @@ function recoverRetainedEpoch(runtime: Runtime, manifest: StrictBundleManifest, 
     !sameEpoch(encodeResolvedStoreEpoch(runtime, epoch), epochKey)
   )
     return RETAINED_EPOCH_EXIT.controllerMismatch;
-  const index = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot, renderWorkflowReport);
+  const index = new JobLocationIndex(
+    runtime,
+    runtime.paths.coral.generation.dataRoot,
+    renderWorkflowReport,
+    storeFormat.fingerprint,
+  );
   const seeded = seedHistoricalEpoch(
     runtime,
     index,

@@ -7,7 +7,7 @@ import { once } from 'node:events';
 import { pruneJobExports } from '#src/jobs/export-retention.js';
 import { createRetentionFixture, RETENTION_CUTOFF, RETENTION_NOW } from '#tests/helpers/storage-retention.js';
 import { InMemoryStorage } from '#tools/simulation/core/memory-storage.js';
-import { initTestJob } from '#tests/helpers/session.js';
+import { testConversationFacet, initTestJob } from '#tests/helpers/session.js';
 import { commitJobTerminal } from '#tests/helpers/job-commits.js';
 import { readExportJobState } from '#src/jobs/export-retention.js';
 
@@ -20,15 +20,14 @@ it.each([false, true])('reclaims exports after external recreation during retire
   const f = createRetentionFixture();
   fixtures.push(f);
   f.setNow(1);
-  const id = 'result-reader';
+  const id = '651b3cda-cd96-54c3-ba9d-6d8d48c65507';
   initTestJob(f.store, {
     jobId: id,
-    sessionId: 'session',
-    provider: 'codex',
+    conversation: testConversationFacet('codex'),
     projectRoot: '/workspace',
     backendNamespace: 'test-ns',
   });
-  commitJobTerminal(f.store, id, 'session', {
+  commitJobTerminal(f.store, id, 1, {
     content: 'retained result',
     outcome: { kind: 'completed' },
     durationMs: 1,

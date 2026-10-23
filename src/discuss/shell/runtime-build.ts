@@ -10,12 +10,12 @@ import {
 import { nowIsoString } from '../../infra/time.js';
 import { isLivePhase } from '../../jobs/phase.js';
 import { assertNever, errorMessage } from '../../infra/error-format.js';
-import { refuseLaunch, undeterminedLaunch } from '../../jobs/launch.js';
+import { executionOrdinalSchema, refuseLaunch, undeterminedLaunch } from '../../jobs/launch.js';
 import { backendLog } from '../../infra/backend-log.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type { CanonicalWorkDir } from '../../runtime/canonical-work-dir.js';
 import { appendRuntimeEvents, loadAttachedOrPersistedSnapshot } from './persistence.js';
-import type { ContinuitySnapshot } from '../../sessions/continuity.js';
+import type { ContinuitySnapshot } from '../../jobs/conversation/continuity.js';
 import type { AgentConfig, DiscussContext, DiscussLaunchDecision } from './types.js';
 import { discussAgentExecution } from '../execution-policy.js';
 
@@ -41,6 +41,7 @@ export type AttemptSuccess = {
   ok: true;
   attempt: number;
   jobId: string;
+  execution: number;
   content: string;
   continuity: ContinuitySnapshot | null;
 };
@@ -81,6 +82,7 @@ export type RecordJobFinishedParams = {
   agentName: string;
   purpose: DiscussAgentJobPurpose;
   jobId: string;
+  execution: number;
   attempt: number;
   outcome: DiscussAgentJobOutcome;
 };
@@ -163,7 +165,7 @@ function nextAttemptForPurpose(run: PersistedDiscussAgentRun | undefined, purpos
   if (run.currentJobPurpose === purpose && run.currentJobId !== undefined) {
     return run.currentAttempt ?? 1;
   }
-  if (isRetryableAttemptOutcome(run.lastAttemptOutcome)) {
+  if (run.lastAttemptPurpose === purpose && isRetryableAttemptOutcome(run.lastAttemptOutcome)) {
     return (run.currentAttempt ?? 0) + 1;
   }
   return 1;
@@ -240,7 +242,7 @@ async function appendRequiredRuntimeEvents(
 }
 
 export async function recordJobFinished(ctx: DiscussContext, params: RecordJobFinishedParams): Promise<void> {
-  const { sessionId, agentName, purpose, jobId, attempt, outcome } = params;
+  const { sessionId, agentName, purpose, jobId, execution, attempt, outcome } = params;
 
   try {
     const persisted = await appendRuntimeEvents(ctx, sessionId, (current) => {
@@ -248,7 +250,7 @@ export async function recordJobFinished(ctx: DiscussContext, params: RecordJobFi
       if (!run || run.currentJobPurpose !== purpose || run.currentAttempt !== attempt) {
         return [];
       }
-      if (run.currentJobId !== jobId) {
+      if (run.currentJobId !== jobId || run.currentExecution !== execution) {
         return [];
       }
 
@@ -263,6 +265,7 @@ export async function recordJobFinished(ctx: DiscussContext, params: RecordJobFi
           {
             agent: agentName,
             jobId,
+            execution,
             outcome,
             attempt,
           },
@@ -270,10 +273,12 @@ export async function recordJobFinished(ctx: DiscussContext, params: RecordJobFi
       ];
     });
     if (persisted === null) {
-      backendLog.warn(`Discuss job finish persistence failed for ${sessionId}/${jobId}`);
+      backendLog.warn(`Discuss job finish persistence failed for ${sessionId}/${jobId}#${execution}`);
     }
   } catch (error: unknown) {
-    backendLog.warn(`Discuss job finish persistence failed for ${sessionId}/${jobId}: ${errorMessage(error)}`);
+    backendLog.warn(
+      `Discuss job finish persistence failed for ${sessionId}/${jobId}#${execution}: ${errorMessage(error)}`,
+    );
   }
 }
 
@@ -296,14 +301,16 @@ export async function executeAgentAttempt(
   let attempt = nextAttemptForPurpose(snapshot.runtime.agentRuns[agentName], purpose);
   let activeJobId = activeRun.currentJobPurpose === purpose ? activeRun.currentJobId : undefined;
 
-  while (activeJobId) {
-    const status = ctx.jobStatusReader.read(activeJobId);
+  while (activeJobId !== undefined) {
+    const execution = executionOrdinalSchema.parse(activeRun.currentExecution);
+    const status = ctx.jobStatusReader.read(activeJobId, execution);
     if (status === null) {
       await recordJobFinished(ctx, {
         sessionId,
         agentName,
         purpose,
         jobId: activeJobId,
+        execution,
         attempt,
         outcome: 'recovery_missing',
       });
@@ -313,6 +320,7 @@ export async function executeAgentAttempt(
         ok: true,
         attempt,
         jobId: activeJobId,
+        execution,
         content: result.content,
         continuity: result.continuity,
       };
@@ -322,6 +330,7 @@ export async function executeAgentAttempt(
         agentName,
         purpose,
         jobId: activeJobId,
+        execution,
         attempt,
         outcome: 'recovery_failed',
       });
@@ -332,6 +341,7 @@ export async function executeAgentAttempt(
           ok: true,
           attempt,
           jobId: activeJobId,
+          execution,
           content: result.content,
           continuity: result.continuity,
         };
@@ -342,6 +352,7 @@ export async function executeAgentAttempt(
           agentName,
           purpose,
           jobId: activeJobId,
+          execution,
           attempt,
           outcome: 'execution_error',
         });
@@ -369,11 +380,11 @@ export async function executeAgentAttempt(
     activeJobId = activeRun.currentJobPurpose === purpose ? activeRun.currentJobId : undefined;
   }
 
-  const executionSessionId = activeRun.executionSessionId;
+  const boundJobId = activeRun.jobId;
   const launch = await (async (): Promise<DiscussLaunchDecision> => {
     try {
       const pendingLaunch =
-        executionSessionId === undefined
+        boundJobId === undefined
           ? ctx.service.start(
               provider,
               {
@@ -382,6 +393,7 @@ export async function executeAgentAttempt(
                 pool: 'discuss',
                 cwd,
                 bypassPermissions: true,
+                retention: 'retain',
                 owner: { kind: 'discussion', id: sessionId },
                 discussionRun: { agent: agentName, purpose, attempt },
                 instruction: {
@@ -394,11 +406,9 @@ export async function executeAgentAttempt(
           : ctx.service.resume(
               provider,
               {
-                sessionId: executionSessionId,
+                jobId: boundJobId,
                 prompt: `${instruction}\n\n---\n\n${prompt}`,
-                model,
                 pool: 'discuss',
-                cwd,
                 bypassPermissions: true,
                 owner: { kind: 'discussion', id: sessionId },
                 discussionRun: { agent: agentName, purpose, attempt },
@@ -430,13 +440,19 @@ export async function executeAgentAttempt(
     default:
       return assertNever(launch);
   }
-  const providerSessionId = launch.sessionId;
+  const ordinal = executionOrdinalSchema.safeParse(
+    ctx.jobStatusReader.requestedExecution(launch.jobId, launch.requestedSeq),
+  );
+  if (!ordinal.success) {
+    return { ok: false, attempt, consumedAttempt: true, message: `Execution not found for job ${launch.jobId}.` };
+  }
+  const execution = ordinal.data;
 
   try {
-    if (executionSessionId === undefined) {
+    if (boundJobId === undefined) {
       await appendRequiredRuntimeEvents(ctx, sessionId, 'agent run binding', (current) => {
         const latestRun = current.runtime.agentRuns[agentName];
-        if (latestRun?.executionSessionId === providerSessionId) {
+        if (latestRun?.jobId === launch.jobId) {
           return [];
         }
         return [
@@ -449,7 +465,7 @@ export async function executeAgentAttempt(
             nowIsoString(ctx.runtime.time),
             {
               agent: agentName,
-              executionSessionId: providerSessionId,
+              jobId: launch.jobId,
             },
           ),
         ];
@@ -460,6 +476,7 @@ export async function executeAgentAttempt(
       const latestRun = current.runtime.agentRuns[agentName];
       if (
         latestRun?.currentJobId === launch.jobId &&
+        latestRun.currentExecution === execution &&
         latestRun.currentJobPurpose === purpose &&
         latestRun.currentAttempt === attempt
       ) {
@@ -477,6 +494,7 @@ export async function executeAgentAttempt(
           {
             agent: agentName,
             jobId: launch.jobId,
+            execution,
             purpose,
             attempt,
           },
@@ -498,6 +516,7 @@ export async function executeAgentAttempt(
       ok: true,
       attempt,
       jobId: launch.jobId,
+      execution,
       content: result.content,
       continuity: result.continuity,
     };
@@ -508,6 +527,7 @@ export async function executeAgentAttempt(
       agentName,
       purpose,
       jobId: launch.jobId,
+      execution,
       attempt,
       outcome: 'execution_error',
     });
@@ -534,6 +554,7 @@ export async function runPlainTurn(
     agentName: params.agentName,
     purpose: params.purpose,
     jobId: attempt.jobId,
+    execution: attempt.execution,
     attempt: attempt.attempt,
     outcome: attempt.continuity?.resumable === false ? 'non_resumable' : 'completed',
   });

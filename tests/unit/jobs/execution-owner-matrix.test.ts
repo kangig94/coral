@@ -1,3 +1,5 @@
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
+import { testConversationOpenedInput } from '#tests/helpers/session.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { describe, expect, it } from 'vitest';
 
@@ -6,8 +8,7 @@ import { jobsRegistry } from '#src/jobs/events.js';
 import type { JobLaunch } from '#src/jobs/records.js';
 import { jobLaunchRequestedEvent, JobStore } from '#src/jobs/store.js';
 import type { ExecutionOwner } from '#src/runtime/execution-owner.js';
-import { SessionManager } from '#src/sessions/shell.js';
-import { sessionsRegistry } from '#src/sessions/events.js';
+import { ConversationManager } from '#src/jobs/conversation/shell.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { composeReducers } from '#src/store/reducers.js';
@@ -23,13 +24,13 @@ function createHarness() {
   const db = newRawDatabase(':memory:');
   applyBundledStoreSchema(db, currentCoralStoreFormat());
   const runtime = new SimulationRuntime();
-  const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
+  const reducers = composeReducers(jobsRegistry, discussRegistry, workflowRegistry);
   const store = new JobStore('tests', runtime, createEventBodyCodec(), {
     db,
     reducers,
     providers: permissiveProviderLookupPort,
   });
-  const sessions = new SessionManager(PROJECT_ROOT, runtime, (cb) => store.commit(cb), undefined, db);
+  const sessions = new ConversationManager(PROJECT_ROOT, runtime, (cb) => store.commit(cb), db);
   return { db, store, sessions };
 }
 
@@ -37,7 +38,7 @@ function workflowLaunch(jobId: string, owner: ExecutionOwner): JobLaunch {
   return {
     jobId,
     owner,
-    sessionId: null,
+    execution: 1,
     provider: null,
     projectRoot: PROJECT_ROOT,
     backendNamespace: 'tests',
@@ -55,10 +56,10 @@ describe('ExecutionOwner and job-kind negative matrix', () => {
     try {
       expect(() =>
         store.appendLaunchRequested(
-          'workflow-1',
-          workflowLaunch('workflow-1', { kind: 'workflow', id: 'workflow-other' }),
+          '10000000-0000-4000-8000-000000000001',
+          workflowLaunch('10000000-0000-4000-8000-000000000001', { kind: 'workflow', id: 'workflow-other' }),
         ),
-      ).toThrowError(expect.objectContaining({ code: 'job_owner_mismatch' }));
+      ).toThrowError(expect.objectContaining({ code: 'job_execution_order_violation' }));
       expect(db.prepare('SELECT COUNT(*) AS count FROM events').get()).toEqual({ count: 0 });
     } finally {
       db.close();
@@ -69,17 +70,18 @@ describe('ExecutionOwner and job-kind negative matrix', () => {
     const { db, store, sessions } = createHarness();
     try {
       const prepared = sessions.prepare({
+        jobId: '10000000-0000-4000-8000-000000000002',
         binding: TEST_CODEX_BINDING,
         name: 'provider-job-session',
-        cwd: PROJECT_ROOT,
+        cwd: fixtureCanonicalWorkDir(PROJECT_ROOT),
         projectRoot: PROJECT_ROOT,
         backendNamespace: 'tests',
         retention: 'retain',
       });
       const launch: JobLaunch = {
-        jobId: 'provider-job',
+        jobId: '10000000-0000-4000-8000-000000000002',
         owner: { kind: 'system-task', id: 'system-1' },
-        sessionId: prepared.sessionId,
+        execution: 1,
         provider: 'codex',
         projectRoot: PROJECT_ROOT,
         backendNamespace: 'tests',
@@ -93,13 +95,15 @@ describe('ExecutionOwner and job-kind negative matrix', () => {
 
       expect(() =>
         store.commit((c) => {
-          sessions.appendPreparedClaim(c, prepared, launch.jobId);
+          const opened = testConversationOpenedInput(prepared);
+          opened.body.owner = launch.owner;
+          c.append(opened);
           c.append(jobLaunchRequestedEvent(launch.jobId, launch));
           return undefined;
         }),
-      ).toThrowError(expect.objectContaining({ code: 'job_binding_owner_mismatch' }));
+      ).toThrowError(expect.objectContaining({ code: 'job_execution_order_violation' }));
       expect(db.prepare('SELECT COUNT(*) AS count FROM events').get()).toEqual({ count: 0 });
-      expect(sessions.readById(prepared.sessionId, { forceFresh: true })).toBeNull();
+      expect(sessions.readById(prepared.jobId)).toBeNull();
     } finally {
       db.close();
     }

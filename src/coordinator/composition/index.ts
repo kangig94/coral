@@ -370,11 +370,6 @@ export function probeHistoricalJobClosure(runtime: Runtime, epochKey: string): '
 
 function subscribeChildPrincipalTerminalEvents(core: ReturnType<typeof createCoordinatorCoreContext>): () => void {
   const { world, getProgressStore } = core;
-  const onChildPrincipalJobPhaseChanged = (event: { jobId: string; phase: string }): void => {
-    if (isTerminalPhase(event.phase)) {
-      world.childPrincipalRegistry.revokeParentJob(event.jobId);
-    }
-  };
   const onLaunchReclamationJobPhaseChanged = (): void => {
     try {
       if (world.launchCoordinator.active > 0 && getProgressStore().liveJobCount() === 0) {
@@ -384,23 +379,14 @@ function subscribeChildPrincipalTerminalEvents(core: ReturnType<typeof createCoo
       // An unreadable liveness view cannot authorize reclamation or escape an event callback.
     }
   };
-  const onChildPrincipalJobCompleted = (event: { jobId: string }): void => {
-    world.childPrincipalRegistry.revokeParentJob(event.jobId);
+  const onChildPrincipalJobCompleted = (event: { jobId: string; execution: number }): void => {
+    world.childPrincipalRegistry.revokeParentJob(event.jobId, event.execution);
   };
-  const onChildPrincipalDiscussUpdated = (event: { sessionId: string; status: string }): void => {
-    if (isTerminalDiscussStatus(event.status)) {
-      world.childPrincipalRegistry.revokeParentSession(event.sessionId);
-    }
-  };
-  world.eventBus.on('job:phase_changed', onChildPrincipalJobPhaseChanged);
   world.eventBus.on('job:phase_changed', onLaunchReclamationJobPhaseChanged);
   world.eventBus.on('job:completed', onChildPrincipalJobCompleted);
-  world.eventBus.on('discuss:updated', onChildPrincipalDiscussUpdated);
   const disposeChildPrincipalTerminalListeners = (): void => {
-    world.eventBus.off('job:phase_changed', onChildPrincipalJobPhaseChanged);
     world.eventBus.off('job:phase_changed', onLaunchReclamationJobPhaseChanged);
     world.eventBus.off('job:completed', onChildPrincipalJobCompleted);
-    world.eventBus.off('discuss:updated', onChildPrincipalDiscussUpdated);
   };
   return disposeChildPrincipalTerminalListeners;
 }
@@ -425,6 +411,7 @@ function createHostedKbAssembly(
     if (existing) return existing;
     const created = new KbJobRecorder({
       runtime,
+      executionFinisher: core.executionFinisher,
       progressStore: getProgressStore(),
       backendNamespace: world.namespace,
       bundleHash: identity.bundleHash,
@@ -446,21 +433,20 @@ function createHostedKbAssembly(
     }
 
     const jobId = ctx.coralEnv.CORAL_JOB_ID;
-    const sessionId = ctx.coralEnv.CORAL_SESSION_ID;
-    if (typeof jobId !== 'string' || jobId.length === 0 || typeof sessionId !== 'string' || sessionId.length === 0) {
+    if (typeof jobId !== 'string' || jobId.length === 0) {
       return;
     }
 
     const progressStore = getProgressStore();
     const status = progressStore.readStatus(jobId);
-    if (!status || status.sessionId !== sessionId || !isLivePhase(status.phase)) {
+    if (!status || status.execution === null || status.backendNamespace === null || !isLivePhase(status.phase)) {
       return;
     }
 
     const detail = normalizeHostedKbFailureDetail(result.detail);
     getKbJobRecorder().appendHostedKbOperationFailure({
       jobId,
-      sessionId,
+      execution: status.execution,
       projectRoot: status.projectRoot,
       namespace: status.backendNamespace,
       operation,
@@ -484,7 +470,14 @@ function createHostedKbAssembly(
     disposeKbDaemonExitListener,
     disposeDaemonJobTerminalListeners,
     registerDaemonJobAbortProxy,
-  } = createKbDaemonJobTracking({ runtime, world, kbDaemonSupervisor, getProgressStore, internalJobAbortRegistry });
+  } = createKbDaemonJobTracking({
+    runtime,
+    world,
+    kbDaemonSupervisor,
+    getProgressStore,
+    internalJobAbortRegistry,
+    executionFinisher: core.executionFinisher,
+  });
   const daemonKbReadPort = createKbDaemonReadPort(kbDaemonSupervisorWithTrackedShutdown);
   const kbRpcPort = createKbDaemonMutationPort(
     daemonKbReadPort,
@@ -537,6 +530,8 @@ function assembleCoordinatorCoreResult(
     runtimeState,
     storeServicesRef,
     eventBus: world.eventBus,
+    holdsInternalExecution: (jobId, ordinal) =>
+      world.runningWorkflowJobs.has(jobId) || execution.internalJobAbortRegistry.has(jobId, ordinal),
     launchCoordinator: world.launchCoordinator,
     providerRegistry: world.providerRegistry,
     ...(world.systemProviderScope === undefined ? {} : { systemProviderScope: world.systemProviderScope }),
@@ -564,6 +559,7 @@ export function createCoordinatorCore(
     read: (boundary, subjectKey) => getRecoveryQuarantineStore().read(boundary, subjectKey),
     upsert: (write) => getRecoveryQuarantineStore().upsert(write),
     delete: (request) => getRecoveryQuarantineStore().delete(request),
+    releaseRetry: (request) => getRecoveryQuarantineStore().releaseRetry(request),
     claimRetry: (request) => getRecoveryQuarantineStore().claimRetry(request),
     reclaimRetry: (request) => getRecoveryQuarantineStore().reclaimRetry(request),
   };
@@ -582,6 +578,8 @@ export function createCoordinatorCore(
   const internalWaitRequests = new WeakMap<object, WaitStreamRequest>();
   const preparedExecution = prepareCoordinatorExecutionAssembly(core, options);
   const services = createExecutionServices({
+    jobLocations: core.jobLocationIndex,
+    executionFinisher: options.executionFinisher,
     world,
     runtime,
     getActiveEpochPath: () => core.state.selectedStoreEpochPath,

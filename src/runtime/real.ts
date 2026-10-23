@@ -392,9 +392,37 @@ function createRealStoragePort(platform: NodeJS.Platform): StoragePort {
       for await (const entry of directory) yield entry.name;
     },
     readFileSync: (path, encoding) => readFileSync(path, encoding),
+    readFileBytesSync: (path) => readFileSync(path),
     writeFileSync: (path, data, options) => writeFileSync(path, data, options),
     renameSync: (oldPath, newPath) => renameSync(oldPath, newPath),
     linkSync: (existingPath, newPath) => linkSync(existingPath, newPath),
+    publishFileNoReplaceSync: (stage, destination) => {
+      let linked = false;
+      try {
+        try {
+          linkSync(stage, destination);
+          linked = true;
+        } catch (error: unknown) {
+          if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+          try {
+            unlinkSync(stage);
+          } catch {
+            // An existing destination must stay usable when private-stage cleanup fails.
+          }
+          return { kind: 'exists' };
+        }
+        const parent = openSync(dirname(destination), 'r');
+        try {
+          fsyncSync(parent);
+        } finally {
+          closeSync(parent);
+        }
+        unlinkSync(stage);
+        return { kind: 'published' };
+      } catch (error: unknown) {
+        return { kind: 'failed', reason: errorMessage(error), linked };
+      }
+    },
     mkdirSync: (path, options) => mkdirSync(path, options),
     rmSync: (path, options) => rmSync(path, options),
     readdirSync: ((path: string, options?: { withFileTypes: true } | { encoding: 'buffer' }) => {

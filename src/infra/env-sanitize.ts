@@ -129,31 +129,13 @@ function stripInternalCoralKeys(env: Readonly<Record<string, string>>): Record<s
   return stripped;
 }
 
-/**
- * `CORAL_*` keys the daemon owns and a caller may never set through the
- * per-request `coralEnv` forwarding channel (see `filterForwardableCoralEnv`).
- *
- * - Identity / auth / lineage. `CORAL_CHILD_CREDENTIAL_ID` / `CORAL_CHILD_CREDENTIAL_KEY`
- *   (and a shipped daemon's `CORAL_CHILD_PRINCIPAL_HANDLE`) are minted per child by the daemon, `CORAL_JOB_ID` / `CORAL_SESSION_ID` are set from the
- *   validated jobId/sessionId body fields, and `CORAL_CHILD` marks the child
- *   boundary. Taking any of these from untrusted wire input would let a caller
- *   forge child credentials or misattribute work to another job/session.
- * - Daemon boot-fixed infra. The build-flavor key (see {@link BUILD_FLAVOR_ENV_KEY}),
- *   `CORAL_KB_PATH`, `CORAL_ENV_PASSTHROUGH`, and the startup markers are resolved
- *   once at boot and pin which daemon a spawned child talks back to; they are
- *   re-asserted from the daemon's own snapshot so a nested `coral-cli` targets the
- *   right daemon rather than one the caller names.
- * - Daemon-scoped decisions. `CORAL_KB_ENABLE` gates whether the daemon booted its
- *   KB runtime at all, so a child must see the daemon's boot state, not a value a
- *   caller forwards.
- */
+/** A caller may never set daemon-owned keys through the per-request `coralEnv` channel. */
 export const DAEMON_OWNED_CORAL_ENV_KEYS: ReadonlySet<string> = new Set([
   'CORAL_CHILD',
   'CORAL_CHILD_PRINCIPAL_HANDLE',
   'CORAL_CHILD_CREDENTIAL_ID',
   'CORAL_CHILD_CREDENTIAL_KEY',
   'CORAL_JOB_ID',
-  'CORAL_SESSION_ID',
   BUILD_FLAVOR_ENV_KEY,
   'CORAL_KB_PATH',
   'CORAL_SYSTEM_PROVIDER_SCOPE',

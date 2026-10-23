@@ -3,36 +3,24 @@ import {
   readOptionalOwnDataProperty,
   readOwnDataProperty,
 } from '../../../infra/immutable-snapshot.js';
-import type { ProviderSession } from '../../../sessions/entry.js';
-import { providerSessionSchema, sessionControllerFromProfile } from '../../../sessions/entry.js';
+import type { JobConversation } from '../../../jobs/conversation/entry.js';
+import { hydrateJobConversation } from '../../../jobs/conversation/read-queries.js';
 import type { BoundProvider } from '../../../providers/bound-provider-contract.js';
-import type { ProviderContinuityBlob } from '../../../sessions/continuity.js';
+import type { ProviderContinuityBlob } from '../../../jobs/conversation/continuity.js';
 import type {
   ProviderRecoveryAuthority,
   ProviderRecoveryLaunch,
   ProviderRecoverySession,
 } from '../../../jobs/reconcile/contracts.js';
-import type { RawCoordinatorSessionRow } from './coordinator-job-source.js';
+import type { RawCoordinatorConversationRow } from './coordinator-job-source.js';
 
-export function hydrateCoordinatorSessionAuthority(raw: RawCoordinatorSessionRow): ProviderSession {
-  const parsed = providerSessionSchema.parse(JSON.parse(raw.entry) as unknown);
-  const expectedController = sessionControllerFromProfile(parsed.controllerProfile);
-  const expectedResumable = parsed.state === 'ready' ? 1 : 0;
-  const expectedConversationRef = parsed.conversationRef ?? null;
-  if (
-    parsed.sessionId !== raw.session_id ||
-    raw.controller !== expectedController ||
-    raw.resumable !== expectedResumable ||
-    raw.conversation_ref !== expectedConversationRef
-  ) {
-    throw new TypeError(`Persisted session authority is inconsistent for '${raw.session_id}'.`);
-  }
-  return parsed;
+export function hydrateCoordinatorConversationAuthority(raw: RawCoordinatorConversationRow): JobConversation {
+  return hydrateJobConversation(raw);
 }
 
 export function snapshotProviderRecoveryAuthority(
   launchRecord: ProviderRecoveryLaunch,
-  session: ProviderSession,
+  session: JobConversation,
   boundProvider: BoundProvider,
   providerContinuity: ProviderContinuityBlob | undefined,
 ): ProviderRecoveryAuthority {
@@ -51,8 +39,6 @@ function snapshotRecoveryLaunch(launchRecord: ProviderRecoveryLaunch): ProviderR
   const discussionRun = readOptionalOwnDataProperty(launchRecord, 'discussionRun', label);
   const parentWorkflowJobId = readOptionalOwnDataProperty(launchRecord, 'parentWorkflowJobId', label);
   const workflowSlotId = readOptionalOwnDataProperty(launchRecord, 'workflowSlotId', label);
-  const workflowSlotGeneration = readOptionalOwnDataProperty(launchRecord, 'workflowSlotGeneration', label);
-  const replacesWorkflowJobId = readOptionalOwnDataProperty(launchRecord, 'replacesWorkflowJobId', label);
   const name = readOptionalOwnDataProperty(requestSource, 'name', requestLabel);
   const model = readOptionalOwnDataProperty(requestSource, 'model', requestLabel);
   const effort = readOptionalOwnDataProperty(requestSource, 'effort', requestLabel);
@@ -64,7 +50,7 @@ function snapshotRecoveryLaunch(launchRecord: ProviderRecoveryLaunch): ProviderR
     {
       jobId: readOwnDataProperty(launchRecord, 'jobId', label),
       owner: readOwnDataProperty(launchRecord, 'owner', label),
-      sessionId: readOwnDataProperty(launchRecord, 'sessionId', label),
+      execution: readOwnDataProperty(launchRecord, 'execution', label),
       provider: readOwnDataProperty(launchRecord, 'provider', label),
       projectRoot: readOwnDataProperty(launchRecord, 'projectRoot', label),
       backendNamespace: readOwnDataProperty(launchRecord, 'backendNamespace', label),
@@ -77,8 +63,6 @@ function snapshotRecoveryLaunch(launchRecord: ProviderRecoveryLaunch): ProviderR
       providerAction: readOwnDataProperty(launchRecord, 'providerAction', label),
       ...(parentWorkflowJobId === undefined ? {} : { parentWorkflowJobId }),
       ...(workflowSlotId === undefined ? {} : { workflowSlotId }),
-      ...(workflowSlotGeneration === undefined ? {} : { workflowSlotGeneration }),
-      ...(replacesWorkflowJobId === undefined ? {} : { replacesWorkflowJobId }),
       request: {
         prompt: readOwnDataProperty(requestSource, 'prompt', requestLabel),
         cwd: readOwnDataProperty(requestSource, 'cwd', requestLabel),
@@ -97,7 +81,7 @@ function snapshotRecoveryLaunch(launchRecord: ProviderRecoveryLaunch): ProviderR
 }
 
 function snapshotRecoverySession(
-  session: ProviderSession,
+  session: JobConversation,
   providerContinuity: ProviderContinuityBlob | undefined,
 ): ProviderRecoverySession {
   const label = 'Provider recovery session';
@@ -107,6 +91,7 @@ function snapshotRecoverySession(
     `${label}.artifactHandles`,
   );
   const minimalArtifactHandles = artifactHandles.map((artifact, index) => ({
+    execution: readOwnDataProperty(artifact, 'execution', `${label}.artifactHandles[${index}]`),
     handle: readOwnDataProperty(artifact, 'handle', `${label}.artifactHandles[${index}]`),
     identity: readOwnDataProperty(artifact, 'identity', `${label}.artifactHandles[${index}]`),
     sourceJobId: readOwnDataProperty(artifact, 'sourceJobId', `${label}.artifactHandles[${index}]`),
@@ -114,12 +99,12 @@ function snapshotRecoverySession(
 
   return immutablePlainSnapshot(
     {
-      sessionId: readOwnDataProperty(session, 'sessionId', label),
+      jobId: readOwnDataProperty(session, 'jobId', label),
       projectRoot: readOwnDataProperty(session, 'projectRoot', label),
       ...(conversationRef === undefined ? {} : { conversationRef }),
       providerContinuity: providerContinuity ?? null,
       artifactHandles: minimalArtifactHandles,
-      version: readOwnDataProperty(session, 'version', label),
+      execution: readOwnDataProperty(session, 'execution', label),
     },
     label,
   );

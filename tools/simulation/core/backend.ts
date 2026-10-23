@@ -1,3 +1,7 @@
+import { LocalOperationRegistry } from '../../../src/coordinator/services/operation-registry.js';
+import { hasProviderOperationForJob } from '../../../src/store/provider-operation-journal.js';
+import { ExecutionFinisher, readExecutionFinishingState } from '../../../src/jobs/finishing.js';
+import { LifecycleReactor } from '../../../src/jobs/conversation/lifecycle-reactor.js';
 import { describeCoralStoreFormat } from '#src/store-format.js';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
@@ -47,8 +51,6 @@ import { createHostAdmissionCollection } from '../../../src/providers/host-admis
 import { JobStore } from '../../../src/jobs/store.js';
 import { providerLookupPortFromCatalog } from '../../../src/providers/catalog.js';
 import { jobsRegistry } from '../../../src/jobs/events.js';
-import { sessionsRegistry } from '../../../src/sessions/events.js';
-import { SessionManager } from '../../../src/sessions/shell.js';
 import { discussRegistry as discussStoreRegistry } from '../../../src/discuss/event-registry.js';
 import { workflowRegistry } from '../../../src/workflow/events.js';
 import type { StoragePort } from '../../../src/infra/port-types.js';
@@ -388,7 +390,7 @@ export function createFakeProvider(
     transport: 'standalone',
     run,
     prepareExecutionPlan: ({ access, request, baseEnv, protectedEnv, platform }) => {
-      const authority = { CORAL_CHILD: '1', CORAL_SESSION_ID: request.sessionId, ...(protectedEnv ?? {}) };
+      const authority = { CORAL_CHILD: '1', CORAL_SESSION_ID: request.jobId, ...(protectedEnv ?? {}) };
       const hostEnvironment = [
         environmentLayer(
           {
@@ -455,7 +457,7 @@ export function createFakeProvider(
       ];
       const plan: SimulationExecutionPlan = Object.freeze({
         host: Object.freeze({ access, platform, environment: Object.freeze(hostEnvironment) }),
-        session: Object.freeze({ sessionId: request.sessionId }),
+        session: Object.freeze({ sessionId: request.jobId }),
         turn: Object.freeze({ environment: Object.freeze(turnEnvironment) }),
       });
       const exactEnv = compileEnvironmentLayers([...hostEnvironment, ...turnEnvironment], {
@@ -641,7 +643,7 @@ export function createSimulationBackend(
   const progressStore = new JobStore(namespace, runtime, createEventBodyCodec(), {
     eventBus,
     db: storeDb,
-    reducers: composeReducers(jobsRegistry, sessionsRegistry, discussStoreRegistry, workflowRegistry),
+    reducers: composeReducers(jobsRegistry, discussStoreRegistry, workflowRegistry),
     providers: providerLookupPortFromCatalog(providerRegistry),
   });
   const storeServices: CoordinatorStoreServices = {
@@ -740,8 +742,38 @@ export function createSimulationBackend(
     onExit: () => () => {},
   };
 
+  const operationRegistry = new LocalOperationRegistry();
+  const retentionLifetime = new AbortController();
+  const lifecycleReactor = new LifecycleReactor({
+    db: () => storeDb,
+    readCtx: progressStore,
+    providers: providerRegistry,
+    runtime,
+    time: runtime.time,
+    commitEvents: (write) => progressStore.commit(write),
+    signal: retentionLifetime.signal,
+  });
+  const executionFinisher = new ExecutionFinisher({
+    time: runtime.time,
+    commit: (write) => progressStore.commit(write),
+    read: (address) => readExecutionFinishingState(storeDb, address, progressStore),
+    quiesce: async (address) =>
+      !hasProviderOperationForJob(storeDb, address.jobId) &&
+      operationRegistry.stateForJob(address.jobId) === null &&
+      launchCoordinator.reservationFor(address.jobId) === null,
+    retentionAction: (address) => lifecycleReactor.retentionAction(address),
+    settleRetention: (address, action) => lifecycleReactor.settleRetention(address, action),
+  });
   const core = createCoordinatorCore(
     {
+      executionFinisher,
+      operationRegistry,
+      admitLifecycleRetention: () => lifecycleReactor.admitRetention(),
+      discardConversationArtifacts: (jobId) => lifecycleReactor.discardConversationArtifacts(jobId),
+      disposeLifecycleReactor: async () => {
+        retentionLifetime.abort();
+        await lifecycleReactor.dispose();
+      },
       storeFormat,
       runtime,
       pluginRoot,
@@ -860,14 +892,6 @@ export function createSimulationBackend(
       await workflowRecover.recoverAll({
         db: storeDb,
         progressStore: recoveryProgressStore,
-        clearContinuationLease: (projectRoot, input) =>
-          SessionManager.forProduction(
-            projectRoot,
-            runtime,
-            (cb) => progressStore.commit(cb),
-            (payload) => eventBus.emit('session:released', payload),
-            { db: storeDb },
-          ).clearContinuationLease(input),
         finalizeWorkflow: createWorkflowRecoveryFinalizer({
           runtime,
           progressStore,
@@ -881,7 +905,6 @@ export function createSimulationBackend(
           getExecutionService,
           createInvocationContext,
           releaseAdoptedJob: recoveryCoordinator.releaseAdoptedJob,
-          emitSessionReleased: (payload) => eventBus.emit('session:released', payload),
           log: identity.log,
         }),
         signal,

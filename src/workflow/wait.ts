@@ -1,14 +1,17 @@
+import { sameEpoch } from '../store/epoch/identity.js';
 import { setImmediate } from 'node:timers/promises';
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
 import type { TimePort } from '../infra/port-types.js';
 import { type WaitCursor, type WaitStreamEvent } from '../jobs/wait/contract.js';
 import { advanceWaitRenderCursor } from '../jobs/wait/stream-event.js';
+import type { WaitExecutionSelection } from '../jobs/wait/execution-selection.js';
 import { phaseForOutcome } from '../jobs/outcome.js';
 import {
   buildStepDetailsForAtoms,
   createWorkflowExecutionError,
   type LaunchedAtom,
+  type AtomExecution,
   type StepDetail,
   type WaitFailure,
   type WaitInternalState,
@@ -16,7 +19,6 @@ import {
 } from './execution-contract.js';
 import { describeTerminalFailure } from './command.js';
 
-// Atom-progress formatters live next to the wait loop that consumes them.
 function stripElapsedPrefix(message: string): string {
   if (!message.startsWith('[')) return message;
   const closeBracket = message.indexOf('] ');
@@ -73,7 +75,8 @@ export type AwaitStepState = {
   cursor: WaitCursor | undefined;
   lastActivityAt: Map<string, number>;
   staleRetries: Map<string, number>;
-  expectedStaleAborts: Set<string>;
+  expectedStaleAborts: Map<string, AtomExecution>;
+  executionSelections: WaitExecutionSelection[];
   observedIdleMs: Map<string, number>;
   lastObservedAtMonotonicMs: bigint;
   observedDrainMs: number;
@@ -94,10 +97,6 @@ function waitTimeoutSeconds(staleTimeoutMs: number, staleCheckIntervalMs: number
 
 function cloneMap<K, V>(value?: Map<K, V>): Map<K, V> {
   return value ? new Map(value) : new Map();
-}
-
-function cloneSet<T>(value?: Set<T>): Set<T> {
-  return value ? new Set(value) : new Set();
 }
 
 function createAwaitStepState(
@@ -128,7 +127,16 @@ function createAwaitStepState(
     cursor: initialState.cursor,
     lastActivityAt,
     staleRetries,
-    expectedStaleAborts: cloneSet(initialState.expectedStaleAborts),
+    expectedStaleAborts: cloneMap(initialState.expectedStaleAborts),
+    executionSelections: [...pending.values()].map(
+      (atom) =>
+        initialState.executionSelections?.find(
+          (selection) =>
+            selection.jobId === atom.jobId &&
+            selection.requestedSeq === atom.requestedSeq &&
+            sameEpoch(selection.epochKey, atom.epochKey),
+        ) ?? { jobId: atom.jobId, epochKey: atom.epochKey, requestedSeq: atom.requestedSeq, awaitingArtifact: false },
+    ),
     observedIdleMs: new Map([...pending.values()].map((atom) => [atom.atomKey, 0])),
     lastObservedAtMonotonicMs: time.monotonicNow(),
     observedDrainMs: 0,
@@ -162,7 +170,8 @@ function snapshotWaitState(state: AwaitStepState): WaitInternalState {
     cursor: state.cursor,
     lastActivityAt: new Map(state.lastActivityAt),
     staleRetries: new Map(state.staleRetries),
-    expectedStaleAborts: new Set(state.expectedStaleAborts),
+    expectedStaleAborts: new Map(state.expectedStaleAborts),
+    executionSelections: state.executionSelections.map((selection) => ({ ...selection })),
     failureDrain:
       state.failureDrain === null
         ? undefined
@@ -217,6 +226,8 @@ function handleWaitEvent(
   options: Pick<WaitForAtomsOptions, 'onProgress' | 'onAtomTerminal' | 'onFailureDrain' | 'time' | 'drainDeadlineMs'>,
 ): 'handled' | 'check-stale' {
   switch (event.type) {
+    case 'admission':
+      return 'handled';
     case 'cursor':
       state.cursor = event.cursor;
       return 'handled';
@@ -253,7 +264,7 @@ function handleWaitEvent(
 
     case 'progress': {
       const atom = state.pending.get(event.jobId);
-      if (!atom) return 'handled';
+      if (!atom || event.seq <= atom.requestedSeq) return 'handled';
       recordWaitActivity(state, atom, stripElapsedPrefix(event.message), options);
       return 'handled';
     }
@@ -261,7 +272,19 @@ function handleWaitEvent(
     case 'terminal': {
       const atom = state.pending.get(event.jobId);
       if (!atom) return 'handled';
+      const selection = event.executionSelections?.find((entry) => entry.jobId === event.jobId);
+      if (
+        selection?.requestedSeq !== atom.requestedSeq ||
+        !sameEpoch(selection.epochKey, atom.epochKey) ||
+        selection.deliveredEndSeq !== event.seq
+      )
+        return 'handled';
+      const previous = state.executionSelections.find((entry) => entry.jobId === event.jobId);
+      if (previous?.deliveredEndSeq === event.seq) return 'handled';
 
+      state.executionSelections = state.executionSelections.map((entry) =>
+        entry.jobId === event.jobId ? { ...selection } : entry,
+      );
       state.cursor = advanceWaitRenderCursor(state.cursor, event).cursor;
       state.pending.delete(event.jobId);
       state.observedIdleMs.delete(atom.atomKey);
@@ -270,13 +293,14 @@ function handleWaitEvent(
       const terminalState = outcomePhase === 'completed' ? 'done' : 'error';
       options.onProgress(formatAtomProgress(atom, terminalState));
 
-      if (state.expectedStaleAborts.has(event.jobId)) {
-        // We requested a stale-recovery abort for this job. If it terminated as
-        // aborted (expected), swallow it. But if it actually completed in the race
-        // before the abort landed, fall through to record the real result rather
-        // than discarding it (B4-a).
+      const expectedAbort = state.expectedStaleAborts.get(event.jobId);
+      if (
+        expectedAbort?.execution === atom.execution &&
+        expectedAbort.requestedSeq === atom.requestedSeq &&
+        sameEpoch(expectedAbort.epochKey, atom.epochKey)
+      ) {
         state.expectedStaleAborts.delete(event.jobId);
-        if (outcomePhase !== 'completed') {
+        if (event.result.outcome.kind === 'aborted') {
           return 'handled';
         }
       }
@@ -338,6 +362,7 @@ async function awaitWaitCycle(
     jobIds: [...state.pending.keys()],
     timeoutSeconds,
     cursor: state.cursor,
+    executionSelections: state.executionSelections.filter((selection) => state.pending.has(selection.jobId)),
   })) {
     events++;
     advanceObservedWaitTime(state, options.time.monotonicNow(), observedCadenceMs);

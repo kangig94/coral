@@ -19,8 +19,8 @@ import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { z } from 'zod';
 import type { EventsRow } from '#src/store/schema.js';
 
-const sessionQueryRegistry: DomainEventRegistry = {
-  streamKind: 'session',
+const resetQueryRegistry: DomainEventRegistry = {
+  streamKind: 'workflow',
   entries: [defineDomainEvent({ type: 'test.counter.reset', schema: TEST_COUNTER_SCHEMA })],
 };
 
@@ -36,7 +36,7 @@ const workflowQueryRegistry: DomainEventRegistry = {
 
 const queryReducers = composeReducers(
   testCounterRegistry,
-  sessionQueryRegistry,
+  resetQueryRegistry,
   discussQueryRegistry,
   workflowQueryRegistry,
 );
@@ -69,7 +69,7 @@ describe('events queries', () => {
       },
       {
         type: 'test.counter.reset',
-        stream: { kind: 'session', id: 'session-2' },
+        stream: { kind: 'workflow', id: 'workflow-2' },
         namespace: 'tests',
         project: 'coral',
         correlationId: 'cor-a',
@@ -139,13 +139,13 @@ describe('events queries', () => {
   });
 
   it('rejects a registered event type stored under a different valid stream kind', () => {
-    db.prepare("UPDATE events SET stream_kind = 'session' WHERE seq = 1").run();
+    db.prepare("UPDATE events SET stream_kind = 'workflow' WHERE seq = 1").run();
 
-    expect(() => getEvent(db, { kind: 'session', id: 'job-0' }, 1, readCtx)).toThrow(
-      "Stored event type 'test.counter.ticked' belongs to stream kind 'job', not 'session'",
+    expect(() => getEvent(db, { kind: 'workflow', id: 'job-0' }, 1, readCtx)).toThrow(
+      "Stored event type 'test.counter.ticked' belongs to stream kind 'job', not 'workflow'",
     );
     expect(() => getEventsSince(db, 0, {}, 1000, readCtx)).toThrow(
-      "Stored event type 'test.counter.ticked' belongs to stream kind 'job', not 'session'",
+      "Stored event type 'test.counter.ticked' belongs to stream kind 'job', not 'workflow'",
     );
   });
 
@@ -163,8 +163,8 @@ describe('events queries', () => {
   it('does not let a stream-kind filter hide a corrupted physical stream kind', () => {
     db.prepare("UPDATE events SET stream_kind = 'job' WHERE seq = 3").run();
 
-    expect(() => getEventsSince(db, 0, { streamKind: 'session' }, 1000, readCtx)).toThrow(
-      "Stored event type 'test.counter.reset' belongs to stream kind 'session', not 'job'",
+    expect(() => getEventsSince(db, 0, { streamKind: 'workflow' }, 1000, readCtx)).toThrow(
+      "Stored event type 'test.counter.reset' belongs to stream kind 'workflow', not 'job'",
     );
   });
 

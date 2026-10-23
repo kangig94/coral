@@ -37,7 +37,7 @@ function echoBootstrapSignature(params: Record<string, unknown> | undefined): Cl
 
 const REQUEST: ProviderRequest = {
   action: 'exec',
-  sessionId: 'job-claude-diagnostic',
+  jobId: 'job-claude-diagnostic',
   name: 'claude',
   prompt: 'hello',
   cwd: fixtureCanonicalWorkDir('/workspace'),

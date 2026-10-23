@@ -15,10 +15,9 @@ function fixture() {
       watermark = seq;
     },
     appendProgress: async () => {},
-    appendSessionEvent: async () => {},
-    appendSessionInterrupted: async () => {},
-    appendJobTerminal: async () => {},
-    releaseSessionClaim: async () => {},
+    appendConversationEvent: async () => {},
+    appendJobInterrupted: async () => {},
+    acceptExecutionOutcome: async () => {},
     markSettlementPending: async () => {},
   };
   return { port };
@@ -38,7 +37,7 @@ describe('applyProviderEventAtSeq', () => {
         durable = true;
         return result;
       },
-      appendSessionEvent: async () => {
+      appendConversationEvent: async () => {
         checkpointStarted.resolve();
         await checkpoint.promise;
       },

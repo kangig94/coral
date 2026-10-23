@@ -1,3 +1,6 @@
+import { executionRetryStatusSchema } from '../records.js';
+import { executionOrdinalSchema } from '../launch.js';
+import { type WaitExecutionSelection, waitExecutionSelectionsSchema } from './execution-selection.js';
 import assert from 'node:assert/strict';
 import { z } from 'zod';
 import { decodeWaitCursor } from './cursor.js';
@@ -49,6 +52,7 @@ export function selectWaitSnapshot(session: WaitSession, lines = 20, visit: Prog
       jobs,
       notices,
       cursor: session.cursor(),
+      executionSelections: session.executionSelections(),
       remainingJobIds,
       exitCode: session.exitCode(),
     };
@@ -61,8 +65,11 @@ function snapshotJob(session: WaitSession, admission: WaitAdmission): WaitSnapsh
   const { jobId, disposition, message, detail, availability } = admission;
   const row: WaitSnapshotJob = { jobId, disposition, ...(message === undefined ? {} : { message }), progress: [] };
   if (disposition !== 'admitted') return row;
+  if (typeof detail?.status.execution === 'number') row.execution = detail.status.execution;
   row.phase = detail?.status.phase ?? 'unresolved';
-  if (!detail?.exit || !session.terminalDeliverable(admission)) return row;
+  row.finishingStatus = detail?.status.finishingStatus;
+  if (!detail?.exit || !session.terminalDeliverable(admission) || session.terminalDelivery(admission) === null)
+    return row;
   row.availability = availability;
   row.terminal = terminalSummary(detail, detail.exit);
   session.deliverTerminal(admission);
@@ -127,9 +134,14 @@ function snapshotEnvelopeBytes(snapshot: unknown): number {
 }
 
 /** An oversized snapshot never advances the input cursor; each subset retry repeats that unchanged cursor. */
-export function waitSnapshotTooLarge(jobIds: readonly string[], input: WaitCursor | undefined): WaitSessionError {
+export function waitSnapshotTooLarge(
+  jobIds: readonly string[],
+  input: WaitCursor | undefined,
+  selections: readonly WaitExecutionSelection[] = [],
+): WaitSessionError {
   const retries = jobIds.map(
-    (jobId) => `coral-cli jobs wait '${jobId.replaceAll("'", "'\\''")}' --snapshot${input ? ` --cursor ${input}` : ''}`,
+    (jobId) =>
+      `coral-cli jobs wait '${jobId.replaceAll("'", "'\\''")}' --snapshot${input ? ` --cursor ${input}` : ''}${selections.length === 0 ? '' : ` --execution-selection '${JSON.stringify(selections).replaceAll("'", "'\\''")}'`}`,
   );
   return new WaitSessionError(
     'wait_snapshot_too_large',
@@ -147,7 +159,7 @@ function fitSnapshotResponse(snapshot: WaitSnapshot, session: WaitSession): void
       job.terminal.diagnosticPreview = '[diagnostics omitted: response size budget]';
     }
   if (!waitSnapshotEnvelopeFits(snapshotEnvelopeBytes(snapshot)))
-    throw waitSnapshotTooLarge(session.jobIds, session.input);
+    throw waitSnapshotTooLarge(session.jobIds, session.input, session.inputExecutionSelections);
 }
 
 /** A partial or malformed unary response must not advance collection state. */
@@ -168,9 +180,11 @@ const waitSnapshotSchema = z
         z
           .object({
             jobId: z.string().min(1),
+            execution: executionOrdinalSchema.optional(),
             disposition: z.enum(['admitted', 'missing', 'scope-mismatch', 'unknown', 'unreadable']),
             message: z.string().optional(),
             phase: z.string().optional(),
+            finishingStatus: executionRetryStatusSchema.optional(),
             progress: z.array(z.string()),
             terminal: z
               .object({
@@ -191,6 +205,7 @@ const waitSnapshotSchema = z
       )
       .max(128),
     notices: z.array(z.string()),
+    executionSelections: waitExecutionSelectionsSchema.optional(),
     cursor: z.custom<WaitCursor>((value) => decodeWaitCursor(value).kind === 'decoded').nullable(),
     remainingJobIds: z.array(z.string()).max(128),
     exitCode: z.number().int().min(0).max(255),

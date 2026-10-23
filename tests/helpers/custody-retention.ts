@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { reconcileFinishedCustody } from '#src/coordinator/services/recovery/custody-reconciliation.js';
 import { createAsyncRecordedProcessObserver, processIncarnationSchema } from '#src/infra/node-process.js';
 import { JobLocationIndex } from '#src/jobs/location-index.js';
@@ -12,7 +13,12 @@ import { vi } from 'vitest';
 
 export function createCustodyRetentionFixture(f: ReturnType<typeof createRetentionFixture>) {
   const runDir = f.runtime.paths.coral.coordinator.runDir;
-  const index = new JobLocationIndex(f.runtime, f.runtime.paths.coral.generation.dataRoot);
+  const index = new JobLocationIndex(
+    f.runtime,
+    f.runtime.paths.coral.generation.dataRoot,
+    undefined,
+    currentCoralStoreFormat().fingerprint,
+  );
   let monotonic = 0n;
   f.runtime.time.monotonicNow = () => monotonic;
   f.runtime.time.sleep = async (ms) => {

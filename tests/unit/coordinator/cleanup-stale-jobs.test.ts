@@ -1,3 +1,4 @@
+import { insertTestJobProjection } from '#tests/helpers/job-projection.js';
 import { beforeEach, describe, it, expect, vi } from 'vitest';
 import { cleanupStaleJobs } from '#src/coordinator/lifecycle.js';
 import { backendLog } from '#src/infra/backend-log.js';
@@ -34,13 +35,6 @@ async function runCleanup(
   const runtime = new SimulationRuntime();
   const db = openTestStoreDb(runtime, ':memory:');
   const purged: string[] = [];
-  const insertProjection = db.prepare(
-    `INSERT INTO projection_jobs (
-       job_id, execution_owner, phase, terminal, diagnostics, session_id, provider,
-       project_root, work_dir, backend_namespace, bundle_hash, job_kind, parent_workflow_job_id,
-       workflow_slot, workflow_slot_generation, replaces_workflow_job_id, created_at, last_seq
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  );
   const insertEvent = db.prepare(
     `INSERT INTO events (
        seq, ts, type, stream_kind, stream_id, namespace, project,
@@ -51,31 +45,21 @@ async function runCleanup(
   for (const [jobId, jobStatus] of Object.entries(statuses)) {
     const terminal = jobStatus.phase === 'completed' || jobStatus.phase === 'error' || jobStatus.phase === 'aborted';
     seq += 1;
-    insertProjection.run(
-      jobId,
-      JSON.stringify({ kind: 'provider-session', id: `${jobId}-session` }),
-      jobStatus.phase,
-      terminal ? JSON.stringify({ content: '', outcome: { kind: 'completed' }, durationMs: 0 }) : null,
-      '{"progressFaults":[]}',
-      `${jobId}-session`,
-      'codex',
-      '/project',
-      '/project',
-      'namespace',
-      jobStatus.bundleHash ?? null,
-      'provider',
-      null,
-      null,
-      null,
-      null,
-      jobStatus.updatedAt,
-      seq,
-    );
+    insertTestJobProjection(db, {
+      job_id: jobId,
+      project_root: '/project',
+      phase: jobStatus.phase,
+      terminal: terminal ? JSON.stringify({ content: '', outcome: { kind: 'completed' }, durationMs: 0 }) : null,
+      backend_namespace: 'namespace',
+      bundle_hash: jobStatus.bundleHash ?? null,
+      created_at: jobStatus.updatedAt,
+      last_seq: seq,
+    });
     if (terminal) {
       insertEvent.run(
         seq,
         jobStatus.updatedAt,
-        'job.terminal.recorded',
+        'job.execution.ended',
         'job',
         jobId,
         'namespace',
@@ -95,6 +79,7 @@ async function runCleanup(
   }
   const store = {
     getDb: () => db,
+    readStatus: (id: string) => statuses[id] ?? null,
     jobDir: (id: string) => `/jobs/${id}`,
     purgeFromCache: (id: string) => purged.push(id),
   } as unknown as JobStore;

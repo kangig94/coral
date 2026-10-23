@@ -1,7 +1,13 @@
+import { waitExecutionSelectionsSchema, type WaitExecutionSelection } from '../../jobs/wait/execution-selection.js';
 import { decodeWaitCursor, WAIT_CURSOR_REPLAY_NOTICE } from '../../jobs/wait/cursor.js';
 import type { WaitCursor } from '../../jobs/wait/contract.js';
 import { parseWaitSnapshot } from '../../jobs/wait/snapshot.js';
-import { formatWaitSnapshot, formatWaitContinuation, waitCommandPrefix } from '../format/wait.js';
+import {
+  formatWaitSnapshot,
+  formatWaitContinuation,
+  waitCommandPrefix,
+  waitContinuationCommand,
+} from '../format/wait.js';
 import { mapWaitSubscriptionError, SOFT_CURSOR_REFUSALS } from '../wait-stream-error.js';
 import { MAX_WAIT_JOB_IDS } from '../../jobs/wait/stream-event.js';
 import { BackendToolHttpError } from '../../transport/http/errors.js';
@@ -16,9 +22,9 @@ import { waitCommandPaths } from '../../coordinator/handoff-routing/wait-command
 import type { AbortResult } from '../../jobs/contracts/abort-registry.js';
 import type { ProviderRegistry } from '../../providers/registry.js';
 import { getProviderNames, makeClient } from '../dispatch.js';
-import { emitError, getTerminalContext } from '../emit.js';
+import { emitError, getTerminalContext, handleLaunchResult } from '../emit.js';
 import { parseJobIds, resolveInput } from '../flags.js';
-import { flushPendingReadStoreNote, getSharedReadCoralStore } from '../read-store.js';
+import { flushPendingReadStoreNote } from '../read-store.js';
 import { UsageError, WaitOutputError, WaitSnapshotResponseError, normalizeUsageError } from '../errors.js';
 import { WaitBuildMismatchError } from '../../coordinator/handoff-routing/wait-invocation.js';
 import {
@@ -27,7 +33,6 @@ import {
   formatJobSendResult,
   formatJobsList,
   renderJobsList,
-  type JobSendOutputContext,
 } from '../format/jobs.js';
 import { openCliCauseRefRenderer } from '../cause-renderer.js';
 import { followJobs } from '../follow.js';
@@ -61,6 +66,7 @@ type WaitJobsOptions = {
   unbounded?: boolean;
   lines?: string;
   cursor?: string;
+  executionSelection?: string;
   embed?: boolean;
   verbose?: boolean;
 };
@@ -276,42 +282,32 @@ function registerJobsSendCommand(jobsCommand: Command): void {
   const sendCommand = jobsCommand.command('send');
   const inputUsage = 'Input is required. Use -i <text>, -i <file>, or -i - (stdin).';
   sendCommand
-    .description('Deliver a user message to a running provider turn. An ended turn is not resumed.')
-    .argument('<jobId>', 'Job ID')
+    .description(
+      "Steer a running provider turn, or continue an ended job's conversation (follows to completion; -d returns after launch, ignored for a steer)",
+    )
+    .argument('<jobId>', 'Canonical job UUID (required)')
     .option(
       '-i, --input <text-or-file...>',
       'Message input (required; tokens are joined with single spaces; the whole input is read if it names an existing regular file, or stdin if exactly -; otherwise literal text)',
     )
-    .action(async (jobId: string, opts: { input?: string[] }) => {
+    .option('-d, --detach', 'Return immediately after launching a continuation')
+    .action(async (jobId: string, opts: { input?: string[]; detach?: boolean }) => {
       try {
         if (opts.input === undefined) throw new UsageError(inputUsage);
         const input = resolveInput(opts.input);
         if (input.trim().length === 0) throw new UsageError(inputUsage);
         const result = await makeClient(process.cwd(), sendCommand).sendJob(jobId, input);
-        const launch =
-          result.state === 'refused' && result.code === 'turn_ended' && opts.input.join(' ') !== '-'
-            ? readJobSendLaunch(jobId)
-            : null;
-        const output = formatJobSendResult(jobId, result, { inputTokens: opts.input, launch });
+        if (result.state === 'launched' && opts.detach !== true) {
+          await handleLaunchResult(result.launch, false);
+          return;
+        }
+        const output = formatJobSendResult(jobId, result, { inputTokens: opts.input, detach: opts.detach === true });
         (output.exitCode === 0 ? process.stdout : process.stderr).write(output.text + '\n');
         process.exitCode = output.exitCode;
       } catch (error) {
         emitError(normalizeUsageError(error));
       }
     });
-}
-
-function readJobSendLaunch(jobId: string): JobSendOutputContext['launch'] {
-  try {
-    const store = getSharedReadCoralStore(process.cwd(), { announceMissing: false });
-    const status = store.jobs.detail(jobId)?.status;
-    if (status === undefined || status.jobKind !== 'provider' || status.sessionId === null) return null;
-    const session = store.sessions.readEntry(status.sessionId);
-    return { provider: session.binding.provider, agent: session.agentName ?? null };
-  } catch {
-    // A failed metadata read cannot replace a decisive refusal with a generic retry error.
-    return null;
-  }
 }
 
 function reportAbortResult(result: AbortResult): void {
@@ -388,7 +384,11 @@ function configureWaitJobsCommand(command: Command): Command {
       'Monitor jobs until the first terminal or ~590 s, then return a continuation; --snapshot returns immediately; --unbounded drops the ~590 s bound',
     )
     .argument('<jobIds...>', 'Job IDs')
-    .option('--cursor <cursor>', 'Opaque resume cursor (from previous wait output)')
+    .option('--cursor <cursor>', 'Progress seq cursor (from previous wait output)')
+    .option(
+      '--execution-selection <JSON>',
+      'Optional complete opaque JSON from a printed continuation; copy it unchanged',
+    )
     .option(
       '--snapshot',
       'Read an immediate snapshot; continuations keep --snapshot; drop it explicitly to switch to a blocking wait',
@@ -429,6 +429,7 @@ async function runWaitSnapshot(
   lines: number | undefined,
 ): Promise<void> {
   const invocation = getWaitInvocation();
+  const executionSelections = parseExecutionSelections(opts.executionSelection, jobIds);
   let cursor: WaitCursor | undefined;
   if (opts.cursor !== undefined) {
     if (decodeWaitCursor(opts.cursor).kind === 'decoded') cursor = opts.cursor;
@@ -443,20 +444,21 @@ async function runWaitSnapshot(
       jobIds,
       projectRoot,
       ...(cursor === undefined ? {} : { cursor }),
+      ...(executionSelections === undefined ? {} : { executionSelections }),
       ...(lines === undefined ? {} : { lines }),
     });
   let response;
   try {
     response = await read();
   } catch (error) {
-    const mapped = mapWaitSubscriptionError(error);
+    const mapped = mapWaitSubscriptionError(error, 'snapshot');
     if (mapped instanceof WaitBuildMismatchError) throw mapped;
     if (
       !(mapped instanceof BackendToolHttpError) ||
       !isRecord(mapped.body) ||
       !SOFT_CURSOR_REFUSALS.includes(String(mapped.body.code))
     )
-      throw error;
+      throw mapped;
     reset();
     response = await read();
   }
@@ -467,11 +469,12 @@ async function runWaitSnapshot(
   } catch {
     throw new WaitSnapshotResponseError(
       invocation?.originalCommand ??
-        `${waitCommandPrefix()} ${jobIds.join(' ')} --snapshot${opts.cursor === undefined ? '' : ` --cursor ${opts.cursor}`}${opts.lines === undefined ? '' : ` --lines ${opts.lines}`}`,
+        `${waitCommandPrefix()} ${jobIds.join(' ')} --snapshot${opts.cursor === undefined ? '' : ` --cursor ${opts.cursor}`}${opts.lines === undefined ? '' : ` --lines ${opts.lines}`}${opts.executionSelection === undefined ? '' : ` --execution-selection '${opts.executionSelection.replaceAll("'", "'\\''")}'`}`,
     );
   }
   const output = formatWaitSnapshot(snapshot) + '\n';
-  const continuation = formatWaitContinuation(snapshot.remainingJobIds, snapshot.cursor, 'snapshot') + '\n';
+  const continuation =
+    formatWaitContinuation(snapshot.remainingJobIds, snapshot.cursor, 'snapshot', snapshot.executionSelections) + '\n';
   const write = () =>
     new Promise<void>((resolve, reject) =>
       process.stdout.write(output, (error) => (error ? reject(error) : resolve())),
@@ -483,7 +486,7 @@ async function runWaitSnapshot(
     throw new WaitOutputError(
       error,
       invocation?.originalCommand ??
-        `${waitCommandPrefix()} ${jobIds.join(' ')} --snapshot${opts.cursor === undefined ? '' : ` --cursor ${opts.cursor}`}${opts.lines === undefined ? '' : ` --lines ${opts.lines}`}`,
+        `${waitCommandPrefix()} ${jobIds.join(' ')} --snapshot${opts.cursor === undefined ? '' : ` --cursor ${opts.cursor}`}${opts.lines === undefined ? '' : ` --lines ${opts.lines}`}${opts.executionSelection === undefined ? '' : ` --execution-selection '${opts.executionSelection.replaceAll("'", "'\\''")}'`}`,
     );
   }
 
@@ -497,7 +500,12 @@ async function runStreamingWaitJobs(
   opts: WaitJobsOptions,
 ): Promise<void> {
   process.exitCode = await followJobs({
-    start: { kind: 'jobs', jobIds, ...(opts.cursor === undefined ? {} : { serializedCursor: opts.cursor }) },
+    start: {
+      kind: 'jobs',
+      jobIds,
+      executionSelections: parseExecutionSelections(opts.executionSelection, jobIds),
+      ...(opts.cursor === undefined ? {} : { serializedCursor: opts.cursor }),
+    },
     reconnectPolicy: opts.unbounded === true ? 'unbounded' : 'bounded',
     invocation: getWaitInvocation(),
     projectRoot,
@@ -507,12 +515,33 @@ async function runStreamingWaitJobs(
       embed: opts.embed === true,
       verbose: opts.verbose === true,
     },
-    connect: async ({ jobIds: activeJobIds, cursor, timeoutSeconds, signal, drainProgress }) => ({
+    connect: async ({ jobIds: activeJobIds, cursor, executionSelections, timeoutSeconds, signal, drainProgress }) => ({
       kind: 'subscription',
       subscription: await client.subscribeJobsWait(
-        { jobIds: activeJobIds, timeoutSeconds, projectRoot, drainProgress, ...(cursor ? { cursor } : {}) },
+        {
+          jobIds: activeJobIds,
+          timeoutSeconds,
+          projectRoot,
+          drainProgress,
+          executionSelections,
+          ...(cursor ? { cursor } : {}),
+        },
         { signal },
       ),
     }),
   });
+}
+
+function parseExecutionSelections(
+  value: string | undefined,
+  jobIds: readonly string[],
+): WaitExecutionSelection[] | undefined {
+  if (value === undefined) return undefined;
+  try {
+    return waitExecutionSelectionsSchema.parse(JSON.parse(value));
+  } catch {
+    throw new UsageError(
+      `--execution-selection must be the complete JSON state from a wait continuation. Rerun the printed continuation exactly as printed, or start a fresh wait: ${waitContinuationCommand(jobIds, null, 'bounded')}`,
+    );
+  }
 }

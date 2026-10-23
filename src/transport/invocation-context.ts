@@ -15,13 +15,7 @@ export function buildControllerEnv(
   coralEnvSnapshot: Readonly<Record<string, string>>,
 ): Record<string, string> {
   const env = invocationCoralEnvSnapshot(coralEnvSnapshot);
-  // Caller-forwarded CORAL_* config is authoritative over the daemon's boot
-  // snapshot. The daemon's own CORAL_* is frozen at boot, so a value the caller
-  // changed — or removed from settings — after the daemon started would never
-  // otherwise reach a spawned provider. Presence of the field (even an empty
-  // map) is the authoritative signal. Daemon-owned identity/secret/lineage and
-  // boot-fixed keys are kept from the snapshot (never taken from this untrusted
-  // map) and, for lineage, set from the validated jobId/sessionId fields below.
+  // Untrusted forwarding must not replace daemon-owned identity, secrets, lineage, or boot-fixed keys.
   const forwardedCoralEnv = readForwardedCoralEnv(body.coralEnv);
   if (forwardedCoralEnv !== undefined) {
     for (const key of Object.keys(env)) {
@@ -31,12 +25,6 @@ export function buildControllerEnv(
     }
     Object.assign(env, forwardedCoralEnv);
   }
-  // These keys intentionally ride in the controller env (coralEnv), not a
-  // separate field: that is what carries them into the claude `envHash` and
-  // the codex host spec, so a changed proxy correctly re-bootstraps rather
-  // than reusing a stale one. Do not split this out. Read only the
-  // recognized keys with non-empty string values — the body is untrusted
-  // wire input.
   const networkEnv = body.networkEnv;
   if (networkEnv !== null && typeof networkEnv === 'object') {
     for (const key of FORWARDED_NETWORK_ENV_KEYS) {
@@ -46,12 +34,6 @@ export function buildControllerEnv(
       }
     }
   }
-  // owner/effort/claudeModelCap/claudeTransport also travel as dedicated,
-  // strictly-validated body fields — the only channel remote callers may use
-  // (coralEnv is loopback-only). The dedicated field intentionally wins over
-  // any coralEnv-forwarded copy of the same key. Do not delete either path as
-  // redundant: the dedicated fields are the remote-safe, strictly-typed
-  // source; coralEnv is the local bulk one.
   for (const field of TRANSPORT_CONTEXT_FIELDS) {
     const value = body[field];
     if (typeof value === 'string') {
@@ -60,9 +42,6 @@ export function buildControllerEnv(
   }
   if (typeof body.jobId === 'string' && body.jobId.length > 0) {
     env.CORAL_JOB_ID = body.jobId;
-  }
-  if (typeof body.sessionId === 'string' && body.sessionId.length > 0) {
-    env.CORAL_SESSION_ID = body.sessionId;
   }
   return env;
 }

@@ -1,3 +1,4 @@
+import type { JobLaunchRequest, JobConversationFacet } from '../jobs/launch.js';
 // Workflow execution contract: the port + value types that coordinator
 // services consume to drive workflow runs. Lives at the workflow root next
 // to other contract surfaces (events.ts, plan.ts).
@@ -8,8 +9,9 @@ import type { WaitCursor, WaitStreamEvent, WaitStreamRequest } from '../jobs/wai
 import type { CauseRef } from '../causality/cause-ref.js';
 import type { TerminalOutcome } from '../jobs/outcome.js';
 import type { ExecutionOwner } from '../runtime/execution-owner.js';
-import type { ProviderSessionLaunchDecision } from '../jobs/launch.js';
-import type { ClearContinuationLeaseInput, RecordContinuationLeaseInput, RetentionPolicy } from '../sessions/entry.js';
+import type { ProviderJobLaunchDecision } from '../jobs/launch.js';
+import type { RetentionPolicy } from '../jobs/conversation/entry.js';
+import type { WaitExecutionSelection } from '../jobs/wait/execution-selection.js';
 import type { CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
 
 export type StepDetail = {
@@ -26,13 +28,10 @@ export type PipelineResult = {
 
 interface CoralDispatchInput {
   prompt: string;
-  sessionId?: string;
   jobId?: string;
   workflowSlotId?: string;
-  workflowSlotGeneration?: number;
-  replacesWorkflowJobId?: string;
   cwd?: CanonicalWorkDir;
-  effort?: string;
+  effort?: JobConversationFacet['effort'];
   bypassPermissions?: boolean;
   systemPrompt?: string;
   parentWorkflowJobId?: string;
@@ -41,17 +40,14 @@ interface CoralDispatchInput {
 }
 
 interface ResumeInput {
-  sessionId: string;
+  jobId: string;
   prompt: string;
-  jobId?: string;
   workflowSlotId?: string;
-  workflowSlotGeneration?: number;
-  replacesWorkflowJobId?: string;
   name?: string;
   model?: string;
-  pool?: string;
+  pool?: JobLaunchRequest['pool'];
   cwd?: CanonicalWorkDir;
-  effort?: string;
+  effort?: JobConversationFacet['effort'];
   bypassPermissions?: boolean;
   systemPrompt?: string;
   instruction?: {
@@ -68,27 +64,28 @@ export interface WorkflowExecutionPort {
     coralName: string,
     input: CoralDispatchInput,
     ctx: InvocationContext,
-  ): Promise<ProviderSessionLaunchDecision>;
-  resume(providerName: string, input: ResumeInput, ctx: InvocationContext): Promise<ProviderSessionLaunchDecision>;
-  recordContinuationLease(input: RecordContinuationLeaseInput): Promise<void>;
-  clearContinuationLease(input: ClearContinuationLeaseInput): Promise<boolean>;
+  ): Promise<ProviderJobLaunchDecision>;
+  resume(providerName: string, input: ResumeInput, ctx: InvocationContext): Promise<ProviderJobLaunchDecision>;
   abort(jobIds: string[]): AbortResult;
   awaitLaunch(jobId: string, timeoutMs: number): Promise<LaunchReadiness>;
   waitStream(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent>;
-  waitForJobTerminal(jobId: string, timeoutMs?: number): Promise<void>;
 }
 
-export type LaunchedAtom = {
+export type AtomExecution = {
+  execution: number;
+  requestedSeq: number;
+  epochKey: string;
+};
+
+export type LaunchedAtom = AtomExecution & {
   slotId: string;
   jobId: string;
-  sessionId: string;
   providerName: string;
   agent: string;
   tagName: string;
   stepIndex: number;
   atomIndex: number;
   atomKey: string;
-  generation: number;
 };
 
 export type WaitFailure = {
@@ -108,7 +105,8 @@ export type WaitInternalState = {
   cursor: WaitCursor | undefined;
   lastActivityAt: Map<string, number>;
   staleRetries: Map<string, number>;
-  expectedStaleAborts: Set<string>;
+  expectedStaleAborts: Map<string, AtomExecution>;
+  executionSelections: WaitExecutionSelection[];
   failureDrain?: {
     firstFailure: WaitFailure;
     abortRequested: boolean;
@@ -152,7 +150,10 @@ export class WorkflowExecutionError extends Error {
   }
 }
 
-export function buildStepDetailsForAtoms(atoms: LaunchedAtom[], results: Map<string, string>): StepDetail[] {
+export function buildStepDetailsForAtoms(
+  atoms: readonly Pick<LaunchedAtom, 'atomKey' | 'stepIndex' | 'atomIndex' | 'agent'>[],
+  results: Map<string, string>,
+): StepDetail[] {
   const stepDetails: StepDetail[] = [];
 
   for (const atom of atoms) {

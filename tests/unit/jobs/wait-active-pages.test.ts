@@ -18,7 +18,7 @@ function setup() {
   const owner = f.store.getResultExportOwner();
   const wait = new WaitCoordinator({
     visitProgress: <T>(_epoch: string, read: (source: ProgressSource) => T) => f.store.visitProgress(read),
-    sessionManager: { get: () => null } as never,
+    conversationManager: { get: () => null } as never,
     launchQueue: { reservationFor: () => null, getActiveJobIds: () => [] } as never,
     eventBus: f.store.getEventBus(),
     time: f.runtime.time,
@@ -56,19 +56,25 @@ it('resumes after a budget cut through the active journal, skipping a fault row 
   const { f, addressing } = setup();
   try {
     const launchSeq = f.db.prepare<[], { seq: number }>('SELECT MAX(seq) AS seq FROM events').get()!.seq;
-    f.store.appendProgress(f.jobId, 'session-1', 'line 0');
+    f.store.appendProgress(f.jobId, 'line 0');
     f.store.commit((c) => {
       c.append({
-        type: 'job.progress.emitted',
+        type: 'job.execution.progress',
         stream: { kind: 'job', id: f.jobId },
         namespace: 'fixture',
         project: f.root,
-        refs: buildJobEventRefs({ jobId: f.jobId, sessionId: 'session-1' }),
-        body: { kind: 'domain', stage: 'hosted_kb_operation_failed', message: 'KB op failed', detail: {} },
+        refs: buildJobEventRefs({ jobId: f.jobId }),
+        body: {
+          execution: 1,
+          kind: 'domain',
+          stage: 'hosted_kb_operation_failed',
+          message: 'KB op failed',
+          detail: {},
+        },
       });
       return undefined;
     });
-    for (let i = 1; i < 600; i++) f.store.appendProgress(f.jobId, 'session-1', `line ${i}`);
+    for (let i = 1; i < 600; i++) f.store.appendProgress(f.jobId, `line ${i}`);
     f.complete({ terminal: { content: 'done', outcome: { kind: 'completed' }, durationMs: 1 } });
     f.store.publishTerminalResult(f.jobId);
     const cursor = savedCursor(launchSeq);

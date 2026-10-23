@@ -108,9 +108,9 @@ function registeredSchemaFor(
   return schema;
 }
 
-export function decodeBody<T>(
+export function decodeBody<T, Input>(
   row: Pick<EventsRow, 'type' | 'stream_kind' | 'body'> & Partial<Pick<EventsRow, 'seq' | 'stream_id'>>,
-  schema: z.ZodType<T>,
+  schema: z.ZodType<T, z.ZodTypeDef, Input>,
   ctx: StoreReadContext,
 ): T {
   if (registeredSchemaFor(row, ctx) !== schema) {

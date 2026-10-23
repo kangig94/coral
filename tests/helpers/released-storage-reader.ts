@@ -2,17 +2,21 @@ import { execFileSync } from 'node:child_process';
 import { posix } from 'node:path';
 import { build } from 'esbuild';
 
-export async function buildReleasedStorageReader(tag: string, outfile: string): Promise<void> {
+export async function buildReleasedStorageReader(
+  tag: string,
+  outfile: string,
+  entry = 'export {JobLocationIndex, hasReadableTerminalDetail} from "#src/jobs/location-index.js"; export {readCustodyLedger} from "#src/store/custody-ledger.js";',
+): Promise<void> {
   const cwd = process.cwd();
   const sources = new Map<string, string>();
   await build({
     stdin: {
-      contents:
-        'export {JobLocationIndex, hasReadableTerminalDetail} from "./src/jobs/location-index.ts"; export {readCustodyLedger} from "./src/store/custody-ledger.ts";',
+      contents: entry,
       resolveDir: cwd,
     },
     bundle: true,
     platform: 'node',
+    loader: { '.sql': 'text' },
     format: 'esm',
     outfile,
     plugins: [
@@ -38,7 +42,7 @@ export async function buildReleasedStorageReader(tag: string, outfile: string): 
               });
               sources.set(args.path, source);
             }
-            return { contents: source, loader: 'ts', resolveDir: cwd };
+            return { contents: source, loader: args.path.endsWith('.sql') ? 'text' : 'ts', resolveDir: cwd };
           });
         },
       },

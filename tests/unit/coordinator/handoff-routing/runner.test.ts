@@ -665,3 +665,28 @@ it('delegates a launch follow as a jobs wait invocation carrying its cursor, and
   );
   expect(mockState.spawn.mock.calls[1][1].slice(1)).toEqual(['jobs', 'wait', 'a']);
 });
+
+it('delegates the full wait selection beside a low seq cursor', async () => {
+  mockState.execFile.mockImplementation((_file, _args, _options, callback) => {
+    queueMicrotask(() => callback(null, JSON.stringify({ version: 1, monitorOnly: true })));
+    return childThatExits(0, null);
+  });
+  mockState.spawn.mockImplementation(() => childThatExits(75, null));
+  const selections = JSON.stringify([
+    { jobId: 'a', epochKey: 'epoch', requestedSeq: 1000, awaitingArtifact: false },
+    { jobId: 'b', epochKey: 'epoch', requestedSeq: 2, deliveredEndSeq: 950, awaitingArtifact: false },
+  ]);
+  await runHandoff(
+    { kind: 'wait-jobs', jobId: 'a', serializedCursor: '279', serializedExecutionSelections: selections },
+    { pluginRoot: '/plugin/root', waitProbeRemainingMs: () => 10_000 },
+  );
+  expect(mockState.spawn.mock.calls[0][1].slice(1)).toEqual([
+    'jobs',
+    'wait',
+    'a',
+    '--cursor',
+    '279',
+    '--execution-selection',
+    selections,
+  ]);
+});

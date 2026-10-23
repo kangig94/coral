@@ -12,7 +12,7 @@ import {
 import type { Runtime } from '../../runtime/ports.js';
 import type { ProviderJobLaunch } from '../../jobs/records.js';
 import { toProviderRequest } from '../../jobs/provider-request.js';
-import type { ProviderSession } from '../../sessions/entry.js';
+import type { JobConversation } from '../../jobs/conversation/entry.js';
 import { CORAL_CHILD_CREDENTIAL_ID, CORAL_CHILD_CREDENTIAL_KEY } from '../../security/child-principal-env.js';
 import type { ChildPrincipalRegistry } from '../child-principal-registry.js';
 import type {
@@ -44,7 +44,7 @@ export type ProviderOperationPrepareMaterializerDeps = Readonly<{
   providerRegistry: ProviderBindingCatalog;
   childPrincipalRegistry: Pick<ChildPrincipalRegistry, 'registerPersistedAuthorization'>;
   readJobLaunch(jobId: string, eventSeq: number): ProviderJobLaunch;
-  readSession(sessionId: string): ProviderSession | null;
+  readConversation(jobId: string): JobConversation | null;
 }>;
 
 function materializationRefusal(
@@ -68,7 +68,7 @@ export function materializeProviderOperationPrepare(
   source: ProviderOperationPrepareSource,
 ): ProviderOperationPrepareMaterializationResult {
   const launch = deps.readJobLaunch(operation.jobId, source.jobLaunchEventSeq);
-  if (launch.jobId !== operation.jobId || launch.sessionId !== source.sessionId) {
+  if (launch.jobId !== operation.jobId || launch.execution !== source.execution) {
     return materializationRefusal(
       'prepare_materialization_refused',
       'Provider operation prepare source does not match its durable job launch.',
@@ -81,11 +81,11 @@ export function materializeProviderOperationPrepare(
     );
   }
 
-  const session = deps.readSession(source.sessionId);
-  if (session === null || session.version !== source.sessionVersion || session.activeJobId !== operation.jobId) {
+  const session = deps.readConversation(operation.jobId);
+  if (session === null || session.execution !== source.execution || !session.open || session.finishing) {
     return materializationRefusal(
       'prepare_materialization_refused',
-      'Provider operation session snapshot is unavailable at its journaled version.',
+      'Provider operation does not own the open requested execution.',
     );
   }
   if (source.platform !== deps.runtime.env.platform()) {
@@ -127,7 +127,7 @@ export function materializeProviderOperationPrepare(
     issuer: 'provider-operation-reprepare',
     authorization: source.childAuthorization,
     parentJobId: operation.jobId,
-    parentSessionId: source.sessionId,
+    execution: launch.execution,
     nowMs: deps.runtime.time.now(),
   });
 
@@ -142,7 +142,6 @@ export function materializeProviderOperationPrepare(
       baseEnv: deps.runtime.env.fullSnapshot(),
       protectedEnv: {
         CORAL_JOB_ID: operation.jobId,
-        CORAL_SESSION_ID: source.sessionId,
         [CORAL_CHILD_CREDENTIAL_ID]: child.credentialId,
         [CORAL_CHILD_CREDENTIAL_KEY]: child.privateKey,
       },

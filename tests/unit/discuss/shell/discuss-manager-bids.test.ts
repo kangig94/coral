@@ -22,8 +22,18 @@ describe('Discuss bid collection', () => {
   it('records valid JSON bids during session start', async () => {
     const start = vi
       .fn()
-      .mockResolvedValueOnce({ kind: 'provider-session', status: 'running', jobId: 'job-1', sessionId: 'exec-alpha' })
-      .mockResolvedValueOnce({ kind: 'provider-session', status: 'running', jobId: 'job-2', sessionId: 'exec-beta' });
+      .mockResolvedValueOnce({
+        kind: 'provider-session',
+        status: 'running',
+        jobId: 'f10f3e57-0d04-53df-b4c3-3bcf75a1222d',
+        sessionId: 'exec-alpha',
+      })
+      .mockResolvedValueOnce({
+        kind: 'provider-session',
+        status: 'running',
+        jobId: 'aaff84b2-7e19-5006-93d0-2ddd7f0424c0',
+        sessionId: 'exec-beta',
+      });
     const waitStreamOnce = vi
       .fn()
       .mockResolvedValueOnce({
@@ -61,12 +71,18 @@ describe('Discuss bid collection', () => {
   });
 
   it('retries malformed JSON and persists the second-attempt success', async () => {
-    const start = vi
-      .fn()
-      .mockResolvedValue({ kind: 'provider-session', status: 'running', jobId: 'job-1', sessionId: 'exec-alpha' });
-    const resume = vi
-      .fn()
-      .mockResolvedValue({ kind: 'provider-session', status: 'running', jobId: 'job-2', sessionId: 'exec-alpha' });
+    const start = vi.fn().mockResolvedValue({
+      kind: 'provider-session',
+      status: 'running',
+      jobId: 'f10f3e57-0d04-53df-b4c3-3bcf75a1222d',
+      sessionId: 'exec-alpha',
+    });
+    const resume = vi.fn().mockResolvedValue({
+      kind: 'provider-session',
+      status: 'running',
+      jobId: 'f10f3e57-0d04-53df-b4c3-3bcf75a1222d',
+      sessionId: 'exec-alpha',
+    });
     const waitStreamOnce = vi
       .fn()
       .mockResolvedValueOnce({ content: 'not json at all', continuity: null })
@@ -108,8 +124,18 @@ describe('Discuss bid collection', () => {
     });
     const start = vi
       .fn()
-      .mockResolvedValueOnce({ kind: 'provider-session', status: 'running', jobId: 'job-1', sessionId: 'exec-alpha' })
-      .mockResolvedValueOnce({ kind: 'provider-session', status: 'running', jobId: 'job-2', sessionId: 'exec-beta' });
+      .mockResolvedValueOnce({
+        kind: 'provider-session',
+        status: 'running',
+        jobId: 'f10f3e57-0d04-53df-b4c3-3bcf75a1222d',
+        sessionId: 'exec-alpha',
+      })
+      .mockResolvedValueOnce({
+        kind: 'provider-session',
+        status: 'running',
+        jobId: 'aaff84b2-7e19-5006-93d0-2ddd7f0424c0',
+        sessionId: 'exec-beta',
+      });
     const waitStreamOnce = vi
       .fn()
       .mockImplementationOnce(async () => {
@@ -154,8 +180,18 @@ describe('Discuss bid collection', () => {
   it('does not auto-bid for manual observer participants', async () => {
     const start = vi
       .fn()
-      .mockResolvedValueOnce({ kind: 'provider-session', status: 'running', jobId: 'job-1', sessionId: 'exec-alpha' })
-      .mockResolvedValueOnce({ kind: 'provider-session', status: 'running', jobId: 'job-2', sessionId: 'exec-beta' });
+      .mockResolvedValueOnce({
+        kind: 'provider-session',
+        status: 'running',
+        jobId: 'f10f3e57-0d04-53df-b4c3-3bcf75a1222d',
+        sessionId: 'exec-alpha',
+      })
+      .mockResolvedValueOnce({
+        kind: 'provider-session',
+        status: 'running',
+        jobId: 'aaff84b2-7e19-5006-93d0-2ddd7f0424c0',
+        sessionId: 'exec-beta',
+      });
     const waitStreamOnce = vi
       .fn()
       .mockResolvedValueOnce({ content: '{"score": 61, "thought": "alpha"}', continuity: null })

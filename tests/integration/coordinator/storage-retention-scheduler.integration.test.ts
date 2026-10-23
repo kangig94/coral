@@ -1,3 +1,5 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
+import { testConversationFacet } from '#tests/helpers/session.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdirSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -27,15 +29,14 @@ function fixture() {
 function launch(f: ReturnType<typeof fixture>, id: string) {
   initTestJob(f.store, {
     jobId: id,
-    sessionId: `session-${id}`,
-    provider: 'codex',
     projectRoot: '/workspace',
     backendNamespace: 'test-ns',
+    conversation: testConversationFacet('codex', '/workspace'),
   });
-  return f.store.appendProgress(id, `session-${id}`, 'evidence');
+  return f.store.appendProgress(id, 'evidence');
 }
 function finish(f: ReturnType<typeof fixture>, id: string) {
-  commitJobTerminal(f.store, id, `session-${id}`, { content: 'done', outcome: { kind: 'completed' }, durationMs: 1 });
+  commitJobTerminal(f.store, id, 1, { content: 'done', outcome: { kind: 'completed' }, durationMs: 1 });
   const path = join(f.runtime.paths.coral.exports.jobsRoot, id);
   mkdirSync(path, { recursive: true });
   writeFileSync(join(path, 'result.md'), 'result');
@@ -71,7 +72,12 @@ function scheduler(
       path: join(runtime.paths.coral.store.dbDir, 'epoch-1', 'store.db'),
     }),
     activeEpochKey: () => 'active',
-    jobLocations: new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot),
+    jobLocations: new JobLocationIndex(
+      runtime,
+      runtime.paths.coral.generation.dataRoot,
+      undefined,
+      currentCoralStoreFormat().fingerprint,
+    ),
     log: () => {},
     cleanupScratch,
     publish: (status) => {
@@ -161,15 +167,15 @@ describe('storage retention scheduler owner composition', () => {
     async (quarantined) => {
       const f = fixture();
       f.setNow(1);
-      launch(f, 'scratch-fail');
-      finish(f, 'scratch-fail');
-      const scratch = f.store.jobDir('scratch-fail');
+      launch(f, '93000000-0000-4000-8007-000000000001');
+      finish(f, '93000000-0000-4000-8007-000000000001');
+      const scratch = f.store.jobDir('93000000-0000-4000-8007-000000000001');
       mkdirSync(scratch, { recursive: true });
       writeFileSync(join(scratch, 'result.md'), 'result');
       if (quarantined)
         new RecoveryQuarantineStore(f.db, f.runtime.time).upsert({
           boundary: 'stale-job-cleanup',
-          subject: { key: 'scratch-fail', revision: { kind: 'until-cleared' } },
+          subject: { key: '93000000-0000-4000-8007-000000000001', revision: { kind: 'until-cleared' } },
           stage: 'settle',
           state: 'active',
           errorMessage: 'previous scratch deletion denied',
@@ -226,7 +232,7 @@ describe('storage retention scheduler owner composition', () => {
       f.setNow(1);
       const scratchPaths: string[] = [];
       for (let i = 0; i < jobs; i += 1) {
-        const id = `scratch-budget-${i}`;
+        const id = `93000000-0000-4000-9001-${String(i + 1).padStart(12, '0')}`;
         launch(f, id);
         finish(f, id);
         const path = f.store.jobDir(id);
@@ -275,7 +281,7 @@ describe('storage retention scheduler owner composition', () => {
     f.setNow(1);
     const scratchPaths: string[] = [];
     for (let i = 0; i < 10; i += 1) {
-      const id = `scratch-scan-${i}`;
+      const id = `93000000-0000-4000-9002-${String(i + 1).padStart(12, '0')}`;
       launch(f, id);
       finish(f, id);
       const path = f.store.jobDir(id);
@@ -300,7 +306,7 @@ describe('storage retention scheduler owner composition', () => {
     const prepare = f.db.prepare.bind(f.db);
     const scan = vi.spyOn(f.db, 'prepare').mockImplementation((sql) => {
       const statement = prepare(sql);
-      if (sql.includes('FROM events') && sql.includes("'job.launch.rejected'")) {
+      if (sql.includes('FROM events') && sql.includes("'job.provider_failed'")) {
         const all = statement.all.bind(statement);
         statement.all = (...args) => {
           reads += 1;
@@ -316,7 +322,7 @@ describe('storage retention scheduler owner composition', () => {
       expect(status.phase).toBe('partial');
       expect(scratchPaths.filter((path) => existsSync(path))).toHaveLength(9);
       expect(f.db.prepare('SELECT value FROM meta WHERE key = ?').get('storage-retention.scratch.v1')).toEqual({
-        value: 'scratch-scan-0',
+        value: '93000000-0000-4000-9002-000000000001',
       });
       scan.mockRestore();
       f.setNow(RETENTION_NOW + DAY);
@@ -332,7 +338,11 @@ describe('storage retention scheduler owner composition', () => {
   it('yields between scratch subjects so cancellation stops the next deletion', async () => {
     const f = fixture();
     f.setNow(1);
-    for (const id of ['scratch-yield-a', 'scratch-yield-b', 'scratch-yield-c']) {
+    for (const id of [
+      '93000000-0000-4000-8007-000000000002',
+      '93000000-0000-4000-8007-000000000003',
+      '93000000-0000-4000-8007-000000000004',
+    ]) {
       launch(f, id);
       finish(f, id);
       mkdirSync(f.store.jobDir(id), { recursive: true });
@@ -358,15 +368,15 @@ describe('storage retention scheduler owner composition', () => {
       ),
     ).rejects.toMatchObject({ name: 'AbortError' });
     expect(calls).toBe(1);
-    expect(existsSync(f.store.jobDir('scratch-yield-b'))).toBe(true);
+    expect(existsSync(f.store.jobDir('93000000-0000-4000-8007-000000000003'))).toBe(true);
   });
 
   it('keeps scratch hydration quarantine visible on every cycle until the projection is repaired', async () => {
     const f = fixture();
     f.setNow(1);
-    launch(f, 'scratch-corrupt');
-    finish(f, 'scratch-corrupt');
-    const scratch = f.store.jobDir('scratch-corrupt');
+    launch(f, '93000000-0000-4000-8007-000000000005');
+    finish(f, '93000000-0000-4000-8007-000000000005');
+    const scratch = f.store.jobDir('93000000-0000-4000-8007-000000000005');
     mkdirSync(scratch, { recursive: true });
     writeFileSync(join(scratch, 'result.md'), 'result');
     const valid = f.db.prepare<[], { diagnostics: string }>('SELECT diagnostics FROM projection_jobs').get()!
@@ -394,7 +404,7 @@ describe('storage retention scheduler owner composition', () => {
         expect(status.outcomes).toContainEqual(
           expect.objectContaining({
             kind: 'kept',
-            subject: 'scratch-corrupt',
+            subject: '93000000-0000-4000-8007-000000000005',
             reason: expect.stringContaining('hydration-quarantine'),
           }),
         );
@@ -406,7 +416,9 @@ describe('storage retention scheduler owner composition', () => {
       expect(existsSync(scratch)).toBe(false);
       expect(new RecoveryQuarantineStore(f.db, f.runtime.time).list()).toEqual([]);
       expect(
-        repaired.outcomes.some((outcome) => outcome.kind === 'kept' && outcome.subject === 'scratch-corrupt'),
+        repaired.outcomes.some(
+          (outcome) => outcome.kind === 'kept' && outcome.subject === '93000000-0000-4000-8007-000000000005',
+        ),
       ).toBe(false);
     } finally {
       await s.stop();
@@ -415,22 +427,22 @@ describe('storage retention scheduler owner composition', () => {
 
   it('keeps a terminal regression witnessed by any preceding event of that job between daily samples', async () => {
     const f = fixture();
-    const seq = launch(f, 'regressed');
+    const seq = launch(f, '93000000-0000-4000-8007-000000000006');
     const s = scheduler(f);
     try {
       await s.run();
       f.setNow(RETENTION_NOW - 30 * DAY);
-      f.store.appendProgress('regressed', 'session-regressed', 'during correction');
-      const path = finish(f, 'regressed');
+      f.store.appendProgress('93000000-0000-4000-8007-000000000006', 'during correction');
+      const path = finish(f, '93000000-0000-4000-8007-000000000006');
       f.setNow(RETENTION_NOW + DAY);
       const status = await s.run(DAY);
       expect(existsSync(path)).toBe(true);
       expect(f.db.prepare('SELECT seq FROM events WHERE seq = ?').get(seq)).toBeDefined();
-      expect(readExportJobState(f.db, f.store, 'regressed')).toEqual({ kind: 'regression' });
+      expect(readExportJobState(f.db, f.store, '93000000-0000-4000-8007-000000000006')).toEqual({ kind: 'regression' });
       expect(status.phase).toBe('partial');
       expect(status.outcomes).toContainEqual({
         kind: 'kept',
-        subject: 'progress:regressed',
+        subject: `progress:93000000-0000-4000-8007-000000000006:${f.store.readStatus('93000000-0000-4000-8007-000000000006')?.lastSeq}`,
         reason: 'terminal-clock-regression',
       });
     } finally {
@@ -441,8 +453,8 @@ describe('storage retention scheduler owner composition', () => {
   it('expires an idle old terminal on the first short boot and does not reset age on restart', async () => {
     const f = fixture();
     f.setNow(RETENTION_NOW - 30 * DAY);
-    const seq = launch(f, 'idle');
-    const path = finish(f, 'idle');
+    const seq = launch(f, '93000000-0000-4000-8007-000000000007');
+    const path = finish(f, '93000000-0000-4000-8007-000000000007');
     for (let boot = 0; boot < 3; boot += 1) {
       f.setNow(RETENTION_NOW + boot * DAY);
       const s = scheduler(f);
@@ -459,8 +471,8 @@ describe('storage retention scheduler owner composition', () => {
   it('documents the accepted unwitnessed clock risk with a negative control', async () => {
     const f = fixture();
     f.setNow(RETENTION_NOW - 30 * DAY);
-    const seq = launch(f, 'unwitnessed');
-    const path = finish(f, 'unwitnessed');
+    const seq = launch(f, '93000000-0000-4000-8007-000000000008');
+    const path = finish(f, '93000000-0000-4000-8007-000000000008');
     f.setNow(RETENTION_NOW);
     const s = scheduler(f);
     try {
@@ -475,9 +487,10 @@ describe('storage retention scheduler owner composition', () => {
   it('reports unknown terminal evidence as partial and keeps the data', async () => {
     const f = fixture();
     f.setNow(1);
-    const seq = launch(f, 'held');
-    const path = finish(f, 'held');
-    f.db.prepare("UPDATE events SET body = ? WHERE type = 'job.terminal.recorded'").run(Buffer.from('{}'));
+    const seq = launch(f, '93000000-0000-4000-8007-000000000009');
+    const path = finish(f, '93000000-0000-4000-8007-000000000009');
+    const endSeq = f.store.readStatus('93000000-0000-4000-8007-000000000009')?.lastSeq;
+    f.db.prepare("UPDATE events SET body = ? WHERE type = 'job.execution.outcome.accepted'").run(Buffer.from('{}'));
     f.setNow(RETENTION_NOW);
     const s = scheduler(f);
     try {
@@ -486,7 +499,9 @@ describe('storage retention scheduler owner composition', () => {
       expect(existsSync(path)).toBe(true);
       expect(f.db.prepare('SELECT seq FROM events WHERE seq = ?').get(seq)).toBeDefined();
       expect(status.outcomes).toContainEqual(expect.objectContaining({ kind: 'kept', reason: 'unknown' }));
-      expect(status.outcomes).toContainEqual(expect.objectContaining({ kind: 'kept', subject: 'progress:held' }));
+      expect(status.outcomes).toContainEqual(
+        expect.objectContaining({ kind: 'kept', subject: `progress:93000000-0000-4000-8007-000000000009:${endSeq}` }),
+      );
     } finally {
       await s.stop();
     }

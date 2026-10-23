@@ -83,7 +83,7 @@ import type {
   ProviderRepresentationAbandonmentNotice,
   RepresentationAbandonmentDeliveryAttemptOutcome,
 } from '../provider-representation-abandonment.js';
-import type { ProviderProxySetClaimMirror } from './claim-mirror.js';
+import type { ProviderOperationContainmentRequest, ProviderProxySetClaimMirror } from './claim-mirror.js';
 import type {
   ProviderProxySetAutonomousDisposition,
   ProviderProxySetOperatorDisposition,
@@ -3310,7 +3310,7 @@ export class ProviderProxySetLifecycle {
     };
   }
 
-  requestOperationContainment(identity: ProviderProxySetIdentity, cause: string): void {
+  requestOperationContainment(identity: ProviderProxySetIdentity, request: ProviderOperationContainmentRequest): void {
     const slot = this.#slots.get(providerProxySetKey(identity));
     if (
       slot === undefined ||
@@ -3320,8 +3320,9 @@ export class ProviderProxySetLifecycle {
       (slot.kind !== 'available' && slot.kind !== 'draining')
     )
       return;
-    const liveClaims = this.#deps.claims.claimsFor(identity).length;
-    if (liveClaims > 0) {
+    const cause = typeof request === 'string' ? request : 'provider_settlement_retries_exhausted';
+    const claims = this.#deps.claims.claimsFor(identity);
+    if (this.#operationContainmentDecision(identity, request) === null) {
       const dispositions = new Map(this.#operatorDispositions.get(slot.key) ?? []);
       const firstOccurrence = dispositions.get('operation-release')?.incidentReason !== cause;
       dispositions.set('operation-release', {
@@ -3333,26 +3334,49 @@ export class ProviderProxySetLifecycle {
       if (firstOccurrence)
         this.#report(
           'warn',
-          `Provider operation containment held cause=${cause} liveClaims=${liveClaims}; exit=single-operation-release-or-authority-fault`,
+          `Provider operation containment held cause=${cause} liveClaims=${claims.length}; exit=operation-release-or-settlement-exhaustion-or-authority-fault`,
         );
       return;
     }
+    const operationKeys = new Set(this.#deps.claims.operationsFor(identity).map(operationKey));
     const fence = this.#deps.fenceProviderOperationMutations?.(identity);
     if (fence === undefined) throw new Error('provider_proxy_operation_containment_mutation_fence_unavailable');
-    this.#removeRoute(slot);
     const begin = (): void => {
-      if (this.#slots.get(slot.key) === slot && this.#deps.claims.claimsFor(identity).length === 0) {
-        this.#beginContainment(slot, {
-          action: 'stop-and-reap',
-          reason: 'operation_release_failed',
-          liveClaims: 0,
-          setIdentity: identity,
-        });
+      try {
+        if (this.#slots.get(slot.key) !== slot || (slot.kind !== 'available' && slot.kind !== 'draining')) return;
+        const currentOperations = this.#deps.claims.operationsFor(identity);
+        if (
+          currentOperations.length !== operationKeys.size ||
+          currentOperations.some((operation) => !operationKeys.has(operationKey(operation)))
+        )
+          return;
+        const decision = this.#operationContainmentDecision(identity, request);
+        if (decision !== null) this.#beginContainment(slot, decision);
+      } finally {
+        fence.release();
       }
-      fence.release();
     };
     if (fence.kind === 'holding') void fence.retryAfter.then(begin);
     else begin();
+  }
+
+  #operationContainmentDecision(
+    identity: ProviderProxySetIdentity,
+    request: ProviderOperationContainmentRequest,
+  ): ProviderProxySetRetirementStopDecision | null {
+    const claims = this.#deps.claims.claimsFor(identity);
+    if (typeof request !== 'string') {
+      const claim = this.#deps.claims.claimFor(request.operation);
+      if (
+        claim === null ||
+        claim.retirementProtection !== 'released-after-settlement-exhaustion' ||
+        !providerProxySetIdentitiesEqual(claim.setIdentity, identity)
+      )
+        return null;
+    }
+    return claims.length === 0
+      ? { action: 'stop-and-reap', reason: 'operation_release_failed', liveClaims: 0, setIdentity: identity }
+      : null;
   }
 
   containmentAbsent(identity: ProviderProxySetIdentity, disappearanceReceipt: string): ContainmentAbsenceAcceptance {
@@ -3485,7 +3509,7 @@ export class ProviderProxySetLifecycle {
       | Extract<ProviderProxySetSlot, { kind: 'recovering' }>,
     mutationProof: ProviderProxySetFencedContainmentProof | null,
   ): Omit<ReleaseDeliveryPendingSlot, 'kind' | 'releaseEvidence' | 'routeKey'> {
-    const claimOperations = this.#deps.claims.claimsFor(slot.identity).map((claim) => claim.operation);
+    const claimOperations = this.#deps.claims.operationsFor(slot.identity);
     const pendingOperations = new Map(claimOperations.map((operation) => [operationKey(operation), operation]));
     let settleRepresentationRelease!: (disposition: ProviderProxyRepresentationReleaseSettlement) => void;
     const representationReleaseSettlement = new Promise<ProviderProxyRepresentationReleaseSettlement>((resolve) => {
@@ -5159,7 +5183,7 @@ export class ProviderProxySetLifecycle {
   /** Control must remain available until containment absence is confirmed. */
   #commitContainmentThenBegin(
     slot: EstablishedSlot,
-    decision: ProviderProxySetAuthorityStopDecision | ProviderProxySetRetirementStopDecision,
+    decision: Extract<ProviderProxySetContainmentDecision, { action: 'stop-and-reap' }>,
   ): void {
     void this.#runContainmentAttempt(slot, decision);
   }
@@ -5167,7 +5191,7 @@ export class ProviderProxySetLifecycle {
   /** A containment-commit outcome must amend, not add, a disposition. */
   #recordContainmentCommitOutcome(
     slot: EstablishedSlot,
-    decision: ProviderProxySetAuthorityStopDecision | ProviderProxySetRetirementStopDecision,
+    decision: Extract<ProviderProxySetContainmentDecision, { action: 'stop-and-reap' }>,
     outcome: 'not-sent' | 'outcome-unknown',
   ): void {
     const setKey = providerProxySetKey(decision.setIdentity);

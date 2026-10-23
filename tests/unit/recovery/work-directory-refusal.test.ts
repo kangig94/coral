@@ -53,7 +53,7 @@ describe('persisted recovery work-directory decoding', () => {
     const launch: ProviderJobLaunch = {
       jobId: 'job-recovered',
       owner: { kind: 'provider-session', id: 'session-recovered' },
-      sessionId: 'session-recovered',
+      execution: 1,
       provider: 'codex',
       providerAction: 'resume',
       projectRoot,

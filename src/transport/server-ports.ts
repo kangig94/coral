@@ -1,3 +1,4 @@
+import type { ExecutionRetryStatus } from '../jobs/records.js';
 import type { RetentionRunStatus } from '../store/retention-outcome.js';
 import type { LaunchStatus } from '../infra/launch-status.js';
 import type { ProcessIncarnation } from '../infra/node-process.js';
@@ -221,7 +222,7 @@ export const launchPermitDiagnosticsSchema = z
           z
             .object({
               jobId: z.string().min(1),
-              cause: z.enum(['terminal-persist-failed', 'claim-release-failed', 'claim-already-reassigned']),
+              cause: z.literal('terminal-persist-failed'),
               error: z.string().min(1),
               observedAtMs: z.number().finite().nonnegative(),
             })
@@ -420,6 +421,8 @@ export type HealthSnapshot = {
    */
   listCounts?: Readonly<Record<string, number>>;
   diagnostics?: LaunchPermitDiagnostics & {
+    executionFinishing?: Array<{ jobId: string; execution: number; status: ExecutionRetryStatus }>;
+    skippedExecutionFinishingStatuses?: number;
     providerOperationStartupReconciliation?: ProviderOperationStartupStatus;
     carriers?: {
       coverage: 'complete' | 'unknown';
@@ -457,6 +460,7 @@ export interface EventStreamHandlers {
   onProgress: (payload: { jobId: string; seq: number; message: string }) => void;
   onCompleted: (payload: {
     jobId: string;
+    execution: number;
     result: JobTerminal;
     costUsd?: number;
     tokenUsage?: {

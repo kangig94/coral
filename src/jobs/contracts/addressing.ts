@@ -1,6 +1,11 @@
 import type { JobDetailResponse } from '../records.js';
+import type { JobSendOutcome } from '../send.js';
 
 export type JobDetailLookup =
+  | (LocatedJobDetail & Readonly<{ sendRefusal?: Extract<JobSendOutcome, { state: 'refused' }> }>)
+  | null;
+
+type LocatedJobDetail =
   | JobDetailResponse
   | Readonly<{
       kind: 'unresolved';
@@ -21,5 +26,4 @@ export type JobDetailLookup =
   | Readonly<{
       kind: 'pre-epoch-history';
       jobId: string;
-    }>
-  | null;
+    }>;

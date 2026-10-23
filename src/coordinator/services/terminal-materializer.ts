@@ -4,26 +4,20 @@ import type { ProviderTerminalEventBody } from '../../providers/contract.js';
 import type { ProviderFailureCause } from '../../providers/fault.js';
 import type { JobLifecycleFault, JobProgressFault, TerminalOutcome, TerminalOutcomeInput } from '../../jobs/outcome.js';
 import type { JobTerminalDiagnostics, JobTerminalInput } from '../../jobs/records.js';
-import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
 import {
-  appendJobTerminalRecorded,
+  appendJobExecutionOutcomeAccepted,
   failedTerminalOutcome,
-  type JobTerminalRecordedOptions,
+  type JobExecutionOutcomeAcceptedOptions,
 } from '../../jobs/terminal/recording.js';
 import type {
   SessionAdapterUnparseableFault,
-  SessionInterruptedFault,
+  ConversationInterruptedFault,
   SessionProviderFailedFault,
-} from '../../sessions/fault.js';
-import {
-  sessionAdapterUnparseableEvent,
-  sessionInterruptedEvent,
-  sessionProviderFailedEvent,
-} from '../../sessions/event-builders.js';
+} from '../../jobs/conversation/fault.js';
 
 export interface RuntimeIngestOptions {
   readonly jobId: string;
-  readonly sessionId?: string | null;
+  readonly execution: number;
   readonly namespace?: string;
   readonly project?: string;
   readonly correlationId?: string;
@@ -34,7 +28,7 @@ export interface RuntimeIngestOptions {
 
 type RuntimeIngestDomainBody =
   | JobProgressFault
-  | SessionInterruptedFault
+  | ConversationInterruptedFault
   | SessionProviderFailedFault
   | SessionAdapterUnparseableFault;
 
@@ -46,7 +40,7 @@ type RuntimeIngestPlan =
     }
   | {
       readonly kind: 'failed_cause';
-      readonly domainEvents: readonly [CoralEventInput<RuntimeIngestDomainBody>];
+      readonly domainEvents: readonly [CoralEventInput<RuntimeIngestDomainBody & { execution: number }>];
       readonly immediateOutcome: null;
     };
 
@@ -62,23 +56,14 @@ export type MaterializedProviderTerminalRecipe = {
 };
 
 type JobRecoveryFault = JobLifecycleFault | JobProgressFault;
-type RuntimeCommitStore = Pick<JobProgressStore, 'commit'>;
 
 function baseRefs(options: RuntimeIngestOptions): NonNullable<CoralEventInput['refs']> {
   return {
     jobId: options.jobId,
-    ...(options.sessionId === undefined || options.sessionId === null ? {} : { sessionId: options.sessionId }),
     ...(options.parentJobId ? { parentJobId: options.parentJobId } : {}),
     ...(options.workflowId ? { workflowId: options.workflowId } : {}),
     ...(options.workflowSlotId ? { workflowSlotId: options.workflowSlotId } : {}),
   };
-}
-
-function requireSessionId(options: RuntimeIngestOptions, eventType: string): string {
-  if (options.sessionId === undefined || options.sessionId === null) {
-    throw new Error(`${eventType} requires a provider session id.`);
-  }
-  return options.sessionId;
 }
 
 function baseEvent(
@@ -86,7 +71,7 @@ function baseEvent(
   stream: CoralEventInput['stream'],
   type: string,
   body: RuntimeIngestDomainBody,
-): CoralEventInput<RuntimeIngestDomainBody> {
+): CoralEventInput<RuntimeIngestDomainBody & { execution: number }> {
   return {
     type,
     stream,
@@ -94,11 +79,11 @@ function baseEvent(
     project: options.project,
     correlationId: options.correlationId,
     refs: baseRefs(options),
-    body,
+    body: { ...body, execution: options.execution },
   };
 }
 
-function planFailed(event: CoralEventInput<RuntimeIngestDomainBody>): RuntimeIngestPlan {
+function planFailed(event: CoralEventInput<RuntimeIngestDomainBody & { execution: number }>): RuntimeIngestPlan {
   return {
     kind: 'failed_cause',
     domainEvents: [event],
@@ -119,35 +104,35 @@ function planJobRecoveryFault(fault: JobRecoveryFault, options: RuntimeIngestOpt
       };
     case 'missing_launch_record':
     case 'recovery_parse_failed':
-      return planFailed(baseEvent(options, { kind: 'job', id: options.jobId }, 'job.progress.emitted', fault));
+      return planFailed(baseEvent(options, { kind: 'job', id: options.jobId }, 'job.execution.progress', fault));
   }
 }
 
-function planSessionInterrupted(fault: SessionInterruptedFault, options: RuntimeIngestOptions): RuntimeIngestPlan {
-  const sessionId = requireSessionId(options, 'session.interrupted');
-  return planFailed(sessionInterruptedEvent(fault, { ...options, sessionId }));
+function planConversationInterrupted(
+  fault: ConversationInterruptedFault,
+  options: RuntimeIngestOptions,
+): RuntimeIngestPlan {
+  return planFailed(baseEvent(options, { kind: 'job', id: options.jobId }, 'job.interrupted', fault));
 }
 
 function planSessionProviderFailed(
   fault: SessionProviderFailedFault,
   options: RuntimeIngestOptions,
 ): RuntimeIngestPlan {
-  const sessionId = requireSessionId(options, 'session.provider_failed');
   const body: SessionProviderFailedFault = {
     provider: fault.provider,
     reason: fault.reason,
     message: fault.message,
     ...(fault.diagnostic === undefined ? {} : { diagnostic: fault.diagnostic }),
   };
-  return planFailed(sessionProviderFailedEvent(body, { ...options, sessionId }));
+  return planFailed(baseEvent(options, { kind: 'job', id: options.jobId }, 'job.provider_failed', body));
 }
 
 function planSessionAdapterUnparseable(
   fault: SessionAdapterUnparseableFault,
   options: RuntimeIngestOptions,
 ): RuntimeIngestPlan {
-  const sessionId = requireSessionId(options, 'session.adapter_unparseable');
-  return planFailed(sessionAdapterUnparseableEvent(fault, { ...options, sessionId }));
+  return planFailed(baseEvent(options, { kind: 'job', id: options.jobId }, 'job.adapter_unparseable', fault));
 }
 
 function planProviderFailureCause(failure: ProviderFailureCause, options: RuntimeIngestOptions): RuntimeIngestPlan {
@@ -271,10 +256,10 @@ function terminalRecordOptions<Scope>(
   record: {
     readonly diagnostics?: JobTerminalDiagnostics;
   },
-): JobTerminalRecordedOptions<Scope> {
+): JobExecutionOutcomeAcceptedOptions<Scope> {
   return {
     jobId: options.jobId,
-    sessionId: options.sessionId ?? null,
+    execution: options.execution,
     namespace: options.namespace,
     project: options.project,
     correlationId: options.correlationId,
@@ -292,23 +277,12 @@ export function appendProviderTerminalInCommit<Scope>(
   options: RuntimeIngestOptions,
 ): void {
   const materialized = materializeProviderTerminalInCommit(c, terminal, options);
-  appendJobTerminalRecorded(
+  appendJobExecutionOutcomeAccepted(
     c,
     terminalRecordOptions(options, materialized.terminal, {
       diagnostics: materialized.diagnostics,
     }),
   );
-}
-
-export function recordProviderTerminal(
-  progressStore: RuntimeCommitStore,
-  terminal: ProviderTerminalEventBody,
-  options: RuntimeIngestOptions,
-): void {
-  progressStore.commit((c) => {
-    appendProviderTerminalInCommit(c, terminal, options);
-    return undefined;
-  });
 }
 
 function appendTerminalWithOutcomePlan<Scope>(
@@ -322,7 +296,7 @@ function appendTerminalWithOutcomePlan<Scope>(
   },
 ): void {
   const outcome = materializePlannedOutcomeInCommit(c, plan);
-  appendJobTerminalRecorded(
+  appendJobExecutionOutcomeAccepted(
     c,
     terminalRecordOptions(
       options,
@@ -338,9 +312,9 @@ function appendTerminalWithOutcomePlan<Scope>(
   );
 }
 
-export function appendSessionInterruptedTerminalInCommit<Scope>(
+export function appendConversationInterruptedTerminalInCommit<Scope>(
   c: CommitContext<Scope>,
-  fault: SessionInterruptedFault,
+  fault: ConversationInterruptedFault,
   options: RuntimeIngestOptions,
   record: {
     readonly content: string;
@@ -348,7 +322,7 @@ export function appendSessionInterruptedTerminalInCommit<Scope>(
     readonly diagnostics?: JobTerminalDiagnostics;
   },
 ): void {
-  appendTerminalWithOutcomePlan(c, planSessionInterrupted(fault, options), options, record);
+  appendTerminalWithOutcomePlan(c, planConversationInterrupted(fault, options), options, record);
 }
 
 export function appendJobRecoveryFaultTerminalInCommit<Scope>(

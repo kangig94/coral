@@ -159,10 +159,10 @@ Evidence whose filename and decoded target do not agree is moved to `~/.coral/st
 
 ## Compact Recovery
 
-Two hooks run after compaction:
+Compaction recovery uses three hooks:
 
 - `kb-promote-gate.mjs` restores memo-review and KB-promotion guidance
-- `pre-compact.mjs` snapshots recent jobs for the current project from `projection_jobs`
+- `pre-compact.mjs` snapshots recent jobs for the current project from `projection_jobs` before compaction
 - `post-compact.mjs` reads that snapshot and tells the user how to recover work
 
 `post-compact.mjs` now describes recovery in CLI terms:
@@ -176,9 +176,9 @@ Two hooks run after compaction:
 Implementation notes:
 
 - snapshots are written under the project temp directory (`/tmp/claude-<uid>/coral/<project-slug>/hooks/active-jobs-*.json`)
-- terminal recovery uses the durable artifact path under `~/.coral/exports/jobs/<jobId>/result.md` in prod or `~/.coral/exports-dev/jobs/<jobId>/result.md` in dev
+- terminal recovery uses `~/.coral/exports/jobs/<jobId>/executions/<n>/result.md` in prod or `~/.coral/exports-dev/jobs/<jobId>/executions/<n>/result.md` in dev; terminal snapshot rows require a valid execution ordinal, and recovery rejects a result path unless it resolves to that job and execution's canonical path. An ended execution is included only if its result exists
 - `<os-tmpdir>/coral-jobs/<jobId>/` contains live scratch artifacts such as stdout/stderr/intermediates only
-- hook recovery reads CLI-visible job state and durable result artifacts, not file-backed job status records
+- the pre-compaction hook reads the current-generation store and checks local result artifacts without launching the CLI or running handoff routing
 
 The wait guidance matches the current CLI contract: terminal text always includes `Result path: <path>`, may include a terminal-line usage segment from job diagnostics, and `--embed` preview text is only a convenience layer. Read the printed result path for the durable artifact.
 
@@ -268,8 +268,8 @@ Rules:
 
 `bash-rewrite.mjs` defaults `CORAL_OWNER` to the hook's `session_id` for commands invoking `coral-cli`, preserving an already-set value. It also records each Coral wait command in the session's live-work registry. Wait detection matches `coral-cli jobs wait` and the hidden `coral-cli wait jobs` shim, kept until 0.11.0, so both receive the same 600 s timeout. Legacy continuations reach a new-hook session from a child delegated to a newer build (with the handoff guard set), which deliberately prints the legacy form, or from a continuation printed before the plugin update. Coordinators never format bounded continuations.
 
-`session-job-guard.mjs` runs on Stop for Claude, Codex, and Copilot. It queries `coral-cli jobs list --mine --unwaited --json` with the session owner and the plugin bridge on PATH, with a two-second subprocess timeout. A nonempty result blocks the stop with the exact `coral-cli jobs wait <ids>` command. Empty results, missing session ids, query errors, and timeouts allow the stop. All hosts receive flat `{ decision: "block", reason }` output through `writeHookOutput`.
+`session-job-guard.mjs` runs on Stop for Claude, Codex, and Copilot. It queries `coral-cli jobs list --mine --unwaited --json` with the session owner and the plugin bridge on PATH, with a two-second subprocess timeout. Unwaited list rows carry the observed execution’s admission selection (job ID, epoch, and committed request sequence). Rows with missing or malformed ordinals or selections are filtered; valid rows still participate. A nonempty valid result blocks the stop with `coral-cli jobs wait <ids> --execution-selection '<JSON>'`, grouped by working directory. The command waits for the observed executions even if a continuation is requested before it runs. Empty results, missing session ids, query errors, and timeouts allow the stop. All hosts receive flat `{ decision: "block", reason }` output through `writeHookOutput`.
 
-The registry records the block time. A further stop is allowed until a Coral wait command records its time and clears the previous block. This bounds the guard when a session ignores its instruction while allowing another reminder after a wait.
+The registry records the blocked set of `(jobId, execution)` pairs. A repeated Stop whose valid rows are all in that set passes, regardless of ordering or omitted members, so ignoring one reminder cannot trap the session. Any new job or execution blocks once with a fresh wait command, including a queued continuation after its predecessor was released or while an old wait remains attached. A Coral wait command clears the previous block marker.
 
-`jobs list --mine` lists live jobs whose launch environment matches `CORAL_OWNER`. `--unwaited` excludes active wait streams and released jobs; snapshots do not count as waits. The query never starts a coordinator, and with none running prints `[]`. Human job lists mark released jobs. Only when the user explicitly asks to leave a job unattended, use `coral-cli jobs release <job-id>`; release neither stops nor aborts a job, and the exemption disappears when the coordinator restarts.
+`jobs list --mine` lists live jobs whose launch environment matches `CORAL_OWNER`. `--unwaited` excludes executions with an active wait stream or release; snapshots do not count as waits. Wait counts and releases apply to the selected execution, and a new request rearms attention even while queued. An older wait cannot hide or detach its successor. A wait initially unable to read its job registers attention when polling first admits an execution, and releases that registration when the stream closes. The query never starts a coordinator, and with none running prints `[]`. Human job lists mark released jobs. Only when the user explicitly asks to leave a job unattended, use `coral-cli jobs release <job-id>`; release neither stops nor aborts a job, and the exemption disappears when the coordinator restarts.

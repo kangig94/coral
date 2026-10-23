@@ -1,3 +1,4 @@
+import { createTestExecutionFinisher } from '#tests/helpers/execution-finisher.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 // Transport is stubbed (no IPC bind, no HTTP listener) so the harness exercises the lifecycle/recovery contract
 // end-to-end without process boundaries.
@@ -30,7 +31,6 @@ import { JobStore } from '#src/jobs/store.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { jobsRegistry } from '#src/jobs/events.js';
-import { sessionsRegistry } from '#src/sessions/events.js';
 import { discussRegistry } from '#src/discuss/event-registry.js';
 import { workflowRegistry } from '#src/workflow/events.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
@@ -72,7 +72,7 @@ function createHarnessStoreServices(runtime: Runtime, db: Database, namespace: s
     storeDb: db,
     progressStore: new JobStore(namespace, runtime, createEventBodyCodec(), {
       db,
-      reducers: composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry),
+      reducers: composeReducers(jobsRegistry, discussRegistry, workflowRegistry),
       providers: permissiveProviderLookupPort,
     }),
     consumerDriver: null,
@@ -155,6 +155,10 @@ export function createHandoffCoresHarness(options: CreateHarnessOptions = {}): H
 
     const core = createCoordinatorCore(
       {
+        executionFinisher: createTestExecutionFinisher(
+          (): JobStore => core.storeServicesRef.get().progressStore,
+          runtime,
+        ),
         onFatalShutdownError: vi.fn(),
         storeFormat: currentCoralStoreFormat(),
         runtime,

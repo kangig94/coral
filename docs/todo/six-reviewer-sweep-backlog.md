@@ -19,9 +19,9 @@ Splitting it per-file would lose that, and each instance is individually small.
 ## 1. Workflow recovery execution-port cast — resolved
 
 Cold-boot workflow recovery now uses `recoverAll` to close workflows without launching replacements.
-Coordinator and simulation composition supply lease clearing through `SessionManager`; recovery no longer
-requires an execution port or casts `getExecutionService(ctx)` to one. Pending leases on sessions claimed
-by non-terminal children remain under job recovery ownership until claim release permits lifecycle expiry.
+`recoverAll` in `src/workflow/recover.ts` uses `releaseFailedWorkflowDescendants` for descendant release.
+Provider conversations belong to jobs; execution order and finishing replace session claims and continuation
+leases. Recovery requires neither an execution port nor a session manager.
 
 ## 2. Branches the call graph cannot reach
 

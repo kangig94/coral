@@ -15,7 +15,7 @@ function launchRecord(): ProviderJobLaunch {
   return {
     jobId: JOB_ID,
     owner: { kind: 'provider-session', id: 'session-1' },
-    sessionId: 'session-1',
+    execution: 1,
     provider: 'codex',
     projectRoot: '/project',
     backendNamespace: 'namespace',
@@ -104,7 +104,6 @@ function recoveryFixture(
           }) as never,
         signal: new AbortController().signal,
         settleFault,
-        settleClaim: vi.fn(),
         setProcessLocalCleanup: (nextCleanup: () => void) => {
           cleanup = nextCleanup;
         },

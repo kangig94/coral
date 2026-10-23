@@ -4,6 +4,7 @@ import { registerBackendCommands, type BackendStatusCommandOperations } from '#s
 import { statusFromStartupDiagnostic } from '#src/cli/backend-status.js';
 import type { BackendStatusFull } from '#src/cli/backend-status.js';
 import { executeRenderedCommand } from '#tests/helpers/rendered-command.js';
+import { formatBackendStatus } from '#src/cli/format/backend.js';
 
 function health(
   phase: 'starting' | 'kernel-ready' | 'running',
@@ -25,6 +26,28 @@ function health(
     skippedProviderProxySetTokens: [],
   };
 }
+
+it.each(['live-retry', 'recovery-quarantine'] as const)(
+  'renders a blocked execution with its %s successor',
+  (successor) => {
+    const snapshot = health('running');
+    snapshot.diagnostics = {
+      executionFinishing: [
+        {
+          jobId: 'held-job',
+          execution: 2,
+          status: { stage: 'accept', kind: 'blocked', reason: 'Request evidence unreadable', successor },
+        },
+      ],
+    };
+    const output = formatBackendStatus({ status: 'ok', health: snapshot }, { kind: 'absent' }, null);
+    expect(output).toContain('Execution finishing: held-job#2 blocked (accept); Request evidence unreadable');
+    expect(output).toContain(`successor=${successor}`);
+    expect(output.includes('command=coral-cli backend recovery-quarantine list')).toBe(
+      successor === 'recovery-quarantine',
+    );
+  },
+);
 
 it.each(['starting', 'kernel-ready', 'running'] as const)(
   'reports authenticated %s health with its readiness exit',

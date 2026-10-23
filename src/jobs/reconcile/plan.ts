@@ -2,18 +2,6 @@ import { isLivePhase, isTerminalPhase } from '../phase.js';
 import type { JobLaunch, JobRuntime, JobStatus } from '../records.js';
 import type { JobLifecycleFault, JobProgressFault } from '../outcome.js';
 
-/**
- * Invariant — jobIds freshness:
- * `jobIds` mirrors `progressStore.listJobIds()` at snapshot construction time.
- * Recovery planning does not delete jobs between snapshot build and planning, so
- * `jobIds.includes(activeJobId)` preserves the active projection membership
- * semantics for orphaned session-claim detection.
- *
- * Invariant — session state spans job origins:
- * `listSessionRefs()` / `readSession(...)` enumerate Journal-projected sessions
- * without filtering by job origin, matching the current lifecycle session sweep.
- * Terminal and orphaned claims must remain releasable for every stored job.
- */
 export type RecoveryJobFacts = {
   jobId: string;
   hasLaunchRequest: boolean;
@@ -24,15 +12,9 @@ export type RecoveryJobFacts = {
   runtimeRecord: JobRuntime | null;
 };
 
-export type RecoverySessionFacts = {
-  activeJobId?: string;
-};
-
 export interface RecoveryProjectionSnapshot {
   readonly jobIds: readonly string[];
   readJob(jobId: string): RecoveryJobFacts;
-  listSessionRefs(): Array<{ sessionId: string; provider: string }>;
-  readSession(sessionId: string): RecoverySessionFacts | null;
   /**
    * Probes whether a durable pid is live. Dead provider runtimes still register
    * for BoundProvider recovery; dead non-provider runtimes use wrapper_lost.
@@ -51,8 +33,7 @@ export type RecoveryAction =
       jobId: string;
       launchRecord: JobLaunch;
       runtimeRecord: JobRuntime;
-    }
-  | { type: 'releaseSessionClaim'; sessionId: string; jobId: string };
+    };
 
 type RegisterAction = Extract<RecoveryAction, { type: 'registerRunning' | 'registerQueued' }>;
 type CleanupAction = Exclude<RecoveryAction, { type: 'registerRunning' | 'registerQueued' }>;
@@ -103,12 +84,7 @@ export function planRecovery(snapshot: RecoveryProjectionSnapshot): RecoveryPlan
 
   return {
     register: [...registerRunning, ...registerQueued],
-    cleanup: [
-      ...discardIncompleteAdmission,
-      ...markMissingLaunchRecord,
-      ...markStaleRunning,
-      ...planSessionClaimReleases(snapshot, jobIds),
-    ],
+    cleanup: [...discardIncompleteAdmission, ...markMissingLaunchRecord, ...markStaleRunning],
   };
 }
 
@@ -124,7 +100,7 @@ function planJobRecovery(facts: RecoveryJobFacts, isPidAlive: (pid: number) => b
       : null;
   }
 
-  if (isTerminalPhase(status.phase)) {
+  if (status.finishing === true || isTerminalPhase(status.phase)) {
     return null;
   }
 
@@ -246,48 +222,7 @@ function readDurableRuntimePid(runtime: JobRuntime): number | null {
   return null;
 }
 
-function planSessionClaimReleases(snapshot: RecoveryProjectionSnapshot, jobIds: readonly string[]): CleanupAction[] {
-  const knownJobIds = new Set(jobIds);
-  const actions: CleanupAction[] = [];
-
-  for (const ref of readSessionRefs(snapshot)) {
-    const session = snapshot.readSession(ref.sessionId);
-    const activeJobId = session?.activeJobId;
-    if (!activeJobId) continue;
-
-    if (!knownJobIds.has(activeJobId)) {
-      actions.push({
-        type: 'releaseSessionClaim',
-        sessionId: ref.sessionId,
-        jobId: activeJobId,
-      });
-      continue;
-    }
-
-    const activeJob = snapshot.readJob(activeJobId);
-    if (activeJob.status !== null && isTerminalPhase(activeJob.status.phase)) {
-      actions.push({
-        type: 'releaseSessionClaim',
-        sessionId: ref.sessionId,
-        jobId: activeJobId,
-      });
-    }
-  }
-
-  return actions;
-}
-
 function readJobIds(jobIds: readonly string[]): string[] {
   if (!Array.isArray(jobIds)) return [];
   return jobIds.filter((jobId): jobId is string => typeof jobId === 'string');
-}
-
-function readSessionRefs(snapshot: RecoveryProjectionSnapshot): Array<{ sessionId: string; provider: string }> {
-  const refs = snapshot.listSessionRefs();
-  if (!Array.isArray(refs)) return [];
-
-  return refs.filter(
-    (ref): ref is { sessionId: string; provider: string } =>
-      ref !== null && typeof ref === 'object' && typeof ref.sessionId === 'string' && typeof ref.provider === 'string',
-  );
 }

@@ -1,3 +1,8 @@
+import { ExecutionFinisher, readExecutionFinishingState } from '#src/jobs/finishing.js';
+import { appendJobExecutionOutcomeAccepted } from '#src/jobs/terminal/recording.js';
+import { commit } from '#src/store/append.js';
+import { executionHarness, EXECUTION_JOB_ID, openedJob, requestedExecution } from '#tests/helpers/job-executions.js';
+import { createDeferred } from '#tools/testing/deferred.js';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -307,4 +312,61 @@ it('runs damaged-writer startup recovery for a semantically invalid durable iden
     record: { storeRoot: settled.store.storeRoot, epoch: settled.store.epoch },
   });
   expect(joinSuccessionWriterGeneration(runtime, settled.store).withWriteTurn(() => 'started')).toBe('started');
+});
+
+it('preserves a producer result when an unserved succession is aborted and the incumbent writer is reclaimed', async () => {
+  const { runtime, store, open } = fixture();
+  const incumbent = joinSuccessionWriterGeneration(runtime, store);
+  const db = open();
+  const h = executionHarness();
+  commit(
+    db,
+    (c) => {
+      c.append(openedJob());
+      c.append(requestedExecution());
+      return undefined;
+    },
+    h.ctx,
+  );
+  const parked = createDeferred<void>();
+  const owner = new ExecutionFinisher({
+    time: runtime.time,
+    commit: (write) => commit(db, write, h.ctx),
+    read: (address) => {
+      try {
+        return readExecutionFinishingState(db, address, h.readCtx);
+      } catch (error: unknown) {
+        if (error instanceof SuccessionWriterParkedError) parked.resolve();
+        throw error;
+      }
+    },
+    quiesce: async () => true,
+    retentionAction: async () => ({ attempt: 1, handles: [] }),
+    settleRetention: async () => ({ kind: 'completed', outcome: 'skipped_no_handles' }),
+  });
+  const address = { jobId: EXECUTION_JOB_ID, execution: 1 };
+  try {
+    incumbent.park();
+    const accepted = owner.accept(address, (c) => {
+      appendJobExecutionOutcomeAccepted(c, {
+        ...address,
+        terminal: { content: 'result before failed succession', durationMs: 1, outcome: { kind: 'completed' } },
+      });
+      return undefined;
+    });
+    await parked.promise;
+    const failed = advanceSuccessionWriterGeneration(runtime, incumbent.generation, store);
+    handbackSuccessionWriterGeneration(runtime, failed, store);
+    incumbent.unpark();
+    await accepted;
+    await owner.finish(address);
+    expect(readExecutionFinishingState(db, address, h.readCtx)).toMatchObject({
+      kind: 'ended',
+      accepted: { terminal: { content: 'result before failed succession' } },
+    });
+  } finally {
+    await owner.dispose();
+    db.close();
+    h.db.close();
+  }
 });

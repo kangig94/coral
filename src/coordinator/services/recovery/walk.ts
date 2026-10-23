@@ -5,18 +5,13 @@ import { errorMessage } from '../../../infra/error-format.js';
 import { StoreDecodeError } from '../../../store/body-codec.js';
 import { elapsedDurationMs } from '../../../jobs/duration.js';
 import { isTerminalPhase } from '../../../jobs/phase.js';
-import type { JobTerminalInput } from '../../../jobs/records.js';
-import { appendJobTerminalRecorded } from '../../../jobs/terminal/recording.js';
+import type { JobTerminal } from '../../../jobs/records.js';
+import { appendJobExecutionOutcomeAccepted } from '../../../jobs/terminal/recording.js';
 import type { JobLifecycleFault, JobProgressFault } from '../../../jobs/outcome.js';
 import type { JobStore } from '../../../jobs/store.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import type { JobEventBus } from '../../../jobs/event-bus.js';
-import type { CommitContext, CommitEventsFn } from '../../../store/append.js';
-import type { ProviderSession, ClaimedContinuationLease, ClearedContinuationLease } from '../../../sessions/entry.js';
-import { sessionContinuationLeaseClearedEvent } from '../../../sessions/continuation-lease-events.js';
-import type { SessionClaimReleasedBody } from '../../../sessions/event-bodies.js';
-import type { CoralEventInput } from '../../../store/envelope.js';
-import { normalizeProviderSession } from '../../../sessions/entry-normalization.js';
+import type { CommitEventsFn } from '../../../store/append.js';
 import type {
   RecoveryDisposition,
   RecoveryFault,
@@ -27,7 +22,7 @@ import type {
 import type { RecoveryQuarantineStore } from '../../../recovery/quarantine.js';
 import type { RecoveryRetryPolicy } from '../../../recovery/source-registry.js';
 import { COORDINATOR_JOB_RECOVERY_BOUNDARY } from '../../../recovery/source-registry.js';
-import { COORDINATOR_CLAIM_RELEASE_OBLIGATION, COORDINATOR_TERMINAL_OBLIGATION } from './actions.js';
+import { COORDINATOR_TERMINAL_OBLIGATION } from './actions.js';
 import type { RawCoordinatorJobRecoveryEnvelope } from './coordinator-job-source.js';
 import { hydrateCoordinatorRecoveryItem, type CoordinatorRecoveryItem } from './snapshot.js';
 import { runCoordinatorJobRecovery } from './startup-recovery.js';
@@ -60,14 +55,13 @@ export type CoordinatorWalkOptions = {
 export type CoordinatorTerminalSettlement =
   | Readonly<{ kind: 'none' }>
   | Readonly<{ kind: 'fault'; fault: JobLifecycleFault | JobProgressFault; content: string }>
-  | Readonly<{ kind: 'terminal'; terminal: JobTerminalInput }>;
+  | Readonly<{ kind: 'terminal'; terminal: JobTerminal }>;
 
 export type CoordinatorSettlementOptions = Readonly<{
   jobId: string;
   terminal: CoordinatorTerminalSettlement;
   coordinatorCommit: CommitEventsFn;
   nowMs: number;
-  emitSessionReleased(payload: { sessionId: string; jobId: string }): void;
 }>;
 
 class CoordinatorRecoveryCommitError extends Error {
@@ -77,64 +71,11 @@ class CoordinatorRecoveryCommitError extends Error {
   }
 }
 
-function clearClaimedContinuationLease(
-  lease: ClaimedContinuationLease,
-  jobId: string,
-  now: string,
-): ClearedContinuationLease {
-  return {
-    staleJobId: lease.staleJobId,
-    workflowId: lease.workflowId,
-    workflowSlotId: lease.workflowSlotId,
-    replacementGeneration: lease.replacementGeneration,
-    reason: lease.reason,
-    expiresAt: lease.expiresAt,
-    recordedAt: lease.recordedAt,
-    status: 'cleared',
-    resumedJobId: lease.resumedJobId,
-    claimedAt: lease.claimedAt,
-    clearedAt: now,
-    clearedByJobId: jobId,
-    outcome: 'resumed_released',
-  };
-}
-
-function appendSessionClaimRelease<Scope>(
-  commit: CommitContext<Scope>,
-  session: ProviderSession,
-  jobId: string,
-  now: string,
-): void {
-  const { activeJobId: _activeJobId, ...withoutActiveJob } = session;
-  const releasedEntry = normalizeProviderSession({
-    ...withoutActiveJob,
-    lastUsedAt: now,
-    version: session.version + 1,
-  });
-  const releasedEvent: CoralEventInput<SessionClaimReleasedBody> = {
-    type: 'session.claim.released',
-    stream: { kind: 'session', id: session.sessionId },
-    refs: { sessionId: session.sessionId, jobId },
-    body: { entry: releasedEntry, jobId },
-  };
-  commit.append(releasedEvent);
-
-  const lease = session.continuationLease;
-  if (lease?.status !== 'claimed' || lease.resumedJobId !== jobId) return;
-  const clearedLease = clearClaimedContinuationLease(lease, jobId, now);
-  const clearedEntry = normalizeProviderSession({
-    ...releasedEntry,
-    continuationLease: clearedLease,
-    version: releasedEntry.version + 1,
-  });
-  commit.append(sessionContinuationLeaseClearedEvent(clearedEntry, clearedLease));
-}
-
 export type CoordinatorRecoveryStatus = NonNullable<CoordinatorRecoveryItem['detail']>['status'];
 
 export type CoordinatorSettlementProvenance = Readonly<{
-  fault(status: CoordinatorRecoveryStatus): Readonly<{ namespace: string }>;
-  terminal(status: CoordinatorRecoveryStatus): Readonly<{ namespace: string }>;
+  fault(status: CoordinatorRecoveryStatus): Readonly<{ namespace: string | undefined }>;
+  terminal(status: CoordinatorRecoveryStatus): Readonly<{ namespace: string | undefined }>;
 }>;
 
 export function settleCoordinatorRecoveryItemWithProvenance(
@@ -142,13 +83,14 @@ export function settleCoordinatorRecoveryItemWithProvenance(
   options: CoordinatorSettlementOptions,
   provenance: CoordinatorSettlementProvenance,
 ): readonly RecoverySettlementFact[] {
-  const { detail, claimedSession } = item;
+  const { detail } = item;
   const status = detail?.status.jobId === options.jobId ? detail.status : null;
-  const terminalRequired = options.terminal.kind !== 'none' && status !== null && !isTerminalPhase(status.phase);
-  const claimRequired = claimedSession?.activeJobId === options.jobId;
+  const terminalRequired =
+    options.terminal.kind !== 'none' && status !== null && !status.finishing && !isTerminalPhase(status.phase);
 
-  if (terminalRequired || claimRequired) {
-    const now = new Date(options.nowMs).toISOString();
+  if (terminalRequired) {
+    if (status.execution === null) throw new Error(`Job '${options.jobId}' has no execution to settle.`);
+    const execution = status.execution;
     try {
       options.coordinatorCommit((commit) => {
         if (terminalRequired && status !== null) {
@@ -169,32 +111,32 @@ export function settleCoordinatorRecoveryItemWithProvenance(
               options.terminal.fault,
               {
                 jobId: options.jobId,
-                sessionId: status.sessionId,
+                execution,
                 namespace: provenance.fault(status).namespace,
                 project: status.projectRoot,
               },
               { content: options.terminal.content, durationMs },
             );
           } else if (options.terminal.kind === 'terminal') {
-            appendJobTerminalRecorded(commit, {
+            appendJobExecutionOutcomeAccepted(commit, {
               jobId: options.jobId,
-              sessionId: status.sessionId,
+              execution,
               namespace: provenance.terminal(status).namespace,
               project: status.projectRoot,
-              terminal: options.terminal.terminal,
+              terminal: {
+                ...options.terminal.terminal,
+                outcome:
+                  options.terminal.terminal.outcome.kind === 'failed'
+                    ? { kind: 'failed', causeRef: options.terminal.terminal.outcome.causeRef }
+                    : options.terminal.terminal.outcome,
+              },
             });
           }
-        }
-        if (claimRequired && claimedSession !== null) {
-          appendSessionClaimRelease(commit, claimedSession, options.jobId, now);
         }
         return undefined;
       });
     } catch (error: unknown) {
       throw new CoordinatorRecoveryCommitError(options.jobId, error);
-    }
-    if (claimRequired && claimedSession !== null) {
-      options.emitSessionReleased({ sessionId: claimedSession.sessionId, jobId: options.jobId });
     }
   }
 
@@ -203,13 +145,6 @@ export function settleCoordinatorRecoveryItemWithProvenance(
       obligation: COORDINATOR_TERMINAL_OBLIGATION,
       outcome: terminalRequired ? ('done' as const) : ('not-applicable' as const),
       ...(terminalRequired ? { authorityRef: `job:${options.jobId}:terminal` } : {}),
-    }),
-    Object.freeze({
-      obligation: COORDINATOR_CLAIM_RELEASE_OBLIGATION,
-      outcome: claimRequired ? ('done' as const) : ('not-applicable' as const),
-      ...(claimRequired && claimedSession !== null
-        ? { authorityRef: `session:${claimedSession.sessionId}:claim:${options.jobId}` }
-        : {}),
     }),
   ]);
 }
@@ -230,7 +165,7 @@ export function createRecoveryWalk(
     ): readonly RecoverySettlementFact[];
   }>,
 ) {
-  const { progressStore, runtime, eventBus, log, quarantine, source, settleCoordinatorRecoveryItem } = deps;
+  const { progressStore, runtime, log, quarantine, source, settleCoordinatorRecoveryItem } = deps;
 
   const reportCoordinatorRecovery = (
     summary: string,
@@ -279,7 +214,7 @@ export function createRecoveryWalk(
         },
       },
       hydrate: (raw) => hydrateCoordinatorRecoveryItem(raw, progressStore),
-      requiredObligations: () => [COORDINATOR_TERMINAL_OBLIGATION, COORDINATOR_CLAIM_RELEASE_OBLIGATION],
+      requiredObligations: () => [COORDINATOR_TERMINAL_OBLIGATION],
       settle: async (item) => {
         const controls: CoordinatorRecoveryControls = {
           report: (message: string) => messages.push(message),
@@ -346,20 +281,6 @@ export function createRecoveryWalk(
       terminal: { kind: 'fault', fault, content },
       coordinatorCommit,
       nowMs: runtime.time.now(),
-      emitSessionReleased: (payload) => eventBus.emit('session:released', payload),
-    });
-
-  const settleClaim = (
-    item: CoordinatorRecoveryItem,
-    jobId: string,
-    coordinatorCommit: CommitEventsFn,
-  ): readonly RecoverySettlementFact[] =>
-    settleCoordinatorRecoveryItem(item, {
-      jobId,
-      terminal: { kind: 'none' },
-      coordinatorCommit,
-      nowMs: runtime.time.now(),
-      emitSessionReleased: (payload) => eventBus.emit('session:released', payload),
     });
 
   const isUninterpretableRecord = (error: unknown): boolean =>
@@ -398,7 +319,6 @@ export function createRecoveryWalk(
     createCoordinatorJobRecoveryPolicy,
     deleteCoordinatorRecoveryQuarantine,
     runCoordinatorWalk,
-    settleClaim,
     settleCoordinatorRecoveryItem,
     settleFault,
     settleUnexpectedRecoveryFailure,

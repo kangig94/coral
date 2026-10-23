@@ -106,7 +106,12 @@ it.each([
   const entries = readCustodyLedger(runtime, runDir);
   expect(entries[0]).toMatchObject({ kind: 'bound', intent: keyed ? { epochKey: old.key } : { epoch: old.dir } });
   if (keyed) expect(forwarded).toMatchObject({ epochKey: old.key });
-  const index = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
+  const index = new JobLocationIndex(
+    runtime,
+    runtime.paths.coral.generation.dataRoot,
+    undefined,
+    currentCoralStoreFormat().fingerprint,
+  );
   vi.spyOn(index, 'resultsReleased').mockReturnValue(true);
   vi.spyOn(index, 'unknownLocationHold').mockReturnValue(null);
   for (let attempt = 0; attempt < 2; attempt++) {

@@ -1,6 +1,10 @@
+import { executionHarness, openedJob, requestedExecution } from '#tests/helpers/job-executions.js';
+import { SimulationRuntime } from '#tools/simulation/runtime.js';
+import { JobStore } from '#src/jobs/store.js';
+import { createTestExecutionFinisher } from '#tests/helpers/execution-finisher.js';
 import { describe, expect, it } from 'vitest';
 import type { CauseRefToken } from '#src/causality/cause-ref.js';
-import type { AppendedEvent, CommitContext } from '#src/store/append.js';
+import type { CommitContext } from '#src/store/append.js';
 import type { ResolvableCoralEventInput } from '#src/store/envelope.js';
 import { providerRequestFailed, type ProviderFailureCause } from '#src/providers/fault.js';
 import type { ProviderTerminalEventBody } from '#src/providers/contract.js';
@@ -8,39 +12,13 @@ import {
   materializeJobRecoveryFaultInCommit,
   materializeProviderFailureCauseInCommit,
   materializeProviderTerminal,
-  recordProviderTerminal,
+  appendProviderTerminalInCommit,
 } from '#src/coordinator/services/terminal-materializer.js';
 
 type RecordedInput = {
   input: ResolvableCoralEventInput<unknown, unknown>;
   token: CauseRefToken<unknown>;
 };
-
-function createCommitRecorder(): {
-  readonly appended: RecordedInput[];
-  readonly progressStore: {
-    commit(cb: <Scope>(c: CommitContext<Scope>) => undefined): AppendedEvent[];
-  };
-} {
-  const appended: RecordedInput[] = [];
-
-  return {
-    appended,
-    progressStore: {
-      commit(cb) {
-        const c: CommitContext<unknown> = {
-          append(input) {
-            const token = { slot: appended.length } as unknown as CauseRefToken<unknown>;
-            appended.push({ input, token });
-            return token;
-          },
-        };
-        cb(c);
-        return [] as AppendedEvent[];
-      },
-    },
-  };
-}
 
 function createContextRecorder(): {
   readonly appended: RecordedInput[];
@@ -60,8 +38,8 @@ function createContextRecorder(): {
 }
 
 const OPTIONS = {
-  jobId: 'job-1',
-  sessionId: 'session-1',
+  jobId: 'f10f3e57-0d04-53df-b4c3-3bcf75a1222d',
+  execution: 1,
   parentJobId: 'parent-1',
   workflowSlotId: 'slot-1',
 } as const;
@@ -91,15 +69,14 @@ describe('terminal-materializer canonical output boundary', () => {
         causeRef: recorder.appended[0]?.token,
       });
       expect(recorder.appended[0]?.input).toEqual({
-        type: 'job.progress.emitted',
-        stream: { kind: 'job', id: 'job-1' },
+        type: 'job.execution.progress',
+        stream: { kind: 'job', id: 'f10f3e57-0d04-53df-b4c3-3bcf75a1222d' },
         refs: {
-          jobId: 'job-1',
-          sessionId: 'session-1',
+          jobId: 'f10f3e57-0d04-53df-b4c3-3bcf75a1222d',
           parentJobId: 'parent-1',
           workflowSlotId: 'slot-1',
         },
-        body: fault,
+        body: { ...fault, execution: 1 },
       });
     },
   );
@@ -117,7 +94,7 @@ describe('terminal-materializer canonical output boundary', () => {
           parseError: 'bad json',
         },
       } satisfies ProviderFailureCause,
-      'session.adapter_unparseable',
+      'job.adapter_unparseable',
       {
         provider: 'claude',
         exitCode: 17,
@@ -132,7 +109,7 @@ describe('terminal-materializer canonical output boundary', () => {
         provider: 'codex',
         message: 'transport reset',
       }),
-      'session.provider_failed',
+      'job.provider_failed',
       {
         provider: 'codex',
         reason: 'request_failed',
@@ -152,14 +129,13 @@ describe('terminal-materializer canonical output boundary', () => {
       });
       expect(recorder.appended[0]?.input).toEqual({
         type: expectedType,
-        stream: { kind: 'session', id: 'session-1' },
+        stream: { kind: 'job', id: 'f10f3e57-0d04-53df-b4c3-3bcf75a1222d' },
         refs: {
-          jobId: 'job-1',
-          sessionId: 'session-1',
+          jobId: 'f10f3e57-0d04-53df-b4c3-3bcf75a1222d',
           parentJobId: 'parent-1',
           workflowSlotId: 'slot-1',
         },
-        body: expectedBody,
+        body: { ...expectedBody, execution: 1 },
       });
     },
   );
@@ -199,8 +175,20 @@ describe('terminal-materializer canonical output boundary', () => {
     });
   });
 
-  it('records provider failure causes and terminal events in one commit closure', () => {
-    const recorder = createCommitRecorder();
+  it('records provider failure causes and terminal events in one commit closure', async () => {
+    const journal = executionHarness();
+    const stream = { kind: 'job', id: OPTIONS.jobId } as const;
+    journal.append(
+      { ...openedJob({ owner: { kind: 'provider-session', id: OPTIONS.jobId } }), stream },
+      { ...requestedExecution(), stream },
+    );
+    const runtime = new SimulationRuntime();
+    const store = new JobStore('tests', runtime, journal.ctx.bodyCodec, {
+      db: journal.db,
+      reducers: journal.ctx.reducers,
+      providers: journal.ctx.providers,
+    });
+    const finisher = createTestExecutionFinisher(store, runtime);
     const terminal = {
       kind: 'terminal',
       terminal: {
@@ -216,27 +204,32 @@ describe('terminal-materializer canonical output boundary', () => {
       }),
     } satisfies ProviderTerminalEventBody;
 
-    recordProviderTerminal(recorder.progressStore, terminal, OPTIONS);
+    const acceptedCause = await finisher.accept(OPTIONS, (commit) => {
+      appendProviderTerminalInCommit(commit, terminal, OPTIONS);
+      return undefined;
+    });
+    await finisher.finish(OPTIONS);
+    const appended = journal
+      .events()
+      .filter((event) => event.type === 'job.provider_failed' || event.type === 'job.execution.outcome.accepted');
 
-    expect(recorder.appended).toHaveLength(2);
-    expect(recorder.appended[0]?.input).toMatchObject({
-      type: 'session.provider_failed',
-      stream: { kind: 'session', id: 'session-1' },
+    expect(appended).toHaveLength(2);
+    expect(appended[0]).toMatchObject({
+      type: 'job.provider_failed',
       body: {
         provider: 'codex',
         reason: 'request_failed',
         message: 'transport reset',
       },
     });
-    expect(recorder.appended[1]?.input).toMatchObject({
-      type: 'job.terminal.recorded',
-      stream: { kind: 'job', id: 'job-1' },
+    expect(appended[1]).toMatchObject({
+      type: 'job.execution.outcome.accepted',
       body: {
         terminal: {
           content: 'failed',
           outcome: {
             kind: 'failed',
-            causeRef: recorder.appended[0]?.token,
+            causeRef: { stream, seq: appended[0]?.seq },
           },
           durationMs: 0,
         },
@@ -245,5 +238,7 @@ describe('terminal-materializer canonical output boundary', () => {
         },
       },
     });
+    expect(acceptedCause.seq).toBe(appended[1]?.seq);
+    journal.db.close();
   });
 });

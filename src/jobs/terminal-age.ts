@@ -12,7 +12,7 @@ export function readJobTerminalAge(db: Database, terminal: EventsRow): number | 
     db,
     hasRetentionAgeIndex(db)
       ? "SELECT ts FROM events INDEXED BY events_retention_age WHERE stream_kind = 'job' AND stream_id = ? AND seq < ? ORDER BY ts DESC LIMIT 1"
-      : "SELECT ts FROM events WHERE type IN ('job.launch.requested', 'job.launch.rejected', 'job.queue.queued', 'job.queue.admitted', 'job.runtime.started', 'job.progress.emitted', 'job.terminal.recorded', 'job.aborted') AND stream_kind = 'job' AND stream_id = ? AND seq < ? ORDER BY ts DESC LIMIT 1",
+      : "SELECT ts FROM events WHERE type IN ('job.opened', 'job.execution.requested', 'job.execution.queued', 'job.execution.admitted', 'job.execution.started', 'job.execution.progress', 'job.execution.outcome.accepted', 'job.execution.ended', 'job.execution.aborted') AND stream_kind = 'job' AND stream_id = ? AND seq < ? ORDER BY ts DESC LIMIT 1",
   ).get(terminal.stream_id, terminal.seq);
   if (preceding === undefined) return terminalAt;
   const precedingAt = Date.parse(preceding.ts);

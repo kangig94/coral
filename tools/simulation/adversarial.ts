@@ -1,5 +1,5 @@
 import { join } from 'node:path';
-import { SessionManager } from '../../src/sessions/shell.js';
+import { ConversationManager } from '../../src/jobs/conversation/shell.js';
 import type {
   CoordinatorServerInfo,
   LifecycleShutdownDisposition,
@@ -25,8 +25,7 @@ import type { LaunchDecision } from '../../src/jobs/launch.js';
 import { isTerminalPhase } from '../../src/jobs/phase.js';
 import type { JobEvent, JobRuntime, JobStatus, JobTerminal } from '../../src/jobs/records.js';
 import type { DurableCliRuntimeRecord, DurableProcessExit } from '../../src/runtime/durable-runtime.js';
-import type { ProviderSession } from '../../src/sessions/entry.js';
-import { providerLookupPortFromCatalog } from '../../src/providers/catalog.js';
+import type { JobConversation } from '../../src/jobs/conversation/entry.js';
 import type { ShutdownReason } from '../../src/infra/shutdown-contract.js';
 
 const RESULT_FILE = 'result.md';
@@ -459,7 +458,7 @@ export class SimulationWorld {
     this.assertUsable();
     const row = this.current.backend.progressStore
       .getDb()
-      .prepare<[], { total: number }>(`SELECT COUNT(*) AS total FROM events WHERE type = 'job.terminal.recorded'`)
+      .prepare<[], { total: number }>(`SELECT COUNT(*) AS total FROM events WHERE type = 'job.execution.ended'`)
       .get();
     return row?.total ?? 0;
   }
@@ -469,16 +468,14 @@ export class SimulationWorld {
     return this.current.backend.progressStore.listJobIds();
   }
 
-  listSessions(provider: string, projectRoot?: string): ProviderSession[] {
+  listSessions(provider: string, projectRoot?: string): JobConversation[] {
     this.assertUsable();
     const targetRoot = projectRoot ?? this.current.backend.projectRoot;
-    return new SessionManager(
+    return new ConversationManager(
       targetRoot,
       this.current.backend.runtime,
-      undefined,
-      () => {},
+      (cb) => this.current.backend.progressStore.commit(cb),
       this.current.backend.progressStore.getDb(),
-      providerLookupPortFromCatalog(this.current.backend.providerRegistry),
     ).list(provider);
   }
 

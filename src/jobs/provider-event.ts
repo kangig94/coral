@@ -101,27 +101,24 @@ export interface ProviderEventEffectPort<Tx> {
     seq: number,
     body: ProviderProgressEventBody,
   ) => Promise<void>;
-  /** Continuity and artifact events both append to the session stream. */
-  readonly appendSessionEvent: (
+  readonly appendConversationEvent: (
     tx: Tx,
     identity: ProviderOperationEventIdentity,
     seq: number,
     body: ProviderContinuityEventBody | ProviderArtifactHandleEventBody,
   ) => Promise<void>;
-  readonly appendJobTerminal: (
+  readonly acceptExecutionOutcome: (
     tx: Tx,
     identity: ProviderOperationEventIdentity,
     seq: number,
     disposition: TerminalDisposition,
   ) => Promise<void>;
-  readonly appendSessionInterrupted: (
+  readonly appendJobInterrupted: (
     tx: Tx,
     identity: ProviderOperationEventIdentity,
     seq: number,
     trigger: ProviderInterruptionCause,
   ) => Promise<void>;
-  /** Releases the exact session claim this operation holds. Must run before `advanceWatermark` in the same transaction. */
-  readonly releaseSessionClaim: (tx: Tx, identity: ProviderOperationEventIdentity) => Promise<void>;
   /** Retains the identity because a lost settlement reply needs a stable replay target. */
   readonly markSettlementPending: (
     tx: Tx,
@@ -225,11 +222,10 @@ async function applyEffect<Tx>(
       return;
     case 'continuity':
     case 'artifact_handle':
-      await port.appendSessionEvent(tx, identity, seq, event);
+      await port.appendConversationEvent(tx, identity, seq, event);
       return;
     case 'terminal':
-      await port.appendJobTerminal(tx, identity, seq, { kind: 'direct', body: event });
-      await port.releaseSessionClaim(tx, identity);
+      await port.acceptExecutionOutcome(tx, identity, seq, { kind: 'direct', body: event });
       return;
     case 'suspended':
       await applySuspendedEffect(port, tx, identity, seq, event.recordedStopCause);
@@ -239,15 +235,6 @@ async function applyEffect<Tx>(
   }
 }
 
-/**
- * A `suspended` event means the proxy could not confirm whether its interrupt landed. `restart`/`handoff`
- * owe the job a truthful `session.interrupted` before its terminal; the three abort causes were deliberate
- * stops, so writing `session.interrupted` for them would record an interruption nobody suffered — they get
- * only the existing abort terminal. Deciding by the positive (`isInterruptionStopCause` first) means an
- * unrecognised or future stop cause falls through to `assertNever` instead of silently picking the
- * interruption side — the opposite of a fail-safe default. Both paths still release the claim in the same
- * transaction as a direct terminal does.
- */
 async function applySuspendedEffect<Tx>(
   port: ProviderEventEffectPort<Tx>,
   tx: Tx,
@@ -256,12 +243,11 @@ async function applySuspendedEffect<Tx>(
   recordedStopCause: Exclude<ProviderStopCause, 'coordinator_rekey_refused'>,
 ): Promise<void> {
   if (isInterruptionStopCause(recordedStopCause)) {
-    await port.appendSessionInterrupted(tx, identity, seq, recordedStopCause);
-    await port.appendJobTerminal(tx, identity, seq, { kind: 'interrupted' });
+    await port.appendJobInterrupted(tx, identity, seq, recordedStopCause);
+    await port.acceptExecutionOutcome(tx, identity, seq, { kind: 'interrupted' });
   } else if (isAbortStopCause(recordedStopCause)) {
-    await port.appendJobTerminal(tx, identity, seq, { kind: 'abort', reason: recordedStopCause });
+    await port.acceptExecutionOutcome(tx, identity, seq, { kind: 'abort', reason: recordedStopCause });
   } else {
     assertNever(recordedStopCause);
   }
-  await port.releaseSessionClaim(tx, identity);
 }

@@ -1,3 +1,4 @@
+import { insertTestJobProjection } from '#tests/helpers/job-projection.js';
 import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
@@ -87,21 +88,7 @@ it('retries a transient holder publication failure without replacing the current
     build: buildManifest,
     authorizeMint: authorizeFixtureStoreMint,
   });
-  initial.db
-    .prepare(
-      `INSERT INTO projection_jobs (
-         job_id, execution_owner, phase, diagnostics, session_id, provider,
-         project_root, work_dir, backend_namespace, job_kind, created_at, last_seq
-       ) VALUES (?, ?, 'running', '{"progressFaults":[]}', ?, 'codex', ?, ?, 'tests', 'provider', ?, 0)`,
-    )
-    .run(
-      'job-survives-holder-retry',
-      JSON.stringify({ kind: 'provider-session', id: 'session-survives-holder-retry' }),
-      'session-survives-holder-retry',
-      '/workspace',
-      '/workspace',
-      '2026-09-23T00:00:00.000Z',
-    );
+  insertTestJobProjection(initial.db, { job_id: 'job-survives-holder-retry', project_root: '/workspace' });
   initial.db.close();
   const clock = withVirtualRetryClock(runtime);
   let failedWrites = 0;

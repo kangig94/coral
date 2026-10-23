@@ -89,6 +89,7 @@ function providerProxySetContainBooleanResponse(
 function createCoordinatorJobLister(
   getProgressStore: () => JobStore,
   attention: JobAttention,
+  admitWait: JobAddressing['admitWait'],
 ): RpcPorts['jobs']['list'] {
   return (filters) => {
     const progressStore = getProgressStore();
@@ -116,10 +117,27 @@ function createCoordinatorJobLister(
           continue;
         }
       }
-      if (filters.unwaited === true && !attention.isUnwaited(entry.jobId)) continue;
-      jobs.push({ ...entry, ...(attention.isReleased(entry.jobId) ? { released: true } : {}) });
+      if (filters.unwaited === true && !attention.isUnwaited(entry.jobId, entry.status.execution ?? 0)) continue;
+      jobs.push({
+        ...entry,
+        execution: entry.status.execution,
+        ...(attention.isReleased(entry.jobId, entry.status.execution ?? 0) ? { released: true } : {}),
+      });
     }
 
+    if (filters.unwaited === true && jobs.length > 0) {
+      const admissions = admitWait({ jobIds: jobs.map(({ jobId }) => jobId) });
+      for (const job of jobs) {
+        const admission = admissions.find((admission) => admission.jobId === job.jobId);
+        if (
+          admission?.disposition === 'admitted' &&
+          !admission.observationDeferred &&
+          admission.detail?.status.execution === job.execution &&
+          admission.selection !== undefined
+        )
+          job.executionSelection = admission.selection;
+      }
+    }
     return jobs;
   };
 }
@@ -164,7 +182,7 @@ export function createCoordinatorRpcPorts({
       snapshot: (request) => jobAddressing.snapshot(request),
       scopeCheck: (jobIds, callerRoot, relation) => jobAddressing.scopeCheck(jobIds, callerRoot, relation),
       abort: (jobIds) => jobAddressing.abort(jobIds),
-      send: (request, ctx) => services.getExecutionService(ctx).send(request),
+      send: (request, ctx) => services.getExecutionService(ctx).send(request, ctx),
       release: (jobIds) => {
         const result: JobsReleaseResult = { released: [], unknown: [], terminal: [] };
         for (const jobId of jobIds) {
@@ -172,22 +190,22 @@ export function createCoordinatorRpcPorts({
           if (status === null) result.unknown.push(jobId);
           else if (!isLivePhase(status.phase)) result.terminal.push(jobId);
           else {
-            services.jobAttention.release(jobId);
+            services.jobAttention.release(jobId, status.execution ?? 0);
             result.released.push(jobId);
           }
         }
         return result;
       },
-      waitStream: async function* (request) {
-        const endWait = services.jobAttention.beginWait(request.jobIds);
-        try {
-          yield* jobAddressing.waitStream(request);
-        } finally {
-          endWait();
-        }
-      },
+      waitStream: (request) =>
+        services.jobAttention.waitStream(
+          request,
+          (scoped) => jobAddressing.admitWait(scoped),
+          (scoped) => jobAddressing.waitStream(scoped),
+        ),
       waitHandoverSignal,
-      list: createCoordinatorJobLister(getProgressStore, services.jobAttention),
+      list: createCoordinatorJobLister(getProgressStore, services.jobAttention, (request) =>
+        jobAddressing.admitWait(request),
+      ),
       detail: (jobId) => jobAddressing.detail(jobId),
       unknownJobDisposition: () => jobAddressing.unknownJobDisposition(),
       unknownJobCaveat: () => jobAddressing.unknownJobCaveat(),

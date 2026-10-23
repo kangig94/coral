@@ -1,3 +1,4 @@
+import { type WaitExecutionSelection } from '../../jobs/wait/execution-selection.js';
 import { z } from 'zod';
 
 import { parseBooleanQuery } from '../../infra/json.js';
@@ -5,7 +6,8 @@ import { providerIdentPattern } from '../../infra/identifiers.js';
 import { jobPhaseSchema } from '../../jobs/phase.js';
 import { type WaitCursor } from '../../jobs/wait/contract.js';
 import { MAX_WAIT_JOB_IDS } from '../../jobs/wait/stream-event.js';
-import { proxyOperationSendResultSchema } from '../../provider-proxy/protocol.js';
+import { jobSendAttemptSchema } from '../../jobs/send.js';
+import { sessionCreateSchema } from '../../jobs/conversation/command-schemas.js';
 
 const projectRootSchema = z.string().min(1, 'Project root is required');
 const jobIdSchema = z.string().min(1, 'Job ID is required');
@@ -23,6 +25,7 @@ const jobWaitFieldsSchema = z.object({
   // Decoded by the wait owner, so an undecodable cursor is a soft typed refusal rather than invalid params.
   cursor: z.unknown(),
   drainProgress: z.boolean().optional(),
+  executionSelections: z.unknown().optional(),
 });
 
 const uniqueJobIds = (value: { jobIds: readonly string[] }, ctx: z.RefinementCtx): void => {
@@ -47,7 +50,14 @@ export const jobWaitSnapshotSchema = jobWaitFieldsSchema
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: '--lines cannot be used with --cursor' });
   });
 
-const WAIT_REQUEST_FIELDS = new Set(['jobIds', 'projectRoot', 'timeoutSeconds', 'cursor', 'drainProgress']);
+const WAIT_REQUEST_FIELDS = new Set([
+  'jobIds',
+  'projectRoot',
+  'timeoutSeconds',
+  'cursor',
+  'drainProgress',
+  'executionSelections',
+]);
 
 export const WAIT_BUILD_MISMATCH_REASON =
   'This Coral CLI and the running coordinator are different builds, and wait does not bridge builds.';
@@ -76,6 +86,7 @@ export type JobsWaitFields = Readonly<{
   timeoutSeconds?: number;
   drainProgress?: boolean;
   cursor?: WaitCursor;
+  executionSelections?: readonly WaitExecutionSelection[];
 }>;
 
 export function jobsWaitRequest(fields: JobsWaitFields): Record<string, unknown> {
@@ -85,6 +96,7 @@ export function jobsWaitRequest(fields: JobsWaitFields): Record<string, unknown>
     ...(fields.timeoutSeconds === undefined ? {} : { timeoutSeconds: fields.timeoutSeconds }),
     ...(fields.drainProgress === true ? { drainProgress: true } : {}),
     cursor: fields.cursor ?? null,
+    ...(fields.executionSelections === undefined ? {} : { executionSelections: fields.executionSelections }),
   };
 }
 
@@ -95,25 +107,11 @@ export const jobAbortSchema = z
   })
   .strict();
 
-export const JOB_SEND_MAX_INPUT_LENGTH = 65_536;
-
-/** The provider turn id the proxy reports stays inside the coordinator; the caller learns only the outcome. */
-export const jobSendResponseSchema = z.discriminatedUnion('state', [
-  proxyOperationSendResultSchema.options[0].omit({ providerTurnId: true }),
-  proxyOperationSendResultSchema.options[1],
-  proxyOperationSendResultSchema.options[2],
-]);
-
 export const jobSendSchema = z
   .object({
     projectRoot: projectRootSchema,
-    jobId: jobIdSchema,
-    input: z
-      .string()
-      .min(1, 'Input is required')
-      .max(JOB_SEND_MAX_INPUT_LENGTH, `Input must be at most ${JOB_SEND_MAX_INPUT_LENGTH} UTF-16 code units`)
-      .refine((input) => input.trim().length > 0, 'Input must contain non-whitespace text'),
-    clientMessageId: z.string().uuid('Client message ID must be a UUID'),
+    ...jobSendAttemptSchema.shape,
+    ...sessionCreateSchema.pick({ providerScope: true, coralEnv: true, networkEnv: true, owner: true }).shape,
   })
   .strict();
 

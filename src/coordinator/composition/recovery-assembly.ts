@@ -1,3 +1,4 @@
+import { createExecutionFinishingRetryPlan, EXECUTION_FINISHING_BOUNDARY } from '../../jobs/finishing.js';
 import { createDiscussionCandidateRetryPlan, createDiscussionSourceRetryPlan } from '../../discuss/shell/recovery.js';
 import type { createDiscussRuntime } from '../../discuss/shell/runtime-services.js';
 import { formatError } from '../../infra/error-format.js';
@@ -13,13 +14,9 @@ import {
   type RecoveryRetryQuarantinePort,
 } from '../../recovery/source-registry.js';
 import {
-  createRetentionReleasePairRetryPlan,
   createRetentionWorkRetryPlan,
   isLifecycleRetentionAdmitted,
-  createSessionContinuationLeaseRetryPlan,
-  createSessionProjectionRetryPlan,
-  createTerminalRetentionOutcomeRetryPlan,
-} from '../../sessions/lifecycle-reactor.js';
+} from '../../jobs/conversation/lifecycle-reactor.js';
 import type { HealthSnapshot } from '../../transport/server-ports.js';
 import { createWorkflowRecoveryRetryPlan } from '../../workflow/recover.js';
 import { createCrashedJobTerminalizationRetryPlan, createStaleJobCleanupRetryPlan } from '../lifecycle.js';
@@ -87,20 +84,11 @@ function registerRecoverySources(input: RecoveryAssemblyInput): void {
       quarantine,
     ),
   );
-  recoverySources.register('session-projection', (subject, _signal, quarantine) =>
-    createSessionProjectionRetryPlan(recoveryDb(), subject, quarantine),
+  recoverySources.register(EXECUTION_FINISHING_BOUNDARY, (subject, signal) =>
+    createExecutionFinishingRetryPlan(core.executionFinisher, recoveryDb(), subject, signal),
   );
-  recoverySources.register('session-continuation-lease', (subject, _signal, quarantine) =>
-    createSessionContinuationLeaseRetryPlan(recoveryDb(), subject, quarantine),
-  );
-  recoverySources.register('terminal-retention-outcome', (subject, _signal, quarantine) =>
-    createTerminalRetentionOutcomeRetryPlan(recoveryDb(), subject, quarantine),
-  );
-  recoverySources.register('retention-release-pair', (subject, _signal, quarantine) =>
-    createRetentionReleasePairRetryPlan(recoveryDb(), subject, quarantine),
-  );
-  recoverySources.register('session-retention-work', (subject, signal, quarantine) =>
-    createRetentionWorkRetryPlan(recoveryDb(), subject, signal, quarantine),
+  recoverySources.register('job-conversation-retention', (subject, signal) =>
+    createRetentionWorkRetryPlan(recoveryDb(), subject, signal),
   );
   recoverySources.register('workflow-recovery', (subject) => createWorkflowRecoveryRetryPlan(recoveryDb(), subject));
   recoverySources.register('stale-job-cleanup', (subject) => createStaleJobCleanupRetryPlan(recoveryDb(), subject));
@@ -178,7 +166,8 @@ export function createRecoveryAssembly(input: RecoveryAssemblyInput) {
     ids: runtime.ids,
     quarantine: recoveryQuarantineStore,
     sources: recoverySources,
-    isRetryAdmitted: (boundary) => boundary !== 'session-retention-work' || isLifecycleRetentionAdmitted(recoveryDb()),
+    isRetryAdmitted: (boundary) =>
+      boundary !== 'job-conversation-retention' || isLifecycleRetentionAdmitted(recoveryDb()),
   });
   const recoveryQuarantine = createRecoveryQuarantinePorts({
     runtime,

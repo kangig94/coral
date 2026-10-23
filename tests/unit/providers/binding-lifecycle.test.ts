@@ -19,9 +19,8 @@ import { TEST_CODEX_BINDING } from '#tests/helpers/provider-credentials.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 import type { ProviderBindingRuntime } from '#src/providers/contracts/binding.js';
 import { createBuiltInProviderRegistry as createUnconnectedBuiltInProviderRegistry } from '#src/providers/bootstrap.js';
-import { providerLookupPortFromCatalog } from '#src/providers/catalog.js';
-import { SessionManager } from '#src/sessions/shell.js';
-import { openTestStoreDb } from '#tests/helpers/store-db.js';
+import { ConversationManager } from '#src/jobs/conversation/shell.js';
+import { executionHarness, openedJob } from '#tests/helpers/job-executions.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 
 const roots: string[] = [];
@@ -186,7 +185,7 @@ describe('provider binding lifecycle', () => {
       hostRoot: '/test/plugin/bridge',
       request: {
         action: 'exec',
-        sessionId: 'codex-session',
+        jobId: 'codex-session',
         prompt: 'test',
         cwd: fixtureCanonicalWorkDir(root),
         bypassPermissions: false,
@@ -258,17 +257,31 @@ describe('provider binding lifecycle', () => {
     if (!bound.ok) return;
 
     const storeRuntime = new SimulationRuntime();
-    const db = openTestStoreDb(storeRuntime, ':memory:');
-    new SessionManager(root, storeRuntime, undefined, undefined, db, providerLookupPortFromCatalog(registry)).allocate({
+    const journal = executionHarness();
+    const db = journal.db;
+    const conversation = new ConversationManager(root, storeRuntime, journal.commit, db).prepare({
       binding: bound.value.envelope,
       name: 'durable-secret-boundary',
-      cwd: root,
+      cwd: fixtureCanonicalWorkDir(root),
       projectRoot: root,
       backendNamespace: 'binding-secret-test',
     });
+    journal.append(
+      openedJob({
+        projectRoot: root,
+        conversation: {
+          provider: conversation.provider,
+          binding: conversation.binding,
+          name: conversation.name,
+          cwd: conversation.cwd,
+          bypassPermissions: conversation.bypassPermissions,
+          retention: conversation.retention,
+        },
+      }),
+    );
 
     const eventBodies = db.prepare('SELECT body FROM events').all() as Array<{ body: Buffer }>;
-    const projections = db.prepare('SELECT entry FROM projection_sessions').all() as Array<{ entry: string }>;
+    const projections = db.prepare('SELECT facet AS entry FROM projection_jobs').all() as Array<{ entry: string }>;
     const durableBytes = [
       ...eventBodies.map(({ body }) => body.toString('utf8')),
       ...projections.map(({ entry }) => entry),
@@ -290,7 +303,7 @@ describe('bound provider send', () => {
       jobId: 'job-send',
       request: {
         action: 'exec' as const,
-        sessionId: 'session-send',
+        jobId: 'job-send',
         prompt: 'Initial prompt',
         cwd: fixtureCanonicalWorkDir(root),
         bypassPermissions: false,

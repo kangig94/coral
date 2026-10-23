@@ -1,17 +1,15 @@
-import type { SessionEventBusEvents } from '../sessions/event-bus.js';
 import type { JobProgressTiming } from './event-bodies.js';
 import type { JobPhase } from './phase.js';
 import type { JobTerminal } from './records.js';
-import type { JobLaunchRequestBody } from './launch.js';
+import type { JobOpenedBody } from './launch.js';
 import type { JobCreatedEvent } from './contracts/event-stream.js';
 
-export function jobCreatedEvent(jobId: string, launch: JobLaunchRequestBody): JobCreatedEvent {
+export function jobCreatedEvent(jobId: string, launch: JobOpenedBody): JobCreatedEvent {
   if (launch.jobKind === 'provider') {
     return {
       kind: 'provider',
       jobId,
-      sessionId: launch.sessionId,
-      provider: launch.provider,
+      provider: launch.conversation.provider,
       projectRoot: launch.projectRoot,
     };
   }
@@ -39,10 +37,12 @@ export function jobCreatedEvent(jobId: string, launch: JobLaunchRequestBody): Jo
 
 export type JobEventBusEvents = {
   'job:created': JobCreatedEvent;
+  'job:requested': { jobId: string; execution: number };
   'job:phase_changed': { jobId: string; phase: JobPhase; previousPhase: JobPhase };
   'job:progress': { jobId: string; seq: number; message: string; timing: JobProgressTiming };
   'job:completed': {
     jobId: string;
+    execution: number;
     result: JobTerminal;
     costUsd?: number;
     tokenUsage?: {
@@ -52,9 +52,7 @@ export type JobEventBusEvents = {
   };
 };
 
-// The event itself is owned by the sessions domain; the bus surface accepts the
-// union of slices that jobs subscribers actually observe.
-type JobObservedEvents = JobEventBusEvents & Pick<SessionEventBusEvents, 'session:released'>;
+type JobObservedEvents = JobEventBusEvents;
 
 export interface JobEventBus {
   on<K extends keyof JobObservedEvents>(event: K, listener: (payload: JobObservedEvents[K]) => void): this;

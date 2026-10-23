@@ -23,6 +23,7 @@ import {
   type ControlExchange,
   type ControlClientRemoteFailure,
 } from '#src/provider-proxy/control-client.js';
+import { formatJobSendResult } from '#src/cli/format/jobs.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
 const SET_IDENTITY: ProviderProxySetIdentity = {
@@ -215,15 +216,24 @@ describe('provider send uncertainty policy', () => {
   });
 
   it.each(['method_not_found', null] as const)(
-    'replaces older-proxy method-not-found with restart guidance without a fault or replay: %s',
+    'formats an older-proxy refusal with only automatic convergence guidance: %s',
     async (protocolCode) => {
       const h = setup(failure(-32601, protocolCode));
-      await expect(sendProviderOperation(h.deps, OPERATION, input)).resolves.toMatchObject({
+      const outcome = await sendProviderOperation(h.deps, OPERATION, input);
+      expect(outcome).toEqual({
         state: 'refused',
         code: 'unsupported_by_running_build',
-        reason:
-          'The running Coral build predates jobs send. Restart the session so the current Coral plugin loads; the coordinator follows the installed build.',
+        reason: 'The running Coral build predates this jobs send contract.',
       });
+      const output = formatJobSendResult(OPERATION.jobId, outcome, { inputTokens: [input.text] });
+      expect(output.exitCode).toBe(1);
+      expect(output.text).toContain('The running Coral build predates this jobs send contract.');
+      expect(output.text).toContain('A pending upgrade proceeds automatically when its recorded conditions clear.');
+      expect(output.text).toContain('If none is pending, wait for the coordinator to retire idle');
+      expect(output.text).not.toMatch(/restart|shutdown|backend start/iu);
+      expect(output.text.split('\n').filter((line) => line.startsWith('command='))).toEqual([
+        'command=coral-cli backend status',
+      ]);
       expect(h.exchange).toHaveBeenCalledTimes(1);
       expect(h.reportIncident).not.toHaveBeenCalled();
       expect(h.faultAuthority).not.toHaveBeenCalled();
@@ -266,7 +276,7 @@ it('keeps the exhaustive operation policy dispositions separate from send uncert
     binding: { provider: 'codex', kind: 'account', binding: {} },
     request: {
       action: 'exec',
-      sessionId: 'session-1',
+      jobId: 'session-1',
       prompt: 'hello',
       cwd: fixtureCanonicalWorkDir('/tmp'),
       bypassPermissions: false,

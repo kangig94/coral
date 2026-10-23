@@ -14,30 +14,32 @@ import { createBuiltInProviderRegistry } from '#src/providers/bootstrap.js';
 import type { JobsListResponse } from '#src/jobs/records.js';
 import { selectWaitSnapshot } from '#tests/helpers/wait-progress.js';
 import { admitted, testSession } from '#tests/helpers/wait-session.js';
-import type { ProviderSendOutcome } from '#src/providers/contract.js';
+import type { JobSendOutcome } from '#src/jobs/send.js';
+import type { CliJobSendOutcome } from '#src/cli/dispatch.js';
 import { registerProviderCommands } from '#src/cli/commands/provider.js';
 import { formatJobSendResult } from '#src/cli/format/jobs.js';
-import { followJobs } from '#src/cli/follow.js';
+import { followJobs, launchAndFollow } from '#src/cli/follow.js';
 
 const client = vi.hoisted(() => ({
   listJobs: vi.fn<() => Promise<JobsListResponse>>(async () => ({ jobs: [] })),
   abortJobs: vi.fn(async () => ({ aborted: ['a'], notFound: [] })),
   snapshotJobsWait: vi.fn(),
-  sendJob: vi.fn<() => Promise<ProviderSendOutcome>>(async () => ({ state: 'delivered' })),
+  sendJob: vi.fn<() => Promise<CliJobSendOutcome>>(async () => ({ state: 'delivered' })),
   createSession: vi.fn(async () => ({
     kind: 'provider-session',
-    sessionId: 's',
     jobId: 'p',
+    requestedSeq: 1,
+    epochKey: 'epoch',
     launchState: 'running',
   })),
 }));
 const stdin = vi.hoisted(() => ({ text: '' }));
 const readStore = vi.hoisted(() => ({
-  jobs: { detail: vi.fn(() => ({ status: { jobKind: 'provider', sessionId: 'session-1' } })) },
-  sessions: {
-    readEntry: vi.fn<() => { binding: { provider: string }; agentName?: string }>(() => ({
+  jobs: {
+    detail: vi.fn(() => ({ status: { jobKind: 'provider' } })),
+    conversation: vi.fn<() => { binding: { provider: string }; agent?: string }>(() => ({
       binding: { provider: 'codex' },
-      agentName: 'coral:architect',
+      agent: 'coral:architect',
     })),
   },
 }));
@@ -61,6 +63,7 @@ vi.mock('#src/cli/dispatch.js', async (importOriginal) => ({
 vi.mock('#src/cli/follow.js', async (importOriginal) => ({
   ...(await importOriginal<typeof FollowMod>()),
   followJobs: vi.fn(async () => 0),
+  launchAndFollow: vi.fn(async () => 7),
 }));
 
 afterEach(() => {
@@ -113,10 +116,13 @@ it('explains required send input resolution and ended-turn behavior in help', ()
     .helpInformation()
     .replace(/\s+/gu, ' ');
   expect(help).toContain('required');
+  expect(help).toContain('Canonical job UUID (required)');
   expect(help).toContain('tokens are joined with single spaces');
   expect(help).toContain('the whole input is read if it names an existing regular file');
   expect(help).toContain('stdin if exactly -');
-  expect(help).toContain('An ended turn is not resumed');
+  expect(help).toContain("continue an ended job's conversation");
+  expect(help).toContain('ignored for a steer');
+  expect(help).toContain('--detach');
 });
 
 it.each([
@@ -278,16 +284,16 @@ it.each([
     { state: 'refused', code: 'turn_ended', reason: 'The turn ended.' },
     1,
     'Message refused (turn_ended): The turn ended.\n' +
-      "Read the job's result.\ncommand=coral-cli jobs wait job-1\n" +
-      'Start a new job with the same message; this starts a new conversation. The original -w, -m and -b options are not reproduced.\n' +
-      'command=coral-cli codex coral:architect -i message',
+      "Read the job's result before requesting another execution of its conversation.\ncommand=coral-cli jobs wait job-1\n" +
+      'A new intentional send attempt reads a fresh execution target and uses a new message ID.\n' +
+      'command=coral-cli jobs send job-1 -i message',
   ],
   [
     { state: 'unknown', reason: 'No answer.' },
     75,
-    "Unknown: message may have been delivered. Check the job's progress for evidence.\ncommand=coral-cli jobs wait job-1",
+    "Unknown: message may have been delivered. Check the job's progress for evidence.\ncommand=coral-cli jobs wait job-1\nDo not resend until the wait shows the outcome.",
   ],
-] satisfies [ProviderSendOutcome, number, string][])('renders %j with exit %i', async (result, exitCode, expected) => {
+] satisfies [JobSendOutcome, number, string][])('renders %j with exit %i', async (result, exitCode, expected) => {
   const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
   const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
   client.sendJob.mockResolvedValueOnce(result);
@@ -336,47 +342,121 @@ it.each(['turn_not_started', 'control_unavailable'] as const)(
   },
 );
 
-it.each([
-  ['codex', 'coral:architect'],
-  ['claude', undefined],
-] as const)(
-  'executes an ended-turn result remedy and parses a new %s conversation unchanged',
-  async (provider, agent) => {
-    const output = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
-    readStore.sessions.readEntry.mockReturnValueOnce({
-      binding: { provider },
-      ...(agent === undefined ? {} : { agentName: agent }),
-    });
-    client.sendJob.mockResolvedValueOnce({ state: 'refused', code: 'turn_ended', reason: 'Ended.' });
-    const inputTokens = ['a message', '-', '$HOME', "don't expand"];
-    await program().parseAsync(['jobs', 'send', 'job-1', '-i', ...inputTokens], { from: 'user' });
-    expect(client.sendJob).toHaveBeenLastCalledWith('job-1', inputTokens.join(' '));
-    expect(process.exitCode).toBe(1);
-    const commands = printedCommands(output.mock.calls.map(([text]) => String(text)).join(''));
-    expect(commands).toEqual([
-      ['jobs', 'wait', 'job-1'],
-      [provider, ...(agent === undefined ? [] : [agent]), ...inputTokens.map((token) => `--input=${token}`)],
-    ]);
-    const root = program();
-    registerProviderCommands(root, createBuiltInProviderRegistry());
-    const launch = root.commands.find((command) => command.name() === provider)!;
-    const launchAction = vi.fn();
-    launch.action(launchAction);
-    await root.parseAsync(commands[1], { from: 'user' });
-    expect(launchAction).toHaveBeenCalledOnce();
-    expect(launchAction.mock.calls[0]?.[0]).toBe(agent);
-    expect(launch.opts()).toEqual({ input: inputTokens });
-    await root.parseAsync(commands[0], { from: 'user' });
-    expect(followJobs).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({
-        start: { kind: 'jobs', jobIds: ['job-1'] },
-        projectRoot: process.cwd(),
-      }),
-    );
-    expect(process.exitCode).toBe(0);
-  },
-);
+it('preserves detach when executing a refused send retry', async () => {
+  const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+  vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+  const launch = {
+    kind: 'provider-session' as const,
+    jobId: 'job-1',
+    execution: 2,
+    requestedSeq: 100,
+    epochKey: 'epoch',
+    launchState: 'queued' as const,
+  };
+  client.sendJob.mockResolvedValueOnce({ state: 'refused', code: 'busy', reason: 'Admission busy.' });
+  await program().parseAsync(['jobs', 'send', 'job-1', '-d', '-i', 'continue'], { from: 'user' });
+  const commands = printedCommands(stderr.mock.calls.map(([text]) => String(text)).join(''));
+  expect(commands).toEqual([['jobs', 'send', 'job-1', '-d', '-i', 'continue']]);
+  client.sendJob.mockResolvedValueOnce({ state: 'launched', launch });
+  await program().parseAsync(commands[0], { from: 'user' });
+  expect(client.sendJob).toHaveBeenLastCalledWith('job-1', 'continue');
+  expect(launchAndFollow).not.toHaveBeenCalled();
+  expect(process.exitCode).toBe(0);
+});
+
+it.each(['codex', 'claude'] as const)('preserves detach when executing a fresh %s remedy', async (provider) => {
+  const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+  vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+  client.sendJob.mockResolvedValueOnce({ state: 'refused', code: 'pre_generation_job', reason: 'Historical job.' });
+  await program().parseAsync(['jobs', 'send', 'job-1', '-d', '-i', 'continue'], { from: 'user' });
+  const commands = printedCommands(stderr.mock.calls.map(([text]) => String(text)).join(''));
+  const command = commands.find(([name]) => name === provider)!;
+  expect(command).toEqual([provider, '-d', '-i', 'continue']);
+  const root = program();
+  registerProviderCommands(root, createBuiltInProviderRegistry());
+  process.exitCode = undefined;
+  await root.parseAsync(command, { from: 'user' });
+  expect(client.createSession).toHaveBeenCalledWith(provider, 'continue', expect.any(Object));
+  expect(launchAndFollow).not.toHaveBeenCalled();
+  expect(process.exitCode).toBeUndefined();
+});
+
+it('executes an ended-turn result remedy and sends the original input unchanged on a new attempt', async () => {
+  const output = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+  vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+  client.sendJob.mockResolvedValueOnce({ state: 'refused', code: 'turn_ended', reason: 'Ended.' });
+  const inputTokens = ['a message', '-', '$HOME', "don't expand"];
+  await program().parseAsync(['jobs', 'send', 'job-1', '-i', ...inputTokens], { from: 'user' });
+  expect(client.sendJob).toHaveBeenLastCalledWith('job-1', inputTokens.join(' '));
+  expect(process.exitCode).toBe(1);
+  const commands = printedCommands(output.mock.calls.map(([text]) => String(text)).join(''));
+  expect(commands).toEqual([
+    ['jobs', 'wait', 'job-1'],
+    ['jobs', 'send', 'job-1', ...inputTokens.map((token) => `--input=${token}`)],
+  ]);
+  const root = program();
+  await root.parseAsync(commands[1], { from: 'user' });
+  expect(client.sendJob).toHaveBeenCalledTimes(2);
+  expect(client.sendJob.mock.calls[1]).toEqual(client.sendJob.mock.calls[0]);
+  expect(readStore.jobs.detail).not.toHaveBeenCalled();
+  expect(readStore.jobs.conversation).not.toHaveBeenCalled();
+  await root.parseAsync(commands[0], { from: 'user' });
+  expect(followJobs).toHaveBeenCalledExactlyOnceWith(
+    expect.objectContaining({
+      start: { kind: 'jobs', jobIds: ['job-1'] },
+      projectRoot: process.cwd(),
+    }),
+  );
+  expect(process.exitCode).toBe(0);
+});
+it.each([false, true])('follows a launched continuation by default and detaches=%s', async (detach) => {
+  const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+  vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+  const launch = {
+    kind: 'provider-session' as const,
+    jobId: 'job-1',
+    execution: 2,
+    requestedSeq: 100,
+    epochKey: 'epoch',
+    launchState: 'queued' as const,
+  };
+  client.sendJob.mockResolvedValueOnce({ state: 'launched', launch });
+  await program().parseAsync(['jobs', 'send', 'job-1', ...(detach ? ['-d'] : []), '-i', 'continue'], { from: 'user' });
+  if (detach) {
+    expect(launchAndFollow).not.toHaveBeenCalled();
+    const text = stdout.mock.calls.map(([chunk]) => String(chunk)).join('');
+    expect(text).toContain('Provider job job-1 execution #2 queued');
+    expect(text).toContain('job-1');
+    expect(text).toContain('--execution-selection');
+    expect(text).toContain('100');
+  } else {
+    expect(launchAndFollow).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ launchResult: launch }));
+    expect(process.exitCode).toBe(7);
+  }
+});
+
+it('detaches a continuation using the ordinal derived by target binding when the launch omits it', async () => {
+  const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+  client.sendJob.mockResolvedValueOnce({
+    state: 'launched',
+    execution: 2,
+    launch: { kind: 'provider-session', jobId: 'job-1', requestedSeq: 100, epochKey: 'epoch', launchState: 'queued' },
+  });
+  await program().parseAsync(['jobs', 'send', 'job-1', '-d', '-i', 'continue'], { from: 'user' });
+  const text = stdout.mock.calls.map(([chunk]) => String(chunk)).join('');
+  expect(text).toContain('Provider job job-1 execution #2 queued');
+  expect(text).toContain('--execution-selection');
+  expect(text).toContain('100');
+  expect(launchAndFollow).not.toHaveBeenCalled();
+  expect(process.exitCode).toBe(0);
+});
+
+it.each([false, true])('returns a steer immediately with detach=%s', async (detach) => {
+  vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+  await program().parseAsync(['jobs', 'send', 'job-1', ...(detach ? ['-d'] : []), '-i', 'steer'], { from: 'user' });
+  expect(launchAndFollow).not.toHaveBeenCalled();
+  expect(followJobs).not.toHaveBeenCalled();
+});
 
 it('keeps option-looking input tokens as message text in the runnable retry command', async () => {
   vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
@@ -387,7 +467,7 @@ it('keeps option-looking input tokens as message text in the runnable retry comm
       code: 'turn_not_started',
       reason: 'Not ready.',
     },
-    { inputTokens: ['-w', 'literal', '--model=example'], launch: null },
+    { inputTokens: ['-w', 'literal', '--model=example'] },
   );
   const commands = printedCommands(output.text);
   await program().parseAsync(commands[0], { from: 'user' });
@@ -399,13 +479,13 @@ it('executes the exact not-found list remedy under the current program', async (
   vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
   const output = formatJobSendResult('missing', { state: 'refused', code: 'not_found', reason: 'Missing.' });
   const commands = printedCommands(output.text);
-  expect(commands).toEqual([['jobs', 'list']]);
+  expect(commands).toEqual([['jobs', 'list', '--all']]);
   await program().parseAsync(commands[0], { from: 'user' });
   expect(client.listJobs).toHaveBeenCalledOnce();
 });
 
 it.each(['turn_not_started', 'control_unavailable', 'turn_ended'] as const)(
-  'does not print stdin-dependent commands for %s',
+  'prints a runnable stdin remedy and requires the original input for %s',
   async (code) => {
     vi.resetModules();
     stdin.text = 'stdin body';
@@ -417,8 +497,12 @@ it.each(['turn_not_started', 'control_unavailable', 'turn_ended'] as const)(
     await root.parseAsync(['jobs', 'send', 'job-1', '-i', '-'], { from: 'user' });
     expect(process.exitCode).toBe(1);
     const text = output.mock.calls.map(([chunk]) => String(chunk)).join('');
-    expect(printedCommands(text)).toEqual(code === 'turn_ended' ? [['jobs', 'wait', 'job-1']] : []);
-    expect(text).not.toMatch(/resume|jobs send|coral-cli codex/i);
+    expect(printedCommands(text)).toEqual([
+      ...(code === 'turn_ended' ? [['jobs', 'wait', 'job-1']] : []),
+      ['jobs', 'send', 'job-1', '-i', '-'],
+    ]);
+    expect(text).toContain('Pipe the same original input into the command you run.');
+    expect(text).not.toMatch(/resume|coral-cli codex/i);
     expect(readStore.jobs.detail).not.toHaveBeenCalled();
   },
 );
@@ -426,14 +510,19 @@ it.each(['turn_not_started', 'control_unavailable', 'turn_ended'] as const)(
 it('preserves the refusal and result remedy when launch metadata cannot be read', async () => {
   const output = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
   client.sendJob.mockResolvedValueOnce({ state: 'refused', code: 'turn_ended', reason: 'Ended.' });
-  readStore.sessions.readEntry.mockImplementationOnce(() => {
+  readStore.jobs.conversation.mockImplementationOnce(() => {
     throw new Error('Session not found.');
   });
   await program().parseAsync(['jobs', 'send', 'job-1', '-i', 'message'], { from: 'user' });
   expect(process.exitCode).toBe(1);
   const text = output.mock.calls.map(([chunk]) => String(chunk)).join('');
-  expect(text).toContain('launch details are unavailable');
-  expect(printedCommands(text)).toEqual([['jobs', 'wait', 'job-1']]);
+  expect(text).toContain('fresh execution target');
+  expect(text).not.toMatch(/start a new job|new conversation/i);
+  expect(printedCommands(text)).toEqual([
+    ['jobs', 'wait', 'job-1'],
+    ['jobs', 'send', 'job-1', '-i', 'message'],
+  ]);
+  expect(readStore.jobs.detail).not.toHaveBeenCalled();
 });
 
 it.each([
@@ -509,4 +598,105 @@ it.each(
   expect(process.exitCode).toBe(2);
   expect(client.listJobs).not.toHaveBeenCalled();
   expect(client.abortJobs).not.toHaveBeenCalled();
+});
+
+it('passes the complete execution selection from a continuation into streaming follow', async () => {
+  const selections = [
+    { jobId: 'a', epochKey: 'epoch', requestedSeq: 1000, awaitingArtifact: false },
+    { jobId: 'b', epochKey: 'epoch', requestedSeq: 2, deliveredEndSeq: 950, awaitingArtifact: false },
+  ];
+  await program().parseAsync([
+    'node',
+    'coral-cli',
+    'jobs',
+    'wait',
+    'a',
+    '--cursor',
+    '279',
+    '--execution-selection',
+    JSON.stringify(selections),
+  ]);
+  expect(followJobs).toHaveBeenCalledWith(
+    expect.objectContaining({
+      start: { kind: 'jobs', jobIds: ['a'], serializedCursor: '279', executionSelections: selections },
+    }),
+  );
+});
+
+it('passes execution selection through snapshot requests and rendered continuations', async () => {
+  const selections = [{ jobId: 'a', epochKey: 'epoch', requestedSeq: 1000, awaitingArtifact: false }];
+  client.snapshotJobsWait.mockResolvedValueOnce({
+    jobs: [{ jobId: 'a', disposition: 'admitted', phase: 'running', progress: [] }],
+    notices: [],
+    cursor: '1000',
+    remainingJobIds: ['a'],
+    exitCode: 75,
+    executionSelections: selections,
+  });
+  let output = '';
+  vi.spyOn(process.stdout, 'write').mockImplementation(((text: unknown, callback?: () => void) => {
+    output += String(text);
+    callback?.();
+    return true;
+  }) as typeof process.stdout.write);
+  await program().parseAsync([
+    'node',
+    'coral-cli',
+    'jobs',
+    'wait',
+    'a',
+    '--snapshot',
+    '--cursor',
+    '279',
+    '--execution-selection',
+    JSON.stringify(selections),
+  ]);
+  expect(client.snapshotJobsWait).toHaveBeenCalledWith(
+    expect.objectContaining({ cursor: '279', executionSelections: selections }),
+  );
+  expect(output).toContain(`--execution-selection '${JSON.stringify(selections)}'`);
+  expect(output).toContain('--snapshot --cursor 1000');
+});
+
+it.each([[], ['--snapshot'], ['--unbounded']].map((args) => [args]))(
+  'rejects malformed execution selections with a runnable recovery %j',
+  async (mode) => {
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    await program().parseAsync([
+      'node',
+      'coral-cli',
+      'jobs',
+      'wait',
+      'a',
+      'b',
+      ...mode,
+      '--execution-selection',
+      '{bad',
+    ]);
+    expect(process.exitCode).toBe(2);
+    const output = stderr.mock.calls.map(([text]) => String(text)).join('');
+    expect(output).toContain('Rerun the printed continuation exactly as printed');
+    expect(output).toContain('coral-cli jobs wait a b');
+    expect(followJobs).not.toHaveBeenCalled();
+    expect(client.snapshotJobsWait).not.toHaveBeenCalled();
+  },
+);
+
+it('renders a snapshot admission refusal with one snapshot-mode fresh-wait remedy', async () => {
+  client.snapshotJobsWait.mockRejectedValueOnce(
+    new Error('wire', {
+      cause: {
+        code: 'wait_selection_invalid',
+        message: 'Malformed selection.',
+        remedy: { kind: 'fresh-wait', jobIds: ['a'] },
+      },
+    }),
+  );
+  const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+  await program().parseAsync(['node', 'coral-cli', 'jobs', 'wait', 'a', '--snapshot']);
+  const output = stderr.mock.calls.map(([text]) => String(text)).join('');
+  expect(output.match(/coral-cli jobs wait/g)).toHaveLength(1);
+  expect(output).toContain('coral-cli jobs wait a --snapshot');
+  expect(output).toContain('Already-delivered results may print again.');
+  expect(process.exitCode).toBe(1);
 });

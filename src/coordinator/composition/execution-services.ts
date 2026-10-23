@@ -1,3 +1,4 @@
+import { readExecutionRetryStatus } from '../../jobs/finishing.js';
 import { observeDatabaseReads } from '../../recovery/read-observation.js';
 import { JobAttention } from '../services/job-attention.js';
 import { readLaunchStatus, recordControllerEvidenceRefusals } from '../../infra/launch-status.js';
@@ -38,7 +39,7 @@ import type { ProviderOperationRecord } from '../../store/provider-operation-rec
 import type { ProviderOperationStartupOwnership } from '../../jobs/startup.js';
 import { ProviderOperationCleanupRouter } from '../../jobs/provider-operation-cleanup.js';
 import { readProviderOperationJobLaunch } from '../../jobs/provider-operation-state.js';
-import { readProjectionProviderSession } from '../../sessions/projections.js';
+import { readProjectionJobConversation } from '../../jobs/conversation/read-queries.js';
 import { materializeProviderOperationPrepare } from '../services/provider-operation-prepare.js';
 import { terminalizeProviderOperation } from '../../jobs/provider-operation-terminalization.js';
 import type { RecoveryCoordinator } from '../services/recovery/index.js';
@@ -88,6 +89,8 @@ import {
 } from '../services/provider-proxy-recovery-policy.js';
 
 type CreateExecutionServicesDeps = {
+  executionFinisher: ExecutionServiceDeps['executionFinisher'];
+  jobLocations: ExecutionServiceDeps['jobLocations'];
   world: CoordinatorWorld;
   runtime: Runtime;
   getActiveEpochPath?: () => string | null;
@@ -128,6 +131,7 @@ function createExecutionServiceRegistry(input: {
   const { services, getProgressStore, providerOperationReconciler, providerOperationCleanup } = input;
   const { world, runtime, bundleHash, backendNamespace, settlementRefusalRecorder, createExecutionService } =
     input.deps;
+  const jobSendAttempts = new Map<string, Promise<void>>();
   function getExecutionService(ctx: InvocationContext): ProjectRequestPort {
     const key = ctx.projectRoot;
     const existing = services.get(key);
@@ -139,6 +143,9 @@ function createExecutionServiceRegistry(input: {
         'SELECT COALESCE(MAX(seq), 0) AS seq FROM events',
       ).get()?.seq ?? 0;
     const created = createExecutionService(ctx, {
+      executionFinisher: input.deps.executionFinisher,
+      jobLocations: input.deps.jobLocations,
+      jobSendAttempts,
       jobAttention: input.jobAttention,
       runningWorkflowJobs: world.runningWorkflowJobs,
       runtime,
@@ -151,9 +158,12 @@ function createExecutionServiceRegistry(input: {
       providerRegistry: world.providerRegistry,
       childPrincipalRegistry: world.childPrincipalRegistry,
       pluginRegistry: world.pluginRegistry,
-      coordinatorCommit: (cb) => getProgressStore().commit(cb),
+      coordinatorCommit: (cb, options) => getProgressStore().commit(cb, options),
       loadJobProjectionDetail: (jobId) => getProgressStore().loadJobProjectionDetail(jobId),
-      loadJobWaitDetail: (jobId) => getProgressStore().loadJobWaitDetail(jobId),
+      loadJobWaitDetail: (jobId, requestedSeq, jobIds) =>
+        getProgressStore().loadJobWaitDetail(jobId, requestedSeq, jobIds),
+      readExecutionFinishingStatus: (address) =>
+        input.deps.executionFinisher.status(address) ?? readExecutionRetryStatus(getProgressStore().getDb(), address),
       readJobLastSeq: (jobId) => getProgressStore().readJobLastSeq(jobId),
 
       visitProgress: (_epoch, read) => getProgressStore().visitProgress(read),
@@ -163,8 +173,9 @@ function createExecutionServiceRegistry(input: {
       currentJobEpochKey: input.deps.currentJobEpochKey,
       internalWait: input.deps.internalWait,
       observeJobAbsence: input.deps.observeJobAbsence,
-      observeResultAvailability: (jobId) => getProgressStore().getResultExportOwner().observeResultAvailability(jobId),
-      hintResultRepair: (jobId) => getProgressStore().getResultExportOwner().hintRepair(jobId),
+      observeResultAvailability: (jobId, execution) =>
+        getProgressStore().getResultExportOwner().observeResultAvailability(jobId, undefined, execution),
+      hintResultRepair: (jobId, execution) => getProgressStore().getResultExportOwner().hintRepair(jobId, execution),
       appServerProxyRoute: createAppServerProxyRoute({
         hostManager: world.providerHostManager,
         reconciler: providerOperationReconciler,
@@ -182,8 +193,8 @@ function createExecutionServiceRegistry(input: {
           isWorkflowOwnedByThisCoordinator: (jobId) => world.runningWorkflowJobs.has(jobId),
           isAdmittedByThisCoordinator: (jobId) => admittedByThisCoordinator(world.launchCoordinator, jobId),
           registryStateForJob: (jobId) => world.operationRegistry.stateForJob(jobId),
-          holdsLocalAppServerExecution: (jobId) =>
-            [...services.values()].some((service) => service.holdsLocalAppServerExecution?.(jobId) === true),
+          holdsLocalAppServerExecution: (jobId, execution) =>
+            [...services.values()].some((service) => service.holdsLocalAppServerExecution?.(jobId, execution) === true),
         },
         getCurrentJournalSeq,
         (records) =>
@@ -467,7 +478,7 @@ function createExecutionOperationReconciler(input: {
           providerRegistry: world.providerRegistry,
           childPrincipalRegistry: world.childPrincipalRegistry,
           readJobLaunch: (jobId, eventSeq) => readProviderOperationJobLaunch(getProgressStore(), jobId, eventSeq),
-          readSession: (sessionId) => readProjectionProviderSession(getProgressStore().getDb(), sessionId),
+          readConversation: (jobId) => readProjectionJobConversation(getProgressStore().getDb(), jobId),
         },
         record.operation,
         record.prepareSource,
@@ -904,6 +915,9 @@ export function createExecutionServices(deps: CreateExecutionServicesDeps): Exec
   };
 
   const jobAttention = new JobAttention();
+  const onRequested = ({ jobId, execution }: { jobId: string; execution: number }) =>
+    jobAttention.requested(jobId, execution);
+  world.eventBus.on('job:requested', onRequested);
   const servicesPorts = createExecutionServiceRegistry({
     jobAttention,
     services,
@@ -920,6 +934,9 @@ export function createExecutionServices(deps: CreateExecutionServicesDeps): Exec
     services: servicesPorts,
     adoptRepairedProviderOperation,
     providerOperationReconciler,
-    unsubscribeProviderProxyControlEstablished,
+    unsubscribeProviderProxyControlEstablished: () => {
+      unsubscribeProviderProxyControlEstablished();
+      world.eventBus.off('job:requested', onRequested);
+    },
   });
 }

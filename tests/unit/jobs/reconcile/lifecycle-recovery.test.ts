@@ -1,3 +1,5 @@
+import { createTestExecutionFinisher } from '#tests/helpers/execution-finisher.js';
+import { requestedExecution } from '#tests/helpers/job-executions.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
@@ -9,9 +11,8 @@ import type { ProviderRecoveryAuthority, RecoveryCapableService } from '#src/job
 import { writeDurableCliProcessRuntimeMeta } from '#src/jobs/runtime-meta-store.js';
 import { JobStore } from '#src/jobs/store.js';
 import { jobsRegistry } from '#src/jobs/events.js';
-import { sessionsRegistry } from '#src/sessions/events.js';
 import { composeReducers } from '#src/store/reducers.js';
-import { SessionManager } from '#src/sessions/shell.js';
+import { ConversationManager } from '#src/jobs/conversation/shell.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
@@ -38,13 +39,13 @@ function fixture(transport: 'app-server' | 'durable-cli' = 'app-server') {
     db,
     eventBus,
     providers: permissiveProviderLookupPort,
-    reducers: composeReducers(jobsRegistry, sessionsRegistry),
+    reducers: composeReducers(jobsRegistry),
   });
-  const sessions = new SessionManager('/project', runtime, undefined, undefined, db, permissiveProviderLookupPort);
+  const sessions = new ConversationManager('/project', runtime, (cb) => store.commit(cb), db);
   const launch: JobLaunch = {
     jobId: '00000000-0000-4000-8000-000000000001',
-    owner: { kind: 'provider-session', id: 'session-1' },
-    sessionId: 'session-1',
+    owner: { kind: 'provider-session', id: '00000000-0000-4000-8000-000000000001' },
+    execution: 1,
     provider: 'codex',
     projectRoot: '/project',
     backendNamespace: 'test',
@@ -56,11 +57,10 @@ function fixture(transport: 'app-server' | 'durable-cli' = 'app-server') {
     createdAt: new Date(runtime.time.now()).toISOString(),
   };
   seedTestSessionProjection(db, {
-    sessionId: 'session-1',
+    jobId: '00000000-0000-4000-8000-000000000001',
     provider: 'codex',
     projectRoot: '/project',
     backendNamespace: 'test',
-    activeJobId: '00000000-0000-4000-8000-000000000001',
   });
   store.appendLaunchRequested('00000000-0000-4000-8000-000000000001', launch);
   const incarnation = testIncarnation('wrapper');
@@ -110,7 +110,7 @@ function fixture(transport: 'app-server' | 'durable-cli' = 'app-server') {
       ok: true,
       authority: {
         launchRecord: launch,
-        session: sessions.get('codex', 'session-1'),
+        session: sessions.get('codex', '00000000-0000-4000-8000-000000000001'),
         boundProvider: { name: 'codex' },
       } as unknown as ProviderRecoveryAuthority,
     })),
@@ -118,12 +118,11 @@ function fixture(transport: 'app-server' | 'durable-cli' = 'app-server') {
     finalizeInterruptedDurableJob: vi.fn<RecoveryCapableService['finalizeInterruptedDurableJob']>(
       async (_authority, _record, observation, fence) => {
         fence.onCommitStart();
-        commitJobTerminal(store, '00000000-0000-4000-8000-000000000001', 'session-1', {
+        commitJobTerminal(store, '00000000-0000-4000-8000-000000000001', 1, {
           content: '',
           durationMs: 0,
           outcome: observation.cancelled ? { kind: 'aborted', reason: 'user_abort' } : { kind: 'completed' },
         });
-        sessions.releaseJob('session-1', '00000000-0000-4000-8000-000000000001');
         finalized.resolve();
       },
     ),
@@ -201,32 +200,38 @@ describe('recovery lifecycle', () => {
       f.store.readJobEvents('00000000-0000-4000-8000-000000000001').filter((event) => event.type === 'terminal'),
     ).toEqual([]);
     expect(f.quarantine()).toEqual({ stage: 'settle' });
-    expect(f.sessions.get('codex', 'session-1')?.activeJobId).toBe('00000000-0000-4000-8000-000000000001');
+    expect(f.sessions.get('codex', '00000000-0000-4000-8000-000000000001')?.open).toBe(true);
   });
 
-  it('14c3 releases an unresolvable app-server claim in the same recovery', async () => {
+  it('14c3 ends an unresolvable app-server execution so the same job can continue', async () => {
     const f = fixture();
     f.service.finalizeInterruptedAppServerJob.mockRejectedValue(new Error('replacement host could not be opened'));
     await f.run();
+    const finisher = createTestExecutionFinisher(f.store, f.runtime);
+    await finisher.finish({ jobId: '00000000-0000-4000-8000-000000000001', execution: 1 });
     expect(f.store.readStatus('00000000-0000-4000-8000-000000000001')?.phase).toBe('error');
     expect(
       f.store.readJobEvents('00000000-0000-4000-8000-000000000001').filter((event) => event.type === 'terminal'),
     ).toHaveLength(1);
-    expect(f.sessions.get('codex', 'session-1')?.activeJobId).toBeUndefined();
-    expect(f.sessions.claimForJobSync('session-1', 'next-job')).toBe(true);
+    expect(f.sessions.get('codex', '00000000-0000-4000-8000-000000000001')?.open).toBe(false);
+    f.store.commit((c) => {
+      c.append({ ...requestedExecution(2), stream: { kind: 'job', id: '00000000-0000-4000-8000-000000000001' } });
+      return undefined;
+    });
+    expect(f.sessions.get('codex', '00000000-0000-4000-8000-000000000001')).toMatchObject({ open: true, execution: 2 });
   });
 
-  it('rolls back terminal and claim together when recovery settlement fails', async () => {
+  it('rolls back outcome acceptance and execution closure together when recovery settlement fails', async () => {
     const f = fixture();
     f.service.captureProviderRecoveryAuthority.mockRejectedValue(new Error('capture failed'));
     f.db.exec(`CREATE TRIGGER reject_release BEFORE INSERT ON events
-      WHEN NEW.type = 'session.claim.released' BEGIN SELECT RAISE(ABORT, 'claim release unavailable'); END`);
+      WHEN NEW.type = 'job.execution.outcome.accepted' BEGIN SELECT RAISE(ABORT, 'claim release unavailable'); END`);
     await f.run();
     expect(f.store.readStatus('00000000-0000-4000-8000-000000000001')?.phase).toBe('running');
     expect(
       f.store.readJobEvents('00000000-0000-4000-8000-000000000001').filter((event) => event.type === 'terminal'),
     ).toEqual([]);
-    expect(f.sessions.get('codex', 'session-1')?.activeJobId).toBe('00000000-0000-4000-8000-000000000001');
+    expect(f.sessions.get('codex', '00000000-0000-4000-8000-000000000001')?.open).toBe(true);
     expect(f.quarantine()).toEqual({ stage: 'settle' });
   });
 
@@ -252,6 +257,6 @@ describe('recovery lifecycle', () => {
       expect.objectContaining({ cancelled: true }),
       expect.anything(),
     );
-    expect(f.sessions.get('codex', 'session-1')?.activeJobId).toBeUndefined();
+    expect(f.sessions.get('codex', '00000000-0000-4000-8000-000000000001')?.open).toBe(false);
   });
 });

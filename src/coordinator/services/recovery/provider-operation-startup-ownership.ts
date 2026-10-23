@@ -116,6 +116,7 @@ function phaseRestoresPermit(phase: ProviderOperationRecord['phase']): boolean {
     phase === 'proxy-activation-pending' ||
     phase === 'activation-resolution-pending' ||
     phase === 'executing' ||
+    phase === 'settlement-pending' ||
     phase === 'prestart-cleanup-pending'
   );
 }
@@ -162,7 +163,7 @@ function restorePermit(
   state: StartupOwnershipState,
   jobId: string,
   ownership:
-    | Readonly<{ kind: 'operation'; operationId: string }>
+    | Readonly<{ kind: 'operation'; operationId: string; requestedSeq: number }>
     | Readonly<{ kind: 'undecided-provider-operation'; recordKeys: readonly string[] }>,
 ): StartupPermitRestoration {
   const { permits, progressStore, binding, log } = state;
@@ -208,7 +209,11 @@ function restorePermit(
   const status = progressStore.readStatus(jobId);
   if (status === null) return { kind: 'job-absent', permit: null };
   try {
-    const launch = readProviderOperationJobLaunch(progressStore, jobId);
+    const launch = readProviderOperationJobLaunch(
+      progressStore,
+      jobId,
+      ownership.kind === 'operation' ? ownership.requestedSeq : undefined,
+    );
     const permit = binding.restoreActiveLaunch(
       jobId,
       launch.provider,
@@ -287,10 +292,24 @@ function settleOwnership(
   record: Extract<ProviderOperationRecord, { phase: 'settlement-pending' }>,
   restoredPermit: LaunchPermit | null,
 ): ProviderOperationStartupRecordOwnership {
+  if (restoredPermit === null)
+    return {
+      phase: record.phase,
+      operation: record.operation,
+      restoredPermit,
+      bindingDisposition: {
+        kind: 'refused',
+        reason: 'Settlement still owns its launch reservation.',
+        remedy: { kind: 'remote-settlement' },
+      },
+    };
+  const prepared = state.binding.prepareProviderOperationBinding(restoredPermit, record.operation);
   const bindingDisposition =
-    restoredPermit === null
-      ? settleBinding(state, record.operation)
-      : releasePermitThroughSettlement(state, restoredPermit, record.operation);
+    prepared.kind === 'refused'
+      ? { ...prepared, remedy: { kind: 'remote-settlement' as const } }
+      : prepared.kind === 'already-settled'
+        ? prepared
+        : { kind: 'prepared' as const };
   return { phase: record.phase, operation: record.operation, restoredPermit, bindingDisposition };
 }
 
@@ -480,6 +499,7 @@ function hydrateRecord(
     ? restorePermit(state, snapshotRecord.operation.jobId, {
         kind: 'operation',
         operationId: snapshotRecord.operation.operationId,
+        requestedSeq: snapshotRecord.jobLaunchEventSeq,
       })
     : reusableExistingPermit && existingPermit !== undefined
       ? { kind: 'restored', permit: existingPermit.permit }

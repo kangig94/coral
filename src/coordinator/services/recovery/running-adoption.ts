@@ -17,7 +17,6 @@ import type { DurableCliPreReadyOwnershipEvidence } from '../../../jobs/runtime-
 import { readDurableCliContainmentStatus, writeDurableCliContainmentStatus } from '../../../jobs/runtime-meta-store.js';
 import type { RecoveryDisposition, RecoveryQuarantineRemedy } from '../../../recovery/containment.js';
 import {
-  COORDINATOR_CLAIM_RELEASE_OBLIGATION,
   COORDINATOR_NOT_APPLICABLE_FACTS,
   COORDINATOR_TERMINAL_OBLIGATION,
   durableOwnershipEvidenceHoldReason,
@@ -110,16 +109,9 @@ function nextStepRemedy(nextStep: AbortNextStep | undefined): RecoveryQuarantine
   return typeof nextStep === 'object' ? nextStep.remedy : undefined;
 }
 
-function settledRecoveryFacts(item: CoordinatorRecoveryItem, jobId: string) {
+function settledRecoveryFacts(jobId: string) {
   return [
     { obligation: COORDINATOR_TERMINAL_OBLIGATION, outcome: 'done' as const, authorityRef: `job:${jobId}:terminal` },
-    {
-      obligation: COORDINATOR_CLAIM_RELEASE_OBLIGATION,
-      outcome: item.claimedSession?.activeJobId === jobId ? ('done' as const) : ('not-applicable' as const),
-      ...(item.claimedSession?.activeJobId === jobId
-        ? { authorityRef: `session:${item.claimedSession.sessionId}:claim:${jobId}` }
-        : {}),
-    },
   ];
 }
 
@@ -127,7 +119,7 @@ async function finalizeRecoveredAppServer(
   settlement: RunningRecoverySettlement,
   runtimeRecord: AppServerRunningRuntime,
 ): Promise<RecoveryDisposition> {
-  const { deps, recovery, context, item, controls, service } = settlement;
+  const { deps, recovery, context, controls, service } = settlement;
   const { state, startTrackedFinalization } = deps;
   const { jobId, authority } = recovery;
   const { signal, interruptedAppServerReason } = context;
@@ -186,9 +178,16 @@ async function finalizeRecoveredAppServer(
   return {
     kind: 'advanced',
     outcome: 'settled',
-    facts: settledRecoveryFacts(item, jobId),
+    facts: settledRecoveryFacts(jobId),
     detail: userCancelled ? 'user-aborted app-server job finalized' : 'interrupted app-server job finalized',
   };
+}
+
+function appendRecoveryProgress(settlement: RunningRecoverySettlement, message: string): void {
+  const { jobId, authority } = settlement.recovery;
+  const status = settlement.deps.progressStore.readStatus(jobId);
+  if (status?.execution !== authority.launchRecord.execution || status.finishing === true) return;
+  settlement.deps.progressStore.appendProgress(jobId, message);
 }
 
 function createRecoveredProgress(
@@ -197,10 +196,11 @@ function createRecoveredProgress(
 ): RecoveredProgress {
   const { progressStore } = settlement.deps;
   const { jobId, authority } = settlement.recovery;
-  const { launchRecord, boundProvider } = authority;
+  const { boundProvider } = authority;
   let adoptedRuntimeRecord = initialRuntimeRecord;
   return {
     drain(): void {
+      if (progressStore.readStatus(jobId)?.finishing === true) return;
       if (!boundProvider.recovery?.extractProgress) return;
       try {
         const { messages, newOffset } = boundProvider.recovery.extractProgress({
@@ -212,7 +212,7 @@ function createRecoveredProgress(
           progressStore.appendRuntimeStarted(jobId, nextRuntimeRecord);
           adoptedRuntimeRecord = nextRuntimeRecord;
         }
-        for (const message of messages) progressStore.appendProgress(jobId, launchRecord.sessionId, message);
+        for (const message of messages) appendRecoveryProgress(settlement, message);
       } catch (error: unknown) {
         if (error instanceof SuccessionWriterParkedError) throw error;
         settlement.controls.report(`Failed to tail recovered progress for job ${jobId}: ${formatError(error)}\n`);
@@ -255,7 +255,7 @@ async function finalizeContainedDurableRecovery(
   return {
     kind: 'advanced',
     outcome: 'settled',
-    facts: settledRecoveryFacts(settlement.item, jobId),
+    facts: settledRecoveryFacts(jobId),
     detail: operatorAbandoned
       ? 'operator-abandoned durable job finalized without process absence proof'
       : 'dead durable job finalized',
@@ -292,7 +292,7 @@ async function retryHeldCleanup(
 ): Promise<void> {
   const { state, progressStore, clearRecoveryPoller, observeDurableRecoveryContainment, runHeldRecoveryReap } =
     settlement.deps;
-  const { jobId, authority } = settlement.recovery;
+  const { jobId } = settlement.recovery;
   const { signal } = settlement.context;
   if (state.teardownRequested) return;
 
@@ -331,11 +331,7 @@ async function retryHeldCleanup(
     currentStatus.status.disposition.kind !== 'held' ||
     currentStatus.status.disposition.reason !== cleanup.reason
   ) {
-    progressStore.appendProgress(
-      jobId,
-      authority.launchRecord.sessionId,
-      `Durable recovery cleanup remains held (${cleanup.reason}).`,
-    );
+    appendRecoveryProgress(settlement, `Durable recovery cleanup remains held (${cleanup.reason}).`);
   }
 }
 
@@ -373,7 +369,7 @@ async function reconcileHeldContainmentStatus(
   RecoveryDisposition | Readonly<{ kind: 'reconciled'; operatorAbandoned: boolean; absenceConfirmed: boolean }>
 > {
   const { state, progressStore, runHeldRecoveryReap } = settlement.deps;
-  const { jobId, authority } = settlement.recovery;
+  const { jobId } = settlement.recovery;
   const { signal, abandonHeldJob } = settlement.context;
   const cleanup =
     containment.evidence.kind === 'current' || containment.evidence.kind === 'provisional'
@@ -412,7 +408,7 @@ async function reconcileHeldContainmentStatus(
   const detail =
     `${cleanup.reason}. Identity-safe reaping continues every ${retryIntervalMs}ms until absence is confirmed. ` +
     'Operator abandonment remains available without proving process absence or sending another signal.';
-  progressStore.appendProgress(jobId, authority.launchRecord.sessionId, detail);
+  appendRecoveryProgress(settlement, detail);
   settlement.controls.report(`Held durable recovery cleanup: ${jobId}: ${cleanup.reason}\n`);
   return {
     kind: 'deferred',
@@ -428,16 +424,14 @@ async function settleDurableContainment(
   progress: RecoveredProgress,
 ): Promise<RecoveryDisposition | Readonly<{ kind: 'observable-live'; containment: DurableContainment }>> {
   const { state, progressStore, observeDurableRecoveryContainment } = settlement.deps;
-  const { jobId, authority } = settlement.recovery;
-  const { launchRecord } = authority;
+  const { jobId } = settlement.recovery;
   const { abandonHeldJob } = settlement.context;
   const { controls } = settlement;
   const persistedContainment = readDurableCliContainmentStatus(progressStore.getDb(), jobId);
   if (persistedContainment.kind === 'corrupt') {
     const reason = 'The durable containment status is corrupt.';
-    progressStore.appendProgress(
-      jobId,
-      launchRecord.sessionId,
+    appendRecoveryProgress(
+      settlement,
       `${reason} Repair or remove the status row before retrying this recovery coordinate.`,
     );
     state.recoveryRegistry?.setAbortHandler(jobId, () => abandonHeldJob(jobId));
@@ -483,8 +477,7 @@ function holdUnobservableDurableRecovery(
   containment: DurableContainment,
 ): RecoveryDisposition {
   const { state, progressStore } = settlement.deps;
-  const { jobId, authority } = settlement.recovery;
-  const { launchRecord } = authority;
+  const { jobId } = settlement.recovery;
   const { abandonHeldJob } = settlement.context;
   if (containment.observation.kind !== 'unobservable') {
     throw new Error('Unobservable durable recovery hold requires an unobservable containment result.');
@@ -498,11 +491,7 @@ function holdUnobservableDurableRecovery(
   const detail =
     `${reason}. Repair the recorded containment before retrying this recovery coordinate. ` +
     'Operator abandonment remains available without proving process absence or sending a signal.';
-  progressStore.appendProgress(
-    jobId,
-    launchRecord.sessionId,
-    `Durable recovery containment pid=${runtimeRecord.pid} is held (${detail})`,
-  );
+  appendRecoveryProgress(settlement, `Durable recovery containment pid=${runtimeRecord.pid} is held (${detail})`);
   state.recoveryRegistry?.setAbortHandler(jobId, () => abandonHeldJob(jobId));
   settlement.controls.clearProcessLocalCleanup();
   settlement.controls.report(`Held durable recovery job: ${jobId}: ${reason}\n`);
@@ -543,7 +532,7 @@ async function finalizeAdoptedRuntime(
       return {
         kind: 'advanced',
         outcome: 'settled',
-        facts: settledRecoveryFacts(finalItem, jobId),
+        facts: settledRecoveryFacts(jobId),
         detail: 'adopted durable job finalized',
       };
     },

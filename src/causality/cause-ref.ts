@@ -22,11 +22,23 @@ export type CauseRefToken<Scope> = {
 
 export type ResolvableCauseRef<Scope> = [Scope] extends [never] ? CauseRef : CauseRef | CauseRefToken<Scope>;
 
-export const causeRefSchema = z
+export const durableCauseRefSchema = z
   .object({
     stream: z
       .object({
         kind: z.enum(['job', 'session', 'discuss', 'workflow']),
+        id: z.string().min(1),
+      })
+      .strict(),
+    seq: z.number().int().positive(),
+  })
+  .strict();
+
+export const causeRefSchema = z
+  .object({
+    stream: z
+      .object({
+        kind: z.enum(['job', 'discuss', 'workflow']),
         id: z.string().min(1),
       })
       .strict(),

@@ -22,10 +22,7 @@ async function finalizeSynthesizedSession(
   sessionId: string,
   snapshot: PersistedDiscussSnapshot,
 ): Promise<void> {
-  // Materialize the completed discussion as a markdown record in the project
-  // data dir. Best-effort export of the journal's discuss stream — a write
-  // failure must never break the discussion (the authoritative record lives
-  // in the journal).
+  // Export must not break the discussion.
   let exportedRecord = false;
   try {
     writeDiscussRecord(ctx.runtime, snapshot);
@@ -37,19 +34,14 @@ async function finalizeSynthesizedSession(
     detachSession(ctx, sessionId);
     return;
   }
-  // The discussion is fully synthesized. Participant (and facilitator) provider
-  // sessions were retained across turns for multi-turn resume and handoff
-  // recovery, which no longer applies — discard each one's native session log so
-  // it does not accumulate as noise. Best-effort: a failure must never break the
-  // already-recorded discussion.
   for (const run of Object.values(snapshot.runtime.agentRuns)) {
-    if (run.executionSessionId === undefined) {
+    if (run.jobId === undefined) {
       continue;
     }
     try {
-      await ctx.discardSessionArtifacts?.(run.executionSessionId);
+      await ctx.discardConversationArtifacts?.(run.jobId);
     } catch (error) {
-      backendLog.warn(`Discuss artifact cleanup failed for session ${run.executionSessionId}: ${errorMessage(error)}`);
+      backendLog.warn(`Discuss artifact cleanup failed for job ${run.jobId}: ${errorMessage(error)}`);
     }
   }
   detachSession(ctx, sessionId);

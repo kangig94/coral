@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import type { JobTerminal } from '#src/jobs/records.js';
-import type { WaitRequest, WaitStreamEvent } from '#src/jobs/wait/contract.js';
+import type { WaitStreamRequest, WaitStreamEvent } from '#src/jobs/wait/contract.js';
 import { parseExpression } from '#src/workflow/parser.js';
 import { launchAtomWithRetry } from '#src/workflow/launch.js';
 import { executePipeline } from '#src/workflow/executor.js';
@@ -47,16 +47,17 @@ const waitTiming = {
   elapsedMs: 2_000,
 } as const;
 
-function running(jobId: string, sessionId: string) {
+function running(jobId: string, _conversation: string) {
   return {
     kind: 'provider-session' as const,
     status: 'running' as const,
     jobId,
-    sessionId,
+    requestedSeq: 1,
+    epochKey: ':memory:',
   };
 }
 
-let terminalSeq = 0;
+let terminalSeq = 1;
 
 function terminal(
   jobId: string,
@@ -67,10 +68,14 @@ function terminal(
     result.outcome !== undefined
       ? ({ ...result, outcome: result.outcome, durationMs: 0 } as JobTerminal)
       : { ...result, outcome: { kind: 'completed' }, durationMs: 0 };
+  const seq = ++terminalSeq;
   return {
     type: 'terminal',
     jobId,
-    seq: ++terminalSeq,
+    seq,
+    executionSelections: [
+      { jobId, requestedSeq: 1, epochKey: ':memory:', deliveredEndSeq: seq, awaitingArtifact: false },
+    ],
     remainingJobIds: [],
     resultPath: `/tmp/coral-exports/jobs/${jobId}/result.md`,
     availability: { kind: 'available', resultPath: `/tmp/coral-exports/jobs/${jobId}/result.md` },
@@ -98,24 +103,18 @@ async function* emit(events: WaitStreamEvent[]): AsyncGenerator<WaitStreamEvent>
 type MockExecutionService = WorkflowExecutionPort & {
   coralDispatch: ReturnType<typeof vi.fn<WorkflowExecutionPort['coralDispatch']>>;
   resume: ReturnType<typeof vi.fn>;
-  recordContinuationLease: ReturnType<typeof vi.fn>;
-  clearContinuationLease: ReturnType<typeof vi.fn>;
   abort: ReturnType<typeof vi.fn>;
   awaitLaunch: ReturnType<typeof vi.fn>;
   waitStream: ReturnType<typeof vi.fn>;
-  waitForJobTerminal: ReturnType<typeof vi.fn>;
 };
 
 function createExecutionService(overrides: Partial<MockExecutionService> = {}): MockExecutionService {
   return {
     coralDispatch: vi.fn(async () => running('job-1', 'session-1')),
-    resume: vi.fn(async () => running('job-resumed', 'session-1')),
-    recordContinuationLease: vi.fn(async () => {}),
-    clearContinuationLease: vi.fn(async () => true),
+    resume: vi.fn(async () => ({ ...running('job-1', 'job-1'), requestedSeq: 100 })),
     abort: vi.fn((jobIds: string[]) => ({ aborted: jobIds, notFound: [] })),
     awaitLaunch: vi.fn(async () => 'ready'),
-    waitStream: vi.fn((_req: WaitRequest) => emit([])),
-    waitForJobTerminal: vi.fn(async () => {}),
+    waitStream: vi.fn((_req: WaitStreamRequest) => emit([])),
     ...overrides,
   } as MockExecutionService;
 }
@@ -124,14 +123,15 @@ function launchedAtom(overrides: Partial<LaunchedAtom> = {}): LaunchedAtom {
   return {
     slotId: 'workflow-1:0:0',
     jobId: 'job-1',
-    sessionId: 'session-1',
     providerName: 'codex',
     agent: 'architect',
     tagName: 'architect',
     stepIndex: 0,
     atomIndex: 0,
     atomKey: '0:0',
-    generation: 0,
+    execution: 1,
+    requestedSeq: 1,
+    epochKey: ':memory:',
     ...overrides,
   };
 }
@@ -161,7 +161,7 @@ describe('workflow pipe executor', () => {
         prompts.push(String(input.prompt));
         return coralName === 'architect' ? running('job-1', 'session-1') : running('job-2', 'session-2');
       }),
-      waitStream: vi.fn((req: WaitRequest) => {
+      waitStream: vi.fn((req: WaitStreamRequest) => {
         if (req.jobIds[0] === 'job-1') {
           return emit([terminal('job-1', 'session-1', { content: 'ARCH' })]);
         }
@@ -201,7 +201,7 @@ describe('workflow pipe executor', () => {
     };
     let firstCycle = true;
     const executionSvc = createExecutionService({
-      waitStream: vi.fn((req: WaitRequest) => {
+      waitStream: vi.fn((req: WaitStreamRequest) => {
         if (firstCycle) {
           firstCycle = false;
           return emit([stillWaiting([...req.jobIds])]);
@@ -226,7 +226,7 @@ describe('workflow pipe executor', () => {
     expect(executionSvc.resume).not.toHaveBeenCalled();
   });
 
-  it('fails stale recovery when the aborted job never releases its session claim', async () => {
+  it('fails stale recovery when the targeted execution never ends', async () => {
     let mockNow = 10_000;
     vi.spyOn(Date, 'now').mockImplementation(() => {
       mockNow += 10;
@@ -234,10 +234,7 @@ describe('workflow pipe executor', () => {
     });
 
     const executionSvc = createExecutionService({
-      waitForJobTerminal: vi.fn(async () => {
-        throw new Error('Timed out waiting for job job-1 to reach a terminal state and release its session');
-      }),
-      waitStream: vi.fn((req: WaitRequest) => emit([stillWaiting([...req.jobIds])])),
+      waitStream: vi.fn((req: WaitStreamRequest) => emit([stillWaiting([...req.jobIds])])),
     });
 
     try {
@@ -254,27 +251,34 @@ describe('workflow pipe executor', () => {
         }),
       ).rejects.toMatchObject({
         message:
-          "Step 0, atom 'architect' stale recovery abort failed: Timed out waiting for job job-1 to reach a terminal state and release its session",
+          "Step 0, atom 'architect' stale recovery abort failed: Timed out waiting for execution #1 of job-1 to end",
         aborted: false,
         stepDetails: [],
       });
 
       expect(executionSvc.abort).toHaveBeenCalledWith(['job-1']);
-      expect(executionSvc.waitForJobTerminal).toHaveBeenCalledOnce();
       expect(executionSvc.resume).not.toHaveBeenCalled();
     } finally {
       vi.restoreAllMocks();
     }
   });
 
-  it('does not abort stale jobs when continuation lease recording fails', async () => {
+  it('reports a refused continuation after consuming the targeted abort', async () => {
+    let calls = 0;
     const executionSvc = createExecutionService({
-      recordContinuationLease: vi.fn(async () => {
-        throw new Error('journal append failed');
-      }),
-      waitStream: vi.fn((req: WaitRequest) => emit([stillWaiting([...req.jobIds])])),
+      resume: vi.fn<WorkflowExecutionPort['resume']>(async () => ({
+        status: 'refused',
+        code: 'archive_missing',
+        message: 'Conversation archive is missing',
+      })),
+      waitStream: vi.fn(() =>
+        emit(
+          ++calls === 1
+            ? [stillWaiting(['job-1'])]
+            : [terminal('job-1', 'job-1', { content: '', outcome: { kind: 'aborted', reason: 'signal_abort' } })],
+        ),
+      ),
     });
-
     await expect(
       waitForAtoms([launchedAtom()], executionSvc, ctx, {
         staleTimeoutMs: 1,
@@ -286,15 +290,8 @@ describe('workflow pipe executor', () => {
         recoverStaleAtom,
         time: workflowTime,
       }),
-    ).rejects.toMatchObject({
-      message: "Step 0, atom 'architect' stale recovery lease failed: journal append failed",
-      aborted: false,
-      stepDetails: [],
-    });
-
-    expect(executionSvc.recordContinuationLease).toHaveBeenCalledOnce();
-    expect(executionSvc.abort).not.toHaveBeenCalled();
-    expect(executionSvc.resume).not.toHaveBeenCalled();
+    ).rejects.toMatchObject({ message: "Step 0, atom 'architect' resume failed: Conversation archive is missing" });
+    expect(executionSvc.resume).toHaveBeenCalledWith('codex', expect.objectContaining({ jobId: 'job-1' }), ctx);
   });
 
   it('preserves launched sibling output when a parallel launch fails', async () => {
@@ -307,7 +304,7 @@ describe('workflow pipe executor', () => {
           message: 'launch blocked',
         };
       }),
-      waitStream: vi.fn((req: WaitRequest) => {
+      waitStream: vi.fn((req: WaitStreamRequest) => {
         if (req.jobIds.includes('job-a')) {
           return emit([terminal('job-a', 'session-a', { content: 'ARCH' })]);
         }
@@ -345,7 +342,7 @@ describe('workflow pipe executor', () => {
         if (coralName === 'architect') return running('job-1', 'session-1');
         return running('job-2', 'session-2');
       }),
-      waitStream: vi.fn((req: WaitRequest) => {
+      waitStream: vi.fn((req: WaitStreamRequest) => {
         if (req.jobIds.includes('job-1')) {
           return emit([terminal('job-1', 'session-1', { content: 'ARCH' })]);
         }
@@ -391,7 +388,8 @@ describe('launchAtomWithRetry', () => {
         kind: 'provider-session' as const,
         status: 'queued' as const,
         jobId: 'job-queued',
-        sessionId: 'session-queued',
+        requestedSeq: 1,
+        epochKey: ':memory:',
       })),
       awaitLaunch: vi.fn(async (): Promise<'queued'> => 'queued'),
     });
@@ -409,14 +407,15 @@ describe('launchAtomWithRetry', () => {
     expect(launched).toEqual({
       slotId: 'workflow-1:0:0',
       jobId: 'job-queued',
-      sessionId: 'session-queued',
       providerName: 'codex',
       agent: 'architect',
       tagName: 'architect',
       stepIndex: 0,
       atomIndex: 0,
       atomKey: '0:0',
-      generation: 0,
+      execution: 1,
+      requestedSeq: 1,
+      epochKey: ':memory:',
     });
     expect(executionSvc.coralDispatch).toHaveBeenCalledTimes(1);
   });
@@ -457,7 +456,7 @@ describe('waitForAtoms', () => {
             type: 'queued',
             jobKind: 'provider',
             jobId: 'job-1',
-            sessionId: 'session-1',
+
             queuePosition: 2,
             runningJobIds: ['job-a'],
             timing: waitTiming,
@@ -491,7 +490,7 @@ describe('waitForAtoms', () => {
       staleAbortTimeoutMs: 30_000,
       drainDeadlineMs: 15_000,
       initialState: {
-        expectedStaleAborts: new Set(['job-1']),
+        expectedStaleAborts: new Map([['job-1', { execution: 1, requestedSeq: 1, epochKey: ':memory:' }]]),
       },
       onProgress: vi.fn(),
       time: workflowTime,
@@ -503,7 +502,6 @@ describe('waitForAtoms', () => {
   it('does not resume a duplicate atom when stale abort was a no-op and the original completes', async () => {
     const executionSvc = createExecutionService({
       abort: vi.fn(() => ({ aborted: [], notFound: [] })),
-      waitForJobTerminal: vi.fn(async () => {}),
       waitStream: vi.fn(() => emit([stillWaiting(['job-1']), terminal('job-1', 'session-1', { content: 'ARCH' })])),
     });
 
@@ -519,7 +517,6 @@ describe('waitForAtoms', () => {
     });
 
     expect(executionSvc.abort).toHaveBeenCalledWith(['job-1']);
-    expect(executionSvc.waitForJobTerminal).toHaveBeenCalledOnce();
     expect(executionSvc.resume).not.toHaveBeenCalled();
     expect(executionSvc.awaitLaunch).not.toHaveBeenCalled();
     expect([...results.entries()]).toEqual([['0:0', 'ARCH']]);
@@ -550,10 +547,9 @@ describe('waitForAtoms', () => {
     await expect(
       waitForAtoms(
         [
-          launchedAtom({ jobId: 'job-1', sessionId: 'session-1', atomKey: '0:0' }),
+          launchedAtom({ jobId: 'job-1', atomKey: '0:0' }),
           launchedAtom({
             jobId: 'job-2',
-            sessionId: 'session-2',
             agent: 'critic',
             tagName: 'critic',
             atomIndex: 1,

@@ -1,4 +1,4 @@
-import type { SessionProviderFailureDiagnostic } from '../sessions/fault.js';
+import type { TurnFailureDiagnostic } from './turn-failure-diagnostic.js';
 
 export const SESSION_ADAPTER_UNPARSEABLE_EVENT = 'session.adapter_unparseable' as const;
 export const SESSION_PROVIDER_FAILED_EVENT = 'session.provider_failed' as const;
@@ -20,11 +20,11 @@ export type ProviderFailureCause =
         provider: string;
         reason: 'session_unavailable' | 'request_failed';
         message: string;
-        diagnostic?: SessionProviderFailureDiagnostic;
+        diagnostic?: TurnFailureDiagnostic;
       };
     };
 
-type ProviderSessionUnavailableInput = {
+type JobConversationUnavailableInput = {
   provider: string;
   reason: string;
 };
@@ -33,10 +33,10 @@ type ProviderRequestFailedInput = {
   provider: string;
   message: string;
   cause?: unknown;
-  diagnostic?: SessionProviderFailureDiagnostic;
+  diagnostic?: TurnFailureDiagnostic;
 };
 
-export function providerSessionUnavailable(input: ProviderSessionUnavailableInput): ProviderFailureCause {
+export function jobConversationUnavailable(input: JobConversationUnavailableInput): ProviderFailureCause {
   return {
     type: SESSION_PROVIDER_FAILED_EVENT,
     body: {

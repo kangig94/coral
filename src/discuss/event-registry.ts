@@ -1,18 +1,23 @@
+import { decodeBody } from '../store/body-codec.js';
+import type { EventsRow } from '../store/schema.js';
 import type { CoralEventInput } from '../store/envelope.js';
 import { CoralSetupError } from '../runtime/errors.js';
 import { defineDomainEvent, type DomainAppendValidator, type DomainEventRegistry } from '../store/reducers.js';
 import { readProjectionDiscuss, reduceDiscussProjection } from './projections.js';
-import { loadJobProjectionDetail } from '../jobs/read-queries.js';
-import { jobLaunchRequestBodySchema } from '../jobs/launch.js';
-import { decodeProjectionJobExecutionOwner, readProjectionJobRows } from '../jobs/projection-row.js';
-import { readDiscussEventLog } from './read-queries.js';
+import {
+  jobOpenedBodySchema,
+  jobExecutionRequestedBodySchema,
+  type JobOpenedBody,
+  type JobExecutionRequestedBody,
+} from '../jobs/launch.js';
+import { readJobOpened } from '../jobs/execution-journal.js';
 import { createDiscussSnapshot } from './reducer.js';
 import {
+  isWithinLiveSessionBoundary,
   discussEventKinds,
   discussEventBodySchemas,
   discussEventType,
   type DiscussDomainEvent,
-  type DiscussAgentJobPurpose,
   type DiscussJournalBody,
   type PersistedDiscussSnapshot,
 } from './events.js';
@@ -108,351 +113,337 @@ function invalidDiscussionLink(message: string, context: Record<string, unknown>
   });
 }
 
-type DiscussionLaunchAuthority = {
-  projectRoot: string;
-  agentRuns: Record<string, { provider: string; executionSessionId?: string }>;
-};
-
-/** Discussion aggregate policy for provider jobs that name it as owner. */
-const validateDiscussionJobLaunches: DomainAppendValidator = (ctx, inputs) => {
-  const discussions = new Map<string, DiscussionLaunchAuthority | undefined>();
-  const completedJobs = new Map<string, Set<string>>();
-  const outstandingRuns = new Map<string, string | null>();
-  const sessionAgents = new Map<string, Set<string>>();
-
-  const discussionFor = (discussionId: string): DiscussionLaunchAuthority | undefined => {
-    if (!discussions.has(discussionId)) {
-      const snapshot = readProjectionDiscuss(ctx.db, discussionId)?.state;
-      discussions.set(
-        discussionId,
-        snapshot === undefined
-          ? undefined
-          : {
-              projectRoot: snapshot.projectRoot,
-              agentRuns: Object.fromEntries(
-                Object.entries(snapshot.runtime.agentRuns).map(([agent, run]) => [
-                  agent,
-                  {
-                    provider: run.provider,
-                    ...(run.executionSessionId === undefined ? {} : { executionSessionId: run.executionSessionId }),
-                  },
-                ]),
-              ),
-            },
-      );
-    }
-    return discussions.get(discussionId);
-  };
-
-  const completedFor = (discussionId: string): Set<string> => {
-    let completed = completedJobs.get(discussionId);
-    if (completed === undefined) {
-      completed = new Set(
-        readDiscussEventLog(ctx.db, discussionId, ctx.readCtx)
-          .filter((event) => event.kind === 'agent.job.finished')
-          .map((event) => event.payload.jobId),
-      );
-      completedJobs.set(discussionId, completed);
-    }
-    return completed;
-  };
-
-  const runKey = (discussionId: string, agent: string) => `${discussionId}\u0000${agent}`;
-  const outstandingFor = (discussionId: string, agent: string): string | null => {
-    const key = runKey(discussionId, agent);
-    if (outstandingRuns.has(key)) return outstandingRuns.get(key) ?? null;
-    const completed = completedFor(discussionId);
-    const rows = readProjectionJobRows(ctx.db).filter((row) => {
-      const owner = decodeProjectionJobExecutionOwner(row);
-      return owner.kind === 'discussion' && owner.id === discussionId;
-    });
-    const outstanding =
-      rows.find(({ job_id }) => {
-        const launch = loadJobProjectionDetail(ctx.db, job_id, ctx.readCtx).launch;
-        return launch?.discussionRun?.agent === agent && !completed.has(job_id);
-      })?.job_id ?? null;
-    outstandingRuns.set(key, outstanding);
-    return outstanding;
-  };
-
-  const agentsForSession = (discussionId: string, sessionId: string): Set<string> => {
-    const key = `${discussionId}\u0000${sessionId}`;
-    let agents = sessionAgents.get(key);
+export const validateDiscussionJobLaunches: DomainAppendValidator = (ctx, inputs) => {
+  const snapshots = new Map<string, PersistedDiscussSnapshot | undefined>();
+  const opened = new Map<string, JobOpenedBody>();
+  const jobsByAgent = new Map<string, Map<string, string>>();
+  const jobsFor = (discussionId: string) => {
+    let agents = jobsByAgent.get(discussionId);
     if (agents !== undefined) return agents;
-    agents = new Set<string>();
-    const rows = readProjectionJobRows(ctx.db).filter((row) => {
-      const owner = decodeProjectionJobExecutionOwner(row);
-      return owner.kind === 'discussion' && owner.id === discussionId && row.session_id === sessionId;
-    });
-    for (const { job_id } of rows) {
-      const descriptor = loadJobProjectionDetail(ctx.db, job_id, ctx.readCtx).launch?.discussionRun;
-      if (descriptor === undefined) throw new Error(`Discussion-owned job '${job_id}' has no durable run descriptor.`);
-      agents.add(descriptor.agent);
-    }
-    sessionAgents.set(key, agents);
+    agents = readDiscussionAgentJobs(ctx, discussionId);
+    jobsByAgent.set(discussionId, agents);
     return agents;
   };
-
+  const closing = new Set(
+    inputs.filter((input) => input.type === 'discuss.session.ended').map((input) => input.stream.id),
+  );
+  const snapshotFor = (id: string) => {
+    if (!snapshots.has(id)) snapshots.set(id, readProjectionDiscuss(ctx.db, id)?.state);
+    return snapshots.get(id);
+  };
   for (const input of inputs) {
+    if (input.type === 'job.opened') {
+      opened.set(input.stream.id, jobOpenedBodySchema.parse(input.body));
+      continue;
+    }
     if (input.type === 'discuss.session.created') {
-      const body = discussEventBodySchemas['session.created'].parse(input.body);
-      if (input.project === undefined || input.project.length === 0) continue;
-      discussions.set(input.stream.id, {
-        projectRoot: input.project,
-        agentRuns: Object.fromEntries(
-          Object.entries(body.agentExecution).flatMap(([agent, config]) =>
-            config.manual ? [] : [[agent, { provider: config.provider }]],
-          ),
-        ),
-      });
+      snapshots.set(input.stream.id, discussionLaunchSnapshot(input));
       continue;
     }
     if (input.type === 'discuss.agent.run.bound') {
       const body = discussEventBodySchemas['agent.run.bound'].parse(input.body);
-      const run = discussionFor(input.stream.id)?.agentRuns[body.agent];
-      if (run !== undefined) run.executionSessionId = body.executionSessionId;
+      const run = snapshotFor(input.stream.id)?.runtime.agentRuns[body.agent];
+      if (run !== undefined) run.jobId = body.jobId;
       continue;
     }
-    if (input.type === 'discuss.agent.job.finished') {
-      const body = discussEventBodySchemas['agent.job.finished'].parse(input.body);
-      completedFor(input.stream.id).add(body.jobId);
-      if (outstandingFor(input.stream.id, body.agent) === body.jobId) {
-        outstandingRuns.set(runKey(input.stream.id, body.agent), null);
-      }
-      continue;
-    }
-    if (input.type !== 'job.launch.requested') continue;
-    const launch = jobLaunchRequestBodySchema.parse(input.body);
-    if (launch.jobKind !== 'provider' || launch.owner.kind !== 'discussion') continue;
-
-    const descriptor = launch.discussionRun;
-    const discussion = discussionFor(launch.owner.id);
-    const agentRun = descriptor === undefined ? undefined : discussion?.agentRuns[descriptor.agent];
-    const assignedAgents = agentsForSession(launch.owner.id, launch.sessionId);
-    const boundToOtherAgent =
-      descriptor !== undefined &&
-      Object.entries(discussion?.agentRuns ?? {}).some(
-        ([agent, run]) => agent !== descriptor.agent && run.executionSessionId === launch.sessionId,
-      );
-    const valid =
-      descriptor !== undefined &&
-      discussion !== undefined &&
-      discussion.projectRoot === launch.projectRoot &&
-      agentRun?.provider === launch.provider &&
-      (agentRun.executionSessionId === undefined || agentRun.executionSessionId === launch.sessionId) &&
-      !boundToOtherAgent &&
-      [...assignedAgents].every((agent) => agent === descriptor.agent);
-    if (!valid) {
-      throw new CoralSetupError({
-        code: 'job_binding_owner_mismatch',
-        userMessage: `Job '${input.stream.id}' does not match discussion '${launch.owner.id}' execution authority.`,
-        remediation: 'Launch with the configured agent provider and that agent’s durable provider session.',
-        context: { discussionId: launch.owner.id, jobId: input.stream.id, descriptor },
-      });
-    }
-
-    assignedAgents.add(descriptor.agent);
-    const outstandingJobId = outstandingFor(launch.owner.id, descriptor.agent);
-    if (outstandingJobId !== null) {
-      throw new CoralSetupError({
-        code: 'discussion_job_launch_conflict',
-        userMessage: `Discussion agent '${descriptor.agent}' already has outstanding job '${outstandingJobId}'.`,
-        remediation: 'Link and finish the outstanding discussion job before launching the next run.',
-        context: {
-          discussionId: launch.owner.id,
-          agent: descriptor.agent,
-          outstandingJobId,
-          requestedJobId: input.stream.id,
-        },
-      });
-    }
-    outstandingRuns.set(runKey(launch.owner.id, descriptor.agent), input.stream.id);
+    if (input.type !== 'job.execution.requested') continue;
+    const request = jobExecutionRequestedBodySchema.parse(input.body);
+    const job = opened.get(input.stream.id) ?? readJobOpened(ctx.db, input.stream.id, ctx.readCtx);
+    if (job === null || job.owner.kind !== 'discussion') continue;
+    const snapshot = snapshotFor(job.owner.id);
+    const reservedJob =
+      request.discussionRun === undefined ? undefined : jobsFor(job.owner.id).get(request.discussionRun.agent);
+    const discussionRun = requireDiscussionLaunchRun(
+      input.stream.id,
+      job,
+      request,
+      snapshot,
+      closing.has(job.owner.id),
+      reservedJob,
+    );
+    jobsFor(job.owner.id).set(discussionRun.agent, input.stream.id);
   }
 };
 
-type ActiveDiscussionJob = { jobId: string; purpose: DiscussAgentJobPurpose; attempt: number };
+function readDiscussionAgentJobs(ctx: DiscussionAppendContext, discussionId: string): Map<string, string> {
+  const agents = new Map<string, string>();
+  const rows = ctx.db
+    .prepare<[string], EventsRow>(
+      `SELECT e.* FROM events e JOIN projection_jobs p ON p.job_id = e.stream_id
+       WHERE e.stream_kind = 'job' AND e.type = 'job.execution.requested' AND p.execution_owner = ?
+       ORDER BY e.seq`,
+    )
+    .all(JSON.stringify({ kind: 'discussion', id: discussionId }));
+  for (const row of rows) {
+    const request = decodeBody(row, jobExecutionRequestedBodySchema, ctx.readCtx);
+    if (request.discussionRun !== undefined) agents.set(request.discussionRun.agent, row.stream_id);
+  }
+  return agents;
+}
+
+function discussionLaunchSnapshot(input: CoralEventInput): PersistedDiscussSnapshot {
+  const { sourceSeq, ...payload } = discussEventBodySchemas['session.created'].parse(input.body);
+  const projectRoot = input.project;
+  if (projectRoot === undefined) {
+    throw invalidDiscussionLink('Discussion creation requires its durable project scope.', {
+      discussionId: input.stream.id,
+    });
+  }
+  return createDiscussSnapshot({
+    v: 1,
+    sessionId: input.stream.id,
+    projectRoot,
+    topic: payload.input.topic,
+    seq: sourceSeq,
+    kind: 'session.created',
+    ts: input.tsOverride ?? '1970-01-01T00:00:00.000Z',
+    payload,
+  });
+}
+
+function requireDiscussionLaunchRun(
+  jobId: string,
+  job: JobOpenedBody,
+  request: JobExecutionRequestedBody,
+  snapshot: PersistedDiscussSnapshot | undefined,
+  closing: boolean,
+  reservedJob: string | undefined,
+): NonNullable<JobExecutionRequestedBody['discussionRun']> {
+  if (
+    job.jobKind !== 'provider' ||
+    request.discussionRun === undefined ||
+    snapshot === undefined ||
+    !isWithinLiveSessionBoundary(snapshot) ||
+    closing ||
+    job.projectRoot !== snapshot.projectRoot ||
+    !discussionAgentJobMatches(snapshot, request, jobId, job.conversation.provider, reservedJob)
+  ) {
+    throw new CoralSetupError({
+      code: 'job_binding_owner_mismatch',
+      userMessage: `Job '${jobId}' does not match an open discussion and bound agent run.`,
+      remediation: 'Continue only the job bound to that agent in the open owning discussion.',
+    });
+  }
+  return request.discussionRun;
+}
+
+function discussionAgentJobMatches(
+  snapshot: PersistedDiscussSnapshot,
+  request: JobExecutionRequestedBody,
+  jobId: string,
+  provider: string,
+  reservedJob: string | undefined,
+): boolean {
+  const run = request.discussionRun === undefined ? undefined : snapshot.runtime.agentRuns[request.discussionRun.agent];
+  return (
+    run !== undefined &&
+    run.provider === provider &&
+    (reservedJob === undefined || reservedJob === jobId) &&
+    (request.execution > 1 ? run.jobId === jobId : run.jobId === undefined || run.jobId === jobId) &&
+    !Object.entries(snapshot.runtime.agentRuns).some(
+      ([agent, other]) => agent !== request.discussionRun?.agent && other.jobId === jobId,
+    )
+  );
+}
+
+type DiscussionAppendContext = Parameters<DomainAppendValidator>[0];
+
+interface DiscussionJobLink {
+  snapshot: PersistedDiscussSnapshot;
+  run: PersistedDiscussSnapshot['runtime']['agentRuns'][string];
+  request: JobExecutionRequestedBody;
+  discussionRun: NonNullable<JobExecutionRequestedBody['discussionRun']>;
+  agent: string;
+  jobId: string;
+}
+
+class DiscussionJobLinks {
+  private readonly snapshots = new Map<string, PersistedDiscussSnapshot | undefined>();
+  private readonly jobs = new Map<string, JobOpenedBody>();
+  private readonly requests = new Map<string, Map<number, JobExecutionRequestedBody>>();
+  private readonly started = new Map<string, Set<string>>();
+
+  private readonly ctx: DiscussionAppendContext;
+
+  constructor(ctx: DiscussionAppendContext) {
+    this.ctx = ctx;
+  }
+
+  apply(input: CoralEventInput): void {
+    if (input.type === 'job.opened') {
+      this.jobs.set(input.stream.id, jobOpenedBodySchema.parse(input.body));
+    } else if (input.type === 'job.execution.requested') {
+      const request = jobExecutionRequestedBodySchema.parse(input.body);
+      this.requestsFor(input.stream.id).set(request.execution, request);
+    } else if (input.type === 'discuss.session.created') {
+      this.createSnapshot(input);
+    } else if (input.type === 'discuss.agent.run.bound') {
+      this.bindRun(this.readLink(input));
+    } else if (input.type === 'discuss.agent.job.started') {
+      this.startExecution(input, this.readLink(input));
+    } else if (input.type === 'discuss.agent.job.finished') {
+      this.finishExecution(input, this.readLink(input));
+    }
+  }
+
+  private requestsFor(jobId: string): Map<number, JobExecutionRequestedBody> {
+    let executions = this.requests.get(jobId);
+    if (executions !== undefined) return executions;
+    executions = new Map();
+    const rows = this.ctx.db
+      .prepare<
+        [string],
+        EventsRow
+      >("SELECT * FROM events WHERE stream_kind = 'job' AND stream_id = ? AND type = 'job.execution.requested' ORDER BY seq")
+      .all(jobId);
+    for (const row of rows) {
+      const request = decodeBody(row, jobExecutionRequestedBodySchema, this.ctx.readCtx);
+      executions.set(request.execution, request);
+    }
+    this.requests.set(jobId, executions);
+    return executions;
+  }
+
+  private startedFor(discussionId: string): Set<string> {
+    let executions = this.started.get(discussionId);
+    if (executions !== undefined) return executions;
+    executions = new Set();
+    const rows = this.ctx.db
+      .prepare<
+        [string],
+        EventsRow
+      >("SELECT * FROM events WHERE stream_kind = 'discuss' AND stream_id = ? AND type = 'discuss.agent.job.started' ORDER BY seq")
+      .all(discussionId);
+    for (const row of rows) {
+      const start = decodeBody(row, discussEventBodySchemas['agent.job.started'], this.ctx.readCtx);
+      executions.add(`${start.jobId}:${start.execution}`);
+    }
+    this.started.set(discussionId, executions);
+    return executions;
+  }
+
+  private snapshotFor(id: string): PersistedDiscussSnapshot | undefined {
+    if (!this.snapshots.has(id)) this.snapshots.set(id, readProjectionDiscuss(this.ctx.db, id)?.state);
+    return this.snapshots.get(id);
+  }
+
+  private createSnapshot(input: CoralEventInput): void {
+    const { sourceSeq, ...payload } = discussEventBodySchemas['session.created'].parse(input.body);
+    const projectRoot = input.project;
+    if (projectRoot === undefined) {
+      throw invalidDiscussionLink('Discussion creation requires its durable project scope.', {
+        discussionId: input.stream.id,
+      });
+    }
+    this.snapshots.set(
+      input.stream.id,
+      createDiscussSnapshot({
+        v: 1,
+        sessionId: input.stream.id,
+        projectRoot,
+        topic: payload.input.topic,
+        seq: sourceSeq,
+        kind: 'session.created',
+        ts: input.tsOverride ?? '1970-01-01T00:00:00.000Z',
+        payload,
+      }),
+    );
+  }
+
+  private readLink(input: CoralEventInput): DiscussionJobLink {
+    const body = this.readLinkIdentity(input);
+    const snapshot = this.snapshotFor(input.stream.id);
+    const run = snapshot?.runtime.agentRuns[body.agent];
+    const job = this.jobs.get(body.jobId) ?? readJobOpened(this.ctx.db, body.jobId, this.ctx.readCtx);
+    const executions = this.requestsFor(body.jobId);
+    const execution = this.readLinkExecution(input);
+    const request = executions.get(execution);
+    if (
+      snapshot === undefined ||
+      run === undefined ||
+      job?.owner.kind !== 'discussion' ||
+      job.owner.id !== input.stream.id ||
+      job.projectRoot !== snapshot?.projectRoot ||
+      job.jobKind !== 'provider' ||
+      run.provider !== job.conversation.provider ||
+      request?.discussionRun?.agent !== body.agent
+    ) {
+      throw invalidDiscussionLink('Discussion job linkage requires its owning aggregate and agent descriptor.', {
+        discussionId: input.stream.id,
+        jobId: body.jobId,
+      });
+    }
+    return { snapshot, run, request, discussionRun: request.discussionRun, agent: body.agent, jobId: body.jobId };
+  }
+
+  private readLinkIdentity(input: CoralEventInput): { agent: string; jobId: string } {
+    return input.type === 'discuss.agent.run.bound'
+      ? discussEventBodySchemas['agent.run.bound'].parse(input.body)
+      : input.type === 'discuss.agent.job.started'
+        ? discussEventBodySchemas['agent.job.started'].parse(input.body)
+        : discussEventBodySchemas['agent.job.finished'].parse(input.body);
+  }
+
+  private readLinkExecution(input: CoralEventInput): number {
+    return input.type === 'discuss.agent.run.bound'
+      ? 1
+      : input.type === 'discuss.agent.job.started'
+        ? discussEventBodySchemas['agent.job.started'].parse(input.body).execution
+        : discussEventBodySchemas['agent.job.finished'].parse(input.body).execution;
+  }
+
+  private bindRun({ snapshot, run, agent, jobId }: DiscussionJobLink): void {
+    if (
+      (run.jobId !== undefined && run.jobId !== jobId) ||
+      Object.entries(snapshot.runtime.agentRuns).some(
+        ([otherAgent, other]) => otherAgent !== agent && other.jobId === jobId,
+      )
+    )
+      throw invalidDiscussionLink('An agent run cannot change its bound job.', { jobId });
+    run.jobId = jobId;
+  }
+
+  private startExecution(input: CoralEventInput, { run, request, discussionRun }: DiscussionJobLink): void {
+    const start = discussEventBodySchemas['agent.job.started'].parse(input.body);
+    if (
+      run.jobId !== start.jobId ||
+      run.currentJobId !== undefined ||
+      this.startedFor(input.stream.id).has(`${start.jobId}:${start.execution}`) ||
+      request.execution !== start.execution ||
+      discussionRun.purpose !== start.purpose ||
+      discussionRun.attempt !== start.attempt
+    ) {
+      throw invalidDiscussionLink('Discussion start must identify the requested execution.', {
+        jobId: start.jobId,
+        execution: start.execution,
+      });
+    }
+    this.startedFor(input.stream.id).add(`${start.jobId}:${start.execution}`);
+    run.currentJobId = start.jobId;
+    run.currentExecution = start.execution;
+    run.currentJobPurpose = start.purpose;
+    run.currentAttempt = start.attempt;
+  }
+
+  private finishExecution(input: CoralEventInput, { run, discussionRun }: DiscussionJobLink): void {
+    const end = discussEventBodySchemas['agent.job.finished'].parse(input.body);
+    if (run.currentJobId !== end.jobId || run.currentExecution !== end.execution || run.currentAttempt !== end.attempt)
+      throw invalidDiscussionLink('Discussion finish must identify its active execution.', {
+        jobId: end.jobId,
+        execution: end.execution,
+      });
+    run.currentJobId = undefined;
+    run.currentExecution = undefined;
+    run.currentJobPurpose = undefined;
+    run.currentAttempt = end.attempt;
+    run.lastAttemptPurpose = discussionRun.purpose;
+    run.lastAttemptOutcome = end.outcome;
+  }
+}
 
 const validateDiscussionJobLinks: DomainAppendValidator = (ctx, inputs) => {
-  const snapshots = new Map<string, PersistedDiscussSnapshot | undefined>();
-  const boundSessions = new Map<string, string | undefined>();
-  const activeJobs = new Map<string, ActiveDiscussionJob | undefined>();
-  const historicallyStarted = new Map<string, Set<string>>();
-  const launchesInBatch = new Map<
-    string,
-    Extract<ReturnType<typeof jobLaunchRequestBodySchema.parse>, { jobKind: 'provider' }>
-  >();
-
-  const snapshotFor = (discussionId: string) => {
-    if (!snapshots.has(discussionId)) {
-      snapshots.set(discussionId, readProjectionDiscuss(ctx.db, discussionId)?.state);
-    }
-    return snapshots.get(discussionId);
-  };
-  const runKey = (discussionId: string, agent: string) => `${discussionId}\u0000${agent}`;
-  const existingRun = (discussionId: string, agent: string) => snapshotFor(discussionId)?.runtime.agentRuns[agent];
-  const boundFor = (discussionId: string, agent: string): string | undefined => {
-    const key = runKey(discussionId, agent);
-    if (!boundSessions.has(key)) boundSessions.set(key, existingRun(discussionId, agent)?.executionSessionId);
-    return boundSessions.get(key);
-  };
-  const activeFor = (discussionId: string, agent: string): ActiveDiscussionJob | undefined => {
-    const key = runKey(discussionId, agent);
-    if (!activeJobs.has(key)) {
-      const run = existingRun(discussionId, agent);
-      activeJobs.set(
-        key,
-        run?.currentJobId === undefined || run.currentJobPurpose === undefined || run.currentAttempt === undefined
-          ? undefined
-          : { jobId: run.currentJobId, purpose: run.currentJobPurpose, attempt: run.currentAttempt },
-      );
-    }
-    return activeJobs.get(key);
-  };
-  const startedFor = (discussionId: string): Set<string> => {
-    let started = historicallyStarted.get(discussionId);
-    if (started === undefined) {
-      started = new Set(
-        readDiscussEventLog(ctx.db, discussionId, ctx.readCtx)
-          .filter((event) => event.kind === 'agent.job.started')
-          .map((event) => event.payload.jobId),
-      );
-      historicallyStarted.set(discussionId, started);
-    }
-    return started;
-  };
-  const launchFor = (jobId: string) => {
-    const batchLaunch = launchesInBatch.get(jobId);
-    if (batchLaunch !== undefined) return batchLaunch;
-    const persistedLaunch = loadJobProjectionDetail(ctx.db, jobId, ctx.readCtx).launch;
-    return persistedLaunch?.jobKind === 'provider' ? persistedLaunch : undefined;
-  };
-
-  for (const input of inputs) {
-    if (input.type === 'job.launch.requested') {
-      const launch = jobLaunchRequestBodySchema.parse(input.body);
-      if (launch.jobKind === 'provider') launchesInBatch.set(input.stream.id, launch);
-      continue;
-    }
-    if (input.stream.kind !== 'discuss') continue;
-    if (input.type === 'discuss.session.created') {
-      const body = discussEventBodySchemas['session.created'].parse(input.body);
-      if (input.project === undefined || input.project.length === 0) {
-        throw new CoralSetupError({
-          code: 'discuss_project_missing',
-          userMessage: `Discussion '${input.stream.id}' requires a durable project scope.`,
-          remediation: 'Append discuss.session.created with a non-empty project envelope field.',
-        });
-      }
-      const { sourceSeq, ...payload } = body;
-      snapshots.set(
-        input.stream.id,
-        createDiscussSnapshot({
-          v: 1,
-          sessionId: input.stream.id,
-          projectRoot: input.project,
-          topic: payload.input.topic,
-          seq: sourceSeq,
-          kind: 'session.created',
-          ts: input.tsOverride ?? '1970-01-01T00:00:00.000Z',
-          payload,
-        }),
-      );
-      continue;
-    }
-    if (
-      input.type !== 'discuss.agent.run.bound' &&
-      input.type !== 'discuss.agent.job.started' &&
-      input.type !== 'discuss.agent.job.finished'
-    ) {
-      continue;
-    }
-    const discussionId = input.stream.id;
-    if (snapshotFor(discussionId) === undefined) {
-      throw invalidDiscussionLink(`Discussion '${discussionId}' has no aggregate to link a job to.`, {
-        discussionId,
-        eventType: input.type,
-      });
-    }
-
-    if (input.type === 'discuss.agent.run.bound') {
-      const body = discussEventBodySchemas['agent.run.bound'].parse(input.body);
-      const candidates = readProjectionJobRows(ctx.db).filter((row) => {
-        const owner = decodeProjectionJobExecutionOwner(row);
-        return owner.kind === 'discussion' && owner.id === discussionId && row.session_id === body.executionSessionId;
-      });
-      const ownsAgentRun =
-        candidates.some(({ job_id }) => launchFor(job_id)?.discussionRun?.agent === body.agent) ||
-        [...launchesInBatch.values()].some(
-          (launch) =>
-            launch.owner.kind === 'discussion' &&
-            launch.owner.id === discussionId &&
-            launch.sessionId === body.executionSessionId &&
-            launch.discussionRun?.agent === body.agent,
-        );
-      const currentBinding = boundFor(discussionId, body.agent);
-      if (!ownsAgentRun || (currentBinding !== undefined && currentBinding !== body.executionSessionId)) {
-        throw invalidDiscussionLink(`Discussion '${discussionId}' cannot bind agent '${body.agent}' to that session.`, {
-          discussionId,
-          agent: body.agent,
-          executionSessionId: body.executionSessionId,
-        });
-      }
-      boundSessions.set(runKey(discussionId, body.agent), body.executionSessionId);
-      continue;
-    }
-
-    if (input.type === 'discuss.agent.job.started') {
-      const body = discussEventBodySchemas['agent.job.started'].parse(input.body);
-      const launch = launchFor(body.jobId);
-      const descriptor = launch?.discussionRun;
-      if (
-        launch?.owner.kind !== 'discussion' ||
-        launch.owner.id !== discussionId ||
-        launch.sessionId === null ||
-        boundFor(discussionId, body.agent) !== launch.sessionId ||
-        descriptor?.agent !== body.agent ||
-        descriptor.purpose !== body.purpose ||
-        descriptor.attempt !== body.attempt ||
-        startedFor(discussionId).has(body.jobId) ||
-        activeFor(discussionId, body.agent) !== undefined
-      ) {
-        throw invalidDiscussionLink(`Discussion '${discussionId}' cannot start job '${body.jobId}' for that run.`, {
-          discussionId,
-          agent: body.agent,
-          jobId: body.jobId,
-          purpose: body.purpose,
-          attempt: body.attempt,
-        });
-      }
-      activeJobs.set(runKey(discussionId, body.agent), {
-        jobId: body.jobId,
-        purpose: body.purpose,
-        attempt: body.attempt,
-      });
-      startedFor(discussionId).add(body.jobId);
-      continue;
-    }
-
-    const body = discussEventBodySchemas['agent.job.finished'].parse(input.body);
-    const active = activeFor(discussionId, body.agent);
-    const launch = launchFor(body.jobId);
-    if (
-      active?.jobId !== body.jobId ||
-      active.attempt !== body.attempt ||
-      launch?.owner.kind !== 'discussion' ||
-      launch.owner.id !== discussionId ||
-      launch.discussionRun?.agent !== body.agent ||
-      launch.discussionRun.attempt !== body.attempt
-    ) {
-      throw invalidDiscussionLink(`Discussion '${discussionId}' cannot finish job '${body.jobId}' for that run.`, {
-        discussionId,
-        agent: body.agent,
-        jobId: body.jobId,
-        attempt: body.attempt,
-      });
-    }
-    activeJobs.set(runKey(discussionId, body.agent), undefined);
-  }
+  const links = new DiscussionJobLinks(ctx);
+  for (const input of inputs) links.apply(input);
 };
 
 export const discussRegistry: DomainEventRegistry = {

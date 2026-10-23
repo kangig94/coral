@@ -54,7 +54,7 @@ describe('canonical work-directory carrier closure', () => {
       issuer: 'provider-operation-recovery',
       authorization: persistedAuthorization(selected),
       parentJobId: 'job-a',
-      parentSessionId: 'session-a',
+      execution: 1,
       nowMs: 1,
     });
 
@@ -75,7 +75,7 @@ describe('canonical work-directory carrier closure', () => {
         issuer: 'provider-operation-recovery',
         authorization: persistedAuthorization(missing),
         parentJobId: 'job-a',
-        parentSessionId: 'session-a',
+        execution: 1,
         nowMs: 1,
       }),
     ).toThrow(WorkDirectoryError);

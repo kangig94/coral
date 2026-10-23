@@ -44,10 +44,9 @@ export function childPrincipalAuthFromEnv(
   const privateKey = nonEmpty(env[CORAL_CHILD_CREDENTIAL_KEY]);
   const handle = nonEmpty(env[CORAL_CHILD_PRINCIPAL_HANDLE]);
   const jobId = nonEmpty(env.CORAL_JOB_ID);
-  const sessionId = nonEmpty(env.CORAL_SESSION_ID);
 
   if (credentialId !== undefined || privateKey !== undefined) {
-    if (credentialId === undefined || privateKey === undefined || jobId === undefined || sessionId === undefined) {
+    if (credentialId === undefined || privateKey === undefined || jobId === undefined) {
       return null;
     }
     return {
@@ -56,19 +55,17 @@ export function childPrincipalAuthFromEnv(
         kind: 'child-proof',
         credentialId,
         jobId,
-        sessionId,
-        proof: signChildProof(privateKey, childProofSubject(challenge, { credentialId, jobId, sessionId }, request)),
+        proof: signChildProof(privateKey, childProofSubject(challenge, { credentialId, jobId }, request)),
       }),
     };
   }
 
-  if (handle && jobId && sessionId) {
+  if (handle && jobId) {
     return () => ({
       kind: 'child',
       handle,
       token: nonce(),
       jobId,
-      sessionId,
     });
   }
 

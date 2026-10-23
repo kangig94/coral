@@ -6,7 +6,8 @@ import { kbJobLaunchPayloadSchema, type KbSourceImportJobRequest, type KbJobOper
 import type { AbortReason, TerminalOutcome } from '../outcome.js';
 import type { InternalJobRuntime, JobLaunch } from '../records.js';
 import { buildJobEventRefs } from '../refs.js';
-import { appendJobTerminalRecorded, failedTerminalOutcome } from '../terminal/recording.js';
+import { appendJobExecutionOutcomeAccepted, failedTerminalOutcome } from '../terminal/recording.js';
+import type { ExecutionFinisher } from '../finishing.js';
 import type { Runtime } from '../../runtime/ports.js';
 
 export type KbInternalJobRequest = KbSourceImportJobRequest | Record<string, never>;
@@ -14,6 +15,7 @@ export type KbInternalJobRequest = KbSourceImportJobRequest | Record<string, nev
 export type KbFailureDetail = { message: string; stack?: string };
 
 export interface KbJobRecorderDeps {
+  executionFinisher: ExecutionFinisher;
   runtime: Pick<Runtime, 'ids' | 'time'>;
   progressStore: JobProgressStore;
   backendNamespace: string;
@@ -74,8 +76,8 @@ export class KbJobRecorder {
 
     const common = {
       jobId,
+      execution: 1,
       owner: { kind: 'system-task', id: `${params.operation}:${jobId}` },
-      sessionId: null,
       provider: null,
       projectRoot: params.projectRoot,
       backendNamespace: this.deps.backendNamespace,
@@ -95,43 +97,40 @@ export class KbJobRecorder {
       startTime: nowIsoString(this.deps.runtime.time),
     });
 
-    // The callback owns the `'user_abort'` reason because
-    // `AbortRegistry.abort()` calls `controller.abort()` without a reason —
-    // setting it here is what lets downstream `AbortError.reason` map to
-    // `terminal { outcome: aborted, reason: 'user_abort' }`.
     const controller = new AbortController();
-    this.deps.abortRegistry.register(jobId, () => controller.abort('user_abort'));
+    this.deps.abortRegistry.register(jobId, 1, () => controller.abort('user_abort'));
 
     let finalized = false;
     const finalize = (): void => {
       if (finalized) return;
       finalized = true;
-      this.deps.abortRegistry.remove(jobId);
+      this.deps.abortRegistry.remove(jobId, 1);
     };
 
     return { jobId, startedAtMs, signal: controller.signal, finalize };
   }
 
   appendMessage(jobId: string, _projectRoot: string, message: string): void {
-    this.deps.progressStore.appendProgress(jobId, null, message);
+    this.deps.progressStore.appendProgress(jobId, message);
   }
 
-  appendOperationFailureWithTerminal(params: {
+  async appendOperationFailureWithTerminal(params: {
     jobId: string;
     projectRoot: string;
     operation: string;
     message: string;
     detail: unknown;
     startedAtMs: number;
-  }): void {
+  }): Promise<void> {
     const durationMs = Math.max(0, this.deps.runtime.time.now() - params.startedAtMs);
     const causeEvent = {
-      type: 'job.progress.emitted',
+      type: 'job.execution.progress',
       stream: { kind: 'job', id: params.jobId },
       namespace: this.deps.backendNamespace,
       project: params.projectRoot,
       refs: buildJobEventRefs({ jobId: params.jobId }),
       body: {
+        execution: 1,
         kind: 'domain',
         stage: 'kb_operation_failed',
         message: params.message,
@@ -139,10 +138,11 @@ export class KbJobRecorder {
       },
     } as const;
 
-    this.deps.progressStore.commit((c) => {
+    await this.deps.executionFinisher.accept({ jobId: params.jobId, execution: 1 }, (c) => {
       const cause = c.append(causeEvent);
-      appendJobTerminalRecorded(c, {
+      appendJobExecutionOutcomeAccepted(c, {
         jobId: params.jobId,
+        execution: 1,
         namespace: this.deps.backendNamespace,
         project: params.projectRoot,
         terminal: {
@@ -157,7 +157,7 @@ export class KbJobRecorder {
 
   appendHostedKbOperationFailure(params: {
     jobId: string;
-    sessionId: string;
+    execution: number;
     projectRoot: string;
     namespace: string;
     operation: string;
@@ -167,12 +167,13 @@ export class KbJobRecorder {
   }): void {
     this.deps.progressStore.commit((c) => {
       c.append({
-        type: 'job.progress.emitted',
+        type: 'job.execution.progress',
         stream: { kind: 'job', id: params.jobId },
         namespace: params.namespace,
         project: params.projectRoot,
-        refs: buildJobEventRefs({ jobId: params.jobId, sessionId: params.sessionId }),
+        refs: buildJobEventRefs({ jobId: params.jobId }),
         body: {
+          execution: params.execution,
           kind: 'domain',
           stage: 'hosted_kb_operation_failed',
           message: `KB ${params.operation} failed: ${params.message}`,
@@ -188,24 +189,23 @@ export class KbJobRecorder {
     });
   }
 
-  appendCompleted(jobId: string, startedAtMs: number, content: string): void {
-    this.commitTerminal(jobId, startedAtMs, { kind: 'completed' }, content);
+  async appendCompleted(jobId: string, startedAtMs: number, content: string): Promise<void> {
+    await this.commitTerminal(jobId, startedAtMs, { kind: 'completed' }, content);
   }
 
-  appendAborted(jobId: string, startedAtMs: number, reason: AbortReason): void {
-    this.commitTerminal(jobId, startedAtMs, { kind: 'aborted', reason }, '');
+  async appendAborted(jobId: string, startedAtMs: number, reason: AbortReason): Promise<void> {
+    await this.commitTerminal(jobId, startedAtMs, { kind: 'aborted', reason }, '');
   }
 
-  private commitTerminal(jobId: string, startedAtMs: number, outcome: TerminalOutcome, content: string): void {
-    this.deps.progressStore.commit((c) => {
-      appendJobTerminalRecorded(c, {
-        jobId,
-        terminal: {
-          outcome,
-          durationMs: Math.max(0, this.deps.runtime.time.now() - startedAtMs),
-          content,
-        },
-      });
+  private async commitTerminal(
+    jobId: string,
+    startedAtMs: number,
+    outcome: TerminalOutcome,
+    content: string,
+  ): Promise<void> {
+    const durationMs = Math.max(0, this.deps.runtime.time.now() - startedAtMs);
+    await this.deps.executionFinisher.accept({ jobId, execution: 1 }, (c) => {
+      appendJobExecutionOutcomeAccepted(c, { jobId, execution: 1, terminal: { outcome, durationMs, content } });
       return undefined;
     });
   }

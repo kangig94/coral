@@ -1,19 +1,22 @@
+import type { ExecutionRetryStatus } from '../jobs/records.js';
+import type { ExecutionWaitDetail } from '../jobs/wait/execution-detail.js';
+import type { ExecutionFinisher } from '../jobs/finishing.js';
 import type { JobAttention } from './services/job-attention.js';
 import type { JobSendRequest, JobSendServiceDeps } from './services/job-send.js';
-import type { ProxyOperationSendResult } from '../provider-proxy/protocol.js';
+import type { JobSendResult } from '../jobs/send.js';
 import type { ProgressVisit } from '../jobs/wait/contract.js';
 import type { WaitAdmission } from '../jobs/wait/session.js';
 import type { ResultAvailability } from '../jobs/terminal/export.js';
 import type {
   JobLaunchRequest,
   JobResumeRequest,
-  ProviderSessionLaunchDecision,
+  ProviderJobLaunchDecision,
   WorkflowLaunchDecision,
 } from '../jobs/launch.js';
 import type { LaunchCoordinatorPort, SettlementRefusalRecorder } from '../jobs/contracts/admission.js';
 import type { ProviderDurableSpawner } from '../providers/cli-runner.js';
 import type { JobProgressStore } from '../jobs/contracts/job-store.js';
-import type { JobProjectionDetail, JobWaitDetail } from '../jobs/read-queries.js';
+import type { JobProjectionDetail } from '../jobs/read-queries.js';
 import type { JobEvent, LaunchReadiness } from '../jobs/records.js';
 import type { JobPhase } from '../jobs/phase.js';
 import type {
@@ -26,7 +29,7 @@ import type { ProviderStopCause, UsageSummary } from '../providers/contract.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { AbortResult } from '../jobs/contracts/abort-registry.js';
 import type { Runtime } from '../runtime/ports.js';
-import type { ProviderSession } from '../sessions/entry.js';
+import type { JobConversation } from '../jobs/conversation/entry.js';
 import type { CommitEventsFn } from '../store/append.js';
 import type { ProviderBindingCatalog } from '../providers/catalog.js';
 import type { PipelineAST } from '../workflow/ast.js';
@@ -47,17 +50,17 @@ interface CoordinatorSessionOps {
     input: JobLaunchRequest,
     ctx: InvocationContext,
     signal?: AbortSignal,
-  ): Promise<ProviderSessionLaunchDecision>;
-  resume(providerName: string, input: JobResumeRequest, ctx: InvocationContext): Promise<ProviderSessionLaunchDecision>;
+  ): Promise<ProviderJobLaunchDecision>;
+  resume(providerName: string, input: JobResumeRequest, ctx: InvocationContext): Promise<ProviderJobLaunchDecision>;
 }
 
 interface CoordinatorJobOps {
   readWaitAdmissions?(jobIds: readonly string[], epochKey: string, session?: object): WaitAdmission[];
   observeWaitCarriers?(jobIds: readonly string[], signal: AbortSignal): Promise<WaitCarrierCoverage>;
   readWaitAdmission?(jobId: string, epochKey: string, session?: object): WaitAdmission | null;
-  holdsLocalAppServerExecution?(jobId: string): boolean;
+  holdsLocalAppServerExecution?(jobId: string, execution: number): boolean;
   abort(jobIds: string[]): AbortResult;
-  send(request: JobSendRequest): Promise<ProxyOperationSendResult>;
+  send(request: JobSendRequest, ctx: InvocationContext): Promise<JobSendResult>;
   waitStream(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent>;
   waitStreamOnce(jobId: string, timeoutMs?: number): Promise<WaitStreamOnceResult>;
   awaitLaunch(jobId: string, timeoutMs: number): Promise<LaunchReadiness>;
@@ -78,7 +81,7 @@ interface CoordinatorWorkflowOps {
 export type ProjectRequestPort = CoordinatorSessionOps & CoordinatorJobOps & CoordinatorWorkflowOps;
 
 export interface ListResult {
-  sessions: ProviderSession[];
+  sessions: JobConversation[];
 }
 
 type CoordinatorLaunchCoordinator = LaunchCoordinatorPort &
@@ -87,6 +90,9 @@ type CoordinatorLaunchCoordinator = LaunchCoordinatorPort &
   ProviderDurableSpawner & { admitTopLevelLaunch?: () => boolean };
 
 export type ExecutionServiceDeps = {
+  readonly executionFinisher: ExecutionFinisher;
+  jobLocations: JobSendServiceDeps['jobLocations'];
+  jobSendAttempts: JobSendServiceDeps['attempts'];
   runningWorkflowJobs: Set<string>;
   runtime: Runtime;
   progressStore: JobProgressStore;
@@ -103,7 +109,8 @@ export type ExecutionServiceDeps = {
   coordinatorCommit: CommitEventsFn;
   jobAttention?: JobAttention;
   loadJobProjectionDetail: (jobId: string) => JobProjectionDetail;
-  loadJobWaitDetail: (jobId: string) => JobWaitDetail;
+  loadJobWaitDetail: (jobId: string, requestedSeq?: number, jobIds?: readonly string[]) => ExecutionWaitDetail;
+  readExecutionFinishingStatus?: (address: { jobId: string; execution: number }) => ExecutionRetryStatus | null;
   readJobLastSeq: (jobId: string) => number | null;
   visitProgress: ProgressVisit;
 
@@ -121,8 +128,8 @@ export type ExecutionServiceDeps = {
     visitProgress: ProgressVisit;
   }>;
   observeJobAbsence?: (jobId: string) => boolean;
-  observeResultAvailability: (jobId: string) => ResultAvailability;
-  hintResultRepair?: (jobId: string) => void;
+  observeResultAvailability: (jobId: string, execution?: number) => ResultAvailability;
+  hintResultRepair?: (jobId: string, execution?: number) => void;
   /** Tries to route an app-server operation through a live provider proxy set (W2.3). Optional because most
    *  compositions (every test, and any coordinator with no live set) never wire it — `LaunchOrchestrator`
    *  falls back to in-process execution when absent, identically to the port returning `null`. */

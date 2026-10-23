@@ -49,6 +49,37 @@ async function execute(method: 'jobs.abort', body: object, jobs: object): Promis
 }
 
 describe('jobs.detail retained-epoch dispositions', () => {
+  it.each([
+    ['outcome-unreadable', 'job_outcome_unreadable'],
+    ['outcome-unrecoverable', 'job_outcome_unrecoverable'],
+    ['unresolved', 'job_unresolved'],
+    ['detail-unreadable', 'job_detail_unreadable'],
+  ] as const)('carries location admission through a %s detail error', async (kind, code) => {
+    const sendRefusal = {
+      state: 'refused',
+      code: 'pre_generation_job',
+      reason: 'The job predates the current store format generation and cannot be continued.',
+    } as const;
+    for (const refusal of [undefined, sendRefusal]) {
+      const result = await detailFor({
+        kind,
+        jobId: 'job-1',
+        epochKey: 'lineage:7',
+        ...(refusal === undefined ? {} : { sendRefusal: refusal }),
+      });
+      expect(result).toMatchObject({
+        kind: 'unary',
+        statusCode: 409,
+        body: { code },
+      });
+      const body = (result as { body: { detail: Record<string, unknown> } }).body;
+      expect(body.detail).toEqual({
+        epochKey: 'lineage:7',
+        ...(refusal === undefined ? {} : { sendRefusal: refusal }),
+      });
+    }
+  });
+
   it('names maintenance or the next start as the unresolved job read exit', async () => {
     const result = await detailFor({ kind: 'unresolved', jobId: 'job-1', epochKey: 'lineage:7' });
 

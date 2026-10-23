@@ -1,3 +1,4 @@
+import { createTestExecutionFinisher } from '#tests/helpers/execution-finisher.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createServer } from 'node:http';
 import { createCoordinatorCore } from '#src/coordinator/composition/index.js';
@@ -39,6 +40,10 @@ describe('retention startup composition', () => {
     });
     const core = createCoordinatorCore(
       {
+        executionFinisher: createTestExecutionFinisher(
+          (): JobStore => core.storeServicesRef.get().progressStore,
+          f.runtime,
+        ),
         onFatalShutdownError: vi.fn(),
         storeFormat: currentCoralStoreFormat(),
         runtime: f.runtime,

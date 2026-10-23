@@ -1,10 +1,11 @@
 import { z } from 'zod';
+import { jobExecutionRequestedBodySchema } from './launch.js';
 
 import { errorMessage } from '../infra/error-format.js';
 import type { JobProgressStore } from './contracts/job-store.js';
 import { elapsedDurationMs } from './duration.js';
 import { buildJobEventRefs } from './refs.js';
-import { appendJobTerminalRecorded, failedTerminalOutcome } from './terminal/recording.js';
+import { appendJobExecutionOutcomeAccepted, failedTerminalOutcome } from './terminal/recording.js';
 import { deleteProviderOperation, ProviderOperationJournalError } from '../store/provider-operation-journal.js';
 import type {
   ProviderOperationIdentity,
@@ -115,9 +116,23 @@ export function terminalizeProviderOperation(
 ): ProviderOperationTerminalizationResult {
   const status = store.readStatus(record.operation.jobId);
   const launch = store.readLaunchProjection(record.operation.jobId);
-  if (status === null || status.sessionId === null || launch === null) {
+  if (status === null || launch === null || status.execution !== launch.execution) {
     throw new ProviderOperationTerminalMetadataError(record.operation);
   }
+  if (status.finishing === true) throw new Error('An accepted outcome belongs to the execution finalizer.');
+  const anchored = store
+    .getDb()
+    .prepare<
+      [number, string],
+      { body: Uint8Array }
+    >("SELECT body FROM events WHERE seq = ? AND stream_kind = 'job' AND stream_id = ? AND type = 'job.execution.requested'")
+    .get(record.jobLaunchEventSeq, record.operation.jobId);
+  if (
+    anchored === undefined ||
+    jobExecutionRequestedBodySchema.parse(JSON.parse(Buffer.from(anchored.body).toString('utf8'))).execution !==
+      status.execution
+  )
+    throw new ProviderOperationTerminalMetadataError(record.operation);
   const durationMs = elapsedDurationMs(launch.createdAt, nowMs, `job ${record.operation.jobId}`);
   let result: ProviderOperationTerminalizationResult | null = null;
 
@@ -131,12 +146,12 @@ export function terminalizeProviderOperation(
 
       const options = {
         jobId: record.operation.jobId,
-        sessionId: status.sessionId,
-        namespace: status.backendNamespace,
+        execution: launch.execution,
+        namespace: launch.backendNamespace,
         project: status.projectRoot,
       } as const;
       if (directive.kind === 'terminal-aborted') {
-        appendJobTerminalRecorded(commit, {
+        appendJobExecutionOutcomeAccepted(commit, {
           ...options,
           terminal: {
             content: '',
@@ -150,19 +165,20 @@ export function terminalizeProviderOperation(
             ? readProviderHostUnserviceableEvidence(record.lastError)
             : null;
         const cause = commit.append({
-          type: 'job.progress.emitted',
+          type: 'job.execution.progress',
           stream: { kind: 'job', id: record.operation.jobId },
-          namespace: status.backendNamespace,
+          namespace: launch.backendNamespace,
           project: status.projectRoot,
-          refs: buildJobEventRefs({ jobId: record.operation.jobId, sessionId: status.sessionId }),
+          refs: buildJobEventRefs({ jobId: record.operation.jobId }),
           body: {
+            execution: launch.execution,
             kind: 'domain',
             stage: 'provider_operation_failed',
             message: directive.reason,
             detail: hostEvidence === null ? { code: directive.code } : { code: directive.code, ...hostEvidence },
           },
         });
-        appendJobTerminalRecorded(commit, {
+        appendJobExecutionOutcomeAccepted(commit, {
           ...options,
           terminal: { content: '', durationMs, outcome: failedTerminalOutcome(cause) },
         });

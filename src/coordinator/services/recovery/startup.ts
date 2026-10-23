@@ -83,7 +83,6 @@ function createRetryCoordinatorItem(
     const retryRunning: RunningRecoverableJob[] = [];
     const retryOptions: ProviderOperationRecoveryPlanActionOptions = {
       itemsByJobId: new Map([[item.jobId, item]]),
-      itemsBySessionId: new Map(item.claimedSession === null ? [] : ([[item.claimedSession.sessionId, item]] as const)),
       recoveryRegistry,
       queuedRecoverable: retryQueued,
       runningRecoverable: retryRunning,
@@ -195,7 +194,6 @@ function createHeldRecoveryAbandonment(
       try {
         progressStore.appendProgress(
           jobId,
-          jobStatus.sessionId,
           'Durable containment was abandoned without proof of process absence and without sending a signal.',
         );
       } catch (error: unknown) {
@@ -302,13 +300,7 @@ async function planCoordinatorStartupRecovery(
   const snapshot = buildRecoverySnapshot(recoveryItems, runtime.process);
   const plan = planRecovery(snapshot);
   const itemsByJobId = new Map(recoveryItems.map((item) => [item.jobId, item]));
-  const itemsBySessionId = new Map(
-    recoveryItems.flatMap((item) =>
-      item.claimedSession === null ? [] : [[item.claimedSession.sessionId, item] as const],
-    ),
-  );
-
-  return { plan, itemsByJobId, itemsBySessionId };
+  return { plan, itemsByJobId };
 }
 
 async function recoverLocalProviderOperations(
@@ -422,15 +414,10 @@ async function runStartupRecovery(
 
   registerHeldDurableJobs(progressStore, recoveryRegistry, deleteCoordinatorRecoveryQuarantine, abandonHeldRecoveryJob);
 
-  const { plan, itemsByJobId, itemsBySessionId } = await planCoordinatorStartupRecovery(
-    ctx,
-    deps,
-    retryCoordinatorItem,
-  );
+  const { plan, itemsByJobId } = await planCoordinatorStartupRecovery(ctx, deps, retryCoordinatorItem);
 
   const planActionOptions = {
     itemsByJobId,
-    itemsBySessionId,
     recoveryRegistry,
     queuedRecoverable,
     runningRecoverable,

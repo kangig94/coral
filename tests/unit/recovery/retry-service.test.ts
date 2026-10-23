@@ -141,7 +141,7 @@ describe('recovery quarantine retry service', () => {
   it.each(['active', 'retrying'] as const)(
     'refuses deferred retention %s retries before acquiring authority',
     async (state) => {
-      const retentionBoundary = 'session-retention-work';
+      const retentionBoundary = 'job-conversation-retention';
       const retrySubject = subject();
       expect(quarantine.upsert({ ...activeWrite(), boundary: retentionBoundary })).toBe(true);
       if (state === 'retrying') {
@@ -204,7 +204,7 @@ describe('recovery quarantine retry service', () => {
   );
 
   it('keeps genuine retention absence completion behind admission', async () => {
-    const retentionBoundary = 'session-retention-work';
+    const retentionBoundary = 'job-conversation-retention';
     expect(quarantine.upsert({ ...activeWrite(), boundary: retentionBoundary })).toBe(true);
     const before = db.prepare('SELECT * FROM recovery_quarantine WHERE boundary_id = ?').get(retentionBoundary);
     const ids = createIds('absence-token');
@@ -252,6 +252,11 @@ describe('recovery quarantine retry service', () => {
 
     await vi.advanceTimersByTimeAsync(20);
     await rejected;
+    expect(quarantine.read(boundary, request.key)).toMatchObject({ state: 'active' });
+    const recovered = createRegistry({ readEnvelope: () => envelope, settle: () => advanced() });
+    await expect(service('coordinator-1', recovered).clear(request)).resolves.toMatchObject({
+      disposition: 'advanced',
+    });
   });
 
   it('should delete the retained row after successful settlement', async () => {
@@ -276,7 +281,7 @@ describe('recovery quarantine retry service', () => {
     expect(quarantine.read(boundary, request.key)).toBeNull();
   });
 
-  it('should retain retry ownership when deletion crashes after settlement', async () => {
+  it('should release the exact retry claim when deletion fails after settlement', async () => {
     const crash = new Error('process stopped before retry deletion');
     const crashBeforeDelete: RecoveryRetryQuarantinePort = {
       read: quarantine.read.bind(quarantine),
@@ -284,6 +289,7 @@ describe('recovery quarantine retry service', () => {
       delete: () => {
         throw crash;
       },
+      releaseRetry: quarantine.releaseRetry.bind(quarantine),
       claimRetry: quarantine.claimRetry.bind(quarantine),
       reclaimRetry: quarantine.reclaimRetry.bind(quarantine),
     };
@@ -299,8 +305,7 @@ describe('recovery quarantine retry service', () => {
     expect(quarantine.read(boundary, request.key)).toEqual({
       boundary,
       subject: subject(),
-      state: 'retrying',
-      retry: { owner: 'coordinator-1', token: 'settled-token' },
+      state: 'active',
     });
   });
 
@@ -350,7 +355,7 @@ describe('recovery quarantine retry service', () => {
     });
   });
 
-  it('should leave the claimed row visible when retry execution crashes', async () => {
+  it('should retain a failed retry as active work with another serving retry available', async () => {
     const crash = new Error('coordinator crashed');
     const ids = createIds('crash-token');
     const retry = service(
@@ -369,9 +374,13 @@ describe('recovery quarantine retry service', () => {
     expect(quarantine.read(boundary, request.key)).toEqual({
       boundary,
       subject: subject(),
-      state: 'retrying',
-      retry: { owner: 'coordinator-1', token: 'crash-token' },
+      state: 'active',
     });
+    await expect(
+      service('coordinator-1', createRegistry({ readEnvelope: () => envelope, settle: () => advanced() })).clear(
+        request,
+      ),
+    ).resolves.toMatchObject({ disposition: 'advanced' });
   });
 
   it('should allow exactly one concurrent clear to own the row', async () => {

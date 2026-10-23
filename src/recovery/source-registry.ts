@@ -8,7 +8,7 @@ import {
   type RecoverySource,
   type RecoverySubject,
 } from './containment.js';
-import type { RecoveryQuarantineClaim, RecoveryQuarantineReclaim } from './quarantine.js';
+import type { RecoveryQuarantineClaim, RecoveryQuarantineReclaim, RecoveryQuarantineRelease } from './quarantine.js';
 
 export const UNREADABLE_PROVIDER_OPERATION_BOUNDARY = 'provider-operation-unreadable';
 export const SETTLED_UNBOUND_STATUS_REMEDIATION = {
@@ -22,11 +22,8 @@ export const repeatableRecoveryBoundaryIds = [
   COORDINATOR_JOB_RECOVERY_BOUNDARY,
   'discussion-source',
   'discussion-candidate',
-  'session-projection',
-  'session-continuation-lease',
-  'terminal-retention-outcome',
-  'retention-release-pair',
-  'session-retention-work',
+  'job-conversation-retention',
+  'job-execution-finishing',
   'workflow-recovery',
   'stale-job-cleanup',
   'crashed-job-terminalization',
@@ -178,6 +175,7 @@ export class RecoveryQuarantineClearError extends Error {
 }
 
 export interface RecoveryRetryQuarantinePort extends RecoveryQuarantinePort {
+  releaseRetry(request: RecoveryQuarantineRelease): boolean | Promise<boolean>;
   claimRetry(request: RecoveryQuarantineClaim): boolean | Promise<boolean>;
   reclaimRetry(request: RecoveryQuarantineReclaim): boolean | Promise<boolean>;
 }
@@ -234,7 +232,7 @@ export function createRecoveryQuarantineRetryService(
         );
       }
 
-      if (request.boundary === 'session-retention-work' && !options.isRetryAdmitted(request.boundary)) {
+      if (request.boundary === 'job-conversation-retention' && !options.isRetryAdmitted(request.boundary)) {
         throw new RecoveryQuarantineClearError('retention-not-admitted', 'Session retention recovery is not admitted.');
       }
 
@@ -281,7 +279,13 @@ export function createRecoveryQuarantineRetryService(
         );
       }
 
-      const report = await options.sources.retry(request.boundary, retry, options.quarantine, signal);
+      let report: RecoveryReport<unknown>;
+      try {
+        report = await options.sources.retry(request.boundary, retry, options.quarantine, signal);
+      } catch (error: unknown) {
+        await options.quarantine.releaseRetry({ boundary: request.boundary, subject, expectedRetry: retry });
+        throw error;
+      }
       return {
         ...request,
         disposition: retryDisposition(report, request),

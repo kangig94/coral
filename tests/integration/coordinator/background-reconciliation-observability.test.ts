@@ -1,3 +1,4 @@
+import { testConversationFacet } from '#tests/helpers/session.js';
 import { dirname } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 
@@ -34,15 +35,19 @@ it('reports real retention owners, custody passes and repeated epoch sweeps with
   if (selected === null) throw new Error('fixture has no store epoch');
   const epoch = resolvedStoreEpoch(runtime.paths.coral.store.dbDir, selected);
   const epochKey = encodeResolvedStoreEpoch(runtime, epoch);
-  const index = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
+  const index = new JobLocationIndex(
+    runtime,
+    runtime.paths.coral.generation.dataRoot,
+    undefined,
+    currentCoralStoreFormat().fingerprint,
+  );
   initTestJob(f.store, {
-    jobId: 'retained',
-    sessionId: 'retained-session',
-    provider: 'codex',
+    jobId: '93000000-0000-4000-8001-000000000001',
     projectRoot: '/workspace',
     backendNamespace: 'test-ns',
+    conversation: testConversationFacet('codex', '/workspace'),
   });
-  commitJobTerminal(f.store, 'retained', 'retained-session', {
+  commitJobTerminal(f.store, '93000000-0000-4000-8001-000000000001', 1, {
     content: 'done',
     outcome: { kind: 'completed' },
     durationMs: 1,

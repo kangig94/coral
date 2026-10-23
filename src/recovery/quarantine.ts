@@ -113,20 +113,6 @@ const recoveryQuarantineRowSchema = z
   })
   .strict();
 
-export const rawRetentionContinuationRowSchema = recoveryQuarantineRowSchema
-  .pick({
-    subject_key: true,
-    subject_revision: true,
-    continuation_kind: true,
-    continuation_key: true,
-  })
-  .extend({
-    subject_key: z.string().min(1),
-  })
-  .strict();
-
-export type RawRetentionContinuationRow = z.infer<typeof rawRetentionContinuationRowSchema>;
-
 type RecoveryQuarantineRow = z.infer<typeof recoveryQuarantineRowSchema>;
 
 const QUARANTINE_COLUMNS = `boundary_id,
@@ -364,6 +350,14 @@ export class RecoveryQuarantineStore implements RecoveryQuarantinePort {
     ).get(boundary, subjectKey);
 
     return row === undefined ? null : rowToRecord(row);
+  }
+
+  readEntry(boundary: string, subjectKey: string): RecoveryQuarantineEntry | null {
+    const row = prepareCached<[string, string], RecoveryQuarantineRow>(
+      this.db,
+      `SELECT ${QUARANTINE_COLUMNS} FROM recovery_quarantine WHERE boundary_id = ? AND subject_key = ?`,
+    ).get(boundary, subjectKey);
+    return row === undefined ? null : rowToEntry(row);
   }
 
   list(): readonly RecoveryQuarantineEntry[] {

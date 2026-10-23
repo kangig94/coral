@@ -43,13 +43,14 @@ const old = settleStoreEpoch(runtime, options);
 const ref = { stream: { kind: 'job', id: 'historical-failed-job' }, seq: 1 };
 old.db
   .prepare(
-    `INSERT INTO events (seq,ts,type,stream_kind,stream_id,namespace,project,correlation_id,causation_seq,refs,body) VALUES (1,?, 'job.progress.emitted', 'job', ?, NULL,NULL,NULL,NULL,NULL,?)`,
+    `INSERT INTO events (seq,ts,type,stream_kind,stream_id,namespace,project,correlation_id,causation_seq,refs,body) VALUES (1,?, 'job.execution.progress', 'job', ?, NULL,NULL,NULL,NULL,NULL,?)`,
   )
   .run(
     new Date().toISOString(),
     ref.stream.id,
     Buffer.from(
       JSON.stringify({
+        execution: 1,
         kind: 'domain',
         stage: 'provider_operation_failed',
         message: 'Unique retained failure explanation',

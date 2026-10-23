@@ -15,7 +15,7 @@ import {
   sweepStale,
 } from './lib/hook-utils.mjs';
 import { isLivePhase, SNAPSHOT_PREFIX, SNAPSHOT_TTL_MS, snapshotFileName } from './lib/jobs-state.mjs';
-import { exportsJobsDir, projectDirFromInput, projectTmpDir } from './lib/plugin-paths.mjs';
+import { projectDirFromInput, projectTmpDir } from './lib/plugin-paths.mjs';
 import {
   isSqliteWaitBudgetExhausted,
   openLockedReadOnlyStoreDatabase,
@@ -25,7 +25,6 @@ import {
 exitIfChildProcess();
 exitIfWrongFlavor();
 
-// Self-contained mirror of the path authority in src/infra/path/store.ts.
 function storeDbDir(flavor = buildFlavor(), stateRoot = coralStateRoot()) {
   const dataDir = flavor === 'dev' ? 'data-dev' : 'data';
   return join(stateRoot, 'gen2', dataDir, 'store');
@@ -113,7 +112,7 @@ await failOpen(async () => {
     let rows;
     try {
       rows = storeHandle.all(
-        `SELECT job_id AS jobId, phase
+        `SELECT job_id AS jobId, execution, phase
              FROM projection_jobs
             WHERE project_root = ?
             ORDER BY last_seq DESC
@@ -128,8 +127,14 @@ await failOpen(async () => {
       return;
     }
 
+    const exportsDir = join(coralStateRoot(), buildFlavor() === 'dev' ? 'exports-dev' : 'exports', 'jobs');
     const jobs = rows.flatMap((row) => {
-      if (typeof row.jobId !== 'string' || !SAFE_JOB_ID.test(row.jobId) || typeof row.phase !== 'string') {
+      if (
+        typeof row.jobId !== 'string' ||
+        !SAFE_JOB_ID.test(row.jobId) ||
+        typeof row.phase !== 'string' ||
+        (row.execution !== null && (!Number.isSafeInteger(row.execution) || row.execution < 1))
+      ) {
         logSnapshotSkipped(
           projectDir,
           'projection_jobs contains an unsafe job identifier',
@@ -138,8 +143,9 @@ await failOpen(async () => {
         return [];
       }
 
-      const resultPath = join(exportsJobsDir(buildFlavor()), row.jobId, 'result.md');
-      const hasArtifact = existsSync(resultPath);
+      const resultPath =
+        row.execution === null ? null : join(exportsDir, row.jobId, 'executions', String(row.execution), 'result.md');
+      const hasArtifact = resultPath !== null && existsSync(resultPath);
       if (!isLivePhase(row.phase) && !hasArtifact) {
         return [];
       }
@@ -147,7 +153,9 @@ await failOpen(async () => {
       return [
         {
           jobId: row.jobId,
+          execution: row.execution,
           phase: row.phase,
+          resultPath,
           hasResult: hasArtifact,
         },
       ];

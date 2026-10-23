@@ -68,8 +68,8 @@ function settleCoordinatorRecoveryItem(
   options: CoordinatorSettlementOptions,
 ): readonly RecoverySettlementFact[] {
   return settleCoordinatorRecoveryItemWithProvenance(item, options, {
-    fault: (status) => ({ namespace: status.backendNamespace }),
-    terminal: (status) => ({ namespace: status.backendNamespace }),
+    fault: (status) => ({ namespace: status.backendNamespace ?? undefined }),
+    terminal: (status) => ({ namespace: status.backendNamespace ?? undefined }),
   });
 }
 
@@ -242,7 +242,7 @@ export function createRecoveryCoordinator(
     source: (options) => coordinatorJobRecoverySource(progressStore.getDb(), options),
     settleCoordinatorRecoveryItem,
   });
-  const { runCoordinatorWalk, settleClaim, settleFault, settleUnexpectedRecoveryFailure } = recoveryWalk;
+  const { runCoordinatorWalk, settleFault, settleUnexpectedRecoveryFailure } = recoveryWalk;
 
   const recoveryAdoption = createRecoveryAdoptionFor(context, lifecycle, recoveryWalk);
 
@@ -255,7 +255,6 @@ export function createRecoveryCoordinator(
     recoveryAdoption,
     providerOperationStartupOwnership,
     runCoordinatorWalk,
-    settleClaim,
     settleFault,
     settleUnexpectedRecoveryFailure,
     maybeReleaseRecoveryRegistry,

@@ -1,3 +1,4 @@
+import { waitContinuationCommand, waitContinuationShell, type WaitContinuationMode } from './format/wait.js';
 import { ZodError } from 'zod';
 import { BackendToolHttpError } from '../transport/http/errors.js';
 import { TransientHttpError } from '../infra/http-errors.js';
@@ -43,7 +44,12 @@ function waitSubscriptionStatusCode(body: Record<string, unknown>): number {
  * A same-build coordinator accepts every wait request this CLI forms and emits only events it reads, so a rejected
  * request shape or an unreadable event means the coordinator is another build; retrying cannot change that.
  */
-export function mapWaitSubscriptionError(error: unknown): unknown {
+export function mapWaitSubscriptionError(error: unknown, mode: WaitContinuationMode = 'bounded'): unknown {
+  if (error instanceof BackendToolHttpError && isRecord(error.body)) {
+    const body = withAdmissionRemedy(error.body, mode);
+    if (body !== error.body && typeof body.remediation === 'string')
+      return new BackendToolHttpError(`${error.message} ${body.remediation}`, error.statusCode, body);
+  }
   if (error instanceof ZodError) return new WaitBuildMismatchError();
   if (
     error instanceof IpcRpcError &&
@@ -59,5 +65,25 @@ export function mapWaitSubscriptionError(error: unknown): unknown {
     return new TransientHttpError(503, error.cause.message);
   }
 
-  return new BackendToolHttpError(error.cause.message, waitSubscriptionStatusCode(error.cause), error.cause);
+  const body = withAdmissionRemedy(error.cause, mode);
+  return new BackendToolHttpError(
+    typeof body.remediation === 'string' ? `${error.cause.message} ${body.remediation}` : error.cause.message,
+    waitSubscriptionStatusCode(body),
+    body,
+  );
+}
+
+function withAdmissionRemedy(body: Record<string, unknown>, mode: WaitContinuationMode): Record<string, unknown> {
+  const remedy = body.remedy;
+  if (
+    !isRecord(remedy) ||
+    remedy.kind !== 'fresh-wait' ||
+    !Array.isArray(remedy.jobIds) ||
+    !remedy.jobIds.every((id): id is string => typeof id === 'string')
+  )
+    return body;
+  return {
+    ...body,
+    remediation: `Run ${waitContinuationCommand(remedy.jobIds, null, mode)}${waitContinuationShell(mode)} to admit a fresh wait. Already-delivered results may print again.`,
+  };
 }

@@ -1,211 +1,136 @@
 import { CoralSetupError } from '../runtime/errors.js';
-import { sessionContinuationLeaseClaimedBodySchema } from '../sessions/event-bodies.js';
-import { decodeBody } from '../store/body-codec.js';
 import type { DomainAppendValidator } from '../store/reducers.js';
-import { jobLaunchRequestBodySchema } from '../jobs/launch.js';
-import { workflowLifecycleSchema, workflowTerminalLifecycleSchema } from './lifecycle.js';
-import { readProjectionJobRows } from '../jobs/projection-row.js';
-
-const TERMINAL_LIFECYCLES: ReadonlySet<string> = new Set(workflowTerminalLifecycleSchema.options);
-
-type WorkflowSlotHead = { jobId: string; sessionId: string; generation: number; terminal: boolean };
-
-function slotChainError(jobId: string, reason: string, context: Record<string, unknown>): CoralSetupError {
-  return new CoralSetupError({
-    code: 'workflow_slot_chain_invalid',
-    userMessage: `Workflow child '${jobId}' violates the durable slot-attempt chain: ${reason}.`,
-    remediation: 'Launch exactly generation 0 first, then replace only the current terminal generation.',
-    context,
-  });
-}
+import type { CoralEventInput } from '../store/envelope.js';
+import { jobOpenedBodySchema, jobExecutionRequestedBodySchema, type JobOpenedBody } from '../jobs/launch.js';
+import { readJobOpened } from '../jobs/execution-journal.js';
+import { workflowLifecycleSchema } from './lifecycle.js';
+import { workflowPlanSchema } from './plan.js';
 
 export const validateWorkflowJobAuthority: DomainAppendValidator = (ctx, inputs) => {
-  const declaredInBatch = new Set(
-    inputs.filter((input) => input.type === 'workflow.plan.declared').map((input) => input.stream.id),
+  const candidates = inputs.filter(
+    (input) => input.stream.kind === 'job' && (input.type === 'job.opened' || input.type === 'job.execution.requested'),
   );
-  const terminalInBatch = new Map<string, string>();
-  const replacementClaims = new Map<string, ReturnType<typeof sessionContinuationLeaseClaimedBodySchema.parse>>();
-  const heads = new Map<string, WorkflowSlotHead | null>();
+  if (candidates.length === 0) return;
+  const opened = new Map<string, JobOpenedBody>();
+  for (const input of candidates) {
+    const job =
+      input.type === 'job.opened'
+        ? jobOpenedBodySchema.parse(input.body)
+        : (opened.get(input.stream.id) ?? readJobOpened(ctx.db, input.stream.id, ctx.readCtx));
+    if (job !== null) opened.set(input.stream.id, job);
+  }
+  if (![...opened.values()].some((job) => job.owner.kind === 'workflow')) return;
+  const authority = new WorkflowJobAuthority(ctx, inputs, opened);
+  for (const input of inputs) authority.apply(input);
+};
 
-  for (const input of inputs) {
-    if (input.type === 'workflow.completed') {
-      const body = workflowTerminalLifecycleSchema.parse(
-        typeof input.body === 'object' && input.body !== null
-          ? (input.body as { outcome?: unknown }).outcome
-          : undefined,
-      );
-      terminalInBatch.set(input.stream.id, body);
-    } else if (input.type === 'session.continuation_lease.claimed') {
-      const body = sessionContinuationLeaseClaimedBodySchema.parse(input.body);
-      replacementClaims.set(body.lease.resumedJobId, body);
+type WorkflowAppendContext = Parameters<DomainAppendValidator>[0];
+
+class WorkflowJobAuthority {
+  private readonly declared = new Map<string, ReturnType<typeof workflowPlanSchema.parse>>();
+  private readonly closing: Set<string>;
+  private readonly slots = new Map<string, string>();
+  private readonly ctx: WorkflowAppendContext;
+  private readonly opened: Map<string, JobOpenedBody>;
+
+  constructor(ctx: WorkflowAppendContext, inputs: readonly CoralEventInput[], opened: Map<string, JobOpenedBody>) {
+    this.ctx = ctx;
+    this.opened = opened;
+    this.closing = new Set(
+      inputs
+        .filter((input) => input.stream.kind === 'workflow' && input.type === 'workflow.completed')
+        .map((input) => input.stream.id),
+    );
+  }
+
+  apply(input: CoralEventInput): void {
+    if (input.type === 'workflow.plan.declared' && input.stream.kind === 'workflow') {
+      const { plan } = input.body as { plan: unknown };
+      this.declared.set(input.stream.id, workflowPlanSchema.parse(plan));
+    } else if (input.type === 'job.opened') {
+      const job = jobOpenedBodySchema.parse(input.body);
+      this.opened.set(input.stream.id, job);
+      this.reserveSlot(input.stream.id, job);
+    } else if (input.type === 'job.execution.requested') {
+      this.validateRequest(input);
     }
   }
 
-  const workflowRow = (workflowId: string): { lifecycle: string } | undefined =>
-    ctx.db
-      .prepare<[string], { lifecycle: string }>('SELECT lifecycle FROM projection_workflows WHERE workflow_id = ?')
+  private jobForSlot(workflowId: string, slot: string | undefined): string | undefined {
+    const key = `${workflowId}\0${slot}`;
+    return (
+      this.slots.get(key) ??
+      this.ctx.db
+        .prepare<
+          [string, string | null],
+          { job_id: string }
+        >('SELECT job_id FROM projection_jobs WHERE parent_workflow_job_id = ? AND workflow_slot = ?')
+        .get(workflowId, slot ?? null)?.job_id
+    );
+  }
+
+  private reserveSlot(jobId: string, job: JobOpenedBody): void {
+    if (job.jobKind !== 'provider' || job.owner.kind !== 'workflow') return;
+    const key = `${job.owner.id}\0${job.workflowSlotId}`;
+    const previous = this.jobForSlot(job.owner.id, job.workflowSlotId);
+    if (previous !== undefined && previous !== jobId) {
+      throw new CoralSetupError({
+        code: 'workflow_slot_job_conflict',
+        userMessage: `Workflow slot '${job.workflowSlotId}' already names job '${previous}'.`,
+        remediation: 'Continue the slot’s existing job.',
+      });
+    }
+    this.slots.set(key, jobId);
+  }
+
+  private validateRequest(input: CoralEventInput): void {
+    const request = jobExecutionRequestedBodySchema.parse(input.body);
+    const job = this.opened.get(input.stream.id) ?? readJobOpened(this.ctx.db, input.stream.id, this.ctx.readCtx);
+    if (job === null || job.owner.kind !== 'workflow') return;
+    const workflowId = job.owner.id;
+    const plan = this.requireOpenPlan(workflowId);
+    if (job.jobKind === 'workflow' && request.execution === 1) return;
+    if (
+      job.jobKind !== 'provider' ||
+      !plan.slots.some((slot) => slot.slotId === job.workflowSlotId) ||
+      this.jobForSlot(workflowId, job.workflowSlotId) !== input.stream.id
+    ) {
+      throw new CoralSetupError({
+        code: 'workflow_slot_job_mismatch',
+        userMessage: `Workflow '${workflowId}' does not name job '${input.stream.id}' in its slot.`,
+        remediation: 'Continue only the job bound to the owning workflow slot.',
+      });
+    }
+  }
+
+  private requireOpenPlan(workflowId: string): ReturnType<typeof workflowPlanSchema.parse> {
+    const row = this.ctx.db
+      .prepare<
+        [string],
+        { lifecycle: string; plan: string }
+      >('SELECT lifecycle, plan FROM projection_workflows WHERE workflow_id = ?')
       .get(workflowId);
-
-  const readHead = (workflowId: string, slotId: string): WorkflowSlotHead | null => {
-    const key = `${workflowId}\0${slotId}`;
-    if (heads.has(key)) return heads.get(key) ?? null;
-    const rows = readProjectionJobRows(ctx.db)
-      .filter((row) => row.parent_workflow_job_id === workflowId && row.workflow_slot === slotId)
-      .sort((left, right) => (left.workflow_slot_generation ?? 0) - (right.workflow_slot_generation ?? 0));
-    let expectedGeneration = 0;
-    let predecessor: string | null = null;
-    let head: WorkflowSlotHead | null = null;
-    for (const row of rows) {
-      if (row.workflow_slot_generation !== expectedGeneration || row.session_id === null) {
-        throw slotChainError(row.job_id, 'stored generations are incomplete or unscoped', {
-          workflowId,
-          slotId,
-          expectedGeneration,
-          actualGeneration: row.workflow_slot_generation,
-        });
-      }
-      const launchRow = ctx.db
-        .prepare<[string], { type: string; stream_kind: 'job'; body: Uint8Array | Buffer }>(
-          `SELECT type, stream_kind, body FROM events
-            WHERE stream_id = ? AND type = 'job.launch.requested' LIMIT 1`,
-        )
-        .get(row.job_id);
-      if (launchRow === undefined)
-        throw slotChainError(row.job_id, 'projection has no launch event', { workflowId, slotId });
-      const launch = decodeBody(launchRow, jobLaunchRequestBodySchema, ctx.readCtx);
-      const replaces = launch.jobKind === 'provider' ? launch.replacesWorkflowJobId : undefined;
-      if (
-        (expectedGeneration === 0 && replaces !== undefined) ||
-        (expectedGeneration > 0 && replaces !== predecessor)
-      ) {
-        throw slotChainError(row.job_id, 'stored predecessor link is invalid', {
-          workflowId,
-          slotId,
-          generation: expectedGeneration,
-          expectedPredecessor: predecessor,
-          actualPredecessor: replaces,
-        });
-      }
-      head = {
-        jobId: row.job_id,
-        sessionId: row.session_id,
-        generation: expectedGeneration,
-        terminal: row.terminal !== null,
-      };
-      predecessor = row.job_id;
-      expectedGeneration += 1;
-    }
-    heads.set(key, head);
-    return head;
-  };
-
-  for (const input of inputs) {
-    if (input.type !== 'job.launch.requested') continue;
-    const launch = jobLaunchRequestBodySchema.parse(input.body);
-
-    if (launch.jobKind === 'workflow') {
-      const exists = declaredInBatch.has(input.stream.id) || workflowRow(input.stream.id) !== undefined;
-      if (!exists) {
-        throw new CoralSetupError({
-          code: 'job_owner_missing',
-          userMessage: `Workflow owner '${input.stream.id}' does not exist.`,
-          remediation: 'Declare the workflow aggregate before launching its workflow job.',
-        });
-      }
-      continue;
-    }
-    if (launch.jobKind !== 'provider' || launch.owner.kind !== 'workflow') continue;
-
-    const row = declaredInBatch.has(launch.owner.id) ? { lifecycle: 'active' } : workflowRow(launch.owner.id);
-    if (row === undefined) {
+    const plan =
+      this.declared.get(workflowId) ?? (row === undefined ? undefined : workflowPlanSchema.parse(JSON.parse(row.plan)));
+    const lifecycle = this.declared.has(workflowId)
+      ? 'active'
+      : row === undefined
+        ? undefined
+        : workflowLifecycleSchema.parse(row.lifecycle);
+    if (plan === undefined || lifecycle === undefined) {
       throw new CoralSetupError({
         code: 'job_owner_missing',
-        userMessage: `Workflow owner '${launch.owner.id}' does not exist.`,
-        remediation: 'Declare the workflow aggregate before launching its child job.',
+        userMessage: `Workflow owner '${workflowId}' does not exist.`,
+        remediation: 'Declare the owning workflow before requesting execution.',
       });
     }
-    const storedLifecycle = workflowLifecycleSchema.parse(row.lifecycle);
-    const terminalLifecycle = terminalInBatch.get(launch.owner.id);
-    if (terminalLifecycle !== undefined || TERMINAL_LIFECYCLES.has(storedLifecycle)) {
+    if (this.closing.has(workflowId) || (lifecycle !== 'active' && lifecycle !== 'draining')) {
       throw new CoralSetupError({
         code: 'workflow_owner_terminal',
-        userMessage: `Workflow owner '${launch.owner.id}' is already ${terminalLifecycle ?? storedLifecycle}.`,
-        remediation: 'Do not launch child jobs after the workflow reaches a terminal lifecycle.',
-        context: {
-          workflowId: launch.owner.id,
-          lifecycle: terminalLifecycle ?? storedLifecycle,
-          requestedJobId: input.stream.id,
-        },
+        userMessage: `Workflow owner '${workflowId}' is closed.`,
+        remediation: 'Request execution only while the owning workflow is open.',
       });
     }
-
-    const slotId = input.refs?.workflowSlotId;
-    if (slotId === undefined || launch.workflowSlotGeneration === undefined) {
-      throw slotChainError(input.stream.id, 'workflow child generation is required', {
-        workflowId: launch.owner.id,
-        slotId,
-      });
-    }
-    const key = `${launch.owner.id}\0${slotId}`;
-    const head = readHead(launch.owner.id, slotId);
-    if (head === null) {
-      if (
-        launch.workflowSlotGeneration !== 0 ||
-        launch.replacesWorkflowJobId !== undefined ||
-        replacementClaims.has(input.stream.id)
-      ) {
-        throw slotChainError(input.stream.id, 'first child must be generation 0 without a predecessor', {
-          workflowId: launch.owner.id,
-          slotId,
-          generation: launch.workflowSlotGeneration,
-          predecessor: launch.replacesWorkflowJobId,
-        });
-      }
-    } else {
-      if (!head.terminal) {
-        throw slotChainError(input.stream.id, 'current child is still nonterminal', {
-          workflowId: launch.owner.id,
-          slotId,
-          currentJobId: head.jobId,
-        });
-      }
-      if (
-        launch.workflowSlotGeneration !== head.generation + 1 ||
-        launch.replacesWorkflowJobId !== head.jobId ||
-        launch.sessionId !== head.sessionId
-      ) {
-        throw slotChainError(input.stream.id, 'replacement generation or predecessor does not match', {
-          workflowId: launch.owner.id,
-          slotId,
-          currentJobId: head.jobId,
-          currentGeneration: head.generation,
-          generation: launch.workflowSlotGeneration,
-          predecessor: launch.replacesWorkflowJobId,
-        });
-      }
-      const claim = replacementClaims.get(input.stream.id);
-      if (
-        claim === undefined ||
-        claim.sessionId !== launch.sessionId ||
-        claim.lease.staleJobId !== head.jobId ||
-        claim.lease.resumedJobId !== input.stream.id ||
-        claim.lease.workflowId !== launch.owner.id ||
-        claim.lease.workflowSlotId !== slotId ||
-        claim.lease.replacementGeneration !== launch.workflowSlotGeneration
-      ) {
-        throw slotChainError(input.stream.id, 'replacement has no exact claimed continuation intent', {
-          workflowId: launch.owner.id,
-          slotId,
-          sessionId: launch.sessionId,
-          generation: launch.workflowSlotGeneration,
-        });
-      }
-    }
-    heads.set(key, {
-      jobId: input.stream.id,
-      sessionId: launch.sessionId,
-      generation: launch.workflowSlotGeneration,
-      terminal: false,
-    });
+    return plan;
   }
-};
+}

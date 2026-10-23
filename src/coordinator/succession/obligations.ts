@@ -12,7 +12,7 @@ export const REQUIRED_SUCCESSION_OWNERS = [
   'workflow',
   'kb-daemon',
   'discuss',
-  'session-continuation',
+  'conversation-retention',
 ] as const;
 
 export type SuccessionOwnerId = (typeof REQUIRED_SUCCESSION_OWNERS)[number];
@@ -28,9 +28,9 @@ type ShutdownObligationRegistryKey =
 
 const _SHUTDOWN_OBLIGATION_OWNERS = {
   'inflight drain': 'launch-admission',
-  'server connection close': 'session-continuation',
-  'stream response close': 'session-continuation',
-  'server close': 'session-continuation',
+  'server connection close': 'launch-admission',
+  'stream response close': 'launch-admission',
+  'server close': 'launch-admission',
   'recovery coordinator teardown': 'recovery',
   'ownership checker teardown': 'recovery',
   'kb child shutdown': 'kb-daemon',
@@ -49,7 +49,7 @@ const _SHUTDOWN_OBLIGATION_OWNERS = {
   'lifecycle reactor dispose': 'recovery',
   'store epoch sweep cancellation': 'recovery',
   'succession attempt settlement': 'recovery',
-  'succession connection handover': 'session-continuation',
+  'succession connection handover': 'launch-admission',
   'provider proxy lifecycle fatal incident': 'provider-proxy-sets',
 } as const satisfies Record<ShutdownObligationRegistryKey, SuccessionOwnerId>;
 

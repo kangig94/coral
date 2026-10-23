@@ -1,3 +1,7 @@
+import { jobSendOutcomeSchema } from '../jobs/send.js';
+import { proxyOperationSendResultSchema } from '../provider-proxy/protocol.js';
+import { WaitSessionError } from '../jobs/wait/session.js';
+import { waitExecutionSelectionsSchema } from '../jobs/wait/execution-selection.js';
 import type { WaitCursor, WaitSnapshotRequest, CanonicalWaitStreamRequest } from '../jobs/wait/contract.js';
 import { raceWithSignal } from '../infra/promise-signal.js';
 import { randomUUID } from 'node:crypto';
@@ -54,7 +58,6 @@ import {
   type ProviderHostAdministrationErrorCode,
 } from '../providers/host-administration-vocabulary.js';
 import { encodeHostRef } from '../providers/host-ref-codec.js';
-import { proxyOperationSendResultSchema } from '../provider-proxy/protocol.js';
 import type { z } from 'zod';
 
 type RetentionPolicy = NonNullable<JobLaunchRequest['retention']>;
@@ -162,7 +165,6 @@ function stripTransportContextKeys<T extends Record<string, unknown>>(
   | 'claudeModelCap'
   | 'claudeTransport'
   | 'jobId'
-  | 'sessionId'
   | 'networkEnv'
   | 'coralEnv'
   | 'providerScope'
@@ -174,7 +176,6 @@ function stripTransportContextKeys<T extends Record<string, unknown>>(
     claudeModelCap: _claudeModelCap,
     claudeTransport: _claudeTransport,
     jobId: _jobId,
-    sessionId: _sessionId,
     networkEnv: _networkEnv,
     coralEnv: _coralEnv,
     providerScope: _providerScope,
@@ -186,7 +187,6 @@ function stripTransportContextKeys<T extends Record<string, unknown>>(
     claudeModelCap?: unknown;
     claudeTransport?: unknown;
     jobId?: unknown;
-    sessionId?: unknown;
     networkEnv?: unknown;
     coralEnv?: unknown;
     providerScope?: unknown;
@@ -1058,12 +1058,16 @@ async function executeJobsSendCatalogRequest({
   const parsed = request as z.infer<typeof jobSendSchema>;
   const callerRoot = canonicalRequest.projectRoot;
   if (callerRoot === undefined) return unaryHttp(domainResultToHttp(invalidRequestResult()));
-  const ctx = buildQueryContext(callerRoot, rpcPorts, principal);
+  const ctx = buildBodyInvocationContext(parsed, callerRoot, rpcPorts, principal);
+  if (ctx === null) return unaryHttp(domainResultToHttp(invalidRequestResult()));
   try {
-    const result = proxyOperationSendResultSchema.parse(
-      await rpcPorts.jobs.send({ ...parsed, projectRoot: callerRoot }, ctx),
-    );
-    return unary(result.state === 'delivered' ? { state: 'delivered' } : result);
+    const raw = await rpcPorts.jobs.send({ ...parsed, projectRoot: callerRoot }, ctx);
+    if (raw.state === 'delivered') {
+      proxyOperationSendResultSchema.parse(raw);
+      return unary({ state: 'delivered' });
+    }
+    const result = jobSendOutcomeSchema.parse(raw);
+    return unary(result);
   } catch (error: unknown) {
     // Once issued, a send failure cannot prove that the input was not delivered or authorize a retry.
     const reason = error instanceof Error ? error.message : String(error);
@@ -1143,12 +1147,16 @@ async function executeJobsDetailCatalogRequest({
   if ('kind' in detail && detail.kind === 'pre-epoch-history') {
     return unknownJobsAnswer(rpcPorts, [parsed.jobId]);
   }
+  const errorDetail = {
+    epochKey: detail.epochKey,
+    ...(detail.sendRefusal === undefined ? {} : { sendRefusal: detail.sendRefusal }),
+  };
   if ('kind' in detail && detail.kind === 'outcome-unreadable')
     return unary(
       {
         code: 'job_outcome_unreadable',
         message: `Job ${parsed.jobId}: outcome-unreadable. ${detail.message ?? 'The source cannot be read; this coordinator will not re-read it before its next start.'}`,
-        detail: { epochKey: detail.epochKey },
+        detail: errorDetail,
       },
       409,
     );
@@ -1157,7 +1165,7 @@ async function executeJobsDetailCatalogRequest({
       {
         code: 'job_outcome_unrecoverable',
         message: `Job ${parsed.jobId} never reached a recorded outcome in a superseded store epoch that nothing will write again, so no outcome will ever be recorded; retrying will not change that.`,
-        detail: { epochKey: detail.epochKey },
+        detail: errorDetail,
       },
       409,
     );
@@ -1167,7 +1175,7 @@ async function executeJobsDetailCatalogRequest({
       {
         code: 'job_unresolved',
         message: `Job ${parsed.jobId} remains unresolved; a scheduled maintenance retry or the next coordinator start will re-read its epoch.`,
-        detail: { epochKey: detail.epochKey },
+        detail: errorDetail,
       },
       409,
     );
@@ -1177,11 +1185,20 @@ async function executeJobsDetailCatalogRequest({
       {
         code: 'job_detail_unreadable',
         message: `Job ${parsed.jobId} has a recorded detail in a form this Coral build cannot read, so this build cannot show its outcome; retrying with this build will not change that.`,
-        detail: { epochKey: detail.epochKey },
+        detail: errorDetail,
       },
       409,
     );
   }
+  if ('executionAddressing' in detail && detail.executionAddressing === 'lifetime')
+    return unary({
+      ...detail,
+      sendRefusal: {
+        state: 'refused',
+        code: 'pre_generation_job',
+        reason: 'The job predates the current store format generation and cannot be continued.',
+      },
+    });
   return unary(detail);
 }
 
@@ -1200,16 +1217,36 @@ async function executeJobsWaitCatalogRequest({
   if (waitRequestFromAnotherBuild(parsed)) return unary(WAIT_BUILD_MISMATCH, 409);
   const decoded = parsed.cursor === null ? undefined : decodeWaitCursor(parsed.cursor);
   if (decoded?.kind === 'rejected') return unary(decoded.error, 400);
+  const selections = waitExecutionSelectionsSchema.optional().safeParse(parsed.executionSelections);
+  if (!selections.success)
+    return unary(
+      {
+        code: 'wait_selection_invalid',
+        message: 'Execution selection state is malformed; use the complete state from a continuation.',
+        remedy: { kind: 'fresh-wait', jobIds: parsed.jobIds },
+      },
+      400,
+    );
   const waitRequest: CanonicalWaitStreamRequest = {
     jobIds: parsed.jobIds,
     projectRoot: parsed.projectRoot,
     ...(parsed.timeoutSeconds === undefined ? {} : { timeoutSeconds: parsed.timeoutSeconds }),
     ...(decoded === undefined ? {} : { cursor: parsed.cursor as WaitCursor }),
     drainProgress: parsed.drainProgress === true,
+    ...(selections.data === undefined ? {} : { executionSelections: selections.data }),
   };
   const callerRoot = canonicalRequest.projectRoot;
   if (callerRoot === undefined) return unaryHttp(domainResultToHttp(invalidRequestResult()));
-  const admissions = rpcPorts.jobs.admitWait(waitRequest);
+  let admissions;
+  try {
+    admissions = rpcPorts.jobs.admitWait(waitRequest);
+  } catch (error) {
+    if (!(error instanceof WaitSessionError)) throw error;
+    return unary(
+      { code: error.code, message: error.message, remedy: { kind: 'fresh-wait', jobIds: waitRequest.jobIds } },
+      400,
+    );
+  }
   const admittedRequest: CanonicalWaitStreamRequest = Object.assign(waitRequest, { admissions });
   return {
     kind: 'subscription',
@@ -1220,9 +1257,21 @@ async function executeJobsWaitCatalogRequest({
   };
 }
 
-function snapshotRequest(request: unknown): WaitSnapshotRequest | WaitCursorRejection {
+function snapshotRequest(
+  request: unknown,
+):
+  | WaitSnapshotRequest
+  | WaitCursorRejection
+  | { code: string; message: string; remedy: { kind: 'fresh-wait'; jobIds: string[] } } {
   const parsed = request as WaitSnapshotRequest & { cursor?: unknown };
-  if (parsed.cursor === undefined) return parsed;
+  const selections = waitExecutionSelectionsSchema.optional().safeParse(parsed.executionSelections);
+  if (!selections.success)
+    return {
+      code: 'wait_selection_invalid',
+      message: 'Execution selection state is malformed; use the complete state from a continuation.',
+      remedy: { kind: 'fresh-wait', jobIds: parsed.jobIds },
+    };
+  if (parsed.cursor === undefined) return { ...parsed, executionSelections: selections.data };
   const decoded = decodeWaitCursor(parsed.cursor);
   return decoded.kind === 'rejected' ? decoded.error : parsed;
 }
@@ -1251,7 +1300,15 @@ async function executeJobsCatalogRequest(context: AuthorizedCatalogRequest): Pro
     case 'jobs.wait.snapshot': {
       const snapshot = snapshotRequest(context.request);
       if ('code' in snapshot) return Promise.resolve(unary(snapshot, 400));
-      return Promise.resolve(unary(context.rpcPorts.jobs.snapshot(withAbortSignal(snapshot, context.abortSignal))));
+      try {
+        return Promise.resolve(unary(context.rpcPorts.jobs.snapshot(withAbortSignal(snapshot, context.abortSignal))));
+      } catch (error) {
+        if (!(error instanceof WaitSessionError)) throw error;
+        return unary(
+          { code: error.code, message: error.message, remedy: { kind: 'fresh-wait', jobIds: snapshot.jobIds } },
+          400,
+        );
+      }
     }
     case 'jobs.wait':
       return executeJobsWaitCatalogRequest(context);

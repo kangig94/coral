@@ -1,19 +1,19 @@
+import type { EventsRow } from '../../store/schema.js';
 import type { Database } from '../../store/db.js';
 import {
   commitWithinOpenTransaction,
   type AppendContext,
   type AppendedEvent,
-  type CommitEventsFn,
   type PostCommitObserver,
 } from '../../store/append.js';
+import type { ExecutionFinisher } from '../../jobs/finishing.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
-import { appendJobTerminalRecorded } from '../../jobs/terminal/recording.js';
+import { appendJobExecutionOutcomeAccepted } from '../../jobs/terminal/recording.js';
 import { buildJobEventRefs } from '../../jobs/refs.js';
 import { progressTimingFromProjection } from '../../jobs/progress-timing.js';
 import {
   applyProviderEventAtSeq,
-  ProviderEventDurableStateUncommittedError,
   type ApplyProviderEventBody,
   type ProviderEventEffectPort,
   type ProviderOperationEventIdentity,
@@ -22,10 +22,16 @@ import type { ProviderBindingCatalog } from '../../providers/catalog.js';
 import type { ProviderInterruptionCause, ProviderStopCause } from '../../providers/contract.js';
 import { providerProxyRekeyRefusalEvent } from '../../providers/proxy-failure.js';
 import { isRecord } from '../../infra/json.js';
-import { SessionManager } from '../../sessions/shell.js';
-import { releaseSessionJobClaim, type SessionReleasedEmitter } from '../../sessions/job-release.js';
-import type { SessionContinuityState } from '../../sessions/fault.js';
-import { appendProviderTerminalInCommit, appendSessionInterruptedTerminalInCommit } from './terminal-materializer.js';
+import type { SessionContinuityState } from '../../jobs/conversation/fault.js';
+import { decodeBody } from '../../store/body-codec.js';
+import { readJobOpened } from '../../jobs/execution-journal.js';
+import { jobExecutionRequestedBodySchema } from '../../jobs/launch.js';
+import { jobContinuityCheckpointedBodySchema } from '../../jobs/event-bodies.js';
+import { providerArtifactIdentityKey } from '../../providers/artifact-identity.js';
+import {
+  appendProviderTerminalInCommit,
+  appendConversationInterruptedTerminalInCommit,
+} from './terminal-materializer.js';
 import type { ProviderEventHandler } from '../../provider-proxy/control-client.js';
 import type { ProviderEventRequest, ProviderEventResult } from '../../provider-proxy/protocol.js';
 import {
@@ -36,32 +42,6 @@ import {
 import { providerOperationRecordSchema, type ProviderOperationRecord } from '../../store/provider-operation-record.js';
 import { notifyProviderOperationSettlementPending } from './provider-operation-reconciler.js';
 
-/**
- * The coordinator's real `ProviderEventEffectPort` (W2.3, W2.5): the store-backed implementation of the seam
- * `applyProviderEventAtSeq` (`jobs/provider-event.ts`) is written against, and the RPC adapter that turns
- * `provider.event.v1` into a call on it. Lives in `coordinator/services/` — the same exemption
- * `terminal-materializer.ts` uses — because it composes three domains at once (jobs progress/terminal,
- * sessions continuity/claim, provider binding rehydration), which `coordinator/live/**` may not do freely
- * (`architecture-layering.test.ts`'s coordinator-contract-entrypoint rule); `jobs/provider-event.ts` itself
- * stays domain-pure and imports none of this.
- */
-
-/**
- * `applyProviderEventAtSeq`'s opaque `Tx`. Manual `BEGIN IMMEDIATE`/`COMMIT`/`ROLLBACK` on `db`, not
- * `store/append.ts`'s `commit()` — `commit()` cannot nest (SQLite refuses a `BEGIN` inside an open
- * transaction), so `runInTransaction` below opens the one transaction the whole call runs in and every effect
- * composes into it through `commitWithinOpenTransaction`, `checkpointJobContinuityAtomic`/
- * `recordArtifactHandleAtomic` on a `SessionManager` bound to an in-transaction `CommitEventsFn`, or
- * `releaseSessionJobClaim` given that same adapter.
- *
- * `pendingInterruption` exists only because `applyProviderEventAtSeq` calls `appendSessionInterrupted` and
- * `appendJobTerminal` as two separate awaited port calls, but a truthful interrupted terminal is one
- * `causeRef`-linked commit: the terminal's outcome must reference the *same* `CauseRefToken` the interruption
- * fault minted, and tokens do not resolve across two separate `commitWithinOpenTransaction` calls (each
- * reserves its own `seq` batch). So `appendSessionInterrupted` only records the trigger on `tx`, and
- * `appendJobTerminal`'s `interrupted` branch performs the one combined append
- * (`appendSessionInterruptedTerminalInCommit`) that actually needs it.
- */
 interface PortTx {
   readonly db: Database;
   /** Every batch committed directly on a job stream inside this transaction, handed on once it commits. */
@@ -70,6 +50,7 @@ interface PortTx {
 }
 
 export interface ProviderEventApplicationDeps {
+  readonly executionFinisher: ExecutionFinisher;
   readonly db: Database;
   readonly progressStore: Pick<JobProgressStore, 'readStatus' | 'readLaunchProjection' | 'readRuntimeProjection'>;
   /** The same `AppendContext` (reducers/bodyCodec/providers/now) every other journal writer in this process
@@ -78,26 +59,8 @@ export interface ProviderEventApplicationDeps {
   readonly appendContext: AppendContext;
   readonly providerRegistry: Pick<ProviderBindingCatalog, 'rehydrateBinding' | 'renderBindingFailure'>;
   readonly runtime: Runtime;
-  readonly emitSessionReleased: SessionReleasedEmitter;
-  /**
-   * The stop cause the coordinator most recently sent as `operation.stop.v1` for this operation. The wire
-   * `suspended` event carries no cause of its own (`{ kind: 'suspended', reason: 'interrupt_unconfirmed' }`),
-   * so this is the only way a `suspended` event learns whether it followed a deliberate abort or a
-   * restart/handoff that owes the job a truthful `session.interrupted` — the caller that issues
-   * `operation.stop.v1` (the operation-activation orchestrator) is the one party that knows which. `null`
-   * means no stop was ever recorded for this operation, which is a protocol violation, not a default to guess
-   * through.
-   */
+  /** A suspended event must use the durably recorded stop cause and may not infer one. */
   readonly recordedStopCauseFor: (identity: ProviderOperationEventIdentity) => ProviderStopCause | null;
-  /**
-   * Where a proxied operation's terminal (or interrupting suspension) reports back once it has durably
-   * committed, so whatever registered the operation can let go of the in-process bookkeeping it still holds
-   * for that job — its admission slot above all. `settled` receives the full identity, not just `jobId`,
-   * because the registry and proxy ledger are both keyed by the
-   * `(jobId, operationId)` pair. Composed in `coordinator/index.ts` beside where this whole
-   * handler is built, from the same `LocalOperationRegistry` that also answers `recordedStopCauseFor` above.
-   */
-  readonly operations: { settled(identity: ProviderOperationEventIdentity): void };
   /**
    * Receives the job-stream batches this handler commits, only after `COMMIT`. This handler commits on the
    * raw database and reaches no other post-commit observer, so a job terminal it records owes its effects to
@@ -106,43 +69,43 @@ export interface ProviderEventApplicationDeps {
   readonly observeCommitted: PostCommitObserver;
 }
 
-function commitEventsWithinTx(db: Database, ctx: AppendContext): CommitEventsFn {
-  return (cb) => commitWithinOpenTransaction(db, cb, ctx);
-}
-
-function sessionManagerWithinTx(deps: ProviderEventApplicationDeps, db: Database, projectRoot: string): SessionManager {
-  return SessionManager.forProduction(
-    projectRoot,
-    deps.runtime,
-    commitEventsWithinTx(db, deps.appendContext),
-    deps.emitSessionReleased,
-    { db },
-  );
-}
-
-interface JobEventContext {
-  readonly sessionId: string;
-  readonly provider: string;
-  readonly projectRoot: string;
-  readonly namespace?: string;
-  readonly project?: string;
-}
-
-/** Every effect below needs the job's current session/provider/scope facts; none of it is carried on
- *  `ProviderOperationEventIdentity` itself, so every port method re-derives it from the store. A job with no
- *  active provider session to apply against cannot be fixed by a replay, so this throws rather than asking
- *  for one. */
-function resolveJobContext(deps: ProviderEventApplicationDeps, jobId: string): JobEventContext {
-  const status = deps.progressStore.readStatus(jobId);
-  if (status === null || status.sessionId === null || status.provider === null) {
-    throw new Error(`Provider event for job '${jobId}' has no active provider session to apply against.`);
-  }
+function eventReadContext(deps: ProviderEventApplicationDeps) {
   return {
-    sessionId: status.sessionId,
-    provider: status.provider,
-    projectRoot: status.projectRoot,
-    namespace: status.backendNamespace,
-    project: status.projectRoot,
+    schemas: deps.appendContext.reducers.schemas,
+    streamKinds: deps.appendContext.reducers.streamKinds,
+    bodyCodec: deps.appendContext.bodyCodec,
+  };
+}
+
+function resolveJobContext(deps: ProviderEventApplicationDeps, identity: ProviderOperationEventIdentity) {
+  const jobId = identity.jobId;
+  const readCtx = eventReadContext(deps);
+  const record = requireJournalRecord(deps.db, identity);
+  const job = readJobOpened(deps.db, jobId, readCtx);
+  const row = deps.db
+    .prepare<
+      [number, string],
+      EventsRow
+    >("SELECT * FROM events WHERE seq = ? AND stream_kind = 'job' AND stream_id = ? AND type = 'job.execution.requested'")
+    .get(record.jobLaunchEventSeq, jobId);
+  const request = row === undefined ? null : decodeBody(row, jobExecutionRequestedBodySchema, readCtx);
+  const status = deps.progressStore.readStatus(jobId);
+  if (
+    job?.jobKind !== 'provider' ||
+    request === null ||
+    status?.execution !== request.execution ||
+    status.phase === 'completed' ||
+    status.phase === 'error' ||
+    status.phase === 'aborted'
+  )
+    throw new Error(`Provider operation '${identity.operationId}' does not own the open execution of '${jobId}'.`);
+  return {
+    execution: request.execution,
+    provider: job.conversation.provider,
+    binding: job.conversation.binding,
+    projectRoot: job.projectRoot,
+    namespace: request.backendNamespace,
+    project: job.projectRoot,
   };
 }
 
@@ -176,20 +139,16 @@ function updateJournalRecord(db: Database, expected: ProviderOperationRecord, ne
   }
 }
 
-/**
- * Whether the interrupted session's own continuity survives the interruption. This port applies durably and
- * synchronously — it cannot perform the host-reachability check W1.6's `verified`/`unavailable` distinction
- * depends on without a network round trip mid-commit, which would tie a durable write to a foreign process
- * being reachable. So it answers only the question the store itself can prove: whether a checkpoint exists
- * to preserve. A resumable, committed continuity survives (`pre_checkpoint_preserved`); the plan states the
- * other case directly ("No committed snapshot means continuity `unavailable`").
- */
-function derivedInterruptionContinuity(
-  session: Readonly<{ providerContinuity: unknown; conversationRef?: string }> | null,
-): SessionContinuityState {
-  return session !== null && session.providerContinuity !== null && session.conversationRef !== undefined
-    ? 'pre_checkpoint_preserved'
-    : 'unavailable';
+function derivedInterruptionContinuity(deps: ProviderEventApplicationDeps, jobId: string): SessionContinuityState {
+  const row = deps.db
+    .prepare<
+      [string],
+      { type: string; stream_kind: 'job'; body: Uint8Array }
+    >("SELECT type, stream_kind, body FROM events WHERE stream_kind = 'job' AND stream_id = ? AND type = 'job.continuity.checkpointed' ORDER BY seq DESC LIMIT 1")
+    .get(jobId);
+  if (row === undefined) return 'unavailable';
+  const { snapshot } = decodeBody(row, jobContinuityCheckpointedBodySchema, eventReadContext(deps));
+  return snapshot.conversationRef !== null ? 'pre_checkpoint_preserved' : 'unavailable';
 }
 
 /**
@@ -256,7 +215,9 @@ export function createStoreProviderEventEffectPort(
 
     verifyIdentity: async (tx, identity) => {
       const record = readJournalRecord(tx.db, identity);
-      return record?.phase === 'executing' || record?.phase === 'settlement-pending';
+      if (record?.phase !== 'executing' && record?.phase !== 'settlement-pending') return false;
+      resolveJobContext(deps, identity);
+      return true;
     },
 
     readWatermark: async (tx, identity) => {
@@ -282,7 +243,7 @@ export function createStoreProviderEventEffectPort(
     },
 
     appendProgress: async (tx, identity, _seq, body) => {
-      const ctx = resolveJobContext(deps, identity.jobId);
+      const ctx = resolveJobContext(deps, identity);
       const status = deps.progressStore.readStatus(identity.jobId);
       const launch = deps.progressStore.readLaunchProjection(identity.jobId);
       const runtimeProjection = deps.progressStore.readRuntimeProjection(identity.jobId);
@@ -296,67 +257,63 @@ export function createStoreProviderEventEffectPort(
       );
       commitInTx(tx, (c) => {
         c.append({
-          type: 'job.progress.emitted',
+          type: 'job.execution.progress',
           stream: { kind: 'job', id: identity.jobId },
           namespace: ctx.namespace,
           project: ctx.project,
-          refs: buildJobEventRefs({ jobId: identity.jobId, sessionId: ctx.sessionId }),
-          body: { kind: 'message', message: body.message, timing },
+          refs: buildJobEventRefs({ jobId: identity.jobId }),
+          body: { execution: ctx.execution, kind: 'message', message: body.message, timing },
         });
         return undefined;
       });
     },
 
-    appendSessionEvent: async (tx, identity, _seq, body) => {
-      const ctx = resolveJobContext(deps, identity.jobId);
-      const manager = sessionManagerWithinTx(deps, tx.db, ctx.projectRoot);
-      const session = manager.get(ctx.provider, ctx.sessionId);
-      if (session === null || session.activeJobId !== identity.jobId) {
-        throw new Error(`Job '${identity.jobId}' no longer holds the active claim on session '${ctx.sessionId}'.`);
-      }
-
+    appendConversationEvent: async (tx, identity, _seq, body) => {
+      const ctx = resolveJobContext(deps, identity);
       if (body.kind === 'continuity') {
-        const bound = deps.providerRegistry.rehydrateBinding(session.binding);
-        if (!bound.ok) {
-          throw new Error(
-            `Cannot rehydrate the provider binding for job '${identity.jobId}': ${deps.providerRegistry.renderBindingFailure(bound.failure)}`,
-          );
-        }
+        const bound = deps.providerRegistry.rehydrateBinding(ctx.binding);
+        if (!bound.ok) throw new Error(deps.providerRegistry.renderBindingFailure(bound.failure));
         const decoded = bound.value.decodeContinuity(body.providerContinuity);
-        if (!decoded.ok) {
-          throw new Error(
-            `Provider emitted invalid continuity for job '${identity.jobId}': ${deps.providerRegistry.renderBindingFailure(decoded.failure)}`,
-          );
-        }
-        const result = await manager.checkpointJobContinuityAtomic(ctx.sessionId, {
-          expectedActiveJobId: identity.jobId,
-          expectedVersion: session.version,
-          snapshot: {
-            conversationRef: body.conversationRef,
-            resumable: body.resumable,
-            providerContinuity: isRecord(decoded.value) ? decoded.value : null,
-          },
+        if (!decoded.ok) throw new Error(deps.providerRegistry.renderBindingFailure(decoded.failure));
+        commitInTx(tx, (c) => {
+          c.append({
+            type: 'job.continuity.checkpointed',
+            stream: { kind: 'job', id: identity.jobId },
+            body: {
+              execution: ctx.execution,
+              snapshot: {
+                conversationRef: body.conversationRef,
+                resumable: body.resumable,
+                providerContinuity: isRecord(decoded.value) ? decoded.value : null,
+              },
+            },
+          });
+          return undefined;
         });
-        if (!result.ok) throw new ProviderEventDurableStateUncommittedError();
-        return;
+      } else {
+        commitInTx(tx, (c) => {
+          c.append({
+            type: 'job.artifact.recorded',
+            stream: { kind: 'job', id: identity.jobId },
+            body: {
+              execution: ctx.execution,
+              provider: ctx.provider,
+              handle: body.handle,
+              identity: body.identity,
+              identityKey: providerArtifactIdentityKey(ctx.provider, body.identity),
+            },
+          });
+          return undefined;
+        });
       }
-
-      const result = await manager.recordArtifactHandleAtomic(ctx.sessionId, {
-        expectedActiveJobId: identity.jobId,
-        expectedVersion: session.version,
-        handle: body.handle,
-        identity: body.identity,
-        sourceJobId: identity.jobId,
-      });
-      if (!result.ok) throw new ProviderEventDurableStateUncommittedError();
     },
 
-    appendJobTerminal: async (tx, identity, _seq, disposition) => {
-      const ctx = resolveJobContext(deps, identity.jobId);
+    acceptExecutionOutcome: async (tx, identity, _seq, disposition) => {
+      const ctx = resolveJobContext(deps, identity);
       const durationMs = elapsedDurationMs(deps, identity.jobId);
       const options = {
         jobId: identity.jobId,
-        sessionId: ctx.sessionId,
+        execution: ctx.execution,
         namespace: ctx.namespace,
         project: ctx.project,
       };
@@ -371,7 +328,7 @@ export function createStoreProviderEventEffectPort(
 
       if (disposition.kind === 'abort') {
         commitInTx(tx, (c) => {
-          appendJobTerminalRecorded(c, {
+          appendJobExecutionOutcomeAccepted(c, {
             ...options,
             terminal: { content: '', durationMs, outcome: { kind: 'aborted', reason: disposition.reason } },
           });
@@ -384,13 +341,12 @@ export function createStoreProviderEventEffectPort(
       if (trigger === undefined) {
         throw new Error(
           `Interrupted terminal for job '${identity.jobId}' has no recorded interruption trigger — ` +
-            `appendSessionInterrupted must run first in the same transaction.`,
+            `appendJobInterrupted must run first in the same transaction.`,
         );
       }
-      const session = sessionManagerWithinTx(deps, tx.db, ctx.projectRoot).get(ctx.provider, ctx.sessionId);
-      const continuity = derivedInterruptionContinuity(session);
+      const continuity = derivedInterruptionContinuity(deps, identity.jobId);
       commitInTx(tx, (c) => {
-        appendSessionInterruptedTerminalInCommit(c, { trigger, continuity }, options, { content: '', durationMs });
+        appendConversationInterruptedTerminalInCommit(c, { trigger, continuity }, options, { content: '', durationMs });
         return undefined;
       });
       tx.pendingInterruption = undefined;
@@ -408,6 +364,7 @@ export function createStoreProviderEventEffectPort(
         phase: 'settlement-pending',
         terminalProviderSeq,
         settlementIntent: 'release-after-terminal',
+        settlementFailure: { elapsedMs: 0, observedAtMs: deps.runtime.time.now(), containmentRequested: false },
         revision: record.revision + 1,
         retryNotBeforeMs: deps.runtime.time.now(),
         retryCount: 0,
@@ -416,23 +373,8 @@ export function createStoreProviderEventEffectPort(
       updateJournalRecord(tx.db, record, next);
     },
 
-    appendSessionInterrupted: async (tx, _identity, _seq, trigger) => {
-      // Recorded, not appended: see the `PortTx.pendingInterruption` doc for why the actual combined append
-      // happens in `appendJobTerminal`'s `interrupted` branch instead.
+    appendJobInterrupted: async (tx, _identity, _seq, trigger) => {
       tx.pendingInterruption = trigger;
-    },
-
-    releaseSessionClaim: async (tx, identity) => {
-      const ctx = resolveJobContext(deps, identity.jobId);
-      void releaseSessionJobClaim({
-        projectRoot: ctx.projectRoot,
-        runtime: deps.runtime,
-        db: tx.db,
-        commitEvents: commitEventsWithinTx(tx.db, deps.appendContext),
-        emitSessionReleased: deps.emitSessionReleased,
-        sessionId: ctx.sessionId,
-        jobId: identity.jobId,
-      });
     },
   };
 }
@@ -452,10 +394,7 @@ function toApplyProviderEventBody(
       (record?.phase === 'executing' || record?.phase === 'settlement-pending') &&
       record.controlIntent.kind === 'rekey-refusal-containment'
     ) {
-      return providerProxyRekeyRefusalEvent(
-        resolveJobContext(deps, identity.jobId).provider,
-        record.controlIntent.reason,
-      );
+      return providerProxyRekeyRefusalEvent(resolveJobContext(deps, identity).provider, record.controlIntent.reason);
     }
   }
   if (event.kind !== 'suspended') return event;
@@ -466,7 +405,7 @@ function toApplyProviderEventBody(
     );
   }
   if (recordedStopCause === 'coordinator_rekey_refused') {
-    return providerProxyRekeyRefusalEvent(resolveJobContext(deps, identity.jobId).provider);
+    return providerProxyRekeyRefusalEvent(resolveJobContext(deps, identity).provider);
   }
   return { ...event, recordedStopCause };
 }
@@ -491,11 +430,11 @@ export function createProviderEventHandler(deps: ProviderEventApplicationDeps): 
         const identity: ProviderOperationEventIdentity = request.operation;
         const event = toApplyProviderEventBody(deps, identity, request.event);
         const result = await applyProviderEventAtSeq(port, { identity, seq: request.providerSeq, event });
-        // Admission may be released only after a terminal or suspended event is durably applied, never replayed.
-        const endedTheJob = event.kind === 'terminal' || event.kind === 'suspended';
-        if (result.kind === 'ack' && endedTheJob) {
+        const acceptedOutcome = event.kind === 'terminal' || event.kind === 'suspended';
+        if (result.kind === 'ack' && acceptedOutcome) {
           notifyProviderOperationSettlementPending(identity);
-          deps.operations.settled(identity);
+          const { execution } = resolveJobContext(deps, identity);
+          deps.executionFinisher.schedule({ jobId: identity.jobId, execution });
         }
         return result;
       },

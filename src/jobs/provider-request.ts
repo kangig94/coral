@@ -7,10 +7,10 @@ export function toProviderRequest(launchRecord: JobLaunch, conversationRef: stri
   if (launchRecord.jobKind !== 'provider') {
     throw new Error(`Job ${launchRecord.jobId} does not have a provider request.`);
   }
-  const { providerAction, request, sessionId } = launchRecord;
+  const { providerAction, request, jobId } = launchRecord;
   return {
     action: providerAction,
-    sessionId,
+    jobId,
     name: request.name,
     prompt: request.prompt,
     conversationRef,

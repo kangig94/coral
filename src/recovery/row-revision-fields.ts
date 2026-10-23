@@ -1,3 +1,4 @@
+import type { ProjectionJobStoredRow } from '../jobs/projection-row.js';
 import type { Database } from '../store/db.js';
 import type { EventsRow } from '../store/schema.js';
 import type { RecoveryRevisionField, RecoveryRevisionValue } from './containment.js';
@@ -5,39 +6,7 @@ import type { RecoveryRevisionField, RecoveryRevisionValue } from './containment
 export const EVENT_COLUMNS =
   'seq, ts, type, stream_kind, stream_id, namespace, project, correlation_id, causation_seq, refs, body';
 
-export const PROJECTION_SESSION_COLUMNS =
-  'session_id, controller, resumable, conversation_ref, scope_key, entry, last_seq';
-
-type ProjectionJobRevisionRow = {
-  readonly job_id: string;
-  readonly execution_owner: RecoveryRevisionValue;
-  readonly phase: RecoveryRevisionValue;
-  readonly terminal: RecoveryRevisionValue;
-  readonly diagnostics: RecoveryRevisionValue;
-  readonly session_id: RecoveryRevisionValue;
-  readonly provider: RecoveryRevisionValue;
-  readonly project_root: RecoveryRevisionValue;
-  readonly work_dir: RecoveryRevisionValue;
-  readonly backend_namespace: RecoveryRevisionValue;
-  readonly bundle_hash: RecoveryRevisionValue;
-  readonly job_kind: RecoveryRevisionValue;
-  readonly parent_workflow_job_id: RecoveryRevisionValue;
-  readonly workflow_slot: RecoveryRevisionValue;
-  readonly workflow_slot_generation: RecoveryRevisionValue;
-  readonly replaces_workflow_job_id: RecoveryRevisionValue;
-  readonly created_at: RecoveryRevisionValue;
-  readonly last_seq: RecoveryRevisionValue;
-};
-
-type ProjectionSessionRevisionRow = {
-  readonly session_id: string;
-  readonly controller: RecoveryRevisionValue;
-  readonly resumable: RecoveryRevisionValue;
-  readonly conversation_ref: RecoveryRevisionValue;
-  readonly scope_key: RecoveryRevisionValue;
-  readonly entry: RecoveryRevisionValue;
-  readonly last_seq: RecoveryRevisionValue;
-};
+type ProjectionJobRevisionRow = ProjectionJobStoredRow;
 
 type ContinuationRevisionRow = {
   readonly continuation_kind: RecoveryRevisionValue;
@@ -74,45 +43,7 @@ export function eventRevisionFields(row: EventsRow): RecoveryRevisionField[] {
 }
 
 export function projectionJobRevisionFields(row: ProjectionJobRevisionRow): RecoveryRevisionField[] {
-  const key = row.job_id;
-  return [
-    { table: 'projection_jobs', key, field: 'job_id', value: row.job_id },
-    { table: 'projection_jobs', key, field: 'execution_owner', value: row.execution_owner },
-    { table: 'projection_jobs', key, field: 'phase', value: row.phase },
-    { table: 'projection_jobs', key, field: 'terminal', value: row.terminal },
-    { table: 'projection_jobs', key, field: 'diagnostics', value: row.diagnostics },
-    { table: 'projection_jobs', key, field: 'session_id', value: row.session_id },
-    { table: 'projection_jobs', key, field: 'provider', value: row.provider },
-    { table: 'projection_jobs', key, field: 'project_root', value: row.project_root },
-    { table: 'projection_jobs', key, field: 'work_dir', value: row.work_dir },
-    { table: 'projection_jobs', key, field: 'backend_namespace', value: row.backend_namespace },
-    { table: 'projection_jobs', key, field: 'bundle_hash', value: row.bundle_hash },
-    { table: 'projection_jobs', key, field: 'job_kind', value: row.job_kind },
-    { table: 'projection_jobs', key, field: 'parent_workflow_job_id', value: row.parent_workflow_job_id },
-    { table: 'projection_jobs', key, field: 'workflow_slot', value: row.workflow_slot },
-    {
-      table: 'projection_jobs',
-      key,
-      field: 'workflow_slot_generation',
-      value: row.workflow_slot_generation,
-    },
-    { table: 'projection_jobs', key, field: 'replaces_workflow_job_id', value: row.replaces_workflow_job_id },
-    { table: 'projection_jobs', key, field: 'created_at', value: row.created_at },
-    { table: 'projection_jobs', key, field: 'last_seq', value: row.last_seq },
-  ];
-}
-
-export function projectionSessionRevisionFields(row: ProjectionSessionRevisionRow): RecoveryRevisionField[] {
-  const key = row.session_id;
-  return [
-    { table: 'projection_sessions', key, field: 'session_id', value: row.session_id },
-    { table: 'projection_sessions', key, field: 'controller', value: row.controller },
-    { table: 'projection_sessions', key, field: 'resumable', value: row.resumable },
-    { table: 'projection_sessions', key, field: 'conversation_ref', value: row.conversation_ref },
-    { table: 'projection_sessions', key, field: 'scope_key', value: row.scope_key },
-    { table: 'projection_sessions', key, field: 'entry', value: row.entry },
-    { table: 'projection_sessions', key, field: 'last_seq', value: row.last_seq },
-  ];
+  return Object.entries(row).map(([field, value]) => ({ table: 'projection_jobs', key: row.job_id, field, value }));
 }
 
 export function continuationRevisionFields(

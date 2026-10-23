@@ -1,7 +1,7 @@
 import { join, resolve } from 'node:path';
 import { z } from 'zod';
 import type { EffortLevel, ProviderContinuityUpdate, ProviderRequest, ProviderRuntime } from '../contract.js';
-import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
+import type { ProviderContinuityBlob } from '../../jobs/conversation/continuity.js';
 import { resolveProviderEffort } from '../request-policy.js';
 import { backendLog } from '../../infra/backend-log.js';
 import { errorMessage } from '../../infra/error-format.js';

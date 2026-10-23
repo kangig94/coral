@@ -1,13 +1,15 @@
-import { createHash } from 'node:crypto';
-import { resolve } from 'node:path';
-
-import type { SessionManager } from '#src/sessions/shell.js';
-import { providerSessionSchema, type ProviderSession } from '#src/sessions/entry.js';
+import type { ConversationManager } from '#src/jobs/conversation/shell.js';
+import type { JobConversation } from '#src/jobs/conversation/entry.js';
 import type { Database } from '#src/store/db.js';
-import { reduceSessionClaimed, reduceSessionOpened } from '#src/sessions/projections.js';
-import type { SessionClaimedBody, SessionOpenedBody } from '#src/sessions/event-bodies.js';
-import type { CoralEvent } from '#src/store/envelope.js';
-import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
+import { readProjectionJobConversation } from '#src/jobs/conversation/read-queries.js';
+import type { CoralEventInput } from '#src/store/envelope.js';
+import { jobConversationFacetSchema, type JobOpenedBody } from '#src/jobs/launch.js';
+import { jobsRegistry } from '#src/jobs/events.js';
+import { composeReducers } from '#src/store/reducers.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
+import { fixtureCanonicalWorkDir } from './canonical-work-dir.js';
+import { commitInputs } from './commit-inputs.js';
+import { permissiveProviderLookupPort } from './append-context.js';
 import type { InitJobOptions } from '#src/jobs/contracts/job-store.js';
 import type { JobStore } from '#src/jobs/store.js';
 import type {
@@ -15,11 +17,11 @@ import type {
   ProviderContinuityBlob,
   ProviderValidatedContinuityBlob,
   ProviderValidatedContinuitySnapshot,
-} from '#src/sessions/continuity.js';
+} from '#src/jobs/conversation/continuity.js';
 import type {
   ProviderValidatedSessionContinuityMutation,
   SessionContinuityMutation,
-} from '#src/sessions/continuity-mutation.js';
+} from '#src/jobs/conversation/continuity-mutation.js';
 
 import { TEST_CLAUDE_BINDING, TEST_CODEX_BINDING } from './provider-credentials.js';
 
@@ -46,7 +48,7 @@ export function validatedTestContinuityMutation(
 }
 
 export function allocateTestSession(
-  manager: Pick<SessionManager, 'allocate'>,
+  manager: Pick<ConversationManager, 'prepare'>,
   provider: string,
   name: string,
   model: string | undefined,
@@ -54,132 +56,134 @@ export function allocateTestSession(
   projectRoot = cwd,
   backendNamespace = 'test',
 ) {
-  const binding =
-    provider === 'codex'
-      ? TEST_CODEX_BINDING
-      : provider === 'claude'
-        ? TEST_CLAUDE_BINDING
-        : (() => {
-            throw new Error(`No binding fixture for '${provider}'.`);
-          })();
-  return manager.allocate({
-    binding,
+  return manager.prepare({
+    binding: testProviderBinding(provider),
     name,
     ...(model === undefined ? {} : { model }),
-    cwd,
+    cwd: fixtureCanonicalWorkDir(cwd),
     projectRoot,
     backendNamespace,
   });
 }
 
-function testSessionScopeKey(projectRoot: string): string {
-  try {
-    return pluginRootNamespace(projectRoot);
-  } catch {
-    return createHash('sha256').update(resolve(projectRoot)).digest('hex').slice(0, 12);
-  }
+function testProviderBinding(provider: string) {
+  if (provider === 'codex') return TEST_CODEX_BINDING;
+  if (provider === 'claude') return TEST_CLAUDE_BINDING;
+  throw new Error(`No binding fixture for '${provider}'.`);
+}
+
+export function testConversationFacet(provider = 'codex', cwd = '/tmp/project') {
+  return jobConversationFacetSchema.parse({
+    provider,
+    binding: testProviderBinding(provider),
+    cwd: fixtureCanonicalWorkDir(cwd),
+    name: 'test-conversation',
+    bypassPermissions: false,
+    retention: 'retain',
+  });
+}
+
+export function testJobConversation(jobId: string, overrides: Partial<JobConversation> = {}): JobConversation {
+  const binding = overrides.binding ?? TEST_CODEX_BINDING;
+  return {
+    jobId,
+    execution: 0,
+    open: false,
+    finishing: false,
+    provider: binding.provider,
+    binding,
+    name: jobId,
+    retention: 'retain',
+    bypassPermissions: false,
+    artifactHandles: [],
+    retentionDiscard: { attempts: [] },
+    providerContinuity: null,
+    cwd: fixtureCanonicalWorkDir('/tmp/project'),
+    projectRoot: '/tmp/project',
+    backendNamespace: 'tests',
+    createdAt: '2026-01-01T00:00:00.000Z',
+    lastUsedAt: '2026-01-01T00:00:00.000Z',
+    ...overrides,
+  };
+}
+
+export function testConversationOpenedInput(entry: JobConversation): CoralEventInput<JobOpenedBody> {
+  const {
+    jobId: _jobId,
+    execution: _execution,
+    open: _open,
+    finishing: _finishing,
+    conversationRef: _conversationRef,
+    providerContinuity: _providerContinuity,
+    artifactHandles: _artifactHandles,
+    retentionDiscard: _retentionDiscard,
+    projectRoot: _projectRoot,
+    backendNamespace: _backendNamespace,
+    createdAt: _createdAt,
+    lastUsedAt: _lastUsedAt,
+    ...facet
+  } = entry;
+  const conversation = jobConversationFacetSchema.parse(facet);
+  return {
+    type: 'job.opened',
+    stream: { kind: 'job', id: entry.jobId },
+    refs: { jobId: entry.jobId },
+    project: entry.projectRoot,
+    body: {
+      jobKind: 'provider',
+      owner: { kind: 'provider-session', id: entry.jobId },
+      projectRoot: entry.projectRoot,
+      createdAt: entry.createdAt,
+      conversation,
+    },
+  };
 }
 
 export function seedTestSessionProjection(
   db: Database,
   options: {
-    sessionId: string;
+    jobId: string;
     provider: string;
     projectRoot: string;
     backendNamespace?: string;
-    activeJobId?: string;
   },
-): ProviderSession {
-  const existing = db
-    .prepare<[string], { entry: string }>('SELECT entry FROM projection_sessions WHERE session_id = ?')
-    .get(options.sessionId);
-  if (existing !== undefined) {
-    const entry = providerSessionSchema.parse(JSON.parse(existing.entry));
-    if (options.activeJobId !== undefined && entry.activeJobId !== options.activeJobId) {
-      const claimed = { ...entry, activeJobId: options.activeJobId, version: entry.version + 1 };
-      reduceSessionClaimed(db, {
-        seq: 1,
-        ts: entry.lastUsedAt,
-        type: 'session.claimed',
-        stream: { kind: 'session', id: options.sessionId },
-        namespace: options.backendNamespace,
-        project: options.projectRoot,
-        refs: { sessionId: options.sessionId, jobId: options.activeJobId },
-        body: { entry: claimed, jobId: options.activeJobId },
-      });
-      return claimed;
-    }
-    return entry;
-  }
-
-  const binding =
-    options.provider === 'codex' ? TEST_CODEX_BINDING : options.provider === 'claude' ? TEST_CLAUDE_BINDING : undefined;
-  if (binding === undefined) {
-    throw new Error(`Test provider session '${options.provider}' has no binding fixture.`);
-  }
-  const now = '2026-01-01T00:00:00.000Z';
-  const opened: ProviderSession = {
-    sessionId: options.sessionId,
-    binding,
-    name: options.sessionId,
-    state: 'pending',
-    retention: 'retain',
-    artifactHandles: [],
-    retentionDiscard: { attempts: [] },
-    providerContinuity: null,
-    cwd: options.projectRoot,
+): JobConversation {
+  const existing = readProjectionJobConversation(db, options.jobId);
+  if (existing !== null) return existing;
+  const entry = testJobConversation(options.jobId, {
+    binding: testProviderBinding(options.provider),
+    provider: options.provider,
     projectRoot: options.projectRoot,
+    cwd: fixtureCanonicalWorkDir(options.projectRoot),
     backendNamespace: options.backendNamespace ?? 'tests',
-    createdAt: now,
-    lastUsedAt: now,
-    version: 1,
-  };
-  const body: SessionOpenedBody = {
-    entry: opened,
-    controller: 'default',
-    scope_key: testSessionScopeKey(options.projectRoot),
-  };
-  const event: CoralEvent<SessionOpenedBody> = {
-    seq: 0,
-    ts: now,
-    type: 'session.opened',
-    stream: { kind: 'session', id: options.sessionId },
-    namespace: options.backendNamespace,
-    project: options.projectRoot,
-    refs: { sessionId: options.sessionId },
-    body,
-  };
-  reduceSessionOpened(db, event);
-  if (options.activeJobId === undefined) {
-    return opened;
-  }
-  const claimed: ProviderSession = {
-    ...opened,
-    activeJobId: options.activeJobId,
-    version: opened.version + 1,
-  };
-  const claimBody: SessionClaimedBody = { entry: claimed, jobId: options.activeJobId };
-  reduceSessionClaimed(db, {
-    ...event,
-    seq: 1,
-    type: 'session.claimed',
-    refs: { sessionId: options.sessionId, jobId: options.activeJobId },
-    body: claimBody,
   });
-  return claimed;
+  commitInputs(db, [testConversationOpenedInput(entry)], {
+    now: () => new Date(entry.createdAt),
+    reducers: composeReducers(jobsRegistry),
+    bodyCodec: createEventBodyCodec(),
+    providers: permissiveProviderLookupPort,
+  });
+  const persisted = readProjectionJobConversation(db, options.jobId);
+  if (persisted === null) throw new Error(`Expected opened provider job ${options.jobId}.`);
+  return persisted;
 }
 
 export function initTestJob(store: JobStore, options: InitJobOptions): void {
-  seedTestJobSession(store, options);
   store.initJob(options);
 }
 
 export function seedTestJobSession(store: JobStore, options: InitJobOptions): void {
-  seedTestSessionProjection(store.getDb(), {
-    sessionId: options.sessionId,
-    provider: options.provider,
-    projectRoot: options.projectRoot,
-    backendNamespace: options.backendNamespace,
-    activeJobId: options.jobId,
+  if (readProjectionJobConversation(store.getDb(), options.jobId) !== null) return;
+  store.commit((commit) => {
+    commit.append(
+      testConversationOpenedInput(
+        testJobConversation(options.jobId, {
+          ...options.conversation,
+          projectRoot: options.projectRoot,
+          backendNamespace: options.backendNamespace,
+        }),
+      ),
+    );
+    return undefined;
   });
 }

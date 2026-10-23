@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { progressVisitFromDetails } from '#tests/helpers/wait-progress.js';
 import { savedCursor } from '#tests/helpers/wait-session.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -91,7 +92,7 @@ import { BackendUnreachableError } from '#src/infra/http-errors.js';
   describe('all-refused bounded wait', () => {
     it('prints a settled line without a cursor when its only job is missing', async () => {
       const runtime = new SimulationRuntime();
-      const index = new JobLocationIndex(runtime, '/coral');
+      const index = new JobLocationIndex(runtime, '/coral', undefined, currentCoralStoreFormat().fingerprint);
       const addressing = new JobAddressing(
         index.readOnlyView(),
         {
@@ -171,7 +172,13 @@ import { BackendUnreachableError } from '#src/infra/http-errors.js';
     const code = await followJobs({
       start: {
         kind: 'launch',
-        launchResult: { kind: 'accepted', jobId: 'job-1', sessionId: 's', provider: 'codex' } as never,
+        launchResult: {
+          kind: 'provider-session',
+          launchState: 'running',
+          jobId: 'job-1',
+          requestedSeq: 1,
+          epochKey: 'epoch',
+        },
       },
       reconnectPolicy: 'until-terminal',
       projectRoot: '/project',
@@ -234,7 +241,14 @@ import { BackendUnreachableError } from '#src/infra/http-errors.js';
     const code = await followJobs({
       start: {
         kind: 'launch',
-        launchResult: { kind: 'accepted', jobId: 'job-w', sessionId: 's', provider: 'codex' } as never,
+        launchResult: {
+          kind: 'workflow',
+          launchState: 'running',
+          jobId: 'job-w',
+          workflowId: 'job-w',
+          requestedSeq: 1,
+          epochKey: 'epoch',
+        },
       },
       reconnectPolicy: 'until-terminal',
       projectRoot: '/project',
@@ -486,7 +500,13 @@ it('leaves a stop that is still in progress on a second SIGINT with exit 75, its
     const code = followJobs({
       start: {
         kind: 'launch',
-        launchResult: { kind: 'provider-session', launchState: 'running', jobId: 'job-1', sessionId: 's' },
+        launchResult: {
+          kind: 'provider-session',
+          launchState: 'running',
+          jobId: 'job-1',
+          requestedSeq: 1,
+          epochKey: 'epoch',
+        },
       },
       reconnectPolicy: 'until-terminal',
       projectRoot: '/project',
@@ -505,7 +525,7 @@ it('leaves a stop that is still in progress on a second SIGINT with exit 75, its
     stop.reject(new Error('the stop ignored its signal'));
     expect(await code).toBe(75);
     expect(emitError).not.toHaveBeenCalled();
-    const continuation = 'Still waiting on 1 job. Run coral-cli jobs wait job-1 to continue waiting.';
+    const continuation = 'Still waiting on 1 job. Run coral-cli jobs wait job-1 --execution-selection ';
     expect(out.split(continuation)).toHaveLength(2);
     expect(out.indexOf(continuation)).toBeLessThan(out.indexOf('<exit>'));
   } finally {

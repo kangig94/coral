@@ -5,9 +5,9 @@ import type { EnvPort, StoragePort, TimePort } from '../../infra/port-types.js';
 import type { IdPort } from '../../runtime/ports.js';
 import type { JobExit, JobStatus } from '../../jobs/records.js';
 import type { JobLaunch } from '../../jobs/records.js';
-import type { ContinuitySnapshot } from '../../sessions/continuity.js';
+import type { ContinuitySnapshot } from '../../jobs/conversation/continuity.js';
 import type { ProviderBindingCatalog } from '../../providers/catalog.js';
-import type { JobLaunchRequest, JobResumeRequest, ProviderSessionLaunchDecision } from '../../jobs/launch.js';
+import type { JobLaunchRequest, JobResumeRequest, ProviderJobLaunchDecision } from '../../jobs/launch.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type { CanonicalWorkDir } from '../../runtime/canonical-work-dir.js';
 
@@ -40,9 +40,12 @@ export type LiveDiscussSession = {
 };
 
 export type DiscussJobStatusReader = {
-  read(jobId: string): JobStatus | null;
-  readExit(jobId: string): JobExit | null;
-  listOwned(discussionId: string): Array<{ launch: JobLaunch; status: JobStatus }>;
+  requestedExecution(jobId: string, requestedSeq: number): number | null;
+  read(jobId: string, execution?: number): JobStatus | null;
+  readExit(jobId: string, execution?: number): JobExit | null;
+  listOwned(discussionId: string): Array<{
+    launch: Pick<JobLaunch, 'jobId' | 'execution' | 'discussionRun' | 'createdAt'>;
+  }>;
 };
 
 export type DiscussRuntimePorts = {
@@ -54,7 +57,7 @@ export type DiscussRuntimePorts = {
   projectData: (projectRoot: string) => string;
 };
 
-export type DiscussLaunchDecision = ProviderSessionLaunchDecision;
+export type DiscussLaunchDecision = ProviderJobLaunchDecision;
 
 export type DiscussWaitResult = {
   content: string;
@@ -79,5 +82,5 @@ export type DiscussContext = {
    * Discards a participant session's provider native log. Wired from the lifecycle
    * reactor at composition; absent in lightweight harnesses, so callers guard with `?.`.
    */
-  discardSessionArtifacts?: (sessionId: string) => Promise<void>;
+  discardConversationArtifacts?: (sessionId: string) => Promise<void>;
 };

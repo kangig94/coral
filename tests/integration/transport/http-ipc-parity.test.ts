@@ -246,7 +246,7 @@ describe('http/ipc parity', () => {
   it('carries an undetermined preflight error body through HTTP and IPC without an IPC status', async () => {
     const ports = createPorts();
     const errorBody = {
-      code: 'provider_preflight_undetermined',
+      code: 'provider_preflight_undetermined' as const,
       message: 'Provider preflight could not inspect credentials',
     };
     ports.sessions.start = vi.fn<HttpHandlerPorts['sessions']['start']>(async () => ({

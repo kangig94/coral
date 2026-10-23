@@ -75,7 +75,11 @@ it('proves expiry for a pruned terminal and discharges the absent export', () =>
   const f = createTerminalExportFixture('provider', true);
   try {
     f.complete({ terminalAt: TERMINAL_EXPORT_CUTOFF - 1000, precedingAt: TERMINAL_EXPORT_CUTOFF - 2000 });
-    f.db.prepare("DELETE FROM events WHERE type <> 'job.terminal.recorded'").run();
+    f.db
+      .prepare(
+        "DELETE FROM events WHERE type NOT IN ('job.opened', 'job.execution.requested', 'job.execution.outcome.accepted', 'job.execution.ended')",
+      )
+      .run();
     expect(f.index.terminalEligibility(f.jobId)).toEqual({ source: 'readable', age: 'expired' });
     expect(f.store.getResultExportOwner().observeResultAvailability(f.jobId)).toMatchObject({
       kind: 'retained-away',
@@ -94,7 +98,7 @@ afterEach(() => {
 it('repairs post-commit terminal recording under a permanent active epoch hold', async () => {
   const f = createTerminalExportFixture('provider', true);
   closeFixtures.push(f);
-  commitJobTerminal(f.store, f.jobId, 'session-1', {
+  commitJobTerminal(f.store, f.jobId, 1, {
     content: 'canonical held result',
     outcome: { kind: 'completed' },
     durationMs: 1,

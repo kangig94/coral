@@ -1,3 +1,5 @@
+import { formatRecoveryQuarantineCommand } from './format/backend.js';
+import type { WaitExecutionSelection } from '../jobs/wait/execution-selection.js';
 import { waitCommandPaths } from '../coordinator/handoff-routing/wait-command.js';
 import { performance } from 'node:perf_hooks';
 import { WaitInvocation, WaitInvocationEnded } from './wait-invocation.js';
@@ -26,6 +28,7 @@ import {
   consumeHandoffRunResult,
   runHandoff,
   type HandoffOutcome,
+  type HandoffOperation,
 } from '../coordinator/handoff-routing/runner.js';
 import { formatLaunch, formatWorkflowSlot } from './format/jobs.js';
 import { openCliCauseRefRenderer } from './cause-renderer.js';
@@ -64,7 +67,12 @@ type ReconnectPolicy = 'bounded' | 'unbounded' | 'until-terminal';
 
 type FollowStart =
   | Readonly<{ kind: 'launch'; launchResult: AcceptedLaunchResponse }>
-  | Readonly<{ kind: 'jobs'; jobIds: readonly string[]; serializedCursor?: string }>;
+  | Readonly<{
+      kind: 'jobs';
+      jobIds: readonly string[];
+      serializedCursor?: string;
+      executionSelections?: WaitExecutionSelection[];
+    }>;
 
 // `unknown`, not `WaitStreamEvent`: the wire carries whatever the coordinator's build emits, which can be
 // a type this build predates. `followJobs` validates each item through `parseWaitStreamEventValue` before
@@ -81,6 +89,7 @@ type FollowConnection =
 type FollowConnectionRequest = Readonly<{
   jobIds: readonly string[];
   cursor?: WaitCursor;
+  executionSelections: WaitExecutionSelection[];
   timeoutSeconds: number;
   drainProgress: boolean;
   signal: AbortSignal;
@@ -120,6 +129,19 @@ function writeStdout(text: string): void {
 
 function jobIdsFromStart(start: FollowStart): readonly string[] {
   return start.kind === 'launch' ? [start.launchResult.jobId] : start.jobIds;
+}
+
+function initialExecutionSelections(start: FollowStart): WaitExecutionSelection[] {
+  return start.kind === 'jobs'
+    ? (start.executionSelections ?? [])
+    : [
+        {
+          jobId: start.launchResult.jobId,
+          epochKey: start.launchResult.epochKey,
+          requestedSeq: start.launchResult.requestedSeq,
+          awaitingArtifact: false,
+        },
+      ];
 }
 
 function initialSerializedCursor(start: FollowStart): string | undefined {
@@ -186,8 +208,14 @@ function formatFollowWaitEvent(
 ): string {
   let line!: string;
   switch (event.type) {
+    case 'admission':
+    case 'cursor':
+      return '';
     case 'notice':
-      line = event.message;
+      line =
+        event.remedy?.kind === 'recovery-quarantine-list'
+          ? `${event.message}\n${formatRecoveryQuarantineCommand({ kind: 'list' })}`
+          : event.message;
       break;
     case 'disposition':
       line = `Job ${event.jobId}: ${event.disposition}${event.message ? ` — ${event.message}` : ''}`;
@@ -313,7 +341,7 @@ function withWaitRecovery(error: unknown, state: FollowSessionState): unknown {
   const message = body !== null && typeof body.message === 'string' ? body.message : (error as Error).message;
   return new BackendUnreachableError(
     `${message} Run \`coral-cli backend status\` and follow its recovery guidance, then rerun ` +
-      `\`${waitContinuationCommand(state.remainingJobIds, state.currentCursor ?? null, state.continuationMode)}\`` +
+      `\`${waitContinuationCommand(state.remainingJobIds, state.currentCursor ?? null, state.continuationMode, state.executionSelections)}\`` +
       `${waitContinuationShell(state.continuationMode)} to continue waiting.`,
   );
 }
@@ -321,6 +349,7 @@ function withWaitRecovery(error: unknown, state: FollowSessionState): unknown {
 type FollowSessionState = {
   readonly continuationMode: WaitContinuationMode;
   readonly carrierAbsentJobIds: Set<string>;
+  executionSelections: WaitExecutionSelection[];
   currentCursor?: WaitCursor;
   openedCursor?: WaitCursor;
   lastExitCode?: number;
@@ -367,6 +396,7 @@ function finishDelegatedFollow(
       state.remainingJobIds,
       state.currentCursor,
       state.continuationMode,
+      state.executionSelections,
     ),
   );
   return { kind: 'exit', code: errorCodeToExit('transient') };
@@ -394,7 +424,7 @@ function eventRemainingJobs(event: WaitStreamEvent, current: readonly string[]):
 function followOriginalCommand(options: FollowJobsOptions): string {
   if (options.invocation) return options.invocation.originalCommand;
   const cursor = initialSerializedCursor(options.start);
-  return `${waitContinuationCommand(jobIdsFromStart(options.start), cursor ?? null, continuationModeFor(options.reconnectPolicy))}${options.render.embed ? ' --embed' : ''}${options.render.verbose ? ' --verbose' : ''}`;
+  return `${waitContinuationCommand(jobIdsFromStart(options.start), cursor ?? null, continuationModeFor(options.reconnectPolicy), initialExecutionSelections(options.start))}${options.render.embed ? ' --embed' : ''}${options.render.verbose ? ' --verbose' : ''}`;
 }
 
 function deliveredFollowExitCode(event: WaitStreamEvent, context: FollowContext): number | undefined {
@@ -432,6 +462,7 @@ function foldedContinuation(state: FollowSessionState): string {
       {
         type: 'waiting',
         waitingJobIds: remaining,
+        executionSelections: state.executionSelections,
         ...(unknown.length === 0 ? {} : { carrierUnknownJobIds: unknown }),
       },
       state.currentCursor ?? null,
@@ -454,7 +485,10 @@ async function deliverFollowEvent(event: WaitStreamEvent, context: FollowContext
   state.remainingJobIds = eventRemainingJobs(event, state.remainingJobIds);
   const remaining = state.remainingJobIds;
   const savedContinuation = foldedContinuation(state);
-  const renderedEvent = event;
+  const renderedEvent =
+    event.type === 'waiting' || event.type === 'terminal'
+      ? { ...event, executionSelections: state.executionSelections }
+      : event;
   const delivery = emitWaitEvent(
     renderedEvent,
     cursor,
@@ -513,6 +547,8 @@ async function applyFollowStreamEvent(
     state.carrierUnknownJobIds = state.carrierUnknownJobIds.filter((id) => id !== event.jobId);
     state.carrierAbsentJobIds.add(event.jobId);
   } else if (event.type === 'waiting') state.carrierUnknownJobIds = [...(event.carrierUnknownJobIds ?? [])];
+  if ('executionSelections' in event && event.executionSelections !== undefined)
+    state.executionSelections = event.executionSelections;
   if ('exitCode' in event && event.exitCode !== undefined) state.lastExitCode = event.exitCode;
   const decision = advanceWaitRenderCursor(state.currentCursor, event);
   state.currentCursor = decision.cursor;
@@ -552,7 +588,7 @@ async function followReadFailure(error: unknown, context: FollowContext): Promis
   options.invocation?.check();
   if (state.interrupted) return { kind: 'exit', code: finishInterruptedFollow(state) };
   if (error instanceof WaitOutputError) throw error;
-  const handledError = mapWaitSubscriptionError(error);
+  const handledError = mapWaitSubscriptionError(error, state.continuationMode);
   if (
     handledError instanceof BackendToolHttpError &&
     isRecord(handledError.body) &&
@@ -571,7 +607,13 @@ async function followReadFailure(error: unknown, context: FollowContext): Promis
   }
   if (state.retriesLeft === 0) {
     options.emitError(
-      new WaitResumeError(handledError.message, state.remainingJobIds, state.currentCursor, state.continuationMode),
+      new WaitResumeError(
+        handledError.message,
+        state.remainingJobIds,
+        state.currentCursor,
+        state.continuationMode,
+        state.executionSelections,
+      ),
     );
     return { kind: 'exit', code: errorCodeToExit('transient') };
   }
@@ -608,6 +650,7 @@ async function consumeFollowSubscription(
       state.remainingJobIds,
       state.currentCursor,
       state.continuationMode,
+      state.executionSelections,
     ),
   );
   return { kind: 'exit', code: errorCodeToExit('transient') };
@@ -626,6 +669,9 @@ function prepareFollowOptions(options: FollowJobsOptions) {
           ...waitCommandPaths.current.split(' '),
           ...allJobIds,
           ...(rawCursor === undefined ? [] : ['--cursor', rawCursor]),
+          ...(options.start.kind === 'jobs' && options.start.executionSelections
+            ? ['--execution-selection', JSON.stringify(options.start.executionSelections)]
+            : []),
           ...(options.render.embed ? ['--embed'] : []),
           ...(options.render.verbose ? ['--verbose'] : []),
         ])
@@ -675,6 +721,7 @@ function createFollowContext(prepared: ReturnType<typeof prepareFollowOptions>):
       continuationMode: continuationModeFor(options.reconnectPolicy),
       carrierAbsentJobIds: new Set(),
       currentCursor: parsedCursor,
+      executionSelections: initialExecutionSelections(options.start),
       remainingJobIds: allJobIds,
       sendCursor: parsedCursor !== undefined,
       retriesLeft: TRANSIENT_RETRY_LIMIT,
@@ -704,7 +751,12 @@ async function monitorFollowJobs(context: FollowContext): Promise<number> {
     if (connection.kind === 'subscription' && options.reconnectPolicy === 'bounded') {
       options.invocation?.saveContinuation(
         formatWaitWaiting(
-          { type: 'waiting', waitingJobIds: state.remainingJobIds, carrierUnknownJobIds: state.carrierUnknownJobIds },
+          {
+            type: 'waiting',
+            waitingJobIds: state.remainingJobIds,
+            carrierUnknownJobIds: state.carrierUnknownJobIds,
+            executionSelections: state.executionSelections,
+          },
           state.currentCursor ?? null,
         ) + '\n',
       );
@@ -756,8 +808,6 @@ export async function followJobs(options: FollowJobsOptions): Promise<number> {
 }
 
 export async function launchAndFollow(options: FollowOptions): Promise<number> {
-  const ipcAuthOptions = childPrincipalAuthOptions(childPrincipalAuthFromEnv());
-
   return followJobs({
     start: { kind: 'launch', launchResult: options.launchResult },
     reconnectPolicy: 'until-terminal',
@@ -769,64 +819,80 @@ export async function launchAndFollow(options: FollowOptions): Promise<number> {
       embed: false,
       verbose: false,
     },
-    connect: async ({ jobIds, cursor, timeoutSeconds, signal, drainProgress, onDelegatedChild }) => {
-      const probeStarted = performance.now();
-      let backend;
-      try {
-        backend = await raceWithSignal(ensure('jobs.wait', options.pluginRoot), signal, () => {
-          throw signal.reason;
-        });
-        const result = await runHandoff(
-          {
-            kind: 'wait-jobs',
-            jobId: options.launchResult.jobId,
-            ...(cursor === undefined ? {} : { serializedCursor: cursor }),
-          },
-          {
-            pluginRoot: options.pluginRoot,
-            signal,
-            onDelegatedChild,
-            waitProbeRemainingMs: () => Math.max(0, timeoutSeconds * 1000 - (performance.now() - probeStarted)),
-            onSelectionPublicationIncident: (incident) => renderHandoffPublicationIncidents([incident]),
-          },
-        );
-        const continuation = consumeHandoffRunResult(result, (incidents) =>
-          renderHandoffPublicationIncidents(incidents.filter((incident) => incident.phase === 'terminal')),
-        );
-        if (continuation.kind === 'delegated') {
-          return continuation;
-        }
-      } catch (error) {
-        if (error instanceof HandoffRunError) {
-          renderHandoffPublicationIncidents(error.incidents.filter((incident) => incident.phase === 'terminal'));
-          return { kind: 'fatal-error', error: error.originalError };
-        }
-        return { kind: 'fatal-error', error };
-      }
-
-      return {
-        kind: 'subscription',
-        // Wire boundary: see `WaitSubscription`'s definition — validation happens once the item is pulled
-        // from the iterator, not here.
-        subscription: await backend.subscribe<unknown>(
-          'jobs.wait',
-          jobsWaitRequest({
-            jobIds,
-            timeoutSeconds,
-            drainProgress,
-            projectRoot: options.projectRoot,
-            ...(cursor ? { cursor } : {}),
-          }),
-          {
-            timeoutMs: HEALTH_TIMEOUT_MS,
-            signal,
-            ...ipcAuthOptions,
-          },
-        ),
-      };
-    },
+    connect: createLaunchFollowConnection(options),
     ...(options.backoffScheduler ? { backoffScheduler: options.backoffScheduler } : {}),
   });
+}
+
+function launchFollowHandoffOperation(
+  jobId: string,
+  request: FollowConnectionRequest,
+): Extract<HandoffOperation, { kind: 'wait-jobs' }> {
+  const { cursor, executionSelections } = request;
+  return {
+    kind: 'wait-jobs',
+    jobId,
+    ...(executionSelections.length === 0 ? {} : { serializedExecutionSelections: JSON.stringify(executionSelections) }),
+    ...(cursor === undefined ? {} : { serializedCursor: cursor }),
+  };
+}
+
+function followSubscriptionRequest(
+  projectRoot: string,
+  request: FollowConnectionRequest,
+): ReturnType<typeof jobsWaitRequest> {
+  const { jobIds, executionSelections, timeoutSeconds, drainProgress, cursor } = request;
+  return jobsWaitRequest({
+    jobIds,
+    executionSelections,
+    timeoutSeconds,
+    drainProgress,
+    projectRoot,
+    ...(cursor ? { cursor } : {}),
+  });
+}
+
+function createLaunchFollowConnection(options: FollowOptions): FollowJobsOptions['connect'] {
+  const ipcAuthOptions = childPrincipalAuthOptions(childPrincipalAuthFromEnv());
+  return async (request) => {
+    const { signal, timeoutSeconds, onDelegatedChild } = request;
+    const probeStarted = performance.now();
+    let backend;
+    try {
+      backend = await raceWithSignal(ensure('jobs.wait', options.pluginRoot), signal, () => {
+        throw signal.reason;
+      });
+      const result = await runHandoff(launchFollowHandoffOperation(options.launchResult.jobId, request), {
+        pluginRoot: options.pluginRoot,
+        signal,
+        onDelegatedChild,
+        waitProbeRemainingMs: () => Math.max(0, timeoutSeconds * 1000 - (performance.now() - probeStarted)),
+        onSelectionPublicationIncident: (incident) => renderHandoffPublicationIncidents([incident]),
+      });
+      const continuation = consumeHandoffRunResult(result, (incidents) =>
+        renderHandoffPublicationIncidents(incidents.filter((incident) => incident.phase === 'terminal')),
+      );
+      if (continuation.kind === 'delegated') return continuation;
+    } catch (error) {
+      if (error instanceof HandoffRunError) {
+        renderHandoffPublicationIncidents(error.incidents.filter((incident) => incident.phase === 'terminal'));
+        return { kind: 'fatal-error', error: error.originalError };
+      }
+      return { kind: 'fatal-error', error };
+    }
+    return {
+      kind: 'subscription',
+      subscription: await backend.subscribe<unknown>(
+        'jobs.wait',
+        followSubscriptionRequest(options.projectRoot, request),
+        {
+          timeoutMs: HEALTH_TIMEOUT_MS,
+          signal,
+          ...ipcAuthOptions,
+        },
+      ),
+    };
+  };
 }
 
 async function openFollowConnection(
@@ -846,6 +912,7 @@ async function openFollowConnection(
     .connect({
       drainProgress: options.reconnectPolicy === 'until-terminal',
       jobIds: state.remainingJobIds,
+      executionSelections: state.executionSelections,
       ...(cursor === undefined ? {} : { cursor }),
       timeoutSeconds:
         options.reconnectPolicy === 'bounded' ? boundedTimeoutSeconds(deadlineMs) : FOLLOW_TIMEOUT_SECONDS,
@@ -872,43 +939,52 @@ async function recoverFollowConnection(
   if (state.interrupted) {
     return { kind: 'exit', code: finishInterruptedFollow(state) };
   }
-  const handledError = mapWaitSubscriptionError(error);
-  if (
-    handledError instanceof BackendToolHttpError &&
-    isRecord(handledError.body) &&
-    SOFT_CURSOR_REFUSALS.includes(String(handledError.body.code))
-  ) {
-    if (!state.sendCursor) {
-      options.emitError(withWaitRecovery(handledError, state));
-      return { kind: 'exit', code: fallbackExitCode() };
-    }
-    writeStdout(`${WAIT_CURSOR_REPLAY_NOTICE}\n`);
-    state.currentCursor = undefined;
-    state.sendCursor = false;
-    return { kind: 'retry' };
-  }
+  const handledError = mapWaitSubscriptionError(error, state.continuationMode);
+  const cursorRecovery = recoverFollowCursor(handledError, options, state);
+  if (cursorRecovery !== null) return cursorRecovery;
   if (!(handledError instanceof Error) || !isTransientStreamError(handledError)) {
     options.emitError(withWaitRecovery(handledError, state));
     return { kind: 'exit', code: fallbackExitCode() };
   }
-  if (state.retriesLeft === 0) {
-    if (
-      state.hasOpenedSubscription ||
-      handledError instanceof TransientHttpError ||
-      handledError instanceof IpcRequestTimeout
-    ) {
-      options.emitError(
-        new WaitResumeError(handledError.message, state.remainingJobIds, state.currentCursor, state.continuationMode),
-      );
-      return { kind: 'exit', code: errorCodeToExit('transient') };
-    }
-    options.emitError(withWaitRecovery(handledError, state));
-    return { kind: 'exit', code: fallbackExitCode() };
-  }
+  if (state.retriesLeft === 0) return exhaustedFollowConnection(handledError, options, state);
   state.retriesLeft -= 1;
   const shouldRetry = await waitForRetry(controller.signal, options.backoffScheduler);
   if (state.interrupted) {
     return { kind: 'exit', code: finishInterruptedFollow(state) };
   }
   return shouldRetry ? { kind: 'retry' } : { kind: 'exit', code: 1 };
+}
+
+function recoverFollowCursor(error: unknown, options: FollowJobsOptions, state: FollowSessionState): FollowStep | null {
+  if (
+    !(error instanceof BackendToolHttpError) ||
+    !isRecord(error.body) ||
+    !SOFT_CURSOR_REFUSALS.includes(String(error.body.code))
+  )
+    return null;
+  if (!state.sendCursor) {
+    options.emitError(withWaitRecovery(error, state));
+    return { kind: 'exit', code: fallbackExitCode() };
+  }
+  writeStdout(`${WAIT_CURSOR_REPLAY_NOTICE}\n`);
+  state.currentCursor = undefined;
+  state.sendCursor = false;
+  return { kind: 'retry' };
+}
+
+function exhaustedFollowConnection(error: Error, options: FollowJobsOptions, state: FollowSessionState): FollowStep {
+  if (state.hasOpenedSubscription || error instanceof TransientHttpError || error instanceof IpcRequestTimeout) {
+    options.emitError(
+      new WaitResumeError(
+        error.message,
+        state.remainingJobIds,
+        state.currentCursor,
+        state.continuationMode,
+        state.executionSelections,
+      ),
+    );
+    return { kind: 'exit', code: errorCodeToExit('transient') };
+  }
+  options.emitError(withWaitRecovery(error, state));
+  return { kind: 'exit', code: fallbackExitCode() };
 }

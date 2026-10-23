@@ -240,14 +240,6 @@ export function canonicalRecoveryRevision(fields: readonly RecoveryRevisionField
   return hashRecoveryRevision(fields, []);
 }
 
-/** Hashes a composite raw envelope together with every explicitly named nested subject revision. */
-export function compositeRecoveryRevision(
-  fields: readonly RecoveryRevisionField[],
-  dependencies: readonly RecoveryRevisionDependency[],
-): RecoverySubject['revision'] {
-  return hashRecoveryRevision(fields, dependencies);
-}
-
 /** Registers a lazy raw recovery source and returns only its opaque capability. */
 export function defineRecoverySource<Raw>(definition: RecoverySourceDefinition<Raw>): RecoverySource<Raw> {
   return registerSource({

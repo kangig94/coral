@@ -13,6 +13,7 @@ import {
 import {
   encodeProviderOperationRecord,
   PROVIDER_OPERATION_RECORD_VERSION,
+  PROVIDER_OPERATION_RECORD_GENERATIONS,
 } from '#src/store/provider-operation-record.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
@@ -29,6 +30,13 @@ function createDb(): Database {
 }
 
 describe('provider operation journal', () => {
+  it('writes generation four and fences the superseded generation three', () => {
+    const record = providerOperationRecord('prepare-pending');
+    expect(JSON.parse(encodeProviderOperationRecord(record))).toMatchObject({ version: 4 });
+    expect(PROVIDER_OPERATION_RECORD_GENERATIONS.retainedSuperseded).toContain(3);
+    expect(() => decodeProviderOperationRecord(JSON.stringify({ ...record, version: 3 }))).toThrow();
+  });
+
   it('closes only one set and joins mutations admitted before its fence', async () => {
     const admission = new ProviderOperationMutationAdmission();
     const target = providerOperationRecord('prepare-pending');

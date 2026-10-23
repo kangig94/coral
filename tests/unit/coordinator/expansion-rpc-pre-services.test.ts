@@ -1,3 +1,4 @@
+import { ExecutionFinisher } from '#src/jobs/finishing.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { createServer, IncomingMessage, ServerResponse, type Server } from 'node:http';
@@ -6,6 +7,27 @@ import { describe, expect, it, vi } from 'vitest';
 import { createCoordinatorCore } from '#src/coordinator/composition/index.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { createMockKbDaemonSupervisor, createOnlineKbDaemonHealth } from '#tools/testing/kb-daemon-supervisor.js';
+
+function idleExecutionFinisher(runtime: Pick<Runtime, 'time'>): ExecutionFinisher {
+  return new ExecutionFinisher({
+    time: runtime.time,
+    commit: () => {
+      throw new Error('Execution writes are unexpected before store services start');
+    },
+    read: () => {
+      throw new Error('Execution reads are unexpected before store services start');
+    },
+    quiesce: async () => {
+      throw new Error('Execution settlement is unexpected before store services start');
+    },
+    retentionAction: async () => {
+      throw new Error('Retention is unexpected before store services start');
+    },
+    settleRetention: async () => {
+      throw new Error('Retention is unexpected before store services start');
+    },
+  });
+}
 
 function makeRuntime(): Runtime {
   return {
@@ -128,6 +150,7 @@ describe('expansion RPC before store services exist', () => {
         onFatalShutdownError: vi.fn(),
         storeFormat: currentCoralStoreFormat(),
         runtime: makeRuntime(),
+        executionFinisher: idleExecutionFinisher(makeRuntime()),
         bootSnapshot: {
           version: 'test-version',
           bundleHash: 'test-bundle',
@@ -188,6 +211,7 @@ describe('expansion RPC before store services exist', () => {
         onFatalShutdownError: vi.fn(),
         storeFormat: currentCoralStoreFormat(),
         runtime: makeRuntime(),
+        executionFinisher: idleExecutionFinisher(makeRuntime()),
         bootSnapshot: {
           version: 'test-version',
           bundleHash: 'test-bundle',

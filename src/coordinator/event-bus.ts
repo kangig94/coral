@@ -2,9 +2,8 @@ import { EventEmitter } from 'node:events';
 import type { DiscussEventBusEvents } from '../discuss/event-bus.js';
 import { backendLog } from '../infra/backend-log.js';
 import type { JobEventBusEvents } from '../jobs/event-bus.js';
-import type { SessionEventBusEvents } from '../sessions/event-bus.js';
 
-export type EventBusEvents = JobEventBusEvents & SessionEventBusEvents & DiscussEventBusEvents;
+export type EventBusEvents = JobEventBusEvents & DiscussEventBusEvents;
 
 const MAX_EVENT_BUS_LISTENERS = 100;
 

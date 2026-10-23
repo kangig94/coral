@@ -278,7 +278,6 @@ export type ProviderProxySetDrainDecision = FaultlessDecisionFields &
 export type ProviderProxySetRetirementStopDecision = FaultlessDecisionFields &
   Readonly<{
     action: 'stop-and-reap';
-    // Faultless destruction is safe only after every durable claim has left the set.
     reason: ProviderProxySetRetirementReason;
     liveClaims: 0;
     setIdentity: ProviderProxySetIdentity;

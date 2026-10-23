@@ -50,7 +50,7 @@ function fixture(historical = false) {
   const owner = f.store.getResultExportOwner();
   const wait = new WaitCoordinator({
     visitProgress: progressVisitFromEvents((id) => f.store.readJobEvents(id)),
-    sessionManager: { get: () => null } as never,
+    conversationManager: { get: () => null } as never,
     launchQueue: { reservationFor: () => null, getActiveJobIds: () => [] } as never,
     eventBus: f.store.getEventBus(),
     time: f.runtime.time,
@@ -256,14 +256,15 @@ describe('Phase D wait read purity (Revision S3)', () => {
       const f = fixture(true);
       f.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
       const mainBefore = readFileSync(f.epoch.path);
-      f.store.appendProgress(f.jobId, 'session-1', 'historical WAL progress');
-      commitJobTerminal(f.store, f.jobId, 'session-1', {
+      f.store.appendProgress(f.jobId, 'historical WAL progress');
+      commitJobTerminal(f.store, f.jobId, 1, {
         content: 'terminal only in WAL',
         outcome: { kind: 'completed' },
         durationMs: 9,
       });
       expect(readFileSync(f.epoch.path).equals(mainBefore)).toBe(true);
       expect(readFileSync(`${f.epoch.path}-wal`).length).toBeGreaterThan(0);
+      const dispositionBefore = f.index.read(f.jobId)?.disposition;
       const check = measure(f);
       if (entry === 'snapshot')
         expect(f.addressing.snapshot({ jobIds: [f.jobId] }).jobs[0].terminal?.contentPreview).toContain(
@@ -275,7 +276,7 @@ describe('Phase D wait read purity (Revision S3)', () => {
           result: { content: 'terminal only in WAL', durationMs: 9 },
         });
       check();
-      expect(f.index.read(f.jobId)?.disposition).toBe('unresolved');
+      expect(f.index.read(f.jobId)?.disposition).toBe(dispositionBefore);
       expect(existsSync(f.resultPath)).toBe(false);
     },
   );
@@ -289,7 +290,7 @@ describe('Phase D wait read purity (Revision S3)', () => {
 
   it('delivers a validated retained outcome after failed publication, expiry, hydration, retirement and restart', async () => {
     const f = fixture(true);
-    commitJobTerminal(f.store, f.jobId, 'session-1', {
+    commitJobTerminal(f.store, f.jobId, 1, {
       content: 'never exported',
       outcome: { kind: 'completed' },
       durationMs: 1,
@@ -306,7 +307,7 @@ describe('Phase D wait read purity (Revision S3)', () => {
     refreshHistoricalEpochs(f.index);
     expect(f.index.resultsReleased(f.epochKey)).toBe(true);
     f.removeSource();
-    const restarted = new JobLocationIndex(f.runtime, f.root);
+    const restarted = new JobLocationIndex(f.runtime, f.root, undefined, currentCoralStoreFormat().fingerprint);
     const addressing = new JobAddressing(
       restarted.readOnlyView(),
       {
@@ -395,7 +396,7 @@ describe('Phase D wait read purity (Revision S3)', () => {
 
 it.each(['missing', 'malformed'] as const)('maintenance repairs a %s guard after a pure transient read', (guard) => {
   const f = fixture(true);
-  commitJobTerminal(f.store, f.jobId, 'session-1', {
+  commitJobTerminal(f.store, f.jobId, 1, {
     content: 'journal terminal',
     outcome: { kind: 'completed' },
     durationMs: 1,
@@ -431,7 +432,12 @@ it('reads an unpublished protected historical address without Coral writes', () 
     canonicalStoreRoot: f.epoch.storeRoot,
   };
   const key = encodeResolvedStoreEpoch(f.runtime, epoch);
-  const index = new JobLocationIndex(f.runtime, join(f.root, 'protected-locations'));
+  const index = new JobLocationIndex(
+    f.runtime,
+    join(f.root, 'protected-locations'),
+    undefined,
+    currentCoralStoreFormat().fingerprint,
+  );
   seedHistoricalEpoch(
     f.runtime,
     index,

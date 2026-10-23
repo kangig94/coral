@@ -29,7 +29,6 @@ export type ProviderOperationRecoveryAcceptance = Readonly<{
 
 export type ProviderOperationRecoveryPlanActionOptions = Readonly<{
   itemsByJobId: ReadonlyMap<string, CoordinatorRecoveryItem>;
-  itemsBySessionId: ReadonlyMap<string, CoordinatorRecoveryItem>;
   recoveryRegistry: RecoveryRegistry;
   queuedRecoverable: QueuedRecoverableJob[];
   runningRecoverable: RunningRecoverableJob[];
@@ -86,7 +85,6 @@ async function recoverProviderOperationJobOnceFor(
   const runningRecoverable: RunningRecoverableJob[] = [];
   const planActionOptions = {
     itemsByJobId: new Map([[item.jobId, item]]),
-    itemsBySessionId: new Map(item.claimedSession === null ? [] : ([[item.claimedSession.sessionId, item]] as const)),
     recoveryRegistry,
     queuedRecoverable,
     runningRecoverable,
@@ -126,15 +124,7 @@ async function applyRecoveryPlanActionToItem(
   controls: CoordinatorRecoveryControls,
   options: ProviderOperationRecoveryPlanActionOptions,
 ): Promise<RecoveryDisposition> {
-  const {
-    progressStore,
-    runtime,
-    getRecoveryService,
-    createInvocationContext,
-    settleClaim,
-    settleFault,
-    abandonHeldJob,
-  } = deps;
+  const { progressStore, runtime, getRecoveryService, createInvocationContext, settleFault, abandonHeldJob } = deps;
   try {
     return await applyRecoveryAction(action, {
       progressStore,
@@ -147,7 +137,6 @@ async function applyRecoveryPlanActionToItem(
       getRecoveryService,
       signal: options.signal,
       settleFault: (fault, content) => settleFault(item, action.jobId, fault, options.coordinatorCommit, content),
-      settleClaim: (jobId) => settleClaim(item, jobId, options.coordinatorCommit),
       setProcessLocalCleanup: controls.setProcessLocalCleanup,
       clearProcessLocalCleanup: controls.clearProcessLocalCleanup,
       abandonHeldJob: (heldJobId) => abandonHeldJob(heldJobId),
@@ -168,7 +157,6 @@ export function createProviderOperationJobRecovery(
     recoveryAdoption: RecoveryAdoption;
     providerOperationStartupOwnership: Pick<ProviderOperationStartupOwnershipService, 'completeRecovery'>;
     runCoordinatorWalk: ReturnType<typeof createRecoveryWalk>['runCoordinatorWalk'];
-    settleClaim: ReturnType<typeof createRecoveryWalk>['settleClaim'];
     settleFault: ReturnType<typeof createRecoveryWalk>['settleFault'];
     settleUnexpectedRecoveryFailure: ReturnType<typeof createRecoveryWalk>['settleUnexpectedRecoveryFailure'];
     maybeReleaseRecoveryRegistry(): void;
@@ -188,9 +176,7 @@ export function createProviderOperationJobRecovery(
     action: Parameters<typeof applyRecoveryAction>[0],
     options: ProviderOperationRecoveryPlanActionOptions,
   ): Promise<void> => {
-    const item =
-      options.itemsByJobId.get(action.jobId) ??
-      (action.type === 'releaseSessionClaim' ? options.itemsBySessionId.get(action.sessionId) : undefined);
+    const item = options.itemsByJobId.get(action.jobId);
     if (item === undefined) {
       throw new Error(`Recovery plan action '${action.type}' has no raw coordinator item for ${action.jobId}.`);
     }

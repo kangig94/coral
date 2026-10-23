@@ -114,7 +114,6 @@ export function createRecoveryAdoption(
     state,
     progressStore,
     runtime,
-    eventBus,
     getRecoveryService,
     createInvocationContext,
     runCoordinatorWalk,
@@ -149,7 +148,6 @@ export function createRecoveryAdoption(
         },
         coordinatorCommit,
         nowMs: runtime.time.now(),
-        emitSessionReleased: (payload) => eventBus.emit('session:released', payload),
       });
       controls.report(`Aborted queued recovery job: ${jobId}\n`);
       return { kind: 'advanced', outcome: 'settled', facts, detail: 'queued recovery aborted' };

@@ -1,9 +1,9 @@
+import { z } from 'zod';
+import { executionOrdinalSchema } from '../jobs/launch.js';
 import type { RecoveryObservation } from '../recovery/phase-observation.js';
 import type { Database } from '../store/db.js';
 
 import { errorMessage } from '../infra/error-format.js';
-import { describeSessionJobClaimReleaseResult } from '../sessions/job-release.js';
-import type { SessionJobClaimReleaseResult } from '../sessions/contracts.js';
 import { canonicalizeWorkDir, WorkDirectoryError, type CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
 import type { IdPort } from '../runtime/ports.js';
 import type { TimePort } from '../infra/port-types.js';
@@ -30,14 +30,8 @@ import {
   type WorkflowPlan,
 } from './plan.js';
 import type { WorkflowFinalizationIntent } from './finalization.js';
-import {
-  providerSessionProvider,
-  providerSessionSchema,
-  sessionControllerFromProfile,
-  type ProviderSession,
-  type ClearContinuationLeaseInput,
-} from '../sessions/entry.js';
-import { projectionSessionStoredRowSchema } from '../sessions/projections.js';
+import { jobConversationProvider, type JobConversation } from '../jobs/conversation/entry.js';
+import { hydrateJobConversation } from '../jobs/conversation/read-queries.js';
 import type { ProjectionJobStoredRow } from '../jobs/projection-row.js';
 import type {
   RecoveryDisposition,
@@ -54,7 +48,7 @@ import { rowToCoralEvent } from '../store/envelope.js';
 import type { EventsRow } from '../store/schema.js';
 import type { CommitContext } from '../store/append.js';
 
-type WorkflowSlotJobRow = ProjectionJobStoredRow & { workflow_slot: string };
+type RecoveredAtom = Omit<LaunchedAtom, 'requestedSeq' | 'epochKey'>;
 
 type RecoveredWorkflowFinalization = {
   intent: WorkflowFinalizationIntent;
@@ -62,19 +56,19 @@ type RecoveredWorkflowFinalization = {
 
 export type WorkflowRecoveryDescendant = {
   readonly jobId: string;
-  readonly sessionId: string;
+  readonly execution: number;
   readonly projectRoot: CanonicalWorkDir;
 };
 
 export type WorkflowRecoveryDescendantRelease = {
   jobId: string;
-  sessionId: string;
-  sessionClaimRelease: SessionJobClaimReleaseResult;
+  execution: number;
 };
 
 export type WorkflowRecoveryAtomicClose = {
   readonly intent: WorkflowFinalizationIntent;
   readonly recording: {
+    readonly execution: number;
     readonly namespace?: string;
     readonly project?: string;
     readonly startedAt: string;
@@ -111,7 +105,7 @@ type WorkflowRecoveryContext = {
   plan: WorkflowPlan;
   childRows: readonly ProjectionJobStoredRow[];
   slotDetailsByJob: Map<string, JobProjectionDetail>;
-  providerSessionsById: ReadonlyMap<string, ProviderSession>;
+  jobConversationsById: ReadonlyMap<string, JobConversation>;
   completion: ReturnType<typeof workflowCompletedBodySchema.parse> | null;
   drain: ReturnType<typeof workflowDrainEnteredBodySchema.parse> | null;
   jobIds: ReadonlyMap<string, string>;
@@ -139,25 +133,14 @@ type RecoverySnapshot = {
   slotDetailsByJob: Map<string, JobProjectionDetail>;
   summary: RecoverySummary;
   stepSlots: CompiledPlanSlot[];
-  activeAtoms: LaunchedAtom[];
+  activeAtoms: RecoveredAtom[];
 };
 
 type WorkflowRecoveryContinuation = {
   readonly workflowId: string;
   readonly sourceRevision: string;
   readonly childIds: readonly string[];
-  readonly providerSessions: readonly {
-    readonly sessionId: string;
-    readonly projectRoot: CanonicalWorkDir;
-    /**
-     * What the session's version was when this recovery hydrated, and nothing more. It has no reader:
-     * the close compares job identity, never versions, because recovery's own work legitimately moves a
-     * session's version between hydration and close. Do not revive a comparison against it.
-     */
-    readonly version: number;
-    readonly activeJobId: string | null;
-    readonly continuationLease: ProviderSession['continuationLease'] | null;
-  }[];
+  readonly descendants: readonly WorkflowRecoveryDescendant[];
   readonly stage: 'prepared' | 'external-outcome-unknown' | 'ready-to-close';
   readonly intendedFinalization:
     | { readonly kind: 'pending' }
@@ -171,7 +154,7 @@ type HydratedWorkflowRecovery = {
   readonly projection: WorkflowProjectionRow | null;
   readonly childRows: readonly ProjectionJobStoredRow[];
   readonly slotDetailsByJob: Map<string, JobProjectionDetail>;
-  readonly providerSessionsById: ReadonlyMap<string, ProviderSession>;
+  readonly jobConversationsById: ReadonlyMap<string, JobConversation>;
   readonly completion: ReturnType<typeof workflowCompletedBodySchema.parse> | null;
   readonly drain: ReturnType<typeof workflowDrainEnteredBodySchema.parse> | null;
   continuation: WorkflowRecoveryContinuation;
@@ -183,7 +166,7 @@ type HydratedWorkflowRecovery = {
   descendantReleases: readonly WorkflowRecoveryDescendantRelease[];
 };
 
-const WORKFLOW_RECOVERY_CONTINUATION_KIND = 'workflow-recovery.v1';
+const WORKFLOW_RECOVERY_CONTINUATION_KIND = 'workflow-recovery.v2';
 const WORKFLOW_CHILD_SETTLEMENT_MESSAGE =
   'Workflow recovery awaits recorded child terminals or a durable workflow completion; the next coordinator start rechecks them.';
 const WORKFLOW_RESTART_MESSAGE = 'The coordinator restarted; the remaining workflow steps were not resumed.';
@@ -200,62 +183,17 @@ function validateAndReadCurrentSlotJobIds(
   for (const slot of plan.slots) {
     slotIds.add(slot.slotId);
   }
-  const workflowRows = rows
-    .filter((row): row is WorkflowSlotJobRow => row.parent_workflow_job_id === workflowId && row.workflow_slot !== null)
-    .sort(
-      (left, right) =>
-        left.workflow_slot.localeCompare(right.workflow_slot) ||
-        (left.workflow_slot_generation ?? 0) - (right.workflow_slot_generation ?? 0),
-    );
   const selected = new Map<string, string>();
-  const expectedGeneration = new Map<string, number>();
-  const previousJob = new Map<string, string>();
-  const nonterminalBySlot = new Set<string>();
-
-  for (const row of workflowRows) {
-    if (!slotIds.has(row.workflow_slot)) continue;
-    const expected = expectedGeneration.get(row.workflow_slot) ?? 0;
-    const predecessor = previousJob.get(row.workflow_slot);
-    if (
-      row.workflow_slot_generation !== expected ||
-      (expected === 0 ? row.replaces_workflow_job_id !== null : row.replaces_workflow_job_id !== predecessor)
-    ) {
-      throw new Error(
-        `Workflow recovery rejected invalid child chain for slot '${row.workflow_slot}' at job '${row.job_id}'.`,
-      );
-    }
-    if (row.terminal === null) {
-      if (nonterminalBySlot.has(row.workflow_slot)) {
-        throw new Error(`Workflow recovery rejected duplicate nonterminal children for slot '${row.workflow_slot}'.`);
-      }
-      nonterminalBySlot.add(row.workflow_slot);
-    } else if (nonterminalBySlot.has(row.workflow_slot)) {
-      throw new Error(
-        `Workflow recovery rejected a terminal child after the current child for slot '${row.workflow_slot}'.`,
-      );
+  for (const row of rows) {
+    if (row.parent_workflow_job_id !== workflowId || row.workflow_slot === null || !slotIds.has(row.workflow_slot))
+      continue;
+    executionOrdinalSchema.parse(row.execution);
+    if (selected.has(row.workflow_slot)) {
+      throw new Error(`Workflow recovery rejected duplicate jobs for slot '${row.workflow_slot}'.`);
     }
     selected.set(row.workflow_slot, row.job_id);
-    previousJob.set(row.workflow_slot, row.job_id);
-    expectedGeneration.set(row.workflow_slot, expected + 1);
   }
-
   return selected;
-}
-
-async function clearPendingReplacementIntents(
-  item: HydratedWorkflowRecovery,
-  options: RecoverAllOptions,
-): Promise<void> {
-  for (const session of item.providerSessionsById.values()) {
-    const lease = session.continuationLease;
-    if (lease?.status !== 'pending' || lease.workflowId !== item.envelope.subject.key) continue;
-    if (item.childRows.some((child) => child.job_id === session.activeJobId && child.terminal === null)) continue;
-    await options.clearContinuationLease(canonicalizeWorkDir(session.projectRoot, process.cwd()), {
-      sessionId: session.sessionId,
-      jobId: lease.staleJobId,
-      outcome: 'explicit_clear',
-    });
-  }
 }
 
 function detailForJob(detailsByJob: Map<string, JobProjectionDetail>, jobId: string): JobProjectionDetail {
@@ -273,28 +211,24 @@ function buildLaunchedAtomsForStep(
   slots: readonly CompiledPlanSlot[],
   stepIndex: number,
   detailsByJob: Map<string, JobProjectionDetail>,
-): LaunchedAtom[] {
+): RecoveredAtom[] {
   const stepSlots = slots.filter((slot) => slot.stepIndex === stepIndex);
   return stepSlots.flatMap((slot, atomIndex) => {
     const detail = detailForJob(detailsByJob, slot.jobId);
-    if (detail.launch === null || detail.launch.sessionId === null) {
+    if (detail.launch === null || detail.launch.jobId === null) {
       return [];
-    }
-    if (detail.launch.workflowSlotGeneration === undefined) {
-      throw new Error(`Workflow child '${slot.jobId}' has no slot generation.`);
     }
     return [
       {
         slotId: slot.slotId,
         jobId: slot.jobId,
-        sessionId: detail.launch.sessionId,
         providerName: slot.provider,
         agent: slot.label,
         tagName: slot.tagName,
         stepIndex: slot.stepIndex,
         atomIndex,
         atomKey: slot.atomKey,
-        generation: detail.launch.workflowSlotGeneration,
+        execution: detail.launch.execution,
       },
     ];
   });
@@ -317,22 +251,22 @@ function validateDurableSlotRelations(
       launch.parentWorkflowJobId === deps.workflowId &&
       launch.workflowSlotId === slot.slotId &&
       launch.provider === slot.provider &&
-      launch.sessionId !== null;
-    if (!validWorkflowRelation || launch === null || launch.sessionId === null || launch.provider === null) {
+      launch.jobId !== null;
+    if (!validWorkflowRelation || launch === null || launch.jobId === null || launch.provider === null) {
       throw new Error(
         `Workflow recovery rejected invalid durable relation for slot '${slot.slotId}' and job '${slot.jobId}'.`,
       );
     }
 
-    const session = deps.providerSessionsById.get(launch.sessionId);
+    const session = deps.jobConversationsById.get(launch.jobId);
     if (session === undefined) {
       throw new Error(
-        `Workflow recovery could not find provider session '${launch.sessionId}' for slot '${slot.slotId}'.`,
+        `Workflow recovery could not find provider conversation '${launch.jobId}' for slot '${slot.slotId}'.`,
       );
     }
-    if (providerSessionProvider(session) !== slot.provider) {
+    if (jobConversationProvider(session) !== slot.provider) {
       throw new Error(
-        `Workflow recovery rejected provider session '${launch.sessionId}' for slot '${slot.slotId}': expected '${slot.provider}'.`,
+        `Workflow recovery rejected provider conversation '${launch.jobId}' for slot '${slot.slotId}': expected '${slot.provider}'.`,
       );
     }
   }
@@ -590,7 +524,17 @@ function parseWorkflowRecoveryContinuation(envelope: RawWorkflowRecoveryEnvelope
   const workflowId = parsed.workflowId;
   const sourceRevision = parsed.sourceRevision;
   const childIds = parsed.childIds;
-  const providerSessions = parsed.providerSessions;
+  const descendants = z
+    .array(
+      z
+        .object({
+          jobId: z.string().min(1),
+          execution: executionOrdinalSchema,
+          projectRoot: z.string().min(1),
+        })
+        .strict(),
+    )
+    .parse(parsed.descendants);
   const stage = parsed.stage;
   const intendedFinalization = asRecord(parsed.intendedFinalization, 'Workflow intended finalization');
   const completedObligations = parsed.completedObligations;
@@ -600,7 +544,6 @@ function parseWorkflowRecoveryContinuation(envelope: RawWorkflowRecoveryEnvelope
     !Array.isArray(childIds) ||
     childIds.some((value) => typeof value !== 'string') ||
     new Set(childIds).size !== childIds.length ||
-    !Array.isArray(providerSessions) ||
     !Array.isArray(completedObligations) ||
     completedObligations.some((value) => typeof value !== 'string') ||
     new Set(completedObligations).size !== completedObligations.length ||
@@ -618,34 +561,16 @@ function parseWorkflowRecoveryContinuation(envelope: RawWorkflowRecoveryEnvelope
       throw new TypeError(`Workflow '${workflowId}' recovery continuation has an invalid finalization intent.`);
     }
   }
-  for (const value of providerSessions) {
-    const session = asRecord(value, 'Workflow recovery provider-session reference');
-    if (
-      typeof session.sessionId !== 'string' ||
-      typeof session.projectRoot !== 'string' ||
-      typeof session.version !== 'number' ||
-      !Number.isInteger(session.version) ||
-      !(session.activeJobId === null || (typeof session.activeJobId === 'string' && session.activeJobId.length > 0))
-    ) {
-      throw new TypeError(`Workflow '${workflowId}' recovery continuation has an invalid session reference.`);
-    }
+  if (
+    new Set(descendants.map((child) => child.jobId)).size !== descendants.length ||
+    descendants.some((child) => !childIds.includes(child.jobId))
+  ) {
+    throw new TypeError(`Workflow '${workflowId}' recovery continuation has invalid child executions.`);
   }
-  const sessionIds = providerSessions.map(
-    (value) => asRecord(value, 'Workflow recovery provider-session reference').sessionId,
-  );
-  if (new Set(sessionIds).size !== sessionIds.length) {
-    throw new TypeError(`Workflow '${workflowId}' recovery continuation repeats a session reference.`);
-  }
-  const canonicalProviderSessions = providerSessions.map((value) => {
-    const session = asRecord(value, 'Workflow recovery provider-session reference');
-    return {
-      sessionId: session.sessionId as string,
-      projectRoot: canonicalizeWorkDir(session.projectRoot as string, process.cwd()),
-      version: session.version as number,
-      activeJobId: session.activeJobId as string | null,
-      continuationLease: session.continuationLease as ProviderSession['continuationLease'] | null,
-    };
-  });
+  const canonicalDescendants = descendants.map((child) => ({
+    ...child,
+    projectRoot: canonicalizeWorkDir(child.projectRoot, process.cwd()),
+  }));
   const finalization =
     intendedFinalization.kind === 'pending'
       ? ({ kind: 'pending' } as const)
@@ -657,7 +582,7 @@ function parseWorkflowRecoveryContinuation(envelope: RawWorkflowRecoveryEnvelope
     workflowId,
     sourceRevision,
     childIds: childIds as string[],
-    providerSessions: canonicalProviderSessions,
+    descendants: canonicalDescendants,
     stage,
     intendedFinalization: finalization,
     completedObligations: completedObligations as string[],
@@ -666,30 +591,17 @@ function parseWorkflowRecoveryContinuation(envelope: RawWorkflowRecoveryEnvelope
 
 function initialWorkflowContinuation(
   envelope: RawWorkflowRecoveryEnvelope,
-  providerSessionsById: ReadonlyMap<string, ProviderSession>,
-  slotDetailsByJob: ReadonlyMap<string, JobProjectionDetail>,
   rootProjectRoot: CanonicalWorkDir,
 ): WorkflowRecoveryContinuation {
-  const projectRootsBySession = new Map<string, CanonicalWorkDir>();
-  for (const detail of slotDetailsByJob.values()) {
-    const status = detail.status;
-    if (status?.sessionId !== null && status?.sessionId !== undefined) {
-      projectRootsBySession.set(status.sessionId, canonicalizeWorkDir(status.projectRoot, process.cwd()));
-    }
-  }
   return {
     workflowId: envelope.job.projection.job_id,
     sourceRevision: envelope.sourceRevision.value,
     childIds: envelope.children.map((child) => child.projection.job_id),
-    providerSessions: [...providerSessionsById.values()]
-      .sort((left, right) => left.sessionId.localeCompare(right.sessionId))
-      .map((session) => ({
-        sessionId: session.sessionId,
-        projectRoot: projectRootsBySession.get(session.sessionId) ?? rootProjectRoot,
-        version: session.version,
-        activeJobId: session.activeJobId ?? null,
-        continuationLease: session.continuationLease ?? null,
-      })),
+    descendants: envelope.children.map(({ projection }) => ({
+      jobId: projection.job_id,
+      execution: executionOrdinalSchema.parse(projection.execution),
+      projectRoot: canonicalizeWorkDir(projection.project_root, rootProjectRoot),
+    })),
     stage: 'prepared',
     intendedFinalization: { kind: 'pending' },
     completedObligations: [],
@@ -697,18 +609,7 @@ function initialWorkflowContinuation(
 }
 
 function continuationDescendants(continuation: WorkflowRecoveryContinuation): readonly WorkflowRecoveryDescendant[] {
-  const childIds = new Set(continuation.childIds);
-  return continuation.providerSessions.flatMap((session) =>
-    session.activeJobId !== null && childIds.has(session.activeJobId)
-      ? [
-          {
-            jobId: session.activeJobId,
-            sessionId: session.sessionId,
-            projectRoot: session.projectRoot,
-          },
-        ]
-      : [],
-  );
+  return continuation.descendants;
 }
 
 function hydrateWorkflowRecovery(raw: RawWorkflowRecoveryEnvelope, ctx: StoreReadContext): HydratedWorkflowRecovery {
@@ -740,26 +641,16 @@ function hydrateWorkflowRecovery(raw: RawWorkflowRecoveryEnvelope, ctx: StoreRea
     slotDetailsByJob.set(child.projection.job_id, detail);
   }
 
-  const providerSessionsById = new Map<string, ProviderSession>();
-  for (const sessionRow of raw.providerSessions) {
-    const row = projectionSessionStoredRowSchema.parse(sessionRow);
-    const entry = providerSessionSchema.parse(JSON.parse(row.entry) as unknown);
-    if (
-      entry.sessionId !== row.session_id ||
-      sessionControllerFromProfile(entry.controllerProfile) !== row.controller ||
-      (entry.state === 'ready' ? 1 : 0) !== row.resumable ||
-      (entry.conversationRef ?? null) !== row.conversation_ref
-    ) {
-      throw new TypeError(`Workflow recovery provider session '${row.session_id}' contradicts its projection.`);
-    }
-    if (providerSessionsById.has(row.session_id)) {
-      throw new TypeError(`Workflow recovery repeats provider session '${row.session_id}'.`);
-    }
-    providerSessionsById.set(row.session_id, entry);
+  const jobConversationsById = new Map<string, JobConversation>();
+  for (const evidence of raw.jobConversations) {
+    const entry = hydrateJobConversation(evidence);
+    if (jobConversationsById.has(entry.jobId))
+      throw new TypeError(`Workflow recovery repeats provider job '${entry.jobId}'.`);
+    jobConversationsById.set(entry.jobId, entry);
   }
 
   const eventsBySeq = new Map<number, EventsRow>();
-  for (const event of [...raw.job.events, ...raw.workflowEvents, ...raw.sessionEvents]) {
+  for (const event of [...raw.job.events, ...raw.workflowEvents]) {
     rowToCoralEvent(event, null);
     if (eventsBySeq.has(event.seq)) {
       throw new TypeError(`Workflow recovery repeats event sequence '${event.seq}'.`);
@@ -779,15 +670,14 @@ function hydrateWorkflowRecovery(raw: RawWorkflowRecoveryEnvelope, ctx: StoreRea
   const completion = completionRow === null ? null : decodeBody(completionRow, workflowCompletedBodySchema, ctx);
   const drain = drainRow === null ? null : decodeBody(drainRow, workflowDrainEnteredBodySchema, ctx);
   const recoveredContinuation = parseWorkflowRecoveryContinuation(raw);
-  const continuation =
-    recoveredContinuation ?? initialWorkflowContinuation(raw, providerSessionsById, slotDetailsByJob, rootProjectRoot);
+  const continuation = recoveredContinuation ?? initialWorkflowContinuation(raw, rootProjectRoot);
   return {
     envelope: raw,
     rootDetail,
     projection,
     childRows,
     slotDetailsByJob,
-    providerSessionsById,
+    jobConversationsById,
     completion,
     drain,
     continuation,
@@ -859,7 +749,6 @@ type RecoverAllOptions = {
   observation?: RecoveryObservation;
   db: Database;
   progressStore: StoreReadContext;
-  clearContinuationLease: (projectRoot: CanonicalWorkDir, input: ClearContinuationLeaseInput) => Promise<boolean>;
   finalizeWorkflow: (intent: WorkflowFinalizationIntent) => void;
   releaseFailedWorkflowDescendants: (workflowId: string) => readonly WorkflowRecoveryDescendantRelease[];
   signal?: AbortSignal;
@@ -873,14 +762,15 @@ const workflowRetryOptions = new WeakMap<Database, RecoverAllOptions>();
 function finalizationRecording(item: HydratedWorkflowRecovery): WorkflowRecoveryAtomicClose['recording'] {
   const status = item.rootDetail.status;
   const runtime = item.rootDetail.runtime;
-  if (status === null || runtime?.transport !== 'workflow') {
+  if (status === null || status.execution === null || runtime?.transport !== 'workflow') {
     throw new Error(`Workflow '${item.envelope.subject.key}' has no workflow runtime start.`);
   }
   if (!Number.isFinite(Date.parse(runtime.startTime))) {
     throw new Error(`Workflow '${item.envelope.subject.key}' has an invalid runtime start timestamp.`);
   }
   return {
-    namespace: status.backendNamespace,
+    execution: status.execution,
+    namespace: status.backendNamespace ?? undefined,
     project: status.projectRoot,
     startedAt: runtime.startTime,
   };
@@ -958,7 +848,7 @@ function recoverWorkflowFinalization(
       plan: projection.plan,
       childRows: item.childRows,
       slotDetailsByJob: item.slotDetailsByJob,
-      providerSessionsById: item.providerSessionsById,
+      jobConversationsById: item.jobConversationsById,
       completion: item.completion,
       drain: item.drain,
       jobIds: resolveWorkflowJobIds(projection.plan, options.ids, currentSlotJobIds),
@@ -984,9 +874,7 @@ function logWorkflowRecoveryClose(
   options: RecoverAllOptions,
 ): void {
   for (const released of item.descendantReleases) {
-    options.log?.(
-      `Workflow recovery child ${released.jobId} session claim ${released.sessionId} disposition: ${describeSessionJobClaimReleaseResult(released.sessionClaimRelease)}.\n`,
-    );
+    options.log?.(`Workflow recovery child ${released.jobId} released.\n`);
   }
   if (containedFailure !== null) {
     const outcomeDescription =
@@ -1003,7 +891,6 @@ async function settleWorkflowRecovery(
   quarantine: RecoveryQuarantineStore,
   closedWorkflowIds: string[],
 ): Promise<RecoveryDisposition> {
-  await clearPendingReplacementIntents(item, options);
   // Provider work requires a committed launch; a dead issuing writer cannot publish a missing child.
   if (
     item.continuationRecovered &&

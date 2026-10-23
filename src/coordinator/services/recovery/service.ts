@@ -1,14 +1,15 @@
 import { localProviderHostRoot } from '../../../infra/bundle-manifest.js';
 import type { ProviderRequest } from '../../../providers/contract.js';
-import type { ProviderContinuityBlob } from '../../../sessions/continuity.js';
+import type { ProviderContinuityBlob } from '../../../jobs/conversation/continuity.js';
 import { backendLog } from '../../../infra/backend-log.js';
 import { createMonotonicClock } from '../../../infra/monotonic-clock.js';
 import type { AppServerRuntime, JobLaunch, JobRuntime, JobTerminal } from '../../../jobs/records.js';
+import type { ExecutionFinisher } from '../../../jobs/finishing.js';
 import { isTerminalPhase } from '../../../jobs/phase.js';
 import { hasProviderOperationForJob, readProviderOperationForJob } from '../../../store/provider-operation-journal.js';
 import { isDurableCliRuntime } from '../../../runtime/durable-runtime.js';
 import type { DurableCliRuntimeRecord, DurableProcessExit } from '../../../runtime/durable-runtime.js';
-import { providerSessionProvider, type ProviderSession } from '../../../sessions/entry.js';
+import { jobConversationProvider, type JobConversation } from '../../../jobs/conversation/entry.js';
 import type { ProviderBindingCatalog } from '../../../providers/catalog.js';
 import type { ProviderBindingFailure } from '../../../providers/contracts/binding.js';
 import type {
@@ -18,7 +19,7 @@ import type {
   QueuedHandle,
 } from '../../../jobs/contracts/admission.js';
 import type { JobProgressStore } from '../../../jobs/contracts/job-store.js';
-import type { SessionRecoveryPort } from '../../../sessions/contracts.js';
+import type { ConversationRecoveryPort } from '../../../jobs/conversation/contracts.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import type { BoundProvider, BoundProviderHostPreparationInput } from '../../../providers/bound-provider-contract.js';
 import type { JobAbortRegistryPort } from '../../../jobs/contracts/abort-registry.js';
@@ -55,14 +56,15 @@ function requireProviderLaunchRecord(
   launchRecord: JobLaunch,
   operation: string,
 ): asserts launchRecord is ProviderRecoveryLaunch {
-  if (launchRecord.jobKind !== 'provider' || launchRecord.sessionId === null || launchRecord.provider === null) {
+  if (launchRecord.jobKind !== 'provider' || launchRecord.jobId === null || launchRecord.provider === null) {
     throw new Error(`${operation} requires a provider launch record.`);
   }
 }
 
 export interface RecoveryServiceDeps {
   runtime: Runtime;
-  sessionManager: SessionRecoveryPort;
+  executionFinisher: ExecutionFinisher;
+  conversationManager: ConversationRecoveryPort;
   abortRegistry: JobAbortRegistryPort;
   backendNamespace: string;
   bundleHash: string;
@@ -97,21 +99,20 @@ export class RecoveryService {
 
   private queuedRecoveryChildEnv(
     session: ProviderRecoverySession,
-    jobId: string,
+    launch: ProviderRecoveryLaunch,
   ): ProviderOperationProtectedEnvironment {
     const childCredential = this.deps.childPrincipalRegistry.register({
       issuer: 'job-recovery',
       parentPrincipal: this.deps.parentPrincipal,
       namespace: this.deps.backendNamespace,
-      parentJobId: jobId,
-      parentSessionId: session.sessionId,
+      parentJobId: launch.jobId,
+      execution: launch.execution,
       nowMs: this.deps.runtime.time.now(),
       childCaps: CHILD_PRINCIPAL_CAPABILITIES,
     });
     return {
       env: Object.freeze({
-        CORAL_JOB_ID: jobId,
-        CORAL_SESSION_ID: session.sessionId,
+        CORAL_JOB_ID: launch.jobId,
         [CORAL_CHILD_CREDENTIAL_ID]: childCredential.credentialId,
         [CORAL_CHILD_CREDENTIAL_KEY]: childCredential.privateKey,
       }),
@@ -119,22 +120,22 @@ export class RecoveryService {
     };
   }
 
-  private async readProviderSession(launchRecord: JobLaunch): Promise<
+  private async readJobConversation(launchRecord: JobLaunch): Promise<
     | {
         ok: true;
-        session: ProviderSession;
+        session: JobConversation;
         bound: BoundProvider;
         continuity: ProviderContinuityBlob | undefined;
       }
     | { ok: false; failure: ProviderBindingFailure }
   > {
     const provider = launchRecord.provider;
-    if (provider === null || launchRecord.sessionId === null) {
+    if (provider === null || launchRecord.jobId === null) {
       return { ok: false, failure: { reason: 'invalid-persisted-binding', provider: provider ?? 'unknown' } };
     }
-    const session = this.deps.sessionManager.readById(launchRecord.sessionId, { forceFresh: true });
+    const session = this.deps.conversationManager.readById(launchRecord.jobId);
     if (session === null) return { ok: false, failure: { reason: 'invalid-persisted-binding', provider } };
-    if (providerSessionProvider(session) !== launchRecord.provider) {
+    if (jobConversationProvider(session) !== launchRecord.provider) {
       return { ok: false, failure: { reason: 'invalid-persisted-binding', provider } };
     }
     const binding = this.deps.providerRegistry.rehydrateBinding(session.binding);
@@ -151,7 +152,7 @@ export class RecoveryService {
 
   async captureProviderRecoveryAuthority(launchRecord: JobLaunch): Promise<ProviderRecoveryAuthorityCapture> {
     requireProviderLaunchRecord(launchRecord, 'captureProviderRecoveryAuthority');
-    const result = await this.readProviderSession(launchRecord);
+    const result = await this.readJobConversation(launchRecord);
     if (result.ok) {
       return {
         ok: true,
@@ -236,12 +237,22 @@ export class RecoveryService {
   ): Promise<void> {
     const { launchRecord, boundProvider } = authority;
     const status = this.deps.progressStore.readStatus(launchRecord.jobId);
-    if (!status || isTerminalPhase(status.phase)) {
+    if (!status || isTerminalPhase(status.phase) || status.execution !== launchRecord.execution) {
       if (status && options.reason === 'handoff') {
         backendLog.warn(`skipping finalize for already-terminal job ${launchRecord.jobId} during handoff recovery`);
       }
       return;
     }
+
+    if (status.finishing === true && status.execution === launchRecord.execution) {
+      options.signal.throwIfAborted();
+      options.onCommitStart();
+      this.deps.abortRegistry.remove(launchRecord.jobId, launchRecord.execution);
+      this.deps.executionFinisher.schedule({ jobId: launchRecord.jobId, execution: launchRecord.execution });
+      return;
+    }
+
+    if (this.deps.executionFinisher.owns({ jobId: launchRecord.jobId, execution: launchRecord.execution })) return;
 
     const providerOperation = readProviderOperationForJob(this.deps.progressStore.getDb(), launchRecord.jobId);
     if (
@@ -280,11 +291,11 @@ export class RecoveryService {
     options.onCommitStart();
     await finalizeInterruptedAppServerRecovery(plan, performed, status, {
       runtime: this.deps.runtime,
-      sessionManager: this.deps.sessionManager,
+      conversationManager: this.deps.conversationManager,
+      executionFinisher: this.deps.executionFinisher,
       abortRegistry: this.deps.abortRegistry,
       launchAdmission: this.deps.launchAdmission,
       launchPermit: null,
-      publishTerminalResult: (jobId) => this.deps.progressStore.ensureResultArtifact(jobId),
     });
   }
 
@@ -308,12 +319,12 @@ export class RecoveryService {
         launchRecord,
         queuedHandle,
         pool,
-        this.queuedRecoveryChildEnv(session, jobId),
+        this.queuedRecoveryChildEnv(session, launchRecord),
       );
 
       return jobId;
     } catch (error: unknown) {
-      this.cleanupRecoveryRegistration(jobId, queuedHandle);
+      this.cleanupRecoveryRegistration(jobId, launchRecord.execution, queuedHandle);
       throw error;
     }
   }
@@ -333,6 +344,15 @@ export class RecoveryService {
     if (status === null) {
       throw new Error(`Interrupted durable recovery lost job status for ${launchRecord.jobId}.`);
     }
+    if (status.finishing === true && status.execution === launchRecord.execution) {
+      fence.signal.throwIfAborted();
+      fence.onCommitStart();
+      this.deps.abortRegistry.remove(launchRecord.jobId, launchRecord.execution);
+      this.deps.executionFinisher.schedule({ jobId: launchRecord.jobId, execution: launchRecord.execution });
+      return;
+    }
+    if (isTerminalPhase(status.phase) || status.execution !== launchRecord.execution) return;
+    if (this.deps.executionFinisher.owns({ jobId: launchRecord.jobId, execution: launchRecord.execution })) return;
     const plan = planInterruptedDurableRecovery(authority, runtimeRecord, observation, {
       recovery: boundProvider.recovery !== undefined,
     });
@@ -345,11 +365,11 @@ export class RecoveryService {
     fence.onCommitStart();
     await finalizeInterruptedDurableRecovery(plan, performed, status, {
       runtime: this.deps.runtime,
-      sessionManager: this.deps.sessionManager,
+      conversationManager: this.deps.conversationManager,
+      executionFinisher: this.deps.executionFinisher,
       abortRegistry: this.deps.abortRegistry,
       launchAdmission: this.deps.launchAdmission,
       launchPermit: null,
-      publishTerminalResult: (jobId) => this.deps.progressStore.ensureResultArtifact(jobId),
     });
   }
 
@@ -369,7 +389,7 @@ export class RecoveryService {
       permit = this.deps.launchRecovery.restoreActiveLaunch(jobId, launchRecord.provider, launchRecord.owner, pool);
       this.deps.progressStore.rebindNamespace(jobId, this.deps.backendNamespace, this.deps.bundleHash);
     } catch (error: unknown) {
-      this.cleanupRecoveryRegistration(jobId, null, permit);
+      this.cleanupRecoveryRegistration(jobId, launchRecord.execution, null, permit);
       throw error;
     }
 
@@ -379,13 +399,14 @@ export class RecoveryService {
       cleanup: () => {
         if (cleaned) return;
         cleaned = true;
-        this.cleanupRecoveryRegistration(jobId, null, permit);
+        this.cleanupRecoveryRegistration(jobId, launchRecord.execution, null, permit);
       },
     };
   }
 
   private cleanupRecoveryRegistration(
     jobId: string,
+    execution: number,
     queuedHandle: QueuedHandle | null = null,
     permit: LaunchPermit | null = null,
   ): void {
@@ -395,7 +416,7 @@ export class RecoveryService {
         const cancellation = queuedHandle.cancel();
         if (cancellation.kind === 'admitted') this.releaseRecoveryOwnership(cancellation.permit);
       }
-      this.deps.abortRegistry.remove(jobId);
+      this.deps.abortRegistry.remove(jobId, execution);
       if (permit !== null) this.releaseRecoveryOwnership(permit);
     } catch (error: unknown) {
       if (error instanceof RecoveryOwnershipReleaseError) throw error;

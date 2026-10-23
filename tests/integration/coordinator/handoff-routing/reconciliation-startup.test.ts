@@ -1,3 +1,4 @@
+import { createTestExecutionFinisher } from '#tests/helpers/execution-finisher.js';
 import { createServer } from 'node:http';
 import { expect, it, vi } from 'vitest';
 import { createCoordinatorCore } from '#src/coordinator/composition/index.js';
@@ -69,6 +70,10 @@ async function verifyReconciliationStartup(gateBeforeReadiness: boolean): Promis
     logs.filter((line) => line.includes(`kind=background phase=handoff-routing-reconciliation event=${event}`));
   const core = createCoordinatorCore(
     {
+      executionFinisher: createTestExecutionFinisher(
+        (): JobStore => core.storeServicesRef.get().progressStore,
+        runtime,
+      ),
       onFatalShutdownError: vi.fn(),
       storeFormat: currentCoralStoreFormat(),
       runtime,

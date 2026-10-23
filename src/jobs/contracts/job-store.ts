@@ -1,3 +1,5 @@
+import type { JobConversationFacet } from '../launch.js';
+import type { JobLocationSubject } from '../location-index.js';
 import type { RecoveryObservation } from '../../recovery/phase-observation.js';
 import type { Database } from '../../store/db.js';
 
@@ -9,8 +11,7 @@ import type { DurableCliProvisionalProcessRuntimeMeta } from '../runtime-meta.js
 
 type InitJobBase = {
   jobId: string;
-  sessionId: string;
-  provider: string;
+  conversation: JobConversationFacet;
   projectRoot: string;
   backendNamespace: string;
   bundleHash?: string;
@@ -24,6 +25,7 @@ export type TerminalWriteOptions = {
 };
 
 export interface JobProgressStore {
+  withExecutionAdmission(jobId: string, execution: number, subject: JobLocationSubject, action: () => void): void;
   getEventBus(): JobEventBus;
   getDb(): Database;
   jobDir(jobId: string): string;
@@ -36,7 +38,7 @@ export interface JobProgressStore {
     afterSeq?: number,
     observation?: RecoveryObservation,
   ): JobEvent[];
-  ensureResultArtifact(jobId: string, observation?: RecoveryObservation): string;
+  ensureResultArtifact(jobId: string, observation?: RecoveryObservation, execution?: number): string;
   commit(cb: <Scope>(c: CommitContext<Scope>) => CommitClosureResult): AppendedEvent[];
   initJob(opts: InitJobOptions): void;
   rollbackJob(jobId: string): void;
@@ -55,16 +57,5 @@ export interface JobProgressStore {
   rebindNamespace(jobId: string, newNamespace: string, newBundleHash?: string): void;
   listJobIds(): string[];
   liveJobCount(): number;
-  appendProgress(jobId: string, sessionId: string | null, message: string): number;
-  appendUnreadableStatusProgress(jobId: string, sessionId: string, message: string): number;
-  commitUnreadableStatusRecovery(
-    jobId: string,
-    cb: <Scope>(commit: CommitContext<Scope>) => CommitClosureResult,
-  ): readonly AppendedEvent[];
-  appendUnreadableStatusProgressInCommit<Scope>(
-    commit: CommitContext<Scope>,
-    jobId: string,
-    sessionId: string,
-    message: string,
-  ): void;
+  appendProgress(jobId: string, message: string): number;
 }

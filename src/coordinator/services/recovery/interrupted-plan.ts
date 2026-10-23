@@ -6,8 +6,8 @@ import type {
   ProviderRecoverySession,
 } from '../../../jobs/reconcile/contracts.js';
 import type { RecoveredAppServerFinalizationReason } from '../../../jobs/reconcile/interrupted-reason.js';
-import type { ProviderContinuityBlob } from '../../../sessions/continuity.js';
-import { readContinuityRef } from '../../../sessions/continuity.js';
+import type { ProviderContinuityBlob } from '../../../jobs/conversation/continuity.js';
+import { readContinuityRef } from '../../../jobs/conversation/continuity.js';
 import type { ProviderOperationRecord } from '../../../store/provider-operation-record.js';
 
 export type ProviderOperationCarrierRecord = Extract<
@@ -22,7 +22,6 @@ type InterruptedRecoveryPlanBase = Readonly<{
   reason: RecoveredAppServerFinalizationReason;
   continuity: ProviderContinuityBlob | undefined;
   preservedConversationRef: string | undefined;
-  expectedSessionVersion: number;
 }>;
 
 export type AppServerInterruptedRecoveryPlan =
@@ -38,7 +37,6 @@ type DurableInterruptedRecoveryPlanBase = Readonly<{
   launchRecord: ProviderRecoveryLaunch;
   session: ProviderRecoverySession;
   runtimeRecord: DurableCliRuntimeRecord;
-  expectedSessionVersion: number;
 }>;
 
 export type DurableInterruptedRecoveryPlan =
@@ -64,7 +62,6 @@ export function planInterruptedAppServerRecovery(
     reason,
     continuity,
     preservedConversationRef: readContinuityRef(session.conversationRef),
-    expectedSessionVersion: session.version,
   } as const;
 
   if (!capabilities.recovery) return Object.freeze({ ...common, kind: 'unsupported' });
@@ -88,7 +85,6 @@ export function planInterruptedDurableRecovery(
     launchRecord: authority.launchRecord,
     session: authority.session,
     runtimeRecord,
-    expectedSessionVersion: authority.session.version,
   } as const;
 
   if (observation.terminal !== null) {

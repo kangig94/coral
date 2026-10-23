@@ -160,10 +160,16 @@ export function deleteDurableCliContainmentStatus(db: Database, jobId: string): 
 
 /** Terminal cleanup must remain idempotent for jobs that never captured durable identity. */
 export function deleteDurableCliProcessRuntimeMeta(db: Database, jobId: string): void {
-  withImmediate(db, () => {
+  db.exec('SAVEPOINT durable_cli_runtime_cleanup');
+  try {
     db.prepare<[string]>('DELETE FROM meta WHERE key = ?').run(durableCliProcessRuntimeMetaKey(jobId));
     db.prepare<[string]>('DELETE FROM meta WHERE key = ?').run(durableCliProcessRuntimeMetaV1Key(jobId));
     db.prepare<[string]>('DELETE FROM meta WHERE key = ?').run(durableCliProvisionalProcessRuntimeMetaKey(jobId));
     deleteDurableCliContainmentStatus(db, jobId);
-  });
+    db.exec('RELEASE durable_cli_runtime_cleanup');
+  } catch (error: unknown) {
+    db.exec('ROLLBACK TO durable_cli_runtime_cleanup');
+    db.exec('RELEASE durable_cli_runtime_cleanup');
+    throw error;
+  }
 }

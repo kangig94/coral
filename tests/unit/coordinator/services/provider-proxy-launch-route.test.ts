@@ -21,8 +21,7 @@ const request: AppServerProxyRouteRequest = {
   jobId: randomUUID(),
   operationId: randomUUID(),
   jobLaunchEventSeq: 41,
-  sessionId: randomUUID(),
-  sessionVersion: 3,
+  execution: 3,
   hostSpec: {
     provider: 'codex',
     command: 'codex',
@@ -34,7 +33,7 @@ const request: AppServerProxyRouteRequest = {
   binding: { provider: 'codex', kind: 'account', binding: { account: 'acct-1' } },
   request: {
     action: 'exec',
-    sessionId: 'session-1',
+    jobId: 'session-1',
     prompt: 'do the thing',
     cwd: fixtureCanonicalWorkDir(TEST_WORKSPACE),
     bypassPermissions: false,

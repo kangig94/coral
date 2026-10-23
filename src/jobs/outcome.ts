@@ -4,10 +4,12 @@ import { assertNever } from '../infra/error-format.js';
 import { ensureSentence } from '../infra/text.js';
 import {
   causeRefSchema,
+  durableCauseRefSchema,
   renderCauseRefFallback,
   type CauseRef,
   type ResolvableCauseRef,
 } from '../causality/cause-ref.js';
+import { executionOrdinalSchema } from './launch.js';
 import type { JobPhase } from './phase.js';
 import { providerBindingFailureReasonSchema } from '../providers/contracts/binding.js';
 
@@ -66,7 +68,7 @@ export const terminalOutcomeSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('completed') }).strict(),
   z.object({ kind: z.literal('aborted'), reason: abortReasonSchema }).strict(),
   z.object({ kind: z.literal('provider_exit'), code: z.number(), note: z.string().optional() }).strict(),
-  z.object({ kind: z.literal('failed'), causeRef: causeRefSchema }).strict(),
+  z.object({ kind: z.literal('failed'), causeRef: durableCauseRefSchema }).strict(),
   z.object({ kind: z.literal('job_fault'), fault: jobLifecycleFaultSchema }).strict(),
 ]);
 export type TerminalOutcome = z.infer<typeof terminalOutcomeSchema>;
@@ -96,10 +98,6 @@ export function phaseForOutcome(outcome: TerminalOutcome): Extract<JobPhase, 'co
     default:
       return assertNever(outcome);
   }
-}
-
-export function describeLaunchRejected(rejected: JobLaunchRejected): string {
-  return `Launch rejected (${rejected.provider} busy: ${rejected.globalActive}/${rejected.globalLimit}).`;
 }
 
 export function describeJobProgressFault(fault: JobProgressFault): string {
@@ -163,8 +161,17 @@ export function describeTerminalOutcome(
 
 export const jobAbortedBodySchema = z
   .object({
+    execution: executionOrdinalSchema,
     reason: abortReasonSchema,
   })
   .strict();
 
 export type JobAbortedBody = z.infer<typeof jobAbortedBodySchema>;
+
+export const executionOutcomeSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('completed') }).strict(),
+  z.object({ kind: z.literal('aborted'), reason: abortReasonSchema }).strict(),
+  z.object({ kind: z.literal('provider_exit'), code: z.number(), note: z.string().optional() }).strict(),
+  z.object({ kind: z.literal('failed'), causeRef: causeRefSchema }).strict(),
+  z.object({ kind: z.literal('job_fault'), fault: jobLifecycleFaultSchema }).strict(),
+]);

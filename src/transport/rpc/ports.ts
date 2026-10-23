@@ -2,9 +2,8 @@ import type { WaitAdmission, WaitSnapshot } from '../../jobs/wait/session.js';
 import type { WaitSnapshotRequest } from '../../jobs/wait/contract.js';
 import type { DiscussDetailResponse, DiscussSummaryDto, DiscussView } from '../../discuss/read-contract.js';
 import type { ExpansionRequestPort } from '../../expansion/rpc-contract.js';
-import type { JobLaunchRequest, ProviderSessionLaunchDecision, WorkflowLaunchDecision } from '../../jobs/launch.js';
-import type { JobsReleaseResult } from '../../jobs/records.js';
-import type { JobStatus } from '../../jobs/records.js';
+import type { JobLaunchRequest, ProviderJobLaunchDecision, WorkflowLaunchDecision } from '../../jobs/launch.js';
+import type { JobsReleaseResult, JobsListResponse } from '../../jobs/records.js';
 import type { WaitStreamEvent, CanonicalWaitStreamRequest } from '../../jobs/wait/contract.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type { Principal } from '../../security/principal.js';
@@ -30,7 +29,8 @@ import type {
 import type { JobScopeRelation, ScopeCheckResult } from '../../jobs/scope.js';
 import type { JobsListFilters } from '../../jobs/read-queries.js';
 import type { JobDetailLookup } from '../../jobs/contracts/addressing.js';
-import type { ProxyOperationSendResult } from '../../provider-proxy/protocol.js';
+import type { JobSendResult } from '../../jobs/send.js';
+import type { JobSendTarget } from '../../jobs/send-target.js';
 
 type SessionStartInput = Pick<
   JobLaunchRequest,
@@ -56,7 +56,7 @@ interface SessionRequestPort {
     input: SessionStartInput,
     ctx: InvocationContext,
     signal?: AbortSignal,
-  ): Promise<ProviderSessionLaunchDecision>;
+  ): Promise<ProviderJobLaunchDecision>;
 }
 
 interface JobsRequestPort {
@@ -65,14 +65,20 @@ interface JobsRequestPort {
   scopeCheck(jobIds: string[], callerRoot: CanonicalWorkDir, relation: JobScopeRelation): ScopeCheckResult;
   abort(jobIds: string[]): AbortDecision;
   send(
-    request: Readonly<{ projectRoot: CanonicalWorkDir; jobId: string; input: string; clientMessageId: string }>,
+    request: Readonly<{
+      projectRoot: CanonicalWorkDir;
+      jobId: string;
+      input: string;
+      clientMessageId: string;
+      target: JobSendTarget;
+    }>,
     ctx: InvocationContext,
-  ): Promise<ProxyOperationSendResult>;
+  ): Promise<JobSendResult>;
   release(jobIds: string[]): JobsReleaseResult;
   waitStream(req: CanonicalWaitStreamRequest): AsyncGenerator<WaitStreamEvent>;
 
   waitHandoverSignal(): AbortSignal;
-  list(filters: JobsListFilters): Array<{ jobId: string; status: JobStatus; released?: boolean }>;
+  list(filters: JobsListFilters): JobsListResponse['jobs'];
   detail(jobId: string): JobDetailLookup;
   unknownJobDisposition(): 'pre-epoch-history' | 'not-found' | 'discovery-unknown' | 'discovery-unreadable';
   unknownJobCaveat?(): string;

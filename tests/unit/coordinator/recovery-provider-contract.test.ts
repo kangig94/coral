@@ -1,3 +1,10 @@
+import { executionHarness, openedJob, requestedExecution } from '#tests/helpers/job-executions.js';
+import { ExecutionFinisher, readExecutionFinishingState } from '#src/jobs/finishing.js';
+import { testJobConversation } from '#tests/helpers/session.js';
+import { TEST_CODEX_BINDING } from '#tests/helpers/provider-credentials.js';
+import { JobStore } from '#src/jobs/store.js';
+import { ConversationManager } from '#src/jobs/conversation/shell.js';
+import { AbortRegistry } from '#src/jobs/shell/abort-registry.js';
 import type { ProcessIncarnation, ProcessLiveness } from '#src/infra/node-process.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -25,7 +32,7 @@ import type {
   BoundProviderRecovery,
 } from '#src/providers/bound-provider-contract.js';
 import type { HostRef } from '#src/providers/contract.js';
-import type { ProviderSession } from '#src/sessions/entry.js';
+import type { JobConversation } from '#src/jobs/conversation/entry.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { bindingSuccess } from '#src/providers/contracts/binding.js';
 import { validatedTestContinuityBlob } from '#tests/helpers/session.js';
@@ -45,9 +52,9 @@ const TEST_PROJECT = mkdtempSync(join(tmpdir(), 'coral-recovery-provider-contrac
 afterAll(() => rmSync(TEST_PROJECT, { recursive: true, force: true }));
 
 const launchRecord = {
-  jobId: 'job-recovery-contract',
-  owner: { kind: 'provider-session', id: 'session-recovery-contract' },
-  sessionId: 'session-recovery-contract',
+  jobId: 'ed778316-48fd-50c8-90a1-ce885a4b6f2c',
+  owner: { kind: 'provider-session', id: 'ed778316-48fd-50c8-90a1-ce885a4b6f2c' },
+  execution: 1,
   provider: 'fixture',
   projectRoot: TEST_PROJECT,
   backendNamespace: 'namespace',
@@ -85,14 +92,15 @@ const durableRuntime = {
   startTime: '2026-07-22T00:00:00.000Z',
 } as const;
 
-const session = {
-  sessionId: 'session-recovery-contract',
+const session = testJobConversation(launchRecord.jobId, {
+  provider: 'fixture',
+  binding: { ...TEST_CODEX_BINDING, provider: 'fixture' },
+  execution: 1,
+  open: true,
   projectRoot: TEST_PROJECT,
-  conversationRef: undefined,
-  providerContinuity: { checkpoint: 'persisted' },
-  artifactHandles: [],
-  version: 1,
-} as unknown as ProviderSession;
+  cwd: fixtureCanonicalWorkDir(TEST_PROJECT),
+  providerContinuity: validatedTestContinuityBlob({ checkpoint: 'persisted' }),
+});
 
 const providerOperationCarrier = providerOperationRecord('executing') as ProviderOperationCarrierRecord;
 
@@ -115,7 +123,7 @@ function serviceWithCapability(appServer: BoundProviderAppServerCapability, boun
     reapCarrier,
     decide: (
       runtimeRecord: AppServerRuntime,
-      nextSession: ProviderSession = session,
+      nextSession: JobConversation = session,
       providerOperation: ProviderOperationCarrierRecord | null = null,
     ) => {
       const authority = {
@@ -163,7 +171,6 @@ describe('interrupted recovery planning', () => {
     const plan = planInterruptedAppServerRecovery(authority, acquiredRuntime, 'restart', { recovery: true }, null);
     expect(plan).toMatchObject({
       kind: 'interrupted',
-      expectedSessionVersion: 1,
       continuity: { checkpoint: 'persisted' },
     });
   });
@@ -235,7 +242,7 @@ describe('interrupted recovery planning', () => {
   ] as const)('plans %s deterministically', (_label, observation, hasRecovery, expectedKind) => {
     expect(
       planInterruptedDurableRecovery(authority, durableRuntime, observation, { recovery: hasRecovery }),
-    ).toMatchObject({ kind: expectedKind, expectedSessionVersion: 1 });
+    ).toMatchObject({ kind: expectedKind, launchRecord: expect.objectContaining({ execution: 1 }) });
   });
 
   it('routes durable exit evidence to provider artifact interpretation', async () => {
@@ -311,7 +318,7 @@ describe('interrupted provider recovery', () => {
       serviceWithCapability(appServer, boundRecovery).decide(waitingRuntime, {
         ...session,
         providerContinuity: null,
-      } as ProviderSession),
+      } as JobConversation),
     ).resolves.toMatchObject({ kind: 'resolved', mutation: { kind: 'clear_non_resumable' } });
     expect(appServer.openReplacement).not.toHaveBeenCalled();
     expect(boundRecovery.finalizeFromArtifacts).not.toHaveBeenCalled();
@@ -366,32 +373,47 @@ describe('interrupted provider recovery', () => {
 });
 
 describe('interrupted recovery settlement ownership', () => {
-  const status = {
-    jobId: launchRecord.jobId,
-    owner: launchRecord.owner,
-    sessionId: launchRecord.sessionId,
-    provider: launchRecord.provider,
-    projectRoot: launchRecord.projectRoot,
-    workDir: fixtureCanonicalWorkDir(launchRecord.request.cwd),
-    backendNamespace: launchRecord.backendNamespace,
-    jobKind: launchRecord.jobKind,
-    phase: 'running',
-    updatedAt: launchRecord.createdAt,
-    lastSeq: 1,
-  } as const;
-
-  function finalizerFixture(options: { releaseError?: Error; artifactNextVersion?: number } = {}) {
+  function finalizerFixture(options: { releaseError?: Error } = {}) {
     const runtime = new SimulationRuntime();
-    const finalizeJobContinuityAtomic = vi.fn(async () => true);
-    const recordArtifactHandleAtomic = vi.fn(async () => ({
-      ok: true as const,
-      nextVersion: options.artifactNextVersion ?? session.version + 1,
-    }));
-    const abortRegistry = {
-      remove: vi.fn(() => {
-        if (options.releaseError !== undefined) throw options.releaseError;
-      }),
-    };
+    const journal = executionHarness();
+    const stream = { kind: 'job', id: launchRecord.jobId } as const;
+    journal.append(
+      {
+        ...openedJob({
+          owner: launchRecord.owner,
+          projectRoot: TEST_PROJECT,
+          conversation: {
+            provider: session.provider,
+            binding: session.binding,
+            cwd: session.cwd,
+            name: session.name,
+            bypassPermissions: false,
+            retention: 'retain',
+          },
+        }),
+        stream,
+      },
+      { ...requestedExecution(1), stream },
+    );
+    const store = new JobStore('namespace', runtime, journal.ctx.bodyCodec, {
+      db: journal.db,
+      reducers: journal.ctx.reducers,
+      providers: journal.ctx.providers,
+    });
+    const conversationManager = new ConversationManager(
+      TEST_PROJECT,
+      runtime,
+      (write) => store.commit(write),
+      journal.db,
+    );
+    const abortRegistry = new AbortRegistry();
+    abortRegistry.register(launchRecord.jobId, 1);
+    const remove = vi.spyOn(abortRegistry, 'remove');
+    const releaseError = options.releaseError;
+    if (releaseError !== undefined)
+      remove.mockImplementation(() => {
+        throw releaseError;
+      });
     const launchCoordinator = new LaunchCoordinator({ runtime });
     const launchPermit = launchCoordinator.restoreActiveLaunch(
       launchRecord.jobId,
@@ -399,105 +421,111 @@ describe('interrupted recovery settlement ownership', () => {
       launchRecord.owner,
       launchRecord.pool,
     );
-    const launchAdmission = launchCoordinator;
-    const releaseLaunch = vi.spyOn(launchCoordinator, 'releaseLaunch');
+    const executionFinisher = new ExecutionFinisher({
+      time: runtime.time,
+      commit: (write) => store.commit(write),
+      read: (address) => readExecutionFinishingState(journal.db, address, store),
+      quiesce: async (address) =>
+        !abortRegistry.has(address.jobId, address.execution) &&
+        launchCoordinator.reservationFor(address.jobId) === null,
+      retentionAction: async () => ({ attempt: 0, handles: [] }),
+      settleRetention: async () => ({ kind: 'completed', outcome: 'skipped_no_handles' }),
+    });
     const plan = planInterruptedDurableRecovery(
-      {
-        launchRecord,
-        session,
-        boundProvider: { name: 'fixture' } as BoundProvider,
-      } as ProviderRecoveryAuthority,
+      { launchRecord, session, boundProvider: { name: 'fixture' } as BoundProvider },
       durableRuntime,
-      {
-        exit: { exitCode: 0, signal: null, endTime: '2026-07-22T00:01:00.000Z' },
-        terminal: null,
-        cancelled: false,
-      },
+      { exit: { exitCode: 0, signal: null, endTime: '2026-07-22T00:01:00.000Z' }, terminal: null, cancelled: false },
       { recovery: true },
     );
     const performed = {
       kind: 'durable-resolved',
-      terminal: {
-        kind: 'direct',
-        value: { content: 'recovered', durationMs: 60_000, outcome: { kind: 'completed' } },
-      },
+      terminal: { kind: 'direct', value: { content: 'recovered', durationMs: 60_000, outcome: { kind: 'completed' } } },
       mutation: { kind: 'preserve' },
       artifactHandles: [{ handle: '/derived/report', identity: { kind: 'fixture' }, sourceJobId: launchRecord.jobId }],
     } as const;
+    const status = store.readStatus(launchRecord.jobId);
+    if (status === null) throw new Error('Expected an open execution');
     return {
+      journal,
+      store,
+      status,
       plan,
       performed,
-      finalizeJobContinuityAtomic,
-      recordArtifactHandleAtomic,
       abortRegistry,
-      launchAdmission,
+      remove,
+      launchCoordinator,
       launchPermit,
-      releaseLaunch,
+      finish: async () => {
+        runtime.time.tick(500);
+        await executionFinisher.finish(launchRecord);
+      },
       deps: {
         runtime,
-        sessionManager: { finalizeJobContinuityAtomic, recordArtifactHandleAtomic },
-        publishTerminalResult: vi.fn((jobId: string) => `/jobs/${jobId}/result.md`),
+        conversationManager,
+        executionFinisher,
         abortRegistry,
-        launchAdmission,
+        launchAdmission: launchCoordinator,
         launchPermit,
       },
     };
   }
 
-  it('persists artifact handles before final settlement with the exact returned CAS version', async () => {
+  it('persists artifact handles before accepting the recovered outcome and releasing ownership', async () => {
     const fixture = finalizerFixture();
-
-    await finalizeInterruptedDurableRecovery(fixture.plan, fixture.performed, status, fixture.deps as never);
-
-    expect(fixture.recordArtifactHandleAtomic).toHaveBeenCalledOnce();
-    expect(fixture.recordArtifactHandleAtomic).toHaveBeenCalledWith(
-      session.sessionId,
-      expect.objectContaining({
-        expectedActiveJobId: launchRecord.jobId,
-        expectedVersion: session.version,
-        handle: '/derived/report',
-        sourceJobId: launchRecord.jobId,
-      }),
-    );
-    expect(fixture.finalizeJobContinuityAtomic).toHaveBeenCalledOnce();
-    expect(fixture.finalizeJobContinuityAtomic).toHaveBeenCalledWith(
-      session.sessionId,
-      expect.objectContaining({
-        expectedActiveJobId: launchRecord.jobId,
-        expectedVersion: session.version + 1,
-        appendBeforeRelease: expect.any(Function),
-      }),
-    );
-    expect(fixture.recordArtifactHandleAtomic.mock.invocationCallOrder[0]).toBeLessThan(
-      fixture.finalizeJobContinuityAtomic.mock.invocationCallOrder[0],
-    );
-    expect(fixture.abortRegistry.remove).toHaveBeenCalledWith(launchRecord.jobId);
-    expect(fixture.launchPermit.reservationId).not.toBe('');
-    expect(fixture.launchAdmission.reservationFor(launchRecord.jobId)).toBeNull();
+    try {
+      await finalizeInterruptedDurableRecovery(fixture.plan, fixture.performed, fixture.status, fixture.deps);
+      await fixture.finish();
+      const effects = fixture.journal
+        .events()
+        .filter((event) =>
+          ['job.artifact.recorded', 'job.execution.outcome.accepted', 'job.execution.ended'].includes(event.type),
+        );
+      expect(effects.map((event) => event.type)).toEqual([
+        'job.artifact.recorded',
+        'job.execution.outcome.accepted',
+        'job.execution.ended',
+      ]);
+      expect(effects[0]?.body).toMatchObject({ execution: 1, handle: '/derived/report' });
+      expect(fixture.remove).toHaveBeenCalledWith(launchRecord.jobId, 1);
+      expect(fixture.launchPermit.reservationId).not.toBe('');
+      expect(fixture.launchCoordinator.reservationFor(launchRecord.jobId)).toBeNull();
+    } finally {
+      fixture.journal.db.close();
+    }
   });
 
-  it('uses an unchanged artifact replay version for the final settlement CAS', async () => {
-    const fixture = finalizerFixture({ artifactNextVersion: session.version });
-
-    await finalizeInterruptedDurableRecovery(fixture.plan, fixture.performed, status, fixture.deps as never);
-
-    expect(fixture.recordArtifactHandleAtomic).toHaveBeenCalledWith(
-      session.sessionId,
-      expect.objectContaining({ expectedVersion: session.version }),
-    );
-    expect(fixture.finalizeJobContinuityAtomic).toHaveBeenCalledWith(
-      session.sessionId,
-      expect.objectContaining({ expectedVersion: session.version }),
-    );
+  it('deduplicates already recorded artifact evidence for the same execution', async () => {
+    const fixture = finalizerFixture();
+    try {
+      await fixture.deps.conversationManager.recordArtifactHandleAtomic(launchRecord.jobId, {
+        execution: 1,
+        handle: '/derived/report',
+        identity: { kind: 'fixture' },
+      });
+      await finalizeInterruptedDurableRecovery(fixture.plan, fixture.performed, fixture.status, fixture.deps);
+      await fixture.finish();
+      expect(fixture.journal.events().filter((event) => event.type === 'job.artifact.recorded')).toHaveLength(1);
+      expect(fixture.store.readStatus(launchRecord.jobId)?.phase).toBe('completed');
+    } finally {
+      fixture.journal.db.close();
+    }
   });
 
   it('surfaces incomplete process-local release as fatal after durable settlement', async () => {
     const fixture = finalizerFixture({ releaseError: new Error('abort registry unavailable') });
-
-    await expect(
-      finalizeInterruptedDurableRecovery(fixture.plan, fixture.performed, status, fixture.deps as never),
-    ).rejects.toBeInstanceOf(RecoveryOwnershipReleaseError);
-    expect(fixture.finalizeJobContinuityAtomic).toHaveBeenCalledOnce();
+    try {
+      await expect(
+        finalizeInterruptedDurableRecovery(fixture.plan, fixture.performed, fixture.status, fixture.deps),
+      ).rejects.toBeInstanceOf(RecoveryOwnershipReleaseError);
+      expect(fixture.store.readStatus(launchRecord.jobId)?.finishing).toBe(true);
+      expect(fixture.journal.events().filter((event) => event.type === 'job.execution.outcome.accepted')).toHaveLength(
+        1,
+      );
+      expect(fixture.journal.events().filter((event) => event.type === 'job.execution.ended')).toHaveLength(0);
+      expect(fixture.launchCoordinator.reservationFor(launchRecord.jobId)).toMatchObject({ kind: 'active' });
+    } finally {
+      fixture.journal.db.close();
+    }
   });
 });
 

@@ -1,3 +1,5 @@
+import { requestedExecution } from '#tests/helpers/job-executions.js';
+import { testConversationFacet } from '#tests/helpers/session.js';
 import { createServer } from 'node:http';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -10,12 +12,10 @@ import type { JobsStartupContext } from '#src/jobs/startup.js';
 import { createCoordinatorServer } from '#src/coordinator/index.js';
 import { workflowRecover } from '#src/workflow/recover.js';
 import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-supervisor.js';
-import { sessionContinuationLeaseRecordedEvent } from '#src/sessions/continuation-lease-events.js';
-import { providerSessionSchema } from '#src/sessions/entry.js';
-import { appendRetentionDiscardRequested, appendRetentionDiscardCompleted } from '#src/sessions/retention-outbox.js';
-import { TEST_CODEX_BINDING } from '#tests/helpers/provider-credentials.js';
+import { readProjectionJobConversation } from '#src/jobs/conversation/read-queries.js';
+import { appendJobExecutionOutcomeAccepted } from '#src/jobs/terminal/recording.js';
 
-import { LifecycleReactor } from '#src/sessions/lifecycle-reactor.js';
+import { LifecycleReactor } from '#src/jobs/conversation/lifecycle-reactor.js';
 import { ExecutionService } from '#src/coordinator/execution-service.js';
 import { RecoveryService } from '#src/coordinator/services/recovery/service.js';
 import { LaunchOrchestrator } from '#src/jobs/shell/launch.js';
@@ -28,7 +28,7 @@ import * as locationRecovery from '#src/jobs/location-recovery.js';
 import * as discussRecovery from '#src/discuss/shell/recovery.js';
 import { makeEvent } from '#src/discuss/events.js';
 import { toJournalInput } from '#src/discuss/event-registry.js';
-import { initTestJob, seedTestSessionProjection } from '#tests/helpers/session.js';
+import { initTestJob } from '#tests/helpers/session.js';
 import { commitJobTerminal } from '#tests/helpers/job-commits.js';
 import { TEST_CODEX_SCOPE } from '#tests/helpers/provider-credentials.js';
 import * as storeEpochSweep from '#src/coordinator/composition/store-epoch-sweep-scheduler.js';
@@ -63,7 +63,7 @@ afterEach(async () => {
   }
 });
 
-describe('coordinator pending workflow replacement recovery', () => {
+describe('coordinator pending workflow execution recovery', () => {
   it.each([false, true])('recovers a queued workflow child with transferred=%s', async (transferred) => {
     const home = mkdtempSync(join(tmpdir(), 'coral-startup-queued-workflow-home-'));
     const pluginRoot = mkdtempSync(join(tmpdir(), 'coral-startup-queued-workflow-plugin-'));
@@ -77,9 +77,8 @@ describe('coordinator pending workflow replacement recovery', () => {
     vi.stubEnv('HOME', home);
     const runtime = createRealRuntime('prod', { baseDir: home });
     const projectRoot = canonicalizeWorkDir(home, home);
-    const workflowId = 'workflow-queued-child';
+    const workflowId = '10000000-0000-4000-8000-000000000003';
     const childId = '00000000-0000-4000-8000-000000000002';
-    const sessionId = 'queued-workflow-session';
     let startupOptions: JobsStartupContext | undefined;
     const createJobsStartupRunner = jobsStartup.createJobsStartupRunner;
     vi.spyOn(jobsStartup, 'createJobsStartupRunner').mockImplementation((runRecovery) => {
@@ -97,7 +96,6 @@ describe('coordinator pending workflow replacement recovery', () => {
         options.progressStore.appendLaunchRequested(workflowId, {
           jobId: workflowId,
           owner: { kind: 'workflow', id: workflowId },
-          sessionId: null,
           provider: null,
           projectRoot,
           backendNamespace: options.namespace,
@@ -106,29 +104,43 @@ describe('coordinator pending workflow replacement recovery', () => {
           enqueueSequence: options.progressStore.nextEnqueueSequence(),
           request: { prompt: '', cwd: projectRoot, bypassPermissions: false, coralEnv: {} },
           createdAt,
+          execution: 1,
         });
         options.coordinatorCommit((c) => {
           c.append({
-            type: 'job.runtime.started',
+            type: 'job.execution.started',
             stream: { kind: 'job', id: workflowId },
             namespace: options.namespace,
             project: projectRoot,
             refs: { jobId: workflowId, workflowId },
-            body: { transport: 'workflow', startedAt: createdAt },
+            body: { execution: 1, transport: 'workflow', startedAt: createdAt },
           });
           return undefined;
         });
-        seedTestSessionProjection(options.progressStore.getDb(), {
-          sessionId,
-          provider: 'codex',
-          projectRoot,
-          backendNamespace: options.namespace,
-          activeJobId: childId,
-        });
+        options.progressStore.withExecutionAdmission(
+          childId,
+          1,
+          { projectRoot, workDir: projectRoot, jobKind: 'provider' },
+          () =>
+            options.coordinatorCommit((c) => {
+              c.append({
+                type: 'job.opened',
+                stream: { kind: 'job', id: childId },
+                body: {
+                  owner: { kind: 'workflow', id: workflowId },
+                  projectRoot,
+                  createdAt: new Date(runtime.time.now()).toISOString(),
+                  jobKind: 'provider',
+                  workflowSlotId: plan.slots[0].slotId,
+                  conversation: testConversationFacet('codex', projectRoot),
+                },
+              });
+              return undefined;
+            }),
+        );
         options.progressStore.appendLaunchRequested(childId, {
           jobId: childId,
           owner: { kind: 'workflow', id: workflowId },
-          sessionId,
           provider: 'codex',
           projectRoot,
           backendNamespace: options.namespace,
@@ -138,18 +150,18 @@ describe('coordinator pending workflow replacement recovery', () => {
           providerAction: 'exec',
           parentWorkflowJobId: workflowId,
           workflowSlotId: plan.slots[0].slotId,
-          workflowSlotGeneration: 0,
           request: { prompt: '', cwd: projectRoot, bypassPermissions: false, coralEnv: {} },
           createdAt,
+          execution: 1,
         });
         options.coordinatorCommit((c) => {
           c.append({
-            type: 'job.queue.queued',
+            type: 'job.execution.queued',
             stream: { kind: 'job', id: childId },
             namespace: options.namespace,
             project: projectRoot,
-            refs: { jobId: childId, sessionId },
-            body: { queuePosition: 1, runningJobIds: [] },
+            refs: { jobId: childId },
+            body: { execution: 1, queuePosition: 1, runningJobIds: [] },
           });
           return undefined;
         });
@@ -166,13 +178,7 @@ describe('coordinator pending workflow replacement recovery', () => {
                 result: { outcome: { kind: 'job_fault', fault: { kind: 'ghost_launch' } } },
               },
         );
-        const row = options.progressStore
-          .getDb()
-          .prepare<[string], { entry: string }>('SELECT entry FROM projection_sessions WHERE session_id = ?')
-          .get(sessionId);
-        expect(providerSessionSchema.parse(JSON.parse(row?.entry ?? 'null')).activeJobId).toBe(
-          transferred ? childId : undefined,
-        );
+        expect(readProjectionJobConversation(options.progressStore.getDb(), childId)?.open).toBe(transferred);
         return result;
       };
     });
@@ -197,13 +203,7 @@ describe('coordinator pending workflow replacement recovery', () => {
       await coordinator.start();
       if (startupOptions === undefined) throw new Error('Expected jobs startup recovery.');
       expect(startupOptions.progressStore.readStatus(workflowId)?.phase).toBe('error');
-      const row = startupOptions.progressStore
-        .getDb()
-        .prepare<[string], { entry: string }>('SELECT entry FROM projection_sessions WHERE session_id = ?')
-        .get(sessionId);
-      expect(providerSessionSchema.parse(JSON.parse(row?.entry ?? 'null')).activeJobId).toBe(
-        transferred ? childId : undefined,
-      );
+      expect(readProjectionJobConversation(startupOptions.progressStore.getDb(), childId)?.open).toBe(transferred);
       expect(restoreQueued).not.toHaveBeenCalled();
       expect(recoverQueued).not.toHaveBeenCalled();
       expect(executeQueued).not.toHaveBeenCalled();
@@ -214,7 +214,7 @@ describe('coordinator pending workflow replacement recovery', () => {
     }
   });
 
-  it('passes a journal-written pending replacement lease to workflow recovery', async () => {
+  it('passes a journal-written pending execution to workflow recovery', async () => {
     const home = mkdtempSync(join(tmpdir(), 'coral-startup-replacement-home-'));
     const pluginRoot = mkdtempSync(join(tmpdir(), 'coral-startup-replacement-plugin-'));
     tempRoots.push(home, pluginRoot);
@@ -228,64 +228,41 @@ describe('coordinator pending workflow replacement recovery', () => {
 
     const runtime = createRealRuntime('prod', { baseDir: join(home, '.coral') });
     const runStartup = vi.fn(async (options: JobsStartupContext) => {
-      const opened = providerSessionSchema.parse({
-        sessionId: 'pending-replacement-session',
-        binding: TEST_CODEX_BINDING,
-        name: 'pending-replacement-session',
-        state: 'pending',
-        retention: 'retain',
-        artifactHandles: [],
-        retentionDiscard: { attempts: [] },
-        cwd: home,
+      initTestJob(options.progressStore, {
+        jobId: '10000000-0000-4000-8000-000000000005',
+        conversation: testConversationFacet('codex', home),
         projectRoot: home,
-        backendNamespace: 'startup-ordering',
-        providerContinuity: null,
-        createdAt: '2026-07-22T00:00:00.000Z',
-        lastUsedAt: '2026-07-22T00:00:00.000Z',
-        version: 1,
+        backendNamespace: options.namespace,
       });
-      options.coordinatorCommit((c) => {
-        c.append({
-          type: 'session.opened',
-          stream: { kind: 'session', id: opened.sessionId },
-          refs: { sessionId: opened.sessionId },
-          body: { entry: opened, controller: 'default', scope_key: 'startup-ordering' },
-        });
-        return undefined;
+      commitJobTerminal(options.progressStore, '10000000-0000-4000-8000-000000000005', 1, {
+        content: 'first outcome',
+        outcome: { kind: 'completed' },
+        durationMs: 1,
       });
-      const lease = {
-        status: 'pending' as const,
-        staleJobId: 'workflow-pending:0:0',
-        workflowId: 'workflow-pending',
-        workflowSlotId: 'workflow-pending:0:0',
-        replacementGeneration: 1,
-        reason: 'stale_recovery' as const,
-        expiresAt: new Date(runtime.time.now() + 60_000).toISOString(),
-        recordedAt: new Date(runtime.time.now()).toISOString(),
-      };
-      const pending = providerSessionSchema.parse({
-        ...opened,
-        continuationLease: lease,
-        lastUsedAt: lease.recordedAt,
-        version: 2,
-      });
-      options.coordinatorCommit((c) => {
-        c.append(sessionContinuationLeaseRecordedEvent(pending, lease));
-        return undefined;
-      });
+      options.progressStore.withExecutionAdmission(
+        '10000000-0000-4000-8000-000000000005',
+        2,
+        { projectRoot: home, workDir: home, jobKind: 'provider' },
+        () =>
+          options.coordinatorCommit((c) => {
+            c.append({ ...requestedExecution(2), stream: { kind: 'job', id: '10000000-0000-4000-8000-000000000005' } });
+            return undefined;
+          }),
+      );
       return { kind: 'complete', progressStore: options.progressStore } as const;
     });
     vi.spyOn(jobsStartup, 'createJobsStartupRunner').mockReturnValue(runStartup);
     const recoverAll = vi.spyOn(workflowRecover, 'recoverAll').mockImplementation(async (options) => {
-      const row = options.db
-        .prepare<[string], { entry: string }>('SELECT entry FROM projection_sessions WHERE session_id = ?')
-        .get('pending-replacement-session');
-      const entry = providerSessionSchema.parse(JSON.parse(row?.entry ?? 'null'));
-      expect(entry.continuationLease).toMatchObject({
-        status: 'pending',
-        workflowId: 'workflow-pending',
-        replacementGeneration: 1,
+      expect(readProjectionJobConversation(options.db, '10000000-0000-4000-8000-000000000005')).toMatchObject({
+        jobId: '10000000-0000-4000-8000-000000000005',
+        execution: 2,
+        open: true,
       });
+      expect(
+        options.db
+          .prepare("SELECT seq FROM events WHERE stream_id = ? AND type = 'job.opened'")
+          .all('10000000-0000-4000-8000-000000000005'),
+      ).toHaveLength(1);
       return [];
     });
     const kbDaemonSupervisor = createMockKbDaemonSupervisor();
@@ -312,7 +289,7 @@ describe('coordinator pending workflow replacement recovery', () => {
     }
   });
 
-  it('clears pending replacements without launching before the lifecycle reactor scans', async () => {
+  it('recovers failed child executions without launching before the lifecycle reactor scans', async () => {
     const home = mkdtempSync(join(tmpdir(), 'coral-startup-no-workflow-resume-home-'));
     const pluginRoot = mkdtempSync(join(tmpdir(), 'coral-startup-no-workflow-resume-plugin-'));
     tempRoots.push(home, pluginRoot);
@@ -325,24 +302,21 @@ describe('coordinator pending workflow replacement recovery', () => {
     vi.stubEnv('HOME', home);
     const runtime = createRealRuntime('prod', { baseDir: join(home, '.coral') });
     const projectRoot = canonicalizeWorkDir(home, home);
-    const workflowId = 'workflow-pending';
+    const workflowId = '10000000-0000-4000-8000-000000000004';
     const childId = '00000000-0000-4000-8000-000000000001';
-    const sessionId = 'pending-replacement-session';
     let startupOptions: JobsStartupContext | undefined;
     const order: string[] = [];
     const phaseLines: string[] = [];
-    const backgroundLines: string[] = [];
     const recoverLocations = locationRecovery.recoverJobLocations;
     vi.spyOn(locationRecovery, 'recoverJobLocations').mockImplementation((index, epoch, store, observation) => {
       const progressStore = store as JobsStartupContext['progressStore'];
       initTestJob(progressStore, {
-        jobId: 'located-job',
-        sessionId: 'located-session',
-        provider: 'codex',
+        jobId: '10000000-0000-4000-8000-000000000007',
         projectRoot,
         backendNamespace: 'startup-ordering',
+        conversation: testConversationFacet('codex', projectRoot),
       });
-      commitJobTerminal(progressStore, 'located-job', 'located-session', {
+      commitJobTerminal(progressStore, '10000000-0000-4000-8000-000000000007', 1, {
         content: 'done',
         outcome: { kind: 'completed' },
         durationMs: 1,
@@ -362,7 +336,6 @@ describe('coordinator pending workflow replacement recovery', () => {
         options.progressStore.appendLaunchRequested(workflowId, {
           jobId: workflowId,
           owner: { kind: 'workflow', id: workflowId },
-          sessionId: null,
           provider: null,
           projectRoot,
           backendNamespace: options.namespace,
@@ -371,29 +344,43 @@ describe('coordinator pending workflow replacement recovery', () => {
           enqueueSequence: options.progressStore.nextEnqueueSequence(),
           request: { prompt: '', cwd: projectRoot, bypassPermissions: false, coralEnv: {} },
           createdAt: new Date(runtime.time.now()).toISOString(),
+          execution: 1,
         });
         options.coordinatorCommit((c) => {
           c.append({
-            type: 'job.runtime.started',
+            type: 'job.execution.started',
             stream: { kind: 'job', id: workflowId },
             namespace: options.namespace,
             project: projectRoot,
             refs: { jobId: workflowId, workflowId },
-            body: { transport: 'workflow', startedAt: new Date(runtime.time.now()).toISOString() },
+            body: { execution: 1, transport: 'workflow', startedAt: new Date(runtime.time.now()).toISOString() },
           });
           return undefined;
         });
-        seedTestSessionProjection(options.progressStore.getDb(), {
-          sessionId,
-          provider: 'codex',
-          projectRoot,
-          backendNamespace: options.namespace,
-          activeJobId: childId,
-        });
+        options.progressStore.withExecutionAdmission(
+          childId,
+          1,
+          { projectRoot, workDir: projectRoot, jobKind: 'provider' },
+          () =>
+            options.coordinatorCommit((c) => {
+              c.append({
+                type: 'job.opened',
+                stream: { kind: 'job', id: childId },
+                body: {
+                  owner: { kind: 'workflow', id: workflowId },
+                  projectRoot,
+                  createdAt: new Date(runtime.time.now()).toISOString(),
+                  jobKind: 'provider',
+                  workflowSlotId: plan.slots[0].slotId,
+                  conversation: testConversationFacet('codex', projectRoot),
+                },
+              });
+              return undefined;
+            }),
+        );
         options.progressStore.appendLaunchRequested(childId, {
           jobId: childId,
           owner: { kind: 'workflow', id: workflowId },
-          sessionId,
           provider: 'codex',
           projectRoot,
           backendNamespace: options.namespace,
@@ -403,37 +390,30 @@ describe('coordinator pending workflow replacement recovery', () => {
           providerAction: 'exec',
           parentWorkflowJobId: workflowId,
           workflowSlotId: plan.slots[0].slotId,
-          workflowSlotGeneration: 0,
           request: { prompt: '', cwd: projectRoot, bypassPermissions: false, coralEnv: {} },
           createdAt: new Date(runtime.time.now()).toISOString(),
+          execution: 1,
         });
-        commitJobTerminal(options.progressStore, childId, sessionId, {
+        commitJobTerminal(options.progressStore, childId, 1, {
           content: '',
           outcome: { kind: 'job_fault', fault: { kind: 'ghost_launch' } },
           durationMs: 0,
         });
-        const row = options.progressStore
-          .getDb()
-          .prepare<[string], { entry: string }>('SELECT entry FROM projection_sessions WHERE session_id = ?')
-          .get(sessionId);
-        const entry = providerSessionSchema.parse(JSON.parse(row?.entry ?? 'null'));
-        const lease = {
-          status: 'pending' as const,
-          staleJobId: childId,
-          workflowId,
-          workflowSlotId: plan.slots[0].slotId,
-          replacementGeneration: 1,
-          reason: 'stale_recovery' as const,
-          expiresAt: new Date(runtime.time.now() + 60_000).toISOString(),
-          recordedAt: new Date(runtime.time.now()).toISOString(),
-        };
+        initTestJob(options.progressStore, {
+          jobId: '10000000-0000-4000-8000-000000000006',
+          projectRoot,
+          backendNamespace: options.namespace,
+          conversation: {
+            ...testConversationFacet('codex', projectRoot),
+            retention: 'discard_provider_artifacts_on_terminal',
+          },
+        });
         options.coordinatorCommit((c) => {
-          c.append(
-            sessionContinuationLeaseRecordedEvent(
-              { ...entry, continuationLease: lease, version: entry.version + 1 },
-              lease,
-            ),
-          );
+          appendJobExecutionOutcomeAccepted(c, {
+            jobId: '10000000-0000-4000-8000-000000000006',
+            execution: 1,
+            terminal: { content: 'done', outcome: { kind: 'completed' }, durationMs: 1 },
+          });
           return undefined;
         });
         const createdAt = new Date(runtime.time.now()).toISOString();
@@ -477,29 +457,12 @@ describe('coordinator pending workflow replacement recovery', () => {
       observation,
     ) {
       if (startupOptions === undefined) throw new Error('Expected jobs startup before lifecycle scan.');
-      const row = startupOptions.progressStore
-        .getDb()
-        .prepare<[string], { entry: string }>('SELECT entry FROM projection_sessions WHERE session_id = ?')
-        .get(sessionId);
-      const entry = providerSessionSchema.parse(JSON.parse(row?.entry ?? 'null'));
-      expect(entry.continuationLease).toMatchObject({ status: 'cleared', outcome: 'explicit_clear' });
-      expect(startupOptions.progressStore.readStatus(workflowId)?.phase).toBe('error');
-      appendRetentionDiscardRequested(startupOptions.coordinatorCommit, { sessionId, attempt: 1, handles: [] });
-      appendRetentionDiscardCompleted(startupOptions.coordinatorCommit, {
-        sessionId,
-        attempt: 1,
-        handles: [],
-        outcome: 'skipped_protected',
+      expect(readProjectionJobConversation(startupOptions.progressStore.getDb(), childId)).toMatchObject({
+        jobId: childId,
+        execution: 1,
+        open: false,
       });
-      const db = startupOptions.progressStore.getDb();
-      const current = db
-        .prepare<[string], { entry: string }>('SELECT entry FROM projection_sessions WHERE session_id = ?')
-        .get(sessionId);
-      const retained = providerSessionSchema.parse(JSON.parse(current?.entry ?? 'null'));
-      db.prepare<[string, string]>('UPDATE projection_sessions SET entry = ? WHERE session_id = ?').run(
-        JSON.stringify({ ...retained, retention: 'discard_provider_artifacts_on_terminal' }),
-        sessionId,
-      );
+      expect(startupOptions.progressStore.readStatus(workflowId)?.phase).toBe('error');
       order.push('lifecycle-scan');
       await scanStartup.call(this, signal, observation);
     });
@@ -511,7 +474,6 @@ describe('coordinator pending workflow replacement recovery', () => {
       pluginRoot,
       bootSnapshot: {
         log: (message) => {
-          if (message.includes(' kind=background phase=reactor-recovery ')) backgroundLines.push(message);
           if (!message.startsWith('recovery-phase ') || !message.includes(' kind=startup ')) return;
           phaseLines.push(message);
           order.push(/ phase=(\S+) /.exec(message)?.[1] ?? 'invalid-phase');
@@ -559,7 +521,7 @@ describe('coordinator pending workflow replacement recovery', () => {
         );
         expect(line).toContain(`boot=${info.instanceId} `);
       }
-      for (const phase of ['job-locations', 'jobs-startup', 'discussion', 'workflow', 'reactor-scan']) {
+      for (const phase of ['jobs-startup', 'discussion', 'workflow']) {
         const line = phaseLines.find((line) => line.includes(` phase=${phase} `));
         const counts = / subjects=(\d+) reads=(\d+) /.exec(line ?? '');
         expect(counts, phase).not.toBeNull();
@@ -567,24 +529,11 @@ describe('coordinator pending workflow replacement recovery', () => {
         expect(Number(counts?.[2]), `${phase} reads`).toBeGreaterThan(0);
       }
       const expectedSources = {
-        'job-locations': [
-          'uncommitted-launches',
-          'job-locations',
-          'job-launches',
-          'job-high-water',
-          'job-projections',
-          'job-details',
-          'job-events',
-        ],
+        'job-locations': ['job-locations', 'job-high-water'],
         'jobs-startup': ['coordinator-job-recovery'],
         discussion: ['discussion-source', 'discussion-candidate'],
         workflow: ['workflow-recovery'],
-        'reactor-scan': [
-          'session-projection',
-          'session-continuation-lease',
-          'terminal-retention-outcome',
-          'retention-release-pair',
-        ],
+        'reactor-scan': ['job-conversation-retention'],
       };
       for (const [phase, expected] of Object.entries(expectedSources)) {
         const line = phaseLines.find((line) => line.includes(` phase=${phase} `));
@@ -594,25 +543,21 @@ describe('coordinator pending workflow replacement recovery', () => {
         >;
         for (const source of expected) {
           expect(sources[source], `${phase}/${source}`).toBeDefined();
-          expect(sources[source]?.reads, `${phase}/${source} reads`).toBeGreaterThan(0);
+          if (phase !== 'reactor-scan') expect(sources[source]?.reads, `${phase}/${source} reads`).toBeGreaterThan(0);
           if (phase !== 'job-locations')
             expect(sources[source]?.subjects, `${phase}/${source} subjects`).toBeGreaterThan(0);
         }
-        if (phase === 'reactor-scan') {
-          expect(sources['session-retention-work']?.subjects).toBeGreaterThan(0);
-          expect(sources['session-retention-work']?.reads).toBe(0);
-        }
       }
-      const retentionPasses = backgroundLines.filter((line) => line.includes(' event=finish outcome=complete '));
-      expect(
-        retentionPasses.some((line) => {
-          const sources = JSON.parse(/ sources=(.*)\n$/.exec(line)?.[1] ?? '{}') as Record<
-            string,
-            { subjects: number; reads: number }
-          >;
-          return (sources['session-retention-work']?.subjects ?? 0) > 0;
-        }),
-      ).toBe(true);
+      await vi.waitFor(() =>
+        expect(
+          startupOptions?.progressStore
+            .getDb()
+            .prepare(
+              "SELECT seq FROM events WHERE stream_id = '10000000-0000-4000-8000-000000000006' AND type = 'job.execution.ended'",
+            )
+            .all(),
+        ).toHaveLength(1),
+      );
       expect(dispatch).not.toHaveBeenCalled();
       expect(resume).not.toHaveBeenCalled();
     } finally {

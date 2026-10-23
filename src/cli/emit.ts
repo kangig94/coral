@@ -3,14 +3,13 @@ import type { Command } from 'commander';
 
 import { HandoffRunError } from '../coordinator/handoff-routing/runner.js';
 import { BackendToolHttpError } from '../transport/http/errors.js';
-import type { AcceptedLaunchResponse } from '../jobs/launch.js';
+import { acceptedLaunchResponseSchema, type AcceptedLaunchResponse } from '../jobs/launch.js';
 import { getWaitInvocation } from './wait-invocation.js';
 import { WaitResumeError, buildErrorEnvelope } from './errors.js';
 import { formatErrorEnvelope } from './format/error.js';
-import { formatDetachedLaunchStatus, formatLaunchWaitHint } from './format/jobs.js';
+import { formatDetachedLaunchStatus, formatLaunchWaitHint, formatUnknownLaunchOutcome } from './format/jobs.js';
 import { launchAndFollow } from './follow.js';
 import { renderHandoffPublicationIncidents } from './handoff-notice.js';
-import { isJsonObject } from './parse.js';
 import { clearPendingReadStoreNote, flushPendingReadStoreNote } from './read-store.js';
 import { getPluginRoot } from './dispatch.js';
 
@@ -61,32 +60,7 @@ export function emitError(error: unknown): void {
 }
 
 export function isAcceptedLaunchResponse(value: unknown): value is AcceptedLaunchResponse {
-  if (!isJsonObject(value) || typeof value.launchState !== 'string') {
-    return false;
-  }
-
-  if (
-    (value.launchState !== 'running' && value.launchState !== 'queued') ||
-    typeof value.jobId !== 'string' ||
-    value.jobId.length === 0
-  ) {
-    return false;
-  }
-
-  if (value.kind === 'provider-session') {
-    return (
-      typeof value.sessionId === 'string' &&
-      value.sessionId.length > 0 &&
-      Object.keys(value).every((key) => ['kind', 'launchState', 'jobId', 'sessionId'].includes(key))
-    );
-  }
-
-  return (
-    value.kind === 'workflow' &&
-    typeof value.workflowId === 'string' &&
-    value.workflowId.length > 0 &&
-    Object.keys(value).every((key) => ['kind', 'launchState', 'jobId', 'workflowId'].includes(key))
-  );
+  return acceptedLaunchResponseSchema.safeParse(value).success;
 }
 
 function emitAcceptedLaunchResponse(decision: AcceptedLaunchResponse): void {
@@ -102,7 +76,8 @@ export function getTerminalContext(): { isTTY: boolean; columns: number } {
 
 export async function handleLaunchResult(result: unknown, detach: boolean | undefined): Promise<void> {
   if (!isAcceptedLaunchResponse(result)) {
-    emitError(new Error(`Expected accepted launch response, received: ${JSON.stringify(result)}`));
+    process.stderr.write(formatUnknownLaunchOutcome({ kind: 'launch-outcome-unknown' }) + '\n');
+    process.exitCode = 75;
     return;
   }
 
@@ -111,8 +86,6 @@ export async function handleLaunchResult(result: unknown, detach: boolean | unde
     return;
   }
 
-  // Successful follow returns the terminal job exit code (0-255).
-  // Follow-level failures route through emitError and return the envelope exit code instead.
   process.exitCode = await launchAndFollow({
     launchResult: result,
     pluginRoot: getPluginRoot(),

@@ -16,7 +16,7 @@ type TestRuntime = ProviderRuntime<TestProviderContext>;
 
 const BASE_REQUEST: ProviderRequest = {
   action: 'exec',
-  sessionId: 'job-contract',
+  jobId: 'job-contract',
   prompt: 'hello',
   cwd: fixtureCanonicalWorkDir(process.cwd()),
   bypassPermissions: false,

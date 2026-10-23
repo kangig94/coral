@@ -28,6 +28,13 @@ function scanCrashedJobRows(db: Database, subjectKey?: string): readonly RawCras
               `SELECT ${PROJECTION_JOB_COLUMNS}
                  FROM projection_jobs
                 WHERE phase NOT IN ('completed', 'error', 'aborted')
+                  AND NOT EXISTS (
+                    SELECT 1 FROM events accepted
+                    WHERE accepted.stream_kind = 'job'
+                      AND accepted.stream_id = projection_jobs.job_id
+                      AND accepted.type = 'job.execution.outcome.accepted'
+                      AND json_extract(CAST(accepted.body AS TEXT), '$.execution') = projection_jobs.execution
+                  )
                 ORDER BY job_id ASC`,
             )
             .all()
@@ -36,6 +43,13 @@ function scanCrashedJobRows(db: Database, subjectKey?: string): readonly RawCras
               `SELECT ${PROJECTION_JOB_COLUMNS}
                  FROM projection_jobs
                 WHERE phase NOT IN ('completed', 'error', 'aborted')
+                  AND NOT EXISTS (
+                    SELECT 1 FROM events accepted
+                    WHERE accepted.stream_kind = 'job'
+                      AND accepted.stream_id = projection_jobs.job_id
+                      AND accepted.type = 'job.execution.outcome.accepted'
+                      AND json_extract(CAST(accepted.body AS TEXT), '$.execution') = projection_jobs.execution
+                  )
                   AND job_id = ?`,
             )
             .all(subjectKey);
@@ -44,7 +58,7 @@ function scanCrashedJobRows(db: Database, subjectKey?: string): readonly RawCras
          FROM events
         WHERE stream_kind = 'job'
           AND stream_id = ?
-          AND type = 'job.launch.requested'
+          AND type = 'job.execution.requested'
         ORDER BY seq DESC
         LIMIT 1`,
     );
@@ -61,7 +75,7 @@ function crashedJobSubject(raw: RawCrashedJobRow) {
     fields.push({
       table: 'events',
       key: raw.projection.job_id,
-      field: 'job.launch.requested.__absent__',
+      field: 'job.execution.requested.__absent__',
       value: null,
     });
   } else {

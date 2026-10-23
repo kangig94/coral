@@ -1,3 +1,4 @@
+import { createTestExecutionFinisher } from '#tests/helpers/execution-finisher.js';
 import { canonicalWorkDirWireSchema } from '#src/runtime/canonical-work-dir.js';
 import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -32,7 +33,6 @@ import { defineFakeProvider } from '#tests/helpers/scripted-provider.js';
 import { testChildPrincipalRegistry } from '#tests/helpers/child-principal-registry.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
 import { TEST_CODEX_SCOPE } from '#tests/helpers/provider-credentials.js';
-import { sessionsRegistry } from '#src/sessions/events.js';
 import { streamProviderTerminal } from '#src/providers/stream.js';
 
 function progressRecorded(eventBus: TypedEventBus, message: string): Promise<void> {
@@ -56,7 +56,7 @@ it('observes a progressing local app-server placement through production assembl
     db,
     eventBus,
     providers: permissiveProviderLookupPort,
-    reducers: composeReducers(jobsRegistry, sessionsRegistry),
+    reducers: composeReducers(jobsRegistry),
   });
   const registry = new LocalOperationRegistry();
   const launchCoordinator = new LaunchCoordinator({ runtime });
@@ -130,6 +130,8 @@ it('observes a progressing local app-server placement through production assembl
   const observedPasses: CarrierWaitObservation[][] = [];
   let localService: ExecutionService | undefined;
   const services = createExecutionServices({
+    jobLocations: { read: () => null },
+    executionFinisher: createTestExecutionFinisher(store, runtime),
     world,
     runtime,
     bundleHash: 'local-wait',
@@ -203,7 +205,7 @@ it('observes a progressing local app-server placement through production assembl
     });
     finishTurn();
     await released;
-    expect(localService.holdsLocalAppServerExecution(launch.jobId)).toBe(false);
+    expect(localService.holdsLocalAppServerExecution(launch.jobId, 1)).toBe(false);
     expect(store.readStatus(jobId)?.phase).toBe('completed');
   } finally {
     finishTurn();

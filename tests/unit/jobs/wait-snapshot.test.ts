@@ -93,9 +93,11 @@ describe('wait snapshot', () => {
     for (const phase of ['running', 'queued'] as const) {
       const a = admitted('a', [], false);
       a.detail.status.phase = phase;
+      a.detail.status.execution = 1;
       const live = collect([a]);
+      expect(parseWaitSnapshot(live).jobs[0]).toMatchObject({ execution: 1 });
       expect(formatWaitSnapshot(live)).not.toContain('terminal');
-      expect(formatWaitSnapshot(live)).toContain(`Job a: ${phase}`);
+      expect(formatWaitSnapshot(live)).toContain(`Job a execution #1: ${phase}`);
       expect(formatWaitSnapshot(live)).toContain(' --snapshot --cursor ');
     }
     const a = admitted('a', [[1, 'line']], true, 'epoch-E', true);
@@ -203,4 +205,19 @@ it('keeps a historical pending artifact in a snapshot continuation with exit 75 
   expect(second.jobs[0].availability).toEqual(job.availability);
   expect(second.remainingJobIds).toEqual([]);
   expect(second.exitCode).toBe(0);
+});
+
+it('keeps blocked finishing status and typed recovery inspection in snapshots', () => {
+  const job = admitted('held', [], false);
+  job.detail.status.finishingStatus = {
+    kind: 'blocked',
+    stage: 'accept',
+    reason: 'acceptance disk failure',
+    successor: 'recovery-quarantine',
+  };
+  const snapshot = collect([job]);
+  expect(parseWaitSnapshot(snapshot).jobs[0].finishingStatus).toEqual(job.detail.status.finishingStatus);
+  const text = formatWaitSnapshot(snapshot);
+  expect(text).toContain('acceptance disk failure');
+  expect(text).toContain('command=coral-cli backend recovery-quarantine list');
 });

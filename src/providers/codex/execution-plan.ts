@@ -13,7 +13,7 @@ import {
 } from '../execution-plan.js';
 import { shouldUseWindowsCommandShell, windowsCommandName } from '../../infra/windows-shell.js';
 import { CODEX_ALLOWED_REQUEST_ENV_KEYS, CODEX_PROTECTED_REQUEST_ENV_KEYS } from './credential-policy.js';
-import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
+import type { ProviderContinuityBlob } from '../../jobs/conversation/continuity.js';
 import { resolveCodexHostCwd } from './request-mapping.js';
 import type { CanonicalWorkDir } from '../../runtime/canonical-work-dir.js';
 
@@ -33,7 +33,7 @@ export type CodexExecutionPlan = ProviderExecutionPlan<
     environment: readonly EnvironmentLayer[];
     leaseMode: 'shared';
   }>,
-  Readonly<{ sessionId: string }>,
+  Readonly<{ jobId: string }>,
   Readonly<{
     threadConfig: Readonly<Record<string, unknown>>;
   }>
@@ -118,7 +118,7 @@ function turnAuthorityLayer(
   protectedEnv: Readonly<Record<string, string>>,
   platform: string,
 ): EnvironmentLayer {
-  const values = { CORAL_CHILD: '1', CORAL_SESSION_ID: request.sessionId, ...protectedEnv };
+  const values = { CORAL_CHILD: '1', CORAL_JOB_ID: request.jobId, ...protectedEnv };
   return environmentLayer(
     {
       name: 'coral-turn-authority',
@@ -199,7 +199,7 @@ export function buildCodexExecutionPlan(options: {
   });
   const plan: CodexExecutionPlan = Object.freeze({
     host: options.hostPlan,
-    session: Object.freeze({ sessionId: options.request.sessionId }),
+    session: Object.freeze({ jobId: options.request.jobId }),
     turn: Object.freeze({
       threadConfig: Object.freeze({
         shell_environment_policy: codexChildShellEnvironmentPolicy(threadConfiguration),

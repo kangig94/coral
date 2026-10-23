@@ -171,6 +171,7 @@ export const SHIPPED_RELEASE_TAGS = [
   'v0.10.11',
   'v0.10.12',
   'v0.10.13',
+  'v0.10.21',
 ] as const;
 
 export type ShippedReleaseTag = (typeof SHIPPED_RELEASE_TAGS)[number];
@@ -406,9 +407,12 @@ export function createShippedPluginFixture(tempRoots: string[], tag: ShippedRele
   try {
     execFileSync('git', ['rev-parse', '--verify', `refs/tags/${tag}^{commit}`], { stdio: 'pipe' });
   } catch (error: unknown) {
-    throw new Error(`Required shipped release tag ${tag} is missing. Fetch the pinned v0.10.0–v0.10.13 tags.`, {
-      cause: error,
-    });
+    throw new Error(
+      `Required shipped release tag ${tag} is missing. Fetch the pinned shipped release tags, including v0.10.21.`,
+      {
+        cause: error,
+      },
+    );
   }
 
   const root = mkdtempSync(join(tmpdir(), `coral-shipped-${tag}-`));
@@ -532,7 +536,7 @@ export function spawnCoordinator(options: {
   fixture: PluginFixture;
   home: string;
   tempRoots: string[];
-  env?: Record<string, string>;
+  env?: NodeJS.ProcessEnv;
   backendPath?: string;
   triggerPipe?: boolean;
   supervised?: boolean;

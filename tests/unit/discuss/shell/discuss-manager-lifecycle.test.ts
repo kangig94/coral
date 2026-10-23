@@ -266,7 +266,7 @@ describe('DiscussContext lifecycle boundaries', () => {
     const start = vi.fn().mockResolvedValue({
       kind: 'provider-session' as const,
       status: 'running' as const,
-      jobId: 'job-1',
+      jobId: 'f10f3e57-0d04-53df-b4c3-3bcf75a1222d',
       sessionId: 'agent-session-1',
     });
     const waitStreamOnce = vi.fn().mockResolvedValue({ content: 'An answer.', continuity: null });

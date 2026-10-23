@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 
 import { existsSync, readFileSync, readdirSync, unlinkSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 
 import {
   exitIfChildProcess,
+  buildFlavor,
   exitIfWrongFlavor,
   failOpen,
-  buildFlavor,
   logHookLine,
   readStdin,
   sweepStale,
@@ -35,6 +35,13 @@ function readLatestSnapshotPath(snapshotDir) {
   return entries.length > 0 ? join(snapshotDir, entries[0]) : null;
 }
 
+function isResultPath(job) {
+  if (typeof job.resultPath !== 'string' || !isAbsolute(job.resultPath)) return false;
+  if (!Number.isSafeInteger(job.execution) || job.execution < 1) return false;
+  const canonicalPath = join(exportsJobsDir(buildFlavor()), job.jobId, 'executions', String(job.execution), 'result.md');
+  return resolve(job.resultPath) === canonicalPath;
+}
+
 function isSnapshotJob(value) {
   return (
     value !== null &&
@@ -42,7 +49,9 @@ function isSnapshotJob(value) {
     typeof value.jobId === 'string' &&
     /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(value.jobId) &&
     typeof value.phase === 'string' &&
-    typeof value.hasResult === 'boolean'
+    typeof value.hasResult === 'boolean' &&
+    (isLivePhase(value.phase) || (Number.isSafeInteger(value.execution) && value.execution >= 1)) &&
+    (value.resultPath == null || isResultPath(value))
   );
 }
 
@@ -75,15 +84,11 @@ await failOpen(async () => {
     logHookLine('post-compact', 'rejected invalid compact snapshot', { projectDir, snapshotPath });
     return;
   }
-  const jobs = snapshot.jobs;
+  const jobs = snapshot.jobs.map((job) => ({ ...job, resultPath: job.resultPath ?? null }));
   const liveJobs = jobs.filter((job) => isLivePhase(job.phase));
   const terminalJobs = jobs
     .filter((job) => !isLivePhase(job.phase) && job.hasResult)
-    .map((job) => ({
-      ...job,
-      resultPath: join(exportsJobsDir(buildFlavor()), job.jobId, 'result.md'),
-    }))
-    .filter((job) => existsSync(job.resultPath));
+    .filter((job) => typeof job.resultPath === 'string' && existsSync(job.resultPath));
 
   if (liveJobs.length === 0 && terminalJobs.length === 0) {
     logHookLine('post-compact', 'snapshot contained no recoverable jobs', { snapshotPath });

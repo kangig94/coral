@@ -98,22 +98,19 @@ function rebootFixture(observation: 'absent' | 'unknown' = 'absent') {
     }),
     { encoding: 'utf-8', mode: 0o600 },
   );
-  const sessionId = randomUUID();
   const progressStore = new JobStore('handoff-cores', runtime, createEventBodyCodec(), {
     db,
     providers: permissiveProviderLookupPort,
   });
   seedTestSessionProjection(db, {
-    sessionId,
     provider: 'codex',
     projectRoot: harness.homeDir,
     backendNamespace: 'handoff-cores',
-    activeJobId: operation.jobId,
+    jobId: operation.jobId,
   });
   progressStore.appendLaunchRequested(operation.jobId, {
     jobId: operation.jobId,
-    owner: { kind: 'provider-session', id: sessionId },
-    sessionId,
+    owner: { kind: 'provider-session', id: operation.jobId },
     provider: 'codex',
     projectRoot: harness.homeDir,
     backendNamespace: 'handoff-cores',
@@ -123,11 +120,16 @@ function rebootFixture(observation: 'absent' | 'unknown' = 'absent') {
     providerAction: 'exec',
     request: { prompt: 'reboot fixture', cwd: harness.homeDir, bypassPermissions: false, coralEnv: {} },
     createdAt: '2026-08-09T12:34:55.000Z',
+    execution: 1,
   });
-  insertProviderOperation(db, record);
+  const anchoredRecord = {
+    ...record,
+    jobLaunchEventSeq: progressStore.loadJobWaitDetail(operation.jobId).requestedSeq!,
+  };
+  insertProviderOperation(db, anchoredRecord);
   return {
     harness,
-    record,
+    record: anchoredRecord,
     capsulePath,
     progressStore,
   };

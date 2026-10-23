@@ -2,7 +2,7 @@ import { sameEpoch } from '../store/epoch/identity.js';
 import type { Database } from '../store/db.js';
 import { decodeBody, type StoreReadContext } from '../store/body-codec.js';
 import type { CustodyEntry } from '../store/custody-ledger.js';
-import { jobLaunchRequestBodySchema } from './launch.js';
+import { jobExecutionRequestedBodySchema } from './launch.js';
 
 export function readSuccessionLiveJobIds(
   db: Database,
@@ -53,13 +53,13 @@ export function readJobLaunchOriginNamespace(
     .prepare<
       [string],
       { body: Uint8Array }
-    >("SELECT body FROM events WHERE stream_kind = 'job' AND stream_id = ? AND type = 'job.launch.requested'")
+    >("SELECT body FROM events WHERE stream_kind = 'job' AND stream_id = ? AND type = 'job.execution.requested' AND json_extract(CAST(body AS TEXT), '$.execution') = (SELECT execution FROM projection_jobs WHERE job_id = events.stream_id)")
     .all(jobId);
   if (rows.length !== 1) return null;
   try {
     const launch = decodeBody(
-      { type: 'job.launch.requested', stream_kind: 'job', body: rows[0].body },
-      jobLaunchRequestBodySchema,
+      { type: 'job.execution.requested', stream_kind: 'job', body: rows[0].body },
+      jobExecutionRequestedBodySchema,
       readContext,
     );
     return launch.backendNamespace;

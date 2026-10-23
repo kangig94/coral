@@ -1,3 +1,5 @@
+import { createTestExecutionFinisher } from '#tests/helpers/execution-finisher.js';
+
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -13,7 +15,7 @@ import { createWorkflowRecoveryFinalizer } from '#src/coordinator/services/workf
 import { AbortRegistry } from '#src/jobs/shell/abort-registry.js';
 import { JobStore } from '#src/jobs/store.js';
 import { jobsRegistry } from '#src/jobs/events.js';
-import { appendJobTerminalRecorded } from '#src/jobs/terminal/recording.js';
+import { appendJobExecutionOutcomeAccepted, appendJobExecutionEnded } from '#src/jobs/terminal/recording.js';
 import type { JobTerminal } from '#src/jobs/records.js';
 import { decodeEventBody } from '#src/store/body-codec.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
@@ -26,7 +28,7 @@ import { buildWorkflowPlan, type PlanSlot, type WorkflowPlan } from '#src/workfl
 import { recoverAll } from '#src/workflow/recover.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
-import { seedTestSessionProjection } from '#tests/helpers/session.js';
+import { testConversationFacet } from '#tests/helpers/session.js';
 
 const NOW = '2026-04-19T00:00:00.000Z';
 const TEST_NAMESPACE = 'test-ns';
@@ -53,7 +55,6 @@ function initWorkflowJob(progressStore: JobStore, jobId: string): void {
   progressStore.appendLaunchRequested(jobId, {
     jobId,
     owner: { kind: 'workflow', id: jobId },
-    sessionId: null,
     provider: null,
     projectRoot: PROJECT_ROOT,
     backendNamespace: TEST_NAMESPACE,
@@ -67,15 +68,16 @@ function initWorkflowJob(progressStore: JobStore, jobId: string): void {
       coralEnv: {},
     },
     createdAt: NOW,
+    execution: 1,
   });
   progressStore.commit((c) => {
     c.append({
-      type: 'job.runtime.started',
+      type: 'job.execution.started',
       stream: { kind: 'job', id: jobId },
       namespace: TEST_NAMESPACE,
       project: PROJECT_ROOT,
       refs: { jobId, workflowId: jobId },
-      body: { transport: 'workflow', startedAt: NOW },
+      body: { execution: 1, transport: 'workflow', startedAt: NOW },
     });
     return undefined;
   });
@@ -114,18 +116,25 @@ function createWorkflowRecoveryHarness(db: Db, workflowId: string, expression = 
 
 function initWorkflowSlotJob(harness: WorkflowRecoveryHarness, slot: PlanSlot): string {
   const jobId = harness.runtime.ids.uuid();
-  const sessionId = `${jobId}-session`;
-  seedTestSessionProjection(harness.db, {
-    sessionId,
-    provider: slot.provider,
-    projectRoot: PROJECT_ROOT,
-    backendNamespace: TEST_NAMESPACE,
-    activeJobId: jobId,
+  harness.progressStore.commit((commit) => {
+    commit.append({
+      type: 'job.opened',
+      stream: { kind: 'job', id: jobId },
+      refs: { jobId },
+      body: {
+        jobKind: 'provider',
+        owner: { kind: 'workflow', id: harness.workflowId },
+        workflowSlotId: slot.slotId,
+        projectRoot: PROJECT_ROOT,
+        createdAt: NOW,
+        conversation: testConversationFacet(slot.provider, PROJECT_ROOT),
+      },
+    });
+    return undefined;
   });
   harness.progressStore.appendLaunchRequested(jobId, {
     jobId,
     owner: { kind: 'workflow', id: harness.workflowId },
-    sessionId,
     provider: slot.provider,
     projectRoot: PROJECT_ROOT,
     backendNamespace: TEST_NAMESPACE,
@@ -135,7 +144,6 @@ function initWorkflowSlotJob(harness: WorkflowRecoveryHarness, slot: PlanSlot): 
     providerAction: 'exec',
     parentWorkflowJobId: harness.workflowId,
     workflowSlotId: slot.slotId,
-    workflowSlotGeneration: 0,
     request: {
       prompt: '',
       cwd: PROJECT_ROOT,
@@ -143,6 +151,7 @@ function initWorkflowSlotJob(harness: WorkflowRecoveryHarness, slot: PlanSlot): 
       coralEnv: {},
     },
     createdAt: NOW,
+    execution: 1,
   });
   harness.progressStore.appendRuntimeStarted(jobId, {
     transport: 'durable-cli',
@@ -161,15 +170,16 @@ function appendWorkflowSlotTerminal(
   terminal: { content: string; outcome: WaitTerminalOutcome; durationMs: number },
 ): void {
   harness.progressStore.commit((c) => {
-    appendJobTerminalRecorded(c, {
+    const accepted = appendJobExecutionOutcomeAccepted(c, {
       jobId,
-      sessionId: `${jobId}-session`,
+      execution: 1,
       namespace: TEST_NAMESPACE,
       project: PROJECT_ROOT,
       parentJobId: harness.workflowId,
       workflowSlotId: slot.slotId,
       terminal,
     });
+    appendJobExecutionEnded(c, { jobId, execution: 1, causeRef: accepted });
     return undefined;
   });
 }
@@ -195,7 +205,6 @@ async function closeRecoveryHarness(
   return recoverAll({
     db: harness.db,
     progressStore: harness.progressStore,
-    clearContinuationLease: async () => true,
     finalizeWorkflow,
     releaseFailedWorkflowDescendants: () => [],
     ids: harness.runtime.ids,
@@ -204,7 +213,7 @@ async function closeRecoveryHarness(
 }
 
 describe('journal commit atomicity invariant', () => {
-  it('finds no orphan terminal-causing KB operation failure after the migrated recorder path', () => {
+  it('finds no orphan terminal-causing KB operation failure after the migrated recorder path', async () => {
     const db = createDb();
     try {
       const runtime = new SimulationRuntime();
@@ -212,12 +221,14 @@ describe('journal commit atomicity invariant', () => {
         db,
         providers: permissiveProviderLookupPort,
       });
+      const executionFinisher = createTestExecutionFinisher(progressStore, runtime);
       const recorder = new KbJobRecorder({
         runtime,
         progressStore,
+        executionFinisher,
         backendNamespace: 'test-ns',
         bundleHash: 'bundle-a',
-        abortRegistry: new AbortRegistry(runtime.ids),
+        abortRegistry: new AbortRegistry(),
       });
 
       const { jobId, startedAtMs } = recorder.startInternalJob({
@@ -225,7 +236,7 @@ describe('journal commit atomicity invariant', () => {
         operation: 'kb.reindex',
         request: {},
       });
-      recorder.appendOperationFailureWithTerminal({
+      await recorder.appendOperationFailureWithTerminal({
         jobId,
         projectRoot: PROJECT_ROOT,
         operation: 'reindex',
@@ -233,6 +244,9 @@ describe('journal commit atomicity invariant', () => {
         detail: { operation: 'reindex', cause: { message: 'index unavailable' } },
         startedAtMs,
       });
+
+      await executionFinisher.finish({ jobId, execution: 1 });
+      await executionFinisher.dispose();
 
       const rows = db
         .prepare(
@@ -244,14 +258,16 @@ describe('journal commit atomicity invariant', () => {
         )
         .all(jobId) as Array<{ seq: number; type: string; body: Buffer }>;
       expect(rows.map((row) => row.type)).toEqual([
-        'job.launch.requested',
-        'job.runtime.started',
-        'job.progress.emitted',
-        'job.terminal.recorded',
+        'job.opened',
+        'job.execution.requested',
+        'job.execution.started',
+        'job.execution.progress',
+        'job.execution.outcome.accepted',
+        'job.execution.ended',
       ]);
 
-      const progress = rows[2];
-      const terminal = rows[3];
+      const progress = rows[3];
+      const terminal = rows[4];
       expect(progress).toBeDefined();
       expect(terminal).toBeDefined();
       if (progress === undefined || terminal === undefined) {
@@ -281,7 +297,7 @@ describe('journal commit atomicity invariant', () => {
   it('drives recoverAll through failure recovery with the real finalizer and persists causal rows', async () => {
     const db = createDb();
     try {
-      const harness = createWorkflowRecoveryHarness(db, 'workflow-recover-path', '(architect, critic)');
+      const harness = createWorkflowRecoveryHarness(db, '90000000-0000-4000-8000-000000000010', '(architect, critic)');
       const [failedSlot, pendingSlot] = harness.plan.slots;
       if (failedSlot === undefined || pendingSlot === undefined) throw new Error('Expected two workflow slots.');
       const failedJobId = initWorkflowSlotJob(harness, failedSlot);
@@ -354,7 +370,9 @@ describe('journal commit atomicity invariant', () => {
       );
       const terminal = rows.find(
         (row) =>
-          row.stream_kind === 'job' && row.stream_id === harness.workflowId && row.type === 'job.terminal.recorded',
+          row.stream_kind === 'job' &&
+          row.stream_id === harness.workflowId &&
+          row.type === 'job.execution.outcome.accepted',
       );
       expect(lifecycleFault).toBeDefined();
       expect(completed).toBeDefined();

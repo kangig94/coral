@@ -1,5 +1,6 @@
 import { vi } from 'vitest';
 
+import { jobExecutionRequestedBodySchema } from '#src/jobs/launch.js';
 import type { JobProgressStore } from '#src/jobs/contracts/job-store.js';
 import type { TimePort } from '#src/infra/port-types.js';
 import type { ProviderProxyRecoveryProducerPorts } from '#src/coordinator/services/provider-proxy-recovery-policy.js';
@@ -20,6 +21,7 @@ import { currentCoralStoreFormat } from '#src/store-format.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { readProviderOperation } from '#src/store/provider-operation-journal.js';
 import type { ProviderOperationRecord } from '#src/store/provider-operation-record.js';
+import { requestedExecution } from '#tests/helpers/job-executions.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import {
@@ -41,7 +43,7 @@ const PREPARED = {
   binding: { provider: 'codex', kind: 'account', binding: { account: 'acct-1' } },
   request: {
     action: 'exec',
-    sessionId: 'session-1',
+    jobId: '00000000-0000-4000-8000-000000000001',
     prompt: 'do the thing',
     cwd: fixtureCanonicalWorkDir(process.cwd()),
     bypassPermissions: false,
@@ -110,7 +112,7 @@ export type ProviderOperationReconcilerHarnessOverrides = {
   ) => Promise<void>;
   terminalize?: ProviderOperationTerminalizationPort['terminalize'];
   disappearanceTerminalization?: ProviderProxyRecoveryProducerPorts['disappearance-terminalization'];
-  time?: Pick<TimePort, 'setTimeout' | 'clearTimeout'>;
+  time?: Partial<Pick<TimePort, 'now' | 'monotonicNow' | 'setTimeout' | 'clearTimeout'>>;
   onError?: (message: string) => void;
   onRecordRemoved?: () => void;
   beforeCommitOnce?: () => void;
@@ -121,7 +123,7 @@ export type ProviderOperationReconcilerHarnessOverrides = {
 export function createProviderOperationReconcilerHarness(overrides: ProviderOperationReconcilerHarnessOverrides = {}) {
   const providerName = overrides.providerName ?? PREPARED.provider;
   const prepared = preparedFor(providerName);
-  const record = providerOperationRecord('prepare-pending') as Extract<
+  let record = providerOperationRecord('prepare-pending') as Extract<
     ProviderOperationRecord,
     { phase: 'prepare-pending' }
   >;
@@ -159,10 +161,11 @@ export function createProviderOperationReconcilerHarness(overrides: ProviderOper
     overrides.progressStore?.(db, record) ?? {
       getDb: () => db,
       commit,
-      readStatus: () => ({
-        jobId: record.operation.jobId,
-        owner: { kind: 'provider-session', id: record.prepareSource.sessionId },
-        sessionId: record.prepareSource.sessionId,
+      readStatus: (jobId) => ({
+        jobId,
+        execution: record.prepareSource.execution,
+        owner: { kind: 'provider-session', id: record.operation.jobId },
+        sessionId: null,
         provider: providerName,
         projectRoot: fixtureCanonicalWorkDir(process.cwd()),
         workDir: fixtureCanonicalWorkDir(process.cwd()),
@@ -171,10 +174,10 @@ export function createProviderOperationReconcilerHarness(overrides: ProviderOper
         phase: 'running',
         updatedAt: '2026-08-09T12:34:55.000Z',
       }),
-      readLaunchProjection: () => ({
-        jobId: record.operation.jobId,
-        owner: { kind: 'provider-session', id: record.prepareSource.sessionId },
-        sessionId: record.prepareSource.sessionId,
+      readLaunchProjection: (jobId) => ({
+        jobId,
+        execution: record.prepareSource.execution,
+        owner: { kind: 'provider-session', id: record.operation.jobId },
         provider: providerName,
         projectRoot: fixtureCanonicalWorkDir(process.cwd()),
         backendNamespace: 'tests',
@@ -191,6 +194,32 @@ export function createProviderOperationReconcilerHarness(overrides: ProviderOper
         },
       }),
     };
+  const committedRequest = db
+    .prepare<
+      [string],
+      { seq: number; body: Uint8Array }
+    >("SELECT seq, body FROM events WHERE stream_id = ? AND type = 'job.execution.requested' ORDER BY seq DESC LIMIT 1")
+    .get(record.operation.jobId);
+  if (committedRequest === undefined) {
+    const request = requestedExecution(record.prepareSource.execution);
+    db.prepare('INSERT INTO events (seq, ts, type, stream_kind, stream_id, body) VALUES (?, ?, ?, ?, ?, ?)').run(
+      record.jobLaunchEventSeq,
+      '2026-08-09T12:34:55.000Z',
+      request.type,
+      'job',
+      record.operation.jobId,
+      Buffer.from(JSON.stringify(request.body)),
+    );
+  } else {
+    const request = jobExecutionRequestedBodySchema.parse(
+      JSON.parse(Buffer.from(committedRequest.body).toString('utf8')),
+    );
+    record = {
+      ...record,
+      jobLaunchEventSeq: committedRequest.seq,
+      prepareSource: { ...record.prepareSource, jobLaunchEventSeq: committedRequest.seq, execution: request.execution },
+    };
+  }
   const phasesBeforeMutation: string[] = [];
   const readPhase = (): string => readProviderOperation(db, record.operation)?.phase ?? 'missing';
   const authority: DurableProviderProxyOperationAuthority = {
@@ -371,8 +400,8 @@ export function createProviderOperationReconcilerHarness(overrides: ProviderOper
     ...(overrides.onError === undefined ? {} : { onError: overrides.onError }),
     ...(overrides.onRecordRemoved === undefined ? {} : { onRecordRemoved: overrides.onRecordRemoved }),
     time: {
-      now: () => now,
-      monotonicNow: () => BigInt(now),
+      now: overrides.time?.now ?? (() => now),
+      monotonicNow: overrides.time?.monotonicNow ?? (() => BigInt(now)),
       setTimeout: overrides.time?.setTimeout ?? (() => ({ unref: () => undefined })),
       clearTimeout: overrides.time?.clearTimeout ?? (() => undefined),
     },

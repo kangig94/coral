@@ -51,22 +51,23 @@ function scanStaleJobCleanupRows(
                   AND job_id = ?`,
               )
               .all(subjectKey);
-    const readStatusEvents = db.prepare<[string], EventsRow>(
+    const readStatusEvents = db.prepare<[string, number | null], EventsRow>(
       `SELECT ${EVENT_COLUMNS}
          FROM events
         WHERE stream_kind = 'job'
           AND stream_id = ?
-          AND type IN (
-            'job.launch.requested',
-            'job.launch.rejected',
-            'job.runtime.started',
-            'job.terminal.recorded'
-          )
+          AND (type = 'job.opened' OR (json_extract(CAST(body AS TEXT), '$.execution') = ? AND type IN (
+            'job.execution.requested',
+            'job.provider_failed',
+            'job.execution.started',
+            'job.execution.outcome.accepted',
+            'job.execution.ended'
+          )))
         ORDER BY seq ASC`,
     );
     return projections.map((projection) => ({
       projection,
-      statusEvents: readStatusEvents.all(projection.job_id),
+      statusEvents: readStatusEvents.all(projection.job_id, projection.execution),
     }));
   });
 }

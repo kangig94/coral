@@ -91,7 +91,17 @@ function createTransferWorld(): TransferWorld {
   chmodSync(join(binDir, 'codex'), 0o755);
   const prompt = join(projectRoot, 'prompt.txt');
   writeFileSync(prompt, 'Keep working while the coordinator is replaced.');
-  return { home, projectRoot, prompt, state, env: { PATH: `${binDir}:${process.env.PATH ?? ''}` } };
+  return {
+    home,
+    projectRoot,
+    prompt,
+    state,
+    env: {
+      PATH: `${binDir}:${process.env.PATH ?? ''}`,
+      CODEX_HOME: join(home, '.codex'),
+      CLAUDE_CONFIG_DIR: join(home, '.claude'),
+    },
+  };
 }
 
 function startCli(fixture: PluginFixture, world: TransferWorld, args: string[]) {
@@ -320,7 +330,9 @@ describe('real-process provider host transfer', () => {
     const detail = await runCli(newerFixture, world, ['jobs', 'detail', jobId]);
     expect(detail).toMatch(/completed/iu);
     expect(detail).not.toMatch(/interrupted/iu);
-    expect(readFileSync(join(world.home, '.coral', 'exports', 'jobs', jobId, 'result.md'), 'utf8')).toContain('done');
+    expect(
+      readFileSync(join(world.home, '.coral', 'exports', 'jobs', jobId, 'executions', '1', 'result.md'), 'utf8'),
+    ).toContain('done');
     expect(hostsAlive(hosts)).toBe(true);
     expect(existsSync(join(world.home, '.coral', 'gen2', 'builds'))).toBe(false);
   }, 240_000);

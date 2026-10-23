@@ -1,3 +1,5 @@
+import { WaitSessionError } from './wait/session.js';
+import type { WaitExecutionSelection } from './wait/execution-selection.js';
 import type { ProgressVisit } from './wait/contract.js';
 import { epochIdentity, epochToken, sameEpoch } from '../store/epoch/identity.js';
 import { isCodeDefect, sourceReadFailureDisposition, type SourceReadDisposition } from './source-read.js';
@@ -7,11 +9,18 @@ import { readWaitSession } from './wait/reader.js';
 import { canonicalWorkDirWireSchema, type CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
 import type { AbortDecision } from './contracts/abort-registry.js';
 import type { JobDetailLookup } from './contracts/addressing.js';
+import { missingJobSendRefusal } from './send.js';
 import { type HistoricalSourceRead, type HistoricalSourceReader } from './historical-reader.js';
-import { LocationObservationDeferred, type JobLocationView, type JobLocation } from './location-index.js';
+import {
+  LocationObservationDeferred,
+  type JobLocationView,
+  type JobLocation,
+  type JobExecutionLocation,
+  type UnknownLocationHold,
+} from './location-index.js';
 import { hasReadableTerminalDetail } from './terminal/identity.js';
 import { jobInCallerScope, type JobScopeRelation, type ScopeCheckResult } from './scope.js';
-import type { JobDetailResponse } from './records.js';
+import type { JobDetailResponse, JobExecutionDetail } from './records.js';
 import { type ResultAvailability } from './terminal/export.js';
 import {
   type WaitStreamEvent,
@@ -49,8 +58,39 @@ type HistoricalDisposition = Readonly<{
   message?: string;
 }>;
 
+type AdmissionReadContext = Readonly<{
+  request: WaitStreamRequest;
+  activeEpochKey: string;
+  historical: Map<string, HistoricalSourceRead>;
+  closures: Map<string, 'pending' | 'decided'>;
+  holds: UnknownLocationHold[];
+  activeAdmissions: Map<string, WaitAdmission>;
+}>;
+
+type RetainedExecutionRead = Readonly<{
+  jobId: string;
+  epochKey: string;
+  retained: JobLocation;
+  selected: WaitExecutionSelection | undefined;
+  request: WaitStreamRequest;
+}>;
+
 const PRE_EPOCH_HISTORY_MESSAGE =
   'A job that ran before store epochs has no details this build can read; another id may never have been a job';
+
+function locationInCallerScope(location: JobLocation, projectRoot: string | undefined): boolean {
+  return (
+    projectRoot === undefined ||
+    jobInCallerScope(
+      {
+        jobKind: location.subject.jobKind,
+        workDir: location.subject.workDir === null ? null : canonicalWorkDirWireSchema.parse(location.subject.workDir),
+      },
+      canonicalWorkDirWireSchema.parse(projectRoot),
+      'contains',
+    )
+  );
+}
 
 function epochHoldReason(reason: string, retryScheduled: boolean): string {
   if (/\s/.test(reason) && !reason.includes('/') && !reason.includes('Error:') && !/^[A-Z_]+:/.test(reason))
@@ -105,8 +145,8 @@ export class JobAddressing {
   private readonly activeEpochs = new WeakMap<object, string>();
   private readonly locations: JobLocationView;
   private readonly readHistorical: HistoricalSourceReader;
-  private readonly observeResultAvailability: (jobId: string) => ResultAvailability;
-  private readonly hintRepair?: (jobId: string) => void;
+  private readonly observeResultAvailability: (jobId: string, execution?: number) => ResultAvailability;
+  private readonly hintRepair?: (jobId: string, execution?: number) => void;
   private readonly active: ActiveJobAccess;
   private readonly preEpochHistoryExists: PreEpochHistoryProbe;
   private readonly historicalClosure: HistoricalClosureProbe;
@@ -122,8 +162,8 @@ export class JobAddressing {
         disposition: 'transient-unknown',
         reason: 'Source observation is unavailable; retry when its owner becomes reachable',
       },
-    observeResultAvailability: (jobId: string) => ResultAvailability,
-    hintRepair?: (jobId: string) => void,
+    observeResultAvailability: (jobId: string, execution?: number) => ResultAvailability,
+    hintRepair?: (jobId: string, execution?: number) => void,
   ) {
     this.locations = locations;
     this.active = active;
@@ -234,15 +274,23 @@ export class JobAddressing {
   detail(jobId: string): JobDetailLookup {
     const location = this.location(jobId);
     if (location === null) return this.preEpochHistoryExists() ? { kind: 'pre-epoch-history', jobId } : null;
+    const sendRefusal = sameEpoch(location.epochKey, this.active.epochKey() ?? ':memory:')
+      ? null
+      : missingJobSendRefusal(location);
+    const detail = this.locatedDetail(location);
+    return sendRefusal === null ? detail : { ...detail, sendRefusal };
+  }
+
+  private locatedDetail(location: JobLocation): Exclude<JobDetailLookup, null> {
+    const jobId = location.jobId;
     const historical = !sameEpoch(location.epochKey, this.active.epochKey() ?? ':memory:');
     if (!historical) {
       const active = this.active.detail(jobId);
       if (active !== null)
-        return {
+        return this.withResultAvailability({
           ...active,
           epochKey: location.epochKey,
-          ...(active.exit === null ? {} : { availability: this.availability(jobId) }),
-        };
+        });
     }
     const observed = historical
       ? this.historicalLocation(location, true)
@@ -253,15 +301,64 @@ export class JobAddressing {
     if (!historical && latest.disposition === 'unresolved') {
       return { kind: 'unresolved', jobId, epochKey: latest.epochKey };
     }
-    if (latest.detail.kind === 'recorded')
-      return {
-        ...latest.detail.value,
-        epochKey: latest.epochKey,
-        ...(latest.detail.value.exit === null ? {} : { availability: this.availability(jobId) }),
-      };
+    if (latest.detail.kind === 'recorded') return this.retainedDetail(latest, latest.detail.value);
     return latest.detail.kind === 'unreadable'
       ? { kind: 'detail-unreadable', jobId, epochKey: latest.epochKey }
       : { kind: 'unresolved', jobId, epochKey: latest.epochKey };
+  }
+
+  private retainedDetail(latest: JobLocation, detail: JobDetailResponse): JobDetailResponse {
+    const executions = latest.executions?.map(({ execution, requestedSeq, resultPath, detail: entry }) => ({
+      status: entry.status,
+      events: entry.events,
+      readiness: entry.readiness,
+      exit: entry.exit,
+      execution,
+      requestedSeq,
+      resultPath,
+    }));
+    if (
+      executions !== undefined &&
+      detail.exit === null &&
+      detail.status.execution !== null &&
+      detail.requestedSeq !== undefined &&
+      detail.resultPath !== undefined
+    ) {
+      executions.push({
+        status: detail.status,
+        events: detail.events,
+        readiness: detail.readiness,
+        exit: null,
+        execution: detail.status.execution,
+        requestedSeq: detail.requestedSeq,
+        resultPath: detail.resultPath,
+      });
+    }
+    const selected = executions?.find((entry) => entry.execution === detail.status.execution);
+    return this.withResultAvailability({
+      ...detail,
+      ...(executions === undefined ? {} : { executions }),
+      ...(selected === undefined ? {} : { requestedSeq: selected.requestedSeq, resultPath: selected.resultPath }),
+      epochKey: latest.epochKey,
+    });
+  }
+
+  private withResultAvailability(detail: JobDetailResponse): JobDetailResponse {
+    const executions = detail.executions?.map((entry) => ({
+      ...entry,
+      ...(entry.exit === null ? {} : { availability: this.availability(detail.status.jobId, entry.execution) }),
+    }));
+    const latest = executions?.find((entry) => entry.execution === detail.status.execution);
+    return {
+      ...detail,
+      ...(executions === undefined ? {} : { executions }),
+      ...(detail.exit === null
+        ? {}
+        : {
+            availability:
+              latest?.availability ?? this.availability(detail.status.jobId, detail.status.execution ?? undefined),
+          }),
+    };
   }
 
   abort(jobIds: string[]): AbortDecision {
@@ -352,9 +449,9 @@ export class JobAddressing {
     };
   }
 
-  private availability(jobId: string): ResultAvailability {
-    const availability = this.observeResultAvailability(jobId);
-    if (availability.kind === 'pending') this.hintRepair?.(jobId);
+  private availability(jobId: string, execution?: number): ResultAvailability {
+    const availability = this.observeResultAvailability(jobId, execution);
+    if (availability.kind === 'pending') this.hintRepair?.(jobId, execution);
     return availability;
   }
 
@@ -365,6 +462,7 @@ export class JobAddressing {
     return epoch;
   }
 
+  private readonly selectedAdmissions = new WeakMap<object, Map<string, WaitExecutionSelection>>();
   private readonly liveJobs = new WeakMap<object, Set<string>>();
   private readonly readOffsets = new WeakMap<object, number>();
   admitWait(request: WaitStreamRequest, budgeted = this.liveJobs.has(request)): WaitAdmission[] {
@@ -375,20 +473,68 @@ export class JobAddressing {
         : observe();
     const live = this.liveJobs.get(request) ?? new Set<string>();
     for (const job of admissions) {
-      if (job.disposition !== 'admitted') continue;
+      if (job.disposition !== 'admitted' || job.observationDeferred) continue;
+      if (job.selection) {
+        const selections = this.selectedAdmissions.get(request) ?? new Map<string, WaitExecutionSelection>();
+        selections.set(job.jobId, job.selection);
+        this.selectedAdmissions.set(request, selections);
+      }
       if (job.detail?.exit) live.delete(job.jobId);
       else live.add(job.jobId);
     }
     this.liveJobs.set(request, live);
-    return admissions;
+    return admissions.filter((admission) => request.jobIds.includes(admission.jobId));
   }
 
   private readAdmissions(request: WaitStreamRequest, budgeted: boolean): WaitAdmission[] {
     const activeEpochKey = this.waitEpoch(request);
+    const { members, locations, failures } = this.collectAdmissionLocations(request, budgeted, activeEpochKey);
+    const unknownIds = [...locations].filter(([id, location]) => !location && !failures.has(id)).map(([id]) => id);
+    const holds = unknownIds.length ? this.locations.unknownLocationHolds() : [];
+    const epochMembers = this.collectAdmissionEpochs(locations, unknownIds, holds, activeEpochKey);
+    const historicalEpochs = [...epochMembers.values()].filter(({ epochKey }) => !sameEpoch(epochKey, activeEpochKey));
+    const closures = new Map(
+      historicalEpochs.map(({ epochKey }) => [epochIdentity(epochKey), this.historicalClosure(epochKey)]),
+    );
+    const historical = new Map(
+      historicalEpochs.map(({ epochKey, jobIds }) => [
+        epochIdentity(epochKey),
+        this.readHistorical(epochKey, jobIds, request, true),
+      ]),
+    );
+    for (const jobId of unknownIds) {
+      for (const source of historical.values()) {
+        const found = source.kind === 'read' ? source.locations.get(jobId) : null;
+        if (found) {
+          locations.set(jobId, found);
+          break;
+        }
+      }
+    }
+    const activeAdmissions = new Map(
+      (
+        this.active.readWaitAdmissions?.(
+          epochMembers.get(epochIdentity(activeEpochKey))?.jobIds ?? [],
+          activeEpochKey,
+          request,
+        ) ?? []
+      ).map((job) => [job.jobId, job]),
+    );
+    const context = { request, activeEpochKey, historical, closures, holds, activeAdmissions };
+    return members.map((jobId) => {
+      const failure = failures.get(jobId);
+      if (failure) return failure;
+      const location = locations.get(jobId);
+      return location ? this.locatedAdmission(jobId, location, context) : this.missingAdmission(jobId, context);
+    });
+  }
+
+  private collectAdmissionLocations(request: WaitStreamRequest, budgeted: boolean, activeEpochKey: string) {
     const failures = new Map<string, WaitAdmission>();
     const offset = budgeted ? (this.readOffsets.get(request) ?? 0) : 0;
     if (budgeted) this.readOffsets.set(request, (offset + 32) % Math.max(1, request.jobIds.length));
-    const ordered = [...request.jobIds.slice(offset), ...request.jobIds.slice(0, offset)];
+    const members = [...new Set(request.jobIds)];
+    const ordered = [...members.slice(offset), ...members.slice(0, offset)];
     const locations = new Map(
       ordered.map((jobId) => {
         try {
@@ -411,6 +557,15 @@ export class JobAddressing {
         }
       }),
     );
+    return { members, locations, failures };
+  }
+
+  private collectAdmissionEpochs(
+    locations: Map<string, JobLocation | null>,
+    unknownIds: string[],
+    holds: UnknownLocationHold[],
+    activeEpochKey: string,
+  ) {
     const epochMembers = new Map<string, { epochKey: string; jobIds: string[] }>();
     for (const [jobId, location] of locations) {
       if (!location) continue;
@@ -419,10 +574,6 @@ export class JobAddressing {
       members.jobIds.push(jobId);
       epochMembers.set(identity, members);
     }
-    const unknownIds = [...locations]
-      .filter(([jobId, location]) => !location && !failures.has(jobId))
-      .map(([id]) => id);
-    const holds = unknownIds.length ? this.locations.unknownLocationHolds() : [];
     for (const hold of holds) {
       if (!hold.retryScheduled || hold.epochKey === undefined || sameEpoch(hold.epochKey, activeEpochKey)) continue;
       const identity = epochIdentity(hold.epochKey);
@@ -430,86 +581,170 @@ export class JobAddressing {
       for (const jobId of unknownIds) if (!members.jobIds.includes(jobId)) members.jobIds.push(jobId);
       epochMembers.set(identity, members);
     }
-    const historicalEpochs = [...epochMembers.values()].filter(({ epochKey }) => !sameEpoch(epochKey, activeEpochKey));
-    const closures = new Map(
-      historicalEpochs.map(({ epochKey }) => [epochIdentity(epochKey), this.historicalClosure(epochKey)]),
-    );
-    const historical = new Map(
-      historicalEpochs.map(({ epochKey, jobIds }) => [
-        epochIdentity(epochKey),
-        this.readHistorical(epochKey, jobIds, request),
-      ]),
-    );
-    for (const jobId of unknownIds) {
-      for (const source of historical.values()) {
-        const found = source.kind === 'read' ? source.locations.get(jobId) : null;
-        if (found) {
-          locations.set(jobId, found);
-          break;
-        }
+    return epochMembers;
+  }
+
+  private missingAdmission(jobId: string, context: AdmissionReadContext): WaitAdmission {
+    const { request, holds, historical } = context;
+    const selected =
+      this.selectedAdmissions.get(request)?.get(jobId) ??
+      request.executionSelections?.find((selection) => selection.jobId === jobId);
+    if (selected)
+      return {
+        jobId,
+        disposition: 'unknown',
+        epochKey: selected.epochKey,
+        message: 'The selected execution location is unavailable; no other execution was selected.',
+      };
+    const unresolvedHolds = holds.filter((hold) => {
+      if (!hold.retryScheduled || hold.epochKey === undefined) return true;
+      const source = historical.get(epochIdentity(hold.epochKey));
+      return source?.kind !== 'read' || !source.absentJobs?.has(jobId);
+    });
+    const unknown = this.unknownJobDisposition(unresolvedHolds);
+    const message = this.unknownJobCaveat(unresolvedHolds) || undefined;
+    if (unknown === 'not-found') return { jobId, disposition: 'missing', message };
+    if (unknown === 'discovery-unknown') return { jobId, disposition: 'unknown', message };
+    return {
+      jobId,
+      disposition: 'unreadable',
+      message: unknown === 'pre-epoch-history' ? PRE_EPOCH_HISTORY_MESSAGE : message,
+    };
+  }
+
+  private locatedAdmission(jobId: string, location: JobLocation, context: AdmissionReadContext): WaitAdmission {
+    const { request, activeEpochKey, activeAdmissions } = context;
+    if (!locationInCallerScope(location, request.projectRoot))
+      return {
+        jobId,
+        disposition: 'scope-mismatch',
+        message: 'Change cwd to the job work directory; coral-cli jobs list --all includes terminal jobs.',
+      };
+    const selected =
+      this.selectedAdmissions.get(request)?.get(jobId) ??
+      request.executionSelections?.find((selection) => selection.jobId === jobId);
+    if (selected && !sameEpoch(selected.epochKey, location.epochKey))
+      return {
+        jobId,
+        disposition: 'unknown',
+        epochKey: selected.epochKey,
+        message: 'The selected epoch is unavailable; no other execution was selected.',
+      };
+    if (sameEpoch(location.epochKey, activeEpochKey)) {
+      try {
+        return this.activeAdmission(jobId, location.epochKey, activeAdmissions.get(jobId), request);
+      } catch (error) {
+        return activeJournalReadFailure(jobId, location.epochKey, error);
       }
     }
-    const activeAdmissions = new Map(
-      (
-        this.active.readWaitAdmissions?.(
-          epochMembers.get(epochIdentity(activeEpochKey))?.jobIds ?? [],
-          activeEpochKey,
-          request,
-        ) ?? []
-      ).map((job) => [job.jobId, job]),
-    );
-    return request.jobIds.map((jobId): WaitAdmission => {
-      const failure = failures.get(jobId);
-      if (failure) return failure;
-      const location = locations.get(jobId) ?? null;
-      if (location === null) {
-        const unresolvedHolds = holds.filter((hold) => {
-          if (!hold.retryScheduled || hold.epochKey === undefined) return true;
-          const source = historical.get(epochIdentity(hold.epochKey));
-          return source?.kind !== 'read' || !source.absentJobs?.has(jobId);
-        });
-        const unknown = this.unknownJobDisposition(unresolvedHolds);
-        const message = this.unknownJobCaveat(unresolvedHolds) || undefined;
-        if (unknown === 'not-found') return { jobId, disposition: 'missing', message };
-        if (unknown === 'discovery-unknown') return { jobId, disposition: 'unknown', message };
-        return {
-          jobId,
-          disposition: 'unreadable',
-          message: unknown === 'pre-epoch-history' ? PRE_EPOCH_HISTORY_MESSAGE : message,
-        };
-      }
-      if (
-        request.projectRoot !== undefined &&
-        !jobInCallerScope(
-          {
-            jobKind: location.subject.jobKind,
-            workDir:
-              location.subject.workDir === null ? null : canonicalWorkDirWireSchema.parse(location.subject.workDir),
-          },
-          canonicalWorkDirWireSchema.parse(request.projectRoot),
-          'contains',
-        )
-      )
-        return {
-          jobId,
-          disposition: 'scope-mismatch',
-          message: 'Change cwd to the job work directory; coral-cli jobs list --all includes terminal jobs.',
-        };
-      if (sameEpoch(location.epochKey, activeEpochKey)) {
-        try {
-          return this.activeAdmission(jobId, location.epochKey, activeAdmissions.get(jobId), request);
-        } catch (error) {
-          return activeJournalReadFailure(jobId, location.epochKey, error);
-        }
-      }
-      return historicalAdmission(
-        jobId,
-        location,
-        closures.get(epochIdentity(location.epochKey)),
-        historical.get(epochIdentity(location.epochKey)),
-        (id) => this.availability(id),
+    return this.readHistoricalAdmission(jobId, location, context);
+  }
+
+  private readHistoricalAdmission(jobId: string, location: JobLocation, context: AdmissionReadContext): WaitAdmission {
+    const { request, historical, closures } = context;
+    const selected =
+      this.selectedAdmissions.get(request)?.get(jobId) ??
+      request.executionSelections?.find((selection) => selection.jobId === jobId);
+    const source = historical.get(epochIdentity(location.epochKey));
+    const retained = source?.kind === 'read' ? (source.locations.get(jobId) ?? location) : location;
+    const entries = retained.executions;
+    const retainedExecution = retained.detail.kind === 'recorded' ? retained.detail.value.status.execution : null;
+    const lifetimeAddressed =
+      retained.detail.kind === 'recorded' && retained.detail.value.executionAddressing === 'lifetime';
+    if (
+      !entries?.length &&
+      ((source?.kind === 'unreadable' && source.disposition !== 'transient-unknown') ||
+        (source?.kind === 'read' && source.dispositions?.get(jobId) === 'settled-unreadable'))
+    )
+      return historicalAdmission(jobId, location, closures.get(epochIdentity(location.epochKey)), source, (id) =>
+        this.availability(id),
       );
-    });
+    if (
+      !entries?.length &&
+      !lifetimeAddressed &&
+      (retained.latestExecution !== undefined || (retainedExecution !== null && retainedExecution !== undefined))
+    )
+      return {
+        jobId,
+        disposition: 'unknown',
+        epochKey: location.epochKey,
+        message: 'Complete execution admission evidence is unavailable; no execution was selected.',
+      };
+    if (selected || entries?.length)
+      return this.retainedExecutionAdmission({ jobId, epochKey: location.epochKey, retained, selected, request });
+    return historicalAdmission(jobId, location, closures.get(epochIdentity(location.epochKey)), source, (id) =>
+      this.availability(id),
+    );
+  }
+
+  private selectRetainedExecution({
+    jobId,
+    retained,
+    selected,
+    request,
+  }: RetainedExecutionRead):
+    | { kind: 'selected'; entry: JobExecutionLocation | undefined }
+    | { kind: 'unknown'; message: string } {
+    const entries = retained.executions;
+    if (!selected && request.cursor !== undefined && entries && entries.length > 1)
+      throw new WaitSessionError(
+        'wait_admission_required',
+        'A seq cursor cannot identify the admitted execution. Start a fresh wait without a cursor.',
+        request.jobIds,
+      );
+    let entry = selected ? entries?.find((entry) => entry.requestedSeq === selected.requestedSeq) : entries?.at(-1);
+    if (selected?.deliveredEndSeq !== undefined && entry && selected.deliveredEndSeq !== entry.seq)
+      throw new WaitSessionError(
+        'wait_selection_invalid',
+        'Delivered-end evidence does not match the retained execution.',
+        request.jobIds,
+      );
+    const deliveredEndSeq = selected?.deliveredEndSeq;
+    if (
+      request.jobIds.includes(jobId) &&
+      !this.selectedAdmissions.get(request)?.has(jobId) &&
+      deliveredEndSeq !== undefined &&
+      !selected?.awaitingArtifact
+    ) {
+      const next = entries?.find((entry) => entry.requestedSeq > deliveredEndSeq);
+      if (next === undefined && entry && (retained.latestExecution ?? entry.execution) > entry.execution)
+        return {
+          kind: 'unknown',
+          message: 'The next execution request is not readable; delivered-end evidence is preserved.',
+        };
+      entry = next ?? entry;
+    }
+    return { kind: 'selected', entry };
+  }
+
+  private retainedExecutionAdmission(context: RetainedExecutionRead): WaitAdmission {
+    const { jobId, epochKey, retained, selected } = context;
+    const selection = this.selectRetainedExecution(context);
+    if (selection.kind === 'unknown') return { jobId, disposition: 'unknown', epochKey, message: selection.message };
+    const { entry } = selection;
+    if (!entry || (!selected && (retained.openExecution !== undefined || retained.pendingAdmission !== undefined)))
+      return {
+        jobId,
+        disposition: 'unknown',
+        epochKey,
+        message: 'The selected execution evidence is unavailable; no other execution was selected.',
+      };
+    return {
+      jobId,
+      disposition: 'admitted',
+      historical: true,
+      epochKey,
+      selection: {
+        jobId,
+        epochKey,
+        requestedSeq: entry.requestedSeq,
+        ...(entry.requestedSeq === selected?.requestedSeq
+          ? { deliveredEndSeq: selected.deliveredEndSeq, awaitingArtifact: selected.awaitingArtifact }
+          : { awaitingArtifact: false }),
+      },
+      detail: { ...waitDetail(entry.detail), terminalSeq: entry.seq },
+      availability: this.availability(jobId, entry.execution),
+    };
   }
 
   private activeAdmission(
@@ -520,6 +755,10 @@ export class JobAddressing {
   ): WaitAdmission {
     const admission = read ?? this.active.readWaitAdmission?.(jobId, epochKey, request);
     const detail = admission?.detail ?? this.active.detail(jobId);
+    if (admission === undefined || admission === null) {
+      const fallback = this.activeDetailAdmission(jobId, epochKey, detail, request);
+      if (fallback !== undefined) return fallback;
+    }
     if (admission && admission.disposition !== 'admitted') return admission;
     if (!detail && !admission?.queued)
       return {
@@ -538,6 +777,87 @@ export class JobAddressing {
     };
   }
 
+  private activeDetailAdmission(
+    jobId: string,
+    epochKey: string,
+    detail: NonNullable<WaitAdmission['detail']> | JobDetailResponse | null | undefined,
+    request: WaitStreamRequest,
+  ): WaitAdmission | undefined {
+    const selected =
+      this.selectedAdmissions.get(request)?.get(jobId) ??
+      request.executionSelections?.find((selection) => selection.jobId === jobId);
+    const executions = detail && 'executions' in detail ? detail.executions : undefined;
+    if (selected || executions?.length) {
+      const execution = this.selectActiveExecution(jobId, epochKey, executions, selected, request);
+      if (!execution)
+        return {
+          jobId,
+          disposition: 'unknown',
+          epochKey,
+          message: 'The selected request is unavailable; no other execution was selected.',
+        };
+      return {
+        jobId,
+        disposition: 'admitted',
+        epochKey,
+        selection: {
+          jobId,
+          epochKey,
+          requestedSeq: execution.requestedSeq,
+          ...(selected?.requestedSeq === execution.requestedSeq
+            ? { deliveredEndSeq: selected.deliveredEndSeq, awaitingArtifact: selected.awaitingArtifact }
+            : { awaitingArtifact: false }),
+        },
+        detail: waitDetail(execution),
+        ...(execution.exit ? { availability: this.availability(jobId, execution.execution) } : {}),
+      };
+    }
+    const detailExecution = detail?.status.execution;
+    if (detailExecution !== null && detailExecution !== undefined)
+      return {
+        jobId,
+        disposition: 'unknown',
+        epochKey,
+        message: 'Execution request evidence is unavailable; no execution was selected.',
+      };
+    return undefined;
+  }
+
+  private selectActiveExecution(
+    jobId: string,
+    epochKey: string,
+    executions: readonly JobExecutionDetail[] | undefined,
+    selected: WaitExecutionSelection | undefined,
+    request: WaitStreamRequest,
+  ): JobExecutionDetail | undefined {
+    if (!selected && request.cursor !== undefined && executions && executions.length > 1)
+      throw new WaitSessionError(
+        'wait_admission_required',
+        'A seq cursor cannot identify the admitted execution. Start a fresh wait without a cursor.',
+        request.jobIds,
+      );
+    let execution = selected
+      ? executions?.find((execution) => execution.requestedSeq === selected.requestedSeq)
+      : executions?.at(-1);
+    if (selected && !sameEpoch(selected.epochKey, epochKey)) execution = undefined;
+    const end = execution?.events.find((event) => event.type === 'terminal')?.seq;
+    if (execution && selected?.deliveredEndSeq !== undefined && selected.deliveredEndSeq !== end)
+      throw new WaitSessionError(
+        'wait_selection_invalid',
+        'Delivered-end evidence does not match the selected execution.',
+        request.jobIds,
+      );
+    const deliveredEndSeq = selected?.deliveredEndSeq;
+    if (
+      request.jobIds.includes(jobId) &&
+      !this.selectedAdmissions.get(request)?.has(jobId) &&
+      deliveredEndSeq !== undefined &&
+      !selected?.awaitingArtifact
+    )
+      execution = executions?.find((execution) => execution.requestedSeq > deliveredEndSeq) ?? execution;
+    return execution;
+  }
+
   /** Progress is read from the active epoch only; a job admitted from another epoch delivers its terminal alone. */
   readonly visitProgress: ProgressVisit = (epoch, read) =>
     sameEpoch(epoch, this.active.epochKey() ?? ':memory:')
@@ -545,7 +865,13 @@ export class JobAddressing {
       : { kind: 'unreadable', disposition: 'transient-unknown' };
 
   snapshot(request: WaitSnapshotRequest): WaitSnapshot {
-    const session = new WaitSession(request.jobIds, request.cursor, this.waitEpoch(request));
+    const session = new WaitSession(
+      request.jobIds,
+      request.cursor,
+      this.waitEpoch(request),
+      false,
+      request.executionSelections,
+    );
     session.reconcile(this.admitWait(request, false));
     return selectWaitSnapshot(session, request.lines ?? 20, this.visitProgress);
   }
@@ -586,6 +912,7 @@ function waitDetail(
     status: detail.status,
     exit: detail.exit,
     readiness: detail.readiness,
+    ...('finishing' in detail ? { finishing: detail.finishing } : {}),
     terminalSeq:
       'events' in detail
         ? (detail.events.find((event) => event.type === 'terminal')?.seq ?? detail.status.lastSeq)

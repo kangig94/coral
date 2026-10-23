@@ -1,3 +1,4 @@
+import { sameEpoch } from '../store/epoch/identity.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
 import { assertNever } from '../infra/error-format.js';
@@ -12,6 +13,7 @@ import {
   type WorkflowExecutionPort,
 } from './execution-contract.js';
 import { describeTerminalFailure } from './command.js';
+import type { CommittedExecutionRequest } from '../jobs/launch.js';
 
 export const BOOTSTRAP_TIMEOUT_MS = 2_000;
 
@@ -54,11 +56,25 @@ async function readLaunchFailure(
   jobId: string,
   executionSvc: WorkflowExecutionPort,
   signal?: AbortSignal,
+  request?: CommittedExecutionRequest,
 ): Promise<LaunchFailure | null> {
   if (signal?.aborted) return { message: 'aborted during bootstrap', aborted: true };
 
-  for await (const event of executionSvc.waitStream({ jobIds: [jobId], timeoutSeconds: 1 })) {
-    if (event.type !== 'terminal') continue;
+  for await (const event of executionSvc.waitStream({
+    jobIds: [jobId],
+    timeoutSeconds: 1,
+    ...(request === undefined ? {} : { executionSelections: [{ jobId, ...request, awaitingArtifact: false }] }),
+  })) {
+    if (event.type !== 'terminal' || event.jobId !== jobId) continue;
+    if (request !== undefined) {
+      const selection = event.executionSelections?.find((entry) => entry.jobId === jobId);
+      if (
+        selection?.requestedSeq !== request.requestedSeq ||
+        !sameEpoch(selection.epochKey, request.epochKey) ||
+        selection.deliveredEndSeq !== event.seq
+      )
+        continue;
+    }
     return {
       message: describeTerminalFailure(event.result),
       aborted: event.result.outcome.kind === 'aborted',
@@ -74,8 +90,9 @@ export async function readLaunchFailureMessage(
   jobId: string,
   executionSvc: WorkflowExecutionPort,
   signal?: AbortSignal,
+  request?: CommittedExecutionRequest,
 ): Promise<string | null> {
-  return (await readLaunchFailure(jobId, executionSvc, signal))?.message ?? null;
+  return (await readLaunchFailure(jobId, executionSvc, signal, request))?.message ?? null;
 }
 
 export async function launchAtomWithRetry(context: LaunchContext): Promise<LaunchedAtom> {
@@ -119,7 +136,6 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
       prompt: atomPrompt,
       jobId: slot.jobId,
       workflowSlotId: slot.slotId,
-      workflowSlotGeneration: 0,
       cwd: workDir ?? ctx.projectRoot,
       parentWorkflowJobId: workflowJobId,
       owner: { kind: 'workflow', id: workflowJobId },
@@ -152,7 +168,7 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
 
   const launchState = await executionSvc.awaitLaunch(decision.jobId, BOOTSTRAP_TIMEOUT_MS);
   if (launchState === 'error') {
-    const failure = await readLaunchFailure(decision.jobId, executionSvc, signal);
+    const failure = await readLaunchFailure(decision.jobId, executionSvc, signal, decision);
     throw createWorkflowExecutionError(
       `Step ${slot.stepIndex}, atom '${slot.label}' failed: ${failure?.message ?? 'unknown error'}`,
       failure?.aborted ?? false,
@@ -171,14 +187,15 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
   return {
     slotId: slot.slotId,
     jobId: decision.jobId,
-    sessionId: decision.sessionId,
     providerName: slot.provider,
     agent: slot.label,
     tagName: slot.tagName,
     stepIndex: slot.stepIndex,
     atomIndex,
     atomKey: slot.atomKey,
-    generation: 0,
+    execution: 1,
+    requestedSeq: decision.requestedSeq,
+    epochKey: decision.epochKey,
   };
 }
 

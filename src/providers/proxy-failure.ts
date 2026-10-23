@@ -58,10 +58,6 @@ export function providerProxyReplayFailed(input: unknown): ProviderProxyFailureC
   });
 }
 
-export function isProviderProxyFailureOrigin(provider: string): provider is typeof PROVIDER_PROXY_FAILURE_ORIGIN {
-  return provider === PROVIDER_PROXY_FAILURE_ORIGIN;
-}
-
 export const providerProxyEmergencyEventSchema = z
   .object({
     kind: z.literal('terminal'),

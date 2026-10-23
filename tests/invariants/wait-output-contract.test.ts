@@ -194,7 +194,7 @@ it('a snapshot continuation keeps --snapshot and the snapshot cursor', () => {
 it.each(['docs/architecture.md', 'docs/core-modules.md'])('F11 and owner contracts are accurate in %s', (path) => {
   const text = read(path);
   for (const owner of [
-    'jobs/terminal/recording.ts:appendJobTerminalRecorded',
+    'jobs/terminal/recording.ts',
     'jobs/terminal/export.ts:TerminalResultExportOwner',
     'jobs/location-index.ts:JobLocationView',
     'jobs/wait/session.ts:WaitSession',
@@ -205,8 +205,8 @@ it.each(['docs/architecture.md', 'docs/core-modules.md'])('F11 and owner contrac
   ])
     expect(text).toContain(owner);
   for (const state of ['available', 'retained-away', 'pending', 'failed']) expect(text).toContain(`\`${state}\``);
-  expect(text).toContain('current provider session');
-  expect(text).toContain('historical wait continuity is null');
+  expect(text).toContain("Active wait continuity comes from the job's conversation facet");
+  expect(text).toContain('historical continuity is null');
   expect(text).toContain('terminalAt < cutoff');
   expect(text).not.toContain('explicit continuity snapshot');
   expect(text).not.toContain('object construction is owned by `jobs/store.ts`');

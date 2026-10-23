@@ -50,7 +50,7 @@ export type ClaudeExecutionPlan = ProviderExecutionPlan<
     }>;
     controller: Readonly<{ access: ClaudeProviderAccess; environment: readonly EnvironmentLayer[] }>;
   }>,
-  Readonly<{ sessionId: string; projectsRoot: string }>,
+  Readonly<{ jobId: string; projectsRoot: string }>,
   Readonly<{ controllerEnvironment: readonly EnvironmentLayer[] }>
 >;
 
@@ -139,7 +139,7 @@ function turnAuthorityLayer(
   protectedEnv: Readonly<Record<string, string>>,
   platform: string,
 ): EnvironmentLayer {
-  const values = { CORAL_CHILD: '1', CORAL_SESSION_ID: request.sessionId, ...protectedEnv };
+  const values = { CORAL_CHILD: '1', CORAL_JOB_ID: request.jobId, ...protectedEnv };
   return environmentLayer(
     {
       name: 'coral-turn-authority',
@@ -259,7 +259,7 @@ export function buildClaudeExecutionPlan(options: {
 } {
   const plan: ClaudeExecutionPlan = Object.freeze({
     host: options.hostPlan,
-    session: Object.freeze({ sessionId: options.request.sessionId, projectsRoot: options.access.projectsRoot }),
+    session: Object.freeze({ jobId: options.request.jobId, projectsRoot: options.access.projectsRoot }),
     turn: Object.freeze({
       controllerEnvironment: Object.freeze([
         turnAuthorityLayer(options.request, options.protectedEnv ?? {}, options.platform),

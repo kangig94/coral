@@ -7,16 +7,16 @@ import type { ExecResult } from '../infra/port-types.js';
 import { canonicalWorkDirWireSchema, type CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
 import { jsonValueSchema, type JsonValue } from '../infra/json-value.js';
 import type { ProviderExecutionPlan } from './execution-plan.js';
-import type { ProviderContinuityBlob } from '../sessions/continuity.js';
+import type { ProviderContinuityBlob } from '../jobs/conversation/continuity.js';
 import {
   SESSION_ADAPTER_UNPARSEABLE_EVENT,
   SESSION_PROVIDER_FAILED_EVENT,
   type ProviderFailureCause,
 } from './fault.js';
-import type { SessionContinuityMutation } from '../sessions/continuity-mutation.js';
+import type { SessionContinuityMutation } from '../jobs/conversation/continuity-mutation.js';
 import type { AbortReason } from '../jobs/outcome.js';
 import { providerArtifactIdentitySchema, type ProviderArtifactIdentity } from './artifact-identity.js';
-import { sessionProviderFailureDiagnosticSchema } from '../sessions/fault.js';
+import { turnFailureDiagnosticSchema } from './turn-failure-diagnostic.js';
 import type {
   AppServerNotificationMessage,
   ProviderCliRequest,
@@ -91,7 +91,7 @@ export const usageSummarySchema = z
 
 export interface ProviderRequest {
   action: ProviderAction;
-  sessionId: string;
+  jobId: string;
   name?: string;
   conversationRef?: string;
   prompt: string;
@@ -116,7 +116,7 @@ export interface ProviderRequest {
 export const providerRequestSchema = z
   .object({
     action: z.enum(['exec', 'resume']),
-    sessionId: persistedNonEmptyStringSchema,
+    jobId: persistedNonEmptyStringSchema,
     name: z.string().optional(),
     conversationRef: persistedNonEmptyStringSchema.optional(),
     prompt: z.string(),
@@ -247,26 +247,29 @@ export const providerSendInputSchema = z
   .strict();
 export type ProviderSendInput = Readonly<z.infer<typeof providerSendInputSchema>>;
 
+export const providerSendDeliveredSchema = z.object({ state: z.literal('delivered') }).strict();
+export const providerSendRefusedSchema = z
+  .object({
+    state: z.literal('refused'),
+    code: z.enum([
+      'turn_not_started',
+      'turn_ended',
+      'job_not_running',
+      'control_unavailable',
+      'transport_unsupported',
+      'unsupported_by_running_build',
+      'scope_mismatch',
+      'not_found',
+      'provider_rejected',
+    ]),
+    reason: z.string(),
+  })
+  .strict();
+export const providerSendUnknownSchema = z.object({ state: z.literal('unknown'), reason: z.string() }).strict();
 export const providerSendOutcomeSchema = z.discriminatedUnion('state', [
-  z.object({ state: z.literal('delivered') }).strict(),
-  z
-    .object({
-      state: z.literal('refused'),
-      code: z.enum([
-        'turn_not_started',
-        'turn_ended',
-        'job_not_running',
-        'control_unavailable',
-        'transport_unsupported',
-        'unsupported_by_running_build',
-        'scope_mismatch',
-        'not_found',
-        'provider_rejected',
-      ]),
-      reason: z.string(),
-    })
-    .strict(),
-  z.object({ state: z.literal('unknown'), reason: z.string() }).strict(),
+  providerSendDeliveredSchema,
+  providerSendRefusedSchema,
+  providerSendUnknownSchema,
 ]);
 /** An unknown send outcome must never authorize replay. */
 export type ProviderSendOutcome = Readonly<z.infer<typeof providerSendOutcomeSchema>>;
@@ -457,7 +460,7 @@ export const providerFailureCauseSchema = z.discriminatedUnion('type', [
           provider: z.string(),
           reason: z.enum(['session_unavailable', 'request_failed']),
           message: z.string(),
-          diagnostic: sessionProviderFailureDiagnosticSchema.optional(),
+          diagnostic: turnFailureDiagnosticSchema.optional(),
         })
         .strict(),
     })
@@ -735,7 +738,7 @@ export type ProviderPreflightInput<Access extends ProviderAccess = ProviderAcces
   requestEnv: Readonly<Record<string, string>>;
   platform: string;
 };
-export type ArtifactCleanupRuntime = Pick<Runtime, 'storage' | 'env' | 'paths' | 'time'>;
+export type ArtifactCleanupRuntime = Pick<Runtime, 'storage' | 'env' | 'paths' | 'time' | 'process'>;
 
 export type ProviderArtifactHandle = string;
 

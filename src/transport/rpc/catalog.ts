@@ -1,4 +1,6 @@
 import { z, type ZodType } from 'zod';
+
+import { jobSendOutcomeSchema } from '../../jobs/send.js';
 import type { Capability } from '../../security/capability.js';
 import {
   equipExpansionRequestSchema,
@@ -19,7 +21,6 @@ import {
 } from './discuss.js';
 import {
   jobAbortSchema,
-  jobSendResponseSchema,
   jobSendSchema,
   jobsReleaseRequestSchema,
   jobDetailRequestSchema,
@@ -60,7 +61,7 @@ import {
   kbWikiRewriteRequestSchema,
   kbWikiUnlinkRequestSchema,
 } from '../../kb/tool-contracts.js';
-import { sessionCreateSchema } from '../../sessions/command-schemas.js';
+import { sessionCreateSchema } from '../../jobs/conversation/command-schemas.js';
 import type { RpcPorts } from './ports.js';
 import { workflowRequestSchema } from './workflow.js';
 import { hostRefSchema } from '../../providers/host-ref-schema.js';
@@ -638,7 +639,7 @@ export const jobsSendRpcSpec = {
   kind: 'unary',
   requires: 'jobs:control',
   requestSchema: jobSendSchema,
-  responseSchema: jobSendResponseSchema,
+  responseSchema: jobSendOutcomeSchema,
   responseKind: 'json',
   portKey: 'jobs',
   http: { method: 'POST', path: '/jobs/send' },

@@ -1,9 +1,11 @@
+import { waitExecutionSelectionsSchema } from './execution-selection.js';
 import { decodeWaitCursor } from './cursor.js';
 import { z } from 'zod';
 
 import { isRecord } from '../../infra/json.js';
-import { continuitySnapshotSchema } from '../../sessions/continuity.js';
+import { continuitySnapshotSchema } from '../conversation/continuity.js';
 import { jobPhaseSchema } from '../phase.js';
+import { executionOrdinalSchema } from '../launch.js';
 import { jobProgressTimingSchema } from '../event-bodies.js';
 import { jobTerminalSchema } from '../terminal/result.js';
 import { usageSummarySchema } from '../../providers/contract.js';
@@ -18,6 +20,7 @@ const KNOWN_WAIT_STREAM_EVENT_TYPES = new Set<string>([
   'notice',
   'disposition',
   'cursor',
+  'admission',
 ]);
 const waitCursorSchema = z.custom<WaitCursor>((value) => decodeWaitCursor(value).kind === 'decoded');
 
@@ -30,12 +33,20 @@ export type WaitRenderDecision = Readonly<{
 
 /** The client's cursor is the last one a frame or final event named; a cursor frame is never rendered. */
 export function advanceWaitRenderCursor(cursor: WaitCursor | undefined, event: WaitStreamEvent): WaitRenderDecision {
+  if (event.type === 'admission') return { cursor, shouldRender: false };
   if (event.type === 'cursor') return { cursor: event.cursor, shouldRender: false };
-  return { cursor: isFinalWaitEvent(event) ? (event.cursor ?? undefined) : cursor, shouldRender: true };
+  return {
+    cursor:
+      isFinalWaitEvent(event) || (event.type === 'terminal' && event.cursor !== undefined)
+        ? (event.cursor ?? undefined)
+        : cursor,
+    shouldRender: true,
+  };
 }
 
 const finalFields = {
   cursor: waitCursorSchema.nullable(),
+  executionSelections: waitExecutionSelectionsSchema.optional(),
   exitCode: z.number().int().min(0).max(255),
 };
 const nonFinalFields = {
@@ -64,7 +75,7 @@ const waitQueuedEventBaseSchema = z.object({
 });
 
 const waitQueuedEventSchema = z.discriminatedUnion('jobKind', [
-  waitQueuedEventBaseSchema.extend({ jobKind: z.literal('provider'), sessionId: z.string().min(1) }).strip(),
+  waitQueuedEventBaseSchema.extend({ jobKind: z.literal('provider') }).strip(),
   waitQueuedEventBaseSchema.extend({ jobKind: z.literal('workflow'), workflowId: z.string().min(1) }).strip(),
   waitQueuedEventBaseSchema.extend({ jobKind: z.literal('kb'), systemTaskId: z.string().min(1) }).strip(),
 ]);
@@ -78,6 +89,8 @@ export const resultAvailabilitySchema = z.discriminatedUnion('kind', [
 
 const waitTerminalBlockSchema = z.object({
   type: z.literal('terminal'),
+  execution: executionOrdinalSchema.optional(),
+  executionSelections: waitExecutionSelectionsSchema.optional(),
   jobId: z.string(),
   seq: z.number().int().nonnegative(),
   remainingJobIds: z.array(z.string()).max(MAX_WAIT_JOB_IDS),
@@ -124,12 +137,14 @@ const waitNoticeSchema = z
   .object({
     type: z.literal('notice'),
     message: z.string(),
+    remedy: z.object({ kind: z.literal('recovery-quarantine-list') }).optional(),
     ...nonFinalFields,
   })
   .strip();
 const waitCursorFrameSchema = z
   .object({
     type: z.literal('cursor'),
+    executionSelections: waitExecutionSelectionsSchema.optional(),
     cursor: waitCursorSchema,
     exitCode: z.never().optional(),
   })
@@ -145,9 +160,10 @@ const waitDispositionSchema = z
   .strip();
 const waitStreamEventSchema = z
   .union([
+    z.object({ type: z.literal('admission'), executionSelections: waitExecutionSelectionsSchema }).strict(),
     waitProgressEventSchema,
     waitTerminalBlockSchema.extend(finalFields).strip(),
-    waitTerminalBlockSchema.extend(nonFinalFields).strip(),
+    waitTerminalBlockSchema.extend({ ...nonFinalFields, cursor: waitCursorSchema.nullable().optional() }).strip(),
     waitWaitingEventSchema,
     waitCarrierInterruptedEventSchema,
     waitNoticeSchema,

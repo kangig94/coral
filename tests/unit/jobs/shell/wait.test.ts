@@ -1,3 +1,5 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
+import { testJobConversation } from '#tests/helpers/session.js';
 import { StoreCodecError } from '#src/store/body-codec.js';
 import { nextDelivered, nextFinal } from '#tests/helpers/wait-stream.js';
 import { progressVisitFromEvents } from '#tests/helpers/wait-progress.js';
@@ -22,6 +24,7 @@ function fixture() {
   let activeJobId: string | undefined = 'job-1';
   let status: JobStatus = {
     jobId: 'job-1',
+    execution: 1,
     owner: { kind: 'provider-session', id: 'session-1' },
     sessionId: 'session-1',
     provider: 'codex',
@@ -44,7 +47,7 @@ function fixture() {
     visitProgress: progressVisitFromEvents(() => journal),
     time: runtime.time,
     eventBus,
-    sessionManager: { get: () => ({ activeJobId, state: 'pending', providerContinuity: null }) } as never,
+    conversationManager: { get: () => testJobConversation('job-1', { execution: 1, open: activeJobId !== undefined }) },
     launchQueue: { reservationFor: () => null, getActiveJobIds: () => [] } as never,
     loadJobWaitDetail: () => {
       const terminal = journal.find((event): event is JobTerminalEvent => event.type === 'terminal');
@@ -69,7 +72,7 @@ function fixture() {
     }),
   };
   const wait = new WaitCoordinator(deps);
-  const index = new JobLocationIndex(runtime, '/coral');
+  const index = new JobLocationIndex(runtime, '/coral', undefined, currentCoralStoreFormat().fingerprint);
   for (const jobId of ['job-1', 'a', 'b'])
     index.register(jobId, 'epoch', { projectRoot: '/project', workDir: '/project', jobKind: 'provider' });
   // A client wait reaches this coordinator through job addressing, as production composes it.
@@ -105,7 +108,7 @@ function fixture() {
     terminal: (): JobTerminalEvent => ({
       type: 'terminal',
       jobId: 'job-1',
-      sessionId: 'session-1',
+      ...{ sessionId: 'session-1' },
       seq: 1,
       ts: new Date(runtime.time.now()).toISOString(),
       result: { content: 'done', durationMs: 0, outcome: { kind: 'completed' } },
@@ -134,15 +137,15 @@ describe('WaitCoordinator', () => {
     const f = fixture();
     const detail = admitted('job-1').detail;
     f.deps.getCurrentJournalSeq = () => detail.events.at(-1)?.seq ?? 0;
-    const usage = { inputTokens: 123, outputTokens: 456 } as never;
+    const usage = { inputTokens: 123, outputTokens: 456 };
     f.deps.aggregateWorkflowUsage = () => usage;
-    f.deps.sessionManager = {
-      get: () => ({
-        state: 'ready',
-        conversationRef: { provider: 'codex', sessionId: 'session-1' },
-        providerContinuity: null,
-      }),
-    } as never;
+    f.deps.conversationManager = {
+      get: () =>
+        testJobConversation('job-1', {
+          conversationRef: 'thread-1',
+          providerContinuity: null,
+        }),
+    };
     f.deps.loadJobWaitDetail = () => ({
       status: { ...detail.status, jobKind: 'workflow', provider: 'codex', sessionId: 'session-1' },
       runtime: null,
@@ -150,33 +153,26 @@ describe('WaitCoordinator', () => {
     });
     const result = f.wait.readWaitAdmission('job-1', 'epoch');
     expect(result.detail?.exit?.diagnostics.usage).toEqual(usage);
-    expect(result.continuity).toMatchObject({ resumable: true, conversationRef: { sessionId: 'session-1' } });
+    expect(result.continuity).toMatchObject({ resumable: true, conversationRef: 'thread-1' });
   });
 
-  it('waits for both terminal status and session claim release', async () => {
+  it('waits for the selected execution end and ignores other execution notifications', async () => {
     const f = fixture();
     let settled = false;
     const waiting = f.wait.waitForJobTerminal('job-1').then(() => {
       settled = true;
     });
-    f.releaseClaim();
-    f.eventBus.emit('session:released', { jobId: 'job-1', sessionId: 'session-1' });
+    f.eventBus.emit('job:completed', { jobId: 'job-1', execution: 2, result: f.terminal().result });
     await Promise.resolve();
     expect(settled).toBe(false);
     f.terminalize();
+    f.eventBus.emit('job:completed', { jobId: 'job-1', execution: 1, result: f.terminal().result });
+    await waiting;
+    expect(settled).toBe(true);
+
     const g = fixture();
     g.terminalize();
-    let terminalSettled = false;
-    const terminalWaiting = g.wait.waitForJobTerminal('job-1').then(() => {
-      terminalSettled = true;
-    });
-    g.eventBus.emit('job:completed', { jobId: 'job-1', result: g.terminal().result });
-    await Promise.resolve();
-    expect(terminalSettled).toBe(false);
-    f.eventBus.emit('job:completed', { jobId: 'job-1', result: f.terminal().result });
-    g.releaseClaim();
-    g.eventBus.emit('session:released', { jobId: 'job-1', sessionId: 'session-1' });
-    await Promise.all([waiting, terminalWaiting]);
+    await expect(g.wait.waitForJobTerminal('job-1')).resolves.toBeUndefined();
   });
 
   it('catches up from the durable journal after a missed notification', async () => {

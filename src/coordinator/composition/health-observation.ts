@@ -1,3 +1,4 @@
+import { listExecutionRetryStatuses } from '../../jobs/finishing.js';
 import type { RetentionRunStatus } from '../../store/retention-outcome.js';
 import { currentLaunchStatus } from '../../infra/launch-status.js';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
@@ -155,6 +156,8 @@ function readHealthDiagnostics(input: HealthDiagnosticInput) {
     storeServices === null ? [] : (options.getConsumerStuck() ?? []);
   const mutationBlocked = kbDaemon.kbWrite?.mutationBlocked;
   const diagnostics: {
+    skippedExecutionFinishingStatuses?: number;
+    executionFinishing?: NonNullable<HealthSnapshot['diagnostics']>['executionFinishing'];
     providerOperationStartupReconciliation?: NonNullable<
       HealthSnapshot['diagnostics']
     >['providerOperationStartupReconciliation'];
@@ -175,6 +178,12 @@ function readHealthDiagnostics(input: HealthDiagnosticInput) {
     launchReleaseDispositions?: LaunchReleaseDiagnostic[];
     launchReclamations?: LaunchPermitReclamationDiagnostic[];
   } = { carriers: carrierDiagnostics };
+  if (storeServices !== null) {
+    const finishing = listExecutionRetryStatuses(storeServices.progressStore.getDb());
+    finishing.statuses.push(...options.executionFinisher.admissionStatuses());
+    if (finishing.statuses.length > 0) diagnostics.executionFinishing = finishing.statuses;
+    if (finishing.skipped > 0) diagnostics.skippedExecutionFinishingStatuses = finishing.skipped;
+  }
   const startupStatus = providerOperationStartupStatus();
   if (startupStatus !== null)
     diagnostics.providerOperationStartupReconciliation = {

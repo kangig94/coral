@@ -17,7 +17,6 @@ const IMPORT_EDGES = parseProductionImportEdges(REPO_ROOT, PRODUCTION_FILE_PATHS
 
 const DOMAIN_ROOTS = [
   'src/jobs/',
-  'src/sessions/',
   'src/discuss/',
   'src/workflow/',
   'src/kb/',
@@ -52,7 +51,6 @@ const PROVIDER_PROXY_FORBIDDEN = [
   'src/transport/',
   'src/read-model/',
   'src/jobs/',
-  'src/sessions/',
   'src/discuss/',
   'src/workflow/',
   'src/kb/',
@@ -94,11 +92,15 @@ const TRANSPORT_ALLOWED = new Set([
   'src/jobs/contracts/abort-registry.ts',
   'src/jobs/contracts/event-stream.ts',
   'src/jobs/launch.ts',
+  // Transport may depend on the jobs.send wire contract, never its execution shell.
+  'src/jobs/send.ts',
+  'src/jobs/send-target.ts',
   'src/jobs/phase.ts',
   'src/jobs/read-queries.ts',
   'src/jobs/records.ts',
   'src/jobs/scope.ts',
   'src/jobs/wait/contract.ts',
+  'src/jobs/wait/execution-selection.ts',
   'src/jobs/wait/cursor.ts',
   'src/jobs/wait/session.ts',
   'src/jobs/wait/snapshot.ts',
@@ -107,7 +109,7 @@ const TRANSPORT_ALLOWED = new Set([
   'src/providers/host-ref-codec.ts',
   'src/providers/host-ref-schema.ts',
   'src/providers/host-inventory-schema.ts',
-  'src/sessions/command-schemas.ts',
+  'src/jobs/conversation/command-schemas.ts',
   'src/discuss/command-schemas.ts',
   'src/discuss/read-contract.ts',
   'src/discuss/result.ts',
@@ -146,7 +148,6 @@ const COORDINATOR_ALLOWED = new Set([
 const DOMAIN_ROOT_DIRS = [
   'src/provider-proxy',
   'src/jobs',
-  'src/sessions',
   'src/discuss',
   'src/workflow',
   'src/kb',

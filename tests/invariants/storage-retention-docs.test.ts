@@ -5,17 +5,21 @@ describe('storage retention documentation', () => {
   it('documents one retention knob, provider originals, journal progress and startup plus daily cadence', () => {
     const configuration = readFileSync(new URL('../../docs/configuration.md', import.meta.url), 'utf-8');
     const row = configuration.split('\n').find((line) => line.startsWith('| `CORAL_JOBS_RETENTION_DAYS`'))!;
-    for (const text of ['14', 'provider-artifacts/', 'journal progress', 'startup', '24 h', 'Live or unknown'])
+    for (const text of ['14', 'conversation/', 'journal progress', 'startup', '24 h', 'Live or unknown'])
       expect(row).toContain(text);
   });
 
-  it('records the settled lifetime and leaves provider-session restore open', () => {
-    const todo = readFileSync(new URL('../../docs/todo/export-lifetime.md', import.meta.url), 'utf-8');
-    expect(todo).toContain('retention decided; restore design remains open');
-    expect(todo).toContain('Expired exports');
-    expect(todo).toContain('collision rule');
-    expect(todo).toContain('top-level entries, including directories');
-    expect(todo).toContain('deletion admission persists the cutoff in meta');
+  it('records the settled lifetime and automatic conversation restore', () => {
+    const architecture = readFileSync(new URL('../../docs/architecture.md', import.meta.url), 'utf-8');
+    const configuration = readFileSync(new URL('../../docs/configuration.md', import.meta.url), 'utf-8');
+    expect(architecture).toContain('Restore targets the original native path');
+    expect(architecture).toContain('no-replace publication');
+    expect(architecture).toContain('settlement and any conversation retention complete before the execution ends');
+    expect(configuration).toContain('Pruned conversation archives cannot be restored');
+    expect(architecture).toContain('including one created concurrently');
+    expect(architecture).toContain('is never overwritten');
+    expect(architecture).toContain('top-level entries, including directories');
+    expect(configuration).toContain('deletion admission persists across partial cleanup');
   });
 
   it('has no unused exclusive connection option or fixed owner count after legacy removal', () => {
@@ -54,7 +58,13 @@ describe('storage retention documentation', () => {
 it('documents the expanded single knob and bounded backlog drain', () => {
   const configuration = readFileSync(new URL('../../docs/configuration.md', import.meta.url), 'utf8');
   const row = configuration.split('\n').find((line) => line.startsWith('| `CORAL_JOBS_RETENTION_DAYS`'))!;
-  for (const text of ['terminal scratch', 'discharged custody', 'absence proof', '5 minutes', 'compact automatically'])
+  for (const text of [
+    'terminal scratch',
+    'discharged custody',
+    'absence proof',
+    '5 minutes',
+    'compact eligible progress automatically',
+  ])
     expect(row).toContain(text);
   for (const text of ['deletedByOwner', 'root identity', 'writer fencing']) expect(configuration).toContain(text);
 });

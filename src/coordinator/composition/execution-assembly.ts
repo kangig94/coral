@@ -77,8 +77,8 @@ export function createCoordinatorExecutionAssembly(
     runtime,
     getProgressStore,
     getExecutionService: services.getExecutionService,
-    ...(options.discardSessionArtifacts !== undefined
-      ? { discardSessionArtifacts: options.discardSessionArtifacts }
+    ...(options.discardConversationArtifacts !== undefined
+      ? { discardConversationArtifacts: options.discardConversationArtifacts }
       : {}),
   });
   const internalJobAbortRegistry = world.launchCoordinator.getInternalAbortRegistry();

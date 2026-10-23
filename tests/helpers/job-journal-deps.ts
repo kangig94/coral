@@ -2,33 +2,21 @@ import type { ProgressSource } from '#src/jobs/wait/contract.js';
 import type { JobStore } from '#src/jobs/store.js';
 import type { JobEvent } from '#src/jobs/records.js';
 import type { Runtime } from '#src/runtime/ports.js';
-import { commit } from '#src/store/append.js';
-import { composeReducers } from '#src/store/reducers.js';
-import { discussRegistry } from '#src/discuss/event-registry.js';
-import { jobsRegistry } from '#src/jobs/events.js';
-import { sessionsRegistry } from '#src/sessions/events.js';
-import { workflowRegistry } from '#src/workflow/events.js';
+import type { CommitEventsFn } from '#src/store/append.js';
 import { publishJobEvents } from '#src/jobs/shell/event-subscription.js';
 import { observeTerminalResultExports } from '#src/jobs/terminal/export.js';
-import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { aggregateWorkflowUsage } from '#src/jobs/workflow-usage.js';
 
 export function createTestJobJournalDeps(progressStore: JobStore, runtime: Pick<Runtime, 'time'>) {
-  const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
   const getCurrentJournalSeq = () =>
     (progressStore.getDb().prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get() as { seq: number }).seq;
   // Mirrors the production composition root, which composes this onto the same observer every commit
   // path calls (`coordinatorCommit` in src/coordinator/index.ts).
   const exportTerminalResults = observeTerminalResultExports((jobId) => progressStore.ensureResultArtifact(jobId));
-  const coordinatorCommit = (cb: Parameters<typeof commit>[1]) => {
-    const appended = commit(progressStore.getDb(), cb, {
-      now: () => new Date(runtime.time.now()),
-      reducers,
-      bodyCodec: progressStore.bodyCodec,
-      providers: permissiveProviderLookupPort,
-    });
+  const coordinatorCommit = (cb: Parameters<CommitEventsFn>[0]) => {
+    const appended = progressStore.commit(cb);
     if (appended.length > 0) {
-      publishJobEvents(appended);
+      publishJobEvents(appended, progressStore.getDb(), progressStore);
       exportTerminalResults(appended);
     }
     return appended;
@@ -78,12 +66,15 @@ export function createTestJobJournalDeps(progressStore: JobStore, runtime: Pick<
   };
 
   return {
+    jobLocations: { read: () => null },
+    jobSendAttempts: new Map<string, Promise<void>>(),
     loadJobProjectionDetail: (jobId: string) => progressStore.loadJobProjectionDetail(jobId),
-    loadJobWaitDetail: (jobId: string) => progressStore.loadJobWaitDetail(jobId),
+    loadJobWaitDetail: (jobId: string, requestedSeq?: number) => progressStore.loadJobWaitDetail(jobId, requestedSeq),
     readJobLastSeq: (jobId: string) => progressStore.readJobLastSeq(jobId),
 
     visitProgress: <T>(_epoch: string, read: (source: ProgressSource) => T) => progressStore.visitProgress(read),
-    observeResultAvailability: (jobId: string) => progressStore.getResultExportOwner().observeResultAvailability(jobId),
+    observeResultAvailability: (jobId: string, execution?: number) =>
+      progressStore.getResultExportOwner().observeResultAvailability(jobId, undefined, execution),
     aggregateWorkflowUsage: (workflowJobId: string) => aggregateWorkflowUsage(progressStore.getDb(), workflowJobId),
     subscribeJobEvents,
     getCurrentJournalSeq,

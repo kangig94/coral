@@ -1,3 +1,6 @@
+import { jobOpenedBodySchema, jobExecutionRequestedBodySchema } from '#src/jobs/launch.js';
+import { jobRuntimeStartedBodySchema, jobProgressBodySchema } from '#src/jobs/event-bodies.js';
+import { jobExecutionOutcomeAcceptedBodySchema } from '#src/jobs/terminal/result.js';
 import { nextDelivered } from '#tests/helpers/wait-stream.js';
 import { advanceWaitRenderCursor } from '#src/jobs/wait/stream-event.js';
 import type { WaitCursor } from '#src/jobs/wait/contract.js';
@@ -13,7 +16,10 @@ import { TypedEventBus } from '#src/coordinator/event-bus.js';
 import { JobStore } from '#src/jobs/store.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
-import { commitInputs } from '#tests/helpers/commit-inputs.js';
+import { commit } from '#src/store/append.js';
+import type { CoralEventInput } from '#src/store/envelope.js';
+import { appendJobExecutionEnded } from '#src/jobs/terminal/recording.js';
+import { testConversationFacet } from '#tests/helpers/session.js';
 import { readJobEvents, loadJobWaitDetail, readJobLastSeq } from '#src/jobs/read-queries.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
@@ -22,12 +28,12 @@ import { publishJobEvents, subscribeJobEvents } from '#src/jobs/shell/event-subs
 import { WaitCoordinator } from '#src/jobs/shell/wait.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { aggregateWorkflowUsage } from '#src/jobs/workflow-usage.js';
-import type { SessionJobReadPort } from '#src/sessions/contracts.js';
+import type { ConversationReadPort } from '#src/jobs/conversation/contracts.js';
 const runtimes = new Set<ReturnType<typeof createRealRuntime>>();
 
-const missingSessionManager = {
+const missingConversationManager = {
   get: () => null,
-} satisfies SessionJobReadPort;
+} satisfies ConversationReadPort;
 
 const waitUsage = {
   inputTokens: 11,
@@ -51,14 +57,46 @@ function createJournalAppender(db: Database) {
   const reducers = composeReducers(jobsRegistry);
   const bodyCodec = createEventBodyCodec();
 
-  return (inputs: Parameters<typeof commitInputs>[1]) => {
-    const appended = commitInputs(db, inputs, {
-      now: () => new Date('2026-04-19T00:00:00.000Z'),
-      reducers,
-      bodyCodec,
-      providers: permissiveProviderLookupPort,
-    });
-    publishJobEvents(appended);
+  return (inputs: readonly CoralEventInput[]) => {
+    const appended = commit(
+      db,
+      (c) => {
+        for (const input of inputs) {
+          const body =
+            input.type === 'job.opened'
+              ? jobOpenedBodySchema.parse(input.body)
+              : input.type === 'job.execution.requested'
+                ? jobExecutionRequestedBodySchema.parse(input.body)
+                : input.type === 'job.execution.started'
+                  ? jobRuntimeStartedBodySchema.parse(input.body)
+                  : input.type === 'job.execution.progress'
+                    ? jobProgressBodySchema.parse(input.body)
+                    : input.type === 'job.execution.outcome.accepted'
+                      ? jobExecutionOutcomeAcceptedBodySchema.parse(input.body)
+                      : (() => {
+                          throw new Error(`Unexpected fixture event ${input.type}.`);
+                        })();
+          const causeRef = c.append({ ...input, body });
+          if (input.type === 'job.execution.outcome.accepted') {
+            appendJobExecutionEnded(c, {
+              jobId: input.stream.id,
+              execution: 1,
+              causeRef,
+              namespace: input.namespace,
+              project: input.project,
+            });
+          }
+        }
+        return undefined;
+      },
+      {
+        now: () => new Date('2026-04-19T00:00:00.000Z'),
+        reducers,
+        bodyCodec,
+        providers: permissiveProviderLookupPort,
+      },
+    );
+    publishJobEvents(appended, db, { ...reducers, bodyCodec });
   };
 }
 
@@ -76,36 +114,42 @@ describe('wait SSE reconnect', () => {
     });
     const launchCoordinator = new LaunchCoordinator({ runtime });
     const append = createJournalAppender(db);
-    const jobId = 'wait-sse-job';
-    const sessionId = 'wait-sse-session';
+    const jobId = '10000000-0000-4000-8000-000000000001';
     const projectRoot = '/tmp/wait-sse-project';
 
     const appendLaunch = () =>
       append([
         {
-          type: 'job.launch.requested',
+          type: 'job.opened',
           stream: { kind: 'job', id: jobId },
           namespace: 'wait-sse-ns',
           project: projectRoot,
           correlationId: 'wait-sse-correlation',
-          refs: { sessionId },
+          refs: { jobId },
           body: {
-            owner: { kind: 'provider-session', id: sessionId },
-            sessionId,
-            provider: 'codex',
-            providerAction: 'exec',
+            owner: { kind: 'provider-session', id: jobId },
+            jobKind: 'provider',
             projectRoot,
+            createdAt: '2026-04-19T00:00:00.000Z',
+            conversation: testConversationFacet('codex', projectRoot),
+          },
+        },
+        {
+          type: 'job.execution.requested',
+          stream: { kind: 'job', id: jobId },
+          namespace: 'wait-sse-ns',
+          project: projectRoot,
+          correlationId: 'wait-sse-correlation',
+          refs: { jobId },
+          body: {
+            execution: 1,
+            input: 'hello',
+            action: 'exec',
             backendNamespace: 'wait-sse-ns',
             bundleHash: 'wait-sse-bundle',
-            jobKind: 'provider',
             pool: 'default',
             enqueueSequence: 0,
-            request: {
-              prompt: 'hello',
-              cwd: projectRoot,
-              bypassPermissions: false,
-              coralEnv: {},
-            },
+            coralEnv: {},
             createdAt: '2026-04-19T00:00:00.000Z',
           },
         },
@@ -114,13 +158,14 @@ describe('wait SSE reconnect', () => {
     const appendRuntime = () =>
       append([
         {
-          type: 'job.runtime.started',
+          type: 'job.execution.started',
           stream: { kind: 'job', id: jobId },
           namespace: 'wait-sse-ns',
           project: projectRoot,
           correlationId: 'wait-sse-correlation',
-          refs: { sessionId },
+          refs: { jobId },
           body: {
+            execution: 1,
             transport: 'durable-cli',
             pid: 123,
             stdoutPath: '/tmp/stdout',
@@ -133,13 +178,14 @@ describe('wait SSE reconnect', () => {
     const appendProgress = (message: string) =>
       append([
         {
-          type: 'job.progress.emitted',
+          type: 'job.execution.progress',
           stream: { kind: 'job', id: jobId },
           namespace: 'wait-sse-ns',
           project: projectRoot,
           correlationId: 'wait-sse-correlation',
-          refs: { sessionId },
+          refs: { jobId },
           body: {
+            execution: 1,
             kind: 'message',
             message,
             timing: {
@@ -155,13 +201,14 @@ describe('wait SSE reconnect', () => {
     const commitTerminal = () =>
       append([
         {
-          type: 'job.terminal.recorded',
+          type: 'job.execution.outcome.accepted',
           stream: { kind: 'job', id: jobId },
           namespace: 'wait-sse-ns',
           project: projectRoot,
           correlationId: 'wait-sse-correlation',
-          refs: { sessionId },
+          refs: { jobId },
           body: {
+            execution: 1,
             terminal: {
               outcome: { kind: 'completed' },
               durationMs: 12,
@@ -180,7 +227,7 @@ describe('wait SSE reconnect', () => {
 
     const coordinator = new WaitCoordinator({
       visitProgress: progressVisitFromEvents((targetJobId) => readJobEvents(db, targetJobId, progressStore)),
-      sessionManager: missingSessionManager,
+      conversationManager: missingConversationManager,
       launchQueue: launchCoordinator,
       eventBus,
       time: runtime.time,
@@ -204,7 +251,7 @@ describe('wait SSE reconnect', () => {
     expect(first.value).toMatchObject({
       type: 'progress',
       jobId,
-      seq: 3,
+      seq: 4,
       message: 'progress-1',
     });
     // The poll that delivered the row frames the cursor a cut after it resumes from.
@@ -228,7 +275,7 @@ describe('wait SSE reconnect', () => {
     expect(replayed.value).toMatchObject({
       type: 'progress',
       jobId,
-      seq: 4,
+      seq: 5,
       message: 'progress-2',
     });
 
@@ -239,7 +286,7 @@ describe('wait SSE reconnect', () => {
     expect(liveProgress.value).toMatchObject({
       type: 'progress',
       jobId,
-      seq: 5,
+      seq: 6,
       message: 'progress-3',
     });
 
@@ -274,36 +321,42 @@ describe('wait SSE reconnect', () => {
     });
     const launchCoordinator = new LaunchCoordinator({ runtime });
     const append = createJournalAppender(db);
-    const jobId = 'wait-race-job';
-    const sessionId = 'wait-race-session';
+    const jobId = '10000000-0000-4000-8000-000000000002';
     const projectRoot = '/tmp/wait-race-project';
 
     const appendLaunch = () =>
       append([
         {
-          type: 'job.launch.requested',
+          type: 'job.opened',
           stream: { kind: 'job', id: jobId },
           namespace: 'wait-race-ns',
           project: projectRoot,
           correlationId: 'wait-race-correlation',
-          refs: { sessionId },
+          refs: { jobId },
           body: {
-            owner: { kind: 'provider-session', id: sessionId },
-            sessionId,
-            provider: 'codex',
-            providerAction: 'exec',
+            owner: { kind: 'provider-session', id: jobId },
+            jobKind: 'provider',
             projectRoot,
+            createdAt: '2026-04-19T00:00:00.000Z',
+            conversation: testConversationFacet('codex', projectRoot),
+          },
+        },
+        {
+          type: 'job.execution.requested',
+          stream: { kind: 'job', id: jobId },
+          namespace: 'wait-race-ns',
+          project: projectRoot,
+          correlationId: 'wait-race-correlation',
+          refs: { jobId },
+          body: {
+            execution: 1,
+            input: 'hello',
+            action: 'exec',
             backendNamespace: 'wait-race-ns',
             bundleHash: 'wait-race-bundle',
-            jobKind: 'provider',
             pool: 'default',
             enqueueSequence: 0,
-            request: {
-              prompt: 'hello',
-              cwd: projectRoot,
-              bypassPermissions: false,
-              coralEnv: {},
-            },
+            coralEnv: {},
             createdAt: '2026-04-19T00:00:00.000Z',
           },
         },
@@ -312,13 +365,14 @@ describe('wait SSE reconnect', () => {
     const appendRuntime = () =>
       append([
         {
-          type: 'job.runtime.started',
+          type: 'job.execution.started',
           stream: { kind: 'job', id: jobId },
           namespace: 'wait-race-ns',
           project: projectRoot,
           correlationId: 'wait-race-correlation',
-          refs: { sessionId },
+          refs: { jobId },
           body: {
+            execution: 1,
             transport: 'durable-cli',
             pid: 123,
             stdoutPath: '/tmp/stdout',
@@ -331,13 +385,14 @@ describe('wait SSE reconnect', () => {
     const appendProgress = () =>
       append([
         {
-          type: 'job.progress.emitted',
+          type: 'job.execution.progress',
           stream: { kind: 'job', id: jobId },
           namespace: 'wait-race-ns',
           project: projectRoot,
           correlationId: 'wait-race-correlation',
-          refs: { sessionId },
+          refs: { jobId },
           body: {
+            execution: 1,
             kind: 'message',
             message: 'progress-before-race',
             timing: {
@@ -353,13 +408,14 @@ describe('wait SSE reconnect', () => {
     const commitTerminal = () =>
       append([
         {
-          type: 'job.terminal.recorded',
+          type: 'job.execution.outcome.accepted',
           stream: { kind: 'job', id: jobId },
           namespace: 'wait-race-ns',
           project: projectRoot,
           correlationId: 'wait-race-correlation',
-          refs: { sessionId },
+          refs: { jobId },
           body: {
+            execution: 1,
             terminal: {
               outcome: { kind: 'completed' },
               durationMs: 4,
@@ -383,7 +439,7 @@ describe('wait SSE reconnect', () => {
         }
         return events;
       }),
-      sessionManager: missingSessionManager,
+      conversationManager: missingConversationManager,
       launchQueue: launchCoordinator,
       eventBus,
       time: runtime.time,
@@ -407,7 +463,7 @@ describe('wait SSE reconnect', () => {
     expect(progress.value).toMatchObject({
       type: 'progress',
       jobId,
-      seq: 3,
+      seq: 4,
       message: 'progress-before-race',
     });
 

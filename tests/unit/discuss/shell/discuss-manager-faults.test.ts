@@ -19,9 +19,13 @@ afterEach(() => {
 
 describe('Discuss faults and retry recovery', () => {
   it('treats a speech wait timeout as a persisted speech timeout', async () => {
-    const start = vi
-      .fn()
-      .mockResolvedValue({ kind: 'provider-session', status: 'running', jobId: 'job-1', sessionId: 'exec-alpha' });
+    const start = vi.fn().mockResolvedValue({
+      kind: 'provider-session',
+      status: 'running',
+      jobId: 'f10f3e57-0d04-53df-b4c3-3bcf75a1222d',
+      requestedSeq: 1,
+      epochKey: 'test-epoch',
+    });
     const waitStreamOnce = vi.fn().mockRejectedValue(new Error('Job timed out waiting for terminal result'));
     const harness = createDiscussHarness(createExecutionServiceStub({ start, waitStreamOnce }));
     await persistSession(harness, {
@@ -76,9 +80,13 @@ describe('Discuss faults and retry recovery', () => {
   });
 
   it('restarts malformed bid retries from the persisted attempt counter', async () => {
-    const resume = vi
-      .fn()
-      .mockResolvedValue({ kind: 'provider-session', status: 'running', jobId: 'job-2', sessionId: 'exec-alpha' });
+    const resume = vi.fn().mockResolvedValue({
+      kind: 'provider-session',
+      status: 'running',
+      jobId: 'f10f3e57-0d04-53df-b4c3-3bcf75a1222d',
+      requestedSeq: 1,
+      epochKey: 'test-epoch',
+    });
     const waitStreamOnce = vi.fn().mockResolvedValue({
       content: '{"score": 66, "thought": "second attempt"}',
       continuity: null,
@@ -99,7 +107,7 @@ describe('Discuss faults and retry recovery', () => {
           snapshot.lastAppliedSeq + 1,
           'agent.run.bound',
           '2026-03-10T00:01:00.000Z',
-          { agent: 'alpha', executionSessionId: 'exec-alpha' },
+          { agent: 'alpha', jobId: 'f10f3e57-0d04-53df-b4c3-3bcf75a1222d' },
         ),
         makeEvent(
           snapshot.sessionId,
@@ -108,7 +116,7 @@ describe('Discuss faults and retry recovery', () => {
           snapshot.lastAppliedSeq + 2,
           'agent.job.started',
           '2026-03-10T00:01:01.000Z',
-          { agent: 'alpha', jobId: 'job-1', purpose: 'bid', attempt: 1 },
+          { agent: 'alpha', jobId: 'f10f3e57-0d04-53df-b4c3-3bcf75a1222d', execution: 1, purpose: 'bid', attempt: 1 },
         ),
         makeEvent(
           snapshot.sessionId,
@@ -117,7 +125,13 @@ describe('Discuss faults and retry recovery', () => {
           snapshot.lastAppliedSeq + 3,
           'agent.job.finished',
           '2026-03-10T00:01:02.000Z',
-          { agent: 'alpha', jobId: 'job-1', outcome: 'retryable_parse_error', attempt: 1 },
+          {
+            agent: 'alpha',
+            jobId: 'f10f3e57-0d04-53df-b4c3-3bcf75a1222d',
+            execution: 1,
+            outcome: 'retryable_parse_error',
+            attempt: 1,
+          },
         ),
       ],
     });
@@ -128,7 +142,7 @@ describe('Discuss faults and retry recovery', () => {
     expect(resume).toHaveBeenCalledWith(
       'codex',
       expect.objectContaining({
-        sessionId: 'exec-alpha',
+        jobId: 'f10f3e57-0d04-53df-b4c3-3bcf75a1222d',
         pool: 'discuss',
         owner: { kind: 'discussion', id: 'discuss-1' },
       }),

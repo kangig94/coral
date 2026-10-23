@@ -43,7 +43,7 @@ export type LocalCarrierRegistries = Readonly<{
   /** `LocalOperationRegistry.stateForJob` (W2.3) — `null` when this coordinator has no live entry for the
    *  job, which `evidenceFor` below maps to `'inherited'`, never to a guessed `'activated'`. */
   registryStateForJob: (jobId: string) => LocalOperationRegistryState | null;
-  holdsLocalAppServerExecution?: (jobId: string) => boolean;
+  holdsLocalAppServerExecution?: (jobId: string, execution: number) => boolean;
 }>;
 
 /** True once the job is admitted (active or queued) in this coordinator process's own in-memory admission
@@ -99,7 +99,9 @@ function evidenceFor(jobId: string, detail: JobProjectionDetail, registries: Loc
         : {
             carrierClass: 'app-server-acquired',
             registryState: registries.registryStateForJob(jobId) ?? 'inherited',
-            ...(registries.holdsLocalAppServerExecution?.(jobId) === true ? { localExecutionHeld: true } : {}),
+            ...(registries.holdsLocalAppServerExecution?.(jobId, detail.status?.execution ?? 0) === true
+              ? { localExecutionHeld: true }
+              : {}),
           };
     case 'workflow':
       return { carrierClass: 'workflow', ownedByThisCoordinator: registries.isWorkflowOwnedByThisCoordinator(jobId) };

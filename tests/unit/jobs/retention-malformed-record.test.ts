@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createRetentionFixture, RETENTION_CUTOFF } from '#tests/helpers/storage-retention.js';
 import { pruneJobProgress } from '#src/jobs/progress-retention.js';
 import { pruneJobExports } from '#src/jobs/export-retention.js';
-import { initTestJob } from '#tests/helpers/session.js';
+import { testConversationFacet, initTestJob } from '#tests/helpers/session.js';
 import { commitJobTerminal } from '#tests/helpers/job-commits.js';
 import { mkdirSync, writeFileSync, existsSync, utimesSync } from 'node:fs';
 import { join } from 'node:path';
@@ -30,14 +30,13 @@ describe('red retention malformed durable records', () => {
       const f = fixture();
       f.setNow(1);
       initTestJob(f.store, {
-        jobId: 'expired-job',
-        sessionId: 'expired-session',
-        provider: 'codex',
+        jobId: '7cfe5259-bf71-5f55-ae58-213c1b1718c6',
+        conversation: testConversationFacet('codex'),
         projectRoot: '/workspace',
         backendNamespace: 'red-attacker',
       });
-      const progress = f.store.appendProgress('expired-job', 'expired-session', 'expired');
-      commitJobTerminal(f.store, 'expired-job', 'expired-session', {
+      const progress = f.store.appendProgress('7cfe5259-bf71-5f55-ae58-213c1b1718c6', 'expired');
+      commitJobTerminal(f.store, '7cfe5259-bf71-5f55-ae58-213c1b1718c6', 1, {
         content: 'complete',
         outcome: { kind: 'completed' },
         durationMs: 1,

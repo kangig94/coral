@@ -1,0 +1,42 @@
+import { describe, expect, it } from 'vitest';
+
+import { sessionCreateSchema } from '#src/jobs/conversation/command-schemas.js';
+
+describe('session wire schemas', () => {
+  it('sessionCreateSchema accepts a known networkEnv map and rejects unknown keys', () => {
+    expect(
+      sessionCreateSchema.parse({
+        provider: 'claude',
+        prompt: 'hello',
+        projectRoot: '/tmp/project',
+        networkEnv: { HTTP_PROXY: 'http://p:1' },
+      }).networkEnv,
+    ).toEqual({ HTTP_PROXY: 'http://p:1' });
+
+    expect(() =>
+      sessionCreateSchema.parse({
+        provider: 'claude',
+        prompt: 'hello',
+        projectRoot: '/tmp/project',
+        networkEnv: { PATH: '/usr/bin' },
+      }),
+    ).toThrow();
+  });
+
+  it('sessionCreateSchema accepts a forwardable coralEnv map and rejects reserved/non-CORAL keys', () => {
+    expect(
+      sessionCreateSchema.parse({
+        provider: 'claude',
+        prompt: 'hello',
+        projectRoot: '/tmp/project',
+        coralEnv: { CORAL_CODEX_MODEL: 'gpt-5.6-sol' },
+      }).coralEnv,
+    ).toEqual({ CORAL_CODEX_MODEL: 'gpt-5.6-sol' });
+
+    for (const coralEnv of [{ CORAL_JOB_ID: 'forged' }, { PATH: '/usr/bin' }]) {
+      expect(() =>
+        sessionCreateSchema.parse({ provider: 'claude', prompt: 'hello', projectRoot: '/tmp/project', coralEnv }),
+      ).toThrow();
+    }
+  });
+});

@@ -55,6 +55,8 @@ const ACQUIRED_JOB_ID = '00000000-0000-4000-8000-000000000098';
 function status(overrides: Partial<JobStatus> = {}): JobStatus {
   return {
     jobId: 'job-1',
+    execution: 1,
+    finishing: false,
     owner: { kind: 'provider-session', id: 'session-1' },
     sessionId: 'session-1',
     provider: 'codex',

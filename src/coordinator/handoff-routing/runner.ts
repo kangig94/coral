@@ -95,6 +95,7 @@ const handoffOperationSchema = z.discriminatedUnion('kind', [
       // Opaque here on purpose: the caller already holds the serialized cursor, and decoding it would make
       // this coordinator module depend on the jobs domain's wait vocabulary just to re-encode the same string.
       serializedCursor: z.string().min(1).optional(),
+      serializedExecutionSelections: z.string().min(1).optional(),
     })
     .strict(),
   z.object({ kind: z.literal('backend-startup') }).strict(),
@@ -145,7 +146,7 @@ type LiveIncumbentReading =
 
 export type HandoffOperation =
   | Readonly<{ kind: 'cli-invocation'; argv: readonly string[] }>
-  | Readonly<{ kind: 'wait-jobs'; jobId: string; serializedCursor?: string }>
+  | Readonly<{ kind: 'wait-jobs'; jobId: string; serializedCursor?: string; serializedExecutionSelections?: string }>
   | Readonly<{ kind: 'backend-startup' }>;
 
 export type HandoffSuccess = Readonly<{
@@ -852,6 +853,9 @@ function delegatedArguments(operation: HandoffOperation): readonly string[] {
         ...waitCommandPaths.current.split(' '),
         operation.jobId,
         ...(operation.serializedCursor === undefined ? [] : ['--cursor', operation.serializedCursor]),
+        ...(operation.serializedExecutionSelections === undefined
+          ? []
+          : ['--execution-selection', operation.serializedExecutionSelections]),
       ];
     case 'backend-startup':
       return [];

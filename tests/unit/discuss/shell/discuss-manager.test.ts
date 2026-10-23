@@ -138,7 +138,7 @@ describe('Discuss executor and operations', () => {
     const start = vi.fn().mockResolvedValue({
       kind: 'provider-session',
       status: 'running',
-      jobId: 'job-canonical',
+      jobId: 'cc5be7d2-6eec-5e5d-afb2-7a2f3d3cd8f0',
       sessionId: 'exec-canonical',
     });
     const harness = createDiscussHarness(

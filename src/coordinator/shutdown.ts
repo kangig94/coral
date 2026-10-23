@@ -1,3 +1,4 @@
+import type { RecoveryReport } from '../recovery/containment.js';
 import type { Server, ServerResponse } from 'node:http';
 import type { DiscussSessionStore } from '../discuss/shell/session-store.js';
 import { formatError, serializeThrown } from '../infra/error-format.js';
@@ -101,7 +102,10 @@ type RunShutdownSequenceContext = {
   ipcServer?: IpcListener;
   streamResponses: Set<ServerResponse>;
   runtime: Runtime;
-  markJobsAsErrorFn: (message: string, signal: AbortSignal) => void | Promise<void>;
+  markJobsAsErrorFn: (
+    message: string,
+    signal: AbortSignal,
+  ) => void | RecoveryReport<unknown> | Promise<void | RecoveryReport<unknown>>;
   providerHostManager: ProviderHostLifecycle;
   providerProxyAuthority?: ProviderProxyAuthorityRegistry;
   stopProviderOperationReconciler?: () => ProviderOperationReconcilerStopDisposition;
@@ -677,7 +681,14 @@ function buildHardShutdownConsequences({
           detail: 'terminalization awaits provider-host recovery, mutation drain, and child containment discharge',
         });
       }
-      return confirmedTask(() => markJobsAsErrorFn('Backend shutting down', consequenceSignal(signal)));
+      return Promise.resolve(markJobsAsErrorFn('Backend shutting down', consequenceSignal(signal))).then((report) =>
+        report === undefined || (report.deferred === 0 && report.quarantined === 0 && report.skipped === 0)
+          ? { confirmed: true }
+          : {
+              confirmed: false,
+              detail: `Terminalization deferred=${report.deferred}, quarantined=${report.quarantined}, skipped=${report.skipped}; successor=startup recovery.`,
+            },
+      );
     },
     retainedAuthority: () => cleanupContribution('crashed job terminalization'),
     remainder: () => ({ owner: 'successor-recovery', evidence: { kind: 'startup-liveness-recovery' } }),

@@ -1,5 +1,7 @@
 import { afterEach, expect, it, vi } from 'vitest';
 
+import { createTestExecutionFinisher } from '#tests/helpers/execution-finisher.js';
+
 import { KbReindexService } from '#src/kb-daemon/services/reindex.js';
 import { JobStore } from '#src/jobs/store.js';
 import type { JobAbortRegistryPort } from '#src/jobs/contracts/abort-registry.js';
@@ -30,9 +32,9 @@ async function runAtCheckpoint(reason: 'user_abort' | { kind: 'mutation_deadline
   });
   const callbacks = new Map<string, () => void>();
   const abortRegistry: JobAbortRegistryPort = {
-    register: (id, callback) => {
-      callbacks.set(id!, callback!);
-      return id!;
+    register: (id, _execution, callback) => {
+      if (callback) callbacks.set(id, callback);
+      return id;
     },
     getSignal: () => null,
     has: (id) => callbacks.has(id),
@@ -51,6 +53,7 @@ async function runAtCheckpoint(reason: 'user_abort' | { kind: 'mutation_deadline
   const service = new KbReindexService({
     runtime,
     progressStore: store,
+    executionFinisher: createTestExecutionFinisher(store, runtime),
     backendNamespace: 'checkpoint-test',
     bundleHash: 'bundle-a',
     abortRegistry,

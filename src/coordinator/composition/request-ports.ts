@@ -1,6 +1,5 @@
 import { hintHistoricalHydration } from '../../jobs/historical-reader.js';
 import { join } from 'node:path';
-import { deriveLaunchReadiness } from '../../jobs/launch-readiness.js';
 import { JobAddressing } from '../../jobs/addressing.js';
 import { historicalSourceReader } from '../../jobs/historical-reader.js';
 import { type CanonicalWorkDir } from '../../runtime/canonical-work-dir.js';
@@ -42,17 +41,7 @@ export function createCoordinatorRequestPorts(input: {
   } = input;
   const { runtime, world, state, jobLocationIndex, currentJobEpochKey, getProgressStore } = core;
   const { services, control, discuss } = execution;
-  const activeJobDetail = (jobId: string) => {
-    const progressStore = getProgressStore();
-    const detail = progressStore.loadJobProjectionDetail(jobId);
-    if (!detail.status) return null;
-    return {
-      status: detail.status,
-      events: progressStore.readJobEvents(jobId),
-      readiness: deriveLaunchReadiness(detail),
-      exit: detail.exit,
-    };
-  };
+  const activeJobDetail = (jobId: string) => getProgressStore().loadJobDetailResponse(jobId);
   const jobAddressing = new JobAddressing(
     jobLocationIndex.readOnlyView(),
     {
@@ -75,10 +64,11 @@ export function createCoordinatorRequestPorts(input: {
       ].some((path) => runtime.storage.existsSync(path)),
     (epochKey) => probeHistoricalClosure(epochKey),
     historicalSourceReader(jobLocationIndex),
-    (jobId) => getProgressStore().getResultExportOwner().observeResultAvailability(jobId),
-    (jobId) => {
+    (jobId, execution) =>
+      getProgressStore().getResultExportOwner().observeResultAvailability(jobId, undefined, execution),
+    (jobId, execution) => {
       hintHistoricalHydration(jobLocationIndex, jobId);
-      getProgressStore().getResultExportOwner().hintRepair(jobId);
+      getProgressStore().getResultExportOwner().hintRepair(jobId, execution);
     },
   );
 

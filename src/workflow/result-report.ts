@@ -1,4 +1,4 @@
-import type { WorkflowReportPort } from '../jobs/terminal/export.js';
+import type { WorkflowReportPort } from '../jobs/terminal/render.js';
 import { describeTerminalOutcome } from '../jobs/outcome.js';
 import { workflowCompletedBodySchema } from './events.js';
 import type { StepDetail } from './execution-contract.js';
@@ -10,7 +10,7 @@ export const renderWorkflowReport: WorkflowReportPort = ({ db, jobId, accepted, 
     .prepare<
       [string],
       EventsRow
-    >("SELECT * FROM events WHERE stream_kind = 'job' AND stream_id = ? AND type = 'job.launch.requested' ORDER BY seq LIMIT 1")
+    >("SELECT * FROM events WHERE stream_kind = 'job' AND stream_id = ? AND type = 'job.opened' ORDER BY seq LIMIT 1")
     .get(jobId);
   if (!launch) return null;
   const body = JSON.parse(Buffer.from(launch.body).toString('utf8')) as { jobKind?: string };

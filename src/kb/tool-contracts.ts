@@ -77,7 +77,6 @@ const transportContextFieldsShape = {
   claudeModelCap: z.string().optional(),
   claudeTransport: z.string().optional(),
   jobId: z.string().optional(),
-  sessionId: z.string().optional(),
   networkEnv: networkEnvSchema.optional(),
   coralEnv: coralEnvForwardSchema.optional(),
 } satisfies z.ZodRawShape;
@@ -88,7 +87,6 @@ const optionalTransportContextFieldsShape = {
   claudeModelCap: z.string().optional(),
   claudeTransport: z.string().optional(),
   jobId: z.string().optional(),
-  sessionId: z.string().optional(),
   networkEnv: networkEnvSchema.optional(),
   coralEnv: coralEnvForwardSchema.optional(),
 } satisfies z.ZodRawShape;

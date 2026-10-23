@@ -10,14 +10,14 @@
 CREATE TABLE IF NOT EXISTS events (
   seq            INTEGER PRIMARY KEY,                -- coordinator-reserved (see comment above)
   ts             TEXT    NOT NULL,                   -- ISO 8601 (informational; see §4.1)
-  type           TEXT    NOT NULL,                   -- e.g. 'job.terminal.recorded'
+  type           TEXT    NOT NULL,
   stream_kind    TEXT    NOT NULL,                   -- 'job'|'session'|'discuss'|'workflow' (the four Journal stream kinds)
   stream_id      TEXT    NOT NULL,
   namespace      TEXT,
   project        TEXT,
   correlation_id TEXT,
   causation_seq  INTEGER,                            -- FK to events(seq), loose
-  refs           TEXT,                               -- JSON: { jobId?, sessionId?, parentJobId?, ... } @persisted-codec store.events.refs
+  refs           TEXT,                               -- JSON: { jobId?, parentJobId?, ... } @persisted-codec store.events.refs
   body           BLOB    NOT NULL                    -- JSON payload @persisted-codec store.events.body
 );
 CREATE INDEX IF NOT EXISTS events_logical_stream ON events(type, stream_id, seq);
@@ -35,38 +35,30 @@ CREATE TABLE IF NOT EXISTS projection_jobs (
   phase                   TEXT NOT NULL,
   terminal                TEXT,            -- JSON { outcome, durationMs } or NULL @persisted-codec store.projection_jobs.terminal
   diagnostics             TEXT NOT NULL,   -- JSON @persisted-codec store.projection_jobs.diagnostics
-  session_id              TEXT,
+  execution               INTEGER,
+  finishing               INTEGER NOT NULL CHECK (finishing IN (0, 1)),
+  controller              TEXT,
+  resumable               INTEGER CHECK (resumable IN (0, 1)),
+  conversation_ref        TEXT,
+  scope_key               TEXT,
+  facet                   TEXT,            -- JSON @persisted-codec store.projection_jobs.facet
   provider                TEXT,
   project_root            TEXT NOT NULL,
   work_dir                TEXT,
-  backend_namespace       TEXT NOT NULL,
+  backend_namespace       TEXT,
   bundle_hash             TEXT,
   job_kind                TEXT NOT NULL,
   parent_workflow_job_id  TEXT,             -- workflow-slot parent (jobs launched by a workflow plan)
   workflow_slot           TEXT,             -- slotId on the parent workflow plan
-  workflow_slot_generation INTEGER,
-  replaces_workflow_job_id TEXT,
   created_at              TEXT NOT NULL,
   last_seq                INTEGER NOT NULL,
   CONSTRAINT projection_jobs_work_dir_authority CHECK ((job_kind = 'kb') = (work_dir IS NULL))
 );
 CREATE INDEX IF NOT EXISTS projection_jobs_phase_namespace ON projection_jobs(phase, backend_namespace);
-CREATE INDEX IF NOT EXISTS projection_jobs_session ON projection_jobs(session_id);
 CREATE INDEX IF NOT EXISTS projection_jobs_parent ON projection_jobs(parent_workflow_job_id);
-CREATE UNIQUE INDEX IF NOT EXISTS projection_jobs_workflow_slot_generation
-  ON projection_jobs(parent_workflow_job_id, workflow_slot, workflow_slot_generation)
+CREATE UNIQUE INDEX IF NOT EXISTS projection_jobs_workflow_slot
+  ON projection_jobs(parent_workflow_job_id, workflow_slot)
   WHERE parent_workflow_job_id IS NOT NULL AND workflow_slot IS NOT NULL;
-
-CREATE TABLE IF NOT EXISTS projection_sessions (
-  session_id       TEXT PRIMARY KEY,
-  controller       TEXT NOT NULL,
-  resumable        INTEGER NOT NULL,
-  conversation_ref TEXT,
-  scope_key        TEXT NOT NULL,
-  entry            TEXT NOT NULL,          -- JSON @persisted-codec store.projection_sessions.entry
-  last_seq         INTEGER NOT NULL
-);
-
 CREATE TABLE IF NOT EXISTS projection_discuss (
   discuss_id TEXT PRIMARY KEY,
   state      TEXT NOT NULL,        -- JSON (reducer output) @persisted-codec store.projection_discuss.state

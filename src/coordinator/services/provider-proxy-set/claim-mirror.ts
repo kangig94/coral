@@ -13,7 +13,12 @@ import {
 export type ProviderProxySetOperationClaim = Readonly<{
   operation: OperationIdentity;
   setIdentity: ProviderProxySetIdentity;
+  retirementProtection: 'live' | 'released-after-settlement-exhaustion';
 }>;
+
+export type ProviderOperationContainmentRequest =
+  | string
+  | Readonly<{ kind: 'settlement-retries-exhausted'; operation: OperationIdentity }>;
 
 function operationKey(operation: OperationIdentity): string {
   return JSON.stringify([operation.jobId, operation.operationId, operation.proxyInstanceId, operation.buildSetId]);
@@ -39,7 +44,15 @@ export class ProviderProxySetClaimMirror {
   }
 
   claimsFor(identity: ProviderProxySetIdentity): readonly ProviderProxySetOperationClaim[] {
-    return [...this.#claims.values()].filter((claim) => providerProxySetIdentitiesEqual(claim.setIdentity, identity));
+    return [...this.#claims.values()].filter(
+      (claim) => claim.retirementProtection === 'live' && providerProxySetIdentitiesEqual(claim.setIdentity, identity),
+    );
+  }
+
+  operationsFor(identity: ProviderProxySetIdentity): readonly OperationIdentity[] {
+    return [...this.#claims.values()]
+      .filter((claim) => providerProxySetIdentitiesEqual(claim.setIdentity, identity))
+      .map((claim) => claim.operation);
   }
 
   identityKeys(): readonly ProviderProxySetKey[] {
@@ -72,7 +85,17 @@ export class ProviderProxySetClaimMirror {
     if (existing !== undefined && !providerProxySetIdentitiesEqual(existing.setIdentity, setIdentity)) {
       throw new Error('provider_proxy_claim_identity_changed');
     }
-    this.#claims.set(key, Object.freeze({ operation: record.operation, setIdentity }));
+    this.#claims.set(
+      key,
+      Object.freeze({
+        operation: record.operation,
+        setIdentity,
+        retirementProtection:
+          record.phase === 'settlement-pending' && record.settlementFailure.containmentRequested
+            ? 'released-after-settlement-exhaustion'
+            : 'live',
+      }),
+    );
   }
 
   #release(operation: OperationIdentity): void {

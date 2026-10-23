@@ -6,7 +6,7 @@ export type ChildPrincipalCredentialRecord = Readonly<{
   credentialId: string;
   issuer: string;
   parentJobId: string;
-  parentSessionId: string;
+  execution: number;
   namespace: string;
   principalWire: DurablePrincipalWire;
   expiresAtMs: number;
@@ -62,7 +62,7 @@ const recordSchema = z
     credentialId: z.string().min(1),
     issuer: z.string().min(1),
     parentJobId: z.string().min(1),
-    parentSessionId: z.string().min(1),
+    execution: z.number().int().positive().safe(),
     namespace: z.string().min(1),
     principalWire: durablePrincipalWireSchema,
     expiresAtMs: z.number().int().positive(),
@@ -82,6 +82,7 @@ function decodeRecord(credentialId: string, raw: string): ChildPrincipalCredenti
 export function createStoreChildPrincipalCredentials(db: () => Database): ChildPrincipalCredentialStore {
   return {
     write(record) {
+      recordSchema.parse(record);
       db()
         .prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)')
         .run(`${KEY_PREFIX}${record.credentialId}`, JSON.stringify(record));

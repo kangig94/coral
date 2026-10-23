@@ -1,44 +1,45 @@
-import type { CauseRefToken } from '../../causality/cause-ref.js';
+import type { TerminalOutcomeInput } from '../outcome.js';
+import type { CauseRef, CauseRefToken } from '../../causality/cause-ref.js';
 import type { CommitContext } from '../../store/append.js';
 import type { ResolvableCoralEventInput } from '../../store/envelope.js';
-import type { TerminalOutcomeInput } from '../outcome.js';
 import { buildJobEventRefs } from '../refs.js';
-import { normalizeJobTerminal, type JobTerminalRecordedInputBody } from './result.js';
+import { normalizeJobTerminal, type JobExecutionOutcomeAcceptedInputBody } from './result.js';
 import type { JobTerminalDiagnostics, JobTerminalInput } from '../records.js';
 
 export function failedTerminalOutcome<Scope>(causeRef: CauseRefToken<Scope>): TerminalOutcomeInput<Scope> {
   return { kind: 'failed', causeRef } as TerminalOutcomeInput<Scope>;
 }
 
-export interface JobTerminalRecordedOptions<Scope = never> {
+export interface JobExecutionEventOptions {
   readonly jobId: string;
-  readonly sessionId?: string | null;
+  readonly execution: number;
   readonly namespace?: string;
   readonly project?: string;
   readonly correlationId?: string;
   readonly parentJobId?: string;
   readonly workflowId?: string;
   readonly workflowSlotId?: string;
-  readonly terminal: JobTerminalInput<Scope> | JobTerminalInput;
+}
+
+export interface JobExecutionOutcomeAcceptedOptions<Scope = never> extends JobExecutionEventOptions {
+  readonly terminal: JobTerminalInput<Scope>;
   readonly diagnostics?: JobTerminalDiagnostics;
 }
 
-function jobTerminalRecordedEvent<Scope = never>(
-  options: JobTerminalRecordedOptions<Scope>,
-): ResolvableCoralEventInput<Scope, JobTerminalRecordedInputBody<Scope>> {
+function executionEvent<Scope, Body>(
+  options: JobExecutionEventOptions,
+  type: string,
+  body: Body,
+): ResolvableCoralEventInput<Scope, Body> {
   return {
-    type: 'job.terminal.recorded',
-    body: {
-      terminal: normalizeJobTerminal(options.terminal as JobTerminalInput<Scope>),
-      diagnostics: options.diagnostics,
-    },
+    type,
+    body,
     stream: { kind: 'job', id: options.jobId },
     namespace: options.namespace,
     project: options.project,
     correlationId: options.correlationId,
     refs: buildJobEventRefs({
       jobId: options.jobId,
-      sessionId: options.sessionId,
       parentJobId: options.parentJobId,
       workflowId: options.workflowId,
       workflowSlotId: options.workflowSlotId,
@@ -46,9 +47,31 @@ function jobTerminalRecordedEvent<Scope = never>(
   };
 }
 
-export function appendJobTerminalRecorded<Scope>(
+export function appendJobExecutionOutcomeAccepted<Scope>(
   c: CommitContext<Scope>,
-  options: JobTerminalRecordedOptions<Scope>,
+  options: JobExecutionOutcomeAcceptedOptions<Scope>,
 ): CauseRefToken<Scope> {
-  return c.append(jobTerminalRecordedEvent(options));
+  return c.append(
+    executionEvent<Scope, JobExecutionOutcomeAcceptedInputBody<Scope>>(options, 'job.execution.outcome.accepted', {
+      execution: options.execution,
+      terminal: normalizeJobTerminal(options.terminal),
+      diagnostics: options.diagnostics,
+    }),
+  );
+}
+
+export function appendJobExecutionEnded<Scope>(
+  c: CommitContext<Scope>,
+  options: JobExecutionEventOptions & { causeRef: CauseRef | CauseRefToken<Scope> },
+): CauseRefToken<Scope> {
+  return c.append(
+    executionEvent<Scope, { execution: number; causeRef: CauseRef | CauseRefToken<Scope> }>(
+      options,
+      'job.execution.ended',
+      {
+        execution: options.execution,
+        causeRef: options.causeRef,
+      },
+    ),
+  );
 }

@@ -193,9 +193,12 @@ describe('execution discuss tools', () => {
   it('discuss_start creates a live session and returns its id', async () => {
     const harness = createDiscussHarness(
       createExecutionServiceStub({
-        start: vi
-          .fn()
-          .mockResolvedValue({ kind: 'provider-session', status: 'running', jobId: 'job-1', sessionId: 'exec-1' }),
+        start: vi.fn().mockResolvedValue({
+          kind: 'provider-session',
+          status: 'running',
+          jobId: 'f10f3e57-0d04-53df-b4c3-3bcf75a1222d',
+          sessionId: 'exec-1',
+        }),
         waitStreamOnce: vi.fn().mockResolvedValue({ content: '{"score": 61, "thought": "alpha"}', continuity: null }),
       }),
     );

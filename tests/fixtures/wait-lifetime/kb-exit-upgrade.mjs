@@ -99,8 +99,8 @@ async function main() {
   assert.equal((await owner.classify('upgrade-attempt')).kind, 'blocking', 'Unsettled requests still block');
   supervisor.read = read;
   db.prepare(
-    `INSERT INTO projection_jobs(job_id,execution_owner,phase,diagnostics,project_root,backend_namespace,job_kind,created_at,last_seq)
-    VALUES ('unsettled-kb','{}','running','{}','/tmp','test-ns','kb','2026-10-03T00:00:00Z',1)`,
+    `INSERT INTO projection_jobs(job_id,execution_owner,phase,diagnostics,project_root,backend_namespace,job_kind,created_at,last_seq,execution,finishing)
+    VALUES ('unsettled-kb','{}','running','{}','/tmp','test-ns','kb','2026-10-03T00:00:00Z',1,1,0)`,
   ).run();
   assert.equal((await owner.classify('upgrade-attempt')).kind, 'blocking', 'Unsettled durable KB jobs still block');
   db.prepare("DELETE FROM projection_jobs WHERE job_id='unsettled-kb'").run();

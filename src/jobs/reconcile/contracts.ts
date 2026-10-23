@@ -1,29 +1,29 @@
 import type { AppServerRuntime, JobLaunch, JobRuntime, JobTerminal } from '../records.js';
 import type { ProviderArtifactIdentity } from '../../providers/artifact-identity.js';
-import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
+import type { ProviderContinuityBlob } from '../conversation/continuity.js';
 import type { BoundProvider } from '../../providers/bound-provider-contract.js';
 import type { DurableCliRuntimeRecord, DurableProcessExit } from '../../runtime/durable-runtime.js';
 import type { ProviderBindingFailure } from '../../providers/contracts/binding.js';
 import type { RecoveredAppServerFinalizationReason } from './interrupted-reason.js';
 
 export type ProviderRecoveryLaunch = JobLaunch & {
-  readonly sessionId: string;
   readonly provider: string;
   readonly jobKind: 'provider';
 };
 
 /** The minimal captured session facts required after recovery authority validation. */
 export type ProviderRecoverySession = Readonly<{
-  sessionId: string;
+  jobId: string;
   projectRoot: string;
   conversationRef?: string;
   providerContinuity: ProviderContinuityBlob | null;
   artifactHandles: readonly Readonly<{
+    execution: number;
     handle: string;
     identity: ProviderArtifactIdentity;
     sourceJobId: string;
   }>[];
-  version: number;
+  execution: number;
 }>;
 
 export type ProviderRecoveryAuthority = Readonly<{

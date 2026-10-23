@@ -1,3 +1,4 @@
+import { jobOpenedBodySchema } from '../jobs/launch.js';
 import type { Database } from '../store/db.js';
 import { z } from 'zod';
 
@@ -97,12 +98,6 @@ export const workflowLifecycleFaultBodySchema = z.discriminatedUnion('kind', [
     .strict(),
 ]);
 
-/**
- * Stores only `firstFailureSlotId`; `stepIndex` is derived from
- * `projection_workflows.plan.slots`, while `jobId` is selected from the
- * current generation in the workflow child rows joined by workflow and slot
- * (see `validateAndReadCurrentSlotJobIds` in `src/workflow/recover.ts`).
- */
 export const workflowDrainEnteredBodySchema = z
   .object({
     firstFailureSlotId: z.string(),
@@ -425,14 +420,9 @@ const validateWorkflowPlanValidity: DomainAppendValidator = (ctx, inputs) => {
       });
     }
 
-    if (input.type === 'job.launch.requested') {
-      const provider =
-        typeof input.body === 'object' &&
-        input.body !== null &&
-        'provider' in input.body &&
-        typeof input.body.provider === 'string'
-          ? input.body.provider
-          : undefined;
+    if (input.type === 'job.opened') {
+      const opened = jobOpenedBodySchema.parse(input.body);
+      const provider = opened.jobKind === 'provider' ? opened.conversation.provider : undefined;
       const plannedProvider = readPlan(workflowId)?.slots.find((slot) => slot.slotId === slotId)?.provider;
       if (provider !== plannedProvider) {
         throw workflowPlanInvalid('provider_mismatch', {
@@ -595,7 +585,7 @@ export const workflowRegistry: DomainEventRegistry = {
     { contract: 'workflow:plan-structural-validity', validate: validateWorkflowPlanValidity },
     { contract: 'workflow:completed-once', validate: validateWorkflowCompletedOnce },
     { contract: 'workflow:lifecycle-transition-state-machine', validate: validateWorkflowLifecycle },
-    { contract: 'workflow:job-owner-slot-generation-authority', validate: validateWorkflowJobAuthority },
+    { contract: 'workflow:job-owner-slot-authority', validate: validateWorkflowJobAuthority },
   ],
 };
 

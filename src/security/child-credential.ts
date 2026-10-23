@@ -18,7 +18,7 @@ export type ChildAuthChallenge = Readonly<{
 
 export type ChildProvenRequest = Readonly<{ method: string; id: string | number; params: unknown }>;
 
-export type ChildCredentialClaim = Readonly<{ credentialId: string; jobId: string; sessionId: string }>;
+export type ChildCredentialClaim = Readonly<{ credentialId: string; jobId: string }>;
 
 export type ChildPrincipalAuthentication =
   | Readonly<{ kind: 'authenticated'; principal: Principal }>
@@ -31,7 +31,6 @@ export type ChildProofSubject = Readonly<{
   challenge: string;
   credentialId: string;
   jobId: string;
-  sessionId: string;
   method: string;
   requestId: string | number;
   paramsDigest: string;
@@ -50,7 +49,6 @@ export function childProofSubject(
     challenge: challenge.challenge,
     credentialId: claim.credentialId,
     jobId: claim.jobId,
-    sessionId: claim.sessionId,
     method: request.method,
     requestId: request.id,
     paramsDigest: digestRequestParams(request.params),
@@ -80,7 +78,6 @@ function proofMessage(subject: ChildProofSubject): Buffer {
       subject.challenge,
       subject.credentialId,
       subject.jobId,
-      subject.sessionId,
       subject.method,
       subject.requestId,
       subject.paramsDigest,

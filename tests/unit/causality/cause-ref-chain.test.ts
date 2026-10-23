@@ -18,13 +18,13 @@ const causeFixtureBodySchema = z.object({}).passthrough();
 const causeFixtureRegistry = composeReducers(
   {
     streamKind: 'job',
-    entries: ['job.progress.emitted', 'job.terminal.recorded'].map((type) =>
+    entries: ['job.execution.progress', 'job.execution.outcome.accepted'].map((type) =>
       defineDomainEvent({ type, schema: causeFixtureBodySchema }),
     ),
   },
   {
-    streamKind: 'session',
-    entries: [defineDomainEvent({ type: 'session.provider_failed', schema: causeFixtureBodySchema })],
+    streamKind: 'job',
+    entries: [defineDomainEvent({ type: 'job.provider_failed', schema: causeFixtureBodySchema })],
   },
   {
     streamKind: 'workflow',
@@ -52,7 +52,7 @@ function insertEvent(
   input: {
     seq: number;
     type: string;
-    stream: { kind: 'job' | 'session' | 'workflow' | 'discuss'; id: string };
+    stream: { kind: 'job' | 'workflow' | 'discuss'; id: string };
     body: unknown;
   },
 ): void {
@@ -71,7 +71,7 @@ function insertEvent(
 }
 
 describe('describeCauseRef', () => {
-  it('walks a four-link jobs -> session -> jobs -> workflow chain', () => {
+  it('walks a four-link job outcome -> job failure -> job progress -> workflow chain', () => {
     const { db, store } = createStore();
     try {
       insertEvent(db, {
@@ -92,9 +92,10 @@ describe('describeCauseRef', () => {
       });
       insertEvent(db, {
         seq: 3,
-        type: 'job.progress.emitted',
+        type: 'job.execution.progress',
         stream: { kind: 'job', id: 'job-2' },
         body: {
+          execution: 1,
           kind: 'message',
           message: 'Recovered child job checkpoint.',
           causeRef: {
@@ -105,9 +106,10 @@ describe('describeCauseRef', () => {
       });
       insertEvent(db, {
         seq: 4,
-        type: 'session.provider_failed',
-        stream: { kind: 'session', id: 'session-1' },
+        type: 'job.provider_failed',
+        stream: { kind: 'job', id: 'session-1' },
         body: {
+          execution: 1,
           provider: 'codex',
           reason: 'request_failed',
           message: 'transport reset',
@@ -119,14 +121,15 @@ describe('describeCauseRef', () => {
       });
       insertEvent(db, {
         seq: 5,
-        type: 'job.terminal.recorded',
+        type: 'job.execution.outcome.accepted',
         stream: { kind: 'job', id: 'job-1' },
         body: {
+          execution: 1,
           terminal: {
             outcome: {
               kind: 'failed',
               causeRef: {
-                stream: { kind: 'session', id: 'session-1' },
+                stream: { kind: 'job', id: 'session-1' },
                 seq: 4,
               },
             },
@@ -144,8 +147,8 @@ describe('describeCauseRef', () => {
         store,
       );
 
-      expect(description).toContain('Failed: session/session-1#4');
-      expect(description).toContain('codex turn failed: transport reset.');
+      expect(description).toContain('Failed: job/session-1#4');
+      expect(description).toContain('codex request failed: transport reset');
       expect(description).toContain('Recovered child job checkpoint.');
       expect(description).toContain('Workflow failed.');
     } finally {
@@ -158,22 +161,24 @@ describe('describeCauseRef', () => {
     try {
       insertEvent(db, {
         seq: 1,
-        type: 'job.progress.emitted',
+        type: 'job.execution.progress',
         stream: { kind: 'job', id: 'job-cycle' },
         body: {
+          execution: 1,
           kind: 'message',
           message: 'loop a',
           causeRef: {
-            stream: { kind: 'session', id: 'session-cycle' },
+            stream: { kind: 'job', id: 'session-cycle' },
             seq: 2,
           },
         },
       });
       insertEvent(db, {
         seq: 2,
-        type: 'session.provider_failed',
-        stream: { kind: 'session', id: 'session-cycle' },
+        type: 'job.provider_failed',
+        stream: { kind: 'job', id: 'session-cycle' },
         body: {
+          execution: 1,
           provider: 'codex',
           reason: 'request_failed',
           message: 'loop b',
@@ -197,7 +202,7 @@ describe('describeCauseRef', () => {
         key: 'job:job-cycle:1',
         stream: { kind: 'job', id: 'job-cycle' },
         seq: 1,
-        path: ['loop a', 'codex turn failed: loop b.'],
+        path: ['loop a', 'codex request failed: loop b'],
       });
     } finally {
       db.close();
@@ -225,14 +230,15 @@ describe('describeCauseRef', () => {
       });
       insertEvent(db, {
         seq: 3,
-        type: 'job.terminal.recorded',
+        type: 'job.execution.outcome.accepted',
         stream: { kind: 'job', id: 'job-missing-link' },
         body: {
+          execution: 1,
           terminal: {
             outcome: {
               kind: 'failed',
               causeRef: {
-                stream: { kind: 'session', id: 'session-missing-link' },
+                stream: { kind: 'job', id: 'session-missing-link' },
                 seq: 2,
               },
             },
@@ -250,11 +256,11 @@ describe('describeCauseRef', () => {
         store,
       );
 
-      expect(result.description).toContain('<missing session/session-missing-link/2>');
+      expect(result.description).toContain('<missing job/session-missing-link/2>');
       expect(result.missing).toEqual({
-        stream: { kind: 'session', id: 'session-missing-link' },
+        stream: { kind: 'job', id: 'session-missing-link' },
         seq: 2,
-        path: ['Failed: session/session-missing-link#2'],
+        path: ['Failed: job/session-missing-link#2'],
       });
     } finally {
       db.close();

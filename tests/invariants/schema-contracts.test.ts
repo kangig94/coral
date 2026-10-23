@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { jobAbortSchema, jobWaitSchema, jobWaitSnapshotSchema } from '#src/transport/rpc/jobs.js';
 import { MAX_WAIT_JOB_IDS } from '#src/jobs/wait/stream-event.js';
-import { sessionCreateSchema } from '#src/sessions/command-schemas.js';
+import { sessionCreateSchema } from '#src/jobs/conversation/command-schemas.js';
 import { workflowRequestSchema } from '#src/transport/rpc/workflow.js';
 
 describe('sessionCreateSchema', () => {

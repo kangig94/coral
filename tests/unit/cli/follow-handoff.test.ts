@@ -1,6 +1,7 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type * as FollowModule from '#src/cli/follow.js';
+import { formatWaitContinuation } from '#src/cli/format/wait.js';
 import type * as HandoffNoticeModule from '#src/cli/handoff-notice.js';
 import type * as HandoffRunnerModule from '#src/coordinator/handoff-routing/runner.js';
 import type { AcceptedLaunchResponse } from '#src/jobs/launch.js';
@@ -38,7 +39,8 @@ const launchResult = {
   kind: 'provider-session',
   launchState: 'running',
   jobId: 'job-1',
-  sessionId: 'session-1',
+  epochKey: 'epoch',
+  requestedSeq: 1,
 } satisfies AcceptedLaunchResponse;
 
 const waitTiming = {
@@ -169,7 +171,14 @@ describe('cli follow handoff', () => {
       .mockImplementationOnce(async (operation) => {
         secondRunStarted.resolve();
         expect(progressAcknowledged).toBe(false);
-        expect(operation).toEqual({ kind: 'wait-jobs', jobId: 'job-1', serializedCursor: savedCursor(4) });
+        expect(operation).toEqual({
+          kind: 'wait-jobs',
+          jobId: 'job-1',
+          serializedCursor: savedCursor(4),
+          serializedExecutionSelections: JSON.stringify([
+            { jobId: 'job-1', epochKey: 'epoch', requestedSeq: 1, awaitingArtifact: false },
+          ]),
+        });
         return recorded({
           kind: 'delegated',
           version: '2.0.0',
@@ -296,7 +305,16 @@ describe('cli follow handoff', () => {
     expect(options.emitError).not.toHaveBeenCalled();
     const text = output.join('');
     expect(text.match(/checkpoint-one/g)).toHaveLength(1);
-    expect(text).toContain(`Run coral-cli jobs wait job-1 --cursor ${savedCursor(4)} to continue waiting.`);
+    expect(text).toContain(
+      formatWaitContinuation(['job-1'], savedCursor(4), 'bounded', [
+        {
+          jobId: launchResult.jobId,
+          epochKey: launchResult.epochKey,
+          requestedSeq: launchResult.requestedSeq,
+          awaitingArtifact: false,
+        },
+      ]),
+    );
     expect(text.match(/Run coral-cli jobs wait/g)).toHaveLength(1);
   });
 
@@ -322,7 +340,13 @@ describe('cli follow handoff', () => {
     const options = makeOptions();
     const follow = launchAndFollow(options);
     await runStarted.promise;
-    expect(mockState.runHandoff.mock.calls[0][0]).toEqual({ kind: 'wait-jobs', jobId: 'job-1' });
+    expect(mockState.runHandoff.mock.calls[0][0]).toEqual({
+      kind: 'wait-jobs',
+      jobId: 'job-1',
+      serializedExecutionSelections: JSON.stringify([
+        { jobId: 'job-1', epochKey: 'epoch', requestedSeq: 1, awaitingArtifact: false },
+      ]),
+    });
 
     sigintHandler?.();
     handoff.resolve(recorded({ kind: 'delegated', version: '2.0.0', outcome: { kind: 'handoff-exit', exitCode: 75 } }));
@@ -389,7 +413,16 @@ describe('cli follow handoff', () => {
     await ensuring.promise;
     sigintHandler?.();
     await expect(follow).resolves.toBe(75);
-    expect(output.join('')).toContain('Run coral-cli jobs wait job-1 to continue waiting.');
+    expect(output.join('')).toContain(
+      formatWaitContinuation(['job-1'], null, 'bounded', [
+        {
+          jobId: launchResult.jobId,
+          epochKey: launchResult.epochKey,
+          requestedSeq: launchResult.requestedSeq,
+          awaitingArtifact: false,
+        },
+      ]),
+    );
     expect(options.emitError).not.toHaveBeenCalled();
   });
 });

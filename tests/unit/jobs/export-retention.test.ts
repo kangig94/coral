@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { canonicalWorkDirWireSchema } from '#src/runtime/canonical-work-dir.js';
 import type { JobDetailResponse } from '#src/jobs/records.js';
 import { encodeResolvedStoreEpoch } from '#src/store/epoch/observation.js';
@@ -21,7 +22,7 @@ import { basename, dirname, join } from 'node:path';
 import { pruneJobExports, readExportJobState, type ExportJobRetentionState } from '#src/jobs/export-retention.js';
 import { JobLocationIndex } from '#src/jobs/location-index.js';
 import { createRetentionFixture, RETENTION_CUTOFF, RETENTION_NOW } from '#tests/helpers/storage-retention.js';
-import { initTestJob } from '#tests/helpers/session.js';
+import { testConversationFacet, initTestJob } from '#tests/helpers/session.js';
 import { commitJobTerminal } from '#tests/helpers/job-commits.js';
 
 const fixtures: ReturnType<typeof createRetentionFixture>[] = [];
@@ -488,37 +489,48 @@ describe('export retention', () => {
     const f = fixture();
     f.setNow(1);
     initTestJob(f.store, {
-      jobId: 'job',
-      sessionId: 'session',
-      provider: 'codex',
+      jobId: 'ac3d2a49-f4cb-5aaf-8a8a-6ea474690321',
+      conversation: testConversationFacet('codex'),
       projectRoot: '/workspace',
       backendNamespace: 'test-ns',
     });
-    expect(readExportJobState(f.db, f.store, 'job')).toEqual({ kind: 'nonterminal' });
-    commitJobTerminal(f.store, 'job', 'session', { content: 'result', outcome: { kind: 'completed' }, durationMs: 1 });
-    expect(readExportJobState(f.db, f.store, 'job')).toEqual({ kind: 'terminal', terminalAt: 1 });
-    f.db.prepare("UPDATE events SET body = ? WHERE type = 'job.terminal.recorded'").run(Buffer.from('{}'));
-    expect(readExportJobState(f.db, f.store, 'job')).toEqual({ kind: 'unknown' });
+    expect(readExportJobState(f.db, f.store, 'ac3d2a49-f4cb-5aaf-8a8a-6ea474690321')).toEqual({ kind: 'nonterminal' });
+    commitJobTerminal(f.store, 'ac3d2a49-f4cb-5aaf-8a8a-6ea474690321', 1, {
+      content: 'result',
+      outcome: { kind: 'completed' },
+      durationMs: 1,
+    });
+    expect(readExportJobState(f.db, f.store, 'ac3d2a49-f4cb-5aaf-8a8a-6ea474690321')).toEqual({
+      kind: 'terminal',
+      terminalAt: 1,
+    });
+    f.db.prepare("UPDATE events SET body = ? WHERE type = 'job.execution.outcome.accepted'").run(Buffer.from('{}'));
+    expect(readExportJobState(f.db, f.store, 'ac3d2a49-f4cb-5aaf-8a8a-6ea474690321')).toEqual({ kind: 'unknown' });
     expect(readExportJobState(f.db, f.store, 'residue')).toEqual({ kind: 'absent' });
   });
 
   it('retains the exact historical result until its epoch directory is proven absent', () => {
     const f = fixture();
-    const locations = new JobLocationIndex(f.runtime, f.runtime.paths.coral.generation.dataRoot);
+    const locations = new JobLocationIndex(
+      f.runtime,
+      f.runtime.paths.coral.generation.dataRoot,
+      undefined,
+      currentCoralStoreFormat().fingerprint,
+    );
     const epoch = {
       storeRoot: f.runtime.paths.coral.store.dbDir,
       epoch: '1',
       path: join(f.runtime.paths.coral.store.dbDir, 'epoch-1', 'store.db'),
     };
-    locations.register('job', JSON.stringify(epoch), {
+    locations.register('ac3d2a49-f4cb-5aaf-8a8a-6ea474690321', JSON.stringify(epoch), {
       projectRoot: '/workspace',
       workDir: '/workspace',
       jobKind: 'provider',
     });
     mkdirSync(join(epoch.storeRoot, 'epoch-1'), { recursive: true });
-    expect(locations.exportResultRetention('job', 'active')).toBe('required');
+    expect(locations.exportResultRetention('ac3d2a49-f4cb-5aaf-8a8a-6ea474690321', 'active')).toBe('required');
     f.runtime.storage.rmSync(join(epoch.storeRoot, 'epoch-1'), { recursive: true });
-    expect(locations.exportResultRetention('job', 'active')).toBe('released');
+    expect(locations.exportResultRetention('ac3d2a49-f4cb-5aaf-8a8a-6ea474690321', 'active')).toBe('released');
     locations.register('unknown', 'bad-epoch-key', {
       projectRoot: '/workspace',
       workDir: '/workspace',
@@ -529,7 +541,12 @@ describe('export retention', () => {
 
   it('releases unrelated old residue after ordinary location registration', async () => {
     const f = fixture();
-    const locations = new JobLocationIndex(f.runtime, f.runtime.paths.coral.generation.dataRoot);
+    const locations = new JobLocationIndex(
+      f.runtime,
+      f.runtime.paths.coral.generation.dataRoot,
+      undefined,
+      currentCoralStoreFormat().fingerprint,
+    );
     locations.register('current', 'active', { projectRoot: '/workspace', workDir: '/workspace', jobKind: 'provider' });
     const path = join(f.runtime.paths.coral.exports.jobsRoot, 'residue');
     mkdirSync(path, { recursive: true });
@@ -596,7 +613,7 @@ describe('export retention', () => {
     expect(readExportJobState(f.db, f.store, 'absent')).toEqual({ kind: 'absent' });
     const plan = f.db
       .prepare(
-        "EXPLAIN QUERY PLAN SELECT * FROM events WHERE stream_kind = 'job' AND stream_id = ? ORDER BY seq DESC LIMIT 1",
+        "EXPLAIN QUERY PLAN SELECT * FROM events WHERE stream_kind = 'ac3d2a49-f4cb-5aaf-8a8a-6ea474690321' AND stream_id = ? ORDER BY seq DESC LIMIT 1",
       )
       .all('absent');
     expect(JSON.stringify(plan)).not.toContain('SCAN events');
@@ -608,7 +625,12 @@ describe('export retention', () => {
       recursive: true,
     });
     const scan = vi.spyOn(f.runtime.storage, 'readDirectoryBoundedSync');
-    const locations = new JobLocationIndex(f.runtime, f.runtime.paths.coral.generation.dataRoot);
+    const locations = new JobLocationIndex(
+      f.runtime,
+      f.runtime.paths.coral.generation.dataRoot,
+      undefined,
+      currentCoralStoreFormat().fingerprint,
+    );
     expect(locations.exportResultRetention('absent', 'active')).toBe('released');
     expect(scan).not.toHaveBeenCalled();
   });
@@ -634,7 +656,12 @@ describe('export retention', () => {
             `${Buffer.from(address.epochKey).toString('base64url')}.json`,
           ),
         );
-      const locations = new JobLocationIndex(f.runtime, f.runtime.paths.coral.generation.dataRoot);
+      const locations = new JobLocationIndex(
+        f.runtime,
+        f.runtime.paths.coral.generation.dataRoot,
+        undefined,
+        currentCoralStoreFormat().fingerprint,
+      );
       locations.register('historical', epochKey, {
         projectRoot: '/workspace',
         workDir: '/workspace',
@@ -675,7 +702,12 @@ describe('export retention', () => {
       ...f.runtime,
       storage: { ...f.runtime.storage, lstatSync: lstat as unknown as Runtime['storage']['lstatSync'] },
     };
-    const locations = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
+    const locations = new JobLocationIndex(
+      runtime,
+      runtime.paths.coral.generation.dataRoot,
+      undefined,
+      currentCoralStoreFormat().fingerprint,
+    );
     locations.register('historical', epochKey, {
       projectRoot: '/workspace',
       workDir: '/workspace',
@@ -1003,6 +1035,7 @@ describe('retired legacy exports', () => {
     return {
       status: {
         jobId,
+        execution: null,
         owner: { kind: 'provider-session', id: 's' },
         sessionId: 's',
         provider: 'claude',
@@ -1014,27 +1047,43 @@ describe('retired legacy exports', () => {
         updatedAt: ts,
         result,
       },
-      events: [{ type: 'terminal', jobId, sessionId: 's', seq: 2, ts, result }],
+      events: [{ type: 'terminal', jobId, ...{ sessionId: 's' }, seq: 2, ts, result }],
       readiness: 'ready',
       exit: { ...result, diagnostics: { progressFaults: [] }, endTime: ts },
-    } as JobDetailResponse;
+    };
   }
 
   async function run() {
     const f = createRetentionFixture();
     fixtures.push(f);
-    const index = new JobLocationIndex(f.runtime, f.runtime.paths.coral.generation.dataRoot);
+    const index = new JobLocationIndex(
+      f.runtime,
+      f.runtime.paths.coral.generation.dataRoot,
+      undefined,
+      currentCoralStoreFormat().fingerprint,
+    );
     const storeRoot = join(f.baseDir, 'store');
     const retiredKey = JSON.stringify({ storeRoot, epoch: '1', path: join(storeRoot, 'epoch-1', 'store.db') });
     const jobId = 'legacy-job';
     // a v0.10.15-17 terminal location record whose epoch has since retired
-    index.register(jobId, retiredKey, { projectRoot: '/w/p', workDir: '/w/p', jobKind: 'provider' });
-    index.recordTerminal(
-      jobId,
-      detail(jobId, '2026-01-01T00:00:00.000Z'),
-      join(f.runtime.paths.coral.exports.jobsRoot, jobId, 'result.md'),
-      2,
+    const location = index.register(jobId, retiredKey, { projectRoot: '/w/p', workDir: '/w/p', jobKind: 'provider' });
+    const legacyDetail = detail(jobId, '2026-01-01T00:00:00.000Z');
+    writeFileSync(
+      join(
+        f.runtime.paths.coral.generation.dataRoot,
+        'job-locations.v1',
+        'jobs',
+        `${Buffer.from(jobId).toString('base64url')}.json`,
+      ),
+      JSON.stringify({
+        ...location,
+        disposition: 'terminal',
+        terminalSeq: 2,
+        resultPath: join(f.runtime.paths.coral.exports.jobsRoot, jobId, 'result.md'),
+        detail: { ...legacyDetail, status: { ...legacyDetail.status, execution: undefined } },
+      }),
     );
+    expect(index.read(jobId)?.detail).toMatchObject({ kind: 'recorded', value: { status: { execution: null } } });
     const path = join(f.runtime.paths.coral.exports.jobsRoot, jobId);
     mkdirSync(path, { recursive: true });
     writeFileSync(join(path, 'result.md'), 'old result');

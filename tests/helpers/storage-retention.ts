@@ -4,7 +4,6 @@ import { join } from 'node:path';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { JobStore } from '#src/jobs/store.js';
 import { jobsRegistry } from '#src/jobs/events.js';
-import { sessionsRegistry } from '#src/sessions/events.js';
 import { discussRegistry } from '#src/discuss/event-registry.js';
 import { workflowRegistry } from '#src/workflow/events.js';
 import { composeReducers } from '#src/store/reducers.js';
@@ -25,7 +24,7 @@ export function createRetentionFixture(fileDatabase = false) {
   const runtime = { ...real, time: { ...real.time, now: () => now } };
   const db = newRawDatabase(fileDatabase ? join(baseDir, 'store.db') : ':memory:');
   applyBundledStoreSchema(db, currentCoralStoreFormat());
-  const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
+  const reducers = composeReducers(jobsRegistry, discussRegistry, workflowRegistry);
   const store = new JobStore('test-ns', runtime, createEventBodyCodec(), {
     db,
     reducers,

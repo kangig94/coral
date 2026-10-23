@@ -28,12 +28,13 @@ describe('jobs/read-queries progress frontier', () => {
           .prepare('INSERT INTO events(ts, type, stream_kind, stream_id, refs, body) VALUES (?, ?, ?, ?, ?, ?)')
           .run(
             '2026-10-07T00:00:00Z',
-            'job.progress.emitted',
+            'job.execution.progress',
             'job',
             'a',
             JSON.stringify({ jobId: 'a' }),
             Buffer.from(
               JSON.stringify({
+                execution: 1,
                 kind: 'message',
                 message,
                 timing: { origin: 'runtime', originAt: '', emittedAt: '', elapsedMs: 0 },

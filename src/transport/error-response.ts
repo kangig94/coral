@@ -24,7 +24,8 @@ const SETUP_ERROR_STATUS_CODES = new Map<string, number>([
   ['job_binding_owner_mismatch', 409],
   ['discussion_job_launch_conflict', 409],
   ['workflow_owner_terminal', 409],
-  ['workflow_slot_chain_invalid', 409],
+  ['workflow_slot_job_conflict', 409],
+  ['workflow_slot_job_mismatch', 409],
   ['workflow_completed_duplicate', 409],
   ['workflow_lifecycle_invalid', 409],
   ['legacy_foreign_generation', 409],
@@ -91,7 +92,11 @@ const SUCCESSION_WRITER_PARKED_MESSAGE =
 
 export function buildTransportErrorResponse(error: unknown): TransportErrorResponse {
   if (error instanceof WaitSessionError) {
-    const data = { code: error.code, message: error.message };
+    const data = {
+      code: error.code,
+      message: error.message,
+      ...(error.remedy === undefined ? {} : { remedy: error.remedy }),
+    };
     return { message: error.message, statusCode: 409, data, body: data };
   }
   if (error instanceof SuccessionWriterParkedError) {

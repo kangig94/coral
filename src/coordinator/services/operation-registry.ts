@@ -76,6 +76,7 @@ export class LocalOperationRegistry {
     const stopCause = record.controlIntent.kind === 'run' ? null : record.controlIntent.cause;
     const proxyCleanup: ProviderOperationCleanupIdentity = {
       kind: 'proxy-binding',
+      execution: cleanup.execution,
       jobId: identity.jobId,
       operationId: identity.operationId,
       pool: cleanup.pool,

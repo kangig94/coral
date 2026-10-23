@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { nextFinal, nextOfType } from '#tests/helpers/wait-stream.js';
 import { progressVisitFromDetails } from '#tests/helpers/wait-progress.js';
 import { admitted, savedCursor } from '#tests/helpers/wait-session.js';
@@ -138,7 +139,7 @@ describe('job addressing across a process-owned epoch switch', () => {
     let source: DatabaseSync | undefined;
     try {
       await finish(child, lines);
-      const index = new JobLocationIndex(runtime, root);
+      const index = new JobLocationIndex(runtime, root, undefined, currentCoralStoreFormat().fingerprint);
       const seeded = seedHistoricalEpoch(
         runtime,
         index,
@@ -189,7 +190,7 @@ describe('job addressing across a process-owned epoch switch', () => {
     const { root, epochDir, child, lines } = await liveOlderEpoch();
     let source: DatabaseSync | undefined;
     try {
-      const index = new JobLocationIndex(runtime, root);
+      const index = new JobLocationIndex(runtime, root, undefined, currentCoralStoreFormat().fingerprint);
       const seeded = seedHistoricalEpoch(
         runtime,
         index,

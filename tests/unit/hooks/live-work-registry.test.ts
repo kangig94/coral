@@ -9,11 +9,25 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // never created — a decisive "nothing recorded here") and everything else (`EACCES`, `EIO`, ... — the read was
 // refused, which says nothing about what the directory holds). Only the named path below is intercepted; every
 // other call, including the test helpers' own `readdirSync`, passes straight through to the real filesystem.
-const readdirFixture = vi.hoisted(() => ({ failPath: null as string | null, failCode: 'EACCES' }));
+const readdirFixture = vi.hoisted(() => ({
+  failPath: null as string | null,
+  failCode: 'EACCES',
+  guardFailure: null as 'write' | 'rename' | null,
+}));
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof NodeFs>();
   return {
     ...actual,
+    writeFileSync: (...args: Parameters<typeof actual.writeFileSync>) => {
+      actual.writeFileSync(...args);
+      if (readdirFixture.guardFailure === 'write' && String(args[0]).endsWith('.tmp'))
+        throw new Error('guard write failed');
+    },
+    renameSync: (...args: Parameters<typeof actual.renameSync>) => {
+      if (readdirFixture.guardFailure === 'rename' && String(args[0]).endsWith('.tmp'))
+        throw new Error('guard rename failed');
+      actual.renameSync(...args);
+    },
     readdirSync: (path: unknown, options?: unknown) => {
       if (readdirFixture.failPath !== null && String(path) === readdirFixture.failPath) {
         throw Object.assign(new Error('simulated unreadable registry dir'), { code: readdirFixture.failCode });
@@ -62,6 +76,7 @@ beforeEach(() => {
   writeFileSync(parentTranscript, '{}');
   readdirFixture.failPath = null;
   readdirFixture.failCode = 'EACCES';
+  readdirFixture.guardFailure = null;
 });
 
 afterEach(() => {
@@ -309,3 +324,20 @@ describe('live-work-registry: bg task wrapper (beginBgTask)', () => {
     expect(status).toBe(4);
   });
 });
+
+it.each(['write', 'rename'] as const)(
+  'cleans the guard temporary file after a %s failure and preserves the previous block',
+  (failure) => {
+    const executions = [{ jobId: 'job-1', execution: 1 }];
+    liveWorkRegistry.recordJobGuardBlock(projectDir, SESSION, executions);
+    readdirFixture.guardFailure = failure;
+    expect(() => liveWorkRegistry.recordJobGuardBlock(projectDir, SESSION, [{ jobId: 'job-1', execution: 2 }])).toThrow(
+      `guard ${failure} failed`,
+    );
+    expect(readdirSync(sessionRootFor(SESSION))).toEqual(['job-guard.json']);
+    expect(liveWorkRegistry.jobGuardAlreadyBlocked(projectDir, SESSION, executions)).toBe(true);
+    expect(liveWorkRegistry.jobGuardAlreadyBlocked(projectDir, SESSION, [{ jobId: 'job-1', execution: 2 }])).toBe(
+      false,
+    );
+  },
+);

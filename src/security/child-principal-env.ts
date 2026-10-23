@@ -12,8 +12,7 @@ export type CoralChildEnvironment = Readonly<
         | typeof CORAL_CHILD_PRINCIPAL_HANDLE
         | typeof CORAL_CHILD_CREDENTIAL_ID
         | typeof CORAL_CHILD_CREDENTIAL_KEY
-        | 'CORAL_JOB_ID'
-        | 'CORAL_SESSION_ID',
+        | 'CORAL_JOB_ID',
         string | undefined
       >
     >
@@ -33,7 +32,6 @@ export function isCoralChildEnvironment(env: CoralChildEnvironment): boolean {
     nonEmpty(env[CORAL_CHILD_PRINCIPAL_HANDLE]) ||
     nonEmpty(env[CORAL_CHILD_CREDENTIAL_ID]) ||
     nonEmpty(env[CORAL_CHILD_CREDENTIAL_KEY]) ||
-    nonEmpty(env.CORAL_JOB_ID) ||
-    nonEmpty(env.CORAL_SESSION_ID)
+    nonEmpty(env.CORAL_JOB_ID)
   );
 }
