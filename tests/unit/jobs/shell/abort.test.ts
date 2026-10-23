@@ -2,7 +2,7 @@ import { ProviderRegistry } from '#src/providers/registry.js';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
 import { ExecutionFinisher, readExecutionFinishingState } from '#src/jobs/finishing.js';
-import { recordProviderTerminal } from '#src/coordinator/services/terminal-materializer.js';
+import { appendProviderTerminalInCommit } from '#src/coordinator/services/terminal-materializer.js';
 import { describe, expect, it } from 'vitest';
 
 import { JobAbortService } from '#src/coordinator/services/job-abort.js';
@@ -98,7 +98,7 @@ describe('jobs abort command', () => {
         },
         coordinatorCommit: (cb) => store.commit(cb),
         settlementRefusalRecorder: { record: () => true },
-        terminalMaterializer: { recordProviderTerminal },
+        terminalMaterializer: { appendProviderTerminalInCommit },
       });
       const provider: BoundProvider = {
         name: 'codex',

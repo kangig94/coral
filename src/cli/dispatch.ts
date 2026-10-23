@@ -144,9 +144,19 @@ function interpretJobSendOutcome(result: unknown, priorDeliveryUncertain: boolea
 
 function selectJobSendOutcome(binding: BoundJobSendTarget, outcome: CliJobSendOutcome): CliJobSendOutcome {
   if (outcome.state === 'launched') return { ...outcome, execution: binding.target.execution + 1 };
-  return outcome.state === 'unknown' || outcome.priorDeliveryUncertain === true
-    ? { ...outcome, executionSelection: binding.executionSelection }
-    : outcome;
+  if (outcome.state === 'unknown' || outcome.priorDeliveryUncertain === true)
+    return { ...outcome, executionSelection: binding.executionSelection };
+  if (outcome.state === 'refused')
+    return {
+      ...outcome,
+      executionSelection: {
+        jobId: binding.jobId,
+        epochKey: binding.target.sourceEpoch,
+        requestedSeq: binding.target.requestedSeq,
+        awaitingArtifact: false,
+      },
+    };
+  return outcome;
 }
 
 function buildJobSendBinding(jobId: string, detail: z.infer<typeof jobSendDetailSchema>): BoundJobSendTarget {

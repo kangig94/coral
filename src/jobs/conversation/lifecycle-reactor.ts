@@ -388,7 +388,11 @@ export class LifecycleReactor {
       return remember({ kind: 'failed', reason: detail });
     };
     try {
-      await cleanupConversationRestoreStages(this.options.runtime, address.jobId, address.execution, action.handles);
+      await cleanupConversationRestoreStages(this.options.runtime, address.jobId, address.execution, [
+        ...action.handles,
+        ...entry.artifactHandles.map((artifact) => artifact.handle).filter(isAbsolute),
+        ...entry.retentionDiscard.attempts.flatMap((attempt) => attempt.handles).filter(isAbsolute),
+      ]);
     } catch (error: unknown) {
       return failBeforeDiscard(`Restore stage cleanup failed: ${errorMessage(error)}`);
     }

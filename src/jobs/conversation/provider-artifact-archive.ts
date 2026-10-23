@@ -304,38 +304,39 @@ export function restoreStagePath(sourceHandle: string, jobId: string, execution:
 
 function removeRestoreStages(
   runtime: ArtifactCleanupRuntime,
-  descriptor: ProviderArtifactActionDescriptor,
-  manifest: ArchiveManifest | null,
+  jobId: string,
+  throughExecution: number,
+  handles: readonly string[],
 ): void {
-  const handles = new Set([
-    ...descriptor.handles.map((item) => item.handle),
-    ...(manifest?.artifacts.map((item) => item.sourceHandle) ?? []),
-  ]);
-  for (const handle of handles) {
-    try {
-      runtime.storage.unlinkSync(restoreStagePath(handle, descriptor.jobId, descriptor.execution));
-      syncDirectory(runtime, dirname(handle));
-    } catch (error: unknown) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  for (let execution = 1; execution <= throughExecution; execution++) {
+    const stages = new Set(handles.map((handle) => restoreStagePath(handle, jobId, execution)));
+    for (const stage of stages) {
+      try {
+        runtime.storage.unlinkSync(stage);
+      } catch (error: unknown) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
     }
+  }
+  for (const directory of new Set(handles.map(dirname))) {
+    try {
+      if (!runtime.storage.statSync(directory).isDirectory()) throw new Error(`Not a directory: ${directory}`);
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      throw error;
+    }
+    syncDirectory(runtime, directory);
   }
 }
 
 export async function cleanupConversationRestoreStages(
   runtime: ArtifactCleanupRuntime,
   jobId: string,
-  execution: number,
+  throughExecution: number,
   handles: readonly string[],
 ): Promise<void> {
   await withJobArtifactGuard(runtime, jobId, () => {
-    for (const handle of handles) {
-      try {
-        runtime.storage.unlinkSync(restoreStagePath(handle, jobId, execution));
-        syncDirectory(runtime, dirname(handle));
-      } catch (error: unknown) {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-      }
-    }
+    removeRestoreStages(runtime, jobId, throughExecution, handles);
   });
 }
 
@@ -456,7 +457,10 @@ export async function archiveProviderArtifactsForJob(options: {
     const directory = conversationArchiveDirectory(runtime, descriptor.jobId);
     const manifestPath = join(directory, 'manifest.json');
     const existing = readManifest(runtime, manifestPath);
-    removeRestoreStages(runtime, descriptor, existing);
+    removeRestoreStages(runtime, descriptor.jobId, descriptor.execution, [
+      ...descriptor.handles.map((item) => item.handle),
+      ...(existing?.artifacts.map((item) => item.sourceHandle) ?? []),
+    ]);
     if (existing?.archiveActionId === descriptor.archiveActionId) {
       verifyArchiveReplay(runtime, directory, existing, descriptor);
       return { manifestPath, artifacts: existing.artifacts };

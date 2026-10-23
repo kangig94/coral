@@ -3,7 +3,7 @@ import { TEST_CODEX_BINDING } from '#tests/helpers/provider-credentials.js';
 import { ExecutionFinisher, readExecutionFinishingState } from '#src/jobs/finishing.js';
 import { JobStore } from '#src/jobs/store.js';
 import { ConversationManager } from '#src/jobs/conversation/shell.js';
-import { recordProviderTerminal } from '#src/coordinator/services/terminal-materializer.js';
+import { appendProviderTerminalInCommit } from '#src/coordinator/services/terminal-materializer.js';
 import { executionHarness } from '#tests/helpers/job-executions.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { initTestJob, testConversationFacet } from '#tests/helpers/session.js';
@@ -119,11 +119,20 @@ function fixture(
     read: (address) => readExecutionFinishingState(h.db, address, store),
     quiesce: async () => {
       await options.finishingGate;
+      await options.releaseGate;
       return true;
     },
     retentionAction: async () => ({ attempt: 0, handles: [] }),
     settleRetention: async () => ({ kind: 'completed', outcome: 'skipped_no_handles' }),
   });
+  if (options.releaseGate !== undefined) {
+    const accept = finisher.accept.bind(finisher);
+    vi.spyOn(finisher, 'accept').mockImplementation(async (...args) => {
+      const accepted = await accept(...args);
+      await options.releaseGate;
+      return accepted;
+    });
+  }
   const provider: BoundProvider = {
     name: 'codex',
     envelope: TEST_CODEX_BINDING,
@@ -166,11 +175,10 @@ function fixture(
     executionFinisher: finisher,
     settlementRefusalRecorder: { record: () => true },
     terminalMaterializer: {
-      recordProviderTerminal: async (owner, event, address) => {
+      appendProviderTerminalInCommit: (commit, event, address) => {
         terminals.push(event);
         releaseStarted.resolve();
-        await options.releaseGate;
-        return recordProviderTerminal(owner, event, address);
+        appendProviderTerminalInCommit(commit, event, address);
       },
     },
   });

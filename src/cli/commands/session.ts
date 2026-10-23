@@ -301,7 +301,7 @@ function registerJobsSendCommand(jobsCommand: Command): void {
           await handleLaunchResult(result.launch, false);
           return;
         }
-        const output = formatJobSendResult(jobId, result, { inputTokens: opts.input });
+        const output = formatJobSendResult(jobId, result, { inputTokens: opts.input, detach: opts.detach === true });
         (output.exitCode === 0 ? process.stdout : process.stderr).write(output.text + '\n');
         process.exitCode = output.exitCode;
       } catch (error) {

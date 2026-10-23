@@ -1,7 +1,7 @@
 import { expect, it, vi } from 'vitest';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
-import { recordProviderTerminal } from '#src/coordinator/services/terminal-materializer.js';
+import { appendProviderTerminalInCommit } from '#src/coordinator/services/terminal-materializer.js';
 import { AbortRegistry } from '#src/jobs/shell/abort-registry.js';
 import { LaunchOrchestrator } from '#src/jobs/shell/launch.js';
 import { JobStore } from '#src/jobs/store.js';
@@ -127,7 +127,7 @@ it.each([false, true])(
       bundleHash: 'tests',
       coordinatorCommit: (cb) => store.commit(cb),
       settlementRefusalRecorder: { record: () => true },
-      terminalMaterializer: { recordProviderTerminal },
+      terminalMaterializer: { appendProviderTerminalInCommit },
       executionFinisher: finisher,
     });
     try {

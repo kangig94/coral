@@ -200,7 +200,7 @@ function launcher(f: ReturnType<typeof fixture>) {
     bundleHash: 'tests',
     coordinatorCommit: f.h.commit,
     settlementRefusalRecorder: { record: () => true },
-    terminalMaterializer: { recordProviderTerminal: vi.fn() },
+    terminalMaterializer: { appendProviderTerminalInCommit: vi.fn() },
   });
   const launch = (mintProtectedEnv = () => ({})) =>
     orchestrator.launchExecution(

@@ -4,8 +4,6 @@ import type { ProviderTerminalEventBody } from '../../providers/contract.js';
 import type { ProviderFailureCause } from '../../providers/fault.js';
 import type { JobLifecycleFault, JobProgressFault, TerminalOutcome, TerminalOutcomeInput } from '../../jobs/outcome.js';
 import type { JobTerminalDiagnostics, JobTerminalInput } from '../../jobs/records.js';
-import type { CauseRef } from '../../causality/cause-ref.js';
-import type { ExecutionFinisher } from '../../jobs/finishing.js';
 import {
   appendJobExecutionOutcomeAccepted,
   failedTerminalOutcome,
@@ -285,17 +283,6 @@ export function appendProviderTerminalInCommit<Scope>(
       diagnostics: materialized.diagnostics,
     }),
   );
-}
-
-export function recordProviderTerminal(
-  finisher: ExecutionFinisher,
-  terminal: ProviderTerminalEventBody,
-  options: RuntimeIngestOptions,
-): Promise<CauseRef> {
-  return finisher.accept(options, (c) => {
-    appendProviderTerminalInCommit(c, terminal, options);
-    return undefined;
-  });
 }
 
 function appendTerminalWithOutcomePlan<Scope>(

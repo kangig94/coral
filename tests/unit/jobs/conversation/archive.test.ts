@@ -13,7 +13,7 @@ import {
 } from '#src/jobs/conversation/provider-artifact-archive.js';
 import { TEST_CODEX_BINDING } from '#tests/helpers/provider-credentials.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
-import { EXECUTION_JOB_ID as jobId } from '#tests/helpers/job-executions.js';
+import { EXECUTION_JOB_ID as jobId, OTHER_EXECUTION_JOB_ID } from '#tests/helpers/job-executions.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 
 const native = '/home/user/.codex/sessions/2026/10/22/rollout-thread.jsonl';
@@ -182,6 +182,34 @@ describe('one committed conversation archive', () => {
     await expect(f.archive()).rejects.toThrow();
     expect(f.runtime.storage.readFileBytesSync(native)).toEqual(bytes);
     expect(f.runtime.storage.existsSync(f.manifestPath)).toBe(false);
+  });
+
+  it('cleans older restore stages from the previous archive directory without touching other owners', async () => {
+    const f = fixture();
+    await f.archive();
+    const stage = restoreStagePath(native, jobId, 2);
+    const otherJob = restoreStagePath(native, OTHER_EXECUTION_JOB_ID, 2);
+    const future = restoreStagePath(native, jobId, 4);
+    for (const path of [stage, otherJob, future]) f.runtime.storage.linkSync(native, path);
+    const nextHandle = '/home/user/.codex/sessions/2026/10/23/rollout-thread.jsonl';
+    f.runtime.storage.mkdirSync(dirname(nextHandle), { recursive: true });
+    f.runtime.storage.writeFileSync(nextHandle, bytes);
+    const next = deriveProviderArtifactActionDescriptor({
+      entry: { ...f.conversation, execution: 3 },
+      jobId,
+      handles: [nextHandle],
+      sourceRevision: 'accepted-3',
+      archivedAt: f.conversation.createdAt,
+    });
+    await archiveProviderArtifactsForJob({
+      runtime: f.runtime,
+      descriptor: next,
+    });
+
+    expect(f.manifest()).toMatchObject({ execution: 3, artifacts: [{ sourceHandle: nextHandle }] });
+    expect(f.runtime.storage.existsSync(stage)).toBe(false);
+    expect(f.runtime.storage.readFileBytesSync(otherJob)).toEqual(bytes);
+    expect(f.runtime.storage.readFileBytesSync(future)).toEqual(bytes);
   });
 });
 

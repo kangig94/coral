@@ -296,7 +296,7 @@ describe('command client routing', () => {
     const client = makeClient(projectRoot, findCommand(buildProgram(), 'jobs', 'send'));
     const detail = realDetail();
     expect(await client.sendJob('job-1', 'message')).toEqual(
-      result.state === 'unknown'
+      result.state === 'unknown' || result.state === 'refused'
         ? {
             ...result,
             executionSelection: {
@@ -351,10 +351,17 @@ describe('command client routing', () => {
     mockState.request.mockRejectedValueOnce(new IpcRpcError({ code: -32601, message: 'Method not found' }));
     const client = makeClient(projectRoot, findCommand(buildProgram(), 'jobs', 'send'));
     const outcome = await client.sendJob('job-1', 'message');
+    const detail = realDetail();
     expect(outcome).toEqual({
       state: 'refused',
       code: 'unsupported_by_running_build',
       reason: 'The running Coral build predates this jobs send contract.',
+      executionSelection: {
+        jobId: 'job-1',
+        epochKey: detail.epochKey,
+        requestedSeq: detail.requestedSeq,
+        awaitingArtifact: false,
+      },
     });
     const output = formatJobSendResult('job-1', outcome);
     expect(output.exitCode).toBe(1);
@@ -836,6 +843,56 @@ describe('jobs send immutable attempt envelope', () => {
       expect(output.text).toContain(`${field}: rejected value`);
       expect(output.text).toContain('Nothing was delivered.');
       expect(output.text.includes('corrected -i')).toBe(field === 'input');
+      expect(mockState.request).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each([
+    { code: 'execution_finishing', phase: 'running' },
+    { code: 'session_busy', phase: 'running' },
+    { code: 'turn_ended', phase: 'running' },
+    { code: 'job_not_running', phase: 'running' },
+    { code: 'provider_rejected', phase: 'running' },
+    { code: 'transport_unsupported', phase: 'running' },
+    { code: 'archive_missing', phase: 'completed' },
+    { code: 'archive_hash_mismatch', phase: 'completed' },
+    { code: 'archive_invalid', phase: 'completed' },
+  ] as const)(
+    'pins an ordinary $code refusal to its targeted result despite a later execution',
+    async ({ code, phase }) => {
+      const detail = realDetail(phase, 1, TEST_EPOCH);
+      mockState.detailRequest.mockReturnValue(detail);
+      mockState.request.mockResolvedValueOnce({ state: 'refused', code, reason: 'Refused.' });
+      const waits = waitExecutions();
+      waits.request('job-1', detail.requestedSeq!);
+      const result = await makeClient(projectRoot, findCommand(buildProgram(), 'jobs', 'send')).sendJob(
+        'job-1',
+        'input',
+      );
+      waits.end('job-1', 20);
+      waits.request('job-1', 30);
+      mockState.detailRequest.mockReturnValue(realDetail('running', 2, TEST_EPOCH));
+      const output = formatJobSendResult('job-1', result);
+      const command = output.text.split('\n').find((line) => line.startsWith('command=coral-cli jobs wait'))!;
+      const selection = {
+        jobId: 'job-1',
+        epochKey: TEST_EPOCH,
+        requestedSeq: detail.requestedSeq,
+        awaitingArtifact: false,
+      };
+      expect(command).toBe(`command=coral-cli jobs wait job-1 --execution-selection '${JSON.stringify([selection])}'`);
+      const executionSelections = waitExecutionSelectionsSchema.parse(
+        JSON.parse(command.split("--execution-selection '")[1].slice(0, -1)),
+      );
+      const bare = waits.coordinator.readWaitAdmission('job-1', TEST_EPOCH, { jobIds: ['job-1'] });
+      expect(bare.detail?.status.execution).toBe(2);
+      const pinned = waits.coordinator.readWaitAdmission('job-1', TEST_EPOCH, {
+        jobIds: ['job-1'],
+        executionSelections,
+      });
+      expect(pinned.detail?.status.execution).toBe(1);
+      expect(pinned.detail?.exit?.content).toBe('job-1#1');
+      expect(mockState.detailRequest).toHaveBeenCalledOnce();
       expect(mockState.request).toHaveBeenCalledOnce();
     },
   );

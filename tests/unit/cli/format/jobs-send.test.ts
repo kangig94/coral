@@ -116,6 +116,45 @@ it('can render an ended turn without input context', () => {
 });
 
 it.each([
+  'turn_not_started',
+  'control_unavailable',
+  'busy',
+  'succession_admission_paused',
+  'turn_ended',
+  'continuation_target_changed',
+  'execution_superseded',
+  'invalid_request',
+] as const)('preserves detach in the replacement send for %s', (code) => {
+  const output = formatJobSendResult(
+    'job-1',
+    { state: 'refused', code, reason: 'Not delivered.' },
+    { inputTokens: ['-'], detach: true },
+  );
+  expect(output.text.split('\n').filter((line) => line.startsWith('command=coral-cli jobs send'))).toEqual([
+    'command=coral-cli jobs send job-1 -d -i -',
+  ]);
+  expect(output.text).toContain('Pipe the same original input into the command you run.');
+});
+
+it.each([
+  'archive_missing',
+  'archive_hash_mismatch',
+  'archive_invalid',
+  'profile_mismatch',
+  'pre_generation_job',
+] as const)('preserves detach in both fresh-provider commands for %s', (code) => {
+  const output = formatJobSendResult(
+    'job-1',
+    { state: 'refused', code, reason: 'Cannot continue.' },
+    { inputTokens: ['message with spaces'], detach: true },
+  );
+  expect(output.text.split('\n').filter((line) => /^command=coral-cli (codex|claude) /u.test(line))).toEqual([
+    "command=coral-cli codex -d -i 'message with spaces'",
+    "command=coral-cli claude -d -i 'message with spaces'",
+  ]);
+});
+
+it.each([
   ['message with spaces', "agent's message", '$HOME `printf expanded` $(printf expanded)', 'a; echo expanded'],
   ['first line\nsecond line\n', 'tabs\there', '\\literal\\', '"quoted"'],
 ])('shell-quotes caller tokens without expansion or loss: %j', (...inputTokens) => {

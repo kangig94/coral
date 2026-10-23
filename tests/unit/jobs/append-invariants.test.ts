@@ -14,7 +14,6 @@ import {
   jobTerminalSchema,
 } from '#src/jobs/terminal/result.js';
 import { readCommittedExecutionRequest } from '#src/jobs/execution-journal.js';
-import { refuseLaunch } from '#src/jobs/launch.js';
 import type { CoralEventInput } from '#src/store/envelope.js';
 import {
   EXECUTION_JOB_ID as jobId,
@@ -335,12 +334,6 @@ describe('jobs:execution-order', () => {
     h.append(retained());
     expectOrderFailure(() => h.append(failedRetention()));
     h.append(end());
-  });
-
-  it('creates no execution for a refusal before requested commits', () => {
-    const h = harness();
-    expect(refuseLaunch('archive_missing', 'archive unavailable').status).toBe('refused');
-    expect(h.events()).toEqual([]);
   });
 
   it('stores message identity with the input and forbids replay as another execution', () => {

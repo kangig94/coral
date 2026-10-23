@@ -342,6 +342,45 @@ it.each(['turn_not_started', 'control_unavailable'] as const)(
   },
 );
 
+it('preserves detach when executing a refused send retry', async () => {
+  const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+  vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+  const launch = {
+    kind: 'provider-session' as const,
+    jobId: 'job-1',
+    execution: 2,
+    requestedSeq: 100,
+    epochKey: 'epoch',
+    launchState: 'queued' as const,
+  };
+  client.sendJob.mockResolvedValueOnce({ state: 'refused', code: 'busy', reason: 'Admission busy.' });
+  await program().parseAsync(['jobs', 'send', 'job-1', '-d', '-i', 'continue'], { from: 'user' });
+  const commands = printedCommands(stderr.mock.calls.map(([text]) => String(text)).join(''));
+  expect(commands).toEqual([['jobs', 'send', 'job-1', '-d', '-i', 'continue']]);
+  client.sendJob.mockResolvedValueOnce({ state: 'launched', launch });
+  await program().parseAsync(commands[0], { from: 'user' });
+  expect(client.sendJob).toHaveBeenLastCalledWith('job-1', 'continue');
+  expect(launchAndFollow).not.toHaveBeenCalled();
+  expect(process.exitCode).toBe(0);
+});
+
+it.each(['codex', 'claude'] as const)('preserves detach when executing a fresh %s remedy', async (provider) => {
+  const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+  vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+  client.sendJob.mockResolvedValueOnce({ state: 'refused', code: 'pre_generation_job', reason: 'Historical job.' });
+  await program().parseAsync(['jobs', 'send', 'job-1', '-d', '-i', 'continue'], { from: 'user' });
+  const commands = printedCommands(stderr.mock.calls.map(([text]) => String(text)).join(''));
+  const command = commands.find(([name]) => name === provider)!;
+  expect(command).toEqual([provider, '-d', '-i', 'continue']);
+  const root = program();
+  registerProviderCommands(root, createBuiltInProviderRegistry());
+  process.exitCode = undefined;
+  await root.parseAsync(command, { from: 'user' });
+  expect(client.createSession).toHaveBeenCalledWith(provider, 'continue', expect.any(Object));
+  expect(launchAndFollow).not.toHaveBeenCalled();
+  expect(process.exitCode).toBeUndefined();
+});
+
 it('executes an ended-turn result remedy and sends the original input unchanged on a new attempt', async () => {
   const output = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
   vi.spyOn(process.stdout, 'write').mockImplementation(() => true);

@@ -3,7 +3,10 @@ import { ExecutionFinisher, readExecutionFinishingState } from '#src/jobs/finish
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { recordProviderTerminal } from '#src/coordinator/services/terminal-materializer.js';
+import { appendProviderTerminalInCommit } from '#src/coordinator/services/terminal-materializer.js';
+import { CliBusyError } from '#src/runtime/cli-busy.js';
+import { AbortError } from '#src/runtime/abort.js';
+import { ProviderHostUnserviceableError } from '#src/providers/host-admission.js';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { AbortRegistry } from '#src/jobs/shell/abort-registry.js';
 import { LaunchOrchestrator } from '#src/jobs/shell/launch.js';
@@ -13,6 +16,7 @@ import { JobStore } from '#src/jobs/store.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { composeReducers } from '#src/store/reducers.js';
 import type { BoundProvider, BoundProviderStandaloneExecutionRuntime } from '#src/providers/bound-provider-contract.js';
+import type { ProviderEventBody } from '#src/providers/contract.js';
 import type { ProviderDurableSpawner } from '#src/providers/cli-runner.js';
 import { ConversationManager } from '#src/jobs/conversation/shell.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
@@ -62,7 +66,7 @@ function fixture(options: { route?: AppServerProxyRoute; durableSpawner?: Provid
     completed.resolve();
     return result;
   };
-  const execute = vi.fn(async function* () {});
+  const execute = vi.fn(async function* (): AsyncGenerator<ProviderEventBody> {});
   const provider = {
     name: 'codex',
     envelope: TEST_CODEX_BINDING,
@@ -73,8 +77,9 @@ function fixture(options: { route?: AppServerProxyRoute; durableSpawner?: Provid
     readiness: async () => ({ ok: true }),
     prepareExecution: () => ({ kind: 'app-server', hostSpec: {}, execute }),
   } as unknown as BoundProvider;
+  const finisherTime = { sleep: async () => {} };
   const executionFinisher = new ExecutionFinisher({
-    time: { sleep: async () => {} },
+    time: finisherTime,
     commit: (cb) => store.commit(cb),
     read: (address) => readExecutionFinishingState(db, address, store),
     quiesce: async () => true,
@@ -96,7 +101,7 @@ function fixture(options: { route?: AppServerProxyRoute; durableSpawner?: Provid
     coordinatorCommit: (cb) => store.commit(cb),
     settlementRefusalRecorder: { record: () => true },
     appServerProxyRoute: options.route,
-    terminalMaterializer: { recordProviderTerminal },
+    terminalMaterializer: { appendProviderTerminalInCommit },
   });
   return {
     runtime,
@@ -105,6 +110,7 @@ function fixture(options: { route?: AppServerProxyRoute; durableSpawner?: Provid
     sessions,
     session,
     executionFinisher,
+    finisherTime,
     admission,
     registry,
     provider,
@@ -132,6 +138,197 @@ function fixture(options: { route?: AppServerProxyRoute; durableSpawner?: Provid
 }
 
 describe('LaunchOrchestrator', () => {
+  it.each([
+    { outcome: 'provider failure', read: 'readStatus', error: new Error('original provider failure') },
+    { outcome: 'failure duration', read: 'readLaunchProjection', error: new Error('original provider failure') },
+    {
+      outcome: 'busy rejection metadata',
+      read: 'readLaunchProjection',
+      error: new CliBusyError({ error: 'busy', provider: 'codex', globalActive: 1, globalLimit: 1 }),
+    },
+    {
+      outcome: 'unserviceable host duration',
+      read: 'readLaunchProjection',
+      error: new ProviderHostUnserviceableError({
+        provider: 'codex',
+        instanceId: 'fixture-host',
+        fingerprint: 'a'.repeat(64),
+        leaseMode: 'shared',
+      }),
+    },
+    { outcome: 'abort duration', read: 'readLaunchProjection', error: new AbortError({ stage: 'fixture' }) },
+    { outcome: 'provider terminal metadata', read: 'readStatus', error: null },
+  ] as const)('retains $outcome through a transient pre-acceptance read failure', async ({ read, error }) => {
+    const f = fixture();
+    const address = { jobId: JOB_ID, execution: 1 };
+    const signal = new AbortController();
+    vi.spyOn(f.registry, 'getSignal').mockReturnValue(signal.signal);
+    const retry = createDeferred<void>();
+    vi.spyOn(f.finisherTime, 'sleep').mockImplementation(() => retry.promise);
+    let unavailable = false;
+    let observedOwner = false;
+    const observeRead = () => {
+      if (unavailable) {
+        observedOwner = f.executionFinisher.owns(address);
+        throw new Error('transient outcome read failure');
+      }
+    };
+    const readStatus = f.store.readStatus.bind(f.store);
+    const readLaunch = f.store.readLaunchProjection.bind(f.store);
+    const readSpy =
+      read === 'readStatus'
+        ? vi.spyOn(f.store, 'readStatus').mockImplementation((id) => {
+            observeRead();
+            return readStatus(id);
+          })
+        : vi.spyOn(f.store, 'readLaunchProjection').mockImplementation((id) => {
+            observeRead();
+            return readLaunch(id);
+          });
+    f.execute.mockImplementation(async function* () {
+      unavailable = true;
+      if (error !== null) throw error;
+      yield {
+        kind: 'terminal',
+        terminal: { content: 'original provider result', outcome: { kind: 'completed' }, durationMs: 7 },
+        diagnostics: {},
+      };
+    });
+    const releaseStates: string[] = [];
+    const release = f.admission.releaseLaunch.bind(f.admission);
+    vi.spyOn(f.admission, 'releaseLaunch').mockImplementation((permit) => {
+      releaseStates.push(f.executionFinisher.state(address).kind);
+      return release(permit);
+    });
+    try {
+      await f.launch();
+      await vi.waitFor(() => expect(f.executionFinisher.status(address)).toMatchObject({ stage: 'accept' }));
+      expect(observedOwner).toBe(true);
+      expect(f.executionFinisher.state(address).kind).toBe('unaccepted');
+      expect(f.orchestrator.holdsLocalAppServerExecution(JOB_ID, 1)).toBe(true);
+      expect(f.admission.reservationFor(JOB_ID)).not.toBeNull();
+      expect(f.registry.has(JOB_ID, 1)).toBe(true);
+      expect(releaseStates).toEqual([]);
+
+      signal.abort();
+      unavailable = false;
+      retry.resolve();
+      await f.completed;
+      await f.executionFinisher.finish(address);
+      const state = f.executionFinisher.state(address);
+      expect(state.kind).toBe('ended');
+      if (state.kind !== 'ended') throw new Error('Expected execution to end.');
+      if (error instanceof CliBusyError || error instanceof ProviderHostUnserviceableError) {
+        expect(state.accepted.terminal.outcome).toMatchObject({ kind: 'failed' });
+        if (state.accepted.terminal.outcome.kind !== 'failed') throw new Error('Expected the original fault citation.');
+        const cause = f.db
+          .prepare("SELECT json_extract(CAST(body AS TEXT), '$.message') AS message FROM events WHERE seq = ?")
+          .get(state.accepted.terminal.outcome.causeRef.seq);
+        expect(cause).toEqual({ message: error.message });
+      } else if (error instanceof AbortError) {
+        expect(state.accepted.terminal.outcome).toEqual({ kind: 'aborted', reason: 'signal_abort' });
+      } else if (error !== null) {
+        expect(state.accepted.terminal.outcome).toEqual({
+          kind: 'job_fault',
+          fault: { kind: 'wrapper_crashed', cause: { message: error.message } },
+        });
+      } else {
+        expect(state.accepted.terminal).toEqual({
+          content: 'original provider result',
+          outcome: { kind: 'completed' },
+          durationMs: 7,
+        });
+      }
+      const rows = f.db.prepare('SELECT type FROM events').all() as Array<{ type: string }>;
+      expect(rows.filter((row) => row.type === 'job.execution.outcome.accepted')).toHaveLength(1);
+      expect(rows.filter((row) => row.type === 'job.execution.ended')).toHaveLength(1);
+      expect(releaseStates).toHaveLength(1);
+      expect(releaseStates[0]).not.toBe('unaccepted');
+      expect(f.execute).toHaveBeenCalledTimes(1);
+      expect(f.admission.reservationFor(JOB_ID)).toBeNull();
+      expect(f.orchestrator.holdsLocalAppServerExecution(JOB_ID, 1)).toBe(false);
+    } finally {
+      unavailable = false;
+      readSpy.mockRestore();
+      retry.resolve();
+      await f.executionFinisher.dispose();
+    }
+  });
+
+  it('retries terminal metadata reads while retaining an explicitly supplied outcome', async () => {
+    const f = fixture();
+    f.store.initJob({
+      jobId: JOB_ID,
+      conversation: {
+        provider: 'codex',
+        binding: TEST_CODEX_BINDING,
+        name: 'test',
+        cwd: fixtureCanonicalWorkDir('/project'),
+        bypassPermissions: false,
+        retention: 'retain',
+      },
+      projectRoot: '/project',
+      backendNamespace: 'test',
+    });
+    const address = { jobId: JOB_ID, execution: 1 };
+    const terminal = { content: 'original result', durationMs: 7, outcome: { kind: 'completed' as const } };
+    vi.spyOn(f.store, 'readStatus').mockImplementationOnce(() => {
+      expect(f.executionFinisher.owns(address)).toBe(true);
+      throw new Error('transient terminal metadata failure');
+    });
+    const seq = await f.orchestrator.writeJobTerminal(JOB_ID, 1, terminal, 'completed');
+    await f.executionFinisher.finish(address);
+    expect(f.executionFinisher.state(address)).toMatchObject({
+      kind: 'ended',
+      causeRef: { seq },
+      accepted: { terminal },
+    });
+    const rows = f.db.prepare('SELECT type FROM events').all() as Array<{ type: string }>;
+    expect(rows.filter((row) => row.type === 'job.execution.outcome.accepted')).toHaveLength(1);
+    expect(rows.filter((row) => row.type === 'job.execution.ended')).toHaveLength(1);
+    await f.executionFinisher.dispose();
+  });
+
+  it('preserves a queued shutdown outcome when its duration read fails', async () => {
+    const f = fixture();
+    const getEnv = f.runtime.env.get.bind(f.runtime.env);
+    vi.spyOn(f.runtime.env, 'get').mockImplementation((key) => (key === 'CORAL_MAX_WORKERS' ? '1' : getEnv(key)));
+    const blocker = f.admission.requestLaunch(
+      'blocker',
+      'codex',
+      { kind: 'provider-session', id: 'blocker' },
+      'default',
+    );
+    if (blocker === 'queue_full' || blocker.type !== 'immediate') throw new Error('Expected a blocking permit.');
+    await expect(f.launch()).resolves.toMatchObject({ status: 'queued' });
+    const address = { jobId: JOB_ID, execution: 1 };
+    const retry = createDeferred<void>();
+    vi.spyOn(f.finisherTime, 'sleep').mockImplementation(() => retry.promise);
+    vi.spyOn(f.store, 'readLaunchProjection').mockImplementationOnce(() => {
+      throw new Error('transient queue duration failure');
+    });
+    try {
+      f.registry.abort([JOB_ID]);
+      await vi.waitFor(() => expect(f.executionFinisher.status(address)).toMatchObject({ stage: 'accept' }));
+      expect(f.executionFinisher.owns(address)).toBe(true);
+      expect(f.sessions.readById(JOB_ID)?.open).toBe(true);
+      retry.resolve();
+      await vi.waitFor(() => expect(f.executionFinisher.state(address).kind).toBe('ended'));
+      expect(f.executionFinisher.state(address)).toMatchObject({
+        accepted: { terminal: { outcome: { kind: 'aborted', reason: 'queue_shutdown' } } },
+      });
+      const rows = f.db.prepare('SELECT type FROM events').all() as Array<{ type: string }>;
+      expect(rows.filter((row) => row.type === 'job.execution.outcome.accepted')).toHaveLength(1);
+      expect(rows.filter((row) => row.type === 'job.execution.ended')).toHaveLength(1);
+      expect(f.execute).not.toHaveBeenCalled();
+      expect(f.orchestrator.holdsLocalAppServerExecution(JOB_ID, 1)).toBe(false);
+    } finally {
+      retry.resolve();
+      await f.executionFinisher.dispose();
+      f.admission.releaseLaunch(blocker.permit);
+    }
+  });
+
   it('keeps a late producer on its committed execution while the successor is current', async () => {
     const f = fixture();
     f.store.initJob({
@@ -180,7 +377,7 @@ describe('LaunchOrchestrator', () => {
     });
   });
 
-  it('refuses a running predecessor with the busy code and a runnable wait', async () => {
+  it('refuses a running predecessor with the busy code and no embedded command', async () => {
     const f = fixture();
     f.store.initJob({
       jobId: JOB_ID,
@@ -212,7 +409,7 @@ describe('LaunchOrchestrator', () => {
     expect(decision).toMatchObject({
       status: 'refused',
       code: 'session_busy',
-      message: expect.stringContaining(`coral-cli jobs wait ${JOB_ID}`),
+      message: expect.not.stringContaining('coral-cli'),
     });
     await f.executionFinisher.dispose();
   });
@@ -266,7 +463,7 @@ describe('LaunchOrchestrator', () => {
     await expect(decision).resolves.toMatchObject({
       status: 'refused',
       code: 'execution_finishing',
-      message: expect.stringContaining(`coral-cli jobs wait ${JOB_ID}`),
+      message: expect.not.stringContaining('coral-cli'),
     });
   });
 

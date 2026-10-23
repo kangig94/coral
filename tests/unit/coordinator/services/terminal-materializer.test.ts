@@ -12,7 +12,7 @@ import {
   materializeJobRecoveryFaultInCommit,
   materializeProviderFailureCauseInCommit,
   materializeProviderTerminal,
-  recordProviderTerminal,
+  appendProviderTerminalInCommit,
 } from '#src/coordinator/services/terminal-materializer.js';
 
 type RecordedInput = {
@@ -204,7 +204,10 @@ describe('terminal-materializer canonical output boundary', () => {
       }),
     } satisfies ProviderTerminalEventBody;
 
-    const acceptedCause = await recordProviderTerminal(finisher, terminal, OPTIONS);
+    const acceptedCause = await finisher.accept(OPTIONS, (commit) => {
+      appendProviderTerminalInCommit(commit, terminal, OPTIONS);
+      return undefined;
+    });
     await finisher.finish(OPTIONS);
     const appended = journal
       .events()

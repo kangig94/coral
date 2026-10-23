@@ -46,6 +46,7 @@ const MAX_INLINE = 10_000;
 /** Remediation must preserve the caller's input tokens rather than substitute resolved file or stdin content. */
 export type JobSendOutputContext = Readonly<{
   inputTokens: readonly string[];
+  detach?: boolean;
 }>;
 
 export type UnknownLaunchOutcome = Readonly<{ kind: 'launch-outcome-unknown' }>;
@@ -224,17 +225,17 @@ function jobSendRefusalRemedy(
     case 'invalid-request':
       return jobSendInvalidRequestRemedy(jobId, result, context);
     case 'uncertain':
-      return jobSendUncertainRemedy(jobId);
+      return jobSendUncertainRemedy(jobId, result.executionSelection);
     case 'target-changed':
       return jobSendTargetChangedRemedy(jobId, context);
     case 'retry':
       return jobSendRetryRemedy(jobId, context);
     case 'terminal':
-      return jobSendTerminalRemedy(jobId, context);
+      return jobSendTerminalRemedy(jobId, result.executionSelection, context);
     case 'inspect':
-      return jobSendInspectionRemedy(jobId, policy);
+      return jobSendInspectionRemedy(jobId, policy, result.executionSelection);
     case 'unrestorable':
-      return jobSendUnrestorableRemedy(jobId, policy.diagnosis, context);
+      return jobSendUnrestorableRemedy(jobId, policy.diagnosis, result.executionSelection, context);
     case 'fresh-provider':
       return [...policy.diagnosis, ...jobSendFreshProviderRemedy(context)];
     default:
@@ -254,17 +255,18 @@ function jobSendInvalidRequestRemedy(
       : [
           'Make a new send attempt; it reads a fresh execution target and uses a new message ID.',
           ...jobSendStdinReminder(context),
-          ...(context === undefined
-            ? []
-            : [formatJobsOperatorCommand({ kind: 'send-job', jobId, inputTokens: context.inputTokens })]),
+          ...(context === undefined ? [] : [formatJobsOperatorCommand({ kind: 'send-job', jobId, ...context })]),
         ]),
   ];
 }
 
-function jobSendUncertainRemedy(jobId: string): readonly string[] {
+function jobSendUncertainRemedy(
+  jobId: string,
+  executionSelection: WaitExecutionSelection | undefined,
+): readonly string[] {
   return [
     'This invocation wrote nothing; an earlier invocation with this message identity may have delivered it.',
-    formatJobsOperatorCommand({ kind: 'wait-job', jobId, grammar: 'current' }),
+    formatJobsOperatorCommand({ kind: 'wait-job', jobId, grammar: 'current', executionSelection }),
     'Resend only if the result does not reflect the message. A new intentional send reads a fresh target and uses a new message ID.',
   ];
 }
@@ -277,10 +279,14 @@ function jobSendTargetChangedRemedy(jobId: string, context: JobSendOutputContext
   ];
 }
 
-function jobSendInspectionRemedy(jobId: string, policy: Extract<RemedyPolicy, { kind: 'inspect' }>): readonly string[] {
+function jobSendInspectionRemedy(
+  jobId: string,
+  policy: Extract<RemedyPolicy, { kind: 'inspect' }>,
+  executionSelection: WaitExecutionSelection | undefined,
+): readonly string[] {
   return [
     policy.message,
-    formatJobsOperatorCommand({ kind: policy.command, jobId, grammar: 'current', all: policy.all }),
+    formatJobsOperatorCommand({ kind: policy.command, jobId, grammar: 'current', all: policy.all, executionSelection }),
   ];
 }
 
@@ -290,14 +296,18 @@ function jobSendRetryRemedy(jobId: string, context: JobSendOutputContext | undef
     : [
         'Nothing was written. Run the same request again.',
         ...jobSendStdinReminder(context),
-        formatJobsOperatorCommand({ kind: 'send-job', jobId, inputTokens: context.inputTokens }),
+        formatJobsOperatorCommand({ kind: 'send-job', jobId, ...context }),
       ];
 }
 
-function jobSendTerminalRemedy(jobId: string, context: JobSendOutputContext | undefined): readonly string[] {
+function jobSendTerminalRemedy(
+  jobId: string,
+  executionSelection: WaitExecutionSelection | undefined,
+  context: JobSendOutputContext | undefined,
+): readonly string[] {
   return [
     "Read the job's result before requesting another execution of its conversation.",
-    formatJobsOperatorCommand({ kind: 'wait-job', jobId, grammar: 'current' }),
+    formatJobsOperatorCommand({ kind: 'wait-job', jobId, grammar: 'current', executionSelection }),
     ...jobSendNewAttemptRemedy(jobId, context),
   ];
 }
@@ -308,19 +318,20 @@ function jobSendNewAttemptRemedy(jobId: string, context: JobSendOutputContext | 
     : [
         'A new intentional send attempt reads a fresh execution target and uses a new message ID.',
         ...jobSendStdinReminder(context),
-        formatJobsOperatorCommand({ kind: 'send-job', jobId, inputTokens: context.inputTokens }),
+        formatJobsOperatorCommand({ kind: 'send-job', jobId, ...context }),
       ];
 }
 
 function jobSendUnrestorableRemedy(
   jobId: string,
   diagnosis: string,
+  executionSelection: WaitExecutionSelection | undefined,
   context: JobSendOutputContext | undefined,
 ): readonly string[] {
   return [
     diagnosis,
     'Read the execution result.',
-    formatJobsOperatorCommand({ kind: 'wait-job', jobId, grammar: 'current' }),
+    formatJobsOperatorCommand({ kind: 'wait-job', jobId, grammar: 'current', executionSelection }),
     'Start a new conversation with a fresh provider job. This does not continue this conversation.',
     ...jobSendFreshProviderRemedy(context),
   ];
@@ -331,7 +342,7 @@ function jobSendFreshProviderRemedy(context: JobSendOutputContext | undefined): 
   return [
     ...jobSendStdinReminder(context),
     ...(['codex', 'claude'] as const).map((provider) =>
-      formatJobsOperatorCommand({ kind: 'fresh-provider', provider, inputTokens: context.inputTokens }),
+      formatJobsOperatorCommand({ kind: 'fresh-provider', provider, ...context }),
     ),
   ];
 }
@@ -715,16 +726,16 @@ export type JobsOperatorCommand =
   | Readonly<{ kind: 'jobs-detail-full'; jobId: string }>
   | JobOperatorRemedy
   | Readonly<{ kind: 'wait-job'; jobId: string; grammar?: 'current'; executionSelection?: WaitExecutionSelection }>
-  | Readonly<{ kind: 'send-job'; jobId: string; inputTokens: readonly string[] }>
+  | (Readonly<{ kind: 'send-job'; jobId: string }> & JobSendOutputContext)
   | Readonly<{ kind: 'jobs-list'; all?: boolean }>
-  | Readonly<{ kind: 'fresh-provider'; provider: 'codex' | 'claude'; inputTokens: readonly string[] }>;
+  | (Readonly<{ kind: 'fresh-provider'; provider: 'codex' | 'claude' }> & JobSendOutputContext);
 
 export function renderJobsOperatorCommand(command: JobsOperatorCommand): string {
   switch (command.kind) {
     case 'backend-status':
       return 'coral-cli backend status';
     case 'fresh-provider':
-      return `coral-cli ${command.provider} ${renderJobsInputTokens(command.inputTokens)}`;
+      return `coral-cli ${command.provider}${command.detach === true ? ' -d' : ''} ${renderJobsInputTokens(command.inputTokens)}`;
     case 'abort-job':
       return `coral-cli jobs abort ${command.jobId}`;
     case 'jobs-detail-full':
@@ -734,7 +745,7 @@ export function renderJobsOperatorCommand(command: JobsOperatorCommand): string 
     case 'wait-job':
       return `${command.grammar === 'current' ? 'coral-cli jobs wait' : waitCommandPrefix()} ${quoteJobsCommandArgument(command.jobId)}${command.executionSelection === undefined ? '' : ` --execution-selection ${quoteJobsCommandArgument(JSON.stringify([command.executionSelection]))}`}`;
     case 'send-job':
-      return `coral-cli jobs send ${quoteJobsCommandArgument(command.jobId)} ${renderJobsInputTokens(command.inputTokens)}`;
+      return `coral-cli jobs send ${quoteJobsCommandArgument(command.jobId)}${command.detach === true ? ' -d' : ''} ${renderJobsInputTokens(command.inputTokens)}`;
     case 'jobs-list':
       return `coral-cli jobs list${command.all === true ? ' --all' : ''}`;
   }

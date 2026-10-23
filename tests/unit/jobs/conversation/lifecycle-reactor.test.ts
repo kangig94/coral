@@ -1,3 +1,4 @@
+import { dirname } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
@@ -5,6 +6,11 @@ import {
   createRetentionWorkRetryPlan,
   isLifecycleRetentionAdmitted,
 } from '#src/jobs/conversation/lifecycle-reactor.js';
+import {
+  publishConversationRestore,
+  restoreStagePath,
+  verifyConversationRestore,
+} from '#src/jobs/conversation/provider-artifact-archive.js';
 import { RecoveryContainment, canonicalRecoveryRevision } from '#src/recovery/containment.js';
 import { eventRevisionFields } from '#src/recovery/row-revision-fields.js';
 import { RecoveryQuarantineStore } from '#src/recovery/quarantine.js';
@@ -115,6 +121,141 @@ describe('job conversation lifecycle reactor', () => {
       'job.retention.discard.requested',
       'job.retention.discard.completed',
     ]);
+  });
+
+  it.each(['same directory', 'different directory', 'expired archive'])(
+    'cleans a failed prior restore stage before a later discard with %s',
+    async (destination) => {
+      const h = harness();
+      const handle = '/home/user/.codex/sessions/2026/10/22/rollout-thread.jsonl';
+      h.start();
+      await h.recordArtifact(handle);
+      h.accept();
+      await finish(h);
+
+      h.append(requestedExecution(2));
+      await h.recordArtifact(handle, EXECUTION_JOB_ID, null);
+      const verification = await verifyConversationRestore({
+        runtime: h.runtime,
+        conversation: h.read(),
+        nativeHandle: handle,
+        minimumExecution: 1,
+      });
+      expect(verification.kind).toBe('verified');
+      const stage = restoreStagePath(handle, EXECUTION_JOB_ID, 2);
+      const unlink = h.runtime.storage.unlinkSync.bind(h.runtime.storage);
+      const denied = vi.spyOn(h.runtime.storage, 'unlinkSync').mockImplementation((path) => {
+        if (path === stage && h.runtime.storage.existsSync(stage))
+          throw Object.assign(new Error('restore stage unlink denied'), { code: 'EACCES' });
+        unlink(path);
+      });
+      expect(
+        await publishConversationRestore({ runtime: h.runtime, jobId: EXECUTION_JOB_ID, execution: 2, verification }),
+      ).toMatchObject({ kind: 'unrestorable', reason: 'publication_failed' });
+      expect(h.runtime.storage.readFileSync(stage, 'utf-8')).toBe('native artifact\n');
+      expect(h.runtime.storage.readFileSync(handle, 'utf-8')).toBe('native artifact\n');
+      h.accept();
+      await finish(h);
+      expect(h.read()).toMatchObject({ execution: 2, open: false, finishing: false });
+      expect(h.read().retentionDiscard.attempts.at(-1)).toMatchObject({
+        execution: 2,
+        status: 'failed',
+        reason: expect.stringContaining('restore stage unlink denied'),
+      });
+      expect(h.providerEffects).toHaveLength(1);
+
+      denied.mockRestore();
+      if (destination === 'expired archive') h.runtime.storage.rmSync(dirname(h.manifestPath()), { recursive: true });
+      h.restart();
+      h.append(requestedExecution(3));
+      const nextHandle = destination === 'same directory' ? handle : '/tmp/provider/next-native.jsonl';
+      await h.recordArtifact(nextHandle);
+      h.accept();
+      await finish(h);
+
+      expect(h.read()).toMatchObject({ execution: 3, open: false, finishing: false });
+      expect(h.read().retentionDiscard.attempts.at(-1)).toMatchObject({ execution: 3, status: 'completed' });
+      expect(JSON.parse(h.runtime.storage.readFileSync(h.manifestPath(), 'utf-8'))).toMatchObject({ execution: 3 });
+      expect(h.runtime.storage.existsSync(nextHandle)).toBe(false);
+      expect(h.runtime.storage.existsSync(stage)).toBe(false);
+    },
+  );
+
+  it.each(['unlink denied', 'directory durability unknown'])(
+    'keeps native artifacts when prior-stage cleanup has %s',
+    async (failure) => {
+      const h = harness();
+      const { handle } = await seed(h);
+      await finish(h);
+      h.append(requestedExecution(2));
+      await h.recordArtifact(handle);
+      const stage = restoreStagePath(handle, EXECUTION_JOB_ID, 2);
+      h.runtime.storage.linkSync(handle, stage);
+      if (failure === 'unlink denied') {
+        const unlink = h.runtime.storage.unlinkSync.bind(h.runtime.storage);
+        vi.spyOn(h.runtime.storage, 'unlinkSync').mockImplementation((path) => {
+          if (path === stage) throw Object.assign(new Error('stage access unknown'), { code: 'EACCES' });
+          unlink(path);
+        });
+      } else {
+        const sync = h.runtime.storage.syncDirectoryDurableSync.bind(h.runtime.storage);
+        vi.spyOn(h.runtime.storage, 'syncDirectoryDurableSync').mockImplementation((path) =>
+          path === dirname(handle) ? false : sync(path),
+        );
+      }
+      h.accept();
+      await finish(h);
+      expect(h.read().retentionDiscard.attempts.at(-1)).toMatchObject({ execution: 2, status: 'failed' });
+
+      h.append(requestedExecution(3));
+      h.accept();
+      await finish(h);
+
+      expect(h.read()).toMatchObject({ execution: 3, open: false, finishing: false });
+      expect(h.read().retentionDiscard.attempts.at(-1)).toMatchObject({
+        execution: 3,
+        status: 'failed',
+        reason: expect.stringContaining('Restore stage cleanup failed'),
+      });
+      expect(h.runtime.storage.readFileSync(handle, 'utf-8')).toBe('native artifact\n');
+      expect(h.providerEffects).toHaveLength(1);
+    },
+  );
+
+  it('keeps ownership of an unlinked prior stage until its directory sync recovers', async () => {
+    const h = harness();
+    const { handle } = await seed(h);
+    await finish(h);
+    h.append(requestedExecution(2));
+    await h.recordArtifact(handle);
+    const stage = restoreStagePath(handle, EXECUTION_JOB_ID, 2);
+    h.runtime.storage.linkSync(handle, stage);
+    const sync = h.runtime.storage.syncDirectoryDurableSync.bind(h.runtime.storage);
+    const uncertain = vi
+      .spyOn(h.runtime.storage, 'syncDirectoryDurableSync')
+      .mockImplementation((path) => (path === dirname(handle) ? false : sync(path)));
+    h.accept();
+    await finish(h);
+    expect(h.read().retentionDiscard.attempts.at(-1)).toMatchObject({ execution: 2, status: 'failed' });
+    expect(h.runtime.storage.existsSync(stage)).toBe(false);
+
+    h.restart();
+    h.append(requestedExecution(3));
+    const nextHandle = '/tmp/next-provider/native.jsonl';
+    await h.recordArtifact(nextHandle);
+    h.accept();
+    await finish(h);
+    expect(h.read().retentionDiscard.attempts.at(-1)).toMatchObject({ execution: 3, status: 'failed' });
+    expect(h.runtime.storage.readFileSync(nextHandle, 'utf-8')).toBe('native artifact\n');
+    expect(h.providerEffects).toHaveLength(1);
+
+    uncertain.mockRestore();
+    h.append(requestedExecution(4));
+    h.accept();
+    await finish(h);
+    expect(h.read()).toMatchObject({ execution: 4, open: false, finishing: false });
+    expect(h.read().retentionDiscard.attempts.at(-1)).toMatchObject({ execution: 4, status: 'completed' });
+    expect(h.runtime.storage.existsSync(nextHandle)).toBe(false);
   });
 
   it('keeps artifacts owned by the finishing execution until it releases the conversation', async () => {

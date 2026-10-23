@@ -34,7 +34,7 @@ import { refuseLaunch } from '../jobs/launch.js';
 import type { JobSendResult } from '../jobs/send.js';
 import { JobWaitService } from './services/job-wait.js';
 import { RecoveryService } from './services/recovery/service.js';
-import { recordProviderTerminal } from './services/terminal-materializer.js';
+import { appendProviderTerminalInCommit } from './services/terminal-materializer.js';
 
 /**
  * Handoff quiesce port: the dying daemon calls this immediately before
@@ -104,7 +104,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
           return null;
         }
       },
-      terminalMaterializer: { recordProviderTerminal },
+      terminalMaterializer: { appendProviderTerminalInCommit },
       executionFinisher: deps.executionFinisher,
       ...(deps.operations === undefined ? {} : { operations: deps.operations }),
       ...(deps.appServerProxyRoute === undefined ? {} : { appServerProxyRoute: deps.appServerProxyRoute }),
