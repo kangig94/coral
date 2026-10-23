@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { mapSessionEnsureParams } from '#src/providers/claude/request-mapping.js';
+import { buildClaudeBootstrapSignature, mapSessionEnsureParams } from '#src/providers/claude/request-mapping.js';
+import { sameBootstrapSignature } from '#src/providers/claude/request-prep.js';
 import { buildClaudeExecutionPlan } from '#src/providers/claude/execution-plan.js';
 import { claudeAppServerLifecycle } from '#src/providers/claude/provider-facets.js';
 import { TEST_CLAUDE_ACCESS } from '#tests/helpers/provider-credentials.js';
@@ -42,6 +43,34 @@ function prepareBroker(options: {
 }
 
 describe('Claude appserver request mapping', () => {
+  it('keeps one bootstrap signature when a later execution resumes the same conversation', () => {
+    const ids = { sha256: () => 'system-hash' };
+    const cwd = fixtureCanonicalWorkDir('/workspace');
+    const signature = (resumeConversation: boolean, changedCwd = false) =>
+      buildClaudeBootstrapSignature(
+        { cwd: changedCwd ? fixtureCanonicalWorkDir('/elsewhere') : cwd, bypassPermissions: false },
+        ids,
+        { derivedSystemPrompt: 'system', conversationRef: 'conversation-1', projectsRoot: '/projects', model: 'opus' },
+      );
+    const opened = signature(false);
+    const ensureResume = mapSessionEnsureParams(
+      {
+        action: 'resume',
+        jobId: 'job-1',
+        cwd,
+        bypassPermissions: false,
+        conversationRef: 'conversation-1',
+        coralEnv: {},
+        model: 'opus',
+      },
+      ids,
+      { derivedSystemPrompt: 'system', controllerEnv: {}, projectsRoot: '/projects' },
+    );
+    expect(ensureResume.resumeExisting).toBe(true);
+    expect(sameBootstrapSignature(opened, ensureResume)).toBe(true);
+    expect(sameBootstrapSignature(opened, signature(true, true))).toBe(false);
+  });
+
   it('defaults the Claude broker transport to print mode in provider server identity', () => {
     const spec = withPluginRoot(() => prepareBroker({}));
 

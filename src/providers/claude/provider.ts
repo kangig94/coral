@@ -45,7 +45,6 @@ const claude: ProviderAppServer<ClaudeExecutionPlan> = (request, runtime) => {
     const actual = buildClaudeBootstrapSignature(request, runtime.ids, {
       derivedSystemPrompt: prepared.systemPrompt,
       conversationRef: request.conversationRef ?? (request.action === 'exec' ? request.jobId : undefined),
-      resumeExisting: request.action === 'resume',
       projectsRoot: runtime.executionPlan.session.projectsRoot,
       model: prepared.model,
       effort: prepared.effort,

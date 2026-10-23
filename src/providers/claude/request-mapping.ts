@@ -64,7 +64,6 @@ export function buildClaudeBootstrapSignature(
   options: {
     derivedSystemPrompt?: string;
     conversationRef?: string;
-    resumeExisting?: boolean;
     projectsRoot: string;
     model?: string;
     effort?: ProviderRequest['effort'];
@@ -116,7 +115,6 @@ export function mapSessionEnsureParams(
   const bootstrapSignature = buildClaudeBootstrapSignature(request, ids, {
     derivedSystemPrompt: options.derivedSystemPrompt,
     conversationRef,
-    resumeExisting,
     projectsRoot: options.projectsRoot,
     model: request.model,
     effort: request.effort,
