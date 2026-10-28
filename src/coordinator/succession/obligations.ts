@@ -1,5 +1,6 @@
 import type { ShutdownObligation } from '../shutdown-settlement.js';
 import type { JsonValue } from '../../infra/json-value.js';
+import type { UpgradeBlockerOwner } from '../../infra/upgrade-intent.js';
 import type { SuccessionCapabilities } from './protocol.js';
 
 export const REQUIRED_SUCCESSION_OWNERS = [
@@ -13,7 +14,7 @@ export const REQUIRED_SUCCESSION_OWNERS = [
   'kb-daemon',
   'discuss',
   'conversation-retention',
-] as const;
+] as const satisfies readonly UpgradeBlockerOwner[];
 
 export type SuccessionOwnerId = (typeof REQUIRED_SUCCESSION_OWNERS)[number];
 type SuccessionBlockerOwner = SuccessionOwnerId | 'jobs';

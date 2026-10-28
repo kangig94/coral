@@ -11,6 +11,7 @@ import {
   type UpgradeIntentChange,
 } from '#src/infra/upgrade-intent.js';
 import { upgradeIntentPath } from '#src/infra/path/coordinator.js';
+import { REQUIRED_SUCCESSION_OWNERS } from '#src/coordinator/succession/obligations.js';
 
 const build = {
   version: '0.11.0',
@@ -58,6 +59,19 @@ describe('upgrade intent', () => {
     for (const dir of directories.splice(0)) rmSync(dir, { recursive: true, force: true });
     vi.restoreAllMocks();
   });
+
+  it.each([...REQUIRED_SUCCESSION_OWNERS, 'jobs', 'session-continuation'])(
+    'should let an attempt proceed past a blocker this build owns (%s)',
+    async (owner) => {
+      const dir = runDir();
+      const blocked = { ...pendingIntent('blocked'), blockers: [{ owner, reason: 'held' }] };
+      await expect(compareAndSwapUpgradeIntent(dir, null, blocked)).resolves.toMatchObject({ kind: 'written' });
+
+      await expect(compareAndSwapUpgradeIntent(dir, 0, { ...blocked, attemptId: 'attempt-1' })).resolves.toMatchObject({
+        kind: 'written',
+      });
+    },
+  );
 
   it('classifies an unsafe persisted revision as corrupt', async () => {
     const dir = runDir();
