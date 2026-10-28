@@ -9,6 +9,8 @@ import { describe, expect, it } from 'vitest';
 import { createMonotonicClock, type MonotonicInstant } from '#src/infra/monotonic-clock.js';
 import {
   abortRecordedContainment,
+  confirmRecordedGroupMemberAbsence,
+  observeRecordedGroupMember,
   reapRecordedContainment,
   type ProcessContainmentEnvironment,
   type RecordedContainmentIdentity,
@@ -205,5 +207,39 @@ describe('recorded process containment', () => {
       { pid: 101, signal: 'SIGKILL', at: 5_375 },
     ]);
     expect(fake.now()).toBe(6_500);
+  });
+
+  const member: RecordedContainmentIdentity = { pid: 150, incarnation: testIncarnation(3), processGroupId: 100 };
+
+  it.each([
+    ['member and group gone', { groupAlive: false }, {}, 'absent'],
+    ['group outlives the member', { groupAlive: true }, {}, 'unobservable'],
+    ['group unobservable', { groupAlive: false }, { groupLiveness: 'unknown' }, 'unobservable'],
+  ] as const)('decides a group member from its own and its group liveness: %s', async (_case, state, options, kind) => {
+    const fake = createFakeEnvironment({ leaderAlive: false, providerRootAlive: false, ...state }, options);
+
+    expect(observeRecordedGroupMember({ ...member, childRoot: null }, fake.environment)).toMatchObject({ kind });
+    await expect(confirmRecordedGroupMemberAbsence(member, [], fake.environment)).resolves.toMatchObject({ kind });
+    expect(fake.signals).toEqual([]);
+  });
+
+  it('keeps a member absent only when it stays absent across the confirmation window', async () => {
+    const fake = createFakeEnvironment({ groupAlive: false, leaderAlive: false, providerRootAlive: false });
+    const observe = fake.environment.process.observeLiveness;
+    fake.environment.process.observeLiveness = (pid) =>
+      pid === -member.processGroupId && fake.now() >= 500 ? 'alive' : observe(pid);
+
+    await expect(confirmRecordedGroupMemberAbsence(member, [], fake.environment)).resolves.toMatchObject({
+      kind: 'unobservable',
+    });
+  });
+
+  it('refuses to reap a group member record without signaling anything', async () => {
+    const fake = createFakeEnvironment({ groupAlive: true, leaderAlive: false, providerRootAlive: false });
+
+    await expect(
+      reapRecordedContainment(member, [], deadlineAfter(fake.environment, 2_000), fake.environment),
+    ).rejects.toThrow(/not a detached process-group leader/u);
+    expect(fake.signals).toEqual([]);
   });
 });

@@ -30,6 +30,7 @@ import { resultPathFor } from './paths.js';
 import { type WorkflowReportPort } from './terminal/render.js';
 import { hasReadableTerminalDetail, validatedTerminal } from './terminal/identity.js';
 import { withTerminalSource } from './terminal/source.js';
+import { proveResultArtifactDurable } from './terminal/artifact.js';
 import { isCodeDefect, sourceReadFailureDisposition } from './source-read.js';
 import { composeReducers } from '../store/reducers.js';
 import { createEventBodyCodec } from '../store/event-body-codec.js';
@@ -1203,19 +1204,11 @@ export class JobLocationIndex {
     if (eligibility.age === 'expired') return true;
     if (location.resultPath === undefined) return false;
     try {
-      const fd = this.runtime.storage.openSync(location.resultPath, 'r');
-      try {
-        const artifact = this.runtime.storage.fstatSync(fd, { bigint: true });
-        if (!artifact.isFile() || artifact.size === 0n) return false;
-        this.runtime.storage.fdatasyncSync(fd);
-        const directory = dirname(location.resultPath);
-        return (
-          this.runtime.storage.syncDirectoryDurableSync(directory) &&
-          this.runtime.storage.syncDirectoryDurableSync(dirname(directory))
-        );
-      } finally {
-        this.runtime.storage.closeSync(fd);
-      }
+      return proveResultArtifactDurable(
+        this.runtime.storage,
+        location.resultPath,
+        this.runtime.paths.coral.exports.jobsRoot,
+      );
     } catch {
       return false;
     }

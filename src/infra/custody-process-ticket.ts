@@ -16,6 +16,13 @@ import {
 } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
+import {
+  observeRecordedContainment,
+  observeRecordedGroupMember,
+  type ProcessContainmentObservationEnvironment,
+  type RecordedContainmentObservation,
+  type RecordedContainmentObservationSubject,
+} from './process-containment.js';
 
 export const CUSTODY_PROCESS_TICKET_ENV = 'CORAL_CUSTODY_PROCESS_TICKET';
 
@@ -204,6 +211,30 @@ export function recordChildRoleCustodyIntent(
     rmSync(stageDir, { recursive: true, force: true });
   }
   return ticket;
+}
+
+const CHILD_ROLE_OWNERS: ReadonlySet<string> = new Set(['provider-host', 'provider-proxy-set']);
+
+/**
+ * A binding records the process group its process was spawned into. Only a child role is ever spawned into its
+ * parent's group, so only its binding may name a group it does not lead; it is then a member of that group, and its
+ * record can never be signalled through. Any other owner's binding that does not lead its group stays fail-closed.
+ */
+export function custodyBindsGroupMember(
+  owner: string,
+  process: Readonly<{ pid: number; processGroupId: number }>,
+): boolean {
+  return CHILD_ROLE_OWNERS.has(owner) && process.processGroupId !== process.pid;
+}
+
+export function observeCustodyProcess(
+  owner: string,
+  subject: RecordedContainmentObservationSubject,
+  environment: ProcessContainmentObservationEnvironment,
+): RecordedContainmentObservation {
+  return custodyBindsGroupMember(owner, subject)
+    ? observeRecordedGroupMember(subject, environment)
+    : observeRecordedContainment(subject, environment);
 }
 
 export function parseCustodyProcessTicket(value: string): CustodyProcessTicket {

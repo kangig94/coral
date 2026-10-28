@@ -14,6 +14,7 @@ import { loadJobExecutionDetails, loadJobProjectionDetail } from './read-queries
 import type { JobExecutionLocation, JobLocation, JobLocationIndex } from './location-index.js';
 import { hasReadableTerminalDetail } from './terminal/identity.js';
 import {
+  proveResultArtifactDurable,
   ResultArtifactPublicationError,
   writeResultArtifact,
   type DecodedResultArtifact,
@@ -23,7 +24,6 @@ import { resultPathFor } from './paths.js';
 import { readJobTerminalAge } from './terminal-age.js';
 import { jobRetentionCutoff } from './export-retention.js';
 import { sameEpoch } from '../store/epoch/identity.js';
-import { dirname } from 'node:path';
 import { backendLog } from '../infra/backend-log.js';
 
 export function loadRetainedCurrentJob(
@@ -247,19 +247,6 @@ export function currentResultsDurable(
       const age = readJobTerminalAge(source, end);
       if (typeof age === 'number' && age < jobRetentionCutoff(runtime)) return true;
     }
-    const fd = runtime.storage.openSync(entry.resultPath, 'r');
-    try {
-      const file = runtime.storage.fstatSync(fd, { bigint: true });
-      if (!file.isFile() || file.size === 0n) return false;
-      runtime.storage.fdatasyncSync(fd);
-      const boundary = dirname(runtime.paths.coral.exports.jobsRoot);
-      for (let directory = dirname(entry.resultPath); ; directory = dirname(directory)) {
-        if (!runtime.storage.syncDirectoryDurableSync(directory)) return false;
-        if (directory === boundary || directory === dirname(directory)) break;
-      }
-      return true;
-    } finally {
-      runtime.storage.closeSync(fd);
-    }
+    return proveResultArtifactDurable(runtime.storage, entry.resultPath, runtime.paths.coral.exports.jobsRoot);
   });
 }
