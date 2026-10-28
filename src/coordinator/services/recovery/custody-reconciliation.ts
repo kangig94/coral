@@ -27,6 +27,7 @@ import {
   bindCustodyIdentity,
   dischargeCustodyEntry,
   readCustodyLedger,
+  readCustodyLedgerAsync,
   reconcileCustodyLedger,
   type CustodyEntry,
   type CustodyIntent,
@@ -258,7 +259,7 @@ export async function reconcileFinishedCustody(input: {
     readMilliseconds: () => runtime.time.monotonicNow(),
     sleep: (milliseconds) => runtime.time.sleep(milliseconds),
   });
-  for (const entry of readCustodyLedger(runtime, runDir, budget.observation).sort((left, right) =>
+  for (const entry of (await readCustodyLedgerAsync(runtime, runDir, budget.observation)).sort((left, right) =>
     (left.kind === 'unreadable' ? left.path : left.intent.id).localeCompare(
       right.kind === 'unreadable' ? right.path : right.intent.id,
     ),

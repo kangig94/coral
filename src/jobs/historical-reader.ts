@@ -1556,6 +1556,32 @@ function acquireHistoricalRefreshGuard(
   }
 }
 
+/**
+ * A certificate may claim only the job events its sweep applied, so its high-water mark is the last job event at or
+ * before the swept frontier. Both queries must range-walk `seq`; the unary `+` keeps the planner off any index that
+ * leads with `stream_kind`, which cannot range on `seq`.
+ */
+function jobStreamHighWaterSeq(db: HistoricalDatabase, frontier: number): number {
+  return z
+    .object({ seq: z.number().int().nonnegative() })
+    .parse(
+      db
+        .prepare(
+          "SELECT COALESCE((SELECT seq FROM events WHERE seq <= ? AND +stream_kind = 'job' ORDER BY seq DESC LIMIT 1), 0) AS seq",
+        )
+        .get(frontier),
+    ).seq;
+}
+
+function hasJobEventsAfter(db: HistoricalDatabase, seq: number): boolean {
+  return (
+    z
+      .object({ found: z.number().int() })
+      .parse(db.prepare("SELECT EXISTS(SELECT 1 FROM events WHERE seq > ? AND +stream_kind = 'job') AS found").get(seq))
+      .found === 1
+  );
+}
+
 function refreshHistoricalBatch(
   index: JobLocationIndex,
   source: HistoricalEpochSource,
@@ -1568,6 +1594,17 @@ function refreshHistoricalBatch(
   const revision = index.revision(epochKey);
   if (jobIds.length === 0 && source.sweep?.revision === revision && source.sweep.frontier === frontier)
     return { kind: 'read' };
+  // Only job events change a retained location, so a frontier moved by other streams alone leaves nothing to refresh.
+  if (
+    jobIds.length === 0 &&
+    source.refreshPending === undefined &&
+    source.sweep?.revision === revision &&
+    index.certificate(epochKey) !== null &&
+    !hasJobEventsAfter(db, source.sweep.frontier)
+  ) {
+    source.sweep = { revision, frontier };
+    return { kind: 'read' };
+  }
   const requested = historicalRefreshJobIds(index, source, db, epochKey, jobIds, revision);
   let failed = false;
   for (const jobId of [...requested]) {
@@ -1786,11 +1823,7 @@ function completeHistoricalSeed(
   source.refreshAttempts = 0;
   source.sweep = { revision: index.revision(epochKey), frontier };
   if (!certifyRetiredEpoch) return { kind: 'uncertified', knownJobIds: [...observed] };
-  // Read once, where the certificate needs it, never per slice: its cost grows with the journal.
-  const highWaterSeq = z
-    .object({ seq: z.number().int().nonnegative() })
-    .parse(db.prepare("SELECT COALESCE(MAX(seq), 0) AS seq FROM events WHERE stream_kind = 'job'").get()).seq;
-  const certificate = index.certify(epochKey, highWaterSeq);
+  const certificate = index.certify(epochKey, jobStreamHighWaterSeq(db, frontier));
   return certificate === null
     ? { kind: 'unrecoverable-retained', knownJobIds: [...observed], reason: 'known-jobs-unresolved' }
     : { kind: 'complete', jobIds: certificate.jobIds };
@@ -2052,12 +2085,10 @@ function completeHistoricalRefresh(
     if (requireRetainedSourceReader(index, source.fingerprint).pendingIsUnreadable(db, jobId))
       return { kind: 'unreadable', reason: 'Historical source could not be decoded or retained' };
   }
-  const highWaterSeq = z
-    .object({ seq: z.number().int().nonnegative() })
-    .parse(db.prepare("SELECT COALESCE(MAX(seq), 0) AS seq FROM events WHERE stream_kind = 'job'").get()).seq;
+  const sweptFrontier = source.refreshPending?.frontier ?? frontier;
   index.clearUnknownLocations(epochKey);
-  index.certify(epochKey, highWaterSeq);
-  source.sweep = { revision: index.revision(epochKey), frontier: source.refreshPending?.frontier ?? frontier };
+  index.certify(epochKey, jobStreamHighWaterSeq(db, sweptFrontier));
+  source.sweep = { revision: index.revision(epochKey), frontier: sweptFrontier };
   source.refreshPending = undefined;
   return { kind: 'read' };
 }

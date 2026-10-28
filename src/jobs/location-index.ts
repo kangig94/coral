@@ -47,7 +47,7 @@ import {
 } from './historical-reader.js';
 import type { RetentionRunBudget } from '../store/retention-outcome.js';
 
-const RELEASE_PLAN_BATCH = 64;
+const RELEASE_PLAN_BATCH = 16;
 
 type ReleasePlan = Readonly<{
   artifacts: readonly string[];

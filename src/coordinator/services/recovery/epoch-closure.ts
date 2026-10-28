@@ -18,7 +18,7 @@ import {
 } from '../../../infra/process-constants.js';
 import {
   custodyLedgerDir,
-  readCustodyLedger,
+  readCustodyLedgerAsync,
   readCustodyLedgerStartMs,
   type CustodyEntry,
 } from '../../../store/custody-ledger.js';
@@ -567,7 +567,7 @@ async function certifyRetiringEpochCustody(
   const lineageKey = decodeResolvedStoreEpoch(runtime, epochKey)?.lineageKey;
   const candidate = closureCandidates(runtime).find((entry) => sameEpoch(entry.epochKey, lineageKey));
   if (candidate === undefined) return false;
-  const entries = readCustodyLedger(runtime, runtime.paths.coral.coordinator.runDir);
+  const entries = await readCustodyLedgerAsync(runtime, runtime.paths.coral.coordinator.runDir);
   const settlement = await certifyCustody(
     runtime,
     index,
@@ -658,7 +658,7 @@ export async function settleSupersededEpochClosures(
     const current = uncertifiableEpochKeys(runtime, activeEpochKey);
     return current === null || [...current].some((key) => sameEpoch(key, epochKey));
   };
-  const custody = readCustodyLedger(runtime, runtime.paths.coral.coordinator.runDir);
+  const custody = await readCustodyLedgerAsync(runtime, runtime.paths.coral.coordinator.runDir);
   const evidence: EpochClosureEvidence[] = [];
   const keepRecorded = (recording: EpochClosureRecording): void => {
     if (recording.kind === 'recorded') evidence.push(recording.evidence);

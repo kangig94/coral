@@ -12,6 +12,7 @@ import {
   bindCustodyIdentity,
   custodyLedgerDir,
   readCustodyLedger,
+  readCustodyLedgerAsync,
   reconcileCustodyLedger,
   recordCustodyIntent,
 } from '../../../src/store/custody-ledger.js';
@@ -33,6 +34,28 @@ afterEach(() => {
 });
 
 describe('custody ledger', () => {
+  it('should read the same ledger while yielding as it reads without yielding', async () => {
+    const run = runDir();
+    const runtime = runtimeFor(run);
+    vi.spyOn(runtime.storage, 'fdatasyncSync').mockImplementation(() => undefined);
+    vi.spyOn(runtime.storage, 'syncDirectoryDurableSync').mockReturnValue(true);
+    for (let entry = 0; entry < 300; entry++) {
+      recordCustodyIntent(runtime, run, {
+        effect: 'process-spawn',
+        epoch: 'epoch-2',
+        owner: 'durable-cli',
+        operationId: `job-${entry}`,
+        capsule: null,
+        bindWithinMs: 1_000,
+        nowMs: 100,
+      });
+    }
+
+    const read = await readCustodyLedgerAsync(runtime, run);
+    expect(read).toHaveLength(300);
+    expect(read).toEqual(readCustodyLedger(runtime, run));
+  });
+
   it('should hold a crash after intent until deadline, grace, and absence evidence', () => {
     const run = runDir();
     const intent = recordCustodyIntent(runtimeFor(run), run, {

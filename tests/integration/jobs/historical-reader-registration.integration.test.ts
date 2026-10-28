@@ -1,5 +1,5 @@
 import { progressVisitFromDetails } from '#tests/helpers/wait-progress.js';
-import { it, expect } from 'vitest';
+import { it, expect, vi } from 'vitest';
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createTerminalExportFixture } from '#tests/helpers/terminal-export.js';
@@ -81,6 +81,32 @@ it('reads a v0.10.16-18 hold as retrying only while a registered source of a pre
     ]);
     f.removeSource();
     expect(f.index.unknownLocationHolds()).toMatchObject([{ retryScheduled: false }]);
+  } finally {
+    f.close();
+  }
+});
+
+it('does not re-certify a retained epoch whose journal moved only on streams other than jobs', async () => {
+  const f = createTerminalExportFixture('provider', true);
+  try {
+    f.complete();
+    const jobHighWater = (
+      f.db.prepare("SELECT MAX(seq) AS seq FROM events WHERE stream_kind = 'job'").get() as { seq: number }
+    ).seq;
+    expect(f.index.certify(f.epochKey, jobHighWater)).not.toBeNull();
+    f.db
+      .prepare('INSERT INTO events(ts, type, stream_kind, stream_id, refs, body) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(new Date().toISOString(), 'workflow.completed', 'workflow', 'workflow-1', '{}', Buffer.from('{}'));
+    const entry = {
+      resolved: f.epoch,
+      epochKey: f.epochKey,
+      epochJson: { kind: 'valid', value: { build: { storeFormatFingerprint: currentCoralStoreFormat().fingerprint } } },
+    } as never;
+    registerPresentHistoricalEpochs(f.runtime, f.index, [entry], 'other-active', { remaining: 0 });
+    const certify = vi.spyOn(f.index, 'certify');
+
+    await refreshHistoricalEpochs(f.index, { remaining: 100 });
+    expect(certify).not.toHaveBeenCalled();
   } finally {
     f.close();
   }
