@@ -72,7 +72,8 @@ const blockerSchema = z
   })
   .passthrough();
 
-const knownBlockerOwners = new Set([
+/** Every blocker owner this build can read; a blocker naming any other owner was written by a newer build. */
+export const UPGRADE_BLOCKER_OWNERS = [
   'launch-admission',
   'durable-cli',
   'provider-operations',
@@ -82,6 +83,7 @@ const knownBlockerOwners = new Set([
   'workflow',
   'kb-daemon',
   'discuss',
+  'conversation-retention',
   'session-continuation',
   'child-principals',
   'jobs',
@@ -95,7 +97,11 @@ const knownBlockerOwners = new Set([
   'succession-commit',
   'succession-prepare',
   'succession-startup',
-]);
+] as const;
+
+export type UpgradeBlockerOwner = (typeof UPGRADE_BLOCKER_OWNERS)[number];
+
+const knownBlockerOwners: ReadonlySet<string> = new Set(UPGRADE_BLOCKER_OWNERS);
 
 function blockerNeedsNewerBuild(blocker: Readonly<{ owner: string; reason: string }>): boolean {
   return (
