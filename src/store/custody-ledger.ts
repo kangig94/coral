@@ -125,6 +125,8 @@ export function readCustodyLedgerStartMs(runtime: Pick<Runtime, 'storage'>, runD
   }
 }
 
+const CUSTODY_READ_BATCH = 256;
+
 function intentDir(runDir: string, id: string): string {
   return join(custodyLedgerDir(runDir), id);
 }
@@ -396,25 +398,59 @@ export function readCustodyBinding(
   return null;
 }
 
+type CustodyLedgerListing =
+  | Readonly<{ kind: 'names'; names: readonly string[] }>
+  | Readonly<{ kind: 'entries'; entries: CustodyEntry[] }>;
+
+function listCustodyLedger(runtime: Pick<Runtime, 'storage'>, runDir: string): CustodyLedgerListing {
+  let names: string[];
+  try {
+    names = runtime.storage.readdirSync(custodyLedgerDir(runDir));
+  } catch (error: unknown) {
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return { kind: 'entries', entries: [] };
+    return {
+      kind: 'entries',
+      entries: [{ kind: 'unreadable', path: custodyLedgerDir(runDir), reason: String(error) }],
+    };
+  }
+  return { kind: 'names', names: names.filter((name) => name !== 'root.v1.json' && !name.includes('.stage.')) };
+}
+
+function readObservedCustodyEntry(
+  runtime: Pick<Runtime, 'storage'>,
+  runDir: string,
+  name: string,
+  observation?: RecoveryObservation,
+): CustodyEntry {
+  const entry = readCustodyEntry(runtime, runDir, name, observation);
+  observation?.record('custody-ledger', { subjects: 1 });
+  return entry;
+}
+
 export function readCustodyLedger(
   runtime: Pick<Runtime, 'storage'>,
   runDir: string,
   observation?: RecoveryObservation,
 ): CustodyEntry[] {
-  let names: string[];
-  try {
-    names = runtime.storage.readdirSync(custodyLedgerDir(runDir));
-  } catch (error: unknown) {
-    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return [];
-    return [{ kind: 'unreadable', path: custodyLedgerDir(runDir), reason: String(error) }];
+  const listing = listCustodyLedger(runtime, runDir);
+  if (listing.kind === 'entries') return listing.entries;
+  return listing.names.map((name) => readObservedCustodyEntry(runtime, runDir, name, observation));
+}
+
+/** `readCustodyLedger` for a caller on the event loop: reading yields between batches of entries. */
+export async function readCustodyLedgerAsync(
+  runtime: Pick<Runtime, 'storage'>,
+  runDir: string,
+  observation?: RecoveryObservation,
+): Promise<CustodyEntry[]> {
+  const listing = listCustodyLedger(runtime, runDir);
+  if (listing.kind === 'entries') return listing.entries;
+  const entries: CustodyEntry[] = [];
+  for (const [position, name] of listing.names.entries()) {
+    if (position > 0 && position % CUSTODY_READ_BATCH === 0) await setImmediate();
+    entries.push(readObservedCustodyEntry(runtime, runDir, name, observation));
   }
-  return names
-    .filter((name) => name !== 'root.v1.json' && !name.includes('.stage.'))
-    .map((name) => {
-      const entry = readCustodyEntry(runtime, runDir, name, observation);
-      observation?.record('custody-ledger', { subjects: 1 });
-      return entry;
-    });
+  return entries;
 }
 
 function readCustodyEntry(

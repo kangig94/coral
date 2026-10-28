@@ -83,7 +83,8 @@ export function createStoreEpochSweepScheduler(input: {
                 {
                   signal: controller.signal,
                   observation,
-                  resultsReleased: (epochKey, closedSource) => jobLocationIndex.resultsReleased(epochKey, closedSource),
+                  resultsReleased: (epochKey, closedSource) =>
+                    jobLocationIndex.resultsReleasedAsync(epochKey, controller.signal, closedSource),
                 },
               ));
             }

@@ -39,7 +39,7 @@ export function createCustodyRetentionFixture(f: ReturnType<typeof createRetenti
         : { owner, evidence: { kind: 'incarnation', incarnation } };
     });
   f.runtime.process.kill = vi.fn(() => false);
-  const bound = (owner = 'provider-host') => {
+  const bound = (owner = 'provider-host', processGroupId = 4321) => {
     const intent = recordCustodyIntent(f.runtime, runDir, {
       effect: 'process-spawn',
       epoch: 'epoch-1',
@@ -50,7 +50,7 @@ export function createCustodyRetentionFixture(f: ReturnType<typeof createRetenti
       bindWithinMs: 1000,
     });
     bindCustodyIdentity(f.runtime, runDir, intent, {
-      process: { pid: 4321, incarnation: processIncarnationSchema.parse('linux:boot:123'), processGroupId: 4321 },
+      process: { pid: 4321, incarnation: processIncarnationSchema.parse('linux:boot:123'), processGroupId },
       capsule: null,
       observedAtMs: 200,
     });

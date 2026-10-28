@@ -4,6 +4,11 @@ import { dirname } from 'node:path';
 import { setImmediate } from 'node:timers/promises';
 import { createMonotonicClock } from '../../../infra/monotonic-clock.js';
 import {
+  CONTAINMENT_DISAPPEARANCE_CONFIRM_MS,
+  CONTAINMENT_PROCESS_CONTROL_CALL_MAX_MS,
+} from '../../../infra/process-constants.js';
+import {
+  confirmRecordedGroupMemberAbsence,
   observeRecordedContainment,
   reapRecordedContainment,
   type RecordedProcessIdentity,
@@ -16,12 +21,13 @@ import type { ResolvedStoreEpoch } from '../../../store/epoch/types.js';
 import type { RetentionRunBudget } from '../../../store/retention-outcome.js';
 import { readDurableCliControllerReceipts } from '../durable-cli-transfer.js';
 
-import { findCustodyProcessToken } from '../../../infra/custody-process-ticket.js';
+import { custodyBindsGroupMember, findCustodyProcessToken } from '../../../infra/custody-process-ticket.js';
 import { readDurableCliPreReadyOwnershipEvidence } from '../../../jobs/runtime-meta-store.js';
 import {
   bindCustodyIdentity,
   dischargeCustodyEntry,
   readCustodyLedger,
+  readCustodyLedgerAsync,
   reconcileCustodyLedger,
   type CustodyEntry,
   type CustodyIntent,
@@ -34,6 +40,12 @@ import type { Runtime } from '../../../runtime/ports.js';
 import { closureCandidates } from './epoch-closure.js';
 
 const CUSTODY_ABSENCE_GRACE_MS = 2_000;
+/**
+ * Reconciliation never signals, so a leader's deadline must fit the disappearance confirmation after observing its
+ * group, plus one observation per recorded root.
+ */
+const ABSENCE_CONFIRMATION_DEADLINE_MS =
+  CONTAINMENT_DISAPPEARANCE_CONFIRM_MS + 2 * CONTAINMENT_PROCESS_CONTROL_CALL_MAX_MS;
 const custodyClockScope = Symbol('custody-reconciliation');
 
 type CustodyRecoveryEvidence = Readonly<{
@@ -247,7 +259,7 @@ export async function reconcileFinishedCustody(input: {
     readMilliseconds: () => runtime.time.monotonicNow(),
     sleep: (milliseconds) => runtime.time.sleep(milliseconds),
   });
-  for (const entry of readCustodyLedger(runtime, runDir, budget.observation).sort((left, right) =>
+  for (const entry of (await readCustodyLedgerAsync(runtime, runDir, budget.observation)).sort((left, right) =>
     (left.kind === 'unreadable' ? left.path : left.intent.id).localeCompare(
       right.kind === 'unreadable' ? right.path : right.intent.id,
     ),
@@ -333,9 +345,15 @@ export async function reconcileFinishedCustody(input: {
               readProcessIncarnation: (pid: number, platform: NodeJS.Platform) =>
                 runtime.process.readProcessIncarnation(pid, platform),
             };
-            const observed = observeRecordedContainment({ ...identity, childRoot: null }, environment);
-            if (
-              observed.kind === 'absent' &&
+            if (custodyBindsGroupMember(entry.intent.owner, identity)) {
+              const confirmed = await confirmRecordedGroupMemberAbsence(identity, recordedRoots, {
+                ...environment,
+                clock,
+                signal,
+              });
+              absent = confirmed.kind === 'absent';
+            } else if (
+              observeRecordedContainment({ ...identity, childRoot: null }, environment).kind === 'absent' &&
               recordedRoots.every(
                 (root) => observeRecordedContainment({ ...identity, childRoot: root }, environment).kind === 'absent',
               )
@@ -343,7 +361,10 @@ export async function reconcileFinishedCustody(input: {
               const proof = await reapRecordedContainment(
                 identity,
                 recordedRoots,
-                clock.shiftMilliseconds(clock.now(), 1000),
+                clock.shiftMilliseconds(
+                  clock.now(),
+                  ABSENCE_CONFIRMATION_DEADLINE_MS + recordedRoots.length * CONTAINMENT_PROCESS_CONTROL_CALL_MAX_MS,
+                ),
                 {
                   ...environment,
                   clock,

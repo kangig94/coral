@@ -30,12 +30,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-it.each([
-  { reuse: false, keyed: false, live: false, disposition: 'closed' },
-  { reuse: true, keyed: true, live: false, disposition: 'closed' },
-  { reuse: true, keyed: false, live: false, disposition: 'unrecoverable-retained' },
-  { reuse: true, keyed: true, live: true, disposition: 'unrecoverable-retained' },
-])('settles child custody by admitted lineage: %j', async ({ reuse, keyed, live, disposition }) => {
+function createLineageFixture(live: boolean) {
   const root = mkdtempSync(join(tmpdir(), 'coral-child-lineage-'));
   roots.push(root);
   const runtime = createRealRuntime('prod', { baseDir: root });
@@ -76,6 +71,24 @@ it.each([
     recordEpochCustodyCoverage(runtime, dir, ledgerId);
     return { resolved, key, dir };
   };
+  const index = new JobLocationIndex(
+    runtime,
+    runtime.paths.coral.generation.dataRoot,
+    undefined,
+    currentCoralStoreFormat().fingerprint,
+  );
+  const resultsReleased = vi.spyOn(index, 'resultsReleasedAsync').mockResolvedValue(true);
+  vi.spyOn(index, 'unknownLocationHold').mockReturnValue(null);
+  return { runtime, runDir, publish, index, resultsReleased };
+}
+
+it.each([
+  { reuse: false, keyed: false, live: false, disposition: 'closed' },
+  { reuse: true, keyed: true, live: false, disposition: 'closed' },
+  { reuse: true, keyed: false, live: false, disposition: 'unrecoverable-retained' },
+  { reuse: true, keyed: true, live: true, disposition: 'unrecoverable-retained' },
+])('settles child custody by admitted lineage: %j', async ({ reuse, keyed, live, disposition }) => {
+  const { runtime, runDir, publish, index } = createLineageFixture(live);
   const old = publish('1');
   if (reuse) {
     protectStoreEpoch(runtime, old.resolved);
@@ -106,16 +119,75 @@ it.each([
   const entries = readCustodyLedger(runtime, runDir);
   expect(entries[0]).toMatchObject({ kind: 'bound', intent: keyed ? { epochKey: old.key } : { epoch: old.dir } });
   if (keyed) expect(forwarded).toMatchObject({ epochKey: old.key });
-  const index = new JobLocationIndex(
-    runtime,
-    runtime.paths.coral.generation.dataRoot,
-    undefined,
-    currentCoralStoreFormat().fingerprint,
-  );
-  vi.spyOn(index, 'resultsReleased').mockReturnValue(true);
-  vi.spyOn(index, 'unknownLocationHold').mockReturnValue(null);
   for (let attempt = 0; attempt < 2; attempt++) {
     const evidence = await settleSupersededEpochClosures(runtime, index, undefined, old.key);
     expect(evidence[0]).toMatchObject({ disposition, dataOutcome: 'retained' });
   }
+});
+
+it.each([
+  { live: false, disposition: 'closed' },
+  { live: true, disposition: 'unrecoverable-retained' },
+])('settles a provider host bound inside its proxy group: %j', async ({ live, disposition }) => {
+  const { runtime, runDir, publish, index } = createLineageFixture(live);
+  const old = publish('1');
+  publish('2');
+  const ticket = recordChildRoleCustodyIntent({
+    runDir,
+    epoch: old.dir,
+    epochKey: old.key,
+    owner: 'provider-host',
+    operationId: 'codex:12',
+    capsule: null,
+    nowMs: 100,
+    bindWithinMs: 10_000,
+    processGroupId: 987654000,
+  });
+  bindCustodyProcessTicket(ticket, { pid: 987654321, incarnation: 'linux:boot:2' }, 200);
+  const evidence = await settleSupersededEpochClosures(runtime, index, undefined, old.key);
+  expect(evidence[0]).toMatchObject({ disposition });
+});
+
+it.each([
+  { released: true, disposition: 'closed', closes: 1 },
+  { released: false, disposition: 'unrecoverable-retained', closes: 0 },
+])('closes a proxy set before deciding any role or host inside it: %j', async ({ released, disposition, closes }) => {
+  const { runtime, runDir, publish, index, resultsReleased } = createLineageFixture(false);
+  resultsReleased.mockResolvedValue(released);
+  const guardianGroup = 987650000;
+  const proxyGroup = 987654000;
+  let proxySetClosed = false;
+  vi.mocked(runtime.process.observeLiveness).mockImplementation((pid) =>
+    (pid === -guardianGroup || pid === -proxyGroup) && !proxySetClosed ? 'alive' : 'absent',
+  );
+  const old = publish('1');
+  publish('2');
+  const bind = (owner: string, operationId: string, pid: number, processGroupId: number | null) => {
+    const ticket = recordChildRoleCustodyIntent({
+      runDir,
+      epoch: old.dir,
+      epochKey: old.key,
+      owner,
+      operationId,
+      capsule: null,
+      nowMs: 100,
+      bindWithinMs: 10_000,
+      processGroupId,
+    });
+    bindCustodyProcessTicket(ticket, { pid, incarnation: 'linux:boot:2' }, 200);
+  };
+  for (let host = 1; host <= 6; host++) bind('provider-host', `codex:${host}`, proxyGroup + host, proxyGroup);
+  bind('provider-proxy-set', 'set-1:proxy', proxyGroup, null);
+  bind('provider-proxy-set', 'set-1:reaper', guardianGroup + 1, guardianGroup);
+  bind('provider-proxy-set', 'set-1:guardian', guardianGroup, null);
+  const closeProxySet = vi.fn(async () => {
+    proxySetClosed = true;
+    return true;
+  });
+
+  const evidence = await settleSupersededEpochClosures(runtime, index, undefined, old.key, undefined, closeProxySet);
+
+  expect(evidence[0]).toMatchObject({ disposition });
+  expect(closeProxySet).toHaveBeenCalledTimes(closes);
+  expect(resultsReleased).toHaveBeenCalledOnce();
 });

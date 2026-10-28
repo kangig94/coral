@@ -64,6 +64,36 @@ it.each(['live', 'unknown', 'group-live', 'missing-result', 'unknown-owner'] as 
   },
 );
 
+it('discharges a finished owner whose absence observations take time', async () => {
+  const f = fixture();
+  f.bound();
+  let monotonic = 0n;
+  f.runtime.time.monotonicNow = () => monotonic;
+  f.runtime.time.sleep = async (ms) => {
+    monotonic += BigInt(ms);
+  };
+  f.runtime.process.observeLiveness = () => {
+    monotonic += 1n;
+    return 'absent';
+  };
+  await f.reconcile();
+  expect(readCustodyLedger(f.runtime, f.runDir)).toMatchObject([{ kind: 'absent' }]);
+});
+
+it.each([
+  ['discharges', 'absent'],
+  ['retains', 'alive'],
+] as const)('%s a group-member binding whose group is %s', async (verdict, groupLiveness) => {
+  const f = fixture();
+  f.bound('provider-host', 9876);
+  f.runtime.process.observeLiveness = (pid) => (pid === -9876 ? groupLiveness : 'absent');
+  await f.reconcile();
+  expect(readCustodyLedger(f.runtime, f.runDir)).toMatchObject([
+    { kind: verdict === 'discharges' ? 'absent' : 'bound' },
+  ]);
+  expect(f.runtime.process.kill).not.toHaveBeenCalled();
+});
+
 it('does not discharge a binding from age, an ordinary absence observation, or mismatched exact evidence', async () => {
   const f = fixture();
   const bound = f.bound();

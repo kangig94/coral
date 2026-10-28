@@ -7,6 +7,7 @@ import {
   decodeDurableCliProvisionalProcessRuntimeMeta,
 } from '../../../jobs/runtime-meta.js';
 import { observeRecordedContainment, reapRecordedContainment } from '../../../infra/process-containment.js';
+import { observeCustodyProcess } from '../../../infra/custody-process-ticket.js';
 import { createMonotonicClock } from '../../../infra/monotonic-clock.js';
 import { isProcessIncarnation, type ProcessIncarnation } from '../../../infra/node-process.js';
 import {
@@ -17,7 +18,7 @@ import {
 } from '../../../infra/process-constants.js';
 import {
   custodyLedgerDir,
-  readCustodyLedger,
+  readCustodyLedgerAsync,
   readCustodyLedgerStartMs,
   type CustodyEntry,
 } from '../../../store/custody-ledger.js';
@@ -197,7 +198,8 @@ function observePreCoverageCustody(
     if (entry.binding.process === null) return { kind: 'undecidable' };
     const process = entry.binding.process;
     if (!isProcessIncarnation(process.incarnation)) return { kind: 'undecidable' };
-    const observed = observeRecordedContainment(
+    const observed = observeCustodyProcess(
+      entry.intent.owner,
       { pid: process.pid, incarnation: process.incarnation, processGroupId: process.processGroupId, childRoot: null },
       {
         process: runtime.process,
@@ -280,10 +282,7 @@ type AbsenceProof =
 type RecordedProcess = Readonly<{ pid: number; incarnation: ProcessIncarnation; processGroupId: number }>;
 type AbsenceDecisionContext = Readonly<{
   runtime: Runtime;
-  index: JobLocationIndex;
-  jobEpochKey: string;
   signal: AbortSignal;
-  closeProxySet: CloseProxySet | undefined;
   absence: AbsenceProof;
 }>;
 
@@ -293,7 +292,7 @@ const ABSENT: RecordedAbsence = { kind: 'absent' };
 const NOT_PROVEN_ABSENT: RecordedAbsence = { kind: 'not-proven-absent' };
 
 async function decideRecordedAbsence(
-  { runtime, index, jobEpochKey, signal, closeProxySet, absence }: AbsenceDecisionContext,
+  { runtime, signal, absence }: AbsenceDecisionContext,
   entry: Extract<CustodyEntry, { kind: 'bound' }>,
   identity: RecordedProcess,
 ): Promise<RecordedAbsence> {
@@ -327,27 +326,8 @@ async function decideRecordedAbsence(
       return NOT_PROVEN_ABSENT;
     }
   }
-  if (entry.intent.owner === 'provider-proxy-set' && closeProxySet !== undefined) {
-    let resultsReady = false;
-    try {
-      resultsReady = index.resultsReleased(jobEpochKey);
-    } catch {
-      // Unreadable results keep the owner from requesting proxy containment.
-    }
-    if (resultsReady) {
-      const proxyInstanceId = entry.intent.operationId.endsWith(':guardian')
-        ? entry.intent.operationId.slice(0, -':guardian'.length)
-        : null;
-      if (proxyInstanceId !== null) {
-        try {
-          await closeProxySet(proxyInstanceId, identity, signal);
-        } catch {
-          // Failed proxy containment must not settle custody; process observation still decides.
-        }
-      }
-    }
-  }
-  const observed = observeRecordedContainment(
+  const observed = observeCustodyProcess(
+    entry.intent.owner,
     { ...identity, childRoot: null },
     {
       process: runtime.process,
@@ -374,6 +354,32 @@ function providerOperationCustodyReason(
     : `provider operation ${entry.intent.operationId} awaits owner terminal result`;
 }
 
+/**
+ * Every role of a proxy set, and every host bound inside its group, is absent only once the set closes, and only its
+ * guardian's entry can close it: all sets close before any entry is decided, whatever order the ledger lists them in.
+ */
+async function closeRecordedProxySets(
+  entries: readonly CustodyEntry[],
+  closeProxySet: CloseProxySet,
+  signal: AbortSignal,
+): Promise<void> {
+  for (const entry of entries) {
+    if (entry.kind !== 'bound' || entry.intent.owner !== 'provider-proxy-set') continue;
+    const process = entry.binding.process;
+    if (!entry.intent.operationId.endsWith(':guardian') || process === null) continue;
+    if (!isProcessIncarnation(process.incarnation)) continue;
+    try {
+      await closeProxySet(
+        entry.intent.operationId.slice(0, -':guardian'.length),
+        { pid: process.pid, incarnation: process.incarnation },
+        signal,
+      );
+    } catch {
+      // Failed proxy containment must not settle custody; process observation still decides.
+    }
+  }
+}
+
 async function certifyMatchedCustody(options: {
   runtime: Runtime;
   index: JobLocationIndex;
@@ -387,6 +393,7 @@ async function certifyMatchedCustody(options: {
   const { runtime, index, candidate, matching, signal, closeProxySet, jobEpochKey, absence } = options;
   const receipts = readDurableCliControllerReceipts(runtime, runtime.paths.coral.coordinator.runDir);
   const obligations: EpochClosureEvidence['obligations'][number][] = [];
+  if (closeProxySet !== undefined) await closeRecordedProxySets(matching, closeProxySet, signal);
   for (const entry of matching) {
     if (entry.kind === 'unreadable') {
       return { executionDischarge: 'undecidable', obligations, reason: 'custody ledger is unreadable' };
@@ -470,11 +477,7 @@ async function certifyMatchedCustody(options: {
       };
     }
     const identity = { pid: process.pid, incarnation: process.incarnation, processGroupId: process.processGroupId };
-    const recorded = await decideRecordedAbsence(
-      { runtime, index, jobEpochKey, signal, closeProxySet, absence },
-      entry,
-      identity,
-    );
+    const recorded = await decideRecordedAbsence({ runtime, signal, absence }, entry, identity);
     if (recorded.kind !== 'absent') {
       return {
         executionDischarge: 'undecidable',
@@ -564,7 +567,7 @@ async function certifyRetiringEpochCustody(
   const lineageKey = decodeResolvedStoreEpoch(runtime, epochKey)?.lineageKey;
   const candidate = closureCandidates(runtime).find((entry) => sameEpoch(entry.epochKey, lineageKey));
   if (candidate === undefined) return false;
-  const entries = readCustodyLedger(runtime, runtime.paths.coral.coordinator.runDir);
+  const entries = await readCustodyLedgerAsync(runtime, runtime.paths.coral.coordinator.runDir);
   const settlement = await certifyCustody(
     runtime,
     index,
@@ -644,6 +647,7 @@ export async function settleSupersededEpochClosures(
   activeEpochKey?: string,
   closeProxySet?: CloseProxySet,
 ): Promise<EpochClosureEvidence[]> {
+  const closureSignal = signal ?? new AbortController().signal;
   const stateRoot = runtime.paths.coral.generation.dataRoot;
   const candidates = closureCandidates(runtime);
   if (candidates.length === 0) return [];
@@ -654,7 +658,7 @@ export async function settleSupersededEpochClosures(
     const current = uncertifiableEpochKeys(runtime, activeEpochKey);
     return current === null || [...current].some((key) => sameEpoch(key, epochKey));
   };
-  const custody = readCustodyLedger(runtime, runtime.paths.coral.coordinator.runDir);
+  const custody = await readCustodyLedgerAsync(runtime, runtime.paths.coral.coordinator.runDir);
   const evidence: EpochClosureEvidence[] = [];
   const keepRecorded = (recording: EpochClosureRecording): void => {
     if (recording.kind === 'recorded') evidence.push(recording.evidence);
@@ -684,7 +688,7 @@ export async function settleSupersededEpochClosures(
     return evidence;
   }
   for (const candidate of candidates) {
-    if (signal?.aborted) break;
+    if (closureSignal.aborted) break;
     if (subjectKey !== undefined && !sameEpoch(subjectKey, candidate.epochKey)) continue;
     if (isUncertifiable(candidate.epochKey)) continue;
     const jobEpochKey = lineageJobEpochKey(
@@ -697,7 +701,7 @@ export async function settleSupersededEpochClosures(
     const previous = read.kind === 'recorded' ? read.evidence : null;
     let dataOutcome: EpochClosureEvidence['dataOutcome'];
     try {
-      dataOutcome = index.resultsReleased(jobEpochKey)
+      dataOutcome = (await index.resultsReleasedAsync(jobEpochKey, closureSignal))
         ? 'retained'
         : index.unknownLocationHold(jobEpochKey) !== null
           ? 'unreadable'
@@ -705,6 +709,7 @@ export async function settleSupersededEpochClosures(
     } catch {
       dataOutcome = 'unreadable';
     }
+    if (closureSignal.aborted) break;
     if (previous?.disposition === 'closed') {
       keepRecorded(
         previous.dataOutcome === dataOutcome
@@ -733,8 +738,8 @@ export async function settleSupersededEpochClosures(
           candidate,
           custody,
           ambiguousOriginalPath,
-          signal ?? new AbortController().signal,
-          closeProxySet,
+          closureSignal,
+          dataOutcome === 'retained' ? closeProxySet : undefined,
           jobEpochKey,
         );
     if (isUncertifiable(candidate.epochKey)) continue;

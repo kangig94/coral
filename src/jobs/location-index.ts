@@ -1,4 +1,4 @@
-import { currentResultsDurable } from './retained-current.js';
+import { currentResultArtifacts } from './retained-current.js';
 import { executionRetryStatusSchema } from './records.js';
 import type { RecoveryObservation } from '../recovery/phase-observation.js';
 import { createHash } from 'node:crypto';
@@ -30,6 +30,7 @@ import { resultPathFor } from './paths.js';
 import { type WorkflowReportPort } from './terminal/render.js';
 import { hasReadableTerminalDetail, validatedTerminal } from './terminal/identity.js';
 import { withTerminalSource } from './terminal/source.js';
+import { proveResultArtifactsDurable, proveResultArtifactsDurableAsync } from './terminal/artifact.js';
 import { isCodeDefect, sourceReadFailureDisposition } from './source-read.js';
 import { composeReducers } from '../store/reducers.js';
 import { createEventBodyCodec } from '../store/event-body-codec.js';
@@ -45,6 +46,17 @@ import {
   type HistoricalSourceReader,
 } from './historical-reader.js';
 import type { RetentionRunBudget } from '../store/retention-outcome.js';
+
+const RELEASE_PLAN_BATCH = 16;
+
+type ReleasePlan = Readonly<{
+  artifacts: readonly string[];
+  /** Null when a planned record's stat cannot show it unchanged, which makes the plan unrememberable. */
+  locations: ReadonlyMap<string, string> | null;
+  fromSource: boolean;
+}>;
+
+type RememberedReleasePlan = ReleasePlan & Readonly<{ revision: number; locations: ReadonlyMap<string, string> }>;
 
 const subjectSchema = z
   .object({
@@ -347,6 +359,7 @@ export class JobLocationIndex {
   private locationsStamp: string | undefined;
   private readonly epochRevisions = new Map<string, number>();
   private readonly certificates = new Map<string, { stamp: string; value: JobLocationCertificate | null }>();
+  private readonly releasePlans = new Map<string, RememberedReleasePlan>();
   private locationsUnreadable: Array<{ file: string; epochKey: string | null }> = [];
   private readonly locationsByEpoch = new Map<string, JobLocation[]>();
   private readonly runtime: Runtime;
@@ -1146,28 +1159,153 @@ export class JobLocationIndex {
     return certificate?.revision === revision ? certificate : null;
   }
 
-  /** A record that cannot be read proves nothing, so release then stays unproven rather than failing its caller. */
+  /**
+   * A record that cannot be read proves nothing, so release then stays unproven rather than failing its caller. Forces
+   * on the calling thread.
+   */
   resultsReleased(epochKey: string, closedSource?: ResolvedStoreEpoch): boolean {
     try {
-      return this.withRevisionLock(epochKey, () => {
-        const certificate = this.certificate(epochKey);
-        if (certificate === null) return false;
+      const certificate = this.withRevisionLock(epochKey, () => this.certificate(epochKey));
+      if (certificate === null) return false;
+      const prove = (plan: ReleasePlan): boolean => {
         try {
-          return (
-            withTerminalSource(
-              this.runtime,
-              epochKey,
-              (db) => certificate.jobIds.every((jobId) => this.resultDurable(jobId, db)),
-              closedSource,
-            ) ?? certificate.jobIds.every((jobId) => this.resultDurable(jobId, null))
-          );
+          return proveResultArtifactsDurable(this.runtime.storage, plan.artifacts, this.jobsRoot);
         } catch {
-          return certificate.jobIds.every((jobId) => this.resultDurable(jobId, null));
+          return false;
         }
-      });
+      };
+      const remembered = this.takeRememberedReleasePlan(epochKey, certificate, closedSource);
+      if (remembered !== null && prove(remembered)) return this.confirmRelease(epochKey, certificate, remembered);
+      const plan = this.planRelease(epochKey, certificate.jobIds, closedSource);
+      return plan !== null && prove(plan) && this.confirmRelease(epochKey, certificate, plan);
     } catch (error) {
       if (isCodeDefect(error)) throw error;
       return false;
+    }
+  }
+
+  /** Every force is awaited off the event loop. */
+  async resultsReleasedAsync(
+    epochKey: string,
+    signal: AbortSignal,
+    closedSource?: ResolvedStoreEpoch,
+  ): Promise<boolean> {
+    try {
+      const certificate = this.withRevisionLock(epochKey, () => this.certificate(epochKey));
+      if (certificate === null) return false;
+      const prove = async (plan: ReleasePlan): Promise<boolean> => {
+        try {
+          return await proveResultArtifactsDurableAsync(this.runtime.storage, plan.artifacts, this.jobsRoot, signal);
+        } catch {
+          return false;
+        }
+      };
+      const remembered = this.takeRememberedReleasePlan(epochKey, certificate, closedSource);
+      if (remembered !== null && (await prove(remembered)))
+        return this.confirmRelease(epochKey, certificate, remembered);
+      const plan = await this.planReleaseYielding(epochKey, certificate.jobIds, signal, closedSource);
+      return plan !== null && (await prove(plan)) && this.confirmRelease(epochKey, certificate, plan);
+    } catch (error) {
+      if (isCodeDefect(error)) throw error;
+      return false;
+    }
+  }
+
+  /** Planning and forcing run unlocked, so release holds only if the certificate they began from is still current. */
+  private confirmRelease(epochKey: string, certificate: JobLocationCertificate, plan: ReleasePlan): boolean {
+    return this.withRevisionLock(epochKey, () => {
+      if (this.certificate(epochKey)?.revision !== certificate.revision) return false;
+      if (plan.locations !== null)
+        this.releasePlans.set(epochIdentity(epochKey), {
+          ...plan,
+          revision: certificate.revision,
+          locations: plan.locations,
+        });
+      return true;
+    });
+  }
+
+  /**
+   * Taking a plan forgets it until `confirmRelease` remembers it again. A record rewritten without advancing its
+   * epoch's revision, such as one no longer readable, or a refuted source the plan read from invalidates it.
+   */
+  private takeRememberedReleasePlan(
+    epochKey: string,
+    certificate: JobLocationCertificate,
+    closedSource?: ResolvedStoreEpoch,
+  ): ReleasePlan | null {
+    const remembered = this.releasePlans.get(epochIdentity(epochKey));
+    this.releasePlans.delete(epochIdentity(epochKey));
+    if (remembered?.revision !== certificate.revision) return null;
+    for (const [jobId, stamp] of remembered.locations) if (this.locationStamp(jobId) !== stamp) return null;
+    if (remembered.fromSource && !this.sourceConfirmed(epochKey, closedSource)) return null;
+    return remembered;
+  }
+
+  private sourceConfirmed(epochKey: string, closedSource?: ResolvedStoreEpoch): boolean {
+    try {
+      return withTerminalSource(this.runtime, epochKey, () => true, closedSource) === true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Null when the record's stat cannot show it unchanged. */
+  private locationStamp(jobId: string): string | null {
+    try {
+      const stat = this.runtime.storage.lstatSync(this.jobPath(jobId), { bigint: true });
+      return stat.ctimeNs === undefined ? null : `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
+    } catch {
+      return null;
+    }
+  }
+
+  private async planReleaseYielding(
+    epochKey: string,
+    jobIds: readonly string[],
+    signal: AbortSignal,
+    closedSource?: ResolvedStoreEpoch,
+  ): Promise<ReleasePlan | null> {
+    const artifacts: string[] = [];
+    const locations = new Map<string, string>();
+    let stamped = true;
+    let fromSource = false;
+    for (let start = 0; start < jobIds.length; start += RELEASE_PLAN_BATCH) {
+      const batch = this.planRelease(epochKey, jobIds.slice(start, start + RELEASE_PLAN_BATCH), closedSource);
+      if (batch === null) return null;
+      artifacts.push(...batch.artifacts);
+      if (batch.locations === null) stamped = false;
+      else for (const [jobId, stamp] of batch.locations) locations.set(jobId, stamp);
+      fromSource ||= batch.fromSource;
+      await setImmediate();
+      if (signal.aborted) return null;
+    }
+    return { artifacts, locations: stamped ? locations : null, fromSource };
+  }
+
+  /** Each record is stamped before it is read, so any later change to it is visible to the stamp. */
+  private planRelease(
+    epochKey: string,
+    jobIds: readonly string[],
+    closedSource?: ResolvedStoreEpoch,
+  ): ReleasePlan | null {
+    const plan = (source: Database | null): ReleasePlan | null => {
+      const artifacts: string[] = [];
+      let locations: Map<string, string> | null = new Map();
+      for (const jobId of jobIds) {
+        const stamp = this.locationStamp(jobId);
+        if (stamp === null) locations = null;
+        else locations?.set(jobId, stamp);
+        const job = this.releaseArtifacts(jobId, source);
+        if (job === null) return null;
+        artifacts.push(...job);
+      }
+      return { artifacts, locations, fromSource: source !== null };
+    };
+    try {
+      return withTerminalSource(this.runtime, epochKey, plan, closedSource) ?? plan(null);
+    } catch {
+      return plan(null);
     }
   }
 
@@ -1176,6 +1314,15 @@ export class JobLocationIndex {
    * the job's intact source, discharges it without a file; anything else needs a durable nonempty file.
    */
   resultDurable(jobId: string, source?: Database | null): boolean {
+    const artifacts = this.releaseArtifacts(jobId, source);
+    try {
+      return artifacts !== null && proveResultArtifactsDurable(this.runtime.storage, artifacts, this.jobsRoot);
+    } catch {
+      return false;
+    }
+  }
+
+  private releaseArtifacts(jobId: string, source?: Database | null): readonly string[] | null {
     const location = this.read(jobId);
     if (
       location === null ||
@@ -1183,42 +1330,25 @@ export class JobLocationIndex {
       location.openExecution !== undefined ||
       !hasReadableTerminalDetail(location)
     ) {
-      return false;
+      return null;
     }
     if (location.executions !== undefined) {
       try {
         return source === undefined
           ? (withTerminalSource(this.runtime, location.epochKey, (db) =>
-              currentResultsDurable(this.runtime, location, db),
-            ) ?? currentResultsDurable(this.runtime, location, null))
-          : currentResultsDurable(this.runtime, location, source);
+              currentResultArtifacts(this.runtime, location, db),
+            ) ?? currentResultArtifacts(this.runtime, location, null))
+          : currentResultArtifacts(this.runtime, location, source);
       } catch {
-        return false;
+        return null;
       }
     }
     const eligibility =
       source === undefined
         ? this.terminalEligibility(jobId)
         : this.sourceEligibility(location, (read) => (source === null ? null : read(source)));
-    if (eligibility.age === 'expired') return true;
-    if (location.resultPath === undefined) return false;
-    try {
-      const fd = this.runtime.storage.openSync(location.resultPath, 'r');
-      try {
-        const artifact = this.runtime.storage.fstatSync(fd, { bigint: true });
-        if (!artifact.isFile() || artifact.size === 0n) return false;
-        this.runtime.storage.fdatasyncSync(fd);
-        const directory = dirname(location.resultPath);
-        return (
-          this.runtime.storage.syncDirectoryDurableSync(directory) &&
-          this.runtime.storage.syncDirectoryDurableSync(dirname(directory))
-        );
-      } finally {
-        this.runtime.storage.closeSync(fd);
-      }
-    } catch {
-      return false;
-    }
+    if (eligibility.age === 'expired') return [];
+    return location.resultPath === undefined ? null : [location.resultPath];
   }
 
   resultPathFor(jobId: string, execution: number): string {

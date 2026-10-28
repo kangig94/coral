@@ -1075,6 +1075,10 @@ export class InMemoryStorage implements StoragePort {
     return this.syncDirectoryDurableSync(path);
   }
 
+  async syncFileDataDurable(path: string): Promise<boolean> {
+    return this.fileNode(normalizePathForStorage(path)) !== undefined;
+  }
+
   chmodSync(path: string, mode: number): void {
     const normalized = normalizePathForStorage(path);
     const file = this.fileNode(normalized);

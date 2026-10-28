@@ -3,7 +3,7 @@ import { dirname, join } from 'node:path';
 import { z } from 'zod';
 
 import type { ValidatedHandoffTarget } from '../../infra/handoff-target.js';
-import { observeRecordedContainment } from '../../infra/process-containment.js';
+import { observeCustodyProcess } from '../../infra/custody-process-ticket.js';
 import {
   registerPresentHistoricalEpochs,
   seedHistoricalEpoch,
@@ -138,7 +138,8 @@ export function prepareRetainedControllerHandoff(
     if (entry.kind !== 'bound') continue;
     if (entry.intent.effect === 'provider-operation-publication') continue;
     if (entry.binding.process === null) return null;
-    const observation = observeRecordedContainment(
+    const observation = observeCustodyProcess(
+      entry.intent.owner,
       { ...entry.binding.process, childRoot: null },
       {
         process: runtime.process,
@@ -276,7 +277,8 @@ function prepareRetainedControllerHandoffForLineage(
           process.processGroupId !== latest.runtimeMeta.processGroupId)
       )
         continue;
-      const observation = observeRecordedContainment(
+      const observation = observeCustodyProcess(
+        entry.intent.owner,
         {
           pid: process.pid,
           incarnation: process.incarnation,
@@ -351,7 +353,8 @@ function observeStartupRetirementCustody(
         custodySettled = false;
         break;
       }
-      const observation = observeRecordedContainment(
+      const observation = observeCustodyProcess(
+        entry.intent.owner,
         {
           pid: process.pid,
           incarnation: process.incarnation,

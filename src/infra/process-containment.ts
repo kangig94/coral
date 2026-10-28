@@ -44,6 +44,17 @@ export type RecordedContainmentIdentity = RecordedProcessIdentity &
     processGroupId: number;
   }>;
 
+/** A recorded process inside a process group it does not lead. */
+export type RecordedGroupMember = RecordedProcessIdentity &
+  Readonly<{
+    processGroupId: number;
+  }>;
+
+export type RecordedGroupMemberSubject = RecordedGroupMember &
+  Readonly<{
+    childRoot: RecordedProcessIdentity | null;
+  }>;
+
 export type RecordedContainmentObservationSubject = RecordedContainmentIdentity &
   Readonly<{
     childRoot: RecordedProcessIdentity | null;
@@ -486,6 +497,61 @@ export function observeRecordedContainment(
   }
 }
 
+/**
+ * A group member records its own identity and the group it ran in, never its group leader's incarnation: the group
+ * can be proven gone but never attributed, so no member observation may authorize a signal.
+ */
+export function observeRecordedGroupMember(
+  subject: RecordedGroupMemberSubject,
+  environment: ProcessContainmentObservationEnvironment,
+): RecordedContainmentObservation {
+  try {
+    assertProcessIdentity(subject, 'member');
+    assertPositiveSafeInteger(subject.processGroupId, 'member.processGroupId');
+    const processes = subject.childRoot === null ? [subject] : [subject, subject.childRoot];
+    if (processes.some((identity) => observeProcessIdentity(identity, environment) === 'present')) {
+      return { kind: 'alive' };
+    }
+    const groupLiveness = environment.process.observeLiveness(-subject.processGroupId);
+    if (groupLiveness === 'absent') return { kind: 'absent' };
+    return {
+      kind: 'unobservable',
+      reason:
+        groupLiveness === 'unknown'
+          ? 'the recorded process group could not be observed'
+          : 'the recorded process group survives its member and cannot be attributed to it',
+    };
+  } catch (error: unknown) {
+    return {
+      kind: 'unobservable',
+      reason: error instanceof Error ? error.message : 'recorded group member observation failed',
+    };
+  }
+}
+
+/** Member absence counts only when it holds for the member and every recorded root across the whole window. */
+export async function confirmRecordedGroupMemberAbsence<Scope extends symbol>(
+  member: RecordedGroupMember,
+  recordedRoots: readonly RecordedProcessIdentity[],
+  environment: ProcessContainmentObservationEnvironment &
+    Readonly<{ clock: MonotonicClock<Scope>; signal?: AbortSignal }>,
+): Promise<RecordedContainmentObservation> {
+  const subjects = [null, ...recordedRoots].map((childRoot) => ({ ...member, childRoot }));
+  const confirmationDeadline = environment.clock.shiftMilliseconds(
+    environment.clock.now(),
+    CONTAINMENT_DISAPPEARANCE_CONFIRM_MS,
+  );
+  while (true) {
+    const notAbsent = subjects
+      .map((subject) => observeRecordedGroupMember(subject, environment))
+      .find((observed) => observed.kind !== 'absent');
+    if (notAbsent !== undefined) return notAbsent;
+    const remainingMs = environment.clock.millisecondsBetween(environment.clock.now(), confirmationDeadline);
+    if (remainingMs <= 0) return { kind: 'absent' };
+    await sleepWhileAuthorized(Math.min(ABSENCE_POLL_MS, remainingMs), environment);
+  }
+}
+
 function assertSignalCallWithinBounds<Scope extends symbol>(
   callStartedAt: MonotonicInstant<Scope>,
   exitDeadline: MonotonicInstant<Scope>,
@@ -676,7 +742,7 @@ export function abortRecordedContainment<Scope extends symbol>(
 
 async function sleepWhileAuthorized<Scope extends symbol>(
   milliseconds: number,
-  environment: ProcessContainmentEnvironment<Scope>,
+  environment: Pick<ProcessContainmentEnvironment<Scope>, 'clock' | 'signal'>,
 ): Promise<void> {
   const signal = environment.signal;
   if (signal === undefined) {
