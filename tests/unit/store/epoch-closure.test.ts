@@ -73,7 +73,7 @@ describe('epoch closure reclamation', () => {
     const root = runtime.paths.coral.store.dbDir;
     for (const epoch of ['1', '2', '3']) publish(runtime, epoch);
 
-    await sweepStoreEpochsPostReady(runtime, resolvedStoreEpoch(root, '3'), { resultsReleased: () => true });
+    await sweepStoreEpochsPostReady(runtime, resolvedStoreEpoch(root, '3'), { resultsReleased: async () => true });
 
     expect(existsSync(epochDirectory(root, '1'))).toBe(true);
     expect(existsSync(epochDirectory(root, '3'))).toBe(true);
@@ -99,7 +99,7 @@ describe('epoch closure reclamation', () => {
     });
 
     await sweepStoreEpochsPostReady(runtime, resolvedStoreEpoch(root, '3'), {
-      resultsReleased: (epochKey) => epochKey === jobKey,
+      resultsReleased: async (epochKey) => epochKey === jobKey,
     });
 
     expect(existsSync(epochDirectory(root, '1'))).toBe(false);
@@ -125,6 +125,44 @@ it('retains an unsafe closure timestamp as unreadable', () => {
   const path = join(stateRoot, 'epoch-closure.v1', `${runtime.ids.sha256(evidence.epochKey)}.json`);
   writeFileSync(path, JSON.stringify({ ...evidence, observedAtMs: Number.MAX_SAFE_INTEGER + 1 }));
   expect(observeEpochClosure(runtime, stateRoot, evidence.epochKey).kind).toBe('unreadable');
+});
+
+it('keeps an unchanged closure record instead of rewriting it for a newer observation', () => {
+  const runtime = harness();
+  const stateRoot = runtime.paths.coral.generation.dataRoot;
+  const evidence = {
+    version: 'v1' as const,
+    epochKey: 'lineage:1',
+    disposition: 'unrecoverable-retained' as const,
+    dataOutcome: 'unknown' as const,
+    executionDischarge: 'undecidable' as const,
+    obligations: [],
+    reason: 'awaits custody',
+    observedAtMs: 1,
+  };
+  recordEpochClosure(runtime, stateRoot, evidence);
+  const sync = vi.spyOn(runtime.storage, 'syncDirectoryDurableSync');
+
+  const rename = vi.spyOn(runtime.storage, 'renameSync');
+  recordEpochClosure(runtime, stateRoot, { ...evidence, observedAtMs: 2 });
+  expect(rename).not.toHaveBeenCalled();
+  expect(sync).not.toHaveBeenCalled();
+
+  const restarted: Runtime = { ...runtime, storage: new Proxy(runtime.storage, {}) };
+  recordEpochClosure(restarted, stateRoot, { ...evidence, observedAtMs: 3 });
+  recordEpochClosure(restarted, stateRoot, { ...evidence, observedAtMs: 4 });
+  expect(rename).not.toHaveBeenCalled();
+  expect(sync).toHaveBeenCalledOnce();
+  expect(observeEpochClosure(runtime, stateRoot, evidence.epochKey)).toMatchObject({
+    kind: 'recorded',
+    evidence: { observedAtMs: 1 },
+  });
+
+  recordEpochClosure(runtime, stateRoot, { ...evidence, reason: 'still awaits custody', observedAtMs: 5 });
+  expect(observeEpochClosure(runtime, stateRoot, evidence.epochKey)).toMatchObject({
+    kind: 'recorded',
+    evidence: { reason: 'still awaits custody', observedAtMs: 5 },
+  });
 });
 
 it('excludes an active full JSON key from lineage closure candidates', async () => {

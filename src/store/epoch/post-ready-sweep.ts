@@ -163,13 +163,15 @@ function validClosedReapingMarker(marker: unknown): marker is { version: 'v1'; e
   );
 }
 
-function closedReapingDirectoryRemovable(
+type ResultsReleased = (epochKey: string, closedSource?: ResolvedStoreEpoch) => Promise<boolean>;
+
+async function closedReapingDirectoryRemovable(
   runtime: Runtime,
   dbDir: string,
   path: string,
   markerPath: string,
-  resultsReleased: (epochKey: string, closedSource?: ResolvedStoreEpoch) => boolean,
-): boolean {
+  resultsReleased: ResultsReleased,
+): Promise<boolean> {
   try {
     const marker = JSON.parse(runtime.storage.readFileSync(markerPath, 'utf-8')) as unknown;
     if (
@@ -186,14 +188,13 @@ function closedReapingDirectoryRemovable(
         marker.epochKey,
       ) ||
       observeStorePath(runtime.storage, epochDirectory(dbDir, marker.epoch)) !== 'absent' ||
-      closureCapability(runtime, runtime.paths.coral.generation.dataRoot, marker.epochKey) === null ||
-      !resultsReleased(lineageJobEpochKey(dbDir, marker.epochKey), {
-        ...resolvedStoreEpoch(dbDir, marker.epoch),
-        path: join(path, STORE_DATABASE_FILE_NAME),
-      })
+      closureCapability(runtime, runtime.paths.coral.generation.dataRoot, marker.epochKey) === null
     )
       return false;
-    return true;
+    return await resultsReleased(lineageJobEpochKey(dbDir, marker.epochKey), {
+      ...resolvedStoreEpoch(dbDir, marker.epoch),
+      path: join(path, STORE_DATABASE_FILE_NAME),
+    });
   } catch {
     return false;
   }
@@ -204,7 +205,7 @@ async function removeReapingStoreDirectory(
   dbDir: string,
   path: string,
   root: ProvenSweepDirectory,
-  resultsReleased: ((epochKey: string, closedSource?: ResolvedStoreEpoch) => boolean) | undefined,
+  resultsReleased: ResultsReleased | undefined,
 ): Promise<AbandonedDirectoryRemoval> {
   const database = await observeContainedRegularFileAsync(
     runtime.storage,
@@ -217,7 +218,8 @@ async function removeReapingStoreDirectory(
   const markerProof = await observeContainedRegularFileAsync(runtime.storage, path, markerPath, root);
   if (markerProof.kind === 'disproven') return retainUnmarkedReapingDirectory(runtime, dbDir, path, root);
   if (markerProof.kind !== 'proven' || resultsReleased === undefined) return 'unobservable';
-  if (!closedReapingDirectoryRemovable(runtime, dbDir, path, markerPath, resultsReleased)) return 'unobservable';
+  if (!(await closedReapingDirectoryRemovable(runtime, dbDir, path, markerPath, resultsReleased)))
+    return 'unobservable';
   const lockPath = join(path, STORE_LOCK_FILE_NAME);
   const lock = await observeContainedRegularFileAsync(runtime.storage, path, lockPath, root);
   return lock.kind === 'proven' ? removeWhileExclusivelyLockedAsync(runtime, dbDir, lockPath, path) : 'unobservable';
@@ -251,7 +253,7 @@ async function removeAbandonedStoreDirectory(
   runtime: Runtime,
   dbDir: string,
   path: string,
-  resultsReleased?: (epochKey: string, closedSource?: ResolvedStoreEpoch) => boolean,
+  resultsReleased?: ResultsReleased,
 ): Promise<AbandonedDirectoryRemoval> {
   const root = await observeContainedDirectoryAsync(runtime.storage, dbDir, path);
   if (root.kind === 'unobservable') return 'unobservable';
@@ -359,7 +361,7 @@ async function reapPostReadyStoreEpochEntries(
   entries: readonly string[],
   residueEntries: ReadonlySet<string>,
   mutations: PostReadySweepMutationState,
-  resultsReleased?: (epochKey: string, closedSource?: ResolvedStoreEpoch) => boolean,
+  resultsReleased?: ResultsReleased,
 ): Promise<PostReadyEpochReapingResult> {
   const { runtime, dbDir, signal } = context;
   let complete = true;
@@ -455,7 +457,7 @@ export async function sweepStoreEpochsPostReady(
   options: {
     readonly signal?: AbortSignal;
     readonly observation?: RecoveryObservation;
-    readonly resultsReleased?: (epochKey: string, closedSource?: ResolvedStoreEpoch) => boolean;
+    readonly resultsReleased?: ResultsReleased;
   } = {},
 ): Promise<StoreEpochSweepResult> {
   const context: PostReadyStoreEpochSweepContext = {
@@ -511,7 +513,7 @@ export async function sweepStoreEpochsPostReady(
       }
       if (
         closureCapability(runtime, runtime.paths.coral.generation.dataRoot, epochKey) === null ||
-        !options.resultsReleased(lineageJobEpochKey(dbDir, epochKey))
+        !(await options.resultsReleased(lineageJobEpochKey(dbDir, epochKey)))
       )
         continue;
       mutations.pending = true;
@@ -528,7 +530,7 @@ export async function sweepStoreEpochsPostReady(
         if (metadata.kind !== 'valid' || Date.parse(metadata.value.publishedAt) >= retentionBoundary) continue;
         if (
           closureCapability(runtime, runtime.paths.coral.generation.dataRoot, address.epochKey) === null ||
-          !options.resultsReleased(lineageJobEpochKey(dbDir, address.epochKey))
+          !(await options.resultsReleased(lineageJobEpochKey(dbDir, address.epochKey)))
         )
           continue;
         const removal = removeClosedProtectedEpoch(runtime, address);
@@ -544,7 +546,7 @@ export async function sweepStoreEpochsPostReady(
       if (signal?.aborted) return finishPostReadyStoreEpochSweep(runtime, dbDir, mutations, 'cancelled');
       if (
         closureCapability(runtime, runtime.paths.coral.generation.dataRoot, address.epochKey) === null ||
-        !options.resultsReleased(lineageJobEpochKey(dbDir, address.epochKey))
+        !(await options.resultsReleased(lineageJobEpochKey(dbDir, address.epochKey)))
       )
         continue;
       complete = removeClosedProtectedEpoch(runtime, address) === 'removed' && complete;

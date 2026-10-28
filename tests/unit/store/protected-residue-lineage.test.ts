@@ -51,7 +51,7 @@ it.each(['root', 'lineage', 'tombstone', 'ordinary'] as const)(
               : join(backup, 'sentinel');
       }
       const result = await sweepStoreEpochsPostReady(runtime, resolvedStoreEpoch(dbDir, '2'), {
-        resultsReleased: () => true,
+        resultsReleased: async () => true,
       });
       expect(existsSync(sentinel)).toBe(subject !== 'ordinary');
       expect(result).toBe(subject === 'ordinary' ? 'complete' : 'unobservable-metadata');

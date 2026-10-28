@@ -156,7 +156,7 @@ function assembleSuccessionCommitter(
     liveJobIds: readSuccessionJobs,
     retiringEpoch: {
       certificate: (epochKey) => jobLocationIndex.certificate(epochKey),
-      resultsReleased: (epochKey) => jobLocationIndex.resultsReleased(epochKey),
+      resultsReleased: (epochKey, signal) => jobLocationIndex.resultsReleasedAsync(epochKey, signal),
       recoverLocations: (epochKey) => recoverJobLocations(jobLocationIndex, epochKey, getProgressStore()),
       certifyCustody: (epochKey, signal) =>
         RetiringCustodyCertificate.certify(runtime, jobLocationIndex, epochKey, signal),

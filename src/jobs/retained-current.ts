@@ -14,7 +14,6 @@ import { loadJobExecutionDetails, loadJobProjectionDetail } from './read-queries
 import type { JobExecutionLocation, JobLocation, JobLocationIndex } from './location-index.js';
 import { hasReadableTerminalDetail } from './terminal/identity.js';
 import {
-  proveResultArtifactDurable,
   ResultArtifactPublicationError,
   writeResultArtifact,
   type DecodedResultArtifact,
@@ -199,11 +198,12 @@ export function repairRetainedExecution(
   writeResultArtifact(runtime.storage, entry.resultPath, markdown, authorized, jobsRoot);
 }
 
-export function currentResultsDurable(
-  runtime: Pick<Runtime, 'storage' | 'time' | 'env' | 'paths'>,
+/** The result artifacts releasing this job requires: an execution its source shows expired needs none. */
+export function currentResultArtifacts(
+  runtime: Pick<Runtime, 'time' | 'env'>,
   location: JobLocation,
   source: Database | null,
-): boolean {
+): readonly string[] | null {
   const executions = location.executions;
   if (
     !hasReadableTerminalDetail(location) ||
@@ -211,8 +211,8 @@ export function currentResultsDurable(
     executions === undefined ||
     executions.length !== location.latestExecution
   )
-    return false;
-  if (location.pendingAdmission !== undefined || location.openExecution !== undefined) return false;
+    return null;
+  if (location.pendingAdmission !== undefined || location.openExecution !== undefined) return null;
   if (source !== null) {
     const requests = source
       .prepare<
@@ -226,9 +226,10 @@ export function currentResultsDurable(
         { n: number }
       >("SELECT COUNT(*) AS n FROM events WHERE stream_kind = 'job' AND stream_id = ? AND type = 'job.execution.ended'")
       .get(location.jobId)?.n;
-    if (requests !== executions.length || ends !== requests) return false;
+    if (requests !== executions.length || ends !== requests) return null;
   }
-  return executions.every((entry) => {
+  const artifacts: string[] = [];
+  for (const entry of executions) {
     if (source !== null) {
       const request = source
         .prepare<
@@ -236,17 +237,18 @@ export function currentResultsDurable(
           { seq: number }
         >("SELECT seq FROM events WHERE seq = ? AND stream_kind = 'job' AND stream_id = ? AND type = 'job.execution.requested' AND json_extract(CAST(body AS TEXT), '$.execution') = ?")
         .get(entry.requestedSeq, location.jobId, entry.execution);
-      if (request === undefined) return false;
+      if (request === undefined) return null;
       const end = source
         .prepare<
           [number, string, number],
           EventsRow
         >("SELECT * FROM events WHERE seq = ? AND stream_kind = 'job' AND stream_id = ? AND type = 'job.execution.ended' AND json_extract(CAST(body AS TEXT), '$.execution') = ?")
         .get(entry.seq, location.jobId, entry.execution);
-      if (end === undefined || end.ts !== entry.detail.exit?.endTime) return false;
+      if (end === undefined || end.ts !== entry.detail.exit?.endTime) return null;
       const age = readJobTerminalAge(source, end);
-      if (typeof age === 'number' && age < jobRetentionCutoff(runtime)) return true;
+      if (typeof age === 'number' && age < jobRetentionCutoff(runtime)) continue;
     }
-    return proveResultArtifactDurable(runtime.storage, entry.resultPath, runtime.paths.coral.exports.jobsRoot);
-  });
+    artifacts.push(entry.resultPath);
+  }
+  return artifacts;
 }

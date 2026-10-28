@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import { sameEpoch } from './identity.js';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
@@ -145,6 +146,22 @@ export type EpochClosureRecording =
   | Readonly<{ kind: 'unsupported'; path: string; version: string }>
   | Readonly<{ kind: 'unreadable'; path: string }>;
 
+const durableClosures = new WeakMap<object, Map<string, string>>();
+
+/** Null when the record's stat cannot show it unchanged, which leaves its directory forced on every keep. */
+function closureStamp(runtime: Pick<Runtime, 'storage'>, path: string): string | null {
+  const stat = runtime.storage.lstatSync(path, { bigint: true });
+  return stat.ctimeNs === undefined ? null : `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
+}
+
+function rememberDurableClosure(runtime: Pick<Runtime, 'storage'>, path: string): void {
+  const stamp = closureStamp(runtime, path);
+  if (stamp === null) return;
+  let durable = durableClosures.get(runtime.storage);
+  if (durable === undefined) durableClosures.set(runtime.storage, (durable = new Map()));
+  durable.set(path, stamp);
+}
+
 export function recordEpochClosure(
   runtime: Runtime,
   stateRoot: string,
@@ -169,6 +186,16 @@ export function recordEpochClosure(
   };
   const path = closurePath(stateRoot, evidence.epochKey);
   const parent = dirname(path);
+  // A record already visible may be one whose rename was never made durable, so keeping it forces its directory until
+  // this storage has forced it for that exact file.
+  if (existing !== null && isDeepStrictEqual({ ...updated, observedAtMs: existing.observedAtMs }, existing)) {
+    const stamp = closureStamp(runtime, path);
+    if (stamp === null || durableClosures.get(runtime.storage)?.get(path) !== stamp) {
+      if (!runtime.storage.syncDirectoryDurableSync(parent)) throw new Error('Epoch closure directory sync failed.');
+      rememberDurableClosure(runtime, path);
+    }
+    return { kind: 'recorded', evidence: existing };
+  }
   runtime.storage.mkdirSync(parent, { recursive: true, mode: 0o700 });
   if (!runtime.storage.syncDirectoryDurableSync(stateRoot)) throw new Error('Epoch closure root sync failed.');
   const stage = `${path}.stage.${runtime.env.pid()}.${runtime.ids.uuid()}`;
@@ -182,6 +209,7 @@ export function recordEpochClosure(
   }
   runtime.storage.renameSync(stage, path);
   if (!runtime.storage.syncDirectoryDurableSync(parent)) throw new Error('Epoch closure directory sync failed.');
+  rememberDurableClosure(runtime, path);
   if (
     existing === null ||
     existing.disposition !== evidence.disposition ||

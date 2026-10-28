@@ -51,17 +51,19 @@ export function createCommitWriterPreparation(ports: SuccessionCommitPorts, stat
     deadlineMonotonicMs: number,
     protect: (openerDrainMs: number) => RetiringStoreProtection,
   ): Promise<void> {
-    const certificate = ports.retiringEpoch.certificate(preparation.epochKey);
-    if (certificate === null || !ports.retiringEpoch.resultsReleased(preparation.epochKey)) {
-      throw new Error('Historical job inventory and result retention are not certified.');
-    }
-    const custodyHolds = await ports.retiringEpoch.confirmCustody(
-      custody,
+    const withinDeadline = (): AbortSignal =>
       AbortSignal.any([
         state.attemptAbort.signal,
         AbortSignal.timeout(Math.max(1, deadlineMonotonicMs - Number(runtime.time.monotonicNow()))),
-      ]),
-    );
+      ]);
+    const certificate = ports.retiringEpoch.certificate(preparation.epochKey);
+    const releaseSignal = withinDeadline();
+    if (certificate === null || !(await ports.retiringEpoch.resultsReleased(preparation.epochKey, releaseSignal))) {
+      if (releaseSignal.aborted)
+        throw new TransientCommitFailure('Proving retiring epoch results stopped before it finished.');
+      throw new Error('Historical job inventory and result retention are not certified.');
+    }
+    const custodyHolds = await ports.retiringEpoch.confirmCustody(custody, withinDeadline());
     if (!custodyHolds) throw new TransientCommitFailure('Retiring epoch custody changed after its certification.');
     if (Number(runtime.time.monotonicNow()) >= deadlineMonotonicMs)
       throw new Error('Retirement certification exceeded the commit deadline.');

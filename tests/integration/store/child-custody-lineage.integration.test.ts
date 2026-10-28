@@ -77,7 +77,7 @@ function createLineageFixture(live: boolean) {
     undefined,
     currentCoralStoreFormat().fingerprint,
   );
-  const resultsReleased = vi.spyOn(index, 'resultsReleased').mockReturnValue(true);
+  const resultsReleased = vi.spyOn(index, 'resultsReleasedAsync').mockResolvedValue(true);
   vi.spyOn(index, 'unknownLocationHold').mockReturnValue(null);
   return { runtime, runDir, publish, index, resultsReleased };
 }
@@ -153,7 +153,7 @@ it.each([
   { released: false, disposition: 'unrecoverable-retained', closes: 0 },
 ])('closes a proxy set before deciding any role or host inside it: %j', async ({ released, disposition, closes }) => {
   const { runtime, runDir, publish, index, resultsReleased } = createLineageFixture(false);
-  resultsReleased.mockReturnValue(released);
+  resultsReleased.mockResolvedValue(released);
   const guardianGroup = 987650000;
   const proxyGroup = 987654000;
   let proxySetClosed = false;

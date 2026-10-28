@@ -175,7 +175,7 @@ export function listStoreResetIncidentsLocal(
       epochs:
         target === 'legacy'
           ? []
-          : listStoreEpochs(runtime).map((epoch) => {
+          : listStoreEpochs(runtime, { observeCustody: true }).map((epoch) => {
               const epochKey =
                 epoch.role === 'removed' && typeof epoch.epochKey === 'string'
                   ? lineageJobEpochKey(runtime.storage.realpathSync(runtime.paths.coral.store.dbDir), epoch.epochKey)
@@ -237,7 +237,7 @@ export async function reportStoreResetLocal(
   if (target === 'gen2') {
     const manifest = requireCurrentBuild(dependencies);
     const runtime = dependencies.runtime?.(manifest) ?? createRealRuntime(manifest.flavor);
-    const epochs = listStoreEpochs(runtime);
+    const epochs = listStoreEpochs(runtime, { observeCustody: true });
     const matches = epochs.filter(
       (candidate) =>
         sameEpoch(candidate.epochKey, reference) || (isCanonicalEpoch(reference) && candidate.epoch === reference),

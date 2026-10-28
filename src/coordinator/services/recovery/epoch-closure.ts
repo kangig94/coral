@@ -647,6 +647,7 @@ export async function settleSupersededEpochClosures(
   activeEpochKey?: string,
   closeProxySet?: CloseProxySet,
 ): Promise<EpochClosureEvidence[]> {
+  const closureSignal = signal ?? new AbortController().signal;
   const stateRoot = runtime.paths.coral.generation.dataRoot;
   const candidates = closureCandidates(runtime);
   if (candidates.length === 0) return [];
@@ -687,7 +688,7 @@ export async function settleSupersededEpochClosures(
     return evidence;
   }
   for (const candidate of candidates) {
-    if (signal?.aborted) break;
+    if (closureSignal.aborted) break;
     if (subjectKey !== undefined && !sameEpoch(subjectKey, candidate.epochKey)) continue;
     if (isUncertifiable(candidate.epochKey)) continue;
     const jobEpochKey = lineageJobEpochKey(
@@ -700,7 +701,7 @@ export async function settleSupersededEpochClosures(
     const previous = read.kind === 'recorded' ? read.evidence : null;
     let dataOutcome: EpochClosureEvidence['dataOutcome'];
     try {
-      dataOutcome = index.resultsReleased(jobEpochKey)
+      dataOutcome = (await index.resultsReleasedAsync(jobEpochKey, closureSignal))
         ? 'retained'
         : index.unknownLocationHold(jobEpochKey) !== null
           ? 'unreadable'
@@ -708,6 +709,7 @@ export async function settleSupersededEpochClosures(
     } catch {
       dataOutcome = 'unreadable';
     }
+    if (closureSignal.aborted) break;
     if (previous?.disposition === 'closed') {
       keepRecorded(
         previous.dataOutcome === dataOutcome
@@ -736,7 +738,7 @@ export async function settleSupersededEpochClosures(
           candidate,
           custody,
           ambiguousOriginalPath,
-          signal ?? new AbortController().signal,
+          closureSignal,
           dataOutcome === 'retained' ? closeProxySet : undefined,
           jobEpochKey,
         );

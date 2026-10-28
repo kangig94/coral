@@ -221,14 +221,20 @@ function unobservableStoreEpochEntry(): StoreEpochListEntry {
   };
 }
 
-export function listStoreEpochs(runtime: InventoryRuntime): readonly StoreEpochListEntry[] {
+export function listStoreEpochs(
+  runtime: InventoryRuntime,
+  /** Observing custody reads the whole custody ledger. */
+  options: Readonly<{ observeCustody?: boolean }> = {},
+): readonly StoreEpochListEntry[] {
   const { dbDir, observations, rootUnobservable } = observeStoreInventory(runtime);
   const current = currentProvenEpoch(observations)?.epoch ?? null;
   const garbageEpochs = garbageStoreEpochs(
     observations.filter(({ proof }) => proof.kind === 'proven').map(({ epoch }) => epoch),
   );
-  const custody = readCustodyLedger(runtime, runtime.paths.coral.coordinator.runDir);
-  const custodyState: CustodyStateReader = (epochKey, closure) => storeEpochCustodyState(custody, epochKey, closure);
+  const custody =
+    options.observeCustody === true ? readCustodyLedger(runtime, runtime.paths.coral.coordinator.runDir) : null;
+  const custodyState: CustodyStateReader = (epochKey, closure) =>
+    custody === null ? undefined : storeEpochCustodyState(custody, epochKey, closure);
   const pendingRead = readPendingProtections(runtime);
   const pendingProtections = pendingRead.records.filter((pending) => pending.storeRoot === dbDir);
   const context = { runtime, dbDir, current, garbageEpochs, custodyState, pendingRead, pendingProtections };

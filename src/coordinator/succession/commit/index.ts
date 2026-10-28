@@ -176,7 +176,7 @@ export type SuccessionCommitPorts = Readonly<{
 
 export type RetiringEpochPorts = Readonly<{
   certificate(epochKey: string): Readonly<{ revision: number; jobIds: readonly string[] }> | null;
-  resultsReleased(epochKey: string): boolean;
+  resultsReleased(epochKey: string, signal: AbortSignal): Promise<boolean>;
   recoverLocations(epochKey: string): void;
 
   certifyCustody(epochKey: string, signal: AbortSignal): Promise<RetiringCustodyCertificate | null>;

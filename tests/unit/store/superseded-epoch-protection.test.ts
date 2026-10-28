@@ -100,6 +100,19 @@ describe('superseded epoch protection', () => {
     expect(existsSync(epochDirectory(dbDir, '2'))).toBe(false);
   });
 
+  it('should observe custody state only for a listing that asks for it', () => {
+    const root = mkdtempSync(join(tmpdir(), 'coral-superseded-protection-'));
+    roots.push(root);
+    const runtime = createRealRuntime('prod', { baseDir: root });
+    const settled = settleStoreEpoch(runtime, { storeFormat: format, build, authorizeMint: authorizeFixtureStoreMint });
+    settled.db.close();
+
+    expect(listStoreEpochs(runtime).find((entry) => entry.epoch === '1')?.custodyState).toBeUndefined();
+    expect(listStoreEpochs(runtime, { observeCustody: true }).find((entry) => entry.epoch === '1')).toMatchObject({
+      custodyState: 'unobserved',
+    });
+  });
+
   it('should protect an epoch that will not open before publishing its successor when nothing holds it', () => {
     const root = mkdtempSync(join(tmpdir(), 'coral-superseded-protection-'));
     roots.push(root);

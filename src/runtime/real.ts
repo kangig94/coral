@@ -446,6 +446,8 @@ function createRealStoragePort(platform: NodeJS.Platform): StoragePort {
           uid: stats.uid,
           size: stats.size,
           mtimeNs: stats.mtimeNs,
+          ctimeNs: stats.ctimeNs,
+          birthtimeNs: stats.birthtimeNs,
           isDirectory: () => stats.isDirectory(),
           isFile: () => stats.isFile(),
         };
@@ -478,6 +480,8 @@ function createRealStoragePort(platform: NodeJS.Platform): StoragePort {
           uid: stats.uid,
           size: stats.size,
           mtimeNs: stats.mtimeNs,
+          ctimeNs: stats.ctimeNs,
+          birthtimeNs: stats.birthtimeNs,
           isDirectory: () => stats.isDirectory(),
           isFile: () => stats.isFile(),
         };
@@ -500,6 +504,8 @@ function createRealStoragePort(platform: NodeJS.Platform): StoragePort {
         uid: stats.uid,
         size: stats.size,
         mtimeNs: stats.mtimeNs,
+        ctimeNs: stats.ctimeNs,
+        birthtimeNs: stats.birthtimeNs,
         isDirectory: () => stats.isDirectory(),
         isFile: () => stats.isFile(),
       };
@@ -523,6 +529,7 @@ function createRealStoragePort(platform: NodeJS.Platform): StoragePort {
     writeAtomicDurableSync: (path, data, options) => writeAtomicDurableSyncNode(path, data, options),
     syncDirectoryDurableSync: (path) => syncDirectoryDurable(path),
     syncDirectoryDurable: (path) => syncDirectoryDurableAsync(path),
+    syncFileDataDurable: (path) => syncFileDataDurableAsync(path),
     chmodSync: (path, mode) => chmodSync(path, mode),
     openSqliteDatabaseSync,
   };
@@ -1639,6 +1646,19 @@ function syncDirectoryDurable(path: string): boolean {
         /* best effort */
       }
     }
+  }
+}
+
+async function syncFileDataDurableAsync(path: string): Promise<boolean> {
+  let file: Awaited<ReturnType<typeof openAsync>> | null = null;
+  try {
+    file = await openAsync(path, 'r');
+    await file.datasync();
+    return true;
+  } catch {
+    return false;
+  } finally {
+    await file?.close().catch(() => {});
   }
 }
 

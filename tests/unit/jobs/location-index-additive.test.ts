@@ -271,6 +271,89 @@ describe('job location additive records', () => {
     expect(index.certify(epochKey, 2)).toBeNull();
     expect(index.resultsReleased(epochKey)).toBe(false);
   });
+  const certifiedEpoch = (jobCount: number) => {
+    const { root, index } = fixture();
+    const epochKey = 'lineage-1:1';
+    const resultPaths = Array.from({ length: jobCount }, (_, job) => join(root, `result-${job}.md`));
+    resultPaths.forEach((resultPath, job) => {
+      const jobId = `job-${String(job).padStart(3, '0')}`;
+      writeFileSync(resultPath, 'done\n');
+      index.register(jobId, epochKey, {
+        projectRoot: '/workspace/project',
+        workDir: '/workspace/project',
+        jobKind: 'provider',
+      });
+      index.recordTerminal(jobId, terminalDetail(jobId), resultPath, 2);
+    });
+    expect(index.certify(epochKey, 2)).not.toBeNull();
+    return { index, epochKey, resultPaths };
+  };
+
+  it('keeps every planning batch when one job early in a large epoch is not released', async () => {
+    const { index, epochKey, resultPaths } = certifiedEpoch(70);
+    writeFileSync(resultPaths[0], '');
+
+    await expect(index.resultsReleasedAsync(epochKey, new AbortController().signal)).resolves.toBe(false);
+  });
+
+  it.each(['planned', 'remembered'] as const)(
+    'does not release a %s plan whose certificate is invalidated while its artifacts are forced',
+    async (plan) => {
+      const { index, epochKey, resultPaths } = certifiedEpoch(1);
+      const signal = new AbortController().signal;
+      if (plan === 'remembered') {
+        await expect(index.resultsReleasedAsync(epochKey, signal)).resolves.toBe(true);
+        writeFileSync(resultPaths[0], 'done again\n');
+      }
+      const force = runtime.storage.syncFileDataDurable.bind(runtime.storage);
+      vi.spyOn(runtime.storage, 'syncFileDataDurable').mockImplementation(async (path) => {
+        index.invalidateTerminalCertificate(epochKey);
+        return force(path);
+      });
+
+      await expect(index.resultsReleasedAsync(epochKey, signal)).resolves.toBe(false);
+    },
+  );
+
+  it('answers an aborted proof as unproven and remembers nothing', async () => {
+    const { index, epochKey } = certifiedEpoch(1);
+    const aborted = new AbortController();
+    aborted.abort();
+    await expect(index.resultsReleasedAsync(epochKey, aborted.signal)).resolves.toBe(false);
+
+    const forced = vi.spyOn(runtime.storage, 'syncFileDataDurable');
+    await expect(index.resultsReleasedAsync(epochKey, new AbortController().signal)).resolves.toBe(true);
+    expect(forced).toHaveBeenCalled();
+  });
+
+  it('proves release off the event loop and forgets the proof once a planned record becomes unreadable', async () => {
+    const { root, index } = fixture();
+    const epochKey = 'lineage-1:1';
+    const jobId = 'job-1';
+    const resultPath = join(root, 'result.md');
+    writeFileSync(resultPath, 'done\n');
+    index.register(jobId, epochKey, {
+      projectRoot: '/workspace/project',
+      workDir: '/workspace/project',
+      jobKind: 'provider',
+    });
+    index.recordTerminal(jobId, terminalDetail(jobId), resultPath, 2);
+    expect(index.certify(epochKey, 2)).not.toBeNull();
+    const signal = new AbortController().signal;
+    await expect(index.resultsReleasedAsync(epochKey, signal)).resolves.toBe(true);
+
+    const forced = vi.spyOn(runtime.storage, 'syncFileDataDurable');
+    const forcedSync = vi.spyOn(runtime.storage, 'fdatasyncSync');
+    await expect(index.resultsReleasedAsync(epochKey, signal)).resolves.toBe(true);
+    expect(index.resultsReleased(epochKey)).toBe(true);
+    expect(forced).not.toHaveBeenCalled();
+    expect(forcedSync).not.toHaveBeenCalled();
+
+    const path = join(root, 'job-locations.v1', 'jobs', `${Buffer.from(jobId).toString('base64url')}.json`);
+    const record = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
+    writeFileSync(path, `${JSON.stringify({ ...record, detail: { futureFormat: true } })}\n`);
+    await expect(index.resultsReleasedAsync(epochKey, signal)).resolves.toBe(false);
+  });
 });
 
 it.each(['revision', 'terminalHighWaterSeq'])('rejects an unsafe job-location certificate %s', (field) => {
