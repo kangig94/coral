@@ -15,7 +15,7 @@ const mockState = vi.hoisted(() => ({
   health: vi.fn(async () => ({ components: [] as Array<Record<string, unknown>> })),
   detailRequest: vi.fn(),
   readStore: {
-    jobs: { detail: vi.fn() },
+    jobs: { detail: vi.fn(), list: vi.fn(() => [] as unknown[]) },
     kb: { listMemos: vi.fn(() => []) },
     discuss: {
       watch: vi.fn(),
@@ -67,7 +67,7 @@ vi.mock('#src/cli/read-store.js', () => ({
 import { ensure, issueWithSuccessorAfterLifecycleRefusal } from '#src/transport/ipc/ensure.js';
 import { makeClient } from '#src/cli/dispatch.js';
 import { formatJobSendResult } from '#src/cli/format/jobs.js';
-import { IpcLifecycleRefusal, IpcRpcError } from '#src/transport/ipc/client.js';
+import { IpcLifecycleRefusal, IpcRequestTimeout, IpcRpcError } from '#src/transport/ipc/client.js';
 import { jobSendSchema } from '#src/transport/rpc/jobs.js';
 import { markProviderCommand } from '#src/cli/classify.js';
 import { FORWARDED_NETWORK_ENV_KEYS } from '#src/infra/network-env.js';
@@ -420,6 +420,55 @@ describe('command client routing', () => {
     });
     expect(ensure).not.toHaveBeenCalled();
   });
+
+  it('answers a jobs list from the stored journal when the coordinator does not answer in time', async () => {
+    mockState.discovery.mockReturnValue({
+      kind: 'record',
+      record: { socketPath: '/test/socket', bootToken: 'test-boot-token' },
+    });
+    mockState.liveRequest.mockRejectedValueOnce(new IpcRequestTimeout('IPC request timed out after 500ms'));
+    const older = { jobId: 'job-older', status: { updatedAt: '2026-10-29T01:00:00.000Z' } };
+    const newer = { jobId: 'job-newer', status: { updatedAt: '2026-10-29T02:00:00.000Z' } };
+    mockState.readStore.jobs.list.mockReturnValueOnce([older, newer]);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const client = makeClient(projectRoot, findCommand(buildProgram(), 'jobs', 'list'));
+
+    await expect(client.listJobs({ allProjects: true, journalAnswerOnTimeout: true })).resolves.toEqual({
+      jobs: [newer, older],
+    });
+    expect(stderr).toHaveBeenCalledWith(expect.stringContaining('listed from the stored journal'));
+    expect(ensure).not.toHaveBeenCalled();
+  });
+
+  it('keeps a jobs list for a stdout-only reader unanswered when the coordinator does not answer in time', async () => {
+    mockState.discovery.mockReturnValue({
+      kind: 'record',
+      record: { socketPath: '/test/socket', bootToken: 'test-boot-token' },
+    });
+    mockState.liveRequest.mockRejectedValueOnce(new IpcRequestTimeout('IPC request timed out after 500ms'));
+    const client = makeClient(projectRoot, findCommand(buildProgram(), 'jobs', 'list'));
+
+    await expect(client.listJobs({ allProjects: true })).rejects.toBeInstanceOf(IpcRequestTimeout);
+    expect(mockState.readStore.jobs.list).not.toHaveBeenCalled();
+  });
+
+  it.each([{ mine: true }, { unwaited: true }])(
+    'keeps a jobs list that needs the live view unanswered when the coordinator does not answer in time: %j',
+    async (scope) => {
+      vi.stubEnv('CORAL_OWNER', 'session-env');
+      mockState.discovery.mockReturnValue({
+        kind: 'record',
+        record: { socketPath: '/test/socket', bootToken: 'test-boot-token' },
+      });
+      mockState.liveRequest.mockRejectedValueOnce(new IpcRequestTimeout('IPC request timed out after 500ms'));
+      const client = makeClient(projectRoot, findCommand(buildProgram(), 'jobs', 'list'));
+
+      await expect(
+        client.listJobs({ ...scope, allProjects: true, journalAnswerOnTimeout: true }),
+      ).rejects.toBeInstanceOf(IpcRequestTimeout);
+      expect(mockState.readStore.jobs.list).not.toHaveBeenCalled();
+    },
+  );
 
   it('session job guard: returns no owned unwaited jobs without starting a coordinator', async () => {
     vi.stubEnv('CORAL_OWNER', 'session-env');

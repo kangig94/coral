@@ -2,11 +2,13 @@ import { describe, expect, it } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 
 // prettier-ignore
 // @ts-expect-error - statusline hooks are executable .mjs files without TS declarations.
-import { codexCacheKey, coralBackendInfoPath, extractUserText, readSettingsEnvValue, stripControlSequences, hudCacheFile, hudFetchLockPath, shouldUseClaudeKeychain } from '../../../clients/skills/statusline/coral-hud.mjs';
+import { codexCacheKey, coralBackendInfoPath, extractUserText, unansweredBackendSlot, readSettingsEnvValue, stripControlSequences, hudCacheFile, hudFetchLockPath, shouldUseClaudeKeychain } from '../../../clients/skills/statusline/coral-hud.mjs';
 
 describe('coral-hud account isolation', () => {
   it('uses a redacted distinct cache slot for each CODEX_HOME', () => {
@@ -66,6 +68,80 @@ describe('coral-hud temporary files', () => {
       expect(existsSync(freshHudTemp)).toBe(true);
       expect(existsSync(unrelatedTemp)).toBe(true);
     } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('coral-hud unanswered backend health', () => {
+  it('keeps the last counts the same backend reported, dimmed, when it does not answer in time', () => {
+    const last = { line: '\x1b[38;2;255;133;89mcoral\x1b[0m \x1b[35m⚙ 3\x1b[0m', indicator: '◇', backend: '10:4000' };
+
+    expect(unansweredBackendSlot(last, '10:4000')).toEqual({
+      line: '\x1b[2mcoral ⚙ 3\x1b[0m',
+      indicator: null,
+      backend: '10:4000',
+    });
+    expect(unansweredBackendSlot(last, '11:4001')).toEqual({
+      line: '\x1b[2mcoral\x1b[0m',
+      indicator: null,
+      backend: '11:4001',
+    });
+    expect(unansweredBackendSlot(null, '10:4000')).toEqual({
+      line: '\x1b[2mcoral\x1b[0m',
+      indicator: null,
+      backend: '10:4000',
+    });
+  });
+});
+
+describe('coral-hud backend counts end to end', () => {
+  it('keeps the counts a backend reported, dimmed, only while that same backend leaves health unanswered', async () => {
+    let mode: 'counts' | 'drop' | 'unavailable' = 'counts';
+    const server = createServer((request, response) => {
+      if (mode === 'drop') return request.socket.destroy();
+      if (mode === 'unavailable') return response.writeHead(503).end();
+      response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ active: 2 }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const root = mkdtempSync(join(tmpdir(), 'coral-hud-backend-'));
+    const home = join(root, 'home');
+    const cfg = join(root, 'cfg');
+    const backend = (port: number) => {
+      const info = join(home, '.coral', 'gen2', 'run', 'coordinator.json');
+      mkdirSync(join(home, '.coral', 'gen2', 'run'), { recursive: true });
+      writeFileSync(info, JSON.stringify({ pid: process.pid, host: '127.0.0.1', port, bootToken: 'token' }));
+    };
+    const expireCachedCounts = () => {
+      const cache = join(cfg, 'hud', '.coral-backend-cache.json');
+      if (existsSync(cache))
+        writeFileSync(cache, JSON.stringify({ ...JSON.parse(readFileSync(cache, 'utf-8')), ts: Date.now() - 60_000 }));
+    };
+    const render = () =>
+      new Promise<string>((resolve) => {
+        const child = execFile(
+          process.execPath,
+          [join(process.cwd(), 'clients/skills/statusline/coral-hud.mjs')],
+          { env: { ...process.env, CLAUDE_CONFIG_DIR: cfg, HOME: home }, encoding: 'utf-8' },
+          (_error, stdout) => resolve(stdout),
+        );
+        child.stdin?.end(JSON.stringify({ cwd: root, session_id: 'session-1', model: { display_name: 'O' } }));
+      });
+    try {
+      backend((server.address() as AddressInfo).port);
+      expect(await render()).toContain('⚙ 2');
+
+      for (const unanswered of ['drop', 'unavailable'] as const) {
+        mode = unanswered;
+        expireCachedCounts();
+        expect(await render()).toContain('\x1b[2mcoral ⚙ 2');
+      }
+
+      backend((server.address() as AddressInfo).port + 1);
+      expireCachedCounts();
+      expect(await render()).not.toContain('⚙ 2');
+    } finally {
+      server.close();
       rmSync(root, { recursive: true, force: true });
     }
   });
