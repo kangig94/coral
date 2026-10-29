@@ -138,6 +138,8 @@ it('keeps listing options on jobs list and aborts explicit IDs under jobs', asyn
   vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
   await program().parseAsync(['jobs', 'list', '--mine', '--unwaited', '--json'], { from: 'user' });
   expect(client.listJobs).toHaveBeenCalledWith({ allProjects: true, mine: true, unwaited: true });
+  await program().parseAsync(['jobs', 'list'], { from: 'user' });
+  expect(client.listJobs).toHaveBeenLastCalledWith({ allProjects: true, journalAnswerOnTimeout: true });
   await program().parseAsync(['jobs', 'abort', 'a'], { from: 'user' });
   expect(client.abortJobs).toHaveBeenCalledWith(['a']);
 });

@@ -433,9 +433,23 @@ describe('command client routing', () => {
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     const client = makeClient(projectRoot, findCommand(buildProgram(), 'jobs', 'list'));
 
-    await expect(client.listJobs({ allProjects: true })).resolves.toEqual({ jobs: [newer, older] });
+    await expect(client.listJobs({ allProjects: true, journalAnswerOnTimeout: true })).resolves.toEqual({
+      jobs: [newer, older],
+    });
     expect(stderr).toHaveBeenCalledWith(expect.stringContaining('listed from the stored journal'));
     expect(ensure).not.toHaveBeenCalled();
+  });
+
+  it('keeps a jobs list for a stdout-only reader unanswered when the coordinator does not answer in time', async () => {
+    mockState.discovery.mockReturnValue({
+      kind: 'record',
+      record: { socketPath: '/test/socket', bootToken: 'test-boot-token' },
+    });
+    mockState.liveRequest.mockRejectedValueOnce(new IpcRequestTimeout('IPC request timed out after 500ms'));
+    const client = makeClient(projectRoot, findCommand(buildProgram(), 'jobs', 'list'));
+
+    await expect(client.listJobs({ allProjects: true })).rejects.toBeInstanceOf(IpcRequestTimeout);
+    expect(mockState.readStore.jobs.list).not.toHaveBeenCalled();
   });
 
   it.each([{ mine: true }, { unwaited: true }])(
@@ -449,7 +463,9 @@ describe('command client routing', () => {
       mockState.liveRequest.mockRejectedValueOnce(new IpcRequestTimeout('IPC request timed out after 500ms'));
       const client = makeClient(projectRoot, findCommand(buildProgram(), 'jobs', 'list'));
 
-      await expect(client.listJobs({ ...scope, allProjects: true })).rejects.toBeInstanceOf(IpcRequestTimeout);
+      await expect(
+        client.listJobs({ ...scope, allProjects: true, journalAnswerOnTimeout: true }),
+      ).rejects.toBeInstanceOf(IpcRequestTimeout);
       expect(mockState.readStore.jobs.list).not.toHaveBeenCalled();
     },
   );

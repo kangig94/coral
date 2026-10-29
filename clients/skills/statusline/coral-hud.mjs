@@ -791,8 +791,8 @@ function readStaleBackendSlot() {
 }
 
 /**
- * A health request that produced no counts learned nothing new about them, so the last counts this same backend
- * reported stay, dimmed: they may no longer hold. Counts another backend reported describe a different subject.
+ * A health request that produced no counts learned nothing new about them, and counts may no longer hold once they
+ * go unconfirmed. Counts another backend reported describe a different subject.
  */
 export function unansweredBackendSlot(last, backend) {
   const seen = last?.backend === backend ? last.line.replace(/\x1b\[[0-9;]*m/g, '') : 'coral';

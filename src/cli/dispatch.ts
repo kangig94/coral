@@ -256,6 +256,11 @@ type WorkflowRequestOptions = {
 };
 
 type JobsListOptions = {
+  /**
+   * Only a reader told on stderr may take a journal answer: the journal has no release marks, admission holds or
+   * result paths, so a caller that reads stdout alone would take their absence as an answer.
+   */
+  journalAnswerOnTimeout?: boolean;
   mine?: boolean;
   unwaited?: boolean;
   projectRoot?: string;
@@ -685,9 +690,13 @@ function createSessionDiscussionClient(
               ...childPrincipalAuthOptions(ipcAuth),
             });
           } catch (error) {
-            // A timeout decides nothing about the coordinator: the journal answers only its own durable fields, so
-            // the reader is told what is missing, and `owner`/`unwaited` have no stored answer at all.
-            if (error instanceof IpcRequestTimeout && options.mine !== true && options.unwaited !== true) {
+            // A timeout decides nothing about the coordinator, and `owner`/`unwaited` have no stored answer at all.
+            if (
+              error instanceof IpcRequestTimeout &&
+              options.journalAnswerOnTimeout === true &&
+              options.mine !== true &&
+              options.unwaited !== true
+            ) {
               process.stderr.write(
                 'The Coral coordinator did not answer in time; jobs are listed from the stored journal, without ' +
                   'release marks, admission holds or result paths.\n',

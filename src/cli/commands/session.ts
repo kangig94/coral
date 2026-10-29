@@ -127,6 +127,7 @@ function registerJobsListCommand(jobsCommand: Command, registeredProviders: stri
         const client = makeClient(projectRoot, jobsListCommand);
         const result = await client.listJobs({
           allProjects: true,
+          ...(parsed.json === true ? {} : { journalAnswerOnTimeout: true }),
           ...(parsed.mine === true ? { mine: true } : {}),
           ...(parsed.unwaited === true ? { unwaited: true } : {}),
           ...(parsed.phase !== undefined ? { phase: parsed.phase } : {}),
