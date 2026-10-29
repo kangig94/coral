@@ -22,6 +22,7 @@ import type { BidResult, PersonaSeedOutput, SpeechResult } from '../discuss/sess
 import type { WatchState } from '../discuss/watch.js';
 import type { AcceptedLaunchResponse } from '../jobs/launch.js';
 import type { JobDetailResponse, JobStatus, JobsListResponse, JobsReleaseResult } from '../jobs/records.js';
+import type { JobsListFilters } from '../jobs/read-queries.js';
 import type { RetentionPolicy } from '../jobs/conversation/entry.js';
 import type {
   KbDiagnoseInput,
@@ -87,7 +88,7 @@ import {
   type RawCoordinatorHealth,
 } from '../transport/ipc/ensure.js';
 import { readDiscoveryRecordDisposition } from '../infra/backend-discovery.js';
-import { createIpcClient, IpcLifecycleRefusal, IpcRpcError } from '../transport/ipc/client.js';
+import { createIpcClient, IpcLifecycleRefusal, IpcRequestTimeout, IpcRpcError } from '../transport/ipc/client.js';
 import { createRealRuntime } from '../runtime/real.js';
 import { readBuildFlavor } from '../infra/bundle-manifest.js';
 import { jobSendSchema, jobsWaitRequest, type JobsWaitFields } from '../transport/rpc/jobs.js';
@@ -684,11 +685,20 @@ function createSessionDiscussionClient(
               ...childPrincipalAuthOptions(ipcAuth),
             });
           } catch (error) {
+            // A timeout decides nothing about the coordinator: the journal answers only its own durable fields, so
+            // the reader is told what is missing, and `owner`/`unwaited` have no stored answer at all.
+            if (error instanceof IpcRequestTimeout && options.mine !== true && options.unwaited !== true) {
+              process.stderr.write(
+                'The Coral coordinator did not answer in time; jobs are listed from the stored journal, without ' +
+                  'release marks, admission holds or result paths.\n',
+              );
+              return { jobs: storedJobs(readStore(), filters) };
+            }
             if (!isRecord(error) || error.code !== 'ipc_connect_failed') throw error;
           }
         }
         if (options.mine === true || options.unwaited === true) return { jobs: [] };
-        return { jobs: readStore().jobs.list(filters) };
+        return { jobs: storedJobs(readStore(), filters) };
       }
       return request<JobsListResponse>('jobs.list', filters);
     },
@@ -956,6 +966,13 @@ function createKbMemoClient(
     kbReindex: async (args = {}) =>
       request<KbReindexResponse>('kb.reindex', buildKbMutationTransportContextBody(args, defaultContext)),
   };
+}
+
+function storedJobs(
+  store: ReturnType<typeof getSharedReadCoralStore>,
+  filters: JobsListFilters,
+): JobsListResponse['jobs'] {
+  return store.jobs.list(filters).sort((left, right) => right.status.updatedAt.localeCompare(left.status.updatedAt));
 }
 
 function createKbBootReconciler(

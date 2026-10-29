@@ -472,7 +472,7 @@ An interrupted execution backed by a detached provider-operation carrier still r
 
 ### Job inspection and control
 
-1. `coral-cli jobs list [--phase <phase>] [--provider <name>] [--all]` reads `read-model/CoralStore` directly for local no-coordinator paths; the same shape remains available through `GET /jobs` on the HTTP gateway
+1. `coral-cli jobs list [--phase <phase>] [--provider <name>] [--all]` reads `read-model/CoralStore` directly for local no-coordinator paths, and also when a serving coordinator does not answer in time (except `--mine`/`--unwaited`, which need its live view); the same shape remains available through `GET /jobs` on the HTTP gateway
 2. `coral-cli jobs detail <jobId>` lists every execution, its outcome, diagnostics (including usage), and result path
 3. `coral-cli jobs abort <id...>` dispatches `jobs.abort` over IPC for local calls
 4. `coral-cli jobs abort --all` or `coral-cli jobs abort --phase <phase> [--provider <name>]` (or `--provider <name>` alone) resolves matching live jobs in the current work directory, including shared KB jobs, through the same read surface, then aborts the resulting job IDs

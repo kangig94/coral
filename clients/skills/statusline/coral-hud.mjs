@@ -778,6 +778,7 @@ function normalizeBackendSlot(raw) {
   return {
     line: raw.line,
     indicator: typeof raw.indicator === 'string' && raw.indicator.length > 0 ? raw.indicator : null,
+    backend: typeof raw.backend === 'string' ? raw.backend : null,
   };
 }
 
@@ -787,6 +788,15 @@ function readStaleBackendSlot() {
   } catch {
     return null;
   }
+}
+
+/**
+ * A health request that produced no counts learned nothing new about them, so the last counts this same backend
+ * reported stay, dimmed: they may no longer hold. Counts another backend reported describe a different subject.
+ */
+export function unansweredBackendSlot(last, backend) {
+  const seen = last?.backend === backend ? last.line.replace(/\x1b\[[0-9;]*m/g, '') : 'coral';
+  return { line: `${DIM}${seen}${RESET}`, indicator: null, backend };
 }
 
 function writeBackendSlot(slot) {
@@ -1279,6 +1289,7 @@ async function renderCoralLine() {
   if (!lock) {
     return readStaleBackendSlot();
   }
+  const backend = `${info.pid}:${info.port}`;
 
   try {
     if (processDead) {
@@ -1292,7 +1303,7 @@ async function renderCoralLine() {
       signal: AbortSignal.timeout(CORAL_HEALTH_TIMEOUT_MS),
     });
     if (!resp.ok) {
-      const slot = { line: `${DIM}coral${RESET}`, indicator: null };
+      const slot = unansweredBackendSlot(readStaleBackendSlot(), backend);
       writeBackendSlot(slot);
       return slot;
     }
@@ -1313,11 +1324,11 @@ async function renderCoralLine() {
       } catch {}
     }
 
-    const slot = { line: parts.join(' '), indicator };
+    const slot = { line: parts.join(' '), indicator, backend };
     writeBackendSlot(slot);
     return slot;
   } catch {
-    const slot = { line: `${DIM}coral${RESET}`, indicator: null };
+    const slot = unansweredBackendSlot(readStaleBackendSlot(), backend);
     writeBackendSlot(slot);
     return slot;
   } finally {

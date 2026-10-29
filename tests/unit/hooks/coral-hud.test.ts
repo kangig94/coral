@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process';
 
 // prettier-ignore
 // @ts-expect-error - statusline hooks are executable .mjs files without TS declarations.
-import { codexCacheKey, coralBackendInfoPath, extractUserText, readSettingsEnvValue, stripControlSequences, hudCacheFile, hudFetchLockPath, shouldUseClaudeKeychain } from '../../../clients/skills/statusline/coral-hud.mjs';
+import { codexCacheKey, coralBackendInfoPath, extractUserText, unansweredBackendSlot, readSettingsEnvValue, stripControlSequences, hudCacheFile, hudFetchLockPath, shouldUseClaudeKeychain } from '../../../clients/skills/statusline/coral-hud.mjs';
 
 describe('coral-hud account isolation', () => {
   it('uses a redacted distinct cache slot for each CODEX_HOME', () => {
@@ -68,6 +68,28 @@ describe('coral-hud temporary files', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe('coral-hud unanswered backend health', () => {
+  it('keeps the last counts the same backend reported, dimmed, when it does not answer in time', () => {
+    const last = { line: '\x1b[38;2;255;133;89mcoral\x1b[0m \x1b[35m⚙ 3\x1b[0m', indicator: '◇', backend: '10:4000' };
+
+    expect(unansweredBackendSlot(last, '10:4000')).toEqual({
+      line: '\x1b[2mcoral ⚙ 3\x1b[0m',
+      indicator: null,
+      backend: '10:4000',
+    });
+    expect(unansweredBackendSlot(last, '11:4001')).toEqual({
+      line: '\x1b[2mcoral\x1b[0m',
+      indicator: null,
+      backend: '11:4001',
+    });
+    expect(unansweredBackendSlot(null, '10:4000')).toEqual({
+      line: '\x1b[2mcoral\x1b[0m',
+      indicator: null,
+      backend: '10:4000',
+    });
   });
 });
 
