@@ -172,7 +172,8 @@ describe('ConsumerDriver handle lifecycle + fault isolation', () => {
     let expire!: () => void;
     const driver = new ConsumerDriver({
       db,
-      now: realConsumerDriverNow,
+      // A real clock can spend the whole 1ms budget before the timer is armed, ending the drain without it.
+      now: () => new Date(0),
       time: {
         setTimeout: (callback: () => void): TimerHandle => {
           expire = callback;
