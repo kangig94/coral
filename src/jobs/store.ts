@@ -14,6 +14,7 @@ import type { CauseRefToken } from '../causality/cause-ref.js';
 import type { ProviderLookupPort } from '../providers/catalog.js';
 import {
   commit as commitJournalEvents,
+  runPostCommitConsumers,
   type AppendedEvent,
   type CommitAppendInput,
   type CommitClosureResult,
@@ -90,6 +91,11 @@ export type JobStoreOptions = {
   withCommitGuard?: AppendContext['withCommitGuard'];
   withExecutionAdmission?: (jobId: string, execution: number, subject: JobLocationSubject, action: () => void) => void;
 };
+
+/** An untracked commit's prior statuses were never seen, so it can authorize no phase-change announcement. */
+type PriorJobStatuses =
+  | Readonly<{ kind: 'tracked'; byJob: ReadonlyMap<string, JobStatus | null> }>
+  | Readonly<{ kind: 'untracked' }>;
 
 export type RawJobRecoveryProjection = {
   readonly projection: ProjectionJobStoredRow;
@@ -469,30 +475,43 @@ export class JobStore implements JobProgressStore {
     }));
   }
 
-  private publishAppendedEvents(
-    appended: readonly AppendedEvent[],
-    previousByJob: ReadonlyMap<string, JobStatus | null>,
-  ): AppendedEvent[] {
+  // Must precede every consumer that reads a job's status: an override it retires would still answer for it.
+  private reconcileCommitted(appended: readonly AppendedEvent[]): void {
     for (const event of appended) {
-      if (event.stream.kind !== 'job') {
-        continue;
+      if (event.stream.kind === 'job' && (event.type === 'job.opened' || event.type === 'job.execution.requested')) {
+        this.namespaceOverrides.delete(event.stream.id);
       }
+    }
+  }
 
-      if (event.type === 'job.opened') {
+  private announceCommitted(appended: readonly AppendedEvent[], prior: PriorJobStatuses): void {
+    try {
+      for (const event of appended) {
+        if (event.stream.kind === 'job') this.announceJobEvent(event);
+      }
+      if (prior.kind === 'tracked') {
+        for (const [jobId, previous] of prior.byJob) {
+          this.notifyPhaseChange(previous, this.readStatus(jobId));
+        }
+      }
+    } finally {
+      this.notifyWaiters();
+    }
+  }
+
+  private announceJobEvent(event: AppendedEvent): void {
+    switch (event.type) {
+      case 'job.opened': {
         const launch = jobOpenedBodySchema.parse(event.body);
-        this.namespaceOverrides.delete(event.stream.id);
         this.eventBus.emit('job:created', jobCreatedEvent(event.stream.id, launch));
-        continue;
+        return;
       }
-
-      if (event.type === 'job.execution.requested') {
-        this.namespaceOverrides.delete(event.stream.id);
+      case 'job.execution.requested': {
         const { execution } = jobExecutionRequestedBodySchema.parse(event.body);
         this.eventBus.emit('job:requested', { jobId: event.stream.id, execution });
-        continue;
+        return;
       }
-
-      if (event.type === 'job.execution.progress') {
+      case 'job.execution.progress': {
         const body = event.body as { kind?: string; message?: string; timing?: JobProgressTiming };
         if (body.kind === 'message' && typeof body.message === 'string') {
           this.eventBus.emit('job:progress', {
@@ -502,10 +521,9 @@ export class JobStore implements JobProgressStore {
             timing: body.timing as JobProgressTiming,
           });
         }
-        continue;
+        return;
       }
-
-      if (event.type === 'job.execution.ended') {
+      case 'job.execution.ended': {
         const ended = jobExecutionEndedBodySchema.parse(event.body);
         const row = this.db.prepare<[number], EventsRow>('SELECT * FROM events WHERE seq = ?').get(ended.causeRef.seq);
         if (row === undefined || row.stream_kind !== 'job' || row.stream_id !== event.stream.id)
@@ -517,21 +535,32 @@ export class JobStore implements JobProgressStore {
           execution: ended.execution,
           result: accepted.terminal,
         });
+        return;
       }
     }
+  }
 
-    for (const [jobId, previous] of previousByJob) {
-      const next = this.readStatus(jobId);
-      this.notifyPhaseChange(previous, next);
-    }
-
-    this.notifyWaiters();
+  // The store observer is attempted before the announcement: a listener it wakes must not see the commit first.
+  private settleCommitted(
+    appended: readonly AppendedEvent[],
+    prior: PriorJobStatuses,
+    downstream: readonly PostCommitObserver[],
+  ): AppendedEvent[] {
+    const observer = this.observer;
+    runPostCommitConsumers(appended, [
+      (events) => this.reconcileCommitted(events),
+      ...(observer === undefined || appended.length === 0 ? [] : [observer]),
+      (events) => this.announceCommitted(events, prior),
+      ...(appended.length === 0 ? [] : downstream),
+    ]);
     return [...appended];
   }
 
+  /** `downstream` consumers are the committer's own, settled with this store's and isolated from them. */
   commit(
     cb: <Scope>(c: CommitContext<Scope>) => CommitClosureResult,
     options?: Parameters<CommitEventsFn>[1],
+    downstream: readonly PostCommitObserver[] = [],
   ): AppendedEvent[] {
     const previousByJob = new Map<string, JobStatus | null>();
     const appended =
@@ -551,11 +580,7 @@ export class JobStore implements JobProgressStore {
         return cb(tracked);
       }, options) ?? [];
 
-    const published = this.publishAppendedEvents(appended, previousByJob);
-    if (published.length > 0) {
-      this.observer?.(published);
-    }
-    return published;
+    return this.settleCommitted(appended, { kind: 'tracked', byJob: previousByJob }, downstream);
   }
 
   initJob(opts: InitJobOptions): void {
@@ -796,8 +821,8 @@ export class JobStore implements JobProgressStore {
   }
 
   /** Only durable job-stream events may be announced to in-process listeners and waiters. */
-  announceCommitted(appended: readonly AppendedEvent[]): void {
-    this.publishAppendedEvents(appended, new Map());
+  settleForeignCommit(appended: readonly AppendedEvent[], downstream: readonly PostCommitObserver[] = []): void {
+    this.settleCommitted(appended, { kind: 'untracked' }, downstream);
   }
 
   private countLiveOverrideJobs(): number {

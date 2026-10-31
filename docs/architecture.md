@@ -190,7 +190,7 @@ Direct does not mean ambient. CLI/bootstrap adapters choose the active plugin ro
 3. The jobs shell admits or queues that execution, activates provider work, and records progress and continuity on the same job stream.
 4. An accepted outcome enters finishing; settlement and any conversation retention complete before the execution ends. Startup recovery atomically closes a workflow root with its descendant releases once no root executor remains.
 5. `jobs send` on an ended `provider-session`-owned provider job, workflow stale replacements, and later discussion turns request the next execution of the same job, restoring the native file before activation when needed.
-6. Journal appends publish projection freshness through the live `ConsumerDriver`; `projection_jobs` carries the conversation facet and latest execution.
+6. Commits through the coordinator journal assembly's `coordinatorCommit`, and journal events the KB daemon reports, publish projection freshness through the live `ConsumerDriver`. Provider-applied commits and the job store's own commits do not; a consumer reaches them only when a later notification's target covers them and its application succeeds. `projection_jobs` carries the conversation facet and latest execution.
 
 ### Job stream model
 
@@ -220,7 +220,7 @@ Publication is a durable saga rather than a returned transport result. Before ea
 
 Events may be buffered after the kernel starts, but they cannot leave the proxy until the coordinator commits `executing + job.execution.started` and attaches the operation to the current control epoch with `operation.attach.v1`. They then travel back over that connection as `provider.event.v1` — the one method in the protocol that runs proxy-to-coordinator. Each is applied durably by `applyProviderEventAtSeq` and acknowledged only after its transaction commits.
 
-Provider-applied commits use the shared post-commit observer to wake execution finalization and retention while preserving result export, progress-location recording, and announcement ordering. See [Lifecycle retention](./core-modules.md#lifecycle-retention).
+Provider-applied commits settle through the `JobStore` like its own commits. That wakes execution finalization and retention, and it runs result export and progress-location recording before the announcement. See [Lifecycle retention](./core-modules.md#lifecycle-retention).
 
 That makes durable-effect authority exclusive, and the two paths are kept apart structurally rather than by discipline: a proxied job returns from `executeJob` before the local consume/finalize path is ever entered, so the applier owns acceptance of the provider outcome and the common finalizer owns its end. Running the local consume path too would accept the same outcome twice.
 

@@ -1,5 +1,4 @@
 import type { AppendContext } from '../store/append.js';
-import type { StoreReadContext } from '../store/body-codec.js';
 import { currentCoralStoreFormat } from '../store-format.js';
 import { observeDurableRecoveryContainmentFor } from './services/recovery/lifecycle.js';
 import { readDurableCliContainmentStatus } from '../jobs/runtime-meta-store.js';
@@ -38,7 +37,12 @@ import {
   type LifecycleState,
 } from './lifecycle.js';
 import { ExecutionService } from './execution-service.js';
-import { type AppendedEvent, type CommitEventsFn, type PostCommitObserver } from '../store/append.js';
+import {
+  runPostCommitConsumers,
+  type AppendedEvent,
+  type CommitEventsFn,
+  type PostCommitObserver,
+} from '../store/append.js';
 import { prepareCached, type Database } from '../store/db.js';
 import { createEventBodyCodec } from '../store/event-body-codec.js';
 import { loadJobProjectionDetail } from '../jobs/read-queries.js';
@@ -408,8 +412,7 @@ function createJournalCommitObserver(
   jobLocations: JobLocationIndex,
   observeLifecycleCommitted: PostCommitObserver,
 ): PostCommitObserver {
-  return (appended) => {
-    exportTerminalResults(appended);
+  const recordProgressLocations: PostCommitObserver = (appended) => {
     for (const event of appended) {
       if (event.stream.kind !== 'job' || event.type !== 'job.execution.progress') continue;
       try {
@@ -425,8 +428,9 @@ function createJournalCommitObserver(
         backendLog.warn(`Writing job progress address failed for ${event.stream.id}: ${errorMessage(error)}`);
       }
     }
-    observeLifecycleCommitted(appended);
   };
+  return (appended) =>
+    runPostCommitConsumers(appended, [exportTerminalResults, recordProgressLocations, observeLifecycleCommitted]);
 }
 
 function createCoordinatorJournalAssembly({
@@ -515,17 +519,14 @@ function createCoordinatorJournalAssembly({
 
   const getCurrentJournalSeq = () =>
     prepareCached<[], { seq: number }>(getQueryDb(), 'SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get()?.seq ?? 0;
-  // Job events commit through `JobStore.commit`, which owns their announcement to in-process listeners.
-  const coordinatorCommit: CommitEventsFn = (cb, options) => {
-    const appended = getStoreServices().progressStore.commit(cb, options);
-    if (appended.length === 0) {
-      return appended;
-    }
-
-    publishJobEvents(appended, getStoreDb(), { ...reducers, bodyCodec });
-    getConsumerDriver().notify('journal', appended[appended.length - 1]?.seq ?? getCurrentJournalSeq());
-    return appended;
-  };
+  const fanOutCommitted: readonly PostCommitObserver[] = [
+    (appended) => publishJobEvents(appended, getStoreDb(), { ...reducers, bodyCodec }),
+    (appended) => getConsumerDriver().notify('journal', appended[appended.length - 1]?.seq ?? getCurrentJournalSeq()),
+  ];
+  const coordinatorCommit: CommitEventsFn = (cb, options) =>
+    getStoreServices().progressStore.commit(cb, options, fanOutCommitted);
+  const settleKbDaemonCommit: PostCommitObserver = (appended) =>
+    getStoreServices().progressStore.settleForeignCommit(appended, fanOutCommitted);
   const buildProviderEventHandler = (): ProviderEventHandler =>
     createCoordinatorProviderEventHandler({
       runtime,
@@ -537,17 +538,13 @@ function createCoordinatorJournalAssembly({
       eventBus,
       operationRegistry,
       beforeJobAppend,
-      observeCommitted,
       executionFinisher: getExecutionFinisher(),
     });
-  const announceCommitted = (appended: readonly AppendedEvent[]): void =>
-    getStoreServices().progressStore.announceCommitted(appended);
   return {
     getStoreDb,
     getQueryDb,
     getConsumerDriver,
-    observeCommitted,
-    announceCommitted,
+    settleKbDaemonCommit,
     createStoreServicesFromDbFn,
     getCurrentJournalSeq,
     coordinatorCommit,
@@ -556,19 +553,11 @@ function createCoordinatorJournalAssembly({
 }
 
 function createKbDaemonEventHandler({
-  getStoreDb,
-  readCtx,
   getConsumerDriver,
-  getCurrentJournalSeq,
-  observeCommitted,
-  announceCommitted,
+  settleKbDaemonCommit,
 }: {
-  getStoreDb: () => Database;
-  readCtx: StoreReadContext;
   getConsumerDriver: () => ConsumerDriver;
-  getCurrentJournalSeq: () => number;
-  observeCommitted: PostCommitObserver;
-  announceCommitted: (appended: readonly AppendedEvent[]) => void;
+  settleKbDaemonCommit: PostCommitObserver;
 }): (message: KbDaemonEventMessage) => void {
   return (message: KbDaemonEventMessage): void => {
     if (message.event === 'journal') {
@@ -576,14 +565,7 @@ function createKbDaemonEventHandler({
         backendLog.warn('[kb-daemon] ignored malformed journal event payload.');
         return;
       }
-      const appended = message.appended;
-      if (appended.length === 0) {
-        return;
-      }
-      publishJobEvents(appended, getStoreDb(), readCtx);
-      getConsumerDriver().notify('journal', appended[appended.length - 1]?.seq ?? getCurrentJournalSeq());
-      announceCommitted(appended);
-      observeCommitted(appended);
+      if (message.appended.length > 0) settleKbDaemonCommit(message.appended);
       return;
     }
 
@@ -694,7 +676,6 @@ function createCoordinatorProviderEventHandler({
   providerRegistry,
   operationRegistry,
   beforeJobAppend,
-  observeCommitted,
   executionFinisher,
 }: {
   runtime: Runtime;
@@ -706,7 +687,6 @@ function createCoordinatorProviderEventHandler({
   eventBus: TypedEventBus;
   operationRegistry: LocalOperationRegistry;
   beforeJobAppend: ReturnType<typeof createJobAppendObserver>;
-  observeCommitted: PostCommitObserver;
   executionFinisher: ExecutionFinisher;
 }): ProviderEventHandler {
   return createProviderEventHandler({
@@ -724,10 +704,7 @@ function createCoordinatorProviderEventHandler({
     providerRegistry,
     runtime,
     // A terminal committed here must release its in-process holdings, including child principal handles.
-    observeCommitted: (appended) => {
-      observeCommitted(appended);
-      getStoreServices().progressStore.announceCommitted(appended);
-    },
+    observeCommitted: (appended) => getStoreServices().progressStore.settleForeignCommit(appended),
 
     recordedStopCauseFor: (identity) => operationRegistry.recordedStopCauseFor(identity),
   });
@@ -924,8 +901,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions): Coor
     getStoreDb,
     getQueryDb,
     getConsumerDriver,
-    observeCommitted,
-    announceCommitted,
+    settleKbDaemonCommit,
     createStoreServicesFromDbFn,
     getCurrentJournalSeq,
     coordinatorCommit,
@@ -1021,14 +997,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions): Coor
       (coreOptions.disposeLifecycleReactor ?? disposeLifecycleReactor)(),
     ]);
   };
-  kbDaemonEventState.handle = createKbDaemonEventHandler({
-    getStoreDb,
-    readCtx,
-    getConsumerDriver,
-    getCurrentJournalSeq,
-    observeCommitted,
-    announceCommitted,
-  });
+  kbDaemonEventState.handle = createKbDaemonEventHandler({ getConsumerDriver, settleKbDaemonCommit });
 
   core = createCoordinatorCore(
     {
