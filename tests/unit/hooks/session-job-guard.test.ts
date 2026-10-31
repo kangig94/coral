@@ -5,10 +5,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { JobAddressing } from '#src/jobs/addressing.js';
 import { JobLocationIndex } from '#src/jobs/location-index.js';
-import { waitContinuationCommand } from '#src/cli/format/wait.js';
-import { waitExecutionSelectionsSchema } from '#src/jobs/wait/execution-selection.js';
 import { TEST_EPOCH } from '#tests/helpers/wait-session.js';
-import { nextOfType } from '#tests/helpers/wait-stream.js';
 import { progressVisitFromDetails } from '#tests/helpers/wait-progress.js';
 import { JobAttention } from '#src/coordinator/services/job-attention.js';
 import { createCoordinatorRpcPorts } from '#src/coordinator/composition/rpc-ports.js';
@@ -45,17 +42,11 @@ function job(jobId: string, execution = 1, workDir: string | null = root, jobKin
     jobId,
     execution,
     status: { execution, jobKind, workDir },
-    executionSelection: { jobId, epochKey: TEST_EPOCH, requestedSeq: execution * 10, awaitingArtifact: false },
   };
 }
 
-function pinnedWait(...jobIds: string[]) {
-  return waitContinuationCommand(
-    jobIds,
-    null,
-    'bounded',
-    jobIds.map((id) => job(id).executionSelection),
-  );
+function plainWait(...jobIds: string[]) {
+  return `coral-cli jobs wait ${jobIds.join(' ')}`;
 }
 
 function attentionFixture() {
@@ -128,7 +119,6 @@ function attentionFixture() {
   state.exec.mockImplementation(() => JSON.stringify(ports.jobs.list({ owner: 'session-1', unwaited: true })));
   return {
     attention,
-    addressing,
     ports,
     store,
     end: (execution: number) => store.settleForeignCommit(h.complete(execution)),
@@ -175,37 +165,6 @@ afterEach(() => {
 });
 
 describe('session job guard', () => {
-  it('waits for the observed execution when a continuation is requested before the printed command runs', async () => {
-    const f = attentionFixture();
-    const blocked = await stop();
-    expect(blocked?.decision).toBe('block');
-    f.end(1);
-    f.request(2, 'queued');
-    const selectionArgument = blocked?.reason.match(/--execution-selection '([^']+)'/)?.[1];
-    expect(selectionArgument).toBeDefined();
-    const executionSelections = waitExecutionSelectionsSchema.parse(JSON.parse(selectionArgument!));
-    const terminal = await nextOfType(
-      f.addressing.waitStream({ jobIds: [jobId], executionSelections, projectRoot: root }),
-      'terminal',
-    );
-    expect(terminal).toMatchObject({ execution: 1, result: { outcome: { kind: 'completed' } } });
-    expect(f.addressing.admitWait({ jobIds: [jobId] })[0].detail?.status.execution).toBe(2);
-  });
-
-  it.each([
-    undefined,
-    { jobId: 'other', epochKey: TEST_EPOCH, requestedSeq: 10, awaitingArtifact: false },
-    { jobId: 'job-1', requestedSeq: 10, awaitingArtifact: false },
-    { jobId: 'job-1', epochKey: '', requestedSeq: 10, awaitingArtifact: false },
-    { jobId: 'job-1', epochKey: TEST_EPOCH, requestedSeq: 0, awaitingArtifact: false },
-    { jobId: 'job-1', epochKey: TEST_EPOCH, requestedSeq: '10', awaitingArtifact: false },
-    { jobId: 'job-1', epochKey: TEST_EPOCH, requestedSeq: 10, awaitingArtifact: true },
-    { jobId: 'job-1', epochKey: TEST_EPOCH, requestedSeq: 10, deliveredEndSeq: 20, awaitingArtifact: false },
-  ])('fails open when the observed execution cannot be pinned: %j', async (executionSelection) => {
-    state.exec.mockReturnValue(JSON.stringify([{ ...job('job-1'), executionSelection }]));
-    expect(await stop()).toBeNull();
-  });
-
   it.each(['claude', 'codex', 'copilot'])(
     'session job guard: blocks with the exact wait command for %s',
     async (host) => {
@@ -213,7 +172,7 @@ describe('session job guard', () => {
       vi.stubEnv('COPILOT_PLUGIN_ROOT', host === 'copilot' ? root : '');
       expect(await stop()).toEqual({
         decision: 'block',
-        reason: `2 Coral job(s) launched in this session are still running with no wait attached. Run ${pinnedWait('job-1', 'job-2')} to wait for them.`,
+        reason: `2 Coral job(s) launched in this session are still running with no wait attached. Run ${plainWait('job-1', 'job-2')} to wait for them.`,
       });
       expect(state.exec).toHaveBeenCalledWith(
         expect.stringMatching(/clients\/bridge\/coral-cli$/),
@@ -235,7 +194,7 @@ describe('session job guard', () => {
       ]),
     );
     expect((await stop())?.reason).toBe(
-      `3 Coral job(s) launched in this session are still running with no wait attached. Run each command below separately to wait for them:\ncd '/other'\\''s project' && ${pinnedWait('job-1', 'job-3')}\ncd '/third-project' && ${pinnedWait('job-2')}`,
+      `3 Coral job(s) launched in this session are still running with no wait attached. Run each command below separately to wait for them:\ncd '/other'\\''s project' && ${plainWait('job-1', 'job-3')}\ncd '/third-project' && ${plainWait('job-2')}`,
     );
   });
 
@@ -250,14 +209,14 @@ describe('session job guard', () => {
       ]),
     );
     expect((await stop())?.reason).toBe(
-      `4 Coral job(s) launched in this session are still running with no wait attached. Run each command below separately to wait for them:\n${pinnedWait('job-here', 'job-child', 'job-kb')}\ncd '/other-project' && ${pinnedWait('job-other')}`,
+      `4 Coral job(s) launched in this session are still running with no wait attached. Run each command below separately to wait for them:\n${plainWait('job-here', 'job-child', 'job-kb')}\ncd '/other-project' && ${plainWait('job-other')}`,
     );
   });
 
   it('session job guard: does not treat a directory with the same prefix as in scope', async () => {
     state.exec.mockReturnValue(JSON.stringify([job('job-other', 1, `${root}-other`)]));
     expect((await stop())?.reason).toBe(
-      `1 Coral job(s) launched in this session are still running with no wait attached. Run cd '${root}-other' && ${pinnedWait('job-other')} to wait for them.`,
+      `1 Coral job(s) launched in this session are still running with no wait attached. Run cd '${root}-other' && ${plainWait('job-other')} to wait for them.`,
     );
   });
 
@@ -400,10 +359,9 @@ describe('session job guard', () => {
         ...JSON.parse(list()),
       ]),
     );
-    const row = f.ports.jobs.list({ owner: 'session-1', unwaited: true })[0];
     expect(await stop()).toEqual({
       decision: 'block',
-      reason: `1 Coral job(s) launched in this session are still running with no wait attached. Run ${waitContinuationCommand([jobId], null, 'bounded', [row.executionSelection!])} to wait for them.`,
+      reason: `1 Coral job(s) launched in this session are still running with no wait attached. Run ${plainWait(jobId)} to wait for them.`,
     });
     expect(await stop()).toBeNull();
   });
