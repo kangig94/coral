@@ -17,13 +17,7 @@ function jobInWaitScope(job, scopeRoot) {
 }
 
 function waitCommand(jobs) {
-  const selections = jobs.map((job) => ({
-    jobId: job.jobId,
-    epochKey: job.executionSelection.epochKey,
-    requestedSeq: job.executionSelection.requestedSeq,
-    awaitingArtifact: false,
-  }));
-  return `coral-cli jobs wait ${jobs.map((job) => job.jobId).join(' ')} --execution-selection '${JSON.stringify(selections).replaceAll("'", "'\\''")}'`;
+  return `coral-cli jobs wait ${jobs.map((job) => job.jobId).join(' ')}`;
 }
 
 try {
@@ -43,10 +37,6 @@ try {
   if (!Array.isArray(rows)) process.exit(0);
   const jobs = rows.filter((job) => typeof job?.jobId === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(job.jobId) &&
     Number.isSafeInteger(job.execution) && job.execution >= 1 &&
-    job.executionSelection?.jobId === job.jobId &&
-    typeof job.executionSelection.epochKey === 'string' && job.executionSelection.epochKey.length > 0 &&
-    Number.isSafeInteger(job.executionSelection.requestedSeq) && job.executionSelection.requestedSeq >= 1 &&
-    job.executionSelection.awaitingArtifact === false && job.executionSelection.deliveredEndSeq === undefined &&
     (job.status?.jobKind === 'kb' || typeof job.status?.workDir === 'string'));
   if (jobs.length === 0) process.exit(0);
   if (jobGuardAlreadyBlocked(projectDir, input.session_id, jobs)) process.exit(0);
