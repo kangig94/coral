@@ -38,12 +38,7 @@ import {
   type LifecycleState,
 } from './lifecycle.js';
 import { ExecutionService } from './execution-service.js';
-import {
-  commit as commitJournalEvents,
-  type AppendedEvent,
-  type CommitEventsFn,
-  type PostCommitObserver,
-} from '../store/append.js';
+import { type AppendedEvent, type CommitEventsFn, type PostCommitObserver } from '../store/append.js';
 import { prepareCached, type Database } from '../store/db.js';
 import { createEventBodyCodec } from '../store/event-body-codec.js';
 import { loadJobProjectionDetail } from '../jobs/read-queries.js';
@@ -520,28 +515,15 @@ function createCoordinatorJournalAssembly({
 
   const getCurrentJournalSeq = () =>
     prepareCached<[], { seq: number }>(getQueryDb(), 'SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get()?.seq ?? 0;
+  // Job events commit through `JobStore.commit`, which owns their announcement to in-process listeners.
   const coordinatorCommit: CommitEventsFn = (cb, options) => {
-    const db = getStoreDb();
-    const appended = commitJournalEvents(
-      db,
-      cb,
-      {
-        now: () => nowDate(runtime.time),
-        reducers,
-        bodyCodec,
-        providers: providerLookupPortFromCatalog(providerRegistry),
-        beforeAppend: beforeJobAppend,
-        withCommitGuard: beforeJobAppend.withCommitGuard,
-      },
-      options,
-    );
+    const appended = getStoreServices().progressStore.commit(cb, options);
     if (appended.length === 0) {
       return appended;
     }
 
     publishJobEvents(appended, getStoreDb(), { ...reducers, bodyCodec });
     getConsumerDriver().notify('journal', appended[appended.length - 1]?.seq ?? getCurrentJournalSeq());
-    observeCommitted(appended);
     return appended;
   };
   const buildProviderEventHandler = (): ProviderEventHandler =>
@@ -558,11 +540,14 @@ function createCoordinatorJournalAssembly({
       observeCommitted,
       executionFinisher: getExecutionFinisher(),
     });
+  const announceCommitted = (appended: readonly AppendedEvent[]): void =>
+    getStoreServices().progressStore.announceCommitted(appended);
   return {
     getStoreDb,
     getQueryDb,
     getConsumerDriver,
     observeCommitted,
+    announceCommitted,
     createStoreServicesFromDbFn,
     getCurrentJournalSeq,
     coordinatorCommit,
@@ -576,12 +561,14 @@ function createKbDaemonEventHandler({
   getConsumerDriver,
   getCurrentJournalSeq,
   observeCommitted,
+  announceCommitted,
 }: {
   getStoreDb: () => Database;
   readCtx: StoreReadContext;
   getConsumerDriver: () => ConsumerDriver;
   getCurrentJournalSeq: () => number;
   observeCommitted: PostCommitObserver;
+  announceCommitted: (appended: readonly AppendedEvent[]) => void;
 }): (message: KbDaemonEventMessage) => void {
   return (message: KbDaemonEventMessage): void => {
     if (message.event === 'journal') {
@@ -595,6 +582,7 @@ function createKbDaemonEventHandler({
       }
       publishJobEvents(appended, getStoreDb(), readCtx);
       getConsumerDriver().notify('journal', appended[appended.length - 1]?.seq ?? getCurrentJournalSeq());
+      announceCommitted(appended);
       observeCommitted(appended);
       return;
     }
@@ -937,6 +925,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions): Coor
     getQueryDb,
     getConsumerDriver,
     observeCommitted,
+    announceCommitted,
     createStoreServicesFromDbFn,
     getCurrentJournalSeq,
     coordinatorCommit,
@@ -1038,6 +1027,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions): Coor
     getConsumerDriver,
     getCurrentJournalSeq,
     observeCommitted,
+    announceCommitted,
   });
 
   core = createCoordinatorCore(
