@@ -145,7 +145,6 @@ export class WaitSession {
 
   readonly jobIds: readonly string[];
   readonly input?: WaitCursor;
-  readonly inputExecutionSelections: readonly WaitExecutionSelection[];
   private readonly internal: boolean;
   private readonly activeEpochKey: string;
   /** The request's watermark: every requested active-epoch row at or below it was delivered by an earlier read. */
@@ -159,7 +158,6 @@ export class WaitSession {
   ) {
     this.jobIds = jobIds;
     this.input = input;
-    this.inputExecutionSelections = selections.map((selection) => ({ ...selection }));
     this.internal = internal;
     this.activeEpochKey = activeEpochKey;
     const decoded = input === undefined ? undefined : decodeWaitCursor(input);

@@ -686,12 +686,6 @@ export class JobAddressing {
     | { kind: 'selected'; entry: JobExecutionLocation | undefined }
     | { kind: 'unknown'; message: string } {
     const entries = retained.executions;
-    if (!selected && request.cursor !== undefined && entries && entries.length > 1)
-      throw new WaitSessionError(
-        'wait_admission_required',
-        'A seq cursor cannot identify the admitted execution. Start a fresh wait without a cursor.',
-        request.jobIds,
-      );
     let entry = selected ? entries?.find((entry) => entry.requestedSeq === selected.requestedSeq) : entries?.at(-1);
     if (selected?.deliveredEndSeq !== undefined && entry && selected.deliveredEndSeq !== entry.seq)
       throw new WaitSessionError(
@@ -830,12 +824,6 @@ export class JobAddressing {
     selected: WaitExecutionSelection | undefined,
     request: WaitStreamRequest,
   ): JobExecutionDetail | undefined {
-    if (!selected && request.cursor !== undefined && executions && executions.length > 1)
-      throw new WaitSessionError(
-        'wait_admission_required',
-        'A seq cursor cannot identify the admitted execution. Start a fresh wait without a cursor.',
-        request.jobIds,
-      );
     let execution = selected
       ? executions?.find((execution) => execution.requestedSeq === selected.requestedSeq)
       : executions?.at(-1);

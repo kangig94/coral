@@ -1,5 +1,4 @@
 import { formatRecoveryQuarantineCommand } from './backend.js';
-import type { WaitExecutionSelection } from '../../jobs/wait/execution-selection.js';
 import { waitCommandPrefix } from '../../coordinator/handoff-routing/wait-command.js';
 export { waitCommandPrefix } from '../../coordinator/handoff-routing/wait-command.js';
 import { formatResultAvailability } from './result-availability.js';
@@ -78,13 +77,8 @@ export function waitContinuationCommand(
   jobIds: readonly string[],
   cursor: string | null,
   mode: WaitContinuationMode,
-  executionSelections: readonly WaitExecutionSelection[] = [],
 ): string {
-  const selection =
-    executionSelections.length === 0
-      ? ''
-      : ` --execution-selection '${JSON.stringify(executionSelections).replaceAll("'", "'\\''")}'`;
-  return `${waitCommandPrefix()} ${jobIds.join(' ')}${CONTINUATION_MODE_FLAG[mode]}${cursor === null ? '' : ` --cursor ${cursor}`}${selection}`;
+  return `${waitCommandPrefix()} ${jobIds.join(' ')}${CONTINUATION_MODE_FLAG[mode]}${cursor === null ? '' : ` --cursor ${cursor}`}`;
 }
 
 /** Nothing ends an unbounded wait before a foreground shell's own timeout kills it without a continuation. */
@@ -96,10 +90,9 @@ export function formatWaitContinuation(
   jobIds: readonly string[],
   cursor: string | null,
   mode: WaitContinuationMode = 'bounded',
-  executionSelections: readonly WaitExecutionSelection[] = [],
 ): string {
   if (jobIds.length === 0) return 'No remaining jobs.';
-  return `Run ${waitContinuationCommand(jobIds, cursor, mode, executionSelections)}${waitContinuationShell(mode)} to continue waiting.`;
+  return `Run ${waitContinuationCommand(jobIds, cursor, mode)}${waitContinuationShell(mode)} to continue waiting.`;
 }
 
 export function formatWaitProgress(event: WaitProgressEvent, label?: string): string {
@@ -142,7 +135,7 @@ export function formatWaitTerminal(
     .replace(/\r\n|[\r\n\u2028\u2029]/g, '\n> ');
   // A terminal that ends nothing leaves the continuation to the event that ends the read.
   const continuation = isFinalWaitEvent(event)
-    ? formatWaitContinuation(event.remainingJobIds, cursor, options.continuationMode, event.executionSelections)
+    ? formatWaitContinuation(event.remainingJobIds, cursor, options.continuationMode)
     : undefined;
   const fullDetail =
     event.availability.kind !== 'available' || (inline && event.result.content.length > 10_000)
@@ -169,7 +162,7 @@ export function formatWaitCarrierInterrupted(event: WaitCarrierInterruptedEvent)
 }
 
 export function formatWaitWaiting(
-  event: Pick<WaitWaitingEvent, 'type' | 'waitingJobIds' | 'carrierUnknownJobIds' | 'executionSelections'>,
+  event: Pick<WaitWaitingEvent, 'type' | 'waitingJobIds' | 'carrierUnknownJobIds'>,
   cursor: string | null,
   resumeJobIds: readonly string[] = event.waitingJobIds,
   continuationMode: WaitContinuationMode = 'bounded',
@@ -180,7 +173,7 @@ export function formatWaitWaiting(
     resumeJobIds.length > 0 && waitingCount > 0
       ? `Still waiting on ${waitingCount} ${waitingCount === 1 ? 'job' : 'jobs'}.`
       : 'Wait complete; no jobs remain.';
-  const continuation = ` ${formatWaitContinuation(resumeJobIds, cursor, continuationMode, event.executionSelections)}`;
+  const continuation = ` ${formatWaitContinuation(resumeJobIds, cursor, continuationMode)}`;
   const unknown = !event.carrierUnknownJobIds?.length
     ? undefined
     : `Carrier unconfirmed for: ${event.carrierUnknownJobIds.join(', ')}.`;
@@ -229,7 +222,7 @@ export function formatWaitSnapshot(snapshot: WaitSnapshot): string {
     ...snapshot.notices,
     ...blocks,
     snapshot.remainingJobIds.length
-      ? formatWaitContinuation(snapshot.remainingJobIds, snapshot.cursor, 'snapshot', snapshot.executionSelections)
+      ? formatWaitContinuation(snapshot.remainingJobIds, snapshot.cursor, 'snapshot')
       : undefined,
   ]);
 }

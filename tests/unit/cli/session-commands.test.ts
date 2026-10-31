@@ -293,7 +293,9 @@ it.each([
   [
     { state: 'unknown', reason: 'No answer.' },
     75,
-    "Unknown: message may have been delivered. Check the job's progress for evidence.\ncommand=coral-cli jobs wait job-1\nDo not resend until the wait shows the outcome.",
+    "Unknown: message may have been delivered. Check the job's progress for evidence.\ncommand=coral-cli jobs wait job-1\n" +
+      'If it reports an execution other than the one this send targeted, it does not show whether the message arrived; the job detail lists every execution and may.\n' +
+      'command=coral-cli jobs detail job-1 --full\nDo not resend it automatically.',
   ],
 ] satisfies [JobSendOutcome, number, string][])('renders %j with exit %i', async (result, exitCode, expected) => {
   const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
@@ -428,9 +430,8 @@ it.each([false, true])('follows a launched continuation by default and detaches=
     expect(launchAndFollow).not.toHaveBeenCalled();
     const text = stdout.mock.calls.map(([chunk]) => String(chunk)).join('');
     expect(text).toContain('Provider job job-1 execution #2 queued');
-    expect(text).toContain('job-1');
-    expect(text).toContain('--execution-selection');
-    expect(text).toContain('100');
+    expect(text).toContain('command=coral-cli jobs wait job-1');
+    expect(text).not.toContain('--execution-selection');
   } else {
     expect(launchAndFollow).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ launchResult: launch }));
     expect(process.exitCode).toBe(7);
@@ -447,8 +448,8 @@ it('detaches a continuation using the ordinal derived by target binding when the
   await program().parseAsync(['jobs', 'send', 'job-1', '-d', '-i', 'continue'], { from: 'user' });
   const text = stdout.mock.calls.map(([chunk]) => String(chunk)).join('');
   expect(text).toContain('Provider job job-1 execution #2 queued');
-  expect(text).toContain('--execution-selection');
-  expect(text).toContain('100');
+  expect(text).toContain('command=coral-cli jobs wait job-1');
+  expect(text).not.toContain('--execution-selection');
   expect(launchAndFollow).not.toHaveBeenCalled();
   expect(process.exitCode).toBe(0);
 });
@@ -602,38 +603,26 @@ it.each(
   expect(client.abortJobs).not.toHaveBeenCalled();
 });
 
-it('passes the complete execution selection from a continuation into streaming follow', async () => {
-  const selections = [
-    { jobId: 'a', epochKey: 'epoch', requestedSeq: 1000, awaitingArtifact: false },
-    { jobId: 'b', epochKey: 'epoch', requestedSeq: 2, deliveredEndSeq: 950, awaitingArtifact: false },
-  ];
-  await program().parseAsync([
-    'node',
-    'coral-cli',
-    'jobs',
-    'wait',
-    'a',
-    '--cursor',
-    '279',
-    '--execution-selection',
-    JSON.stringify(selections),
-  ]);
-  expect(followJobs).toHaveBeenCalledWith(
-    expect.objectContaining({
-      start: { kind: 'jobs', jobIds: ['a'], serializedCursor: '279', executionSelections: selections },
-    }),
-  );
-});
+it.each([[], ['--snapshot'], ['--unbounded']].map((args) => [args]))(
+  'should refuse --execution-selection as an unknown option %j',
+  async (mode) => {
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    await expect(
+      program().parseAsync(['node', 'coral-cli', 'jobs', 'wait', 'a', ...mode, '--execution-selection', '[]']),
+    ).rejects.toThrow("unknown option '--execution-selection'");
+    expect(followJobs).not.toHaveBeenCalled();
+    expect(client.snapshotJobsWait).not.toHaveBeenCalled();
+  },
+);
 
-it('passes execution selection through snapshot requests and rendered continuations', async () => {
-  const selections = [{ jobId: 'a', epochKey: 'epoch', requestedSeq: 1000, awaitingArtifact: false }];
+it('should print a snapshot continuation that carries only the cursor', async () => {
   client.snapshotJobsWait.mockResolvedValueOnce({
     jobs: [{ jobId: 'a', disposition: 'admitted', phase: 'running', progress: [] }],
     notices: [],
     cursor: '1000',
     remainingJobIds: ['a'],
     exitCode: 75,
-    executionSelections: selections,
+    executionSelections: [{ jobId: 'a', epochKey: 'epoch', requestedSeq: 1000, awaitingArtifact: false }],
   });
   let output = '';
   vi.spyOn(process.stdout, 'write').mockImplementation(((text: unknown, callback?: () => void) => {
@@ -641,48 +630,13 @@ it('passes execution selection through snapshot requests and rendered continuati
     callback?.();
     return true;
   }) as typeof process.stdout.write);
-  await program().parseAsync([
-    'node',
-    'coral-cli',
-    'jobs',
-    'wait',
-    'a',
-    '--snapshot',
-    '--cursor',
-    '279',
-    '--execution-selection',
-    JSON.stringify(selections),
-  ]);
+  await program().parseAsync(['node', 'coral-cli', 'jobs', 'wait', 'a', '--snapshot', '--cursor', '279']);
   expect(client.snapshotJobsWait).toHaveBeenCalledWith(
-    expect.objectContaining({ cursor: '279', executionSelections: selections }),
+    expect.not.objectContaining({ executionSelections: expect.anything() }),
   );
-  expect(output).toContain(`--execution-selection '${JSON.stringify(selections)}'`);
-  expect(output).toContain('--snapshot --cursor 1000');
+  expect(output).toContain('coral-cli jobs wait a --snapshot --cursor 1000');
+  expect(output).not.toContain('--execution-selection');
 });
-
-it.each([[], ['--snapshot'], ['--unbounded']].map((args) => [args]))(
-  'rejects malformed execution selections with a runnable recovery %j',
-  async (mode) => {
-    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-    await program().parseAsync([
-      'node',
-      'coral-cli',
-      'jobs',
-      'wait',
-      'a',
-      'b',
-      ...mode,
-      '--execution-selection',
-      '{bad',
-    ]);
-    expect(process.exitCode).toBe(2);
-    const output = stderr.mock.calls.map(([text]) => String(text)).join('');
-    expect(output).toContain('Rerun the printed continuation exactly as printed');
-    expect(output).toContain('coral-cli jobs wait a b');
-    expect(followJobs).not.toHaveBeenCalled();
-    expect(client.snapshotJobsWait).not.toHaveBeenCalled();
-  },
-);
 
 it('renders a snapshot admission refusal with one snapshot-mode fresh-wait remedy', async () => {
   client.snapshotJobsWait.mockRejectedValueOnce(

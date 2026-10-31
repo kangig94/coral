@@ -192,8 +192,8 @@ describe('execution-addressed waits', () => {
       }),
     );
     expect(rpc.executionSelections).toEqual(input);
-    expect(waitContinuationCommand(['a', 'b'], cut.cursor, 'bounded', cut.executionSelections)).toContain(
-      `--execution-selection '${JSON.stringify(input)}'`,
+    expect(waitContinuationCommand(['a', 'b'], cut.cursor, 'bounded')).toBe(
+      `coral-cli jobs wait a b --cursor ${cut.cursor}`,
     );
     const events = await collect(
       f.stream({ ...read, cursor: cut.cursor ?? undefined, executionSelections: cut.executionSelections }),
@@ -202,14 +202,14 @@ describe('execution-addressed waits', () => {
     expect(events.at(-1)).toMatchObject({ executionSelections: input });
   });
 
-  it('refuses ambiguous bare cursors and invalid delivered boundaries, preserving unreadable pins', () => {
+  it('admits the latest execution for a bare cursor and refuses invalid delivered boundaries', () => {
     const f = waitExecutions();
     f.request('a', 10);
     f.end('a', 20);
     f.request('a', 30);
-    expect(() => f.coordinator.readWaitAdmission('a', TEST_EPOCH, { jobIds: ['a'], cursor: '0' })).toThrow(
-      expect.objectContaining({ code: 'wait_admission_required' }),
-    );
+    expect(f.coordinator.readWaitAdmission('a', TEST_EPOCH, { jobIds: ['a'], cursor: '0' })).toMatchObject({
+      selection: { requestedSeq: 30, awaitingArtifact: false },
+    });
     expect(() =>
       f.coordinator.readWaitAdmission('a', TEST_EPOCH, {
         jobIds: ['a'],
@@ -226,17 +226,14 @@ describe('execution-addressed waits', () => {
     ).toMatchObject({ disposition: 'unknown' });
   });
 
-  it('accepts a bare cursor only for a provable single-execution history', async () => {
+  it('should infer no delivery from a bare cursor, so a resumed wait prints the latest terminal again', async () => {
     const f = waitExecutions();
     f.request('a', 10);
     f.end('a', 20);
-    const events = await collect(f.stream({ jobIds: ['a'], cursor: '20' }));
-    expect(events.filter((event) => event.type === 'terminal')).toEqual([]);
-    expect(events.at(-1)).toMatchObject({
-      type: 'waiting',
-      waitingJobIds: [],
-      executionSelections: [{ ...selected('a', 10), deliveredEndSeq: 20 }],
-    });
+    f.request('a', 30);
+    f.end('a', 40);
+    const events = await collect(f.stream({ jobIds: ['a'], cursor: '45' }));
+    expect(events.filter((event) => event.type === 'terminal')).toEqual([expect.objectContaining({ execution: 2 })]);
   });
 
   it('keeps an artifact-pending selection through reconnect until its artifact disposition is delivered', async () => {

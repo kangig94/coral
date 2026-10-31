@@ -88,9 +88,7 @@ import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { TOOL_TIMEOUT_MS } from '#src/transport/http/sse.js';
-import { waitExecutions } from '#tests/helpers/wait-executions.js';
 import { TEST_EPOCH } from '#tests/helpers/wait-session.js';
-import { waitExecutionSelectionsSchema } from '#src/jobs/wait/execution-selection.js';
 
 function realDetail(phase: 'running' | 'completed' = 'running', execution = 1, epochKey = 'epoch') {
   const h = executionHarness();
@@ -299,12 +297,7 @@ describe('command client routing', () => {
       result.state === 'unknown' || result.state === 'refused'
         ? {
             ...result,
-            executionSelection: {
-              jobId: 'job-1',
-              epochKey: detail.epochKey,
-              requestedSeq: detail.requestedSeq,
-              awaitingArtifact: false,
-            },
+            targetExecution: detail.status.execution,
           }
         : result,
     );
@@ -328,7 +321,7 @@ describe('command client routing', () => {
     expect(output.exitCode).toBe(75);
     expect(output.text).toContain('may have been delivered');
     expect(output.text).toContain('command=coral-cli jobs wait job-1');
-    expect(output.text).toContain('Do not resend until the wait shows the outcome.');
+    expect(output.text).toContain('Do not resend it automatically.');
     expect(output.text).not.toMatch(/retry|command=coral-cli jobs send|backend status/i);
     expect(mockState.request).toHaveBeenCalledOnce();
     expect(issueWithSuccessorAfterLifecycleRefusal).toHaveBeenCalledTimes(2);
@@ -341,7 +334,7 @@ describe('command client routing', () => {
     expect(outcome).toMatchObject({ state: 'unknown' });
     const output = formatJobSendResult('job-1', outcome);
     expect(output.exitCode).toBe(75);
-    expect(output.text).toContain('Do not resend until the wait shows the outcome.');
+    expect(output.text).toContain('Do not resend it automatically.');
     expect(output.text).not.toMatch(/retry|command=coral-cli jobs send|backend status/i);
     expect(mockState.request).toHaveBeenCalledTimes(2);
     expect(ensure).toHaveBeenCalledTimes(3);
@@ -356,12 +349,7 @@ describe('command client routing', () => {
       state: 'refused',
       code: 'unsupported_by_running_build',
       reason: 'The running Coral build predates this jobs send contract.',
-      executionSelection: {
-        jobId: 'job-1',
-        epochKey: detail.epochKey,
-        requestedSeq: detail.requestedSeq,
-        awaitingArtifact: false,
-      },
+      targetExecution: detail.status.execution,
     });
     const output = formatJobSendResult('job-1', outcome);
     expect(output.exitCode).toBe(1);
@@ -650,11 +638,8 @@ describe('jobs send immutable attempt envelope', () => {
       const output = formatJobSendResult('job-1', result);
       expect(output.exitCode).toBe(0);
       expect(output.text.split('\n')[0]).toBe(`Provider job job-1 execution #3 ${launchState}`);
-      const selection = output.text.match(/--execution-selection '(.*)'/)?.[1];
-      expect(selection).toBeDefined();
-      expect(waitExecutionSelectionsSchema.parse(JSON.parse(selection!))).toEqual([
-        { jobId: 'job-1', requestedSeq: 30, epochKey: 'epoch', awaitingArtifact: false },
-      ]);
+      expect(output.text).toContain('command=coral-cli jobs wait job-1');
+      expect(output.text).not.toContain('--execution-selection');
     },
   );
 
@@ -907,60 +892,32 @@ describe('jobs send immutable attempt envelope', () => {
     { code: 'archive_hash_mismatch', phase: 'completed' },
     { code: 'archive_invalid', phase: 'completed' },
   ] as const)(
-    'pins an ordinary $code refusal to its targeted result despite a later execution',
+    'names the targeted execution of an ordinary $code refusal with a plain wait',
     async ({ code, phase }) => {
       const detail = realDetail(phase, 1, TEST_EPOCH);
       mockState.detailRequest.mockReturnValue(detail);
       mockState.request.mockResolvedValueOnce({ state: 'refused', code, reason: 'Refused.' });
-      const waits = waitExecutions();
-      waits.request('job-1', detail.requestedSeq!);
       const result = await makeClient(projectRoot, findCommand(buildProgram(), 'jobs', 'send')).sendJob(
         'job-1',
         'input',
       );
-      waits.end('job-1', 20);
-      waits.request('job-1', 30);
-      mockState.detailRequest.mockReturnValue(realDetail('running', 2, TEST_EPOCH));
       const output = formatJobSendResult('job-1', result);
       const command = output.text.split('\n').find((line) => line.startsWith('command=coral-cli jobs wait'))!;
-      const selection = {
-        jobId: 'job-1',
-        epochKey: TEST_EPOCH,
-        requestedSeq: detail.requestedSeq,
-        awaitingArtifact: false,
-      };
-      expect(command).toBe(`command=coral-cli jobs wait job-1 --execution-selection '${JSON.stringify([selection])}'`);
-      const executionSelections = waitExecutionSelectionsSchema.parse(
-        JSON.parse(command.split("--execution-selection '")[1].slice(0, -1)),
-      );
-      const bare = waits.coordinator.readWaitAdmission('job-1', TEST_EPOCH, { jobIds: ['job-1'] });
-      expect(bare.detail?.status.execution).toBe(2);
-      const pinned = waits.coordinator.readWaitAdmission('job-1', TEST_EPOCH, {
-        jobIds: ['job-1'],
-        executionSelections,
-      });
-      expect(pinned.detail?.status.execution).toBe(1);
-      expect(pinned.detail?.exit?.content).toBe('job-1#1');
+      expect(result).toMatchObject({ state: 'refused', code, targetExecution: phase === 'running' ? 1 : 2 });
+      expect(command).toBe('command=coral-cli jobs wait job-1');
       expect(mockState.detailRequest).toHaveBeenCalledOnce();
       expect(mockState.request).toHaveBeenCalledOnce();
     },
   );
 
   it.each(['steer', 'continue'] as const)(
-    'pins a lost-response %s retry refusal despite later executions',
+    'names the execution a lost-response %s retry targeted: the bound one for a steer, the next for a continuation',
     async (mode) => {
       const detail = realDetail(mode === 'continue' ? 'completed' : 'running', 1, TEST_EPOCH);
-      const terminal = [...detail.events].reverse().find((event) => event.type === 'terminal');
-      const waits = waitExecutions();
-      waits.request('job-1', detail.requestedSeq!);
-      if (mode === 'continue') waits.end('job-1', terminal!.seq);
+      const target = mode === 'continue' ? 2 : 1;
       mockState.detailRequest.mockReturnValue(detail);
       mockState.request
         .mockImplementationOnce(async () => {
-          if (mode === 'steer') waits.end('job-1', 20);
-          waits.request('job-1', 30);
-          waits.end('job-1', 40);
-          waits.request('job-1', 50);
           mockState.detailRequest.mockReturnValue(realDetail('running', 3, TEST_EPOCH));
           throw new Error('response lost');
         })
@@ -969,38 +926,21 @@ describe('jobs send immutable attempt envelope', () => {
         'job-1',
         'input',
       );
-      const selection = {
-        jobId: 'job-1',
-        epochKey: TEST_EPOCH,
-        requestedSeq: detail.requestedSeq,
-        awaitingArtifact: false,
-        ...(mode === 'continue' ? { deliveredEndSeq: terminal!.seq } : {}),
-      };
       expect(result).toEqual({
         state: 'refused',
         code: 'execution_finishing',
         reason: 'Finishing.',
         priorDeliveryUncertain: true,
-        executionSelection: selection,
+        targetExecution: target,
       });
       const output = formatJobSendResult('job-1', result);
       expect(output.exitCode).toBe(1);
       expect(output.text).toContain('earlier invocation may have delivered');
-      const commands = output.text.split('\n').filter((line) => line.startsWith('command='));
-      expect(commands).toEqual([
-        `command=coral-cli jobs wait job-1 --execution-selection '${JSON.stringify([selection])}'`,
-      ]);
-      const executionSelections = waitExecutionSelectionsSchema.parse(
-        JSON.parse(commands[0].split("--execution-selection '")[1].slice(0, -1)),
+      expect(output.text).toContain(
+        `If it reports an execution other than #${target}, it does not show whether the message arrived`,
       );
-      const bare = waits.coordinator.readWaitAdmission('job-1', TEST_EPOCH, { jobIds: ['job-1'] });
-      expect(bare.detail?.status.execution).toBe(3);
-      const pinned = waits.coordinator.readWaitAdmission('job-1', TEST_EPOCH, {
-        jobIds: ['job-1'],
-        executionSelections,
-      });
-      expect(pinned.detail?.status.execution).toBe(mode === 'continue' ? 2 : 1);
-      expect(pinned.selection?.requestedSeq).toBe(mode === 'continue' ? 30 : detail.requestedSeq);
+      const commands = output.text.split('\n').filter((line) => line.startsWith('command='));
+      expect(commands).toEqual(['command=coral-cli jobs wait job-1', 'command=coral-cli jobs detail job-1 --full']);
       expect(mockState.detailRequest).toHaveBeenCalledOnce();
       expect(mockState.request).toHaveBeenCalledTimes(2);
       expect(mockState.request.mock.calls[1][1]).toEqual(mockState.request.mock.calls[0][1]);
@@ -1047,7 +987,7 @@ describe('jobs send immutable attempt envelope', () => {
     }
   });
 
-  it.each(['steer', 'continue'] as const)('pins an unknown %s to the observed execution boundary', async (mode) => {
+  it.each(['steer', 'continue'] as const)('names the targeted execution of an unknown %s', async (mode) => {
     const detail = realDetail(mode === 'continue' ? 'completed' : 'running');
     mockState.detailRequest.mockReturnValue(detail);
     mockState.request.mockResolvedValue({ state: 'unknown', reason: 'Commit response lost' });
@@ -1055,16 +995,10 @@ describe('jobs send immutable attempt envelope', () => {
       'job-1',
       'input',
     );
-    expect(outcome).toMatchObject({
-      state: 'unknown',
-      executionSelection: {
-        jobId: 'job-1',
-        requestedSeq: detail.requestedSeq,
-        epochKey: detail.epochKey,
-        ...(mode === 'continue' ? { deliveredEndSeq: detail.events[detail.events.length - 1].seq } : {}),
-        awaitingArtifact: false,
-      },
-    });
-    expect(formatJobSendResult('job-1', outcome).text).toContain('--execution-selection');
+    const target = mode === 'continue' ? detail.status.execution! + 1 : detail.status.execution;
+    expect(outcome).toMatchObject({ state: 'unknown', targetExecution: target });
+    const text = formatJobSendResult('job-1', outcome).text;
+    expect(text).toContain(`an execution other than #${target}`);
+    expect(text).not.toContain('--execution-selection');
   });
 });

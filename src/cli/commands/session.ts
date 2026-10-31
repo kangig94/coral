@@ -1,13 +1,7 @@
-import { waitExecutionSelectionsSchema, type WaitExecutionSelection } from '../../jobs/wait/execution-selection.js';
 import { decodeWaitCursor, WAIT_CURSOR_REPLAY_NOTICE } from '../../jobs/wait/cursor.js';
 import type { WaitCursor } from '../../jobs/wait/contract.js';
 import { parseWaitSnapshot } from '../../jobs/wait/snapshot.js';
-import {
-  formatWaitSnapshot,
-  formatWaitContinuation,
-  waitCommandPrefix,
-  waitContinuationCommand,
-} from '../format/wait.js';
+import { formatWaitSnapshot, formatWaitContinuation, waitCommandPrefix } from '../format/wait.js';
 import { mapWaitSubscriptionError, SOFT_CURSOR_REFUSALS } from '../wait-stream-error.js';
 import { MAX_WAIT_JOB_IDS } from '../../jobs/wait/stream-event.js';
 import { BackendToolHttpError } from '../../transport/http/errors.js';
@@ -66,7 +60,6 @@ type WaitJobsOptions = {
   unbounded?: boolean;
   lines?: string;
   cursor?: string;
-  executionSelection?: string;
   embed?: boolean;
   verbose?: boolean;
 };
@@ -387,10 +380,6 @@ function configureWaitJobsCommand(command: Command): Command {
     .argument('<jobIds...>', 'Job IDs')
     .option('--cursor <cursor>', 'Progress seq cursor (from previous wait output)')
     .option(
-      '--execution-selection <JSON>',
-      'Optional complete opaque JSON from a printed continuation; copy it unchanged',
-    )
-    .option(
       '--snapshot',
       'Read an immediate snapshot; continuations keep --snapshot; drop it explicitly to switch to a blocking wait',
     )
@@ -430,7 +419,6 @@ async function runWaitSnapshot(
   lines: number | undefined,
 ): Promise<void> {
   const invocation = getWaitInvocation();
-  const executionSelections = parseExecutionSelections(opts.executionSelection, jobIds);
   let cursor: WaitCursor | undefined;
   if (opts.cursor !== undefined) {
     if (decodeWaitCursor(opts.cursor).kind === 'decoded') cursor = opts.cursor;
@@ -445,7 +433,6 @@ async function runWaitSnapshot(
       jobIds,
       projectRoot,
       ...(cursor === undefined ? {} : { cursor }),
-      ...(executionSelections === undefined ? {} : { executionSelections }),
       ...(lines === undefined ? {} : { lines }),
     });
   let response;
@@ -470,12 +457,11 @@ async function runWaitSnapshot(
   } catch {
     throw new WaitSnapshotResponseError(
       invocation?.originalCommand ??
-        `${waitCommandPrefix()} ${jobIds.join(' ')} --snapshot${opts.cursor === undefined ? '' : ` --cursor ${opts.cursor}`}${opts.lines === undefined ? '' : ` --lines ${opts.lines}`}${opts.executionSelection === undefined ? '' : ` --execution-selection '${opts.executionSelection.replaceAll("'", "'\\''")}'`}`,
+        `${waitCommandPrefix()} ${jobIds.join(' ')} --snapshot${opts.cursor === undefined ? '' : ` --cursor ${opts.cursor}`}${opts.lines === undefined ? '' : ` --lines ${opts.lines}`}`,
     );
   }
   const output = formatWaitSnapshot(snapshot) + '\n';
-  const continuation =
-    formatWaitContinuation(snapshot.remainingJobIds, snapshot.cursor, 'snapshot', snapshot.executionSelections) + '\n';
+  const continuation = formatWaitContinuation(snapshot.remainingJobIds, snapshot.cursor, 'snapshot') + '\n';
   const write = () =>
     new Promise<void>((resolve, reject) =>
       process.stdout.write(output, (error) => (error ? reject(error) : resolve())),
@@ -487,7 +473,7 @@ async function runWaitSnapshot(
     throw new WaitOutputError(
       error,
       invocation?.originalCommand ??
-        `${waitCommandPrefix()} ${jobIds.join(' ')} --snapshot${opts.cursor === undefined ? '' : ` --cursor ${opts.cursor}`}${opts.lines === undefined ? '' : ` --lines ${opts.lines}`}${opts.executionSelection === undefined ? '' : ` --execution-selection '${opts.executionSelection.replaceAll("'", "'\\''")}'`}`,
+        `${waitCommandPrefix()} ${jobIds.join(' ')} --snapshot${opts.cursor === undefined ? '' : ` --cursor ${opts.cursor}`}${opts.lines === undefined ? '' : ` --lines ${opts.lines}`}`,
     );
   }
 
@@ -504,7 +490,6 @@ async function runStreamingWaitJobs(
     start: {
       kind: 'jobs',
       jobIds,
-      executionSelections: parseExecutionSelections(opts.executionSelection, jobIds),
       ...(opts.cursor === undefined ? {} : { serializedCursor: opts.cursor }),
     },
     reconnectPolicy: opts.unbounded === true ? 'unbounded' : 'bounded',
@@ -531,18 +516,4 @@ async function runStreamingWaitJobs(
       ),
     }),
   });
-}
-
-function parseExecutionSelections(
-  value: string | undefined,
-  jobIds: readonly string[],
-): WaitExecutionSelection[] | undefined {
-  if (value === undefined) return undefined;
-  try {
-    return waitExecutionSelectionsSchema.parse(JSON.parse(value));
-  } catch {
-    throw new UsageError(
-      `--execution-selection must be the complete JSON state from a wait continuation. Rerun the printed continuation exactly as printed, or start a fresh wait: ${waitContinuationCommand(jobIds, null, 'bounded')}`,
-    );
-  }
 }

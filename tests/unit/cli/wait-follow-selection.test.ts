@@ -106,7 +106,7 @@ describe('follow execution selection', () => {
     expect(connect.mock.calls[1][0]).toMatchObject({ jobIds: ['a'], cursor: '279', executionSelections: completed });
   });
 
-  it('prints a pin in the continuation after disconnect before any progress cursor', async () => {
+  it('should print a plain continuation after disconnect before any progress cursor', async () => {
     const connect = vi.fn<Parameters<typeof followJobs>[0]['connect']>().mockResolvedValue({
       kind: 'subscription',
       subscription: subscription([{ type: 'admission', executionSelections: [pin('a', 100)] }]),
@@ -114,8 +114,7 @@ describe('follow execution selection', () => {
     const emitError = vi.fn();
     await followJobs({ ...options, emitError, start: { kind: 'launch', launchResult }, connect });
     const error = emitError.mock.calls[0][0] as WaitResumeError;
-    expect(error.remediation).toContain(`--execution-selection '${JSON.stringify([pin('a', 100)])}'`);
-    expect(error.remediation).not.toContain('--cursor');
+    expect(error.remediation).toBe('Rerun `coral-cli jobs wait a` to continue waiting.');
   });
 
   it('rejects accepted launch shapes lacking the committed request address', () => {

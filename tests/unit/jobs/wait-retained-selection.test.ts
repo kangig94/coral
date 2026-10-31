@@ -4,9 +4,9 @@ import type { JobLocation, JobLocationView } from '#src/jobs/location-index.js';
 import { admitted } from '#tests/helpers/wait-session.js';
 import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
 
-function fixture() {
+function fixture(epochKey: 'retained' | 'active' = 'retained') {
   const execution = (ordinal: number, requestedSeq: number, end: number) => {
-    const detail = admitted('a', [], true, 'retained', false, end).detail;
+    const detail = admitted('a', [], true, epochKey, false, end).detail;
     return {
       execution: ordinal,
       requestedSeq,
@@ -19,7 +19,7 @@ function fixture() {
   const location: JobLocation = {
     version: 'v1',
     jobId: 'a',
-    epochKey: 'retained',
+    epochKey,
     disposition: 'terminal',
     subject: { projectRoot: '/tmp', workDir: '/tmp', jobKind: 'provider' },
     executions,
@@ -37,7 +37,18 @@ function fixture() {
     view,
     {
       epochKey: () => 'active',
-      detail: () => null,
+      detail: () =>
+        epochKey === 'active'
+          ? {
+              ...executions[1].detail,
+              executions: executions.map(({ detail, execution, requestedSeq, resultPath }) => ({
+                ...detail,
+                execution,
+                requestedSeq,
+                resultPath,
+              })),
+            }
+          : null,
       abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
     },
     () => false,
@@ -47,6 +58,21 @@ function fixture() {
   );
   return { addressing, location };
 }
+
+describe('cursor-only waits of a two-execution job', () => {
+  it.each(['retained', 'active'] as const)(
+    'should admit the latest %s execution and deliver its terminal even past the cursor',
+    (epochKey) => {
+      const { addressing } = fixture(epochKey);
+      const [admission] = addressing.admitWait({ jobIds: ['a'], cursor: '45' });
+      expect(admission).toMatchObject({ disposition: 'admitted', selection: { requestedSeq: 30 } });
+      expect(admission.selection?.deliveredEndSeq).toBeUndefined();
+      const [job] = addressing.snapshot({ jobIds: ['a'], cursor: '45' }).jobs;
+      expect(job).toMatchObject({ execution: 2 });
+      expect(job.terminal).toBeDefined();
+    },
+  );
+});
 
 describe('retained wait selections', () => {
   it('validates and reopens a past execution independently of the latest terminal copy', () => {
@@ -63,11 +89,11 @@ describe('retained wait selections', () => {
     ).toMatchObject({ selection: { requestedSeq: 30 }, detail: { terminalSeq: 40 } });
   });
 
-  it('refuses a multi-execution scalar cursor and invalid delivered-end evidence', () => {
+  it('admits the latest retained execution for a scalar cursor and refuses invalid delivered-end evidence', () => {
     const { addressing } = fixture();
-    expect(() => addressing.admitWait({ jobIds: ['a'], cursor: '25' })).toThrow(
-      expect.objectContaining({ code: 'wait_admission_required', remedy: { kind: 'fresh-wait', jobIds: ['a'] } }),
-    );
+    expect(addressing.admitWait({ jobIds: ['a'], cursor: '25' })[0]).toMatchObject({
+      detail: { status: { execution: 2 } },
+    });
     expect(() =>
       addressing.admitWait({
         jobIds: ['a'],

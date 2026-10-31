@@ -3,7 +3,6 @@ import { randomUUID } from 'node:crypto';
 import type { Command } from 'commander';
 import { z } from 'zod';
 
-import type { WaitExecutionSelection } from '../jobs/wait/execution-selection.js';
 import { UNSUPPORTED_JOB_SEND_BUILD_REASON, jobSendOutcomeSchema, type JobSendOutcome } from '../jobs/send.js';
 import { isTerminalPhase, jobPhaseSchema } from '../jobs/phase.js';
 import { isRecord } from '../infra/json.js';
@@ -106,7 +105,7 @@ export type CliJobSendOutcome = JobSendOutcome &
   Readonly<{
     execution?: number;
     priorDeliveryUncertain?: true;
-    executionSelection?: WaitExecutionSelection;
+    targetExecution?: number;
   }>;
 
 const jobSendDetailSchema = z
@@ -120,7 +119,6 @@ const jobSendDetailSchema = z
         provider: z.string().min(1).nullable(),
       })
       .passthrough(),
-    events: z.array(z.object({ type: z.string(), seq: z.number().int().positive().safe() }).passthrough()),
   })
   .passthrough();
 
@@ -128,7 +126,6 @@ type BoundJobSendTarget = Readonly<{
   jobId: string;
   detail: z.infer<typeof jobSendDetailSchema>;
   target: z.infer<typeof jobSendSchema>['target'];
-  executionSelection: WaitExecutionSelection;
 }>;
 
 type JobSendBinding =
@@ -145,24 +142,16 @@ function interpretJobSendOutcome(result: unknown, priorDeliveryUncertain: boolea
 
 function selectJobSendOutcome(binding: BoundJobSendTarget, outcome: CliJobSendOutcome): CliJobSendOutcome {
   if (outcome.state === 'launched') return { ...outcome, execution: binding.target.execution + 1 };
-  if (outcome.state === 'unknown' || outcome.priorDeliveryUncertain === true)
-    return { ...outcome, executionSelection: binding.executionSelection };
-  if (outcome.state === 'refused')
+  if (outcome.state === 'unknown' || outcome.state === 'refused')
     return {
       ...outcome,
-      executionSelection: {
-        jobId: binding.jobId,
-        epochKey: binding.target.sourceEpoch,
-        requestedSeq: binding.target.requestedSeq,
-        awaitingArtifact: false,
-      },
+      targetExecution: binding.target.mode === 'continue' ? binding.target.execution + 1 : binding.target.execution,
     };
   return outcome;
 }
 
 function buildJobSendBinding(jobId: string, detail: z.infer<typeof jobSendDetailSchema>): BoundJobSendTarget {
   const mode = isTerminalPhase(detail.status.phase) ? 'continue' : 'steer';
-  const terminal = [...detail.events].reverse().find((event) => event.type === 'terminal');
   return {
     jobId,
     detail,
@@ -171,13 +160,6 @@ function buildJobSendBinding(jobId: string, detail: z.infer<typeof jobSendDetail
       execution: detail.status.execution,
       requestedSeq: detail.requestedSeq,
       sourceEpoch: detail.epochKey,
-    },
-    executionSelection: {
-      jobId,
-      epochKey: detail.epochKey,
-      requestedSeq: detail.requestedSeq,
-      awaitingArtifact: false,
-      ...(mode === 'continue' && terminal !== undefined ? { deliveredEndSeq: terminal.seq } : {}),
     },
   };
 }

@@ -1,6 +1,6 @@
 import { executionRetryStatusSchema } from '../records.js';
 import { executionOrdinalSchema } from '../launch.js';
-import { type WaitExecutionSelection, waitExecutionSelectionsSchema } from './execution-selection.js';
+import { waitExecutionSelectionsSchema } from './execution-selection.js';
 import assert from 'node:assert/strict';
 import { z } from 'zod';
 import { decodeWaitCursor } from './cursor.js';
@@ -134,14 +134,9 @@ function snapshotEnvelopeBytes(snapshot: unknown): number {
 }
 
 /** An oversized snapshot never advances the input cursor; each subset retry repeats that unchanged cursor. */
-export function waitSnapshotTooLarge(
-  jobIds: readonly string[],
-  input: WaitCursor | undefined,
-  selections: readonly WaitExecutionSelection[] = [],
-): WaitSessionError {
+export function waitSnapshotTooLarge(jobIds: readonly string[], input: WaitCursor | undefined): WaitSessionError {
   const retries = jobIds.map(
-    (jobId) =>
-      `coral-cli jobs wait '${jobId.replaceAll("'", "'\\''")}' --snapshot${input ? ` --cursor ${input}` : ''}${selections.length === 0 ? '' : ` --execution-selection '${JSON.stringify(selections).replaceAll("'", "'\\''")}'`}`,
+    (jobId) => `coral-cli jobs wait '${jobId.replaceAll("'", "'\\''")}' --snapshot${input ? ` --cursor ${input}` : ''}`,
   );
   return new WaitSessionError(
     'wait_snapshot_too_large',
@@ -159,7 +154,7 @@ function fitSnapshotResponse(snapshot: WaitSnapshot, session: WaitSession): void
       job.terminal.diagnosticPreview = '[diagnostics omitted: response size budget]';
     }
   if (!waitSnapshotEnvelopeFits(snapshotEnvelopeBytes(snapshot)))
-    throw waitSnapshotTooLarge(session.jobIds, session.input, session.inputExecutionSelections);
+    throw waitSnapshotTooLarge(session.jobIds, session.input);
 }
 
 /** A partial or malformed unary response must not advance collection state. */
