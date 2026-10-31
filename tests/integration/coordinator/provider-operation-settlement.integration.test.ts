@@ -120,6 +120,7 @@ describe('accepted provider terminal settlement escalation', () => {
       const lifecycle = new ProviderProxySetLifecycle({
         buildSetId: operation.buildSetId,
         claims,
+        capacity: { maxSets: 4, idleRetirement: { kind: 'never' } },
         time: runtime.time,
         controlEstablished: () => undefined,
         fenceProviderOperationMutations: (identity) => providerOperationMutationAdmission(db).closeSet(identity),

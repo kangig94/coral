@@ -75,6 +75,7 @@ import type { ProviderProxySetLifecycleRef } from '../../services/provider-proxy
 import type {
   ProviderProxyRepresentationReleaseDisposition,
   ProviderProxyRepresentationReleaseSettlement,
+  ProviderProxySlotRelease,
 } from '../../services/provider-proxy-set/index.js';
 import type { ProviderProxySetProtection } from '../../services/provider-proxy-set/identity.js';
 import type { PublicationReceipt } from '../provider-proxy/set-publication.js';
@@ -107,7 +108,7 @@ export interface ProviderHostManager {
     spec: ProviderServerSpec,
     signal: AbortSignal,
   ): Promise<ProviderProxyOperationAuthority | null>;
-  providerProxySlotReleased?(routeKey: string): void;
+  providerProxySlotReleased?(routeKey: string, release: ProviderProxySlotRelease): void;
 }
 
 type ProxySetAcquisitionTarget = Pick<ProviderHostEntry, 'identityKey' | 'spec'>;
@@ -603,10 +604,10 @@ export class DefaultProviderHostManager
     return this.routeAppServerOperation(spec);
   }
 
-  providerProxySlotReleased(routeKey: string): void {
+  providerProxySlotReleased(routeKey: string, release: ProviderProxySlotRelease): void {
     const rotationEntry = this.proxySetRotationEntries.get(routeKey);
     this.proxySetRotationEntries.delete(routeKey);
-    if (!this.acceptingAcquisitions) return;
+    if (!this.acceptingAcquisitions || release === 'idle-retired') return;
     const entry =
       rotationEntry ??
       [...this.entries.values()].find(

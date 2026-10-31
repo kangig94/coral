@@ -16,7 +16,10 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { observeProcessLiveness, probeProcessIncarnation, type ProcessIncarnation } from '#src/infra/node-process.js';
-import { MAX_COORDINATOR_PROXY_SET_SLOTS } from '#src/coordinator/services/provider-proxy-set/index.js';
+import {
+  CORAL_MAX_PROVIDER_PROXY_SETS_ENV,
+  CORAL_PROVIDER_PROXY_SET_IDLE_MS_ENV,
+} from '#src/coordinator/services/provider-proxy-set/capacity.js';
 import { readHandoffCapsuleFile } from '#src/provider-proxy/handoff-capsule.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import {
@@ -32,6 +35,7 @@ import {
 import { stopRecordedProcesses } from '#tests/support/stop-recorded-processes.js';
 import { waitForCondition } from '#tests/support/wait-for-condition.js';
 
+const PROXY_SET_SLOTS = 2;
 const roots: string[] = [];
 const workDirs: string[] = [];
 const coordinators: SpawnedCoordinator[] = [];
@@ -66,7 +70,7 @@ afterEach(async () => {
 
 type World = Readonly<{ fixture: PluginFixture; home: string; env: Record<string, string> }>;
 
-function createWorld(): World {
+function createWorld(env: Record<string, string> = {}): World {
   const home = mkdtempSync(join(tmpdir(), 'coral-local-host-home-'));
   roots.push(home);
   homes.push(home);
@@ -88,6 +92,8 @@ function createWorld(): World {
       CODEX_HOME: join(home, '.codex'),
       CLAUDE_CONFIG_DIR: join(home, '.claude'),
       CORAL_BROKER_IDLE_MS: '200',
+      [CORAL_MAX_PROVIDER_PROXY_SETS_ENV]: String(PROXY_SET_SLOTS),
+      ...env,
     },
   };
 }
@@ -152,7 +158,7 @@ describe('coordinator-local provider host retirement', () => {
     coordinators.push(coordinator);
     const coordinatorPid = (await waitForDiscoveryRecord(world.home, 'prod', 15_000)).pid;
 
-    for (let held = 0; held < MAX_COORDINATOR_PROXY_SET_SLOTS; held += 1) await launchHeldJob(world);
+    for (let held = 0; held < PROXY_SET_SLOTS; held += 1) await launchHeldJob(world);
     const local = await launchHeldJob(world);
     expect(hostOwnerPid(local.codexPid), 'every proxy slot is held, so placement falls back locally').toBe(
       coordinatorPid,
@@ -162,5 +168,44 @@ describe('coordinator-local provider host retirement', () => {
     await runCli(world, local.workDir, ['jobs', 'wait', local.jobId]);
 
     await waitForCondition(() => observeProcessLiveness(local.codexPid) === 'absent', 15_000);
+  }, 180_000);
+});
+
+describe('provider proxy set retirement', () => {
+  it("should return an idle proxy set's slot so the next host is proxied rather than placed locally", async () => {
+    assertBuildArtifactsAvailable();
+    const world = createWorld({
+      [CORAL_MAX_PROVIDER_PROXY_SETS_ENV]: '1',
+      [CORAL_PROVIDER_PROXY_SET_IDLE_MS_ENV]: '500',
+    });
+    const coordinator = spawnCoordinator({
+      fixture: world.fixture,
+      home: world.home,
+      tempRoots: roots,
+      env: world.env,
+    });
+    coordinators.push(coordinator);
+    const coordinatorPid = (await waitForDiscoveryRecord(world.home, 'prod', 15_000)).pid;
+
+    const first = await launchHeldJob(world);
+    expect(hostOwnerPid(first.codexPid), 'the only slot is free, so the first host is proxied').not.toBe(
+      coordinatorPid,
+    );
+    const firstSet = proxyRoleProcesses(world.home);
+    expect(firstSet).not.toHaveLength(0);
+    writeFileSync(join(first.workDir, 'release'), '');
+    await runCli(world, first.workDir, ['jobs', 'wait', first.jobId]);
+    await waitForCondition(() => firstSet.every(({ pid }) => observeProcessLiveness(pid) === 'absent'), 30_000);
+
+    let proxied = false;
+    for (let attempt = 0; attempt < 3 && !proxied; attempt += 1) {
+      const next = await launchHeldJob(world);
+      proxied = hostOwnerPid(next.codexPid) !== coordinatorPid;
+      if (proxied) break;
+      writeFileSync(join(next.workDir, 'release'), '');
+      await runCli(world, next.workDir, ['jobs', 'wait', next.jobId]);
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+    }
+    expect(proxied, 'the idle set returned the only slot').toBe(true);
   }, 180_000);
 });

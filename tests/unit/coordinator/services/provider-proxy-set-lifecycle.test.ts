@@ -110,6 +110,8 @@ function lifecycleFor(deps: {
   reapRecordedContainment?: ProviderProxySetRecordedContainmentReaper;
   fenceProviderOperationMutations?: ProviderProxySetLifecycleDeps['fenceProviderOperationMutations'];
   reportLifecycle?: ProviderProxySetLifecycleDeps['reportLifecycle'];
+  capacity?: ProviderProxySetLifecycleDeps['capacity'];
+  onSlotReleased?: ProviderProxySetLifecycleDeps['onSlotReleased'];
 }): ProviderProxySetLifecycle {
   const mutationAdmission = new ProviderOperationMutationAdmission();
   const collectProof = async (identity: ReturnType<typeof providerProxySetIdentityFromRecord>, signal: AbortSignal) => {
@@ -138,6 +140,8 @@ function lifecycleFor(deps: {
   const lifecycle = new ProviderProxySetLifecycle({
     buildSetId: FIXTURE_BUILD_SET_ID,
     claims: deps.claims,
+    capacity: deps.capacity ?? { maxSets: 4, idleRetirement: { kind: 'never' } },
+    ...(deps.onSlotReleased === undefined ? {} : { onSlotReleased: deps.onSlotReleased }),
     time: deps.time,
     controlEstablished: deps.controlEstablished,
     recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
@@ -633,6 +637,246 @@ it('owns an operation containment request through route removal, the mutation fe
   expect(fenced).toHaveBeenCalledOnce();
   await vi.waitFor(() => expect(stopAndReap).toHaveBeenCalledOnce());
   await vi.waitFor(() => expect(lifecycle.snapshot().represented).toBe(0));
+});
+
+it('retires a set once it has held no live claim for its idle window, releasing its route as idle-retired', async () => {
+  const record = providerOperationRecord('executing');
+  const claims = new ProviderProxySetClaimMirror();
+  claims.initialize([record]);
+  const stopAndReap = vi.fn(async () => ({ disappearanceReceipt: 'idle-retirement-absence' }));
+  const authority = fakeAuthority({ record, stopAndReap });
+  const time = new ManualClock();
+  const onSlotReleased = vi.fn();
+  const lifecycle = lifecycleFor({
+    claims,
+    time,
+    controlEstablished: ignoreControlEstablished,
+    disappearanceConsumer: { containmentDisappeared: vi.fn() },
+    proveContainmentAbsent: noContainmentProof,
+    capacity: { maxSets: 4, idleRetirement: { kind: 'after-idle', ms: 1_000 } },
+    onSlotReleased,
+  });
+  lifecycle.initializeClaimSlots();
+  lifecycle.completeStartupDiscovery();
+  const admission = lifecycle.beginFreshAcquisition('idle-route');
+  if (admission.kind !== 'accepted') throw new Error('acquisition refused');
+  lifecycle.acquisitionSucceeded(admission.slotId, authority, TEST_PUBLICATION_RECEIPT);
+
+  time.elapse(1_000);
+  time.runDue();
+  await drainMicrotasks();
+  expect(stopAndReap).not.toHaveBeenCalled();
+
+  claims.applyMutation({ kind: 'deleted', record });
+  lifecycle.claimsChanged(authority.setIdentity);
+  time.elapse(999);
+  time.runDue();
+  await drainMicrotasks();
+  expect(stopAndReap).not.toHaveBeenCalled();
+  expect(lifecycle.routeFor('idle-route')).toBe(authority);
+
+  time.elapse(1);
+  time.runDue();
+  await vi.waitFor(() => expect(stopAndReap).toHaveBeenCalledOnce());
+  await vi.waitFor(() => expect(onSlotReleased).toHaveBeenCalledWith('idle-route', 'idle-retired'));
+  expect(lifecycle.snapshot().represented).toBe(0);
+});
+
+it('re-arms idle retirement when control reattachment returns an idle set to service', async () => {
+  const record = providerOperationRecord('executing');
+  const claims = new ProviderProxySetClaimMirror();
+  claims.initialize([]);
+  const stopAndReap = vi.fn(async () => ({ disappearanceReceipt: 'idle-retirement-absence' }));
+  const faults = createProviderProxyAuthorityFaultLatch();
+  const promoted = fakeAuthority({ record, stopAndReap });
+  const authority: DurableProviderProxyOperationAuthority = {
+    ...fakeAuthority({ record, faults, stopAndReap }),
+    redeemControl: async () => ({ kind: 'redeemed' }) as never,
+    promoteControl: async () => promoted,
+  };
+  const time = new ManualClock();
+  const lifecycle = lifecycleFor({
+    claims,
+    time,
+    controlEstablished: ignoreControlEstablished,
+    disappearanceConsumer: { containmentDisappeared: vi.fn() },
+    proveContainmentAbsent: noContainmentProof,
+    capacity: { maxSets: 4, idleRetirement: { kind: 'after-idle', ms: 1_000 } },
+  });
+  lifecycle.initializeClaimSlots();
+  lifecycle.completeStartupDiscovery();
+  lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
+
+  time.elapse(900);
+  faults.reportIncident({
+    kind: 'control-channel-fault',
+    role: 'guardian',
+    cause: 'closed',
+    error: new ControlClientError('control_client_closed', 'guardian closed', 'closed'),
+  });
+  time.elapse(100);
+  time.runDue();
+  await vi.waitFor(() => expect(lifecycle.authorityFor(authority.setIdentity)).toBe(promoted));
+  expect(stopAndReap).not.toHaveBeenCalled();
+
+  time.elapse(1_000);
+  time.runDue();
+  await vi.waitFor(() => expect(stopAndReap).toHaveBeenCalledOnce());
+});
+
+it('gives a set back a full idle window when reattachment returns it before its old deadline', async () => {
+  const record = providerOperationRecord('executing');
+  const claims = new ProviderProxySetClaimMirror();
+  claims.initialize([]);
+  const stopAndReap = vi.fn(async () => ({ disappearanceReceipt: 'idle-retirement-absence' }));
+  const faults = createProviderProxyAuthorityFaultLatch();
+  const promoted = fakeAuthority({ record, stopAndReap });
+  const authority: DurableProviderProxyOperationAuthority = {
+    ...fakeAuthority({ record, faults, stopAndReap }),
+    redeemControl: async () => ({ kind: 'redeemed' }) as never,
+    promoteControl: async () => promoted,
+  };
+  const time = new ManualClock();
+  const lifecycle = lifecycleFor({
+    claims,
+    time,
+    controlEstablished: ignoreControlEstablished,
+    disappearanceConsumer: { containmentDisappeared: vi.fn() },
+    proveContainmentAbsent: noContainmentProof,
+    capacity: { maxSets: 4, idleRetirement: { kind: 'after-idle', ms: 1_000 } },
+  });
+  lifecycle.initializeClaimSlots();
+  lifecycle.completeStartupDiscovery();
+  lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
+
+  time.elapse(900);
+  faults.reportIncident({
+    kind: 'control-channel-fault',
+    role: 'guardian',
+    cause: 'closed',
+    error: new ControlClientError('control_client_closed', 'guardian closed', 'closed'),
+  });
+  await vi.waitFor(() => expect(lifecycle.authorityFor(authority.setIdentity)).toBe(promoted));
+  time.elapse(100);
+  time.runDue();
+  await drainMicrotasks();
+  expect(stopAndReap).not.toHaveBeenCalled();
+
+  time.elapse(900);
+  time.runDue();
+  await vi.waitFor(() => expect(stopAndReap).toHaveBeenCalledOnce());
+});
+
+it('restarts the idle window when a claim arrives and leaves before it expires', async () => {
+  const record = providerOperationRecord('executing');
+  const claims = new ProviderProxySetClaimMirror();
+  claims.initialize([]);
+  const stopAndReap = vi.fn(async () => ({ disappearanceReceipt: 'idle-retirement-absence' }));
+  const authority = fakeAuthority({ record, stopAndReap });
+  const time = new ManualClock();
+  const lifecycle = lifecycleFor({
+    claims,
+    time,
+    controlEstablished: ignoreControlEstablished,
+    disappearanceConsumer: { containmentDisappeared: vi.fn() },
+    proveContainmentAbsent: noContainmentProof,
+    capacity: { maxSets: 4, idleRetirement: { kind: 'after-idle', ms: 1_000 } },
+  });
+  lifecycle.initializeClaimSlots();
+  lifecycle.completeStartupDiscovery();
+  lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
+
+  time.elapse(600);
+  claims.applyMutation({ kind: 'upserted', record });
+  lifecycle.claimsChanged(authority.setIdentity);
+  claims.applyMutation({ kind: 'deleted', record });
+  lifecycle.claimsChanged(authority.setIdentity);
+  time.elapse(400);
+  time.runDue();
+  await drainMicrotasks();
+  expect(stopAndReap).not.toHaveBeenCalled();
+
+  time.elapse(600);
+  time.runDue();
+  await vi.waitFor(() => expect(stopAndReap).toHaveBeenCalledOnce());
+});
+
+it.each(['controller transfer', 'fault containment'] as const)(
+  "cancels a set's idle window when %s takes it out of service",
+  async (exit) => {
+    const record = providerOperationRecord('executing');
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([]);
+    const faults = createProviderProxyAuthorityFaultLatch();
+    const authority = fakeAuthority({ record, faults });
+    const time = new ManualClock();
+    const lifecycle = lifecycleFor({
+      claims,
+      time,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: vi.fn() },
+      proveContainmentAbsent: noContainmentProof,
+      capacity: { maxSets: 4, idleRetirement: { kind: 'after-idle', ms: 1_000 } },
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
+    const idleWindow = () => time.timers.filter((timer) => timer.active && timer.at === 1_000);
+    expect(idleWindow()).toHaveLength(1);
+
+    if (exit === 'controller transfer') await lifecycle.releaseControlForTransfer('transfer-attempt');
+    else faults.latch(terminalAuthorityFault());
+    await drainMicrotasks();
+
+    expect(idleWindow()).toHaveLength(0);
+  },
+);
+
+it('admits fresh sets only up to the configured limit', () => {
+  const claims = new ProviderProxySetClaimMirror();
+  claims.initialize([]);
+  const lifecycle = lifecycleFor({
+    claims,
+    time: new ManualClock(),
+    controlEstablished: ignoreControlEstablished,
+    disappearanceConsumer: { containmentDisappeared: vi.fn() },
+    proveContainmentAbsent: noContainmentProof,
+    capacity: { maxSets: 3, idleRetirement: { kind: 'never' } },
+  });
+  lifecycle.initializeClaimSlots();
+  lifecycle.completeStartupDiscovery();
+
+  expect(['first', 'second', 'third', 'fourth'].map((route) => lifecycle.beginFreshAcquisition(route).kind)).toEqual([
+    'accepted',
+    'accepted',
+    'accepted',
+    'capacity',
+  ]);
+});
+
+it('retains only as many established sets as the configured limit', async () => {
+  const first = providerOperationRecord('executing');
+  const second = providerOperationRecord('executing', {
+    operation: { ...first.operation, proxyInstanceId: '00000000-0000-4000-8000-000000000030' },
+  });
+  const claims = new ProviderProxySetClaimMirror();
+  claims.initialize([]);
+  const stopAndReap = vi.fn(async () => ({ disappearanceReceipt: 'excess-capacity-absence' }));
+  const lifecycle = lifecycleFor({
+    claims,
+    time: new ManualClock(),
+    controlEstablished: ignoreControlEstablished,
+    disappearanceConsumer: { containmentDisappeared: vi.fn() },
+    proveContainmentAbsent: noContainmentProof,
+    capacity: { maxSets: 1, idleRetirement: { kind: 'never' } },
+  });
+  lifecycle.initializeClaimSlots();
+  lifecycle.completeStartupDiscovery();
+  lifecycle.registerInheritedSet(fakeAuthority({ record: first, stopAndReap }), TEST_PUBLICATION_RECEIPT);
+  lifecycle.registerInheritedSet(fakeAuthority({ record: second, stopAndReap }), TEST_PUBLICATION_RECEIPT);
+
+  await vi.waitFor(() => expect(stopAndReap).toHaveBeenCalledOnce());
+  await vi.waitFor(() => expect(lifecycle.snapshot().represented).toBe(1));
 });
 
 it.each(['proxy-activation-pending', 'activation-resolution-pending'] as const)(
