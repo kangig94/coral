@@ -38,10 +38,11 @@ it('reports uncertainty with exit 75 and only a progress command, even if the re
   expect(output.exitCode).toBe(75);
   expect(output.text).toContain('may have been delivered');
   expect(output.text).toContain('progress');
-  expect(output.text).toContain('Do not resend until the wait shows the outcome.');
+  expect(output.text).toContain('Do not resend it automatically.');
   expect(output.text).not.toMatch(/retry|command=coral-cli jobs send|reconnect/i);
   expect(output.text.split('\n').filter((line) => line.startsWith('command='))).toEqual([
     'command=coral-cli jobs wait job-1',
+    'command=coral-cli jobs detail job-1 --full',
   ]);
 });
 
@@ -277,14 +278,22 @@ it('offers fresh provider launches for pre-generation jobs without a wait', () =
 });
 
 it.each(['session_busy', 'execution_finishing'] as const)(
-  'requires reading the result before resending after %s',
+  'should point an uncertain %s refusal at the targeted execution, not at whatever the wait shows',
   (code) => {
-    const output = formatJobSendResult('job-1', { state: 'refused', code, reason: 'Not ready.' }, context);
+    const output = formatJobSendResult(
+      'job-1',
+      { state: 'refused', code, reason: 'Not ready.', targetExecution: 2 },
+      context,
+    );
     expect(output.exitCode).toBe(1);
     expect(output.text).toContain('may have delivered');
-    expect(output.text).toContain('Resend only if the result does not reflect the message.');
+    expect(output.text).toContain(
+      'If it reports an execution other than #2, it does not show whether the message arrived',
+    );
+    expect(output.text).not.toContain('Resend only if');
     expect(output.text.split('\n').filter((line) => line.startsWith('command='))).toEqual([
       'command=coral-cli jobs wait job-1',
+      'command=coral-cli jobs detail job-1 --full',
     ]);
   },
 );
@@ -303,20 +312,20 @@ it.each(['running', 'queued'] as const)('identifies execution #2 in a %s detache
   });
   expect(output.exitCode).toBe(0);
   expect(output.text.split('\n')[0]).toBe(`Provider job job-1 execution #2 ${launchState}`);
-  expect(output.text).toContain('--execution-selection');
+  expect(output.text).toContain('coral-cli jobs wait job-1');
+  expect(output.text).not.toContain('--execution-selection');
 });
 
-it('pins an uncertain continuation wait and forbids another send until its outcome is visible', () => {
-  const selection = { jobId: 'job-1', epochKey: 'epoch', requestedSeq: 2, deliveredEndSeq: 5, awaitingArtifact: false };
-  const output = formatJobSendResult('job-1', {
-    state: 'unknown',
-    reason: 'Lost acknowledgement',
-    executionSelection: selection,
-  });
+it('should not present a later execution as evidence for an uncertain send', () => {
+  const output = formatJobSendResult('job-1', { state: 'unknown', reason: 'Lost acknowledgement', targetExecution: 2 });
   expect(output.exitCode).toBe(75);
-  expect(output.text).toContain('--execution-selection');
-  expect(output.text).toContain(JSON.stringify([selection]));
-  expect(output.text).toContain('Do not resend until the wait shows the outcome.');
+  expect(output.text).toContain('coral-cli jobs wait job-1');
+  expect(output.text).toContain(
+    'If it reports an execution other than #2, it does not show whether the message arrived',
+  );
+  expect(output.text).toContain('coral-cli jobs detail job-1 --full');
+  expect(output.text).toContain('Do not resend it automatically.');
+  expect(output.text).not.toContain('--execution-selection');
 });
 
 it('rejects CLI-local uncertainty metadata on the wire', () => {
@@ -447,6 +456,6 @@ it.each([
     });
     const output = formatJobSendResult('job-1', { ...launch, execution: derived });
     expect(output.text.split('\n')[0]).toBe(`Provider job job-1 execution #${expected} queued`);
-    expect(output.text).toContain('--execution-selection');
+    expect(output.text).toContain('command=coral-cli jobs wait job-1');
   },
 );

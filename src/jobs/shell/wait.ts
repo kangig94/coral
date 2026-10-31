@@ -1,5 +1,4 @@
 import type { ExecutionRetryStatus } from '../records.js';
-import { decodeWaitCursor } from '../wait/cursor.js';
 import type { ExecutionWaitDetail } from '../wait/execution-detail.js';
 import { WaitSessionError } from '../wait/session.js';
 import type { WaitExecutionSelection } from '../wait/execution-selection.js';
@@ -415,7 +414,7 @@ export class WaitCoordinator {
         epochKey,
         message: 'The selected request is not readable; no other execution was selected.',
       };
-    projected = this.advanceWaitSelection(context, projected);
+    if (!context.cached) projected = this.advanceDeliveredExecution(context, projected);
     if (!projected.status)
       return this.deps.observeJobAbsence?.(jobId) === true
         ? { jobId, disposition: 'missing' }
@@ -426,18 +425,6 @@ export class WaitCoordinator {
             message: 'The job is not yet readable in the active journal; this wait reads it again on its next poll',
           };
     return this.buildWaitAdmission(context, { ...projected, status: projected.status });
-  }
-
-  private advanceWaitSelection(context: WaitAdmissionContext, projected: ExecutionWaitDetail): ExecutionWaitDetail {
-    const { jobId, session, selected, cached } = context;
-    if (!cached) projected = this.advanceDeliveredExecution(context, projected);
-    if (!selected && session?.cursor !== undefined && (projected.requestSeqs?.length ?? 0) > 1)
-      throw new WaitSessionError(
-        'wait_admission_required',
-        'A seq cursor cannot identify the admitted execution. Start a fresh wait without a cursor.',
-        session?.jobIds ?? [jobId],
-      );
-    return projected;
   }
 
   private advanceDeliveredExecution(
@@ -488,7 +475,7 @@ export class WaitCoordinator {
       ? this.deps.observeResultAvailability(jobId, projected.status.execution ?? undefined)
       : undefined;
     if (availability?.kind === 'pending') this.deps.hintResultRepair?.(jobId, projected.status.execution ?? undefined);
-    const selection = this.selectWaitExecution(context, projected, availability);
+    const selection = this.selectWaitExecution(context, projected);
     return {
       jobId,
       disposition: 'admitted',
@@ -504,16 +491,8 @@ export class WaitCoordinator {
   private selectWaitExecution(
     context: WaitAdmissionContext,
     projected: ExecutionWaitDetail,
-    availability: ResultAvailability | undefined,
   ): WaitExecutionSelection | undefined {
-    const { jobId, epochKey, session, selected } = context;
-    const cursor = session?.cursor;
-    const decoded = cursor === undefined ? undefined : decodeWaitCursor(cursor);
-    const previouslyDelivered =
-      selected === undefined &&
-      decoded?.kind === 'decoded' &&
-      projected.terminalSeq !== undefined &&
-      projected.terminalSeq <= decoded.watermark;
+    const { jobId, epochKey, selected } = context;
     if (projected.requestedSeq === undefined) return undefined;
     return {
       jobId,
@@ -521,9 +500,7 @@ export class WaitCoordinator {
       requestedSeq: projected.requestedSeq,
       ...(selected?.requestedSeq === projected.requestedSeq
         ? { deliveredEndSeq: selected.deliveredEndSeq, awaitingArtifact: selected.awaitingArtifact }
-        : previouslyDelivered
-          ? { deliveredEndSeq: projected.terminalSeq, awaitingArtifact: availability?.kind === 'pending' }
-          : { awaitingArtifact: false }),
+        : { awaitingArtifact: false }),
     };
   }
 

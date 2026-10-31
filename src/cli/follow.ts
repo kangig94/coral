@@ -341,7 +341,7 @@ function withWaitRecovery(error: unknown, state: FollowSessionState): unknown {
   const message = body !== null && typeof body.message === 'string' ? body.message : (error as Error).message;
   return new BackendUnreachableError(
     `${message} Run \`coral-cli backend status\` and follow its recovery guidance, then rerun ` +
-      `\`${waitContinuationCommand(state.remainingJobIds, state.currentCursor ?? null, state.continuationMode, state.executionSelections)}\`` +
+      `\`${waitContinuationCommand(state.remainingJobIds, state.currentCursor ?? null, state.continuationMode)}\`` +
       `${waitContinuationShell(state.continuationMode)} to continue waiting.`,
   );
 }
@@ -396,7 +396,6 @@ function finishDelegatedFollow(
       state.remainingJobIds,
       state.currentCursor,
       state.continuationMode,
-      state.executionSelections,
     ),
   );
   return { kind: 'exit', code: errorCodeToExit('transient') };
@@ -424,7 +423,7 @@ function eventRemainingJobs(event: WaitStreamEvent, current: readonly string[]):
 function followOriginalCommand(options: FollowJobsOptions): string {
   if (options.invocation) return options.invocation.originalCommand;
   const cursor = initialSerializedCursor(options.start);
-  return `${waitContinuationCommand(jobIdsFromStart(options.start), cursor ?? null, continuationModeFor(options.reconnectPolicy), initialExecutionSelections(options.start))}${options.render.embed ? ' --embed' : ''}${options.render.verbose ? ' --verbose' : ''}`;
+  return `${waitContinuationCommand(jobIdsFromStart(options.start), cursor ?? null, continuationModeFor(options.reconnectPolicy))}${options.render.embed ? ' --embed' : ''}${options.render.verbose ? ' --verbose' : ''}`;
 }
 
 function deliveredFollowExitCode(event: WaitStreamEvent, context: FollowContext): number | undefined {
@@ -462,7 +461,6 @@ function foldedContinuation(state: FollowSessionState): string {
       {
         type: 'waiting',
         waitingJobIds: remaining,
-        executionSelections: state.executionSelections,
         ...(unknown.length === 0 ? {} : { carrierUnknownJobIds: unknown }),
       },
       state.currentCursor ?? null,
@@ -607,13 +605,7 @@ async function followReadFailure(error: unknown, context: FollowContext): Promis
   }
   if (state.retriesLeft === 0) {
     options.emitError(
-      new WaitResumeError(
-        handledError.message,
-        state.remainingJobIds,
-        state.currentCursor,
-        state.continuationMode,
-        state.executionSelections,
-      ),
+      new WaitResumeError(handledError.message, state.remainingJobIds, state.currentCursor, state.continuationMode),
     );
     return { kind: 'exit', code: errorCodeToExit('transient') };
   }
@@ -650,7 +642,6 @@ async function consumeFollowSubscription(
       state.remainingJobIds,
       state.currentCursor,
       state.continuationMode,
-      state.executionSelections,
     ),
   );
   return { kind: 'exit', code: errorCodeToExit('transient') };
@@ -669,9 +660,6 @@ function prepareFollowOptions(options: FollowJobsOptions) {
           ...waitCommandPaths.current.split(' '),
           ...allJobIds,
           ...(rawCursor === undefined ? [] : ['--cursor', rawCursor]),
-          ...(options.start.kind === 'jobs' && options.start.executionSelections
-            ? ['--execution-selection', JSON.stringify(options.start.executionSelections)]
-            : []),
           ...(options.render.embed ? ['--embed'] : []),
           ...(options.render.verbose ? ['--verbose'] : []),
         ])
@@ -755,7 +743,6 @@ async function monitorFollowJobs(context: FollowContext): Promise<number> {
             type: 'waiting',
             waitingJobIds: state.remainingJobIds,
             carrierUnknownJobIds: state.carrierUnknownJobIds,
-            executionSelections: state.executionSelections,
           },
           state.currentCursor ?? null,
         ) + '\n',
@@ -828,11 +815,10 @@ function launchFollowHandoffOperation(
   jobId: string,
   request: FollowConnectionRequest,
 ): Extract<HandoffOperation, { kind: 'wait-jobs' }> {
-  const { cursor, executionSelections } = request;
+  const { cursor } = request;
   return {
     kind: 'wait-jobs',
     jobId,
-    ...(executionSelections.length === 0 ? {} : { serializedExecutionSelections: JSON.stringify(executionSelections) }),
     ...(cursor === undefined ? {} : { serializedCursor: cursor }),
   };
 }
@@ -975,13 +961,7 @@ function recoverFollowCursor(error: unknown, options: FollowJobsOptions, state: 
 function exhaustedFollowConnection(error: Error, options: FollowJobsOptions, state: FollowSessionState): FollowStep {
   if (state.hasOpenedSubscription || error instanceof TransientHttpError || error instanceof IpcRequestTimeout) {
     options.emitError(
-      new WaitResumeError(
-        error.message,
-        state.remainingJobIds,
-        state.currentCursor,
-        state.continuationMode,
-        state.executionSelections,
-      ),
+      new WaitResumeError(error.message, state.remainingJobIds, state.currentCursor, state.continuationMode),
     );
     return { kind: 'exit', code: errorCodeToExit('transient') };
   }

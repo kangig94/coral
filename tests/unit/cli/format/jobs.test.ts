@@ -98,14 +98,12 @@ describe('jobs list and detail formatting', () => {
     expect(second).not.toContain('Result path:');
   });
 
-  it('pins queued detail and launch wait commands to the same committed execution', () => {
+  it('should give queued detail and launch the same plain wait command', () => {
     const f = fixture('queued');
     const detail = f.store.loadJobDetailResponse(f.jobId)!;
-    detail.epochKey = 'epoch';
-    const second = detail.executions![1];
-    const hint = formatLaunchWaitHint({ jobId: f.jobId, epochKey: detail.epochKey, requestedSeq: second.requestedSeq });
+    const hint = formatLaunchWaitHint({ jobId: f.jobId });
     const command = hint.split('\n')[1];
-    expect(command).toContain('--execution-selection');
+    expect(command).toBe(`command=coral-cli jobs wait ${f.jobId}`);
     const output = formatJobDetail(detail).split('Execution #2')[1];
     expect(output).toContain(command);
     expect(output).not.toContain('Result path:');

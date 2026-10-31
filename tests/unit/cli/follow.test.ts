@@ -525,7 +525,7 @@ it('leaves a stop that is still in progress on a second SIGINT with exit 75, its
     stop.reject(new Error('the stop ignored its signal'));
     expect(await code).toBe(75);
     expect(emitError).not.toHaveBeenCalled();
-    const continuation = 'Still waiting on 1 job. Run coral-cli jobs wait job-1 --execution-selection ';
+    const continuation = 'Still waiting on 1 job. Run coral-cli jobs wait job-1 ';
     expect(out.split(continuation)).toHaveLength(2);
     expect(out.indexOf(continuation)).toBeLessThan(out.indexOf('<exit>'));
   } finally {

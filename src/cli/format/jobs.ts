@@ -1,5 +1,4 @@
 import { formatRecoveryQuarantineCommand } from './backend.js';
-import type { WaitExecutionSelection } from '../../jobs/wait/execution-selection.js';
 import { waitCommandPrefix } from '../../coordinator/handoff-routing/wait-command.js';
 import { formatResultAvailability } from './result-availability.js';
 import type { CauseRef } from '../../causality/cause-ref.js';
@@ -81,12 +80,7 @@ export function formatJobSendResult(
           ...(result.priorDeliveryUncertain === true
             ? [
                 'An earlier invocation may have delivered this message. This refusal does not resolve that uncertainty.',
-                formatJobsOperatorCommand({
-                  kind: 'wait-job',
-                  jobId,
-                  grammar: 'current',
-                  executionSelection: result.executionSelection,
-                }),
+                ...targetExecutionEvidence(jobId, result.targetExecution),
               ]
             : jobSendRefusalRemedy(jobId, result, context)),
         ].join('\n'),
@@ -96,13 +90,8 @@ export function formatJobSendResult(
       return {
         text: [
           "Unknown: message may have been delivered. Check the job's progress for evidence.",
-          formatJobsOperatorCommand({
-            kind: 'wait-job',
-            jobId,
-            grammar: 'current',
-            ...(result.executionSelection === undefined ? {} : { executionSelection: result.executionSelection }),
-          }),
-          'Do not resend until the wait shows the outcome.',
+          ...targetExecutionEvidence(jobId, result.targetExecution),
+          'Do not resend it automatically.',
         ].join('\n'),
         exitCode: 75,
       };
@@ -225,17 +214,17 @@ function jobSendRefusalRemedy(
     case 'invalid-request':
       return jobSendInvalidRequestRemedy(jobId, result, context);
     case 'uncertain':
-      return jobSendUncertainRemedy(jobId, result.executionSelection);
+      return jobSendUncertainRemedy(jobId, result.targetExecution);
     case 'target-changed':
       return jobSendTargetChangedRemedy(jobId, context);
     case 'retry':
       return jobSendRetryRemedy(jobId, context);
     case 'terminal':
-      return jobSendTerminalRemedy(jobId, result.executionSelection, context);
+      return jobSendTerminalRemedy(jobId, context);
     case 'inspect':
-      return jobSendInspectionRemedy(jobId, policy, result.executionSelection);
+      return jobSendInspectionRemedy(jobId, policy);
     case 'unrestorable':
-      return jobSendUnrestorableRemedy(jobId, policy.diagnosis, result.executionSelection, context);
+      return jobSendUnrestorableRemedy(jobId, policy.diagnosis, context);
     case 'fresh-provider':
       return [...policy.diagnosis, ...jobSendFreshProviderRemedy(context)];
     default:
@@ -260,14 +249,19 @@ function jobSendInvalidRequestRemedy(
   ];
 }
 
-function jobSendUncertainRemedy(
-  jobId: string,
-  executionSelection: WaitExecutionSelection | undefined,
-): readonly string[] {
+function jobSendUncertainRemedy(jobId: string, targetExecution: number | undefined): readonly string[] {
   return [
     'This invocation wrote nothing; an earlier invocation with this message identity may have delivered it.',
-    formatJobsOperatorCommand({ kind: 'wait-job', jobId, grammar: 'current', executionSelection }),
-    'Resend only if the result does not reflect the message. A new intentional send reads a fresh target and uses a new message ID.',
+    ...targetExecutionEvidence(jobId, targetExecution),
+    'A new intentional send reads a fresh target and uses a new message ID.',
+  ];
+}
+
+function targetExecutionEvidence(jobId: string, targetExecution: number | undefined): readonly string[] {
+  return [
+    formatJobsOperatorCommand({ kind: 'wait-job', jobId, grammar: 'current' }),
+    `If it reports an execution other than ${targetExecution === undefined ? 'the one this send targeted' : `#${targetExecution}`}, it does not show whether the message arrived; the job detail lists every execution and may.`,
+    formatJobsOperatorCommand({ kind: 'jobs-detail-full', jobId }),
   ];
 }
 
@@ -279,14 +273,10 @@ function jobSendTargetChangedRemedy(jobId: string, context: JobSendOutputContext
   ];
 }
 
-function jobSendInspectionRemedy(
-  jobId: string,
-  policy: Extract<RemedyPolicy, { kind: 'inspect' }>,
-  executionSelection: WaitExecutionSelection | undefined,
-): readonly string[] {
+function jobSendInspectionRemedy(jobId: string, policy: Extract<RemedyPolicy, { kind: 'inspect' }>): readonly string[] {
   return [
     policy.message,
-    formatJobsOperatorCommand({ kind: policy.command, jobId, grammar: 'current', all: policy.all, executionSelection }),
+    formatJobsOperatorCommand({ kind: policy.command, jobId, grammar: 'current', all: policy.all }),
   ];
 }
 
@@ -300,14 +290,10 @@ function jobSendRetryRemedy(jobId: string, context: JobSendOutputContext | undef
       ];
 }
 
-function jobSendTerminalRemedy(
-  jobId: string,
-  executionSelection: WaitExecutionSelection | undefined,
-  context: JobSendOutputContext | undefined,
-): readonly string[] {
+function jobSendTerminalRemedy(jobId: string, context: JobSendOutputContext | undefined): readonly string[] {
   return [
     "Read the job's result before requesting another execution of its conversation.",
-    formatJobsOperatorCommand({ kind: 'wait-job', jobId, grammar: 'current', executionSelection }),
+    formatJobsOperatorCommand({ kind: 'wait-job', jobId, grammar: 'current' }),
     ...jobSendNewAttemptRemedy(jobId, context),
   ];
 }
@@ -325,13 +311,12 @@ function jobSendNewAttemptRemedy(jobId: string, context: JobSendOutputContext | 
 function jobSendUnrestorableRemedy(
   jobId: string,
   diagnosis: string,
-  executionSelection: WaitExecutionSelection | undefined,
   context: JobSendOutputContext | undefined,
 ): readonly string[] {
   return [
     diagnosis,
     'Read the execution result.',
-    formatJobsOperatorCommand({ kind: 'wait-job', jobId, grammar: 'current', executionSelection }),
+    formatJobsOperatorCommand({ kind: 'wait-job', jobId, grammar: 'current' }),
     'Start a new conversation with a fresh provider job. This does not continue this conversation.',
     ...jobSendFreshProviderRemedy(context),
   ];
@@ -449,21 +434,10 @@ function formatLaunchStatus(result: AcceptedLaunchResponse, execution: number | 
     : `Workflow ${result.workflowId} ${result.launchState} (job ${result.jobId}${ordinal})`;
 }
 
-export function formatLaunchWaitHint(
-  result: Pick<AcceptedLaunchResponse, 'jobId' | 'requestedSeq' | 'epochKey'>,
-): string {
+export function formatLaunchWaitHint(result: Pick<AcceptedLaunchResponse, 'jobId'>): string {
   return [
     'Wait for completion with the command below.',
-    formatJobsOperatorCommand({
-      jobId: result.jobId,
-      kind: 'wait-job',
-      executionSelection: {
-        jobId: result.jobId,
-        epochKey: result.epochKey,
-        requestedSeq: result.requestedSeq,
-        awaitingArtifact: false,
-      },
-    }),
+    formatJobsOperatorCommand({ jobId: result.jobId, kind: 'wait-job' }),
   ].join('\n');
 }
 
@@ -600,7 +574,7 @@ export function formatJobDetail(
       ? formatResultAvailability(response.availability)
       : undefined,
     ...(response.executions === undefined
-      ? [formatExecutionResult(response, describeCauseRef, full, response.epochKey)]
+      ? [formatExecutionResult(response, describeCauseRef, full)]
       : response.executions.map((execution) =>
           joinLines([
             `Execution #${execution.execution}`,
@@ -614,7 +588,7 @@ export function formatJobDetail(
                   execution.availability?.kind === 'available' ? undefined : `Result location: ${execution.resultPath}`,
                   execution.availability === undefined ? undefined : formatResultAvailability(execution.availability),
                 ]),
-            formatExecutionResult(execution, describeCauseRef, full, response.epochKey),
+            formatExecutionResult(execution, describeCauseRef, full),
           ]),
         )),
   ];
@@ -623,29 +597,15 @@ export function formatJobDetail(
 }
 
 function formatExecutionResult(
-  response: Pick<JobDetailResponse, 'status' | 'exit' | 'requestedSeq'>,
+  response: Pick<JobDetailResponse, 'status' | 'exit'>,
   describeCauseRef: CauseRefDescriber | undefined,
   full: boolean,
-  epochKey: string | undefined,
 ): string {
   const exit = response.exit;
   if (exit === null) {
     return joinLines([
       'Follow it with the command below.',
-      formatJobsOperatorCommand({
-        kind: 'wait-job',
-        jobId: response.status.jobId,
-        ...(epochKey === undefined || response.requestedSeq === undefined
-          ? {}
-          : {
-              executionSelection: {
-                jobId: response.status.jobId,
-                epochKey,
-                requestedSeq: response.requestedSeq,
-                awaitingArtifact: false,
-              },
-            }),
-      }),
+      formatJobsOperatorCommand({ kind: 'wait-job', jobId: response.status.jobId }),
     ]);
   }
   const usage = formatUsageSegment(exit.diagnostics.usage, { verbose: true, cacheReadAnnotation: 'full' });
@@ -725,7 +685,7 @@ export type JobsOperatorCommand =
   | Readonly<{ kind: 'backend-status' }>
   | Readonly<{ kind: 'jobs-detail-full'; jobId: string }>
   | JobOperatorRemedy
-  | Readonly<{ kind: 'wait-job'; jobId: string; grammar?: 'current'; executionSelection?: WaitExecutionSelection }>
+  | Readonly<{ kind: 'wait-job'; jobId: string; grammar?: 'current' }>
   | (Readonly<{ kind: 'send-job'; jobId: string }> & JobSendOutputContext)
   | Readonly<{ kind: 'jobs-list'; all?: boolean }>
   | (Readonly<{ kind: 'fresh-provider'; provider: 'codex' | 'claude' }> & JobSendOutputContext);
@@ -743,7 +703,7 @@ export function renderJobsOperatorCommand(command: JobsOperatorCommand): string 
     case 'jobs-detail':
       return `coral-cli jobs detail ${command.jobId}`;
     case 'wait-job':
-      return `${command.grammar === 'current' ? 'coral-cli jobs wait' : waitCommandPrefix()} ${quoteJobsCommandArgument(command.jobId)}${command.executionSelection === undefined ? '' : ` --execution-selection ${quoteJobsCommandArgument(JSON.stringify([command.executionSelection]))}`}`;
+      return `${command.grammar === 'current' ? 'coral-cli jobs wait' : waitCommandPrefix()} ${quoteJobsCommandArgument(command.jobId)}`;
     case 'send-job':
       return `coral-cli jobs send ${quoteJobsCommandArgument(command.jobId)}${command.detach === true ? ' -d' : ''} ${renderJobsInputTokens(command.inputTokens)}`;
     case 'jobs-list':

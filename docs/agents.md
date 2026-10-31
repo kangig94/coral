@@ -70,7 +70,7 @@ Behavior:
 3. The provider adapter consumes `instruction` + `systemPrompt` + `prompt`:
    - Claude: system append channel + user prompt
    - Codex: single turn text ordered `systemPrompt` → `instruction` → `prompt` (order is presentation only)
-4. Detached provider launches print `Provider job <jobId> execution #<n> <launchState>`. Detached workflows identify both `workflowId` and `jobId`. `jobs wait --embed` prints the terminal line, any available usage diagnostics, and `Result path: <path>` for that execution's durable `executions/<n>/result.md`. Interrupted waits print a continuation carrying both cursor and execution selection; preserve it exactly.
+4. Detached provider launches print `Provider job <jobId> execution #<n> <launchState>`. Detached workflows identify both `workflowId` and `jobId`. `jobs wait --embed` prints the terminal line, any available usage diagnostics, and `Result path: <path>` for that execution's durable `executions/<n>/result.md`. Interrupted waits print a continuation carrying the cursor; preserve it exactly.
 5. One provider conversation is one job. Workflow stale replacement, later discussion turns, and `jobs send` continuations are sequential executions of that same job; `jobs detail` lists each execution. Workflow atoms and discuss workers use the same job shell and finishing/restore path.
 
 Continued agent executions inherit the stored agent instruction; see [`jobs send` outcomes](./cli-errors.md#jobs-send-outcomes) for the command contract and refusal remedies.

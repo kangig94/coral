@@ -175,9 +175,6 @@ describe('cli follow handoff', () => {
           kind: 'wait-jobs',
           jobId: 'job-1',
           serializedCursor: savedCursor(4),
-          serializedExecutionSelections: JSON.stringify([
-            { jobId: 'job-1', epochKey: 'epoch', requestedSeq: 1, awaitingArtifact: false },
-          ]),
         });
         return recorded({
           kind: 'delegated',
@@ -305,16 +302,7 @@ describe('cli follow handoff', () => {
     expect(options.emitError).not.toHaveBeenCalled();
     const text = output.join('');
     expect(text.match(/checkpoint-one/g)).toHaveLength(1);
-    expect(text).toContain(
-      formatWaitContinuation(['job-1'], savedCursor(4), 'bounded', [
-        {
-          jobId: launchResult.jobId,
-          epochKey: launchResult.epochKey,
-          requestedSeq: launchResult.requestedSeq,
-          awaitingArtifact: false,
-        },
-      ]),
-    );
+    expect(text).toContain(formatWaitContinuation(['job-1'], savedCursor(4), 'bounded'));
     expect(text.match(/Run coral-cli jobs wait/g)).toHaveLength(1);
   });
 
@@ -343,9 +331,6 @@ describe('cli follow handoff', () => {
     expect(mockState.runHandoff.mock.calls[0][0]).toEqual({
       kind: 'wait-jobs',
       jobId: 'job-1',
-      serializedExecutionSelections: JSON.stringify([
-        { jobId: 'job-1', epochKey: 'epoch', requestedSeq: 1, awaitingArtifact: false },
-      ]),
     });
 
     sigintHandler?.();
@@ -413,16 +398,7 @@ describe('cli follow handoff', () => {
     await ensuring.promise;
     sigintHandler?.();
     await expect(follow).resolves.toBe(75);
-    expect(output.join('')).toContain(
-      formatWaitContinuation(['job-1'], null, 'bounded', [
-        {
-          jobId: launchResult.jobId,
-          epochKey: launchResult.epochKey,
-          requestedSeq: launchResult.requestedSeq,
-          awaitingArtifact: false,
-        },
-      ]),
-    );
+    expect(output.join('')).toContain(formatWaitContinuation(['job-1'], null, 'bounded'));
     expect(options.emitError).not.toHaveBeenCalled();
   });
 });
