@@ -1,6 +1,7 @@
 import { prepareCached, withImmediate, type Database } from './db.js';
 
 import { isRecord } from '../infra/json.js';
+import { errorMessage } from '../infra/error-format.js';
 import type { CauseRef, CauseRefToken } from '../causality/cause-ref.js';
 import type { ProviderLookupPort } from '../providers/catalog.js';
 import { encodeEventBody } from './body-codec.js';
@@ -51,6 +52,34 @@ export interface AppendedEvent extends CoralEvent {
 }
 
 export type PostCommitObserver = (appended: readonly AppendedEvent[]) => void;
+
+/** A caller must treat `appended` as written: this failure is never a commit that did not happen. */
+export class PostCommitConsumerError extends AggregateError {
+  readonly appended: readonly AppendedEvent[];
+
+  constructor(appended: readonly AppendedEvent[], failures: readonly unknown[]) {
+    super(failures, `Post-commit consumers failed after a durable commit: ${failures.map(errorMessage).join('; ')}`);
+    this.name = 'PostCommitConsumerError';
+    this.appended = appended;
+  }
+}
+
+/** A failure in one consumer of a durable commit never skips another. */
+export function runPostCommitConsumers(
+  appended: readonly AppendedEvent[],
+  consumers: readonly PostCommitObserver[],
+): void {
+  const failures: unknown[] = [];
+  for (const consume of consumers) {
+    try {
+      consume(appended);
+    } catch (error: unknown) {
+      if (error instanceof PostCommitConsumerError) failures.push(...error.errors);
+      else failures.push(error);
+    }
+  }
+  if (failures.length > 0) throw new PostCommitConsumerError(appended, failures);
+}
 
 export type CommitClosureResult = undefined;
 

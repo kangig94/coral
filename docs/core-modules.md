@@ -241,7 +241,13 @@ The conversation archive becomes current through an atomic manifest commit after
 
 `jobs/shell/launch.ts` serializes admission with finishing, requiring the preceding end and complete old-operation, reservation, retention, and run-task cleanup. In-process state is keyed by `(jobId, execution)` so late cleanup cannot erase a later execution. Durable execution order excludes concurrent continuations. Workflow and discussion owners drive their own later executions; continuation leases and session claims have no role.
 
-The shared post-commit observer publishes result exports from ended facts, records progress/locations, notifies lifecycle consumers and finalizers, and announces committed progress. Recovery reconstructs unfinished acceptance/retention work from its durable owners rather than resuming the provider.
+In the coordinator, every job-event commit settles through its `JobStore`: `commit` for the store's own commits, and `settleForeignCommit` for events the provider applier committed or the KB daemon reported. (The KB daemon settles its own commits in its own process with a different observer, and reports the events from inside that observer, so the coordinator can settle them before the daemon's own settlement finishes.)
+
+Settlement first runs the coordinator's post-commit observer, which attempts result export from ended facts, records progress/locations, and notifies lifecycle consumers and finalizers. It then announces the commit to in-process listeners and waiters, so no listener is woken before those attempts. Last come the committer's own downstream consumers. For the journal assembly's `coordinatorCommit` and for KB daemon events, these are subscriber publication and `ConsumerDriver` notification. A foreign commit announces no phase change, because the statuses before it were never seen.
+
+A consumer that throws does not skip the others, and the throws surface together as `PostCommitConsumerError`, which marks the commit durable. Export and location failures that their owners catch themselves are not among them.
+
+Recovery reconstructs unfinished acceptance/retention work from its durable owners rather than resuming the provider.
 
 ## Runtime Components
 

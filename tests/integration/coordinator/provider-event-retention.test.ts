@@ -7,6 +7,9 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createCoordinatorServer } from '#src/coordinator/index.js';
+import * as kbDaemonSupervisor from '#src/coordinator/live/kb-daemon-supervisor/index.js';
+import { KB_DAEMON_EVENT_MESSAGE, type KbDaemonEventMessage } from '#src/kb-daemon/protocol.js';
+import { subscribeJobEvents } from '#src/jobs/shell/event-subscription.js';
 import * as composition from '#src/coordinator/composition/index.js';
 import * as coordinatorLifecycle from '#src/coordinator/lifecycle.js';
 import type { CoordinatorCoreOptions, CoordinatorCoreResult } from '#src/coordinator/composition/types.js';
@@ -60,11 +63,17 @@ async function fixture() {
     JSON.stringify({ bundleHash: '0123456789abcdef', flavor: 'prod' }),
   );
   vi.stubEnv('HOME', home);
+  vi.stubEnv('CORAL_KB_ENABLE', '1');
   const codexHome = join(home, '.codex');
   mkdirSync(codexHome);
   writeFileSync(join(codexHome, 'auth.json'), JSON.stringify({ tokens: { account_id: 'test-account' } }));
   const binding = withTestBindingLocation(TEST_CODEX_BINDING, codexHome);
   const runtime = createRealRuntime('prod', { baseDir: join(home, '.coral') });
+  const kbDaemon: { report?: (message: KbDaemonEventMessage) => void } = {};
+  vi.spyOn(kbDaemonSupervisor, 'createDefaultKbDaemonSupervisor').mockImplementation((options) => {
+    kbDaemon.report = options.onEvent;
+    return createMockKbDaemonSupervisor();
+  });
   const createLifecycle = coordinatorLifecycle.createLifecycle;
   vi.spyOn(coordinatorLifecycle, 'createLifecycle').mockImplementation((deps, recover) =>
     createLifecycle({ ...deps, startProviderOperationReconciler: undefined }, recover),
@@ -120,7 +129,7 @@ async function fixture() {
         jobId: string;
         type: string;
         afterSeq: number;
-        stages: { stage: CommitStage; events: EventIdentity[] }[];
+        stages: { stage: CommitStage; events: EventIdentity[]; changeSeq: number }[];
         events: readonly AppendedEvent[];
         locationAtAnnouncement?: ReturnType<JobLocationIndex['read']>;
       }
@@ -149,13 +158,12 @@ async function fixture() {
           .get(event.seq),
       ).toEqual({ stream_kind: event.stream.kind, stream_id: event.stream.id, type: event.type });
     }
-    current.stages.push({ stage, events: identities(appended) });
+    current.stages.push({ stage, events: identities(appended), changeSeq: progressStore.getChangeSeq() });
   }
   const coordinator = createCoordinatorServer({
     runtime,
     pluginRoot,
     onFatalShutdownError: vi.fn(),
-    kbDaemonSupervisor: createMockKbDaemonSupervisor(),
     writeBackendInfoFn: () => true,
     removeBackendInfoIfOwnerFn: () => {},
     createServerFn: (handler) => createServer(handler),
@@ -204,6 +212,7 @@ async function fixture() {
         stream: { kind: stream_kind, id: stream_id },
         type,
       })),
+      changeSeq: progressStore.getChangeSeq(),
     });
   }
   const recordObserved = locations.recordObserved.bind(locations);
@@ -218,13 +227,18 @@ async function fixture() {
       record('location', current.events);
     }
   });
-  const announce = progressStore.announceCommitted.bind(progressStore);
-  vi.spyOn(progressStore, 'announceCommitted').mockImplementation((appended) => {
-    record('announcement', appended);
-    if (trace !== undefined && trace.stages.at(-1)?.stage === 'announcement') {
-      trace.locationAtAnnouncement = locations.read(trace.jobId);
+  const settleForeignCommit = progressStore.settleForeignCommit.bind(progressStore);
+  vi.spyOn(progressStore, 'settleForeignCommit').mockImplementation((appended, downstream) => {
+    try {
+      settleForeignCommit(appended, downstream);
+    } finally {
+      record('announcement', appended);
     }
-    announce(appended);
+  });
+  core.eventBus.on('job:progress', ({ jobId }) => {
+    if (trace !== undefined && trace.jobId === jobId && trace.type === 'job.execution.progress') {
+      trace.locationAtAnnouncement = locations.read(jobId);
+    }
   });
   const publishResult = vi.spyOn(progressStore, 'publishTerminalResult');
   const namespace = core.identity.namespace;
@@ -285,6 +299,10 @@ async function fixture() {
     handler,
     runtime,
     locations,
+    reportKbDaemonJournal: (appended: readonly AppendedEvent[]) => {
+      if (kbDaemon.report === undefined) throw new Error('KB daemon reporting is not wired.');
+      kbDaemon.report({ type: KB_DAEMON_EVENT_MESSAGE, event: 'journal', appended: [...appended] });
+    },
     finish: async (jobId: string) => {
       const record = readProviderOperationForJob(db, jobId);
       if (record === null) throw new Error('Missing provider operation.');
@@ -294,10 +312,17 @@ async function fixture() {
     traceCommit: (jobId: string, type: string) => {
       const afterSeq =
         reader.prepare<[], { seq: number }>('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get()?.seq ?? 0;
-      trace = { jobId, type, afterSeq, stages: [], events: [] };
-      return trace;
+      const current: NonNullable<typeof trace> = { jobId, type, afterSeq, stages: [], events: [] };
+      trace = current;
+      return current;
     },
   };
+}
+
+function expectAnnouncedAfterDurableStages(trace: { stages: readonly { stage: string; changeSeq: number }[] }): void {
+  const announcement = trace.stages.at(-1);
+  expect(announcement?.stage).toBe('announcement');
+  for (const { changeSeq } of trace.stages.slice(0, -1)) expect(changeSeq).toBeLessThan(announcement?.changeSeq ?? 0);
 }
 
 function terminalRequest(operation: Parameters<ProviderEventHandler>[0]['operation']) {
@@ -342,6 +367,7 @@ describe('provider events through coordinator composition', () => {
     expect(await f.handler(request)).toEqual({ kind: 'ack', committedThroughProviderSeq: 1 });
     await f.reactor.waitForIdle();
     expect(trace.stages.map(({ stage }) => stage)).toEqual(['commit', 'export', 'lifecycle', 'announcement']);
+    expectAnnouncedAfterDurableStages(trace);
     const events = trace.events.map(({ seq, stream, type }) => ({ seq, stream, type }));
     expect(events).toEqual([
       {
@@ -353,7 +379,35 @@ describe('provider events through coordinator composition', () => {
     expect(trace.stages[0]?.events).toEqual(events);
     expect(await f.handler(request)).toEqual({ kind: 'ack', committedThroughProviderSeq: 1 });
     expect(trace.stages.map(({ stage }) => stage)).toEqual(['commit', 'export', 'lifecycle', 'announcement']);
+    const subscription = new AbortController();
+    const delivered: string[] = [];
+    const subscribed = (async () => {
+      for await (const event of subscribeJobEvents({
+        afterSeq: 0,
+        jobIds: [tested.operation.jobId],
+        abortSignal: subscription.signal,
+      })) {
+        delivered.push(event.type);
+      }
+    })();
     await f.finish(tested.operation.jobId);
+    subscription.abort();
+    await subscribed;
+    const ended = f.reader
+      .prepare<
+        [string],
+        { seq: number }
+      >("SELECT seq FROM events WHERE stream_kind = 'job' AND stream_id = ? AND type = 'job.execution.ended'")
+      .get(tested.operation.jobId);
+    expect(delivered).toContain('terminal');
+    expect(
+      f.reader
+        .prepare<
+          [],
+          { cursor: number }
+        >("SELECT MAX(cursor) AS cursor FROM consumer_cursors WHERE authority = 'journal'")
+        .get()?.cursor,
+    ).toBeGreaterThanOrEqual(ended?.seq ?? Number.POSITIVE_INFINITY);
     for (const stage of trace.stages.slice(1)) expect(stage.events).toEqual(events);
     expect(f.publishResult.mock.calls.filter(([jobId]) => jobId === tested.operation.jobId)).toHaveLength(1);
     expect(readProjectionJobConversation(f.db, tested.operation.jobId)?.open).toBe(false);
@@ -399,6 +453,7 @@ describe('provider events through coordinator composition', () => {
       'lifecycle',
       'announcement',
     ]);
+    expectAnnouncedAfterDurableStages(trace);
     expect(trace.events).toHaveLength(1);
     const events = trace.events.map(({ seq, stream, type }) => ({ seq, stream, type }));
     for (const stage of trace.stages) expect(stage.events).toEqual(events);
@@ -413,5 +468,51 @@ describe('provider events through coordinator composition', () => {
         value: { events: [{ type: 'progress', seq: trace.events[0]?.seq, message: 'provider progress' }] },
       },
     });
+  });
+  it('settles a journal event the KB daemon reports and fans it out to subscribers and journal consumers', async () => {
+    const f = await fixture();
+    const tested = f.seedOperation();
+    await f.reactor.waitForIdle();
+    const seq = f.progressStore.appendProgress(tested.operation.jobId, 'reported by the KB daemon');
+    const row = f.reader
+      .prepare<
+        [number],
+        { seq: number; ts: string; type: string; stream_id: string; body: string }
+      >('SELECT seq, ts, type, stream_id, CAST(body AS TEXT) AS body FROM events WHERE seq = ?')
+      .get(seq);
+    if (row === undefined) throw new Error('Missing committed progress.');
+    const subscription = new AbortController();
+    const delivered: string[] = [];
+    const subscribed = (async () => {
+      for await (const event of subscribeJobEvents({
+        afterSeq: 0,
+        jobIds: [tested.operation.jobId],
+        abortSignal: subscription.signal,
+      })) {
+        delivered.push(event.type);
+      }
+    })();
+
+    f.reportKbDaemonJournal([
+      {
+        seq: row.seq,
+        ts: row.ts,
+        type: row.type,
+        stream: { kind: 'job', id: row.stream_id },
+        body: JSON.parse(row.body) as unknown,
+      },
+    ]);
+    subscription.abort();
+    await subscribed;
+
+    expect(delivered).toEqual(['progress']);
+    expect(
+      f.reader
+        .prepare<
+          [],
+          { cursor: number }
+        >("SELECT MAX(cursor) AS cursor FROM consumer_cursors WHERE authority = 'journal'")
+        .get()?.cursor,
+    ).toBeGreaterThanOrEqual(seq);
   });
 });

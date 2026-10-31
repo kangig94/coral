@@ -21,7 +21,7 @@ import { workflowCompiler } from '#src/workflow/compile.js';
 import { workflowCommands } from '#src/workflow/dispatch.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
-import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
+import { createTestJobJournalDeps, observeTestTerminalExports } from '#tests/helpers/job-journal-deps.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { createLifecycleReactor } from '#src/jobs/conversation/lifecycle-reactor.js';
 import { composeReducers } from '#src/store/reducers.js';
@@ -51,11 +51,7 @@ describe('pipe executor coral cascade invariant', () => {
 
     const projectRoot = fixtureCanonicalWorkDir(mkdtempSync(join(tmpdir(), 'pipe-cascade-proj-')));
     const coralPluginRoot = mkdtempSync(join(tmpdir(), 'pipe-cascade-coral-'));
-    // Isolate from the user's real ~/.coral state so stale-schema DBs created
-    // before unrelated rename commits don't poison this integration test.
-    // createRealRuntime() resolves coralRoot via homedir(); pointing HOME at a
-    // fresh tmp dir gives the runtime a clean store path that the schema
-    // loader will populate from current SQL.
+    // Must not read or write the user's real ~/.coral.
     const isolatedHome = mkdtempSync(join(tmpdir(), 'pipe-cascade-home-'));
     const originalHome = process.env.HOME;
     const originalUserProfile = process.env.USERPROFILE;
@@ -101,6 +97,7 @@ describe('pipe executor coral cascade invariant', () => {
       const launchCoordinator = new LaunchCoordinator({ runtime });
       const finisherRef: { current?: ExecutionFinisher } = {};
       const reactorRef: { current?: ReturnType<typeof createLifecycleReactor> } = {};
+      const exportTerminalResults = observeTestTerminalExports(() => progressStore);
       const progressStore = new JobStore('test-ns', runtime, bodyCodec, {
         db,
         eventBus,
@@ -113,6 +110,7 @@ describe('pipe executor coral cascade invariant', () => {
           if (finisherRef.current === undefined) {
             throw new Error('Execution finisher observed events before initialization');
           }
+          exportTerminalResults(appended);
           finisherRef.current.observeCommitted(appended);
           reactorRef.current.observe(appended);
         },
@@ -274,6 +272,7 @@ describe('pipe executor coral cascade invariant', () => {
       const launchCoordinator = new LaunchCoordinator({ runtime });
       const finisherRef: { current?: ExecutionFinisher } = {};
       const reactorRef: { current?: ReturnType<typeof createLifecycleReactor> } = {};
+      const exportTerminalResults = observeTestTerminalExports(() => progressStore);
       const progressStore = new JobStore('test-ns', runtime, bodyCodec, {
         db,
         eventBus,
@@ -286,6 +285,7 @@ describe('pipe executor coral cascade invariant', () => {
           if (finisherRef.current === undefined) {
             throw new Error('Execution finisher observed events before initialization');
           }
+          exportTerminalResults(appended);
           finisherRef.current.observeCommitted(appended);
           reactorRef.current.observe(appended);
         },

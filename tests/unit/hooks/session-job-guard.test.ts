@@ -131,7 +131,7 @@ function attentionFixture() {
     addressing,
     ports,
     store,
-    end: (execution: number) => store.announceCommitted(h.complete(execution)),
+    end: (execution: number) => store.settleForeignCommit(h.complete(execution)),
     request,
   };
 }

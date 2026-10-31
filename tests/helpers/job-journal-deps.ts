@@ -2,25 +2,24 @@ import type { ProgressSource } from '#src/jobs/wait/contract.js';
 import type { JobStore } from '#src/jobs/store.js';
 import type { JobEvent } from '#src/jobs/records.js';
 import type { Runtime } from '#src/runtime/ports.js';
-import type { CommitEventsFn } from '#src/store/append.js';
+import type { CommitEventsFn, PostCommitObserver } from '#src/store/append.js';
 import { publishJobEvents } from '#src/jobs/shell/event-subscription.js';
 import { observeTerminalResultExports } from '#src/jobs/terminal/export.js';
 import { aggregateWorkflowUsage } from '#src/jobs/workflow-usage.js';
 
+/** A test store that exports results must do so from its observer, before its announcement. */
+export function observeTestTerminalExports(getStore: () => JobStore): PostCommitObserver {
+  return observeTerminalResultExports((jobId) => getStore().ensureResultArtifact(jobId));
+}
+
 export function createTestJobJournalDeps(progressStore: JobStore, runtime: Pick<Runtime, 'time'>) {
   const getCurrentJournalSeq = () =>
     (progressStore.getDb().prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get() as { seq: number }).seq;
-  // Mirrors the production composition root, which composes this onto the same observer every commit
-  // path calls (`coordinatorCommit` in src/coordinator/index.ts).
-  const exportTerminalResults = observeTerminalResultExports((jobId) => progressStore.ensureResultArtifact(jobId));
-  const coordinatorCommit = (cb: Parameters<CommitEventsFn>[0]) => {
-    const appended = progressStore.commit(cb);
-    if (appended.length > 0) {
-      publishJobEvents(appended, progressStore.getDb(), progressStore);
-      exportTerminalResults(appended);
-    }
-    return appended;
-  };
+  // see coordinatorCommit in src/coordinator/index.ts
+  const coordinatorCommit = (cb: Parameters<CommitEventsFn>[0]) =>
+    progressStore.commit(cb, undefined, [
+      (appended) => publishJobEvents(appended, progressStore.getDb(), progressStore),
+    ]);
 
   const subscribeJobEvents = async function* ({
     afterSeq,

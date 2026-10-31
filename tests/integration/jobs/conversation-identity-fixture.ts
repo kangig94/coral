@@ -13,7 +13,7 @@ import { managed } from '#src/providers/capability.js';
 import type { ProviderEventBody, ProviderRequest } from '#src/providers/contract.js';
 import { ProviderRegistry } from '#src/providers/registry.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
-import type { CommitEventsFn } from '#src/store/append.js';
+import { runPostCommitConsumers, type CommitEventsFn } from '#src/store/append.js';
 import { decodeStoredBody } from '#src/store/body-codec.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { workflowRegistry } from '#src/workflow/events.js';
@@ -21,7 +21,7 @@ import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { testChildPrincipalRegistry } from '#tests/helpers/child-principal-registry.js';
 import { executionHarness } from '#tests/helpers/job-executions.js';
-import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
+import { createTestJobJournalDeps, observeTestTerminalExports } from '#tests/helpers/job-journal-deps.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
 import { TEST_CLAUDE_ACCESS, TEST_CODEX_ACCESS, TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
 import { toProviderDefinition, type StandaloneTestProvider } from '#tests/helpers/scripted-provider.js';
@@ -60,11 +60,18 @@ export function conversationIdentityFixture(
   const journal = executionHarness(discussRegistry, workflowRegistry);
   const eventBus = new TypedEventBus();
   let acceptanceBlocked = false;
-  const store = new JobStore('identity-test', runtime, createEventBodyCodec(), {
+  const exportTerminalResults = observeTestTerminalExports(() => store);
+  const store: JobStore = new JobStore('identity-test', runtime, createEventBodyCodec(), {
     db: journal.db,
     reducers: journal.ctx.reducers,
     providers: permissiveProviderLookupPort,
     eventBus,
+    observer: (appended) =>
+      runPostCommitConsumers(appended, [
+        exportTerminalResults,
+        (events) => reactor.observe(events),
+        (events) => finisher.observeCommitted(events),
+      ]),
     readAdmissionStatus: (jobId) => finisher.admissionStatus(jobId),
     beforeAppend: (event) => {
       if (acceptanceBlocked && event.type === 'job.execution.outcome.accepted')
@@ -92,8 +99,6 @@ export function conversationIdentityFixture(
       throw new Error('Request commit failed before persistence');
     }
     const appended = journalDeps.coordinatorCommit(write);
-    finisher.observeCommitted(appended);
-    reactor.observe(appended);
     if (loseRequestAcknowledgement && appended.some((event) => event.type === 'job.execution.requested')) {
       loseRequestAcknowledgement = false;
       throw new Error('Committed request acknowledgement lost');
