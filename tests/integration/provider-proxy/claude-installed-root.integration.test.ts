@@ -8,7 +8,7 @@ import { localProviderHostRoot } from '#src/infra/bundle-manifest.js';
 import { providerProxyPlacement } from '#src/coordinator/live/provider-hosts/host-root.js';
 import { claudeAppServerLifecycle } from '#src/providers/claude/provider-facets.js';
 
-import { hostFingerprintFromSpec } from '#src/providers/host-identity.js';
+import { hostFingerprintFromSpec, proxySetFingerprintFromSpec } from '#src/providers/host-identity.js';
 import { createProxy } from '#src/provider-proxy/proxy.js';
 import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
 import { connectControlClient, controlExchangeForTest } from '#src/provider-proxy/control-client.js';
@@ -72,7 +72,7 @@ it.each(['plugin-cache-only', 'unused-old-copy'] as const)(
     vi.stubGlobal('__PLUGIN_ROOT__', config.pluginRoot);
     vi.stubGlobal('__BUNDLE_DIR__', join(config.pluginRoot, 'bridge'));
     const coordinatorSpec = compile(providerProxyPlacement().hostRoot);
-    const fingerprint = hostFingerprintFromSpec(coordinatorSpec);
+    const fingerprint = proxySetFingerprintFromSpec(coordinatorSpec);
     let store!: JobStore;
     let sessions!: ConversationManager;
     const harness = createProviderOperationReconcilerHarness({

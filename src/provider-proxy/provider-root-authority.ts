@@ -64,8 +64,21 @@ import { createProxyProviderHostAdmission } from './provider-host-admission.js';
  * that shared transport rather than a second implementation of it.
  */
 
-export const MAX_PROXY_LIVE_PROVIDER_ROOTS = 1;
+export const MAX_PROXY_LIVE_PROVIDER_ROOTS = 20;
 export const PROVIDER_ROOT_ROTATION_THRESHOLD = 127;
+
+/**
+ * Why one more provider root may not spawn now, or `null` when it may. A spawning root spends a rotation slot
+ * once it commits, so it counts against the rotation threshold already: the enforcers' recorded-root registry
+ * cannot grow past the generation's budget however many roots spawn at once.
+ */
+export function providerRootAdmissionRefusal(
+  roots: Readonly<{ spent: number; spawning: number; live: number }>,
+): ProxyProviderRootCapacityError['code'] | null {
+  if (roots.spent + roots.spawning >= PROVIDER_ROOT_ROTATION_THRESHOLD) return 'provider_root_generation_draining';
+  if (roots.live + roots.spawning + 1 > MAX_PROXY_LIVE_PROVIDER_ROOTS) return 'provider_root_live_capacity';
+  return null;
+}
 
 export class ProxyProviderRootCapacityError extends Error {
   readonly code: Extract<ProxyPrepareCapacityCode, 'provider_root_live_capacity' | 'provider_root_generation_draining'>;
@@ -543,16 +556,21 @@ class ProxyProviderRootPool {
   }
 
   private reserveRootToken(): void {
-    if (this.generationRootSlotsSpent >= PROVIDER_ROOT_ROTATION_THRESHOLD) {
+    const refusal = providerRootAdmissionRefusal({
+      spent: this.generationRootSlotsSpent,
+      spawning: this.spawningRoots,
+      live: this.liveRoots,
+    });
+    if (refusal === 'provider_root_generation_draining') {
       throw new ProxyProviderRootCapacityError(
-        'provider_root_generation_draining',
+        refusal,
         `Provider root generation reached its ${PROVIDER_ROOT_ROTATION_THRESHOLD} root rotation threshold.`,
       );
     }
-    if (this.liveRoots + this.spawningRoots + 1 > MAX_PROXY_LIVE_PROVIDER_ROOTS) {
+    if (refusal === 'provider_root_live_capacity') {
       throw new ProxyProviderRootCapacityError(
-        'provider_root_live_capacity',
-        `Provider root admission permits at most ${MAX_PROXY_LIVE_PROVIDER_ROOTS} live or spawning root.`,
+        refusal,
+        `Provider root admission permits at most ${MAX_PROXY_LIVE_PROVIDER_ROOTS} live or spawning roots.`,
       );
     }
     this.spawningRoots += 1;

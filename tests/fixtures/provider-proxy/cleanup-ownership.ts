@@ -105,6 +105,7 @@ const supervisor = new OperationSupervisor({
   nowMs: () => 0,
   proxyInstanceId: identity.proxyInstanceId,
   buildSetId: identity.buildSetId,
+  hostSetFingerprint: identity.hostFingerprint,
   stageProviderRoot: containment.stageProviderRoot,
   pushProviderEvent: () => ({
     controlEpoch: 1,

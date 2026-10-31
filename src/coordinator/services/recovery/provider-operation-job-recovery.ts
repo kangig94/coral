@@ -42,7 +42,7 @@ async function recoverProviderOperationJobOnceFor(
     action: Parameters<typeof applyRecoveryAction>[0],
     options: ProviderOperationRecoveryPlanActionOptions,
   ) => Promise<void>,
-  record: Extract<ProviderOperationRecord, { phase: 'local-recovery-pending' }>,
+  jobId: string,
   signal: AbortSignal,
 ): Promise<ProviderOperationRecoveryAcceptance> {
   const {
@@ -54,7 +54,6 @@ async function recoverProviderOperationJobOnceFor(
     abandonHeldJob,
     maybeReleaseRecoveryRegistry,
   } = deps;
-  const jobId = record.operation.jobId;
   const coordinatorCommit: CommitEventsFn = (callback) => progressStore.commit(callback);
   const freshItems: CoordinatorRecoveryItem[] = [];
   await runCoordinatorWalk({
@@ -208,29 +207,26 @@ export function createProviderOperationJobRecovery(
     });
   };
 
-  const recoverProviderOperationJobOnce = (
-    record: Extract<ProviderOperationRecord, { phase: 'local-recovery-pending' }>,
-    signal: AbortSignal,
-  ): Promise<ProviderOperationRecoveryAcceptance> =>
-    recoverProviderOperationJobOnceFor(deps, applyPlanAction, record, signal);
+  const recoverReleasedJob = (jobId: string, signal: AbortSignal): Promise<ProviderOperationRecoveryAcceptance> => {
+    const existing = state.providerOperationRecoveries.get(jobId);
+    if (existing !== undefined) return existing;
+
+    const recovery = recoverProviderOperationJobOnceFor(deps, applyPlanAction, jobId, signal).catch(
+      (error: unknown) => {
+        if (state.providerOperationRecoveries.get(jobId) === recovery) {
+          state.providerOperationRecoveries.delete(jobId);
+        }
+        throw error;
+      },
+    );
+    state.providerOperationRecoveries.set(jobId, recovery);
+    return recovery;
+  };
 
   const recoverProviderOperationJob = (
     record: Extract<ProviderOperationRecord, { phase: 'local-recovery-pending' }>,
     signal: AbortSignal,
-  ): Promise<ProviderOperationRecoveryAcceptance> => {
-    const jobId = record.operation.jobId;
-    const existing = state.providerOperationRecoveries.get(jobId);
-    if (existing !== undefined) return existing;
-
-    const recovery = recoverProviderOperationJobOnce(record, signal).catch((error: unknown) => {
-      if (state.providerOperationRecoveries.get(jobId) === recovery) {
-        state.providerOperationRecoveries.delete(jobId);
-      }
-      throw error;
-    });
-    state.providerOperationRecoveries.set(jobId, recovery);
-    return recovery;
-  };
+  ): Promise<ProviderOperationRecoveryAcceptance> => recoverReleasedJob(record.operation.jobId, signal);
 
   const completeProviderOperationJobRecovery = (jobId: string): void => {
     state.providerOperationRecoveries.delete(jobId);
@@ -242,5 +238,6 @@ export function createProviderOperationJobRecovery(
     applyPlanAction,
     completeProviderOperationJobRecovery,
     recoverProviderOperationJob,
+    recoverReleasedJob,
   };
 }

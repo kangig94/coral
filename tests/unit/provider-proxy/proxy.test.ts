@@ -408,6 +408,7 @@ describe('provider-proxy truthful operation authority', () => {
       state: 'executing',
       activationFingerprint: operationActivationFingerprint(activation),
       startedAt: new Date(STARTED_AT_MS).toISOString(),
+      hostSetFingerprint: FINGERPRINT,
       hostRef: hostRefFor(operation.jobId),
       committedThroughProviderSeq: 0,
     });
@@ -519,6 +520,7 @@ async function preparedOperation(
     mintReservation: () => asReservation(randomUUID()),
     proxyInstanceId: operation.proxyInstanceId,
     buildSetId: operation.buildSetId,
+    hostSetFingerprint: 'a'.repeat(64),
     stageProviderRoot: () => ({
       result: Promise.resolve({
         state: 'staged' as const,

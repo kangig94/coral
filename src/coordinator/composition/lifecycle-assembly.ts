@@ -22,6 +22,7 @@ import { createStoreEpochSweepScheduler } from './store-epoch-sweep-scheduler.js
 import type { createCoordinatorSuccessionAssembly, createSuccessionJobView } from './succession-assembly.js';
 import type { createCoordinatorTransportAssembly } from './transport-assembly.js';
 import type { CoordinatorCoreOptions } from './types.js';
+import type { RpcPorts } from '../../transport/rpc/ports.js';
 
 type LifecycleAssemblyInput = Readonly<{
   core: ReturnType<typeof createCoordinatorCoreContext>;
@@ -33,6 +34,7 @@ type LifecycleAssemblyInput = Readonly<{
   successionAssembly: ReturnType<typeof createCoordinatorSuccessionAssembly>;
   transport: ReturnType<typeof createCoordinatorTransportAssembly>;
   closeProxySetForEpochClosure: ReturnType<typeof createProviderProxyContainment>['closeProxySetForEpochClosure'];
+  recoveryQuarantine: Pick<RpcPorts['recoveryQuarantine'], 'clear'>;
   hostedKb: Readonly<{
     kbDaemonSupervisorWithTrackedShutdown: KbDaemonSupervisor;
     disposeChildPrincipalTerminalListeners: () => void;
@@ -151,6 +153,13 @@ function createCoordinatorLifecycleDeps(
     terminateRegisteredChildrenFn: defaults.terminateRegisteredChildrenFn,
     providerHostManager: world.providerHostManager,
     onRecoverySettlement: () => state.notifySuccessionObligationChange(),
+    supersededProviderOperationPorts: {
+      adoptReadable: async (record, recordKey) =>
+        (await services.adoptRepairedProviderOperation(record, recordKey)).kind === 'accepted' ? 'accepted' : 'refused',
+      retryRecoveryQuarantine: async (coordinate, signal) =>
+        (await input.recoveryQuarantine.clear(coordinate, signal)).disposition === 'advanced' ? 'advanced' : 'held',
+      onObligationChange: () => state.notifySuccessionObligationChange(),
+    },
     ...(world.providerProxyAuthority === undefined ? {} : { providerProxyAuthority: world.providerProxyAuthority }),
     kbDaemonSupervisor: kbDaemonSupervisorWithTrackedShutdown,
     disposeLifecycleReactor: () => disposeCoordinatorLifecycleReactor(input),

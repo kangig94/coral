@@ -81,6 +81,7 @@ export function providerOperationRecord(
       state: 'executing',
       activationFingerprint: 'c'.repeat(64),
       startedAt: '2026-08-09T12:34:56.000Z',
+      hostSetFingerprint: common.locator.hostFingerprint,
       hostRef: {
         provider: 'codex',
         fingerprint: common.locator.hostFingerprint,

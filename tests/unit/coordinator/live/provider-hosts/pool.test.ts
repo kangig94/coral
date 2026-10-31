@@ -6,7 +6,7 @@ vi.mock('#src/coordinator/live/provider-hosts/proxy-set-acquisition.js', async (
 }));
 import { ensureProviderProxySet } from '#src/coordinator/live/provider-hosts/proxy-set-acquisition.js';
 import type { ProviderServerSpec } from '#src/providers/contract.js';
-import { hostKeyFromSpec } from '#src/providers/host-identity.js';
+import { proxySetKeyFromSpec } from '#src/providers/host-identity.js';
 import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set/claim-mirror.js';
 import { ProviderProxySetLifecycle } from '#src/coordinator/services/provider-proxy-set/index.js';
 import { ProviderProxySetLifecycleRef } from '#src/coordinator/services/provider-proxy-set/lifecycle-ref.js';
@@ -154,11 +154,11 @@ describe('provider host pool proxy set registry', () => {
     const lease = await manager.openSession(createLaunch(spec), { jobId: 'job-a' });
     await vi.waitFor(() => expect(mockedEnsureProxySet).toHaveBeenCalledTimes(1));
 
-    manager.providerProxySlotReleased(hostKeyFromSpec(spec), 'idle-retired');
+    manager.providerProxySlotReleased(proxySetKeyFromSpec(spec), 'idle-retired');
     await Promise.resolve();
     expect(mockedEnsureProxySet).toHaveBeenCalledTimes(1);
 
-    manager.providerProxySlotReleased(hostKeyFromSpec(spec), 'released');
+    manager.providerProxySlotReleased(proxySetKeyFromSpec(spec), 'released');
     await vi.waitFor(() => expect(mockedEnsureProxySet).toHaveBeenCalledTimes(2));
     lease.close();
     await manager.shutdown();

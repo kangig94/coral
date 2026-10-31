@@ -1,4 +1,4 @@
-import { hostFingerprintFromSpec } from '../providers/host-identity.js';
+import { proxySetFingerprintFromSpec } from '../providers/host-identity.js';
 import { observePromise, raceWithSignal } from '../infra/promise-signal.js';
 import type { ProcessIncarnation } from '../infra/node-process.js';
 import { backendLog } from '../infra/backend-log.js';
@@ -999,7 +999,10 @@ function createSemanticOperationStager(
         );
       }
       const compiled = bound.prepareExecution(executionInput(runtime, options.hostRoot, prepared));
-      if (compiled.kind !== 'app-server' || hostFingerprintFromSpec(compiled.hostSpec) !== options.hostFingerprint) {
+      if (
+        compiled.kind !== 'app-server' ||
+        proxySetFingerprintFromSpec(compiled.hostSpec) !== options.hostFingerprint
+      ) {
         return prepareRefusal(
           'proxy_prepare_refused',
           'local-fallback',

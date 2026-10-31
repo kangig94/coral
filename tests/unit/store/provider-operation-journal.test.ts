@@ -30,11 +30,11 @@ function createDb(): Database {
 }
 
 describe('provider operation journal', () => {
-  it('writes generation four and fences the superseded generation three', () => {
+  it('writes generation five and fences the superseded generation four', () => {
     const record = providerOperationRecord('prepare-pending');
-    expect(JSON.parse(encodeProviderOperationRecord(record))).toMatchObject({ version: 4 });
-    expect(PROVIDER_OPERATION_RECORD_GENERATIONS.retainedSuperseded).toContain(3);
-    expect(() => decodeProviderOperationRecord(JSON.stringify({ ...record, version: 3 }))).toThrow();
+    expect(JSON.parse(encodeProviderOperationRecord(record))).toMatchObject({ version: 5 });
+    expect(PROVIDER_OPERATION_RECORD_GENERATIONS.retainedSuperseded).toContain(4);
+    expect(() => decodeProviderOperationRecord(JSON.stringify({ ...record, version: 4 }))).toThrow();
   });
 
   it('closes only one set and joins mutations admitted before its fence', async () => {
@@ -236,15 +236,24 @@ describe('provider operation durability', () => {
     expect(() => decodeProviderOperationRecord(JSON.stringify(candidate))).toThrow(/prepareSource/u);
   });
 
-  it('rejects an activation receipt bound to another job or locator', () => {
+  it('rejects an activation receipt bound to another set', () => {
     const executing = providerOperationRecord('executing');
     if (executing.phase !== 'executing') throw new Error('expected executing fixture');
-    const hostRef = executing.activationAck.hostRef;
-    const mismatch = { ...hostRef, fingerprint: 'd'.repeat(64) };
-    {
-      const candidate = { ...executing, activationAck: { ...executing.activationAck, hostRef: mismatch } };
-      expect(() => decodeProviderOperationRecord(JSON.stringify(candidate))).toThrow();
+    const { hostSetFingerprint: _set, ...unbound } = executing.activationAck;
+    for (const activationAck of [{ ...executing.activationAck, hostSetFingerprint: 'd'.repeat(64) }, unbound]) {
+      expect(() => decodeProviderOperationRecord(JSON.stringify({ ...executing, activationAck }))).toThrow(
+        /hostSetFingerprint/u,
+      );
     }
+  });
+
+  it('should accept an activated host whose own fingerprint differs from the set it runs in', () => {
+    const executing = providerOperationRecord('executing');
+    if (executing.phase !== 'executing') throw new Error('expected executing fixture');
+    const hostRef = { ...executing.activationAck.hostRef, fingerprint: 'd'.repeat(64) };
+    const candidate = { ...executing, activationAck: { ...executing.activationAck, hostRef } };
+
+    expect(decodeProviderOperationRecord(JSON.stringify(candidate))).toMatchObject({ activationAck: { hostRef } });
   });
 });
 

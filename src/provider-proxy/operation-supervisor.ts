@@ -240,6 +240,7 @@ type OperationSupervisorOptions = Readonly<{
   nowMs(): number;
   proxyInstanceId: string;
   buildSetId: string;
+  hostSetFingerprint: string;
   stageProviderRoot(
     key: ProviderOperationKey,
     reserved: Readonly<{ reservation: Reservation; prepared: ProxyPreparedAppServerOperation }>,
@@ -526,6 +527,7 @@ export class OperationSupervisor {
         state: 'executing',
         activationFingerprint: input.activationFingerprint,
         startedAt: new Date(this.#options.wallClockNow()).toISOString(),
+        hostSetFingerprint: this.#options.hostSetFingerprint,
         hostRef: startResult.hostRef,
         committedThroughProviderSeq: entry.committedThroughProviderSeq,
       });

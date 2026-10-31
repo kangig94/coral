@@ -664,6 +664,7 @@ export function createCoordinatorCore(
     successionAssembly,
     transport,
     closeProxySetForEpochClosure,
+    recoveryQuarantine,
     hostedKb,
   });
 

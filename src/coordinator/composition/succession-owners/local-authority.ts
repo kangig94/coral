@@ -30,6 +30,14 @@ export function createLocalAuthoritySuccessionOwners(input: SuccessionOwnersInpu
     {
       id: 'recovery',
       classify: async () => {
+        const superseded = await lifecycleController()?.settleSupersededProviderOperations();
+        if (superseded?.kind === 'holding') {
+          return {
+            kind: 'blocking',
+            reason: 'a superseded provider operation still fences its job',
+            jobIds: superseded.pendingJobIds,
+          };
+        }
         const quarantines = getRecoveryQuarantineStore().list();
         const registry = lifecycleController()?.getRecoveryRegistry();
         const jobIds = [...(registry ?? [])]

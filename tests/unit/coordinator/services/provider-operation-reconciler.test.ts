@@ -511,33 +511,71 @@ it('releases only the unpublished operation after decisive failure time is exhau
   }
 });
 
-it('releases an invalid activation ACK before terminalizing and lets a recorded abort win', async () => {
+const ACKS_NOT_NAMING_THE_SET = {
+  'another set': () => ({ ...unpublishedStart(), state: 'executing' as const, hostSetFingerprint: 'b'.repeat(64) }),
+  'no set': () => {
+    const { hostSetFingerprint: _set, ...ack } = unpublishedStart();
+    return { ...ack, state: 'executing' as const };
+  },
+};
+
+it.each(Object.keys(ACKS_NOT_NAMING_THE_SET) as (keyof typeof ACKS_NOT_NAMING_THE_SET)[])(
+  'releases an activation ACK naming %s before terminalizing and lets a recorded abort win',
+  async (ack) => {
+    const stop = vi.fn(async () => {});
+    const contain = vi.fn();
+    const warn = vi.fn();
+    const harness = createHarness({
+      stopOperation: stop,
+      requestContainment: contain,
+      onError: warn,
+      activatePreparedOperation: async () => ACKS_NOT_NAMING_THE_SET[ack](),
+      inspectOperation: async (operation, prepareAttemptKey) => ({
+        state: 'released-activation-indeterminate',
+        operation,
+        prepareAttemptNumber: 1,
+        prepareAttemptKey,
+      }),
+    });
+    const record = providerOperationRecord('proxy-activation-pending');
+    try {
+      insertProviderOperation(harness.db, record);
+      await harness.reconciler.reconcile(record);
+      expect(stop).toHaveBeenCalledOnce();
+      expect(contain).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledOnce();
+      expect(readProviderOperation(harness.db, record.operation)).toBeNull();
+      expect(harness.appended).toContainEqual(
+        expect.objectContaining({
+          type: 'job.execution.progress',
+          body: expect.objectContaining({ detail: { code: 'provider_activation_ack_invalid' } }),
+        }),
+      );
+    } finally {
+      harness.reconciler.stop();
+      harness.db.close();
+    }
+  },
+);
+
+it('should refuse to publish an activation replayed during resolution from a receipt that names no set', async () => {
   const stop = vi.fn(async () => {});
-  const contain = vi.fn();
-  const warn = vi.fn();
+  const { hostSetFingerprint: _set, ...legacyAck } = unpublishedStart();
+  let inspections = 0;
   const harness = createHarness({
     stopOperation: stop,
-    requestContainment: contain,
-    onError: warn,
-    activatePreparedOperation: async () => ({
-      ...unpublishedStart(),
-      state: 'executing',
-      hostRef: { ...unpublishedStart().hostRef, fingerprint: 'b'.repeat(64) },
-    }),
-    inspectOperation: async (operation, prepareAttemptKey) => ({
-      state: 'released-activation-indeterminate',
-      operation,
-      prepareAttemptNumber: 1,
-      prepareAttemptKey,
-    }),
+    onError: vi.fn(),
+    activatePreparedOperation: async () => ({ ...legacyAck, state: 'executing' }),
+    inspectOperation: async (operation, prepareAttemptKey) =>
+      (inspections += 1) === 1
+        ? legacyAck
+        : { state: 'released-activation-indeterminate', operation, prepareAttemptNumber: 1, prepareAttemptKey },
   });
-  const record = providerOperationRecord('proxy-activation-pending');
+  const record = providerOperationRecord('activation-resolution-pending');
   try {
     insertProviderOperation(harness.db, record);
     await harness.reconciler.reconcile(record);
     expect(stop).toHaveBeenCalledOnce();
-    expect(contain).not.toHaveBeenCalled();
-    expect(warn).toHaveBeenCalledOnce();
     expect(readProviderOperation(harness.db, record.operation)).toBeNull();
     expect(harness.appended).toContainEqual(
       expect.objectContaining({
@@ -725,8 +763,8 @@ it.each(['proxy-activation-pending', 'activation-resolution-pending'] as const)(
         message: JSON.stringify([
           {
             code: 'custom',
-            path: ['activationAck', 'hostRef', 'fingerprint'],
-            message: 'activation host fingerprint must equal the durable locator',
+            path: ['activationAck', 'hostSetFingerprint'],
+            message: 'activation host must belong to the durable locator set',
           },
         ]),
       },
