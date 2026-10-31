@@ -64,6 +64,7 @@ import {
   providerProxySetIdentityFromRecord,
 } from '../services/provider-proxy-set/identity.js';
 import { ProviderProxySetLifecycle } from '../services/provider-proxy-set/index.js';
+import { resolveProviderProxySetCapacity } from '../services/provider-proxy-set/capacity.js';
 import { ProviderProxySetOperatorDispositionStore } from '../services/provider-proxy-set/operator-disposition-store.js';
 import {
   authorizeProviderProxySetContainmentProof,
@@ -522,6 +523,7 @@ function createExecutionProxyLifecycle(input: {
         capsule,
       ),
     claims: world.providerProxyClaims,
+    capacity: resolveProviderProxySetCapacity(runtime.env),
     controlEstablished: notifyProviderProxyControlEstablished,
     time: runtime.time,
     recoveryDispatcher: providerProxyRecovery,
@@ -556,8 +558,8 @@ function createExecutionProxyLifecycle(input: {
       ),
     reportLifecycle: (severity, message) => backendLog[severity](message),
     onError: (message) => backendLog.warn(message),
-    onSlotReleased: (routeKey) => {
-      world.providerHostManager.providerProxySlotReleased?.(routeKey);
+    onSlotReleased: (routeKey, release) => {
+      world.providerHostManager.providerProxySlotReleased?.(routeKey, release);
       onProviderProxySlotReleased?.();
     },
   });

@@ -100,6 +100,7 @@ function lifecycleForSchedule(
   const lifecycle = new ProviderProxySetLifecycle({
     buildSetId: FIXTURE_BUILD_SET_ID,
     claims,
+    capacity: { maxSets: 4, idleRetirement: { kind: 'never' } },
     controlEstablished: () => undefined,
     time,
     operatorDispositionStore: new ProviderProxySetOperatorDispositionStore(new InMemoryStorage(time), '/coral/run'),

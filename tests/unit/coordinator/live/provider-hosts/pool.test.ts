@@ -6,6 +6,7 @@ vi.mock('#src/coordinator/live/provider-hosts/proxy-set-acquisition.js', async (
 }));
 import { ensureProviderProxySet } from '#src/coordinator/live/provider-hosts/proxy-set-acquisition.js';
 import type { ProviderServerSpec } from '#src/providers/contract.js';
+import { hostKeyFromSpec } from '#src/providers/host-identity.js';
 import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set/claim-mirror.js';
 import { ProviderProxySetLifecycle } from '#src/coordinator/services/provider-proxy-set/index.js';
 import { ProviderProxySetLifecycleRef } from '#src/coordinator/services/provider-proxy-set/lifecycle-ref.js';
@@ -42,6 +43,7 @@ function createProxySetLifecycleRef(): ProviderProxySetLifecycleRef {
   const lifecycle = new ProviderProxySetLifecycle({
     buildSetId: FIXTURE_BUILD_SET_ID,
     claims,
+    capacity: { maxSets: 4, idleRetirement: { kind: 'never' } },
     controlEstablished: () => undefined,
     time: runtime.time,
     operatorDispositionStore: new ProviderProxySetOperatorDispositionStore(
@@ -98,8 +100,7 @@ describe('provider host pool', () => {
 });
 
 describe('provider host pool proxy set registry', () => {
-  // Each manager instance is fresh per test, but the module-level `ensureProviderProxySet` mock is shared —
-  // its call history must not leak from one `it` into the next.
+  // The `ensureProviderProxySet` mock's call history must not leak from one `it` into the next.
   beforeEach(() => {
     mockedEnsureProxySet.mockReset();
   });
@@ -135,6 +136,31 @@ describe('provider host pool proxy set registry', () => {
     expect(mockedEnsureProxySet).toHaveBeenCalledTimes(1);
     first.close();
     second.close();
+    await manager.shutdown();
+  });
+  it('re-acquires a released slot for a live host, but leaves an idle-retired slot for the next job to claim', async () => {
+    const server = createFakeProviderServerHandle();
+    const manager = new StubbedContainmentProviderHostManager({
+      carrierBlocksRetirement: noCarrierBlocksRetirement,
+      runtime,
+      spawnProviderServer: createSpawnProviderServerMock(server.handle),
+      proxySetAcquisition,
+      providerProxyLifecycleRef: createProxySetLifecycleRef(),
+    });
+    mockedEnsureProxySet.mockImplementation(async (_entry, _env, onSettled) => {
+      await onSettled({ kind: 'failed', reason: 'refused by the fixture', strandedArtifacts: [] });
+    });
+    const spec = createSharedSpec();
+    const lease = await manager.openSession(createLaunch(spec), { jobId: 'job-a' });
+    await vi.waitFor(() => expect(mockedEnsureProxySet).toHaveBeenCalledTimes(1));
+
+    manager.providerProxySlotReleased(hostKeyFromSpec(spec), 'idle-retired');
+    await Promise.resolve();
+    expect(mockedEnsureProxySet).toHaveBeenCalledTimes(1);
+
+    manager.providerProxySlotReleased(hostKeyFromSpec(spec), 'released');
+    await vi.waitFor(() => expect(mockedEnsureProxySet).toHaveBeenCalledTimes(2));
+    lease.close();
     await manager.shutdown();
   });
 });

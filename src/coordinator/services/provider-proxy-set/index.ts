@@ -84,6 +84,7 @@ import type {
   RepresentationAbandonmentDeliveryAttemptOutcome,
 } from '../provider-representation-abandonment.js';
 import type { ProviderOperationContainmentRequest, ProviderProxySetClaimMirror } from './claim-mirror.js';
+import type { ProviderProxySetCapacity } from './capacity.js';
 import type {
   ProviderProxySetAutonomousDisposition,
   ProviderProxySetOperatorDisposition,
@@ -160,7 +161,6 @@ import {
   type ProviderProxyAcquisitionAbsenceEvidence,
 } from '../../live/provider-proxy/spawn-undo.js';
 
-export const MAX_COORDINATOR_PROXY_SET_SLOTS = 4;
 const CONTAINMENT_ATTEMPT_MS = 30_000;
 const OPERATOR_EXIT_OBSERVATION_MS = 1_000;
 const ACQUISITION_PUBLICATION_ATTEMPT_LIMIT = 5;
@@ -275,6 +275,7 @@ type EstablishedSlot = {
   containmentAttemptAbort: AbortController | null;
   containmentAuthority: ProviderProxyContainmentAuthority | null;
   retryTimer: TimerHandle | null;
+  idleRetirementTimer: TimerHandle | null;
   retirementDecision: ProviderProxySetDrainDecision | null;
   preserveReports: Map<string, PreserveReportState>;
   heartbeatEvidenceWindows: Map<string, HeartbeatEvidenceWindow>;
@@ -722,6 +723,7 @@ export type ProviderProxySetLifecycleDeps = Readonly<{
 
   acceptsControllerTransfer?(capsule: RedeemableHandoffCapsule): ControllerTransferAcceptance;
   claims: ProviderProxySetClaimMirror;
+  capacity: ProviderProxySetCapacity;
   controlEstablished(authority: DurableProviderProxyOperationAuthority): void;
   /**
    * `monotonicNow` is authority for the heartbeat-hold span (`#advanceHeartbeatHold`): a wall-clock step must
@@ -750,8 +752,11 @@ export type ProviderProxySetLifecycleDeps = Readonly<{
   onProgressPremiseViolation?: (violation: ProviderProxySetLifecycleProgressViolation) => void;
   reportLifecycle(severity: ProviderProxySetLogSeverity, message: string): void;
   onError?: (message: string) => void;
-  onSlotReleased?: (routeKey: string) => void;
+  onSlotReleased?: (routeKey: string, release: ProviderProxySlotRelease) => void;
 }>;
+
+/** An idle-retired slot was not needed, so nothing should replace it until a job asks for its host again. */
+export type ProviderProxySlotRelease = 'idle-retired' | 'released';
 
 export type FreshProxySetAdmission =
   | Readonly<{ kind: 'accepted'; slotId: string }>
@@ -1012,6 +1017,7 @@ export class ProviderProxySetLifecycle {
   readonly #slots = new Map<string, ProviderProxySetSlot>();
   readonly #destructiveAttemptSettlements = new WeakMap<object, Set<Promise<void>>>();
   readonly #routeIndex = new Map<string, ProviderProxySetKey>();
+  readonly #idleRetiredRoutes = new Set<string>();
   readonly #capsuleAddresses = new Map<string, string>();
   readonly #capsuleGrants = new Map<string, string>();
   readonly #foreignRetirementOwners = new Map<string, ForeignCapsuleRetirementOwner>();
@@ -1693,7 +1699,7 @@ export class ProviderProxySetLifecycle {
     ) {
       return { kind: 'already-represented' };
     }
-    if (this.#occupiedSlotCount() + 1 > MAX_COORDINATOR_PROXY_SET_SLOTS) {
+    if (this.#occupiedSlotCount() + 1 > this.#deps.capacity.maxSets) {
       return { kind: 'capacity', code: 'provider_proxy_set_capacity' };
     }
     const slotId = `acquiring-${this.#nextSlotId++}`;
@@ -1805,7 +1811,7 @@ export class ProviderProxySetLifecycle {
         `Provider proxy set acquisition containment is absent with stranded artifacts: ${confirmation.strandedArtifacts.join(', ')}`,
       );
     }
-    this.#deps.onSlotReleased?.(slot.routeKey);
+    this.#releaseRoute(slot.routeKey);
   }
 
   #runAcquisitionCleanupRetry(slot: Extract<ProviderProxySetSlot, { kind: 'acquiring' }>): void {
@@ -1848,7 +1854,7 @@ export class ProviderProxySetLifecycle {
                     `Provider proxy set acquisition containment is absent with stranded artifacts: ${outcome.strandedArtifacts.join(', ')}`,
                   );
                 }
-                this.#deps.onSlotReleased?.(slot.routeKey);
+                this.#releaseRoute(slot.routeKey);
                 return;
               }
               this.#report(
@@ -1873,7 +1879,7 @@ export class ProviderProxySetLifecycle {
               `Provider proxy set acquisition containment is absent with stranded artifacts: ${outcome.strandedArtifacts.join(', ')}`,
             );
           }
-          this.#deps.onSlotReleased?.(slot.routeKey);
+          this.#releaseRoute(slot.routeKey);
           return;
         }
         const target =
@@ -2219,7 +2225,7 @@ export class ProviderProxySetLifecycle {
       slot.cleanupRetryTimer = null;
       slot.cleanupHold = null;
       this.#slots.delete(slot.slotId);
-      this.#deps.onSlotReleased?.(slot.routeKey);
+      this.#releaseRoute(slot.routeKey);
     }
     for (const record of records) {
       this.#durableAcquisitionDispositions.delete(record.key);
@@ -2281,6 +2287,7 @@ export class ProviderProxySetLifecycle {
       if ((slot.kind !== 'available' && slot.kind !== 'draining') || slot.controllerTransfer !== null) continue;
       slot.controllerTransfer = { attemptId };
       slot.attemptToken += 1;
+      this.#clearIdleRetirement(slot);
       this.#removeRoute(slot);
       slot.authority.stopHeartbeats();
       released.push(slot);
@@ -2311,6 +2318,7 @@ export class ProviderProxySetLifecycle {
   claimsChanged(identity: ProviderProxySetIdentity): void {
     const slot = this.#slots.get(providerProxySetKey(identity));
     if (slot === undefined) return;
+    if (slot.kind === 'available') this.#reconsiderIdleRetirement(slot);
     if ((slot.kind === 'available' || slot.kind === 'draining') && slot.controllerTransfer !== null) return;
     // Ordinary retirement from a reattachment hold requires zero live claims.
     if (slot.kind === 'reattachment-hold') {
@@ -3593,6 +3601,7 @@ export class ProviderProxySetLifecycle {
       slot.containmentAttemptAbort?.abort(new Error('provider_proxy_containment_released'));
       slot.containmentAttemptAbort = null;
       if (slot.retryTimer !== null) this.#deps.time.clearTimeout(slot.retryTimer);
+      this.#clearIdleRetirement(slot);
     }
     const authoritiesToClose =
       slot.kind === 'recovering' || slot.kind === 'capsule-recovering'
@@ -3630,6 +3639,7 @@ export class ProviderProxySetLifecycle {
       slot.containmentAttemptAbort = null;
       if (slot.controlReattachmentWindow !== null) this.#clearControlReattachment(slot, slot.controlReattachmentWindow);
       if (slot.retryTimer !== null) this.#deps.time.clearTimeout(slot.retryTimer);
+      this.#clearIdleRetirement(slot);
       this.#removeRoute(slot);
       slot.authority.stopHeartbeats();
       if (slot.containmentAuthority !== null) {
@@ -4439,6 +4449,7 @@ export class ProviderProxySetLifecycle {
       containmentAttemptAbort: null,
       containmentAuthority: null,
       retryTimer: null,
+      idleRetirementTimer: null,
       retirementDecision: null,
       preserveReports: new Map(),
       heartbeatEvidenceWindows: new Map(),
@@ -4467,6 +4478,41 @@ export class ProviderProxySetLifecycle {
     if (this.authorityFor(identity) === authority) {
       this.#deps.controlEstablished(authority);
     }
+    this.#reconsiderIdleRetirement(slot);
+  }
+
+  #reconsiderIdleRetirement(slot: EstablishedSlot): void {
+    const idle = this.#deps.capacity.idleRetirement;
+    if (idle.kind === 'never' || !this.#isIdle(slot)) {
+      this.#clearIdleRetirement(slot);
+      return;
+    }
+    if (slot.idleRetirementTimer !== null) return;
+    slot.idleRetirementTimer = this.#deps.time.setTimeout(() => {
+      slot.idleRetirementTimer = null;
+      if (this.#slots.get(slot.key) !== slot || !this.#isIdle(slot)) return;
+      if (slot.routeKey !== null) this.#idleRetiredRoutes.add(slot.routeKey);
+      this.#retireAvailableSlot(slot, 'graceful_idle');
+    }, idle.ms);
+    slot.idleRetirementTimer.unref?.();
+  }
+
+  // An idle window runs only while the set is continuously available: leaving that state forfeits it.
+  #clearIdleRetirement(slot: EstablishedSlot): void {
+    if (slot.idleRetirementTimer !== null) this.#deps.time.clearTimeout(slot.idleRetirementTimer);
+    slot.idleRetirementTimer = null;
+  }
+
+  #isIdle(slot: EstablishedSlot): boolean {
+    return (
+      slot.kind === 'available' &&
+      slot.controllerTransfer === null &&
+      this.#deps.claims.claimsFor(slot.identity).length === 0
+    );
+  }
+
+  #releaseRoute(routeKey: string): void {
+    this.#deps.onSlotReleased?.(routeKey, this.#idleRetiredRoutes.delete(routeKey) ? 'idle-retired' : 'released');
   }
 
   #subscribeAuthority(slot: EstablishedSlot, authority: DurableProviderProxyOperationAuthority, token: number): void {
@@ -4474,12 +4520,7 @@ export class ProviderProxySetLifecycle {
     authority.onIncident((incident) => this.#recordAuthorityIncident(slot.identity, authority, token, incident));
   }
 
-  /**
-   * Slots this coordinator is actually running a set in. A `capsule-foreign` slot is deliberately excluded:
-   * it holds no authority, no route and no claim, and the coordinator can take no action on it, so counting
-   * it against the acquisition limit lets capsules left behind by another build deny this one its own sets —
-   * four of them permanently, and one of them for the matching host.
-   */
+  /** A `capsule-foreign` slot must not count against the set limit. */
   #occupiedSlotCount(): number {
     return [...this.#slots.values()].filter((slot) => slot.kind !== 'capsule-foreign').length;
   }
@@ -4493,7 +4534,9 @@ export class ProviderProxySetLifecycle {
       .sort((left, right) =>
         providerProxySetAddressKey(left.address).localeCompare(providerProxySetAddressKey(right.address)),
       );
-    for (const [index, slot] of addressed.entries()) slot.capacityClass = index < 4 ? 'retained' : 'excess';
+    for (const [index, slot] of addressed.entries()) {
+      slot.capacityClass = index < this.#deps.capacity.maxSets ? 'retained' : 'excess';
+    }
     for (const slot of addressed) {
       if (slot.capacityClass !== 'excess' || slot.kind !== 'available' || slot.controllerTransfer !== null) continue;
       this.#retireAvailableSlot(slot, 'excess_capacity');
@@ -4545,6 +4588,7 @@ export class ProviderProxySetLifecycle {
       deadlineTimer: null,
     };
     slot.kind = 'reattaching';
+    this.#clearIdleRetirement(slot);
     slot.controlReattachmentWindow = window;
     slot.operatorExitNotBeforeMonotonicMs = observedAtMonotonicMs + BigInt(window.boundMs);
     this.#removeRoute(slot);
@@ -4792,6 +4836,7 @@ export class ProviderProxySetLifecycle {
     if (slot.kind === 'available' && slot.routeKey !== null) this.#routeIndex.set(slot.routeKey, slot.key);
     this.#deps.controlEstablished(promoted);
     if (slot.kind === 'draining') this.claimsChanged(slot.identity);
+    else this.#reconsiderIdleRetirement(slot);
   }
 
   #clearControlReattachment(slot: EstablishedSlot, window: ControlReattachmentWindow): void {
@@ -5160,6 +5205,7 @@ export class ProviderProxySetLifecycle {
     if (this.#slots.get(slot.key) !== slot || slot.kind === 'containing' || slot.kind === 'containment-wait') {
       return;
     }
+    this.#clearIdleRetirement(slot);
     void this.#recordDecision(slot, decision);
     this.#armObservedOperatorExitGate(slot);
     slot.retirementDecision = null;
@@ -6425,7 +6471,7 @@ export class ProviderProxySetLifecycle {
       if (path === slot.capsulePath) this.#capsuleGrants.delete(grantId);
     }
     if (slot.mutationProof !== null) releaseProviderProxySetContainmentProofFence(slot.mutationProof);
-    if (slot.routeKey !== null) this.#deps.onSlotReleased?.(slot.routeKey);
+    if (slot.routeKey !== null) this.#releaseRoute(slot.routeKey);
   }
 
   #finishInitialDisposition(

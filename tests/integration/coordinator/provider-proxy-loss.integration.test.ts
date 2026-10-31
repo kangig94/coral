@@ -130,6 +130,7 @@ describe('provider proxy loss recovery', () => {
     const lifecycle = new ProviderProxySetLifecycle({
       buildSetId: executing.operation.buildSetId,
       claims,
+      capacity: { maxSets: 4, idleRetirement: { kind: 'never' } },
       time,
       controlEstablished: () => {},
       recoveryDispatcher: dispatcher,
