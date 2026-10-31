@@ -128,6 +128,7 @@ export const providerOperationActivationAckSchema = z
     state: z.literal('executing'),
     activationFingerprint: fingerprintSchema,
     startedAt: z.string().datetime(),
+    hostSetFingerprint: fingerprintSchema,
     hostRef: z.discriminatedUnion('leaseMode', [
       z
         .object({
@@ -244,8 +245,8 @@ const lastErrorSchema = z
  * generation neither decoded nor fenced.
  */
 export const PROVIDER_OPERATION_RECORD_GENERATIONS = {
-  retainedSuperseded: [1, 2, 3],
-  current: 4,
+  retainedSuperseded: [1, 2, 3, 4],
+  current: 5,
 } as const;
 
 export const PROVIDER_OPERATION_RECORD_VERSION = PROVIDER_OPERATION_RECORD_GENERATIONS.current;
@@ -397,12 +398,12 @@ export const providerOperationRecordSchema = z
     }
     if (
       (record.phase === 'executing' || record.phase === 'settlement-pending') &&
-      record.activationAck.hostRef.fingerprint !== record.locator.hostFingerprint
+      record.activationAck.hostSetFingerprint !== record.locator.hostFingerprint
     ) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
-        path: ['activationAck', 'hostRef', 'fingerprint'],
-        message: 'activation host fingerprint must equal the durable locator',
+        path: ['activationAck', 'hostSetFingerprint'],
+        message: 'activation host must belong to the durable locator set',
       });
     }
     if (

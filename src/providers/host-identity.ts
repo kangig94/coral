@@ -13,29 +13,42 @@ function canonicalValue(value: unknown): unknown {
   return value;
 }
 
-export function hostKeyFromSpec(spec: ProviderServerSpec): string {
-  return JSON.stringify(
-    canonicalValue({
-      provider: spec.provider,
-      command: spec.command,
-      args: [...spec.args],
-      cwd: spec.cwd,
-      env: spec.env ?? {},
-      initializeRequest: spec.initializeRequest ?? null,
-      initializeTimeoutMs: spec.initializeTimeoutMs ?? null,
-      shutdownCapability: spec.shutdownCapability ?? null,
-    }),
-  );
+function executableIdentity(spec: ProviderServerSpec): Record<string, unknown> {
+  return {
+    provider: spec.provider,
+    command: spec.command,
+    args: [...spec.args],
+    env: spec.env ?? {},
+    initializeRequest: spec.initializeRequest ?? null,
+    initializeTimeoutMs: spec.initializeTimeoutMs ?? null,
+    shutdownCapability: spec.shutdownCapability ?? null,
+  };
 }
 
-export function hostFingerprintFromSpec(spec: ProviderServerSpec): string {
+function fingerprintOf(identity: string, spec: ProviderServerSpec): string {
   return createHash('sha256')
     .update(
       JSON.stringify({
-        identity: hostKeyFromSpec(spec),
+        identity,
         leaseMode: spec.leaseMode,
         idleRetirement: spec.leaseMode === 'shared' ? spec.idleRetirement : null,
       }),
     )
     .digest('hex');
+}
+
+export function hostKeyFromSpec(spec: ProviderServerSpec): string {
+  return JSON.stringify(canonicalValue({ ...executableIdentity(spec), cwd: spec.cwd }));
+}
+
+export function hostFingerprintFromSpec(spec: ProviderServerSpec): string {
+  return fingerprintOf(hostKeyFromSpec(spec), spec);
+}
+
+export function proxySetKeyFromSpec(spec: ProviderServerSpec): string {
+  return JSON.stringify(canonicalValue(executableIdentity(spec)));
+}
+
+export function proxySetFingerprintFromSpec(spec: ProviderServerSpec): string {
+  return fingerprintOf(proxySetKeyFromSpec(spec), spec);
 }

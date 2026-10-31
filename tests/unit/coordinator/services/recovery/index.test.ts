@@ -1,4 +1,5 @@
 import type { ProviderOperationRecord } from '#src/store/provider-operation-record.js';
+import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { currentCoralStoreFormat } from '#src/store-format.js';
@@ -320,6 +321,116 @@ describe('runStartupRecovery provider-operation ownership', () => {
     expect(quarantine.read(UNREADABLE_PROVIDER_OPERATION_BOUNDARY, unreadableKey)).not.toBeNull();
     expect(observeProviderOperationRecord(progressStore.getDb(), unreadableKey).kind).toBe('unreadable');
     await recoveryCoordinator.teardown();
+  });
+
+  it('should recover the job a superseded row fenced once its processes die after startup', async () => {
+    const runtime = createRealRuntime('prod');
+    const progressStore = createProgressStore(runtime);
+    const holder = spawn('sleep', ['60'], { stdio: 'ignore' });
+    const holderPid = holder.pid;
+    if (holderPid === undefined) throw new Error('holder did not spawn');
+    const operation = { ...providerOperationRecord('executing').operation, jobId: randomUUID() };
+    seedQueuedProviderJob(progressStore, { jobId: operation.jobId, sessionId: randomUUID(), enqueueSequence: 1 });
+    const holderProcess = { instanceId: randomUUID(), pid: holderPid, incarnation: 'x', controlEndpoint: '/tmp/s' };
+    const supersededKey = `provider_operation_saga.v4:record:${operation.jobId}:${operation.operationId}:${operation.proxyInstanceId}:${operation.buildSetId}`;
+    progressStore
+      .getDb()
+      .prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)')
+      .run(
+        supersededKey,
+        JSON.stringify({
+          version: 4,
+          operation,
+          locator: {
+            proxy: holderProcess,
+            guardian: holderProcess,
+            reaper: holderProcess,
+            containment: { pid: holderPid, incarnation: 'x', processGroupId: 0, kind: 'process-group' },
+          },
+        }),
+      );
+    const observation = observeProviderOperationRecord(progressStore.getDb(), supersededKey);
+    if (observation.kind !== 'unreadable') throw new Error('expected an unreadable superseded row');
+    const quarantine = new RecoveryQuarantineStore(progressStore.getDb(), runtime.time);
+    await quarantineUnreadableProviderOperations(quarantine, [observation.attribution]);
+    const fakeService = createFakeService();
+    const { recoveryCoordinator, runStartupRecovery } = await createHeldRecoveryCoordinator(
+      runtime,
+      progressStore,
+      fakeService,
+      'superseded-row-maintenance',
+    );
+    try {
+      await runStartupRecovery();
+      await expect(recoveryCoordinator.passSupersededProviderOperations()).resolves.toMatchObject({
+        kind: 'holding',
+        retainedRows: 1,
+      });
+      expect(fakeService.recoverQueuedJob).not.toHaveBeenCalled();
+
+      holder.kill('SIGKILL');
+      await new Promise((resolve) => holder.once('exit', resolve));
+
+      await expect(recoveryCoordinator.passSupersededProviderOperations()).resolves.toEqual({ kind: 'settled' });
+      expect(observeProviderOperationRecord(progressStore.getDb(), supersededKey).kind).toBe('absent');
+      expect(quarantine.read(UNREADABLE_PROVIDER_OPERATION_BOUNDARY, supersededKey)).toBeNull();
+      expect(fakeService.recoverQueuedJob).toHaveBeenCalledOnce();
+    } finally {
+      holder.kill('SIGKILL');
+      await recoveryCoordinator.teardown();
+    }
+  });
+
+  it('should resolve the status of a superseded row startup retired because its processes were already gone', async () => {
+    const runtime = createRealRuntime('prod');
+    const progressStore = createProgressStore(runtime);
+    const holder = spawn('sleep', ['60'], { stdio: 'ignore' });
+    const holderPid = holder.pid;
+    if (holderPid === undefined) throw new Error('holder did not spawn');
+    const operation = { ...providerOperationRecord('executing').operation, jobId: randomUUID() };
+    seedQueuedProviderJob(progressStore, { jobId: operation.jobId, sessionId: randomUUID(), enqueueSequence: 1 });
+    const holderProcess = { instanceId: randomUUID(), pid: holderPid, incarnation: 'x', controlEndpoint: '/tmp/s' };
+    const supersededKey = `provider_operation_saga.v4:record:${operation.jobId}:${operation.operationId}:${operation.proxyInstanceId}:${operation.buildSetId}`;
+    progressStore
+      .getDb()
+      .prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)')
+      .run(
+        supersededKey,
+        JSON.stringify({
+          version: 4,
+          operation,
+          locator: {
+            proxy: holderProcess,
+            guardian: holderProcess,
+            reaper: holderProcess,
+            containment: { pid: holderPid, incarnation: 'x', processGroupId: 0, kind: 'process-group' },
+          },
+        }),
+      );
+    const observation = observeProviderOperationRecord(progressStore.getDb(), supersededKey);
+    if (observation.kind !== 'unreadable') throw new Error('expected an unreadable superseded row');
+    const quarantine = new RecoveryQuarantineStore(progressStore.getDb(), runtime.time);
+    await quarantineUnreadableProviderOperations(quarantine, [observation.attribution]);
+    const fakeService = createFakeService();
+    const { recoveryCoordinator, runStartupRecovery } = await createHeldRecoveryCoordinator(
+      runtime,
+      progressStore,
+      fakeService,
+      'superseded-row-maintenance',
+    );
+    try {
+      holder.kill('SIGKILL');
+      await new Promise((resolve) => holder.once('exit', resolve));
+      await runStartupRecovery();
+
+      await expect(recoveryCoordinator.passSupersededProviderOperations()).resolves.toEqual({ kind: 'settled' });
+      expect(observeProviderOperationRecord(progressStore.getDb(), supersededKey).kind).toBe('absent');
+      expect(quarantine.read(UNREADABLE_PROVIDER_OPERATION_BOUNDARY, supersededKey)).toBeNull();
+      expect(fakeService.recoverQueuedJob).toHaveBeenCalledOnce();
+    } finally {
+      holder.kill('SIGKILL');
+      await recoveryCoordinator.teardown();
+    }
   });
 
   it('retains ambiguous readable ownership on terminal events until every recorded row is absent', async () => {

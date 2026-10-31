@@ -19,7 +19,7 @@ import { readProviderOperation } from '../../../store/provider-operation-journal
 import type { ProviderOperationRecord } from '../../../store/provider-operation-record.js';
 import type { ProviderProxySetIdentity } from './identity.js';
 
-export const PROVIDER_OPERATIONS_TRANSFER_GENERATION = 1;
+export const PROVIDER_OPERATIONS_TRANSFER_GENERATION = 2;
 
 const TRANSFERABLE_OPERATION_PHASES = new Set<ProviderOperationRecord['phase']>(['executing', 'settlement-pending']);
 

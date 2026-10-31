@@ -59,6 +59,7 @@ const ACTIVATION_ACK = {
   state: 'executing',
   activationFingerprint: 'c'.repeat(64),
   startedAt: '2026-08-09T12:34:56.000Z',
+  hostSetFingerprint: 'a'.repeat(64),
   hostRef: {
     provider: 'codex',
     fingerprint: 'a'.repeat(64),

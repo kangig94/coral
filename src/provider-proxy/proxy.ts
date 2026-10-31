@@ -673,6 +673,7 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
     nowMs,
     proxyInstanceId: identity.proxyInstanceId,
     buildSetId: capsule.buildSetId,
+    hostSetFingerprint: capsule.hostFingerprint,
     stageProviderRoot: options.containment.stageProviderRoot,
     pushProviderEvent: (frame) => endpoint.pushOnTenancy(frame, PROXY_EVENT_COMMIT_TIMEOUT_MS),
     faultProviderEventControl: (fault) => endpoint.faultControlTenancy(fault.expectedControlEpoch),

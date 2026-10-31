@@ -14,7 +14,7 @@ import {
   type ProviderProxyAcquisitionSessionHandedOver,
 } from '../provider-proxy/control-session.js';
 import { type ProviderHostEntry } from './state.js';
-import { hostFingerprintFromSpec } from '../../../providers/host-identity.js';
+import { proxySetFingerprintFromSpec } from '../../../providers/host-identity.js';
 
 /**
  * How long one guardian/reaper/proxy set acquisition — spawn, the three-role handshake, and its own cleanup
@@ -163,7 +163,7 @@ export async function disposeStoppedProviderProxySetAcquisition(
  * failure or release its recovery owner.
  */
 export function ensureProviderProxySet(
-  entry: Pick<ProviderHostEntry, 'identityKey' | 'spec'>,
+  entry: Pick<ProviderHostEntry, 'spec'>,
   env: ProviderProxySetAcquisitionEnvironment,
   onSettled: (outcome: ProviderProxySetAcquisitionOutcome) => void | Promise<void>,
 ): Promise<void> {
@@ -195,7 +195,7 @@ export function ensureProviderProxySet(
     pluginRoot: env.pluginRoot,
     currentEntrypoint: env.placement.entrypoint,
     coordinatorIdentity,
-    hostFingerprint: hostFingerprintFromSpec(entry.spec),
+    hostFingerprint: proxySetFingerprintFromSpec(entry.spec),
     operationRegistry: env.operationRegistry,
     ...(env.custody === undefined ? {} : { custody: env.custody() }),
     ...(env.onProviderEvent === undefined ? {} : { onProviderEvent: env.onProviderEvent }),

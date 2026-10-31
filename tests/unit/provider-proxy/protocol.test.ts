@@ -5,6 +5,8 @@ import {
   MAX_PROXY_CONTROL_FRAME_BYTES,
   ProxyControlProtocolError,
   proxyOperationActivateParamsSchema,
+  proxyOperationActivateResultSchema,
+  proxyOperationInspectResultSchema,
 } from '#src/provider-proxy/protocol.js';
 
 const UUID_A = '11111111-1111-4111-8111-111111111111';
@@ -61,5 +63,23 @@ describe('proxy control-method request schemas, shared with their coordinator se
         expect.arrayContaining([expect.objectContaining({ path: ['jointContainmentReceipt'] })]),
       );
     }
+  });
+});
+
+describe('activation receipts replayed from before the set fingerprint existed', () => {
+  const receipt = {
+    state: 'executing',
+    activationFingerprint: 'c'.repeat(64),
+    startedAt: '2026-08-09T12:34:56.000Z',
+    hostRef: { provider: 'codex', fingerprint: 'a'.repeat(64), instanceId: 'host-1', leaseMode: 'shared' },
+    committedThroughProviderSeq: 0,
+  } as const;
+
+  it('should still decode an activation and an inspected start without hostSetFingerprint', () => {
+    expect(proxyOperationActivateResultSchema.parse(receipt)).toEqual(receipt);
+    expect(proxyOperationInspectResultSchema.parse({ ...receipt, state: 'started-awaiting-publication' })).toEqual({
+      ...receipt,
+      state: 'started-awaiting-publication',
+    });
   });
 });

@@ -256,7 +256,7 @@ writeFileSync(
     protocols: ['prepare', 'commit'],
     accepts: [
       { owner: 'durable-cli', generation: 1 },
-      { owner: 'provider-operations', generation: 1 },
+      { owner: 'provider-operations', generation: 2 },
       { owner: 'provider-proxy-sets', generation: 1 },
     ],
   }) + '\n',

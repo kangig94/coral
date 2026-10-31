@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { hostFingerprintFromSpec, hostKeyFromSpec } from '#src/providers/host-identity.js';
+import {
+  hostFingerprintFromSpec,
+  hostKeyFromSpec,
+  proxySetFingerprintFromSpec,
+  proxySetKeyFromSpec,
+} from '#src/providers/host-identity.js';
 import type { ProviderServerSpec } from '#src/providers/contract.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
@@ -25,5 +30,14 @@ describe('stable provider host identity', () => {
     const exclusive: ProviderServerSpec = { ...spec, leaseMode: 'job-exclusive', idleRetirement: undefined };
     expect(hostKeyFromSpec(spec)).toBe(hostKeyFromSpec(exclusive));
     expect(hostFingerprintFromSpec(spec)).not.toBe(hostFingerprintFromSpec(exclusive));
+  });
+  it('should give every work directory of one executable identity one proxy set, and a separate host each', () => {
+    const elsewhere = { ...spec, cwd: fixtureCanonicalWorkDir('/elsewhere') };
+    const otherAccount = { ...spec, env: { ...spec.env, CODEX_HOME: '/home/other/.codex' } };
+
+    expect(proxySetKeyFromSpec(elsewhere)).toBe(proxySetKeyFromSpec(spec));
+    expect(proxySetFingerprintFromSpec(elsewhere)).toBe(proxySetFingerprintFromSpec(spec));
+    expect(hostFingerprintFromSpec(elsewhere)).not.toBe(hostFingerprintFromSpec(spec));
+    expect(proxySetFingerprintFromSpec(otherAccount)).not.toBe(proxySetFingerprintFromSpec(spec));
   });
 });

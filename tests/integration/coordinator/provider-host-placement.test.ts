@@ -7,6 +7,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -98,7 +99,12 @@ function createWorld(env: Record<string, string> = {}): World {
   };
 }
 
-async function runCli(world: World, cwd: string, args: string[]): Promise<string> {
+async function runCli(
+  world: World,
+  cwd: string,
+  args: string[],
+  env: Readonly<Record<string, string>> = {},
+): Promise<string> {
   const {
     CORAL_CHILD: _coralChild,
     CORAL_CHILD_PRINCIPAL_HANDLE: _childHandle,
@@ -108,7 +114,7 @@ async function runCli(world: World, cwd: string, args: string[]): Promise<string
   } = process.env;
   const child = spawn('node', [join(world.fixture.root, 'bridge', 'coral-cli'), ...args], {
     cwd,
-    env: { ...topLevelEnv, HOME: world.home, TMPDIR: world.home, ...world.env },
+    env: { ...topLevelEnv, HOME: world.home, TMPDIR: world.home, ...world.env, ...env },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let output = '';
@@ -131,12 +137,33 @@ function hostOwnerPid(codexPid: number): number {
   return parentPid(parentPid(codexPid));
 }
 
-async function launchHeldJob(world: World): Promise<Readonly<{ workDir: string; jobId: string; codexPid: number }>> {
+function codexAccount(world: World, account: string | null): Readonly<Record<string, string>> {
+  if (account === null) return {};
+  const codexHome = join(world.home, `.codex-${account}`);
+  if (!existsSync(codexHome)) {
+    mkdirSync(codexHome);
+    writeFileSync(
+      join(codexHome, 'auth.json'),
+      JSON.stringify({ tokens: { access_token: 'fake-access-token', account_id: `fake-account-${account}` } }),
+    );
+  }
+  return { CODEX_HOME: codexHome };
+}
+
+async function launchHeldJob(
+  world: World,
+  account: string | null = null,
+): Promise<Readonly<{ workDir: string; jobId: string; codexPid: number }>> {
   const workDir = mkdtempSync(join(tmpdir(), 'coral-local-host-work-'));
   roots.push(workDir);
   workDirs.push(workDir);
   writeFileSync(join(workDir, 'prompt.txt'), 'Hold the turn until released.');
-  const output = await runCli(world, workDir, ['codex', '-i', join(workDir, 'prompt.txt'), '--detach']);
+  const output = await runCli(
+    world,
+    workDir,
+    ['codex', '-i', join(workDir, 'prompt.txt'), '--detach'],
+    codexAccount(world, account),
+  );
   const jobId = output.match(/command=coral-cli jobs wait ([0-9a-f-]{36})\b/u)?.[1];
   if (jobId === undefined) throw new Error(`Launch reported no job id: ${output}`);
   await waitForCondition(() => existsSync(join(workDir, 'running')), 60_000);
@@ -158,8 +185,8 @@ describe('coordinator-local provider host retirement', () => {
     coordinators.push(coordinator);
     const coordinatorPid = (await waitForDiscoveryRecord(world.home, 'prod', 15_000)).pid;
 
-    for (let held = 0; held < PROXY_SET_SLOTS; held += 1) await launchHeldJob(world);
-    const local = await launchHeldJob(world);
+    for (let held = 0; held < PROXY_SET_SLOTS; held += 1) await launchHeldJob(world, `held-${held}`);
+    const local = await launchHeldJob(world, 'local');
     expect(hostOwnerPid(local.codexPid), 'every proxy slot is held, so placement falls back locally').toBe(
       coordinatorPid,
     );
@@ -199,7 +226,7 @@ describe('provider proxy set retirement', () => {
 
     let proxied = false;
     for (let attempt = 0; attempt < 3 && !proxied; attempt += 1) {
-      const next = await launchHeldJob(world);
+      const next = await launchHeldJob(world, 'next');
       proxied = hostOwnerPid(next.codexPid) !== coordinatorPid;
       if (proxied) break;
       writeFileSync(join(next.workDir, 'release'), '');
@@ -207,5 +234,31 @@ describe('provider proxy set retirement', () => {
       await new Promise((resolve) => setTimeout(resolve, 1_000));
     }
     expect(proxied, 'the idle set returned the only slot').toBe(true);
+  }, 180_000);
+});
+
+describe('provider proxy set sharing', () => {
+  it('should serve one account in two work directories from one proxy set, each host in its own directory', async () => {
+    assertBuildArtifactsAvailable();
+    const world = createWorld({ [CORAL_MAX_PROVIDER_PROXY_SETS_ENV]: '1' });
+    const coordinator = spawnCoordinator({
+      fixture: world.fixture,
+      home: world.home,
+      tempRoots: roots,
+      env: world.env,
+    });
+    coordinators.push(coordinator);
+    const coordinatorPid = (await waitForDiscoveryRecord(world.home, 'prod', 15_000)).pid;
+
+    const first = await launchHeldJob(world);
+    const second = await launchHeldJob(world);
+
+    expect(hostOwnerPid(first.codexPid)).not.toBe(coordinatorPid);
+    expect(hostOwnerPid(second.codexPid), 'the second work directory shares the only set').toBe(
+      hostOwnerPid(first.codexPid),
+    );
+    expect(second.codexPid).not.toBe(first.codexPid);
+    expect(realpathSync(`/proc/${first.codexPid}/cwd`)).toBe(realpathSync(first.workDir));
+    expect(realpathSync(`/proc/${second.codexPid}/cwd`)).toBe(realpathSync(second.workDir));
   }, 180_000);
 });

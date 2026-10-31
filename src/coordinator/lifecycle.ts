@@ -34,7 +34,12 @@ import type { DiscussContext } from '../discuss/shell/types.js';
 import type { DiscussSessionStore } from '../discuss/shell/session-store.js';
 import { type ProviderRegistry } from '../providers/registry.js';
 import { isTerminalPhase } from '../jobs/phase.js';
-import { createRecoveryCoordinator, type RecoveryCoordinator } from './services/recovery/index.js';
+import {
+  createRecoveryCoordinator,
+  type RecoveryCoordinator,
+  type SupersededProviderOperationPorts,
+} from './services/recovery/index.js';
+import type { SupersededProviderOperationMaintenancePass } from './services/recovery/superseded-provider-operations.js';
 import { createReplacementBackendOwnershipChecker } from './ownership-checker.js';
 import type { JobStore } from '../jobs/store.js';
 import type { JobStatus } from '../jobs/records.js';
@@ -1064,6 +1069,7 @@ export type LifecycleDeps = {
   readonly discussStores: Map<string, DiscussSessionStore>;
   readonly eventBus: TypedEventBus;
   readonly onRecoverySettlement?: (jobId: string) => void;
+  readonly supersededProviderOperationPorts?: SupersededProviderOperationPorts;
   readonly launchCoordinator: LaunchCoordinator;
   readonly providerRegistry: ProviderRegistry;
   readonly systemProviderScope?: SystemProviderScope;
@@ -1171,6 +1177,8 @@ export type LifecycleController = {
   requestShutdownRetry(): void;
   waitForShutdown(): Promise<LifecycleShutdownDisposition>;
   getRecoveryRegistry(): RecoveryRegistry | null;
+  /** `null` before a recovery coordinator exists to own superseded rows. */
+  settleSupersededProviderOperations(): Promise<SupersededProviderOperationMaintenancePass | null>;
   parkProviderOperationMutations(signal?: AbortSignal): Promise<void>;
   adoptProviderOperationAdmission(admission: ProviderOperationMutationAdmission): void;
   protectRetiringStore(epochKey: string, openerDrainMs: number): RetiringStoreProtection;
@@ -2395,6 +2403,7 @@ function connectStartupRecoveryCoordinator({
       runtimeState,
       eventBus: deps.eventBus,
       onRecoverySettlement: deps.onRecoverySettlement,
+      supersededProviderOperationPorts: deps.supersededProviderOperationPorts,
       getRecoveryService,
       createInvocationContext,
       log: identity.log,
@@ -3418,6 +3427,8 @@ export function createLifecycle(
       return Promise.reject(new Error('Shutdown has not been requested'));
     },
     getRecoveryRegistry: () => state.recoveryCoordinator?.getRecoveryRegistry() ?? null,
+    settleSupersededProviderOperations: async () =>
+      (await state.recoveryCoordinator?.passSupersededProviderOperations()) ?? null,
     parkProviderOperationMutations,
     adoptProviderOperationAdmission,
     protectRetiringStore,

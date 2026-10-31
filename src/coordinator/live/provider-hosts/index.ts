@@ -63,7 +63,12 @@ import {
   type ProviderHostShutdownDisposition,
   type ProviderHostShutdownHold,
 } from './state.js';
-import { hostKeyFromSpec, hostFingerprintFromSpec } from '../../../providers/host-identity.js';
+import {
+  hostKeyFromSpec,
+  hostFingerprintFromSpec,
+  proxySetFingerprintFromSpec,
+  proxySetKeyFromSpec,
+} from '../../../providers/host-identity.js';
 import { AbortError, throwIfAborted } from '../../../runtime/abort.js';
 import type { ProviderProxyAuthorityRegistry, ProviderProxySetAuthority } from '../provider-proxy/authority.js';
 import {
@@ -111,7 +116,7 @@ export interface ProviderHostManager {
   providerProxySlotReleased?(routeKey: string, release: ProviderProxySlotRelease): void;
 }
 
-type ProxySetAcquisitionTarget = Pick<ProviderHostEntry, 'identityKey' | 'spec'>;
+type ProxySetAcquisitionTarget = Pick<ProviderHostEntry, 'spec'>;
 
 export type ProviderHostQuiescenceReceipt = Readonly<{
   kind: 'provider-hosts-quiesced';
@@ -353,7 +358,7 @@ type ProviderHostClosingRecord = Readonly<{
 
 type PendingProviderProxySetAcquisition = {
   readonly slotId: string;
-  readonly identityKey: string;
+  readonly setKey: string;
   readonly outcome: Promise<ProviderProxySetAcquisitionOutcome>;
   readonly resolveOutcome: (outcome: ProviderProxySetAcquisitionOutcome) => void;
   readonly cleanupCompletion: Promise<ProviderProxySetAcquisitionCleanupOutcome>;
@@ -575,7 +580,7 @@ export class DefaultProviderHostManager
 
   /** See the `ProviderHostManager.routeAppServerOperation()` interface doc for this seam's full contract. */
   routeAppServerOperation(spec: ProviderServerSpec): ProviderProxyOperationAuthority | null {
-    return this.providerProxyLifecycleRef?.get()?.routeFor(hostKeyFromSpec(spec)) ?? null;
+    return this.providerProxyLifecycleRef?.get()?.routeFor(proxySetKeyFromSpec(spec)) ?? null;
   }
 
   async awaitAppServerOperationRoute(
@@ -584,9 +589,9 @@ export class DefaultProviderHostManager
   ): Promise<ProviderProxyOperationAuthority | null> {
     const live = this.routeAppServerOperation(spec);
     if (live !== null || !this.acceptingAcquisitions) return live;
-    const identityKey = hostKeyFromSpec(spec);
-    this.ensureProxySetFor({ identityKey, spec });
-    const pending = [...this.pendingProxySetAcquisitions].find((candidate) => candidate.identityKey === identityKey);
+    this.ensureProxySetFor({ spec });
+    const setKey = proxySetKeyFromSpec(spec);
+    const pending = [...this.pendingProxySetAcquisitions].find((candidate) => candidate.setKey === setKey);
     const settlement = pending?.settlement;
     if (settlement === undefined || settlement === null) return this.routeAppServerOperation(spec);
     await new Promise<void>((resolve) => {
@@ -611,7 +616,7 @@ export class DefaultProviderHostManager
     const entry =
       rotationEntry ??
       [...this.entries.values()].find(
-        (candidate) => candidate.identityKey === routeKey && candidate.closingError === null,
+        (candidate) => proxySetKeyFromSpec(candidate.spec) === routeKey && candidate.closingError === null,
       );
     if (entry !== undefined) this.ensureProxySetFor(entry);
   }
@@ -624,7 +629,7 @@ export class DefaultProviderHostManager
     cleanupHold: NonNullable<PendingProviderProxySetAcquisition['cleanupHold']>,
     signal: AbortSignal,
   ): Promise<ProviderProxySetAcquisitionCleanupOutcome> {
-    const identityKey = pending.identityKey;
+    const setKey = pending.setKey;
     let acquired: ProviderProxySetAcquisitionOutcome;
     try {
       acquired = await waitForAcquisitionOutcome(pending.outcome, signal);
@@ -634,7 +639,7 @@ export class DefaultProviderHostManager
       }
       if (acquired.kind === 'handed-over' && stop.disposition === 'contain') {
         const acceptance = lifecycle.acquisitionPublicationUnknown(pending.slotId, acquired, (set) =>
-          this.observeGenerationCapacity(identityKey, entry, set),
+          this.observeGenerationCapacity(setKey, entry, set),
         );
         if (acceptance.owner !== 'provider-proxy-set-lifecycle') {
           throw new Error('provider_proxy_set_acquisition_cleanup_owner_not_accepted');
@@ -653,11 +658,11 @@ export class DefaultProviderHostManager
           disposition.acquisition.kind === 'acquired'
             ? lifecycle.acquisitionSucceeded(
                 pending.slotId,
-                this.observeGenerationCapacity(identityKey, entry, disposition.acquisition.set),
+                this.observeGenerationCapacity(setKey, entry, disposition.acquisition.set),
                 disposition.acquisition.publicationReceipt,
               )
             : lifecycle.acquisitionPublicationUnknown(pending.slotId, disposition.acquisition, (set) =>
-                this.observeGenerationCapacity(identityKey, entry, set),
+                this.observeGenerationCapacity(setKey, entry, set),
               );
         if (acceptance.owner !== disposition.successor) {
           throw new Error('provider_proxy_set_acquisition_cleanup_owner_not_accepted');
@@ -686,7 +691,7 @@ export class DefaultProviderHostManager
     cleanupHold: NonNullable<PendingProviderProxySetAcquisition['cleanupHold']>,
     outcome: ProviderProxySetAcquisitionOutcome,
   ): Promise<void> {
-    const identityKey = pending.identityKey;
+    const setKey = pending.setKey;
 
     pending.resolveOutcome(outcome);
     if (pending.stop !== null) {
@@ -695,7 +700,7 @@ export class DefaultProviderHostManager
       return;
     }
     if (outcome.kind === 'acquired') {
-      const set = this.observeGenerationCapacity(identityKey, entry, outcome.set);
+      const set = this.observeGenerationCapacity(setKey, entry, outcome.set);
       const acceptance = lifecycle.acquisitionSucceeded(pending.slotId, set, outcome.publicationReceipt);
       if (acceptance.owner !== 'provider-proxy-set-lifecycle') {
         throw new Error('provider_proxy_set_acquisition_owner_not_accepted');
@@ -704,7 +709,7 @@ export class DefaultProviderHostManager
     }
     if (outcome.kind === 'handed-over') {
       const acceptance = lifecycle.acquisitionPublicationUnknown(pending.slotId, outcome, (set) =>
-        this.observeGenerationCapacity(identityKey, entry, set),
+        this.observeGenerationCapacity(setKey, entry, set),
       );
       if (acceptance.owner !== 'provider-proxy-set-lifecycle') {
         throw new Error('provider_proxy_set_acquisition_owner_not_accepted');
@@ -731,7 +736,7 @@ export class DefaultProviderHostManager
     const strandedArtifacts =
       outcome.strandedArtifacts.length === 0 ? '' : `; stranded artifacts: ${outcome.strandedArtifacts.join(', ')}`;
     backendLog.warn(
-      `Provider proxy set acquisition failed for ${entry.spec.provider} (${identityKey}): ${outcome.reason}${strandedArtifacts}`,
+      `Provider proxy set acquisition failed for ${entry.spec.provider} (${setKey}): ${outcome.reason}${strandedArtifacts}`,
     );
   }
 
@@ -739,17 +744,16 @@ export class DefaultProviderHostManager
     const config = this.proxySetAcquisitionConfig;
     const lifecycle = this.providerProxyLifecycleRef?.get();
     if (config === undefined || lifecycle === null || lifecycle === undefined) return;
-    // The executable identity, so every job-exclusive entry of the same spec shares one set.
-    const identityKey = entry.identityKey;
-    if (lifecycle.routeFor(identityKey) !== null) return;
-    const admission = lifecycle.beginFreshAcquisition(identityKey, {
+    const setKey = proxySetKeyFromSpec(entry.spec);
+    if (lifecycle.routeFor(setKey) !== null) return;
+    const admission = lifecycle.beginFreshAcquisition(setKey, {
       buildSetId: config.identity.buildSetId,
-      hostFingerprint: hostFingerprintFromSpec(entry.spec),
+      hostFingerprint: proxySetFingerprintFromSpec(entry.spec),
     });
     if (admission.kind !== 'accepted') {
       if (admission.kind === 'capacity') {
         backendLog.warn(
-          `Provider proxy set acquisition refused for ${entry.spec.provider} (${identityKey}): ${admission.code}`,
+          `Provider proxy set acquisition refused for ${entry.spec.provider} (${setKey}): ${admission.code}`,
         );
       }
       return;
@@ -764,7 +768,7 @@ export class DefaultProviderHostManager
     });
     const pending: PendingProviderProxySetAcquisition = {
       slotId: admission.slotId,
-      identityKey,
+      setKey,
       outcome,
       resolveOutcome,
       cleanupCompletion,
@@ -781,7 +785,7 @@ export class DefaultProviderHostManager
     > = {
       kind: 'provider_proxy_acquisition_pending_cleanup',
       owner: 'provider-host-manager',
-      target: identityKey,
+      target: setKey,
       reason: 'provider host manager stopped before acquisition settled',
       recoveryCapability: {
         retry: (signal) => {
@@ -819,7 +823,7 @@ export class DefaultProviderHostManager
       (error: unknown) => {
         if (pending.cleanupOwnerAccepted) this.pendingProxySetAcquisitions.delete(pending);
         backendLog.warn(
-          `Provider proxy set acquisition settlement failed for ${entry.spec.provider} (${identityKey}): ${
+          `Provider proxy set acquisition settlement failed for ${entry.spec.provider} (${setKey}): ${
             error instanceof Error ? error.message : String(error)
           }`,
         );
@@ -828,7 +832,7 @@ export class DefaultProviderHostManager
   }
 
   private observeGenerationCapacity(
-    identityKey: string,
+    setKey: string,
     entry: ProxySetAcquisitionTarget,
     set: ProviderProxyOperationAuthority,
   ): DurableProviderProxyOperationAuthority {
@@ -838,13 +842,13 @@ export class DefaultProviderHostManager
     const observed: DurableProviderProxyOperationAuthority = {
       ...set,
       promoteControl: async (redemption, signal) =>
-        this.observeGenerationCapacity(identityKey, entry, await set.promoteControl(redemption, signal)),
+        this.observeGenerationCapacity(setKey, entry, await set.promoteControl(redemption, signal)),
       prepareOperation: async (attempt) => {
         const result = await set.prepareOperation(attempt);
         if (result.state === 'capacity' && result.code === 'provider_root_generation_draining') {
           const lifecycle = this.providerProxyLifecycleRef?.get();
-          if (lifecycle?.routeFor(identityKey) === observed) {
-            this.proxySetRotationEntries.set(identityKey, entry);
+          if (lifecycle?.routeFor(setKey) === observed) {
+            this.proxySetRotationEntries.set(setKey, entry);
             lifecycle.beginGracefulDrain(observed.setIdentity);
           }
         }

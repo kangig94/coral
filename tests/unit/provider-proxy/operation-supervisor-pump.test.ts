@@ -171,6 +171,7 @@ async function executingSupervisor(
     nowMs: clock.nowMs,
     proxyInstanceId: operation.proxyInstanceId,
     buildSetId: operation.buildSetId,
+    hostSetFingerprint: 'a'.repeat(64),
     stageProviderRoot: () => stage,
     pushProviderEvent,
     faultProviderEventControl: (fault) => faults.push(fault),
@@ -233,6 +234,7 @@ function preExecutionReleaseFixture(abortAndRelease: OperationStageHandle['abort
     nowMs: clock.nowMs,
     proxyInstanceId: operation.proxyInstanceId,
     buildSetId: operation.buildSetId,
+    hostSetFingerprint: 'a'.repeat(64),
     stageProviderRoot: () => stage,
     pushProviderEvent: () => ({
       controlEpoch: 1,

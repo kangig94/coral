@@ -2,7 +2,7 @@ import type { ProcessIncarnation } from '#src/infra/node-process.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
-import { hostFingerprintFromSpec } from '#src/providers/host-identity.js';
+import { hostFingerprintFromSpec, proxySetFingerprintFromSpec } from '#src/providers/host-identity.js';
 
 /**
  * `SemanticOperationRuntime.shutdown` (BLOCKING B6) coverage, kept in its own file rather than added to the
@@ -222,7 +222,7 @@ describe('semantic-operation runtime: shutdown (BLOCKING B6)', () => {
 
     const host = createSemanticOperationRuntime({
       hostRoot: '/test/plugin',
-      hostFingerprint: hostFingerprintFromSpec(fakeHostSpec()),
+      hostFingerprint: proxySetFingerprintFromSpec(fakeHostSpec()),
       runtime,
       hostAuthority: fakeHostAuthority(),
       getProxy: () => proxy,

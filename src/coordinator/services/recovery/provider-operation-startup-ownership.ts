@@ -67,11 +67,12 @@ export type ProviderOperationStartupSnapshot = Readonly<{
 
 export type UnreadableProviderOperationStartupResolution = Readonly<{
   released: number;
+  releasedJobIds: readonly string[];
   readableRecords: readonly Readonly<{ recordKey: string; record: ProviderOperationRecord }>[];
 }>;
 
-export type SupersededProviderOperationRetirementSummary = Readonly<{
-  retired: number;
+export type SupersededProviderOperationRetirement = Readonly<{
+  retiredKeys: readonly string[];
   retained: number;
 }>;
 
@@ -97,7 +98,9 @@ type StartupOwnershipBinding = Pick<
   SettledUnboundStatusHydrationPort;
 
 export interface ProviderOperationStartupOwnershipService {
-  retireAbsentSupersededProviderOperations(): SupersededProviderOperationRetirementSummary;
+  retireAbsentSupersededProviderOperations(): SupersededProviderOperationRetirement;
+  /** Whether no unreadable-row status remains for a row that is gone; a status under retry is not removed. */
+  resolveRetiredStatus(key: string): boolean;
   snapshot(): ProviderOperationStartupSnapshot;
   hydrate(snapshot: ProviderOperationStartupSnapshot): ProviderOperationStartupOwnership;
   adoptRepaired(record: ProviderOperationRecord, recordKey?: string): ProviderOperationStartupRecordOwnership;
@@ -863,6 +866,7 @@ function releaseUnreadable(
 ): UnreadableProviderOperationStartupResolution {
   const { permits, binding, progressStore } = state;
   let released = 0;
+  const releasedJobIds: string[] = [];
   const readableRecords: Array<Readonly<{ recordKey: string; record: ProviderOperationRecord }>> = [];
   for (const [jobId, owned] of permits) {
     if (owned.kind !== 'undecided-provider-operation' || !owned.recordKeys.includes(repairedRecordKey)) continue;
@@ -900,6 +904,7 @@ function releaseUnreadable(
     switch (disposition.kind) {
       case 'released':
         released += 1;
+        releasedJobIds.push(jobId);
         continue;
       case 'already-released':
       case 'transferred':
@@ -907,7 +912,11 @@ function releaseUnreadable(
     }
     assertNever(disposition);
   }
-  return Object.freeze({ released, readableRecords: Object.freeze(readableRecords) });
+  return Object.freeze({
+    released,
+    releasedJobIds: Object.freeze(releasedJobIds),
+    readableRecords: Object.freeze(readableRecords),
+  });
 }
 
 export function createProviderOperationStartupOwnership(
@@ -968,7 +977,7 @@ export function createProviderOperationStartupOwnership(
 
   return {
     retireAbsentSupersededProviderOperations: () => {
-      let retired = 0;
+      const retiredKeys: string[] = [];
       let retained = 0;
       for (const row of readSupersededProviderOperations(progressStore.getDb())) {
         if (row.processTargets === null || row.processTargets.length === 0) {
@@ -981,13 +990,25 @@ export function createProviderOperationStartupOwnership(
           retained += 1;
           continue;
         }
-        retireSupersededProviderOperation(progressStore.getDb(), row.key);
-        retired += 1;
+        try {
+          retireSupersededProviderOperation(progressStore.getDb(), row.key);
+        } catch (error: unknown) {
+          retained += 1;
+          backendLog.warn(`Retiring superseded provider operation record ${row.key} failed: ${formatError(error)}`);
+          continue;
+        }
+        retiredKeys.push(row.key);
         backendLog.warn(
           `Retired a provider operation record this build cannot read whose processes are all absent: ${row.key}`,
         );
       }
-      return Object.freeze({ retired, retained });
+      return Object.freeze({ retiredKeys: Object.freeze(retiredKeys), retained });
+    },
+    resolveRetiredStatus: (key) => {
+      const status = quarantine.read(UNREADABLE_PROVIDER_OPERATION_BOUNDARY, key);
+      if (status === null) return true;
+      if (status.state === 'retrying') return false;
+      return quarantine.delete({ boundary: UNREADABLE_PROVIDER_OPERATION_BOUNDARY, subject: status.subject });
     },
     snapshot,
     hydrate,

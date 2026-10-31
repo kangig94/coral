@@ -21,8 +21,18 @@ import type {
   RecoverySettlementFact,
   RecoverySubject,
 } from '../../../recovery/containment.js';
-import type { RecoverySourceFactoryPlan } from '../../../recovery/source-registry.js';
+import {
+  COORDINATOR_JOB_RECOVERY_BOUNDARY,
+  UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
+  type RecoverySourceFactoryPlan,
+} from '../../../recovery/source-registry.js';
 import type { Database } from '../../../store/db.js';
+import { backendLog } from '../../../infra/backend-log.js';
+import { isTerminalPhase } from '../../../jobs/phase.js';
+import {
+  attributeUnreadableProviderOperations,
+  readProviderOperations,
+} from '../../../store/provider-operation-journal.js';
 import type { ProviderOperationRecord } from '../../../store/provider-operation-record.js';
 import { registerCoordinatorStartupRecovery, type BoundCoordinator } from '../../handoff.js';
 import { createRecoveryAdoption } from './adoption.js';
@@ -34,6 +44,11 @@ import {
 } from './provider-operation-job-recovery.js';
 import { createCoordinatorStartupRecovery, type RunCoordinatorStartupRecoveryFn } from './startup.js';
 import {
+  createSupersededProviderOperationMaintenance,
+  type CoordinatorJobRecoveryStatus,
+  type SupersededProviderOperationMaintenancePass,
+} from './superseded-provider-operations.js';
+import {
   createCoordinatorJobRecoveryRetryPolicy,
   createCoordinatorJobSettlementRefusalRecorderImplementation,
   createSettledUnboundStatusRetryPolicy,
@@ -44,7 +59,7 @@ import {
   createProviderOperationStartupOwnership,
   type ProviderOperationStartupRelease,
   type ProviderOperationStartupSnapshot,
-  type SupersededProviderOperationRetirementSummary,
+  type SupersededProviderOperationRetirement,
   type UnreadableProviderOperationStartupResolution,
 } from './provider-operation-startup-ownership.js';
 import type { CoordinatorRecoveryItem } from './snapshot.js';
@@ -126,7 +141,7 @@ export function createCoordinatorJobRecoveryRetryPlan(
 
 export interface RecoveryCoordinator {
   runStartupRecovery: RunCoordinatorStartupRecoveryFn;
-  retireAbsentSupersededProviderOperations(): SupersededProviderOperationRetirementSummary;
+  retireAbsentSupersededProviderOperations(): SupersededProviderOperationRetirement;
   snapshotProviderOperationStartupOwnership(): ProviderOperationStartupSnapshot;
   hydrateProviderOperationStartupOwnership(
     snapshot: ProviderOperationStartupSnapshot,
@@ -145,6 +160,7 @@ export interface RecoveryCoordinator {
   ): Promise<ProviderOperationRecoveryAcceptance>;
   completeProviderOperationJobRecovery(jobId: string): void;
   releaseAdoptedJob(jobId: string): void;
+  passSupersededProviderOperations(): Promise<SupersededProviderOperationMaintenancePass>;
   getRecoveryRegistry(): RecoveryRegistry | null;
   isIdleBlocked(): boolean;
   teardown(): Promise<void>;
@@ -156,6 +172,7 @@ type RecoveryCoordinatorContext = {
   runtimeState: { setLaunchFenceActive(active: boolean): void };
   eventBus: JobEventBus;
   onRecoverySettlement?: (jobId: string) => void;
+  supersededProviderOperationPorts?: SupersededProviderOperationPorts;
   getRecoveryService: (ctx: InvocationContext) => RecoveryCapableService;
   createInvocationContext: (projectRoot: string) => InvocationContext;
   log: (message: string) => void;
@@ -195,6 +212,36 @@ function createRecoveryAdoptionFor(
   });
 }
 
+export type SupersededProviderOperationPorts = Readonly<{
+  adoptReadable(record: ProviderOperationRecord, recordKey: string): Promise<'accepted' | 'refused'>;
+  retryRecoveryQuarantine(
+    coordinate: Readonly<{ boundary: string; key: string; revision: string | null }>,
+    signal: AbortSignal,
+  ): Promise<'advanced' | 'held'>;
+  onObligationChange(): void;
+}>;
+
+function coordinatorJobRecoveryStatus(
+  quarantine: RecoveryQuarantineStore,
+  jobId: string,
+): CoordinatorJobRecoveryStatus {
+  return quarantine.read(COORDINATOR_JOB_RECOVERY_BOUNDARY, jobId)?.state ?? 'none';
+}
+
+function providerOperationJobOwnership(
+  progressStore: JobStore,
+  jobId: string,
+): 'settled' | 'owned' | 'undecided' | 'unowned' {
+  const status = progressStore.readStatus(jobId);
+  if (status === null || isTerminalPhase(status.phase)) return 'settled';
+  const db = progressStore.getDb();
+  const scan = readProviderOperations(db);
+  if (scan.records.some((record) => record.operation.jobId === jobId)) return 'owned';
+  const attributions = attributeUnreadableProviderOperations(db, scan.unreadableKeys);
+  if (attributions.some(({ jobs }) => jobs.kind === 'indeterminate')) return 'undecided';
+  return attributions.some(({ jobs }) => jobs.kind === 'known' && jobs.values.includes(jobId)) ? 'owned' : 'unowned';
+}
+
 export function createRecoveryCoordinator(
   context: RecoveryCoordinatorContext,
   bound: BoundCoordinator | null,
@@ -209,6 +256,7 @@ export function createRecoveryCoordinator(
     createInvocationContext,
     log,
     startupOwnership,
+    supersededProviderOperationPorts,
   } = context;
   const providerOperationStartupOwnership = createProviderOperationStartupOwnership({
     progressStore,
@@ -262,6 +310,31 @@ export function createRecoveryCoordinator(
   });
   const { completeProviderOperationJobRecovery, recoverProviderOperationJob } = operationRecovery;
 
+  const retryQuarantined = async (boundary: string, key: string, signal: AbortSignal): Promise<'advanced' | 'held'> => {
+    const status = quarantine.read(boundary, key);
+    if (status === null) return 'advanced';
+    if (supersededProviderOperationPorts === undefined) return 'held';
+    const revision = status.subject.revision.kind === 'fingerprint' ? status.subject.revision.value : null;
+    return supersededProviderOperationPorts.retryRecoveryQuarantine({ boundary, key, revision }, signal);
+  };
+  const supersededProviderOperations = createSupersededProviderOperationMaintenance({
+    time: runtime.time,
+    retire: providerOperationStartupOwnership.retireAbsentSupersededProviderOperations,
+    releaseOwnership: providerOperationStartupOwnership.releaseUnreadable,
+    resolveRetiredStatus: async (key, signal) =>
+      providerOperationStartupOwnership.resolveRetiredStatus(key) ||
+      (await retryQuarantined(UNREADABLE_PROVIDER_OPERATION_BOUNDARY, key, signal)) === 'advanced',
+    adoptReadable: async (record, recordKey) =>
+      (await supersededProviderOperationPorts?.adoptReadable(record, recordKey)) ?? 'refused',
+    ownership: (jobId) => providerOperationJobOwnership(progressStore, jobId),
+    recoveryStatus: (jobId) => coordinatorJobRecoveryStatus(quarantine, jobId),
+    recoverJob: operationRecovery.recoverReleasedJob,
+    retryRecovery: (jobId, signal) => retryQuarantined(COORDINATOR_JOB_RECOVERY_BOUNDARY, jobId, signal),
+    completeRecovery: completeProviderOperationJobRecovery,
+    onObligationChange: () => supersededProviderOperationPorts?.onObligationChange(),
+    log: (message) => backendLog.warn(message),
+  });
+
   const startupRecovery = createCoordinatorStartupRecovery({
     state,
     runtimeState,
@@ -274,15 +347,23 @@ export function createRecoveryCoordinator(
       abandonHeldRecoveryJob = handler;
     },
   });
-  const runStartupRecovery = startupRecovery.run;
+  const runStartupRecovery: RunCoordinatorStartupRecoveryFn = async (ctx) => {
+    await supersededProviderOperations.quiesce();
+    const disposition = await startupRecovery.run(ctx);
+    supersededProviderOperations.start();
+    return disposition;
+  };
 
   if (bound !== null) {
     registerCoordinatorStartupRecovery(bound, runStartupRecovery);
   }
   return {
     runStartupRecovery,
-    retireAbsentSupersededProviderOperations:
-      providerOperationStartupOwnership.retireAbsentSupersededProviderOperations,
+    retireAbsentSupersededProviderOperations: () => {
+      const retirement = providerOperationStartupOwnership.retireAbsentSupersededProviderOperations();
+      supersededProviderOperations.trackStartupRetirement(retirement);
+      return retirement;
+    },
     snapshotProviderOperationStartupOwnership: providerOperationStartupOwnership.snapshot,
     hydrateProviderOperationStartupOwnership: providerOperationStartupOwnership.hydrate,
     adoptRepairedProviderOperationOwnership: providerOperationStartupOwnership.adoptRepaired,
@@ -291,8 +372,12 @@ export function createRecoveryCoordinator(
     recoverProviderOperationJob,
     completeProviderOperationJobRecovery,
     releaseAdoptedJob,
+    passSupersededProviderOperations: supersededProviderOperations.pass,
     getRecoveryRegistry: () => state.recoveryRegistry,
     isIdleBlocked: () => state.adoptedRunningPids.size > 0 || (state.recoveryRegistry?.size ?? 0) > 0,
-    teardown,
+    teardown: async () => {
+      await supersededProviderOperations.stop();
+      return teardown();
+    },
   };
 }

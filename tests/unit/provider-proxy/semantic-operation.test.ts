@@ -1,4 +1,4 @@
-import { hostFingerprintFromSpec } from '#src/providers/host-identity.js';
+import { hostFingerprintFromSpec, proxySetFingerprintFromSpec } from '#src/providers/host-identity.js';
 import { codexThreadProvider } from '#src/providers/codex/thread-provider.js';
 import { commitContinuityEvent } from '#src/providers/internal/continuity-commit.js';
 import { TEST_CODEX_PLAN } from '#tests/helpers/provider-credentials.js';
@@ -331,7 +331,7 @@ describe('semantic-operation runtime: pump loop outcomes', () => {
 
     const host = createSemanticOperationRuntime({
       hostRoot: '/test/plugin',
-      hostFingerprint: hostFingerprintFromSpec(fakeHostSpec()),
+      hostFingerprint: proxySetFingerprintFromSpec(fakeHostSpec()),
       runtime,
       hostAuthority: fakeHostAuthority(),
       getProxy: () => proxy,
@@ -389,7 +389,7 @@ describe('semantic-operation runtime: replay admission', () => {
     const proxy = {} as Proxy;
     const semantic = createSemanticOperationRuntime({
       hostRoot: '/test/plugin',
-      hostFingerprint: hostFingerprintFromSpec(fakeHostSpec()),
+      hostFingerprint: proxySetFingerprintFromSpec(fakeHostSpec()),
       runtime,
       hostAuthority: fakeHostAuthority(),
       getProxy: () => proxy,
@@ -403,6 +403,7 @@ describe('semantic-operation runtime: replay admission', () => {
       nowMs: () => 0,
       proxyInstanceId: operation.proxyInstanceId,
       buildSetId: operation.buildSetId,
+      hostSetFingerprint: 'a'.repeat(64),
       stageProviderRoot: (stagedKey, reserved) => ({
         result: semantic
           .ensureProviderRoot(stagedKey, reserved.prepared)
@@ -429,7 +430,7 @@ describe('semantic-operation runtime: replay admission', () => {
 
     const prepareRequest = {
       operation,
-      hostFingerprint: hostFingerprintFromSpec(fakeHostSpec()),
+      hostFingerprint: proxySetFingerprintFromSpec(fakeHostSpec()),
       prepareAttemptNumber: 1,
       prepared,
     };
@@ -535,7 +536,7 @@ it.each(['config-error', 'abort-before-turn', 'completed-turn'])(
     providerRegistryDouble.rehydrateBinding.mockReturnValue({ ok: true, value: bound });
     const semantic = createSemanticOperationRuntime({
       hostRoot: '/test/plugin',
-      hostFingerprint: hostFingerprintFromSpec(fakeHostSpec()),
+      hostFingerprint: proxySetFingerprintFromSpec(fakeHostSpec()),
       runtime,
       hostAuthority: fakeHostAuthority(),
       getProxy: () => proxy,
@@ -589,7 +590,7 @@ it('releases a Claude session/ensure failure before turn/start', async () => {
   const relinquish = vi.fn();
   const semantic = createSemanticOperationRuntime({
     hostRoot: '/test/plugin',
-    hostFingerprint: hostFingerprintFromSpec(fakeHostSpec()),
+    hostFingerprint: proxySetFingerprintFromSpec(fakeHostSpec()),
     runtime,
     hostAuthority: fakeHostAuthority(),
     getProxy: () => proxy,
@@ -638,7 +639,7 @@ it('releases a pre-turn config failure through the real operation supervisor', a
   const relinquish = vi.fn();
   const semantic = createSemanticOperationRuntime({
     hostRoot: '/test/plugin',
-    hostFingerprint: hostFingerprintFromSpec(fakeHostSpec('codex')),
+    hostFingerprint: proxySetFingerprintFromSpec(fakeHostSpec('codex')),
     runtime,
     hostAuthority: fakeHostAuthority(),
     getProxy: () => proxy,
@@ -652,6 +653,7 @@ it('releases a pre-turn config failure through the real operation supervisor', a
     nowMs: () => 0,
     proxyInstanceId: operation.proxyInstanceId,
     buildSetId: operation.buildSetId,
+    hostSetFingerprint: 'a'.repeat(64),
     stageProviderRoot: (stagedKey, reserved) => {
       const stage = semantic.stage(stagedKey, reserved.prepared);
       return {
@@ -678,7 +680,7 @@ it('releases a pre-turn config failure through the real operation supervisor', a
       prepareAttemptNumber: 1,
       prepareAttemptKey: operationPrepareAttemptKey({
         operation,
-        hostFingerprint: hostFingerprintFromSpec(fakeHostSpec('codex')),
+        hostFingerprint: proxySetFingerprintFromSpec(fakeHostSpec('codex')),
         prepareAttemptNumber: 1,
         prepared,
       }),
@@ -735,7 +737,7 @@ it.each(['submitted', 'unknown'] as const)('requires cessation evidence for a %s
   const relinquish = vi.fn();
   const semantic = createSemanticOperationRuntime({
     hostRoot: '/test/plugin',
-    hostFingerprint: hostFingerprintFromSpec(fakeHostSpec()),
+    hostFingerprint: proxySetFingerprintFromSpec(fakeHostSpec()),
     runtime,
     hostAuthority: fakeHostAuthority(),
     getProxy: () => proxy,
@@ -872,7 +874,7 @@ describe('semantic-operation send admission', () => {
       runtime,
       hostAuthority,
       hostRoot: '/plugin',
-      hostFingerprint: hostFingerprintFromSpec(fakeHostSpec(provider)),
+      hostFingerprint: proxySetFingerprintFromSpec(fakeHostSpec(provider)),
       getProxy: () => proxy,
     });
     await semantic.ensureProviderRoot(key, prepared);
@@ -1022,7 +1024,7 @@ describe('semantic-operation send admission', () => {
       const forceClose = vi.spyOn(hostAuthority, 'forceClose');
       const semantic = createSemanticOperationRuntime({
         hostRoot: '/test/plugin',
-        hostFingerprint: hostFingerprintFromSpec(fakeHostSpec()),
+        hostFingerprint: proxySetFingerprintFromSpec(fakeHostSpec()),
         runtime,
         hostAuthority,
         getProxy: () => proxy,
@@ -1035,6 +1037,7 @@ describe('semantic-operation send admission', () => {
         nowMs: () => 0,
         proxyInstanceId: operation.proxyInstanceId,
         buildSetId: operation.buildSetId,
+        hostSetFingerprint: 'a'.repeat(64),
         stageProviderRoot: (stagedKey, reserved) => {
           const stage = semantic.stage(stagedKey, reserved.prepared);
           return {
@@ -1073,7 +1076,7 @@ describe('semantic-operation send admission', () => {
             prepareAttemptNumber: 1,
             prepareAttemptKey: operationPrepareAttemptKey({
               operation,
-              hostFingerprint: hostFingerprintFromSpec(fakeHostSpec()),
+              hostFingerprint: proxySetFingerprintFromSpec(fakeHostSpec()),
               prepareAttemptNumber: 1,
               prepared,
             }),

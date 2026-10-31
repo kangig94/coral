@@ -6,6 +6,7 @@ import type { DurableProviderProxyOperationAuthority } from '#src/coordinator/li
 import type { ControllerTransferOutcome } from '#src/coordinator/live/provider-proxy/set-authority.js';
 import {
   decodeProviderProxyControllerTransfer,
+  PROVIDER_OPERATIONS_TRANSFER_GENERATION,
   type ProviderProxyControllerTransfer,
 } from '#src/coordinator/services/provider-proxy-set/controller-transfer.js';
 import { providerProxySetIdentityFromRecord } from '#src/coordinator/services/provider-proxy-set/identity.js';
@@ -61,7 +62,7 @@ function capabilities(accepts: SuccessionCapabilities['accepts']): SuccessionCap
 
 const ACCEPTS_HOSTS = capabilities([
   { owner: 'provider-proxy-sets', generation: 1 },
-  { owner: 'provider-operations', generation: 1 },
+  { owner: 'provider-operations', generation: PROVIDER_OPERATIONS_TRANSFER_GENERATION },
 ]);
 
 function runtimeFor(): Runtime {
@@ -305,7 +306,7 @@ describe('provider host transfer owners', () => {
     const host = hostFor(record, authorized);
     const result = await classify(
       transferFor(runtimeFor(), { db: databaseWith([record]), hosts: [host] }),
-      capabilities([{ owner: 'provider-operations', generation: 1 }]),
+      capabilities([{ owner: 'provider-operations', generation: PROVIDER_OPERATIONS_TRANSFER_GENERATION }]),
     );
 
     expect(result.operations).toMatchObject({ kind: 'blocking' });
@@ -313,6 +314,25 @@ describe('provider host transfer owners', () => {
       kind: 'blocking',
       reason: expect.stringMatching(/host control generation 1/u),
     });
+  });
+
+  it('should keep serving a running operation for a successor that cannot read its saga generation', async () => {
+    const record = executing();
+    const host = hostFor(record, authorized);
+    const result = await classify(
+      transferFor(runtimeFor(), { db: databaseWith([record]), hosts: [host] }),
+      capabilities([
+        { owner: 'provider-proxy-sets', generation: 1 },
+        { owner: 'provider-operations', generation: PROVIDER_OPERATIONS_TRANSFER_GENERATION - 1 },
+      ]),
+    );
+
+    expect(result.operations).toMatchObject({
+      kind: 'blocking',
+      reason: `successor does not accept provider operation generation ${PROVIDER_OPERATIONS_TRANSFER_GENERATION}`,
+      jobIds: [record.operation.jobId],
+    });
+    expect(host.authorizeControllerTransfer).not.toHaveBeenCalled();
   });
 
   it('hands a set only to the attempt that runs as its successor until serving is recorded', async () => {

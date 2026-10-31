@@ -1019,6 +1019,8 @@ export const proxyOperationActivateResultSchema = z
     state: z.literal('executing'),
     activationFingerprint: activationFingerprintSchema,
     startedAt: z.string().datetime(),
+    // Optional because a receipt replayed through inspect, status or replay may predate the field.
+    hostSetFingerprint: hostFingerprintSchema.optional(),
     hostRef: hostRefSchema,
     committedThroughProviderSeq: nonNegativeSafeIntegerSchema,
   })

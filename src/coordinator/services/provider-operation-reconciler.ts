@@ -24,6 +24,7 @@ import { operationPrepareAttemptKey } from '../../provider-proxy/ledger.js';
 import {
   providerOperationPreparePermanentRefusalSchema,
   type ProviderOperationPreparePermanentRefusal,
+  type ProxyOperationActivationOutcome,
 } from '../../provider-proxy/protocol.js';
 import {
   providerOperationCleanupIdentity,
@@ -551,14 +552,14 @@ function permanentOperationFailure(record: ProviderOperationRecord): ProviderOpe
       Array.isArray(issues) &&
       issues.some(
         (issue: { path?: unknown }) =>
-          Array.isArray(issue.path) && issue.path.join('.') === 'activationAck.hostRef.fingerprint',
+          Array.isArray(issue.path) && issue.path.join('.') === 'activationAck.hostSetFingerprint',
       )
     ) {
       return {
         kind: 'terminal-failed',
         code: ACTIVATION_ACK_INVALID,
         reason:
-          'The proxy activation host fingerprint differs from the durable locator. Automatic set containment is required.',
+          'The proxy activation host does not belong to the durable locator set. Automatic set containment is required.',
       };
     }
   } catch {
@@ -2416,7 +2417,7 @@ export class ProviderOperationReconciler
 
   async #commitExecuting(
     record: Extract<ProviderOperationRecord, { phase: 'proxy-activation-pending' | 'activation-resolution-pending' }>,
-    activationAck: ProviderOperationActivationAck,
+    activationAck: Extract<ProxyOperationActivationOutcome, { state: 'executing' }>,
   ): Promise<Extract<ProviderOperationRecord, { phase: 'executing' }>> {
     this.#assertActiveDrive();
     if (activationAck.committedThroughProviderSeq !== 0) {
