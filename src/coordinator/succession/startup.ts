@@ -1380,7 +1380,10 @@ export async function completeSupervisorLegacyUpgrade(
     attemptId,
     attemptChild: { attemptId, pid, incarnation },
     attemptOwner: { kind: 'incumbent', ...observed.intent.incumbent },
+    attemptDeadline: null,
     disposition: 'completed',
+    blockers: [],
+    retryCondition: null,
     completionReceipt: {
       kind: 'serving',
       attemptId,

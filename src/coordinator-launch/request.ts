@@ -101,7 +101,13 @@ export async function recordLegacyUpgradeIntent(
       }),
     };
   });
-  if (accepted.kind !== 'settled')
+  if (accepted.kind === 'refused')
+    return {
+      kind: 'refused',
+      reason: `upgrade intent write was refused: ${accepted.problem}`,
+      disposition: 'deferred',
+    };
+  if (accepted.kind === 'exhausted')
     return { kind: 'refused', reason: 'upgrade intent changed concurrently', disposition: 'deferred' };
   return accepted.value;
 }

@@ -422,7 +422,16 @@ async function armSupervisorSentinel(replaceSupervisor: () => void, onSentinelLo
     }, SENTINEL_TIMING.challengeMs);
     supervisorMonitor.unref();
     sentinelArm = new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error('Coordinator sentinel did not arm before startup')), 30_000);
+      const sendHello = (): void => {
+        if (process.connected) process.send?.({ kind: 'coral-sentinel-hello', id: sentinelId });
+      };
+      // A single hello is not guaranteed to be delivered; arming must not depend on one.
+      const helloRetry = setInterval(sendHello, SENTINEL_TIMING.challengeMs);
+      helloRetry.unref();
+      const timeout = setTimeout(() => {
+        clearInterval(helloRetry);
+        reject(new Error('Coordinator sentinel did not arm before startup'));
+      }, 30_000);
       const onArm = (message: unknown, handle: unknown): void => {
         if (
           typeof message === 'object' &&
@@ -440,12 +449,13 @@ async function armSupervisorSentinel(replaceSupervisor: () => void, onSentinelLo
           message.id === sentinelId
         ) {
           clearTimeout(timeout);
+          clearInterval(helloRetry);
           process.off('message', onArm);
           resolve();
         }
       };
       process.on('message', onArm);
-      process.send?.({ kind: 'coral-sentinel-hello', id: sentinelId });
+      sendHello();
     });
     process.on('message', (message: unknown, handle: unknown) => {
       if (
