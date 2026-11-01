@@ -486,10 +486,13 @@ export function upgradeIntentProblem(read: UpgradeIntentRead): UpgradeIntentProb
   return read.kind === 'unreadable' || read.kind === 'corrupt' || read.kind === 'unsupported' ? read.kind : null;
 }
 
+/** A proposed record that fails the schema is refused as `invalid-change`; it never throws past the lock. */
+export type UpgradeIntentWriteProblem = UpgradeIntentProblem | 'invalid-change';
+
 export type UpgradeIntentWrite =
   | Readonly<{ kind: 'written'; intent: UpgradeIntent }>
   | Readonly<{ kind: 'conflict'; current: UpgradeIntent | null }>
-  | Readonly<{ kind: 'unreadable' | 'corrupt' | 'unsupported' }>;
+  | Readonly<{ kind: UpgradeIntentWriteProblem }>;
 
 function readUpgradeIntentAtPath(path: string): UpgradeIntentRead {
   let raw: string;
@@ -698,7 +701,7 @@ export async function compareAndSwapUpgradeIntent(
     ) {
       return { kind: 'unsupported' };
     }
-    const next = upgradeIntentSchema.parse(
+    const proposed = upgradeIntentSchema.safeParse(
       mergeUnknownKeys(current, {
         ...change,
         requestedAt:
@@ -709,6 +712,20 @@ export async function compareAndSwapUpgradeIntent(
         revision: (current?.revision ?? -1) + 1,
       }),
     );
+    if (!proposed.success) {
+      writeAuditEvent(
+        'upgrade_intent_change_rejected',
+        {
+          requestId: change.requestId,
+          revision: current?.revision ?? null,
+          disposition: change.disposition,
+          issues: proposed.error.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`),
+        },
+        'warn',
+      );
+      return { kind: 'invalid-change' };
+    }
+    const next = proposed.data;
     lease.assertOwned();
     if (
       current?.completionReceipt !== null &&
@@ -753,7 +770,7 @@ export type UpgradeIntentCasStep<T> =
 
 export type UpgradeIntentCasOutcome<T> =
   | Readonly<{ kind: 'settled'; value: T }>
-  | Readonly<{ kind: 'refused'; problem: UpgradeIntentProblem }>
+  | Readonly<{ kind: 'refused'; problem: UpgradeIntentWriteProblem }>
   | Readonly<{ kind: 'exhausted' }>;
 
 export async function retryUpgradeIntentCas<T>(

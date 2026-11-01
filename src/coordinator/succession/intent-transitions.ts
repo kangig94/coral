@@ -53,7 +53,13 @@ export function decisionOf(
     case 'settled':
       return outcome.value;
     case 'refused':
-      return { kind: refusal, reason: `upgrade intent is ${outcome.problem}` };
+      return {
+        kind: refusal,
+        reason:
+          outcome.problem === 'invalid-change'
+            ? 'proposed upgrade intent change is invalid'
+            : `upgrade intent is ${outcome.problem}`,
+      };
     case 'exhausted':
       return { kind: 'deferred', reason: 'upgrade intent changed concurrently' };
   }

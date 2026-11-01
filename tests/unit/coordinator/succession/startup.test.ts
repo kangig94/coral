@@ -1,13 +1,14 @@
 import * as epochObservation from '#src/store/epoch/observation.js';
 import type * as MockedNodeProcessModule from '#src/infra/node-process.js';
-import { cpSync, existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  completeSupervisorLegacyUpgrade,
   heldUnservedMint,
   prepareCommittedSuccessorRecovery,
   publishAttemptServing,
@@ -25,6 +26,7 @@ import {
   type UpgradeIntentChange,
 } from '#src/infra/upgrade-intent.js';
 import { upgradeIntentPath } from '#src/infra/path/coordinator.js';
+import { launchAdmissionPath } from '#src/infra/launch-admission-record.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import {
@@ -485,6 +487,78 @@ describe('incomplete succession at startup', () => {
             },
           ],
         },
+      },
+    });
+  });
+});
+
+describe('supervised legacy upgrade completion', () => {
+  it('should complete when an earlier attempt left an expired deadline on the intent', async () => {
+    const base = runtimeFixture();
+    const format = currentCoralStoreFormat();
+    const current = { ...build, version: format.productVersion, storeFormatFingerprint: format.fingerprint };
+    const settled = settleStoreEpoch(base, {
+      storeFormat: format,
+      build: current,
+      authorizeMint: authorizeFixtureStoreMint,
+    });
+    settled.db.close();
+    joinSuccessionWriterGeneration(base, settled.store);
+    const runDir = base.paths.coral.coordinator.runDir;
+    const dead = await exitedIncarnation();
+    const written = await compareAndSwapUpgradeIntent(runDir, null, {
+      requestId: 'request-1',
+      legacyRetirement: true,
+      incumbent: {
+        instanceId: 'incumbent',
+        ...dead,
+        version: '0.10.13',
+        bundleHash: 'fedcba9876543210',
+        flavor: 'prod',
+      },
+      target: { build: current, pluginRootLabel: '/installed/coral/0.11.0' },
+      attemptId: 'abandoned-attempt',
+      attemptOwner: { kind: 'incumbent', instanceId: 'incumbent', ...dead },
+      disposition: 'attempting',
+      blockers: [],
+      retryCondition: null,
+      attemptDeadline: new Date(base.time.now() - 60_000).toISOString(),
+      completionReceipt: null,
+    });
+    if (written.kind !== 'written') throw new Error(`intent seed was ${written.kind}`);
+    const launchId = base.ids.uuid();
+    const self = { pid: process.pid, incarnation: testIncarnation(process.pid) };
+    const admissionPath = launchAdmissionPath(runDir, launchId);
+    mkdirSync(dirname(admissionPath), { recursive: true });
+    writeFileSync(
+      admissionPath,
+      JSON.stringify({
+        version: 1,
+        launchId,
+        child: self,
+        parent: dead,
+        admittedAt: base.time.now(),
+        build: {
+          version: current.version,
+          buildSetId: current.buildSetId,
+          bundleHash: current.bundleHash,
+          flavor: current.flavor,
+        },
+        purpose: 'legacy-retirement',
+      }),
+    );
+    const launchEnv: Record<string, string> = { CORAL_LAUNCH_PURPOSE: 'legacy-retirement', CORAL_LAUNCH_ID: launchId };
+    const runtime: Runtime = { ...base, env: { ...base.env, get: (key) => launchEnv[key] ?? base.env.get(key) } };
+
+    await expect(
+      completeSupervisorLegacyUpgrade(runtime, current, settled.store, 'successor', self.pid, self.incarnation),
+    ).resolves.toEqual({ kind: 'completed' });
+    expect(readUpgradeIntent(runDir)).toMatchObject({
+      intent: {
+        disposition: 'completed',
+        attemptId: launchId,
+        attemptDeadline: null,
+        completionReceipt: { attemptId: launchId },
       },
     });
   });

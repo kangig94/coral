@@ -170,9 +170,9 @@ describe('upgrade intent', () => {
       kind: 'readable',
       intent: { disposition: 'attempting', attemptId: 'attempt-1', completionReceipt: null },
     });
-    await expect(compareAndSwapUpgradeIntent(dir, 1, { ...spawned, disposition: 'completed' })).rejects.toThrow(
-      'Completion requires a serving receipt',
-    );
+    await expect(compareAndSwapUpgradeIntent(dir, 1, { ...spawned, disposition: 'completed' })).resolves.toEqual({
+      kind: 'invalid-change',
+    });
     expect(readUpgradeIntent(dir)).toMatchObject({
       kind: 'readable',
       intent: { disposition: 'attempting', completionReceipt: null },
