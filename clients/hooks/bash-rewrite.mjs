@@ -48,10 +48,10 @@ try {
   let nextCommand = invokesCoralCli ? `${PATH_PREFIX}${ownerPrefix}\n${command}` : command;
   let changed = invokesCoralCli;
 
-  // A foreground wait blocks until just under the ceiling, so it gets the whole ceiling. run_in_background is
-  // left to the caller; a backgrounded wait is tracked like any other background command below.
+  // A foreground wait blocks until just under the ceiling, so it gets the whole ceiling. A background timeout
+  // is the harness's background run limit, so it must not be lowered for a wait.
   if (textInvokesCoralWait(command)) {
-    updatedInput.timeout = WAIT_BASH_TIMEOUT_MS;
+    if (updatedInput.run_in_background !== true) updatedInput.timeout = WAIT_BASH_TIMEOUT_MS;
     try {
       recordCoralWait(projectDirFromInput(input), input.session_id);
     } catch {}

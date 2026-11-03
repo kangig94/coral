@@ -331,6 +331,15 @@ describe('bash-rewrite.mjs: background-task wrapping', () => {
     expect(output.updatedInput).toHaveProperty('run_in_background', true);
   });
 
+  it('keeps the caller timeout of a background unbounded wait', () => {
+    const fixture = createFixture();
+    const command = 'coral-cli jobs wait a --unbounded';
+    const output = expectBashRewriteOutput(
+      runBg(fixture, { command, run_in_background: true, timeout: 7_200_000 }, 'claude'),
+    ).hookSpecificOutput;
+    expect(output.updatedInput).toHaveProperty('timeout', 7_200_000);
+  });
+
   it.each(['>/dev/null', '2>&1', "<<'EOF'"])(
     'prefixes the bridge for a background Coral invocation after %s',
     (redirect) => {
@@ -341,7 +350,7 @@ describe('bash-rewrite.mjs: background-task wrapping', () => {
       ).hookSpecificOutput;
       expect(output.permissionDecision).toBe('allow');
       expect(output.updatedInput.command).toContain(`export PATH='${BRIDGE_DIR}':"$PATH"`);
-      expect(output.updatedInput).toHaveProperty('timeout', 600_000);
+      expect(output.updatedInput).not.toHaveProperty('timeout');
       expect(output.updatedInput.command.endsWith(command)).toBe(true);
     },
   );
