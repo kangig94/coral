@@ -696,6 +696,7 @@ function spawnCoordinator(backendBin: string, paths: CoordinatorPaths): SpawnedC
     const sentinel = join(dirname(backendBin), 'coral-sentinel.cjs');
     if (!existsSync(sentinel)) throw new BackendUnreachableError('The bundled coordinator supervisor is unavailable.');
     const child = spawn(process.execPath, [sentinel, backendBin], {
+      cwd: paths.runDir,
       detached: true,
       stdio: ['ignore', 'ignore', stderr],
       env: {

@@ -121,6 +121,7 @@ export async function requestLegacyUpgrade(
   const executable = join(bundleDir, 'coral-backend.cjs');
   const supervisor = join(bundleDir, 'coral-sentinel.cjs');
   const child = spawn(process.execPath, [supervisor, executable], {
+    cwd: options.runDir,
     detached: true,
     stdio: 'ignore',
     env: { ...process.env, CORAL_SENTINEL_RUN_DIR: options.runDir },

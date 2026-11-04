@@ -71,7 +71,10 @@ export function createKbCurateAssistantHandler(options: {
     const curation = requireCurationCapability(bound);
     const prepared = curation.prepare(
       {
-        cwd: canonicalizeWorkDir(options.runtime.env.cwd(), process.cwd()),
+        cwd: canonicalizeWorkDir(
+          options.runtime.paths.coral.coordinator.runDir,
+          options.runtime.paths.coral.coordinator.runDir,
+        ),
         prompt: request.prompt,
         ...(request.model === undefined ? {} : { model: request.model }),
         ...(request.permissionMode === undefined ? {} : { permissionMode: request.permissionMode }),

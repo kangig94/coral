@@ -156,7 +156,7 @@ export function controllerRecoveryTarget(
   const probe = runtime.process.execSync(
     process.execPath,
     [join(root, 'bridge', 'coral-backend.cjs'), PROBE_FLAG, epochKey, opened.instanceId],
-    { timeout: RETAINED_EPOCH_TIMEOUT_MS, encoding: 'utf-8', inheritEnv: true },
+    { cwd: root, timeout: RETAINED_EPOCH_TIMEOUT_MS, encoding: 'utf-8', inheritEnv: true },
   );
   return probe.status === RETAINED_EPOCH_EXIT.settled && probe.stdout === retainedEpochOpenProof(epochKey, opened)
     ? validated.target
@@ -177,7 +177,7 @@ export function settleWithRetainedExecutor(runtime: Runtime, epochKey: string): 
   const result = runtime.process.execSync(
     process.execPath,
     [join(root, 'bridge', 'coral-backend.cjs'), RECOVER_FLAG, epochKey],
-    { timeout: RETAINED_EPOCH_TIMEOUT_MS, inheritEnv: true },
+    { cwd: root, timeout: RETAINED_EPOCH_TIMEOUT_MS, inheritEnv: true },
   );
   switch (result.status) {
     case RETAINED_EPOCH_EXIT.settled:

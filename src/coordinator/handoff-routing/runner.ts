@@ -1404,8 +1404,10 @@ async function executeResolvedHandoff(
         operation.kind === 'backend-startup'
           ? [sentinel, target, ...delegatedArguments(operation)]
           : [target, ...delegatedArguments(operation)];
+      if (operation.kind === 'backend-startup')
+        runtime.storage.mkdirSync(runtime.paths.coral.coordinator.runDir, { recursive: true });
       const spawnOptions: SpawnOptions = {
-        cwd: runtime.env.cwd(),
+        cwd: operation.kind === 'backend-startup' ? runtime.paths.coral.coordinator.runDir : runtime.env.cwd(),
         env: {
           ...runtime.env.fullSnapshot(),
           [CLI_HANDOFF_GUARD_ENV]: '1',
