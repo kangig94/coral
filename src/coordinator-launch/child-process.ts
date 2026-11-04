@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 import { createFailureDomain, inheritedFailureDomainRoot } from '../infra/failure-domain.js';
@@ -127,12 +127,24 @@ export function spawnAdmittedChild(
     process.execPath,
     legacy ? [process.argv[1], '--launch-legacy', executable, ...args] : [executable, ...args],
     {
-      cwd: process.cwd(),
+      cwd: runDir,
       env,
       stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
     },
   );
-  child.on('error', (error) => process.stderr.write(`Coordinator spawn failed: ${String(error)}\n`));
+  child.on('error', (error) => {
+    let cwdProblem: string | null = null;
+    try {
+      if (!statSync(runDir).isDirectory()) cwdProblem = 'not a directory';
+    } catch (cause: unknown) {
+      cwdProblem = String(cause);
+    }
+    process.stderr.write(
+      cwdProblem === null
+        ? `Coordinator spawn failed (cwd ${JSON.stringify(runDir)}): ${String(error)}\n`
+        : `Coordinator spawn failed: cwd ${JSON.stringify(runDir)} is unavailable (${cwdProblem}); ${String(error)}\n`,
+    );
+  });
   const pid = child.pid;
   const incarnation = pid === undefined ? null : probeProcessIncarnation(pid);
   if (pid === undefined || incarnation === null) {

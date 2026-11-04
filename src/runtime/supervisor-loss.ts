@@ -328,6 +328,7 @@ function launchReplacementSupervisor(control: ReplacementSupervisorControl): voi
     process.execPath,
     [join(root, 'bridge', 'coral-sentinel.cjs'), join(root, 'bridge', 'coral-backend.cjs')],
     {
+      cwd: control.runDir,
       detached: true,
       stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
       env: {
@@ -475,6 +476,7 @@ export async function resumeLegacyUpgradeObservation(
       process.execPath,
       [join(bundleDir, 'coral-sentinel.cjs'), join(bundleDir, 'coral-backend.cjs')],
       {
+        cwd: runDir,
         detached: true,
         stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
         env: { ...process.env, CORAL_SENTINEL_RUN_DIR: runDir, CORAL_OBSERVATION_CHALLENGE: challenge },

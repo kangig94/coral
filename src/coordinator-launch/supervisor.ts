@@ -1,6 +1,7 @@
 import { type ChildProcess } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { dirname } from 'node:path';
+import { mkdirSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 import { resolveBuildFlavor } from '../infra/build-flavor.js';
@@ -304,6 +305,8 @@ export async function runNamespaceSupervisor(
     onChild?: (child: ChildProcess) => void;
   }> = {},
 ): Promise<number> {
+  mkdirSync(runDir, { recursive: true });
+  process.chdir(runDir);
   const namespaceDigest = createHash('sha256').update(runDir).digest('hex').slice(0, 20);
   const root = await acquireFailureDomainRoot(
     `app-coral-${resolveBuildFlavor(process.env)}-${namespaceDigest}.scope`,

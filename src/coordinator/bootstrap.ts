@@ -321,9 +321,10 @@ async function dispatchBackendRole(): Promise<number | null> {
   // Provider-proxy roles must be dispatched before coordinator construction.
   const providerRole = parseProviderRoleArgv(process.argv);
   if (providerRole.role !== 'none') {
+    if (typeof __PLUGIN_ROOT__ !== 'string') throw new Error('Provider role requires a bundled plugin root.');
     try {
       return await runProviderRoleMain(providerRole, {
-        pluginRoot: typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : process.cwd(),
+        pluginRoot: __PLUGIN_ROOT__,
       });
     } catch (error: unknown) {
       // Provider role failures must not be recorded as coordinator bootstrap failures.
@@ -333,8 +334,9 @@ async function dispatchBackendRole(): Promise<number | null> {
   }
 
   if (process.env.CORAL_KB_DAEMON === '1') {
+    if (typeof __PLUGIN_ROOT__ !== 'string') throw new Error('KB daemon requires a bundled plugin root.');
     return runKbDaemonMain({
-      pluginRoot: typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : process.cwd(),
+      pluginRoot: __PLUGIN_ROOT__,
     });
   }
 

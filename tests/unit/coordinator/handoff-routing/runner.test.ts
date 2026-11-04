@@ -1,6 +1,7 @@
 import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
 import type { ChildProcess } from 'node:child_process';
 import { EventEmitter } from 'node:events';
+import { mkdirSync, mkdtempSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -133,7 +134,12 @@ async function createHandoffRuntime(): Promise<Runtime> {
     ...actual,
     ids: { ...actual.ids, uuid: runtimeUuid },
     process: { ...actual.process, readProcessIncarnation },
-    storage: { ...actual.storage, existsSync: () => true, readFileSync: () => '--print-wait-invocation-contract' },
+    storage: {
+      ...actual.storage,
+      mkdirSync: vi.fn(),
+      existsSync: () => true,
+      readFileSync: () => '--print-wait-invocation-contract',
+    },
     time,
     env: {
       ...actual.env,
@@ -266,6 +272,43 @@ afterEach(() => {
 });
 
 describe('handoff-routing/runner', () => {
+  it('creates a fresh run directory before delegating backend startup with that cwd', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'coral-handoff-startup-cwd-'));
+    const runDir = join(root, 'fresh', 'run');
+    const startupRuntime: Runtime = {
+      ...runtime,
+      storage: { ...runtime.storage, mkdirSync },
+      paths: {
+        ...runtime.paths,
+        coral: {
+          ...runtime.paths.coral,
+          coordinator: { ...runtime.paths.coral.coordinator, runDir },
+        },
+      },
+    };
+    mockState.createRealRuntime.mockReturnValue(startupRuntime);
+    mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
+    mockState.spawn.mockImplementation((_executable, _args, options) => {
+      expect(statSync(runDir).isDirectory()).toBe(true);
+      expect(options.cwd).toBe(runDir);
+      return childThatExits(7, null);
+    });
+    try {
+      await expect(
+        runHandoff(
+          { kind: 'backend-startup' },
+          { pluginRoot: '/plugin/root', activeSelectionTarget: mockState.target as ValidatedHandoffTarget },
+        ),
+      ).resolves.toMatchObject({
+        kind: 'delegated-startup',
+        observation: { kind: 'not-serving', childEnding: { code: 7, signal: null } },
+      });
+      expect(mockState.spawn).toHaveBeenCalledOnce();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it.each(['timeout', 'abort'] as const)(
     'terminates a hung wait capability probe gracefully on %s and never escalates unknown life',
     async (trigger) => {

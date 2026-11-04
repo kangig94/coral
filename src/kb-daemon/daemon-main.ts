@@ -63,7 +63,7 @@ type PendingParentRequest = {
 };
 
 export type KbDaemonMainOptions = {
-  pluginRoot?: string;
+  pluginRoot: string;
   parentPid?: number | null;
 };
 
@@ -565,9 +565,9 @@ function attachKbDaemonInput(
   process.on('SIGINT', () => stop(0));
 }
 
-export async function runKbDaemonMain(options: KbDaemonMainOptions = {}): Promise<number> {
+export async function runKbDaemonMain(options: KbDaemonMainOptions): Promise<number> {
   const startedAt = Date.now();
-  const pluginRoot = options.pluginRoot ?? process.cwd();
+  const pluginRoot = options.pluginRoot;
   const { parentCurateAssistant, parentCurateUsageBudget, settleParentResponse, cancelPendingParentRequests } =
     createKbDaemonParentBridge();
   const runtime = createRealRuntime(readBuildFlavor(pluginRoot));

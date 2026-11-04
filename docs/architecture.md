@@ -332,6 +332,8 @@ Controller evidence refusals carry an additive `observedAt` timestamp. Health pr
 
 `backend status` preserves the observed service state and exit code when it adds historical upgrade refusals. Launch observations read from disk retain persisted provenance; they establish no retry owner and do not suppress startup guidance. Automatic retry claims require an authenticated current owner's launch report.
 
+Daemon launches must not depend on the invoking directory, provided the run directory and selected build remain available. See `runNamespaceSupervisor` in `src/coordinator-launch/supervisor.ts` and `spawnAdmittedChild` in `src/coordinator-launch/child-process.ts`.
+
 The launch lock carries no data. A malformed lock address — bytes SQLite cannot lock, a directory, a symlink, or a second hard link — is moved aside to `namespace-supervisor.v1.lock.malformed-<ts>-<uuid>` only after `repairMalformedFileLockSync` (`src/infra/fs-lock.ts`) proves no process can hold it, and the path is then recreated. A live holder is left in place, because a lock binds its inode and moving a held inode would create a second lock at one address. A socket bound before any discovery record names nobody, so the supervisor writes no upgrade request for it; it keeps that observation in memory and records the request with the real incumbent identity once `coordinator.json` publishes one.
 
 #### Commit window
