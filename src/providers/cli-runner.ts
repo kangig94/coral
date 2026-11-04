@@ -5,6 +5,7 @@ import type {
   DurableProvisionalProcessSubject,
 } from '../runtime/ports.js';
 import type { LaunchPermit, LaunchPool } from '../jobs/contracts/admission.js';
+import type { ExecutionAddress } from '../jobs/execution-address.js';
 import type { AbortHoldDisposition, AbortHoldOwner } from '../jobs/contracts/abort-registry.js';
 import type { ProviderCliRunner } from './protocol.js';
 
@@ -43,6 +44,7 @@ export interface ProviderDurableSpawner {
     exactEnv?: Record<string, string>;
     jobDir: string;
     jobId?: string;
+    failureDomainName: string;
     onRuntimeRecord?: (record: DurableCliRuntimeRecord, provisionalIdentity?: DurableProvisionalProcessSubject) => void;
     onDurableProcessIdentity?: DurableProcessIdentityCallback;
   }): Promise<{
@@ -59,9 +61,9 @@ export function bindProviderRunner(
   signal: AbortSignal,
   pool: LaunchPool,
   jobDir: string,
+  executionAddress: ExecutionAddress,
   onRuntimeRecord?: (record: DurableCliRuntimeRecord, provisionalIdentity?: DurableProvisionalProcessSubject) => void,
   onDurableProcessIdentity?: DurableProcessIdentityCallback,
-  jobId?: string,
   callerOwnership?: DurableLaunchCallerOwnership,
 ): ProviderCliRunner {
   return (request) =>
@@ -70,7 +72,8 @@ export function bindProviderRunner(
       signal,
       pool,
       jobDir,
-      ...(jobId === undefined ? {} : { jobId }),
+      failureDomainName: `job-${executionAddress.jobId}-${executionAddress.execution}`,
+      jobId: executionAddress.jobId,
       command: request.command,
       args: request.args,
       prompt: request.prompt,

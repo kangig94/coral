@@ -1910,6 +1910,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
       signal,
       permit.pool,
       this.deps.progressStore.jobDir(jobId),
+      { jobId, execution },
       (record, provisionalIdentity) => {
         this.deps.progressStore.appendRuntimeStarted(
           jobId,
@@ -1925,7 +1926,6 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
       },
       (identity, containmentStatus, control) =>
         this.publishDurableProcessIdentity(launch, identity, containmentStatus, control),
-      jobId,
       {
         permit,
         abortHoldOwner: {

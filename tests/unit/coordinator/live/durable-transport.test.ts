@@ -39,6 +39,7 @@ describe('durable transport', () => {
       command: 'fixture',
       args: [],
       jobDir: '/jobs/stream',
+      failureDomainName: 'job-test-1',
       onEvent,
       onRuntimeRecord: (record) => {
         records.push(record);
@@ -74,6 +75,7 @@ describe('durable transport', () => {
       command: 'fixture',
       args: [],
       jobDir: '/jobs/descendant',
+      failureDomainName: 'job-test-1',
     });
     void result.then(() => {
       completed = true;

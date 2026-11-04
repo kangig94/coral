@@ -143,7 +143,7 @@ async function closeSpawnedHandle(
   acceptCleanupHold: (hold: ProviderServerCleanupHold) => ProviderServerFailedSpawnCleanupAcceptance,
 ): Promise<ProviderServerCloseDisposition | ProviderServerShutdownHoldWithoutRetry> {
   const capability = spec.shutdownCapability;
-  if (capability !== undefined) {
+  if (capability !== undefined && !handle.isClosed()) {
     handle.markExpectedClose();
     const resultDisposition = capability.resultDisposition;
     if (resultDisposition?.kind === 'provider-server-shutdown-v1') {
@@ -328,6 +328,7 @@ export interface ProxyAppServerHostAuthority {
   rootIdentity(hostRef: HostRef): Readonly<{ pid: number; incarnation: ProcessIncarnation }> | null;
   closed(hostRef: HostRef): Promise<Error | void> | null;
   forceClose(hostRef: HostRef): Promise<ProxyProviderRootCloseDisposition | undefined>;
+  closeObservedTransport(hostRef: HostRef): Promise<ProviderHostEvictionDisposition | undefined>;
   evictHost(hostRef: HostRef): Promise<ProviderHostEvictionDisposition>;
 }
 
@@ -362,6 +363,7 @@ type RootSpawnTransaction = {
   readonly instanceId: string;
   readonly reservedRef: HostRef;
   handle: ProviderServerHandle | null;
+  failureDomainPath: string | null;
   cleanupHold: ProviderServerFailedSpawnCleanupHold | null;
   liveRootCommitted: boolean;
 };
@@ -369,6 +371,7 @@ type RootSpawnTransaction = {
 class ProxyProviderRootPool {
   private readonly runtime: Runtime;
   private readonly admission: HostAdmissionCollection;
+  private readonly proxyInstanceId: string | null;
   private readonly entries = new Map<string, HostPoolEntry>();
   private readonly closingEntries = new Set<HostPoolEntry>();
   private readonly failedSpawnCleanups = new Set<RootSpawnTransaction>();
@@ -380,9 +383,10 @@ class ProxyProviderRootPool {
   private spawningRoots = 0;
   private generationRootSlotsSpent = 0;
 
-  constructor(runtime: Runtime, admission: HostAdmissionCollection) {
+  constructor(runtime: Runtime, admission: HostAdmissionCollection, proxyInstanceId: string | null) {
     this.runtime = runtime;
     this.admission = admission;
+    this.proxyInstanceId = proxyInstanceId;
   }
 
   active(hostKey: string): HostPoolEntry | undefined {
@@ -478,10 +482,28 @@ class ProxyProviderRootPool {
               bindWithinMs: 10_000,
               processGroupId: this.runtime.env.pid(),
             });
+      const failureDomainRoot = this.runtime.process.failureDomainRoot;
+      const failureDomain =
+        ticket === null || this.proxyInstanceId === null
+          ? null
+          : this.runtime.process.createFailureDomain(
+              `set-${this.proxyInstanceId}/containment/host-${ticket.processToken}`,
+              true,
+            );
+      if (failureDomain?.kind === 'created') transaction.failureDomainPath = failureDomain.path;
+      const failureDomainEnv =
+        failureDomainRoot.kind === 'placed' && failureDomain?.kind === 'created'
+          ? { CORAL_FAILURE_DOMAIN_ROOT: failureDomainRoot.root, CORAL_FAILURE_DOMAIN: failureDomain.path }
+          : null;
       const handle = await spawnProviderServerTransport({
         runtime: this.runtime,
         options: {
           ...spawnOptionsFor(spec, options?.signal),
+          ...(failureDomainEnv === null
+            ? {}
+            : spec.env === undefined
+              ? { extraEnv: failureDomainEnv }
+              : { exactEnv: { ...spec.env, ...failureDomainEnv } }),
           ...(ticket === null
             ? {}
             : {
@@ -496,6 +518,11 @@ class ProxyProviderRootPool {
       });
       if (isHeldProviderServerSpawn(handle)) throw handle.error;
       transaction.handle = handle;
+      if (failureDomain?.kind === 'created') {
+        void handle.closePromise.then(() => {
+          this.removeSpawnFailureDomain(transaction);
+        });
+      }
       return this.commitSpawnedRoot(transaction, handle);
     } catch (error: unknown) {
       await this.compensateFailedSpawn(transaction);
@@ -586,6 +613,7 @@ class ProxyProviderRootPool {
       instanceId,
       reservedRef: hostRefForIdentity(spec, instanceId, options?.jobId),
       handle: null,
+      failureDomainPath: null,
       cleanupHold: null,
       liveRootCommitted: false,
     };
@@ -657,7 +685,14 @@ class ProxyProviderRootPool {
     void handle.processCessation.then(retire);
   }
 
+  private removeSpawnFailureDomain(transaction: RootSpawnTransaction): void {
+    if (transaction.failureDomainPath !== null) {
+      void this.runtime.process.removeFailureDomain(transaction.failureDomainPath);
+    }
+  }
+
   private async compensateFailedSpawn(transaction: RootSpawnTransaction): Promise<void> {
+    this.removeSpawnFailureDomain(transaction);
     const { placement } = transaction.request;
     if (transaction.cleanupHold !== null) return;
     if (!transaction.liveRootCommitted) {
@@ -806,6 +841,7 @@ class ProxyProviderRootPool {
     } else {
       this.admission.abandon(transaction.reservedRef);
     }
+    this.removeSpawnFailureDomain(transaction);
   }
 
   private matchesTransaction(hostRef: HostRef, transaction: RootSpawnTransaction): boolean {
@@ -1068,6 +1104,29 @@ class ProxyProviderHostAdministration {
     return this.pool.terminalEviction(hostRef);
   }
 
+  async closeObservedTransport(hostRef: HostRef): Promise<ProviderHostEvictionDisposition | undefined> {
+    const terminal = this.pool.terminalEviction(hostRef);
+    if (terminal !== null) return terminal;
+    const matches = this.pool.matchingEntries(hostRef);
+    if (matches.size > 1)
+      throw new Error('provider_host_identity_integrity: exact host ref matched multiple proxy entries');
+    const entry = matches.values().next().value;
+    if (entry === undefined) return this.evictProcessAbsentTombstone(hostRef);
+    if (!entry.handle.isClosed()) return undefined;
+    this.pool.remove(entry);
+    const cleanup = await this.pool.close(entry);
+    if (cleanup.kind === 'observed-absent') {
+      const retained = this.pool.retainTerminalEviction(hostRef, { kind: 'evicted' });
+      this.admission.confirmEvicted(hostRef);
+      return retained;
+    }
+    if (isProviderServerShutdownHold(cleanup))
+      return providerHostEvictionHold(cleanup, cleanup.successor?.owner ?? null);
+    if (cleanup.kind === 'held-alive' || cleanup.kind === 'held-unobservable')
+      return providerHostEvictionHold(cleanup, cleanup.successor.owner);
+    return cleanup;
+  }
+
   async evictHost(hostRef: HostRef): Promise<ProviderHostEvictionDisposition> {
     const terminal = this.pool.terminalEviction(hostRef);
     if (terminal !== null) return terminal;
@@ -1163,9 +1222,10 @@ class ProxyProviderHostAdministration {
  */
 export function createProxyAppServerHostAuthority(
   runtime: Runtime,
+  proxyInstanceId: string | null = null,
 ): ProxyAppServerHostAuthority & ProxyProviderHostAdministrationAuthority {
   const admission = createProxyProviderHostAdmission();
-  const pool = new ProxyProviderRootPool(runtime, admission);
+  const pool = new ProxyProviderRootPool(runtime, admission, proxyInstanceId);
   const sessions = new ProxyProviderHostSessions(runtime, admission, pool);
   const administration = new ProxyProviderHostAdministration(admission, pool);
 
@@ -1174,6 +1234,7 @@ export function createProxyAppServerHostAuthority(
     rootIdentity: (hostRef) => pool.rootIdentity(hostRef),
     closed: (hostRef) => pool.closed(hostRef),
     forceClose: (hostRef) => pool.forceClose(hostRef),
+    closeObservedTransport: (hostRef) => administration.closeObservedTransport(hostRef),
     listProviderHosts: () => administration.listProviderHosts(),
     inspectProviderHost: (hostRef) => administration.inspectProviderHost(hostRef),
     terminalEviction: (hostRef) => administration.terminalEviction(hostRef),

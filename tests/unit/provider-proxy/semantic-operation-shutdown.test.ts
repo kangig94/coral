@@ -121,6 +121,7 @@ function fakeHostAuthority(): ProxyAppServerHostAuthority {
     rootIdentity: () => ({ pid: 4_242, incarnation: testIncarnation(1_700_000_000) }),
     closed: () => new Promise<Error | void>(() => {}),
     forceClose: async () => undefined,
+    closeObservedTransport: async () => undefined,
     evictHost: async () => ({ kind: 'stale' as const }),
   };
 }

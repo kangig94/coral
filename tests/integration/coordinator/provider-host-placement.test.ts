@@ -1,4 +1,6 @@
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { DatabaseSync } from 'node:sqlite';
 import {
   chmodSync,
   copyFileSync,
@@ -14,7 +16,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { observeProcessLiveness, probeProcessIncarnation, type ProcessIncarnation } from '#src/infra/node-process.js';
 import {
@@ -29,6 +31,7 @@ import {
   createPluginFixture,
   spawnCoordinator,
   stopCoordinator,
+  storeDbPathForHome,
   waitForDiscoveryRecord,
   type PluginFixture,
   type SpawnedCoordinator,
@@ -44,7 +47,7 @@ const codexProcesses: { pid: number; incarnation: ProcessIncarnation | null }[] 
 const homes: string[] = [];
 
 /** Every proxy set's roles, read from the capsules that record them; a set outlives its coordinator. */
-function proxyRoleProcesses(home: string): { pid: number; incarnation: ProcessIncarnation }[] {
+function proxyRoleProcesses(home: string): { pid: number; incarnation: ProcessIncarnation; leaf: string }[] {
   const runDir = coordinatorFilesForHome(home, 'prod').runDir;
   if (!existsSync(runDir)) return [];
   const storage = createRealRuntime('prod', { baseDir: join(home, '.coral') }).storage;
@@ -54,9 +57,21 @@ function proxyRoleProcesses(home: string): { pid: number; incarnation: ProcessIn
       const capsule = readHandoffCapsuleFile(join(runDir, entry), { storage, uid: process.getuid?.() ?? 0 });
       if (capsule === null || (capsule.version !== 3 && capsule.version !== 4)) return [];
       return [
-        { pid: capsule.guardianPid, incarnation: capsule.guardianIncarnation },
-        { pid: capsule.reaperPid, incarnation: capsule.reaperIncarnation },
-        { pid: capsule.proxyPid, incarnation: capsule.proxyIncarnation },
+        {
+          pid: capsule.guardianPid,
+          incarnation: capsule.guardianIncarnation,
+          leaf: `set-${capsule.proxyInstanceId}/enforcers`,
+        },
+        {
+          pid: capsule.reaperPid,
+          incarnation: capsule.reaperIncarnation,
+          leaf: `set-${capsule.proxyInstanceId}/enforcers`,
+        },
+        {
+          pid: capsule.proxyPid,
+          incarnation: capsule.proxyIncarnation,
+          leaf: `set-${capsule.proxyInstanceId}/containment/proxy`,
+        },
       ];
     });
 }
@@ -68,6 +83,38 @@ afterEach(async () => {
   await stopRecordedProcesses([...proxyRoles, ...codexProcesses.splice(0)], 'SIGKILL', 30_000);
   for (const root of roots.splice(0).reverse()) rmSync(root, { recursive: true, force: true });
 });
+
+function testScopeRoot(unit: string, supervisorPid: number | undefined): string | null {
+  if (supervisorPid !== undefined) {
+    try {
+      const membership = readFileSync(`/proc/${supervisorPid}/cgroup`, 'utf8');
+      const group = membership
+        .split('\n')
+        .find((line) => line.startsWith('0::/'))
+        ?.slice(3);
+      const marker = `/${unit}`;
+      const end = group?.indexOf(marker);
+      if (group !== undefined && end !== undefined && end >= 0 && ['/', undefined].includes(group[end + marker.length]))
+        return join('/sys/fs/cgroup', group.slice(0, end + marker.length));
+    } catch {
+      /* The exact fixture child may already have exited. */
+    }
+  }
+  const manager = ['call', 'org.freedesktop.systemd1', '/org/freedesktop/systemd1', 'org.freedesktop.systemd1.Manager'];
+  const found = spawnSync('busctl', ['--user', ...manager, 'GetUnit', 's', unit], { encoding: 'utf8', timeout: 2_000 });
+  if (found.status !== 0) return null;
+  const object = found.stdout.match(/"([^"]+)"/)?.[1];
+  if (object === undefined) throw new Error('Test scope GetUnit reply has no object path');
+  const group = spawnSync(
+    'busctl',
+    ['--user', 'get-property', 'org.freedesktop.systemd1', object, 'org.freedesktop.systemd1.Scope', 'ControlGroup'],
+    { encoding: 'utf8', timeout: 2_000 },
+  );
+  const path = group.stdout.match(/"(\/[^"]+)"/)?.[1];
+  if (group.status !== 0 || path === undefined || !path.endsWith(`/${unit}`) || path.includes('..'))
+    throw new Error(`Could not locate own test scope: ${unit}`);
+  return join('/sys/fs/cgroup', path);
+}
 
 type World = Readonly<{ fixture: PluginFixture; home: string; env: Record<string, string> }>;
 
@@ -262,3 +309,97 @@ describe('provider proxy set sharing', () => {
     expect(realpathSync(`/proc/${second.codexPid}/cwd`)).toBe(realpathSync(second.workDir));
   }, 180_000);
 });
+
+it('settles a killed host mid-turn as provider failure without holding or disturbing its sibling', async (context) => {
+  if (process.platform !== 'linux') {
+    console.warn('Skipping host failure-domain settlement integration: Linux is required');
+    context.skip('Linux cgroup v2 is required');
+  }
+  const bus = spawnSync('busctl', ['--user', 'status'], { encoding: 'utf8', timeout: 2_000 });
+  if (bus.error !== undefined || bus.status !== 0) {
+    const reason = `busctl --user status unavailable: ${bus.error?.message ?? bus.stderr.trim()}`;
+    console.warn(`Skipping host failure-domain settlement integration: ${reason}`);
+    context.skip(reason);
+  }
+  assertBuildArtifactsAvailable();
+  const world = createWorld({ [CORAL_MAX_PROVIDER_PROXY_SETS_ENV]: '1', CORAL_KB_ENABLE: '0' });
+  const runDir = coordinatorFilesForHome(world.home, 'prod').runDir;
+  const digest = createHash('sha256').update(runDir).digest('hex').slice(0, 20);
+  const unit = `app-coral-prod-${digest}.scope`;
+  let coordinator: SpawnedCoordinator | undefined;
+  let coordinatorIdentity: { pid: number; incarnation: ProcessIncarnation | null } | null = null;
+  let ownRoot: string | null = null;
+  try {
+    coordinator = spawnCoordinator({
+      fixture: world.fixture,
+      home: world.home,
+      tempRoots: roots,
+      env: world.env,
+      supervised: true,
+    });
+    coordinators.push(coordinator);
+    const coordinatorPid = (await waitForDiscoveryRecord(world.home, 'prod', 15_000)).pid;
+    coordinatorIdentity = { pid: coordinatorPid, incarnation: probeProcessIncarnation(coordinatorPid) };
+    ownRoot = testScopeRoot(unit, coordinator.child.pid);
+    expect(ownRoot).not.toBeNull();
+    const group = readFileSync(`/proc/${coordinatorPid}/cgroup`, 'utf8').trim();
+    expect(group).toContain(`/${unit}/coordinator-`);
+    expect(existsSync(ownRoot!)).toBe(true);
+    const doomed = await launchHeldJob(world);
+    const sibling = await launchHeldJob(world);
+    const roles = proxyRoleProcesses(world.home);
+    expect(roles).toHaveLength(3);
+    for (const role of roles) {
+      expect(readFileSync(`/proc/${role.pid}/cgroup`, 'utf8').trim()).toBe(
+        `0::${join(ownRoot!, role.leaf).slice('/sys/fs/cgroup'.length)}`,
+      );
+    }
+    expect(hostOwnerPid(doomed.codexPid)).toBe(hostOwnerPid(sibling.codexPid));
+    const hostGroup = readFileSync(`/proc/${doomed.codexPid}/cgroup`, 'utf8').trim().slice(3);
+    const hostLeaf = join('/sys/fs/cgroup', hostGroup);
+    expect(hostLeaf.startsWith(`${ownRoot}/set-`)).toBe(true);
+    expect(hostLeaf).toMatch(/\/containment\/host-[0-9a-f-]+$/u);
+    writeFileSync(join(hostLeaf, 'cgroup.kill'), '1');
+    const db = new DatabaseSync(storeDbPathForHome(world.home, 'prod'), { readOnly: true });
+    try {
+      await vi.waitFor(
+        () => {
+          expect(
+            db.prepare('SELECT phase, finishing, terminal FROM projection_jobs WHERE job_id = ?').get(doomed.jobId),
+          ).toMatchObject({ phase: 'error', finishing: 0, terminal: expect.any(String) });
+        },
+        { timeout: 30_000 },
+      );
+      const row = db.prepare('SELECT terminal FROM projection_jobs WHERE job_id = ?').get(doomed.jobId)!;
+      const terminal = JSON.parse(String(row.terminal)) as { outcome: { kind: string; causeRef: { seq: number } } };
+      expect(terminal.outcome.kind).toBe('failed');
+      expect(db.prepare('SELECT type FROM events WHERE seq = ?').get(terminal.outcome.causeRef.seq)).toMatchObject({
+        type: 'job.provider_failed',
+      });
+      expect(
+        db.prepare('SELECT phase, finishing FROM projection_jobs WHERE job_id = ?').get(sibling.jobId),
+      ).toMatchObject({ phase: 'running', finishing: 0 });
+      expect(observeProcessLiveness(sibling.codexPid)).toBe('alive');
+      writeFileSync(join(sibling.workDir, 'release'), '');
+      await runCli(world, sibling.workDir, ['jobs', 'wait', sibling.jobId]);
+      expect(
+        db.prepare('SELECT phase, finishing FROM projection_jobs WHERE job_id = ?').get(sibling.jobId),
+      ).toMatchObject({ phase: 'completed', finishing: 0 });
+    } finally {
+      db.close();
+    }
+  } finally {
+    ownRoot ??= testScopeRoot(unit, coordinator?.child.pid);
+    if (ownRoot === null && coordinator !== undefined) {
+      await stopCoordinator(coordinator);
+      ownRoot = testScopeRoot(unit, coordinator.child.pid);
+      if (ownRoot === null && coordinatorIdentity !== null) await stopRecordedProcesses([coordinatorIdentity]);
+    }
+    // Cleanup must never address a unit outside this test's temporary namespace.
+    if (ownRoot !== null && ownRoot.endsWith(`/${unit}`)) {
+      if (existsSync(join(ownRoot, 'cgroup.kill'))) writeFileSync(join(ownRoot, 'cgroup.kill'), '1');
+      const root = ownRoot;
+      await vi.waitFor(() => expect(existsSync(root)).toBe(false), { timeout: 5_000 });
+    }
+  }
+}, 120_000);

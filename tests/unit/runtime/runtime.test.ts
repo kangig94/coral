@@ -178,6 +178,7 @@ describe('createRealRuntime', () => {
             ].join(''),
           ],
           jobDir,
+          failureDomainName: 'job-test-1',
           envAdditions: {
             CORAL_OWNER: 'durable-owner',
           },
@@ -216,6 +217,7 @@ describe('createRealRuntime', () => {
       command: process.execPath,
       args: ['-e', 'setInterval(() => {}, 1000);'],
       jobDir,
+      failureDomainName: 'job-test-1',
       onWrapperSpawned: ((obligation: DurablePendingLaunchObligation) => {
         observeRefusal(obligation);
         return { kind: 'refused' };
@@ -258,6 +260,7 @@ describe('createRealRuntime', () => {
         command: process.execPath,
         args: ['-e', 'setTimeout(() => process.exit(0), 100);'],
         jobDir: firstJobDir,
+        failureDomainName: 'job-test-1',
       }),
     );
     const second = await requireLaunched(
@@ -266,6 +269,7 @@ describe('createRealRuntime', () => {
         command: process.execPath,
         args: ['-e', 'setTimeout(() => process.exit(0), 100);'],
         jobDir: secondJobDir,
+        failureDomainName: 'job-test-1',
       }),
     );
 

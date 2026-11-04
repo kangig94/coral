@@ -1,3 +1,4 @@
+import type { FailureDomainRoot, FailureDomainRefusal } from '../infra/failure-domain.js';
 import type { ExecutionRetryStatus } from '../jobs/records.js';
 import type { RetentionRunStatus } from '../store/retention-outcome.js';
 import type { LaunchStatus } from '../infra/launch-status.js';
@@ -421,6 +422,16 @@ export type HealthSnapshot = {
    */
   listCounts?: Readonly<Record<string, number>>;
   diagnostics?: LaunchPermitDiagnostics & {
+    failureDomainRoot?: FailureDomainRoot;
+    coordinatorObservedFailureDomainRefusalHistory?: Readonly<{
+      entries: readonly FailureDomainRefusal[];
+      unobservedOutcomes: readonly [
+        'role-entry',
+        'payload-entry',
+        'remote-role-leaf-creation',
+        'remote-host-leaf-creation',
+      ];
+    }>;
     executionFinishing?: Array<{ jobId: string; execution: number; status: ExecutionRetryStatus }>;
     skippedExecutionFinishingStatuses?: number;
     providerOperationStartupReconciliation?: ProviderOperationStartupStatus;

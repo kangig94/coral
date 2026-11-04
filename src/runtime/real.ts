@@ -1,3 +1,10 @@
+import {
+  createFailureDomain,
+  inheritedFailureDomainRoot,
+  removeFailureDomain,
+  readRecentFailureDomainRefusals,
+  type FailureDomainRoot,
+} from '../infra/failure-domain.js';
 import { raceObserved } from '../infra/promise-signal.js';
 import { spawn as spawnChild, spawnSync } from 'node:child_process';
 import { createHash, randomBytes as randomBytesNode, randomUUID } from 'node:crypto';
@@ -261,6 +268,7 @@ export async function waitForRecordedDurableExit(
 }
 
 type CapturedEnvState = {
+  failureDomainRoot: FailureDomainRoot;
   fullEnv: Readonly<Record<string, string>>;
   coralEnv: Readonly<Record<string, string>>;
   pid: number;
@@ -880,6 +888,12 @@ function spawnDurableWrapper(
     { mode: 0o600 },
   );
 
+  const root = capturedEnv.failureDomainRoot;
+  const leaf = createFailureDomain(root, options.failureDomainName, true);
+  const placementEnv: Record<string, string> =
+    root.kind === 'placed' && leaf.kind === 'created'
+      ? { CORAL_FAILURE_DOMAIN_ROOT: root.root, CORAL_FAILURE_DOMAIN: leaf.path }
+      : {};
   const wrapper = spawnChild(
     process.execPath,
     [
@@ -892,15 +906,16 @@ function spawnDurableWrapper(
     {
       detached: true,
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
-      env: buildSpawnEnv(
-        options.custodyTicket === undefined
-          ? undefined
-          : {
-              [CUSTODY_PROCESS_TICKET_ENV]: options.custodyTicket,
-            },
-      ),
+      env: buildSpawnEnv({
+        ...(options.custodyTicket === undefined ? {} : { [CUSTODY_PROCESS_TICKET_ENV]: options.custodyTicket }),
+        ...placementEnv,
+      }),
     },
   );
+  if (leaf.kind === 'created')
+    wrapper.once('close', () => {
+      void removeFailureDomain(root, leaf.path);
+    });
   return { wrapper, startTime };
 }
 
@@ -920,6 +935,11 @@ function createRealProcessPort({
   observeRecordedProcessAsync: ReturnType<typeof createAsyncRecordedProcessObserver>;
 }): ProcessPort {
   const runtimeProcess = {
+    failureDomainRoot: capturedEnv.failureDomainRoot,
+    readRecentFailureDomainRefusals,
+    createFailureDomain: (relativePath, payload) =>
+      createFailureDomain(capturedEnv.failureDomainRoot, relativePath, payload),
+    removeFailureDomain: (path) => removeFailureDomain(capturedEnv.failureDomainRoot, path),
     spawn: (options) => {
       const spawnEnv = options.env
         ? { ...options.env }
@@ -1092,6 +1112,7 @@ function captureEnvState(): CapturedEnvState {
   }
 
   return {
+    failureDomainRoot: inheritedFailureDomainRoot(fullEnv),
     fullEnv: Object.freeze({ ...fullEnv }),
     coralEnv: Object.freeze(coralEnv),
     pid: process.pid,

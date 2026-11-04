@@ -43,7 +43,12 @@ export class SimulationRuntime implements Runtime {
         composeChildEnv(inheritedEnv, envAdditions ?? {}, SIMULATION_ENV_BUDGET_BYTES, new Set<string>()),
       runtimePid: this.env.pid(),
     });
-    const simulationProcess = {} as ProcessPort;
+    const simulationProcess = {
+      failureDomainRoot: { kind: 'unavailable', reason: 'simulation' },
+      readRecentFailureDomainRefusals: () => [],
+      createFailureDomain: () => ({ kind: 'refused', errno: 'ENOTSUP' }),
+      removeFailureDomain: () => ({ kind: 'refused', errno: 'ENOTSUP' }),
+    } as unknown as ProcessPort;
     simulationProcess.spawn = (spawnOptions) => {
       const child = this.spawner.spawn(spawnOptions);
       this.observer.emit({

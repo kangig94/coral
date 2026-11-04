@@ -203,6 +203,7 @@ function fakeHostAuthority(): ProxyAppServerHostAuthority {
     rootIdentity: () => ({ pid: 4242, incarnation: testIncarnation(1_700_000_000) }),
     closed: () => new Promise<Error | void>(() => {}),
     forceClose: async () => undefined,
+    closeObservedTransport: async () => undefined,
     evictHost: async () => ({ kind: 'stale' as const }),
   };
 }
@@ -750,6 +751,65 @@ it.each(['submitted', 'unknown'] as const)('requires cessation evidence for a %s
   await expect(start.abortAndRelease()).rejects.toMatchObject({ code: 'semantic_operation_cancellation_unconfirmed' });
   expect(relinquish).toHaveBeenCalledOnce();
 });
+
+it.each(['evicted', 'held', 'transport-open'] as const)(
+  'requires observed host cessation after transport loss: %s',
+  async (scenario) => {
+    const { proxy, emittedEvents } = createTestProxy();
+    proxy.emitProviderEvent = (key, event) => {
+      emittedEvents.push({ key, event });
+      return { kind: 'recorded', providerSeq: emittedEvents.length };
+    };
+    providerRegistryDouble.rehydrateBinding.mockReturnValue({
+      ok: true,
+      value: fakeBoundProvider({
+        supportsInterrupt: true,
+        execute: async function* (executionRuntime) {
+          executionRuntime.onProviderTurnStart?.();
+          yield terminalCompleted;
+        },
+      }),
+    });
+    const transport = deferred<Error | void>();
+    const hostAuthority = fakeHostAuthority();
+    hostAuthority.closed = () => transport.promise;
+    const close = vi
+      .spyOn(hostAuthority, 'closeObservedTransport')
+      .mockResolvedValue(
+        scenario === 'held'
+          ? { kind: 'held', observation: 'unobservable', successorOwner: null, operatorExit: 'retry-provider-shutdown' }
+          : { kind: 'evicted' },
+      );
+    const forceClose = vi.spyOn(hostAuthority, 'forceClose');
+    const relinquish = vi.fn();
+    const semantic = createSemanticOperationRuntime({
+      hostRoot: '/test/plugin',
+      hostFingerprint: proxySetFingerprintFromSpec(fakeHostSpec()),
+      runtime,
+      hostAuthority,
+      getProxy: () => proxy,
+      onRelinquish: relinquish,
+    });
+    const key = testKey();
+    const prepared = preparedFixture();
+    await semantic.ensureProviderRoot(key, prepared);
+    const start = semantic.host.start({ key, prepared });
+    await start.result;
+    await vi.waitFor(() => expect(emittedEvents.some(({ event }) => event.kind === 'terminal')).toBe(true));
+    if (scenario !== 'transport-open') transport.resolve(new Error('custodian exited with SIGKILL'));
+    if (scenario === 'evicted') {
+      await expect(start.abortAndRelease()).resolves.toBeUndefined();
+      expect(relinquish).not.toHaveBeenCalled();
+    } else {
+      await expect(start.abortAndRelease()).rejects.toMatchObject({
+        code: 'semantic_operation_cancellation_unconfirmed',
+      });
+      expect(relinquish).toHaveBeenCalledOnce();
+    }
+    expect(close).toHaveBeenCalledTimes(scenario === 'transport-open' ? 0 : 1);
+    expect(forceClose).not.toHaveBeenCalled();
+  },
+);
 
 it('refuses a compiled fingerprint mismatch with local fallback before opening a host', async () => {
   const close = vi.fn();

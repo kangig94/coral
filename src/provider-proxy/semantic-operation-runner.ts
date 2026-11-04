@@ -698,6 +698,7 @@ function createSemanticOperationCancellation(
     }
 
     if (entry.cancellationMode === 'shared-acknowledged-interrupt') {
+      const transport = observePromise(entry.transportClosed);
       await withinSemanticCancellationDeadline(runtime, entry, completion).catch((error: unknown) => {
         throw requireSetRelinquishment(entry, errorMessage(error));
       });
@@ -705,6 +706,21 @@ function createSemanticOperationCancellation(
         entry.cancellationEvidence = { kind: 'not-started' };
         closeAndForget(entry);
         return;
+      }
+      if (transport.signal.aborted && entry.hostRef !== null) {
+        const cleanup = hostAuthority.closeObservedTransport(entry.hostRef);
+        await withinSemanticCancellationDeadline(
+          runtime,
+          entry,
+          cleanup.then(() => undefined),
+        ).catch((error: unknown) => {
+          throw requireSetRelinquishment(entry, errorMessage(error));
+        });
+        if ((await cleanup)?.kind === 'evicted') {
+          entry.cancellationEvidence = { kind: 'isolated-root-closed' };
+          closeAndForget(entry);
+          return;
+        }
       }
       if (currentTurnTerminalEvidence(entry) === null && entry.turnSettlement !== null) {
         const terminal = await entry.turnSettlement.settle();

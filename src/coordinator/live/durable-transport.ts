@@ -290,6 +290,7 @@ type SpawnCliOptions = {
 };
 
 export type SpawnDurableJobOptions = SpawnCliOptions & {
+  failureDomainName: string;
   jobDir: string;
   jobId?: string;
   onRuntimeRecord?: (record: JobRuntime, provisionalIdentity?: DurableProvisionalProcessSubject) => void;
@@ -849,6 +850,7 @@ async function executeDurableLaunch(
   const { runtime, options } = params;
   const { permit } = params.ownership;
   const launchOptions: DurableLaunchOptions = {
+    failureDomainName: options.failureDomainName,
     provider: options.provider,
     command: options.command,
     args: options.args,

@@ -583,7 +583,15 @@ The incumbent authorizes exactly one successor build per attempt, and only after
 
 A host that predates the transfer methods, a successor that does not declare the host control generation, or a job the saga does not describe returns `blocking` rather than a guess. That keeps the deferred path for anything the protocol cannot prove, and it is why the answer is decided per host rather than per build.
 
-## 14. Cross-References
+## 14. Failure Domains as Cgroup Leaves
+
+Coral’s survival boundaries must align with the memory killer’s kill boundary. A shared leaf lets one memory-pressure kill remove both a coordinator and the carriers meant to survive it. One intended leaf per failure domain keeps those losses separate without changing job failure states or granting new containment authority. Placement is not proof that teardown reaches escaped process groups.
+
+Payload entry must precede spawn. Cgroup v2 does not migrate existing memory charges when a process moves; Coral cannot run placement code inside a provider before exec. A Coral custodian must enter first so the provider and its descendants inherit the intended leaf, including descendants that later create their own session or process group. See `enterPayloadDomain` in `src/infra/failure-domain.ts`.
+
+Systemd access belongs only at namespace-root acquisition, not at each payload launch: provider environments lack the user bus. The namespace needs one delegated scope; leaf operations must stay beneath that inherited root. Non-placement must preserve ordinary spawning so an unavailable isolation facility does not become an admission gate or an indefinite hold. Linux payload OOM adjustment remains best effort even without placement. See `acquireFailureDomainRoot` in `src/infra/failure-domain.ts`.
+
+## 15. Cross-References
 
 - Current shape and ownership matrix: [`docs/architecture.md`](architecture.md)
 - Module map: [`docs/core-modules.md`](core-modules.md)

@@ -353,6 +353,7 @@ describe('launch admission', () => {
           command: 'codex',
           args: ['exec'],
           jobDir: '/tmp/readiness-rejection',
+          failureDomainName: 'job-test-1',
         }),
       ).rejects.toThrow('synthetic readiness rejection');
 
@@ -442,6 +443,7 @@ describe('launch admission', () => {
           command: 'codex',
           args: ['exec'],
           jobDir: '/tmp/provisional-readiness-rejection',
+          failureDomainName: 'job-test-1',
           onDurableProcessIdentity: observations,
         }),
       ).rejects.toThrow('synthetic provisional readiness rejection');
@@ -565,6 +567,7 @@ describe('launch admission', () => {
         command: 'codex',
         args: ['exec'],
         jobDir: '/tmp/failed-absence-publication',
+        failureDomainName: 'job-test-1',
         signal: abort.signal,
         onDurableProcessIdentity: observations,
       })

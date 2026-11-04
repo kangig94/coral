@@ -1,3 +1,8 @@
+import {
+  enterFailureDomain,
+  inheritedFailureDomainRoot,
+  retainFailureDomainRefusals,
+} from '../infra/failure-domain.js';
 declare const __IS_CORAL_BACKEND_MAIN__: boolean | undefined;
 declare const __PLUGIN_ROOT__: string | undefined;
 
@@ -547,6 +552,28 @@ async function handleCoordinatorStartupFailure(
 export async function main(harness: BackendHarness = {}): Promise<number> {
   const dispatched = await dispatchBackendRole();
   if (dispatched !== null) return dispatched;
+  const inheritedRefusals = process.env.CORAL_FAILURE_DOMAIN_REFUSALS;
+  delete process.env.CORAL_FAILURE_DOMAIN_REFUSALS;
+  if (inheritedRefusals !== undefined) {
+    try {
+      const parsed = z
+        .array(
+          z.object({
+            operation: z.enum(['create', 'enter']),
+            subject: z.string().min(1),
+            errno: z.string().min(1),
+            observedAt: z.number().finite(),
+          }),
+        )
+        .safeParse(JSON.parse(inheritedRefusals));
+      if (parsed.success) retainFailureDomainRefusals(parsed.data);
+    } catch {
+      // Diagnostic launch context cannot prevent coordinator startup.
+    }
+  }
+  const failureDomain = process.env.CORAL_FAILURE_DOMAIN;
+  if (failureDomain !== undefined) void enterFailureDomain(inheritedFailureDomainRoot(), failureDomain);
+  delete process.env.CORAL_FAILURE_DOMAIN;
 
   if (typeof __PLUGIN_ROOT__ !== 'string') {
     throw new Error('Coral backend bootstrap requires __PLUGIN_ROOT__ to be defined at build time.');

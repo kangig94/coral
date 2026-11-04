@@ -1,5 +1,6 @@
 import { listExecutionRetryStatuses } from '../../jobs/finishing.js';
 import type { RetentionRunStatus } from '../../store/retention-outcome.js';
+import { invocationCoralEnvSnapshot } from '../../infra/env-sanitize.js';
 import { currentLaunchStatus } from '../../infra/launch-status.js';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 
@@ -309,8 +310,7 @@ export function createCoordinatorHealthReader({
   const identity = world.identity;
   const storeServicesRef = world.storeServicesRef;
   return () => {
-    const env = { ...world.coralEnvSnapshot };
-    delete env.CORAL_SYSTEM_PROVIDER_SCOPE;
+    const env = invocationCoralEnvSnapshot(world.coralEnvSnapshot);
     const storeServices = storeServicesRef.tryGet();
     const lifecycleState = runtimeState.getLifecycle();
     const shutdownObservation = lifecycleController()?.observeShutdown();
@@ -334,7 +334,7 @@ export function createCoordinatorHealthReader({
     const carrier = readCarrierHealth(world, platform, storeServices);
     const { activeJobs } = carrier;
 
-    const { diagnostics, hasDiagnostics } = readHealthDiagnostics({
+    const { diagnostics } = readHealthDiagnostics({
       world,
       options,
       storeServices,
@@ -380,7 +380,14 @@ export function createCoordinatorHealthReader({
       components,
       kbDaemon,
       ...(shutdownObservation === undefined ? {} : { shutdown: shutdownObservation }),
-      ...(hasDiagnostics ? { diagnostics } : {}),
+      diagnostics: {
+        ...diagnostics,
+        failureDomainRoot: runtime.process.failureDomainRoot,
+        coordinatorObservedFailureDomainRefusalHistory: {
+          entries: runtime.process.readRecentFailureDomainRefusals(),
+          unobservedOutcomes: ['role-entry', 'payload-entry', 'remote-role-leaf-creation', 'remote-host-leaf-creation'],
+        },
+      },
       env,
       ...(systemProviderScope === undefined
         ? {}
