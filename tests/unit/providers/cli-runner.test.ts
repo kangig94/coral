@@ -9,6 +9,7 @@ describe('bindProviderRunner', () => {
   it('forwards the durable identity callback and exact job identity to the spawner', async () => {
     let capturedOptionsHadCallback = false;
     let capturedJobId: string | undefined;
+    let capturedFailureDomainName: string | undefined;
     const identity = {
       pid: 4242,
       incarnation: testIncarnation(1_000),
@@ -33,6 +34,7 @@ describe('bindProviderRunner', () => {
       spawnDurableJob: (options) => {
         capturedOptionsHadCallback = typeof options.onDurableProcessIdentity === 'function';
         capturedJobId = options.jobId;
+        capturedFailureDomainName = options.failureDomainName;
         options.onDurableProcessIdentity?.(identity, status, control);
         return Promise.resolve(NO_CLI_RESULT);
       },
@@ -45,14 +47,15 @@ describe('bindProviderRunner', () => {
       new AbortController().signal,
       'default',
       '/tmp/job-dir',
+      { jobId: 'job-visible-hold', execution: 7 },
       undefined,
       onDurableProcessIdentity,
-      'job-visible-hold',
     );
     await runCli({ command: 'codex', args: [] });
 
     expect(capturedOptionsHadCallback).toBe(true);
     expect(capturedJobId).toBe('job-visible-hold');
+    expect(capturedFailureDomainName).toBe('job-job-visible-hold-7');
     expect(onDurableProcessIdentity).toHaveBeenCalledExactlyOnceWith(identity, status, control);
   });
 });

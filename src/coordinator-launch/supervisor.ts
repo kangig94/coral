@@ -1,8 +1,10 @@
 import { type ChildProcess } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { dirname } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 
+import { resolveBuildFlavor } from '../infra/build-flavor.js';
+import { acquireFailureDomainRoot } from '../infra/failure-domain.js';
 import { closeHandle } from '../infra/ipc-handle.js';
 import { type StrictBundleManifest } from '../infra/bundle-manifest.js';
 import { currentLaunchStatus } from '../infra/launch-status.js';
@@ -302,6 +304,18 @@ export async function runNamespaceSupervisor(
     onChild?: (child: ChildProcess) => void;
   }> = {},
 ): Promise<number> {
+  const namespaceDigest = createHash('sha256').update(runDir).digest('hex').slice(0, 20);
+  const root = await acquireFailureDomainRoot(
+    `app-coral-${resolveBuildFlavor(process.env)}-${namespaceDigest}.scope`,
+    `supervisor-${randomUUID()}`,
+  );
+  delete process.env.CORAL_FAILURE_DOMAIN_ROOT;
+  delete process.env.CORAL_FAILURE_DOMAIN;
+  process.env.CORAL_FAILURE_DOMAIN_DISPOSITION = root.kind;
+  if (root.kind === 'placed') {
+    process.env.CORAL_FAILURE_DOMAIN_ROOT = root.root;
+    delete process.env.CORAL_FAILURE_DOMAIN_REASON;
+  } else process.env.CORAL_FAILURE_DOMAIN_REASON = root.reason;
   const timing = options.timing ?? SENTINEL_TIMING;
   if (!validSentinelTiming(timing)) throw new Error('Invalid coordinator supervisor timing');
   const startupBudgetMs = options.startupBudgetMs ?? STARTUP_BUDGET_MS;

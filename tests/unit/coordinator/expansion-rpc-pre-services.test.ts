@@ -51,6 +51,8 @@ function makeRuntime(): Runtime {
       writeAtomicSync: () => {},
     },
     process: {
+      failureDomainRoot: { kind: 'unavailable', reason: 'root-not-inherited' },
+      readRecentFailureDomainRefusals: () => [],
       observeLiveness: () => 'absent' as const,
       kill: () => {},
       readProcessIncarnation: () => testIncarnation(1_700_000_000),

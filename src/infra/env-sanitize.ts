@@ -129,8 +129,15 @@ function stripInternalCoralKeys(env: Readonly<Record<string, string>>): Record<s
   return stripped;
 }
 
+const FAILURE_DOMAIN_ENV_PREFIX = 'CORAL_FAILURE_DOMAIN';
+
 /** A caller may never set daemon-owned keys through the per-request `coralEnv` channel. */
 export const DAEMON_OWNED_CORAL_ENV_KEYS: ReadonlySet<string> = new Set([
+  'CORAL_FAILURE_DOMAIN',
+  'CORAL_FAILURE_DOMAIN_ROOT',
+  'CORAL_FAILURE_DOMAIN_DISPOSITION',
+  'CORAL_FAILURE_DOMAIN_REASON',
+  'CORAL_FAILURE_DOMAIN_REFUSALS',
   'CORAL_CHILD',
   'CORAL_CHILD_PRINCIPAL_HANDLE',
   'CORAL_CHILD_CREDENTIAL_ID',
@@ -150,11 +157,16 @@ export const DAEMON_OWNED_CORAL_ENV_KEYS: ReadonlySet<string> = new Set([
 export function invocationCoralEnvSnapshot(source: Readonly<Record<string, string>>): Record<string, string> {
   const snapshot = { ...source };
   delete snapshot.CORAL_SYSTEM_PROVIDER_SCOPE;
+  for (const key of Object.keys(snapshot)) {
+    if (key.startsWith(FAILURE_DOMAIN_ENV_PREFIX)) delete snapshot[key];
+  }
   return snapshot;
 }
 
 export function isForwardableCoralEnvKey(key: string): boolean {
-  return key.startsWith('CORAL_') && !DAEMON_OWNED_CORAL_ENV_KEYS.has(key);
+  return (
+    key.startsWith('CORAL_') && !key.startsWith(FAILURE_DOMAIN_ENV_PREFIX) && !DAEMON_OWNED_CORAL_ENV_KEYS.has(key)
+  );
 }
 
 /**
@@ -192,7 +204,9 @@ export function readForwardedCoralEnv(value: unknown): Record<string, string> | 
   return filterForwardableCoralEnv(value as Record<string, string | undefined>);
 }
 
-const RESERVED_CORAL_ENV_KEYS = [...DAEMON_OWNED_CORAL_ENV_KEYS].join(', ');
+const RESERVED_CORAL_ENV_KEYS = [...DAEMON_OWNED_CORAL_ENV_KEYS]
+  .filter((key) => !key.startsWith(FAILURE_DOMAIN_ENV_PREFIX))
+  .join(', ');
 
 /**
  * The key refinement is the reject-reserved-keys guard at RPC ingress; `buildControllerEnv`

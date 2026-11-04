@@ -1,3 +1,4 @@
+import { enterFailureDomain, inheritedFailureDomainRoot } from '../infra/failure-domain.js';
 import { localProviderHostRoot } from '../infra/bundle-manifest.js';
 import { z } from 'zod';
 import {
@@ -816,11 +817,20 @@ async function spawnGuardianChildRole(
   roleEnv: Record<string, string>,
 ): Promise<SpawnedRoleProcess | HeldRoleSpawn> {
   const ticket = recordGuardianChildCustodyIntent(ports, proxyInstanceId, role, capsulePath, processGroupId);
+  const failureDomainRoot = ports.runtime.process.failureDomainRoot;
+  const failureDomain = ports.runtime.process.createFailureDomain(
+    `set-${proxyInstanceId}/${role === 'proxy' ? 'containment/proxy' : 'enforcers'}`,
+  );
   const disposition = await requireSpawnedRole(
     spawnRoleProcess(role, capsulePath, spawnPorts, {
       pluginRoot: ports.pluginRoot,
       detached: role === 'proxy',
-      envAdditions: roleEnv,
+      envAdditions: {
+        ...roleEnv,
+        ...(failureDomainRoot.kind === 'placed' && failureDomain.kind === 'created'
+          ? { CORAL_FAILURE_DOMAIN_ROOT: failureDomainRoot.root, CORAL_FAILURE_DOMAIN: failureDomain.path }
+          : {}),
+      },
       ...(ticket === null ? {} : { custodyTicket: JSON.stringify(ticket) }),
     }),
   );
@@ -1296,7 +1306,7 @@ export async function startProviderProxyRole(
   );
   controlPairResultSchema.parse(pairingResult);
 
-  const hostAuthority = createProxyAppServerHostAuthority(ports.runtime);
+  const hostAuthority = createProxyAppServerHostAuthority(ports.runtime, capsule.proxyInstanceId);
   const exitProcess = ports.exitProcess ?? ((code: number): void => process.exit(code));
   let closePromise: Promise<void> | null = null;
   let relinquishmentStarted = false;
@@ -1545,6 +1555,8 @@ export async function runProviderRoleMain(mode: ProviderRoleArgv, options: Provi
     bindCustodyProcessTicket(custodyTicket, { pid, incarnation }, runtime.time.now());
     delete process.env[CUSTODY_PROCESS_TICKET_ENV];
   }
+  const failureDomain = runtime.env.get('CORAL_FAILURE_DOMAIN');
+  if (failureDomain !== undefined) enterFailureDomain(inheritedFailureDomainRoot(), failureDomain);
   activeRoleShutdownDispose?.();
   let removeRoleSignalHandlers = (): void => undefined;
   let disposeRoleLifecycle = (): void => undefined;

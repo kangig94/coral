@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
+import { createFailureDomain, inheritedFailureDomainRoot } from '../infra/failure-domain.js';
 import { type StrictBundleManifest } from '../infra/bundle-manifest.js';
 import { updateLaunchStatus } from '../infra/launch-status.js';
 import { incarnationMayAuthorizeSignal, probeProcessIncarnation } from '../infra/node-process.js';
@@ -107,6 +108,18 @@ export function spawnAdmittedChild(
     CORAL_SENTINEL_RUN_DIR: runDir,
     CORAL_STARTUP_ATTEMPT_ID: attemptId ?? process.env.CORAL_STARTUP_ATTEMPT_ID ?? randomUUID(),
   };
+  delete env.CORAL_FAILURE_DOMAIN_REFUSALS;
+  const root = inheritedFailureDomainRoot();
+  if (root.kind === 'placed') {
+    const leaf = createFailureDomain(root, `coordinator-${reservation.id}`);
+    if (leaf.kind === 'created') env.CORAL_FAILURE_DOMAIN = leaf.path;
+    else {
+      delete env.CORAL_FAILURE_DOMAIN;
+      env.CORAL_FAILURE_DOMAIN_REFUSALS = JSON.stringify([
+        { operation: 'create', subject: `coordinator-${reservation.id}`, errno: leaf.errno, observedAt: Date.now() },
+      ]);
+    }
+  }
   delete env.CORAL_LAUNCH_ID;
   if (attemptId === undefined) delete env.CORAL_SUCCESSION_ATTEMPT_ID;
   else env.CORAL_SUCCESSION_ATTEMPT_ID = attemptId;

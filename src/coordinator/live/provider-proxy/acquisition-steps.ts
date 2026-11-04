@@ -381,6 +381,9 @@ async function spawnProviderProxyGuardian(
       bindWithinMs: 10_000,
     });
   }
+  const failureDomainRoot = runtime.process.failureDomainRoot;
+  const enforcers = runtime.process.createFailureDomain(`set-${setMinted.proxyInstanceId}/enforcers`);
+  void runtime.process.createFailureDomain(`set-${setMinted.proxyInstanceId}/containment/proxy`);
   const spawned = await requireSpawnedRole(
     spawnRoleProcess('guardian', setMinted.guardianCapsulePath, spawnPorts, {
       pluginRoot: options.pluginRoot,
@@ -391,6 +394,9 @@ async function spawnProviderProxyGuardian(
       envAdditions: {
         [BUILD_FLAVOR_ENV_KEY]: flavor,
         [CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS_ENV]: String(deadlineConfiguration.orphanTimeoutMs),
+        ...(failureDomainRoot.kind === 'placed' && enforcers.kind === 'created'
+          ? { CORAL_FAILURE_DOMAIN_ROOT: failureDomainRoot.root, CORAL_FAILURE_DOMAIN: enforcers.path }
+          : {}),
       },
       ...(state.guardianCustodyIntent === null
         ? {}

@@ -1,4 +1,10 @@
 import type { AsyncRecordedProcessObserver, ProcessIncarnation, ProcessLiveness } from '../infra/node-process.js';
+import type {
+  FailureDomainRoot,
+  FailureDomainRefusal,
+  createFailureDomain,
+  removeFailureDomain,
+} from '../infra/failure-domain.js';
 import type { BuildFlavor } from '../infra/build-flavor.js';
 import type { CoralPaths } from '../infra/path/index.js';
 import type {
@@ -66,6 +72,7 @@ export type DurableLaunchOptions = {
   cwd?: string;
   jobDir: string;
   custodyTicket?: string;
+  failureDomainName: string;
   envAdditions?: Record<string, string>;
   /** Complete child environment; when present, envAdditions is ignored. */
   env?: Record<string, string>;
@@ -172,6 +179,10 @@ export type RuntimeExecOptions = {
 };
 
 export interface ProcessPort {
+  readonly failureDomainRoot: FailureDomainRoot;
+  readRecentFailureDomainRefusals(): readonly FailureDomainRefusal[];
+  createFailureDomain(relativePath: string, payload?: boolean): ReturnType<typeof createFailureDomain>;
+  removeFailureDomain(path: string): ReturnType<typeof removeFailureDomain>;
   spawn(options: RuntimeSpawnOptions): ChildProcessLike;
   exec(command: string, args: string[], options?: RuntimeExecOptions): Promise<ExecResult>;
   // Sync exec uses spawnSync semantics, including SIGTERM-only timeout handling.

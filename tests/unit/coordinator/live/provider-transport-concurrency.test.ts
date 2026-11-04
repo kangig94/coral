@@ -231,6 +231,7 @@ describe('provider transport concurrency hardening', () => {
         command: 'codex',
         args: ['exec'],
         jobDir: '/tmp/sim/jobs/late-durable',
+        failureDomainName: 'job-test-1',
       }),
     );
     await flushMicrotasks();
@@ -270,6 +271,7 @@ describe('provider transport concurrency hardening', () => {
         command: 'codex',
         args: ['exec'],
         jobDir: '/tmp/sim/jobs/failed-signal-durable',
+        failureDomainName: 'job-test-1',
       }),
     );
     runtime.time.tick(0);

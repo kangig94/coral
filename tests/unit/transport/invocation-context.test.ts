@@ -1,6 +1,38 @@
 import { describe, expect, it } from 'vitest';
 
+import { coralEnvForwardSchema, invocationCoralEnvSnapshot } from '#src/infra/env-sanitize.js';
 import { buildControllerEnv } from '#src/transport/invocation-context.js';
+
+describe('failure-domain invocation isolation', () => {
+  const placement = {
+    CORAL_FAILURE_DOMAIN: '/private/root/coordinator-1',
+    CORAL_FAILURE_DOMAIN_ROOT: '/private/root',
+    CORAL_FAILURE_DOMAIN_DISPOSITION: 'placed',
+    CORAL_FAILURE_DOMAIN_REASON: 'internal-reason',
+    CORAL_FAILURE_DOMAIN_REFUSALS: '[{"subject":"coordinator-1","errno":"EACCES"}]',
+    CORAL_FAILURE_DOMAIN_FUTURE: 'internal-future-context',
+  };
+
+  it('excludes placement context before constructing request environments while retaining the internal snapshot', () => {
+    const source = { ...placement, CORAL_FLAVOR: 'prod', CORAL_CODEX_MODEL: 'sol' };
+    expect(invocationCoralEnvSnapshot(source)).toEqual({ CORAL_FLAVOR: 'prod', CORAL_CODEX_MODEL: 'sol' });
+    expect(buildControllerEnv({}, source)).toEqual({ CORAL_FLAVOR: 'prod', CORAL_CODEX_MODEL: 'sol' });
+    expect(source).toEqual({ ...placement, CORAL_FLAVOR: 'prod', CORAL_CODEX_MODEL: 'sol' });
+    expect(buildControllerEnv({ coralEnv: placement }, source)).toEqual({ CORAL_FLAVOR: 'prod' });
+  });
+
+  it('rejects internal placement keys without advertising them in the public reserved-key message', () => {
+    for (const [key, value] of Object.entries(placement)) {
+      const parsed = coralEnvForwardSchema.safeParse({ [key]: value });
+      expect(parsed.success).toBe(false);
+      if (parsed.success) throw new Error(`Accepted internal key: ${key}`);
+      for (const issue of parsed.error.issues) {
+        expect(issue.message).toContain('CORAL_JOB_ID');
+        expect(issue.message).not.toContain('CORAL_FAILURE_DOMAIN');
+      }
+    }
+  });
+});
 
 describe('buildControllerEnv coralEnv forwarding', () => {
   it('never places the raw named-system provider scope in an invocation environment', () => {

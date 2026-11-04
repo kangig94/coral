@@ -1,3 +1,4 @@
+import { enterPayloadDomain, inheritedFailureDomainRoot } from '../infra/failure-domain.js';
 import { spawn } from 'node:child_process';
 import { closeSync, openSync, readFileSync, unlinkSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -668,6 +669,11 @@ async function runWrapper(payloadPath: string | undefined): Promise<void> {
     closeOutputFiles();
     return;
   }
+  void enterPayloadDomain(inheritedFailureDomainRoot(), process.env.CORAL_FAILURE_DOMAIN ?? null);
+  delete process.env.CORAL_FAILURE_DOMAIN;
+  delete process.env.CORAL_FAILURE_DOMAIN_ROOT;
+  delete env.CORAL_FAILURE_DOMAIN;
+  delete env.CORAL_FAILURE_DOMAIN_ROOT;
   child = spawn(launch.command, launch.args, {
     stdio: ['pipe', stdoutFd, stderrFd],
     cwd: launch.cwd ?? undefined,
@@ -744,6 +750,9 @@ function runProviderHost(command: string | undefined, args: string[]): void {
     delete process.env[CUSTODY_PROCESS_TICKET_ENV];
     delete process.env.CORAL_CUSTODY_EPOCH;
     delete process.env.CORAL_CUSTODY_EPOCH_KEY;
+    void enterPayloadDomain(inheritedFailureDomainRoot(), process.env.CORAL_FAILURE_DOMAIN ?? null);
+    delete process.env.CORAL_FAILURE_DOMAIN;
+    delete process.env.CORAL_FAILURE_DOMAIN_ROOT;
     child = spawn(command, args.slice(0, -1), {
       stdio: 'inherit',
       env: process.env,
