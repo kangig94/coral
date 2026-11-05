@@ -1,3 +1,8 @@
+import type {
+  ProviderProxySetAcquisitionJudgement,
+  ProviderProxySetInheritanceAdmission,
+  ProviderProxySetInheritanceRegistration,
+} from './index.js';
 import {
   currentHandoffCapsulePathBeside,
   handoffCapsuleControllerBuildSetId,
@@ -100,7 +105,7 @@ export type ProviderProxySetInheritanceDeps = Readonly<{
     set: ProviderProxyOperationAuthority,
     publicationReceipt: PublicationReceipt,
     protection: ProviderProxySetProtection,
-  ): void;
+  ): ProviderProxySetInheritanceRegistration;
 }>;
 
 export type ProviderProxySetInheritanceOutcome =
@@ -174,6 +179,13 @@ async function collectFencedContainmentProof(
 type ProviderProxySetRedemptionAttempt = Exclude<ProviderProxySetRedemptionOutcome, { kind: 'protocol-incompatible' }>;
 
 export type ProviderProxySetAvailabilityIncident =
+  | Readonly<{
+      kind: 'lifecycle-owned-pending';
+      owner: 'provider-proxy-set-lifecycle';
+      status: string;
+      nextObservation: string;
+    }>
+  | Readonly<{ kind: 'inheritance-admission-expired'; retryOwner: 'provider-proxy-set-inheritance' }>
   | Readonly<{ kind: 'mutation-set-fenced' }>
   | ProviderProxyRoleControlAvailabilityIncident
   | ProviderProxySetPublicationUnknown
@@ -273,6 +285,23 @@ function heartbeatObservationAvailabilityReason(observation: HeartbeatObservatio
 
 export function providerProxySetAvailabilityReason(incident: ProviderProxySetAvailabilityIncident): string {
   switch (incident.kind) {
+    case 'inheritance-admission-expired':
+      return `${incident.kind}:${incident.retryOwner}`;
+    case 'role-exchange-unavailable':
+    case 'role-result-unusable':
+      return [incident.kind, incident.role, incident.method].join(':');
+    case 'role-control-channel-fault':
+      return [
+        incident.kind,
+        incident.role,
+        incident.stage,
+        incident.method ?? 'none',
+        incident.fault.remoteFailure?.kind,
+      ].join(':');
+    case 'role-open-indeterminate':
+      return [incident.kind, incident.role, incident.method, incident.exchange.kind].join(':');
+    case 'lifecycle-owned-pending':
+      return [incident.kind, incident.owner, incident.status, incident.nextObservation].join(':');
     case 'paired-reaper-unavailable':
       return [incident.kind, incident.role, incident.method].join(':');
     case 'role-control-teardown-latched':
@@ -441,15 +470,20 @@ async function buildInheritedAuthority(
   signal: AbortSignal,
   via: ProviderProxySetInheritanceRoute,
 ): Promise<
-  Readonly<{
-    set: DurableProviderProxyOperationAuthority;
-    publicationReceipt: PublicationReceipt;
-    protection: ProviderProxySetProtection;
-    capsulePath: string;
-  }>
+  | Readonly<{
+      set: DurableProviderProxyOperationAuthority;
+      publicationReceipt: PublicationReceipt;
+      protection: ProviderProxySetProtection;
+      capsulePath: string;
+    }>
+  | Readonly<{
+      kind: 'superseded';
+      registration: Exclude<ProviderProxySetInheritanceRegistration, { kind: 'accepted' }>;
+    }>
 > {
   const bundle = providerProxyControlRedemptionBundle(redemption);
   let installedCapsulePath = capsulePath;
+  let retryServedTransfer = false;
   try {
     if (expectedIdentity !== null && !providerProxySetIdentitiesEqual(expectedIdentity, bundle.setIdentity)) {
       throw new ProviderProxySetInheritanceCorruptionError(
@@ -479,7 +513,7 @@ async function buildInheritedAuthority(
       const installation = await base.installRecoveryCredential(signal);
       switch (installation.kind) {
         case 'retryable':
-          if (via === 'transfer-served') void completeServedTransfer(base, deps.runtime);
+          retryServedTransfer = via === 'transfer-served';
           break;
         case 'installed':
           if (handoffCapsuleControllerBuildSetId(capsule) !== deps.coordinatorIdentity.buildSetId) {
@@ -487,7 +521,7 @@ async function buildInheritedAuthority(
           }
           break;
         case 'refused':
-          if (via === 'transfer-served') void completeServedTransfer(base, deps.runtime);
+          retryServedTransfer = via === 'transfer-served';
           break;
         case 'cancelled':
           signal.throwIfAborted();
@@ -501,7 +535,12 @@ async function buildInheritedAuthority(
       faults: bundle.faults,
       mutationRpcTimeoutMs: PROXY_CONTROL_RPC_TIMEOUT_MS,
     });
-    deps.registerInheritedSet?.(set, bundle.publicationReceipt, 'protected');
+    const registration = deps.registerInheritedSet?.(set, bundle.publicationReceipt, 'protected');
+    if (registration !== undefined && registration.kind !== 'accepted') {
+      closeRedeemedProviderProxyControl(redemption);
+      return { kind: 'superseded', registration };
+    }
+    if (retryServedTransfer) void completeServedTransfer(base, deps.runtime);
     return {
       set,
       publicationReceipt: bundle.publicationReceipt,
@@ -570,6 +609,19 @@ async function redeemCapsule(
     signal,
     via,
   );
+  if ('kind' in inherited)
+    return {
+      kind: 'temporarily-unavailable',
+      incident:
+        inherited.registration.kind === 'admission-expired'
+          ? { kind: 'inheritance-admission-expired', retryOwner: inherited.registration.retryOwner }
+          : {
+              kind: 'lifecycle-owned-pending',
+              owner: inherited.registration.owner,
+              status: 'superseded',
+              nextObservation: 'operation-reconciliation-after-lifecycle-recovery',
+            },
+    };
   return { kind: 'redeemed', ...inherited };
 }
 
@@ -786,13 +838,14 @@ export type CreateProviderProxySetInheritanceOptions = Readonly<{
   reapRecordedContainment: ProviderProxySetRecordedContainmentReaper;
   onProviderEvent?(): ProviderEventHandler;
   acceptsControllerTransfer?(capsule: RedeemableHandoffCapsule): ControllerTransferAcceptance;
-  /** Where a successfully inherited set is folded in so it participates in this coordinator's own later
-   *  shutdown. */
+  acquisitionFor(identity: ProviderProxySetIdentity): ProviderProxySetAcquisitionJudgement;
+  releaseInheritanceAdmission(token: ProviderProxySetInheritanceAdmission): void;
   registerInheritedSet(
     set: ProviderProxyOperationAuthority,
     publicationReceipt: PublicationReceipt,
     protection: ProviderProxySetProtection,
-  ): void;
+    admission: ProviderProxySetInheritanceAdmission,
+  ): ProviderProxySetInheritanceRegistration;
 }>;
 
 /**
@@ -810,7 +863,7 @@ export function createProviderProxySetInheritance(
       set: ProviderProxyOperationAuthority,
       publicationReceipt: PublicationReceipt,
       protection: ProviderProxySetProtection,
-    ) => void,
+    ) => ProviderProxySetInheritanceRegistration,
   ): ProviderProxySetInheritanceDeps | null => {
     const pid = options.runtime.env.pid();
     const platform = options.runtime.env.platform() as NodeJS.Platform;
@@ -842,9 +895,26 @@ export function createProviderProxySetInheritance(
       const identityKey = providerProxySetKey(providerProxySetIdentityFromRecord(locator));
       const existing = inFlightByIdentity.get(identityKey);
       if (existing !== undefined) return existing;
-      const attempt = (async (): Promise<ProviderProxySetInheritanceOutcome> => {
+      const attempt = Promise.resolve().then(async (): Promise<ProviderProxySetInheritanceOutcome> => {
+        let admitted: ProviderProxySetInheritanceAdmission | undefined;
         try {
-          const inheritanceDeps = deps(options.registerInheritedSet);
+          const judgement = options.acquisitionFor(providerProxySetIdentityFromRecord(locator));
+          const reservation = judgement.kind === 'unowned' ? judgement.admission.reserve() : judgement;
+          if (reservation.kind !== 'admitted') {
+            return {
+              kind: 'temporarily-unavailable',
+              incident: {
+                kind: 'lifecycle-owned-pending',
+                owner: 'provider-proxy-set-lifecycle',
+                status: reservation.kind === 'usable' ? 'usable' : reservation.status,
+                nextObservation: 'operation-reconciliation-after-lifecycle-recovery',
+              },
+            };
+          }
+          admitted = reservation.token;
+          const inheritanceDeps = deps((set, receipt, protection) =>
+            options.registerInheritedSet(set, receipt, protection, reservation.token),
+          );
           let outcome: ProviderProxySetInheritanceOutcome;
           if (inheritanceDeps === null) {
             outcome = { kind: 'not-bequeathed', reason: 'could not read this coordinator process’s own incarnation' };
@@ -862,9 +932,10 @@ export function createProviderProxySetInheritance(
           }
           return outcome;
         } finally {
+          if (admitted !== undefined) options.releaseInheritanceAdmission(admitted);
           inFlightByIdentity.delete(identityKey);
         }
-      })();
+      });
       inFlightByIdentity.set(identityKey, attempt);
       return attempt;
     },

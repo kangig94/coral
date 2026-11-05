@@ -365,15 +365,21 @@ function createExecutionProviderProxyProducers(input: {
 }
 
 function createOrdinaryProviderAuthorityAcquirer(input: {
-  authorityFor: (record: ProviderOperationRecord) => ReturnType<ProviderProxySetLifecycle['authorityFor']>;
+  acquisitionFor: ProviderProxySetLifecycle['acquisitionFor'];
   providerProxyInheritance: CoordinatorWorld['providerProxyInheritance'];
   recoverSet: (record: ProviderOperationRecord, signal: AbortSignal) => Promise<ProviderProxySetInheritanceOutcome>;
   recordContainmentAbsence: ProviderProxySetLifecycle['containmentAbsent'];
 }): ConstructorParameters<typeof ProviderOperationReconciler>[0]['acquireAuthority'] {
-  const { authorityFor, providerProxyInheritance, recoverSet, recordContainmentAbsence } = input;
+  const { providerProxyInheritance, recoverSet, recordContainmentAbsence } = input;
   return async (record, signal) => {
-    const live = authorityFor(record);
-    if (live !== null || providerProxyInheritance === undefined) return live;
+    const judgement = input.acquisitionFor(providerProxySetIdentityFromRecord(record));
+    if (judgement.kind === 'usable') return judgement.authority;
+    if (judgement.kind === 'owned-pending')
+      return {
+        kind: 'temporarily-unavailable',
+        reason: `${judgement.owner}:${judgement.status}:${judgement.nextObservation}`,
+      };
+    if (providerProxyInheritance === undefined) return null;
     const outcome = await recoverSet(record, signal);
     switch (outcome.kind) {
       case 'inherited':
@@ -841,7 +847,7 @@ export function createExecutionServices(deps: CreateExecutionServicesDeps): Exec
     },
     getRecoveryCoordinator: () => state.providerOperationRecovery,
     acquireAuthority: createOrdinaryProviderAuthorityAcquirer({
-      authorityFor,
+      acquisitionFor: (identity) => providerProxyLifecycle.acquisitionFor(identity),
       providerProxyInheritance,
       recoverSet: async (record, signal) => {
         const outcome = await recoverProviderProxySetOrdinarily(

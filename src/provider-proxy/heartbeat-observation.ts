@@ -59,7 +59,7 @@ type HeartbeatObservationShape =
         | Readonly<{ kind: 'challenge-mismatch'; nextChallenge: string }>
         | Readonly<{ kind: 'teardown-latched'; error: ControlClientError }>
         | Readonly<{ kind: 'method-not-found'; error: ControlClientError }>
-        | Readonly<{ kind: 'unusable'; error: unknown }>;
+        | Readonly<{ kind: 'unusable'; error: unknown; exchange?: ControlExchange }>;
     }>
   | Readonly<{ kind: 'no-response-before-deadline'; error: ControlClientError }>
   | Readonly<{
@@ -110,7 +110,7 @@ export function heartbeatObservationFromExchange(exchange: ControlExchange): Hea
     const parsed = heartbeatResultSchema.safeParse(exchange.response.value);
     return parsed.success
       ? observed({ kind: 'reply', reply: { kind: 'accepted', nextChallenge: parsed.data.nextHeartbeatChallenge } })
-      : observed({ kind: 'reply', reply: { kind: 'unusable', error: parsed.error } });
+      : observed({ kind: 'reply', reply: { kind: 'unusable', error: parsed.error, exchange } });
   }
 
   const { error, failure } = exchange.response;

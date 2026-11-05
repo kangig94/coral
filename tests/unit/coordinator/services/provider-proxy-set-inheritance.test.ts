@@ -1,3 +1,5 @@
+import { controlExchangeForTest, type ControlClient } from '#src/provider-proxy/control-client.js';
+import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
 import type { ProcessIncarnation } from '#src/infra/node-process.js';
 import { probeProcessIncarnation } from '#src/infra/node-process.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
@@ -23,7 +25,7 @@ vi.mock('#src/infra/node-process.js', async (importOriginal) => {
   };
 });
 
-import { readHandoffCapsuleFile } from '#src/provider-proxy/handoff-capsule.js';
+import { handoffCapsuleV3Schema, readHandoffCapsuleFile } from '#src/provider-proxy/handoff-capsule.js';
 import { connectRoleControlWithRetry } from '#src/provider-proxy/role-spawn.js';
 import { applyBundledStoreSchema, type Database } from '#src/store/db.js';
 import { type ProviderOperationRecord } from '#src/store/provider-operation-record.js';
@@ -207,3 +209,124 @@ describe('attemptProviderProxySetInheritance', () => {
     expect(mockedConnect).not.toHaveBeenCalled();
   });
 });
+
+it.each(['open', 'first-heartbeat'] as const)(
+  'retries EPIPE through real redemption and inheritance at %s without global fatal',
+  async (stage) => {
+    const loc = locator();
+    const identity = providerProxySetIdentityFromRecord(loc);
+    const { canonicalEndpoint, ...capsuleIdentity } = identity;
+    const capsule = handoffCapsuleV3Schema.parse({
+      ...capsuleIdentity,
+      proxyEndpoint: canonicalEndpoint,
+      version: 3,
+      generation: 'gen2',
+      flavor: 'prod',
+      grantId: randomUUID(),
+      secret: 'a'.repeat(64),
+      orphanTimeoutMs: 60000,
+      teardownReserveMs: 1000,
+    });
+    mockedReadCapsule.mockReturnValue(capsule);
+    const pipe = Object.assign(new Error('write EPIPE'), { code: 'EPIPE' });
+    const failure = controlExchangeForTest({
+      kind: 'delivery-unconfirmed',
+      cause: 'socket-error-after-write',
+      error: pipe,
+    });
+    const shared = { generation: 'gen2', flavor: 'prod', buildSetId: BUILD_SET_ID, hostFingerprint: HOST_FINGERPRINT };
+    const guardian = {
+      ...shared,
+      guardianInstanceId: GUARDIAN_INSTANCE_ID,
+      pid: 100,
+      incarnation: testIncarnation(1),
+      canonicalControlEndpoint: '/tmp/guardian.sock',
+    };
+    const reaper = {
+      ...shared,
+      reaperInstanceId: REAPER_INSTANCE_ID,
+      pid: 300,
+      incarnation: testIncarnation(2),
+      guardianInstanceId: GUARDIAN_INSTANCE_ID,
+      canonicalControlEndpoint: '/tmp/reaper.sock',
+      containmentKind: 'posix-group',
+    };
+    const exchange = vi.fn<ControlClient['exchange']>(async (method) =>
+      stage === 'first-heartbeat' && method === 'guardian.handoff-redeem.v1'
+        ? controlExchangeForTest({
+            kind: 'response',
+            response: {
+              kind: 'result',
+              value: {
+                state: 'redeemed-provisional',
+                controlEpoch: 1,
+                heartbeatChallenge: 'b'.repeat(64),
+                redemptionReceipt: 'receipt',
+                operations: [],
+                guardian,
+                reaper,
+                containment: {
+                  pid: identity.proxyPid,
+                  incarnation: identity.proxyIncarnation,
+                  processGroupId: identity.proxyProcessGroupId,
+                  containmentKind: identity.containmentKind,
+                },
+              },
+            },
+          })
+        : failure,
+    );
+    const close = vi.fn();
+    mockedConnect.mockResolvedValue({ exchange, close, faulted: new Promise(() => {}), onFault: () => () => {} });
+    const collectContainmentProof = vi.spyOn(defaultContainmentProver, 'collectContainmentProof');
+    const reapRecordedContainment = vi.fn(unexpectedInheritanceRecordedContainmentReap);
+    const fatal = vi.fn();
+    const retry = vi.fn();
+    const db = newRawDatabase(':memory:');
+    applyBundledStoreSchema(db, currentCoralStoreFormat());
+    const inherit = vi.fn(async () =>
+      attemptProviderProxySetInheritance(
+        loc,
+        db,
+        {
+          runtime,
+          coordinatorIdentity: COORDINATOR_IDENTITY,
+          operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
+          collectContainmentProof: defaultContainmentProver.collectContainmentProof,
+          reapRecordedContainment,
+        },
+        neverAborts,
+      ),
+    );
+    const dispatcher = createTestProviderProxyRecoveryDispatcher({ 'set-inheritance': inherit }, fatal);
+    try {
+      dispatcher.begin('ordinary-set-inheritance', {}, { evidence: vi.fn(), retry, fatal }).start({
+        sourceId: 'inheritance',
+        producerId: 'set-inheritance',
+        input: { locator: loc, db, signal: neverAborts },
+      });
+      await vi.waitFor(() => {
+        expect(fatal).not.toHaveBeenCalled();
+        expect(retry).toHaveBeenCalledOnce();
+      });
+      const outcome = await inherit.mock.results[0].value;
+      expect(outcome).toMatchObject({
+        kind: 'temporarily-unavailable',
+        incident:
+          stage === 'open'
+            ? { kind: 'role-open-indeterminate', exchange: failure }
+            : { kind: 'role-heartbeat-indeterminate', observation: { kind: 'delivery-unconfirmed', error: pipe } },
+      });
+      expect(mockedConnect).toHaveBeenCalledOnce();
+      expect(exchange.mock.calls.map(([method]) => method)).toEqual(
+        stage === 'open' ? ['guardian.handoff-redeem.v1'] : ['guardian.handoff-redeem.v1', 'guardian.heartbeat.v1'],
+      );
+      expect(close).toHaveBeenCalledOnce();
+      expect(collectContainmentProof).toHaveBeenCalledOnce();
+      expect(reapRecordedContainment).not.toHaveBeenCalled();
+      expect(fatal).not.toHaveBeenCalled();
+    } finally {
+      db.close();
+    }
+  },
+);

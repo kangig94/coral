@@ -951,3 +951,12 @@ Compaction persists identity-keyed refusals under `job-locations.v1/compaction-r
 Historical source ownership is a projection of the store inventory. Store open and every five-second epoch sweep register each present non-active epoch once, including preserved epochs and epochs protected after startup. The maintenance owner probes certified sources too and settles after three failed attempts. It hydrates at most 16 subjects per synchronous slice, closes the source guard between slices, and yields between epochs. Reads observe protected paths without publishing addresses. Only protection owners (`protectMintPredecessors`, `retryPendingProtections`, and the post-ready `reconcileProtectedEpochs`) publish protected addresses. An `unknown` admission keeps the job's cursor entry unchanged.
 
 Result publication is owned by `jobs/terminal/export.ts` and its format-neutral `jobs/terminal/artifact.ts` writer. `src/jobs/paths.ts` (`resultPathFor`) owns current execution result paths; `jobs/historical-reader.ts` owns frozen historical paths and decoded repair inputs. The current retained-source adapter in `jobs/retained-current.ts` uses the same writer after retaining complete execution evidence. A publication failure keeps that evidence readable and leaves result repair pending.
+
+## Provider recovery ownership
+
+Ordinary acquisition distinguishes usable authority, lifecycle-owned pending recovery, and unowned
+inheritance admission. Retained ownership cannot authorize a competing redemption. Lifecycle admission
+binds registration to one exact identity and attempt; transport uncertainty never proves disappearance.
+See `ProviderProxySetLifecycle.acquisitionFor` in `src/coordinator/services/provider-proxy-set/index.ts`
+and [provider acquisition and recovery constraints](provider-proxy.md#acquisition-and-recovery-ownership).
+The capsule and control protocol shapes are unchanged.

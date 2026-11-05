@@ -551,8 +551,16 @@ function createWorldProviderHosts(input: WorldProviderHostInput) {
       ...(options.buildProviderEventHandler === undefined
         ? {}
         : { onProviderEvent: options.buildProviderEventHandler }),
-      registerInheritedSet: (set, publicationReceipt, protection) => {
-        created.registerInheritedSet(set, publicationReceipt, protection);
+      acquisitionFor: (identity) => {
+        const lifecycle = providerProxyLifecycleRef.get();
+        if (lifecycle === null) throw new Error('provider_proxy_set_lifecycle_not_connected');
+        return lifecycle.acquisitionFor(identity);
+      },
+      releaseInheritanceAdmission: (token) => providerProxyLifecycleRef.get()?.releaseInheritanceAdmission(token),
+      registerInheritedSet: (set, publicationReceipt, protection, admission) => {
+        const lifecycle = providerProxyLifecycleRef.get();
+        if (lifecycle === null) throw new Error('provider_proxy_set_lifecycle_not_connected');
+        return created.registerInheritedSet(set, publicationReceipt, protection, admission);
       },
     });
   }

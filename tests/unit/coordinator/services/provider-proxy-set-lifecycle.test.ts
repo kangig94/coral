@@ -1,3 +1,5 @@
+import { createProviderProxySetInheritance } from '#src/coordinator/services/provider-proxy-set/inheritance.js';
+import { registerProviderProxySetForTest } from '#tests/helpers/provider-proxy-registration.js';
 import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { TimerHandle } from '#src/infra/port-types.js';
@@ -369,7 +371,7 @@ async function authorizedOperatorExitForProof(
   });
   lifecycle.initializeClaimSlots();
   lifecycle.completeStartupDiscovery();
-  lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
+  registerProviderProxySetForTest(lifecycle, authority, TEST_PUBLICATION_RECEIPT);
   faults.reportIncident({
     kind: 'control-channel-fault',
     role: 'guardian',
@@ -415,7 +417,7 @@ describe('ProviderProxySetLifecycle', () => {
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
-    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
+    registerProviderProxySetForTest(lifecycle, authority, TEST_PUBLICATION_RECEIPT);
 
     faults.latch({
       kind: 'operation-control-failed',
@@ -427,6 +429,10 @@ describe('ProviderProxySetLifecycle', () => {
     expect(providerProxyOperationControlIsHeld(authority)).toBe(true);
     expect(providerProxyOperationControlIsHeld(underlyingAuthority)).toBe(true);
     expect(lifecycle.authorityFor(authority.setIdentity)).toBeNull();
+    expect(lifecycle.acquisitionFor(authority.setIdentity)).toMatchObject({
+      kind: 'owned-pending',
+      owner: 'provider-proxy-set-lifecycle',
+    });
     await expect(underlyingAuthority.cancelOperation(record.operation, 1, 'b'.repeat(64))).rejects.toMatchObject({
       code: 'operation-control-outcome-unknown',
     });
@@ -705,7 +711,7 @@ it('re-arms idle retirement when control reattachment returns an idle set to ser
   });
   lifecycle.initializeClaimSlots();
   lifecycle.completeStartupDiscovery();
-  lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
+  registerProviderProxySetForTest(lifecycle, authority, TEST_PUBLICATION_RECEIPT);
 
   time.elapse(900);
   faults.reportIncident({
@@ -713,6 +719,10 @@ it('re-arms idle retirement when control reattachment returns an idle set to ser
     role: 'guardian',
     cause: 'closed',
     error: new ControlClientError('control_client_closed', 'guardian closed', 'closed'),
+  });
+  expect(lifecycle.acquisitionFor(authority.setIdentity)).toMatchObject({
+    kind: 'owned-pending',
+    status: 'reattaching',
   });
   time.elapse(100);
   time.runDue();
@@ -747,7 +757,7 @@ it('gives a set back a full idle window when reattachment returns it before its 
   });
   lifecycle.initializeClaimSlots();
   lifecycle.completeStartupDiscovery();
-  lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
+  registerProviderProxySetForTest(lifecycle, authority, TEST_PUBLICATION_RECEIPT);
 
   time.elapse(900);
   faults.reportIncident({
@@ -784,7 +794,7 @@ it('restarts the idle window when a claim arrives and leaves before it expires',
   });
   lifecycle.initializeClaimSlots();
   lifecycle.completeStartupDiscovery();
-  lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
+  registerProviderProxySetForTest(lifecycle, authority, TEST_PUBLICATION_RECEIPT);
 
   time.elapse(600);
   claims.applyMutation({ kind: 'upserted', record });
@@ -820,7 +830,7 @@ it.each(['controller transfer', 'fault containment'] as const)(
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
-    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
+    registerProviderProxySetForTest(lifecycle, authority, TEST_PUBLICATION_RECEIPT);
     const idleWindow = () => time.timers.filter((timer) => timer.active && timer.at === 1_000);
     expect(idleWindow()).toHaveLength(1);
 
@@ -872,8 +882,8 @@ it('retains only as many established sets as the configured limit', async () => 
   });
   lifecycle.initializeClaimSlots();
   lifecycle.completeStartupDiscovery();
-  lifecycle.registerInheritedSet(fakeAuthority({ record: first, stopAndReap }), TEST_PUBLICATION_RECEIPT);
-  lifecycle.registerInheritedSet(fakeAuthority({ record: second, stopAndReap }), TEST_PUBLICATION_RECEIPT);
+  registerProviderProxySetForTest(lifecycle, fakeAuthority({ record: first, stopAndReap }), TEST_PUBLICATION_RECEIPT);
+  registerProviderProxySetForTest(lifecycle, fakeAuthority({ record: second, stopAndReap }), TEST_PUBLICATION_RECEIPT);
 
   await vi.waitFor(() => expect(stopAndReap).toHaveBeenCalledOnce());
   await vi.waitFor(() => expect(lifecycle.snapshot().represented).toBe(1));
@@ -895,7 +905,7 @@ it.each(['proxy-activation-pending', 'activation-resolution-pending'] as const)(
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
-    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
+    registerProviderProxySetForTest(lifecycle, authority, TEST_PUBLICATION_RECEIPT);
     expect(lifecycle.authorizeOperatorExit(providerProxySetAddress(authority.setIdentity))).toEqual({
       kind: 'not-held',
       state: 'available',
@@ -918,7 +928,7 @@ it('preserves all live claims when one operation requests containment and record
   });
   lifecycle.initializeClaimSlots();
   lifecycle.completeStartupDiscovery();
-  lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
+  registerProviderProxySetForTest(lifecycle, authority, TEST_PUBLICATION_RECEIPT);
   lifecycle.requestOperationContainment(authority.setIdentity, 'provider_operation_retries_exhausted');
   await drainMicrotasks();
   expect(stopAndReap).not.toHaveBeenCalled();
@@ -972,7 +982,7 @@ it.each([
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
-    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
+    registerProviderProxySetForTest(lifecycle, authority, TEST_PUBLICATION_RECEIPT);
     const request = { kind: 'settlement-retries-exhausted', operation: record.operation } as const;
     lifecycle.requestOperationContainment(authority.setIdentity, request);
     if (timing === 'during-fence') {
@@ -1032,7 +1042,7 @@ it('rechecks exact operation identities when an exhausted sibling is replaced un
   });
   lifecycle.initializeClaimSlots();
   lifecycle.completeStartupDiscovery();
-  lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
+  registerProviderProxySetForTest(lifecycle, authority, TEST_PUBLICATION_RECEIPT);
   const request = { kind: 'settlement-retries-exhausted', operation: record.operation } as const;
   lifecycle.requestOperationContainment(authority.setIdentity, request);
   claims.applyMutation({ kind: 'deleted', record: sibling });
@@ -1069,7 +1079,7 @@ it('requires the exact durable settlement escalation fact rather than trusting t
   });
   lifecycle.initializeClaimSlots();
   lifecycle.completeStartupDiscovery();
-  lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
+  registerProviderProxySetForTest(lifecycle, authority, TEST_PUBLICATION_RECEIPT);
   const request = { kind: 'settlement-retries-exhausted', operation: record.operation } as const;
   lifecycle.requestOperationContainment(authority.setIdentity, request);
   await drainMicrotasks();
@@ -1114,10 +1124,243 @@ it('delivers ordinary disappearance to live claims when an operation release fai
   });
   lifecycle.initializeClaimSlots();
   lifecycle.completeStartupDiscovery();
-  lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
+  registerProviderProxySetForTest(lifecycle, authority, TEST_PUBLICATION_RECEIPT);
   lifecycle.requestOperationContainment(authority.setIdentity, 'provider_activation_ack_invalid');
   faults.latch(terminalAuthorityFault());
   expect(lifecycle.authorityFor(authority.setIdentity)).toBeNull();
   await vi.waitFor(() => expect(consumed).toHaveBeenCalledOnce());
   expect(consumed).toHaveBeenCalledWith(expect.objectContaining({ disappearanceReceipt: 'teardown-latched-absence' }));
+});
+
+it('reserves sequential inheritance attempts and rejects stale registration without touching accepted authority', () => {
+  const record = providerOperationRecord('executing');
+  const authority = fakeAuthority({ record });
+  const claims = new ProviderProxySetClaimMirror();
+  claims.initialize([]);
+  const lifecycle = lifecycleFor({
+    claims,
+    time: new ManualClock(),
+    controlEstablished: ignoreControlEstablished,
+    disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+    proveContainmentAbsent: noContainmentProof,
+  });
+  const reserve = () => {
+    const judgement = lifecycle.acquisitionFor(authority.setIdentity);
+    expect(judgement.kind).toBe('unowned');
+    if (judgement.kind !== 'unowned') throw new Error('expected unowned');
+    const reservation = judgement.admission.reserve();
+    if (reservation.kind !== 'admitted') throw new Error('expected admission');
+    return reservation.token;
+  };
+  const first = reserve();
+  expect(lifecycle.acquisitionFor(authority.setIdentity)).toMatchObject({
+    kind: 'owned-pending',
+    status: 'inheritance-admitted',
+  });
+  lifecycle.releaseInheritanceAdmission(first);
+  expect(lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT, null, 'protected', first)).toEqual({
+    kind: 'admission-expired',
+    retryOwner: 'provider-proxy-set-inheritance',
+  });
+  const second = reserve();
+  expect(lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT, null, 'protected', first)).toEqual({
+    kind: 'admission-expired',
+    retryOwner: 'provider-proxy-set-inheritance',
+  });
+  expect(lifecycle.acquisitionFor(authority.setIdentity)).toMatchObject({
+    kind: 'owned-pending',
+    status: 'inheritance-admitted',
+  });
+  lifecycle.releaseInheritanceAdmission(first);
+  expect(lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT, null, 'protected', second).kind).toBe(
+    'accepted',
+  );
+  const candidate = fakeAuthority({ record });
+  expect(lifecycle.registerInheritedSet(candidate, TEST_PUBLICATION_RECEIPT, null, 'protected', first)).toMatchObject({
+    kind: 'superseded',
+    owner: 'provider-proxy-set-lifecycle',
+  });
+  expect(lifecycle.authorityFor(authority.setIdentity)).toBe(authority);
+  expect(lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT, null, 'protected', second).kind).toBe(
+    'accepted',
+  );
+});
+
+it('does not redeem retained containment ownership on simultaneous or sequential ordinary inheritance calls', async () => {
+  const record = providerOperationRecord('executing');
+  const claims = new ProviderProxySetClaimMirror();
+  claims.initialize([record]);
+  const faults = createProviderProxyAuthorityFaultLatch();
+  const authority = fakeAuthority({ record, faults });
+  const lifecycle = lifecycleFor({
+    claims,
+    time: new ManualClock(),
+    controlEstablished: ignoreControlEstablished,
+    disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+    proveContainmentAbsent: noContainmentProof,
+  });
+  lifecycle.initializeClaimSlots();
+  registerProviderProxySetForTest(lifecycle, authority, TEST_PUBLICATION_RECEIPT);
+  faults.latch({ kind: 'operation-control-failed', policy: containmentOperationPolicy, error: 'unknown delivery' });
+  const readIncarnation = vi.fn(() => authority.setIdentity.guardianIncarnation);
+  const runtime = createRealRuntime('prod');
+  const inheritance = createProviderProxySetInheritance({
+    runtime: { ...runtime, process: { ...runtime.process, readProcessIncarnation: readIncarnation } },
+    identity: { instanceId: randomUUID(), buildSetId: record.operation.buildSetId, flavor: 'prod' },
+    operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
+    containmentProver: createProviderProxySetContainmentProver(runtime),
+    reapRecordedContainment: async () => {
+      throw new Error('unexpected reap');
+    },
+    acquisitionFor: (identity) => lifecycle.acquisitionFor(identity),
+    releaseInheritanceAdmission: (token) => lifecycle.releaseInheritanceAdmission(token),
+    registerInheritedSet: () => {
+      throw new Error('unexpected registration');
+    },
+  });
+  const db = newRawDatabase(':memory:');
+  try {
+    const signal = new AbortController().signal;
+    const first = inheritance.inheritProviderProxySet(record, db, signal);
+    const second = inheritance.inheritProviderProxySet(record, db, signal);
+    for (const result of await Promise.all([first, second]))
+      expect(result).toMatchObject({ kind: 'temporarily-unavailable', incident: { kind: 'lifecycle-owned-pending' } });
+    await expect(inheritance.inheritProviderProxySet(record, db, signal)).resolves.toMatchObject({
+      kind: 'temporarily-unavailable',
+    });
+    expect(readIncarnation).not.toHaveBeenCalled();
+  } finally {
+    db.close();
+  }
+});
+
+it('keeps conflicting identities visible at inheritance admission', () => {
+  const record = providerOperationRecord('executing');
+  const authority = fakeAuthority({ record });
+  const claims = new ProviderProxySetClaimMirror();
+  claims.initialize([]);
+  const lifecycle = lifecycleFor({
+    claims,
+    time: new ManualClock(),
+    controlEstablished: ignoreControlEstablished,
+    disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+    proveContainmentAbsent: noContainmentProof,
+  });
+  registerProviderProxySetForTest(lifecycle, authority, TEST_PUBLICATION_RECEIPT);
+  const conflicting = lifecycle.acquisitionFor({
+    ...authority.setIdentity,
+    guardianPid: authority.setIdentity.guardianPid + 1,
+  });
+  if (conflicting.kind !== 'unowned') throw new Error('expected unowned identity');
+  expect(() => conflicting.admission.reserve()).toThrow('provider_proxy_set_identity_alias');
+});
+
+it('expires an old admission across internal acquisition and complete retirement', async () => {
+  const record = providerOperationRecord('executing');
+  const claims = new ProviderProxySetClaimMirror();
+  claims.initialize([]);
+  const lifecycle = lifecycleFor({
+    claims,
+    time: new ManualClock(),
+    controlEstablished: ignoreControlEstablished,
+    disappearanceConsumer: { containmentDisappeared: vi.fn() },
+    proveContainmentAbsent: noContainmentProof,
+  });
+  lifecycle.completeStartupDiscovery();
+  const identity = providerProxySetIdentityFromRecord(record);
+  const judgement = lifecycle.acquisitionFor(identity);
+  if (judgement.kind !== 'unowned') throw new Error('expected unowned');
+  const admission = judgement.admission.reserve();
+  if (admission.kind !== 'admitted') throw new Error('expected admission');
+  const fresh = lifecycle.beginFreshAcquisition('internal-promotion');
+  if (fresh.kind !== 'accepted') throw new Error('expected fresh admission');
+  const faults = createProviderProxyAuthorityFaultLatch();
+  expect(
+    lifecycle.acquisitionSucceeded(fresh.slotId, fakeAuthority({ record, faults }), TEST_PUBLICATION_RECEIPT).kind,
+  ).toBe('accepted');
+  faults.latch(terminalAuthorityFault());
+  void lifecycle.containmentAbsent(identity, 'exact-test-disappearance');
+  await vi.waitFor(() => expect(lifecycle.snapshot().represented).toBe(0));
+  expect(
+    lifecycle.registerInheritedSet(
+      fakeAuthority({ record }),
+      TEST_PUBLICATION_RECEIPT,
+      null,
+      'protected',
+      admission.token,
+    ).kind,
+  ).toBe('admission-expired');
+  const corrected = lifecycle.acquisitionFor({ ...identity, guardianPid: identity.guardianPid + 1 });
+  if (corrected.kind !== 'unowned') throw new Error('expected corrected identity to be unowned');
+  const next = corrected.admission.reserve();
+  expect(next.kind).toBe('admitted');
+  if (next.kind === 'admitted') lifecycle.releaseInheritanceAdmission(next.token);
+});
+
+it('deduplicates simultaneous unowned attempts and releases admission for the next failed attempt', async () => {
+  const record = providerOperationRecord('executing');
+  const claims = new ProviderProxySetClaimMirror();
+  claims.initialize([]);
+  const lifecycle = lifecycleFor({
+    claims,
+    time: new ManualClock(),
+    controlEstablished: ignoreControlEstablished,
+    disappearanceConsumer: { containmentDisappeared: vi.fn() },
+    proveContainmentAbsent: noContainmentProof,
+  });
+  const runtime = createRealRuntime('prod');
+  const readProcessIncarnation = vi.fn(() => null);
+  const inheritance = createProviderProxySetInheritance({
+    runtime: { ...runtime, process: { ...runtime.process, readProcessIncarnation } },
+    identity: { instanceId: randomUUID(), buildSetId: record.operation.buildSetId, flavor: 'prod' },
+    operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
+    containmentProver: createProviderProxySetContainmentProver(runtime),
+    reapRecordedContainment: async () => {
+      throw new Error('unexpected reap');
+    },
+    acquisitionFor: (identity) => lifecycle.acquisitionFor(identity),
+    releaseInheritanceAdmission: (token) => lifecycle.releaseInheritanceAdmission(token),
+    registerInheritedSet: () => {
+      throw new Error('unexpected registration');
+    },
+  });
+  const db = newRawDatabase(':memory:');
+  try {
+    const signal = new AbortController().signal;
+    const results = await Promise.all([
+      inheritance.inheritProviderProxySet(record, db, signal),
+      inheritance.inheritProviderProxySet(record, db, signal),
+    ]);
+    expect(results[0]).toEqual(results[1]);
+    expect(readProcessIncarnation).toHaveBeenCalledOnce();
+    await inheritance.inheritProviderProxySet(record, db, signal);
+    expect(readProcessIncarnation).toHaveBeenCalledTimes(2);
+    expect(lifecycle.acquisitionFor(providerProxySetIdentityFromRecord(record)).kind).toBe('unowned');
+  } finally {
+    db.close();
+  }
+});
+
+it('releases an admission-only identity index entry so corrected identity can use the same address', () => {
+  const record = providerOperationRecord('executing');
+  const claims = new ProviderProxySetClaimMirror();
+  claims.initialize([]);
+  const lifecycle = lifecycleFor({
+    claims,
+    time: new ManualClock(),
+    controlEstablished: ignoreControlEstablished,
+    disappearanceConsumer: { containmentDisappeared: vi.fn() },
+    proveContainmentAbsent: noContainmentProof,
+  });
+  const identity = providerProxySetIdentityFromRecord(record);
+  const first = lifecycle.acquisitionFor(identity);
+  if (first.kind !== 'unowned') throw new Error('expected unowned');
+  const reservation = first.admission.reserve();
+  if (reservation.kind !== 'admitted') throw new Error('expected admission');
+  lifecycle.releaseInheritanceAdmission(reservation.token);
+  const corrected = lifecycle.acquisitionFor({ ...identity, guardianPid: identity.guardianPid + 1 });
+  if (corrected.kind !== 'unowned') throw new Error('expected unowned corrected identity');
+  const next = corrected.admission.reserve();
+  expect(next.kind).toBe('admitted');
+  if (next.kind === 'admitted') lifecycle.releaseInheritanceAdmission(next.token);
 });

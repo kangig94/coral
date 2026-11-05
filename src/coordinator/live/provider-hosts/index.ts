@@ -1,3 +1,7 @@
+import type {
+  ProviderProxySetInheritanceAdmission,
+  ProviderProxySetInheritanceRegistration,
+} from '../../services/provider-proxy-set/index.js';
 import { providerProxyPlacement, type ProviderProxyPlacement } from './host-root.js';
 import { raceObserved } from '../../../infra/promise-signal.js';
 import type {
@@ -199,8 +203,9 @@ export interface ProviderProxySetRegistration {
   registerInheritedSet(
     set: ProviderProxyOperationAuthority,
     publicationReceipt: PublicationReceipt,
-    protection?: ProviderProxySetProtection,
-  ): void;
+    protection: ProviderProxySetProtection,
+    admission: ProviderProxySetInheritanceAdmission,
+  ): ProviderProxySetInheritanceRegistration;
 }
 
 export type ManagedAppServerSession = Readonly<{
@@ -563,7 +568,8 @@ export class DefaultProviderHostManager
     set: ProviderProxyOperationAuthority,
     publicationReceipt: PublicationReceipt,
     protection: ProviderProxySetProtection = 'protected',
-  ): void {
+    admission: ProviderProxySetInheritanceAdmission,
+  ): ProviderProxySetInheritanceRegistration {
     const lifecycle = this.providerProxyLifecycleRef?.get();
     if (lifecycle === null || lifecycle === undefined) {
       throw new Error('provider_proxy_set_lifecycle_not_connected');
@@ -571,7 +577,7 @@ export class DefaultProviderHostManager
     if (!isProviderProxyOperationAuthority(set)) {
       throw new Error('provider_proxy_set_inherited_authority_not_durable');
     }
-    lifecycle.registerInheritedSet(set, publicationReceipt, null, protection);
+    return lifecycle.registerInheritedSet(set, publicationReceipt, null, protection, admission);
   }
 
   proxyHostRoot(): string {

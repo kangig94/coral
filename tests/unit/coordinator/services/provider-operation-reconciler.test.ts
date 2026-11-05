@@ -1,3 +1,4 @@
+import { registerProviderProxySetForTest } from '#tests/helpers/provider-proxy-registration.js';
 import { providerOperationRecordSchema } from '#src/store/provider-operation-record.js';
 import {
   compareAndSwapProviderOperation,
@@ -133,7 +134,7 @@ function lifecycleForSchedule(
   lifecycle.activateDurableOperatorDispositions();
   lifecycle.initializeClaimSlots();
   lifecycle.completeStartupDiscovery();
-  lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
+  registerProviderProxySetForTest(lifecycle, authority, TEST_PUBLICATION_RECEIPT);
   return lifecycle;
 }
 

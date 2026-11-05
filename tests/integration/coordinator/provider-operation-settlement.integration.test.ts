@@ -1,3 +1,4 @@
+import { registerProviderProxySetForTest } from '#tests/helpers/provider-proxy-registration.js';
 import { describe, expect, it, vi } from 'vitest';
 
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
@@ -147,7 +148,9 @@ describe('accepted provider terminal settlement escalation', () => {
       lifecycle.activateDurableOperatorDispositions();
       lifecycle.initializeClaimSlots();
       lifecycle.completeStartupDiscovery();
-      lifecycle.registerInheritedSet(authority, { kind: 'provider-proxy-set-published' } as PublicationReceipt);
+      registerProviderProxySetForTest(lifecycle, authority, {
+        kind: 'provider-proxy-set-published',
+      } as PublicationReceipt);
       const retention = vi.fn(async () => ({ kind: 'completed', outcome: 'discarded' }) as const);
       const finisher = new ExecutionFinisher({
         recovery: { db: () => db, readCtx: store, time: runtime.time },
