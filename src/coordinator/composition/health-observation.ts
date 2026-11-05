@@ -306,10 +306,36 @@ export function createCoordinatorHealthReader({
   providerOperationStartupStatus: () => NonNullable<
     NonNullable<HealthSnapshot['diagnostics']>['providerOperationStartupReconciliation']
   > | null;
-}): () => HealthSnapshot {
+}): (() => HealthSnapshot) & {
+  readLiveness: () => Pick<
+    HealthSnapshot,
+    'status' | 'version' | 'bundleHash' | 'flavor' | 'namespace' | 'instanceId' | 'pid' | 'incarnation' | 'sentinel'
+  >;
+} {
   const identity = world.identity;
   const storeServicesRef = world.storeServicesRef;
-  return () => {
+  const readLiveness = (): ReturnType<ReturnType<typeof createCoordinatorHealthReader>['readLiveness']> => {
+    const lifecycle = runtimeState.getLifecycle();
+    const incarnation = readSelfIncarnation();
+    const sentinelId = runtime.env.get('CORAL_SENTINEL_ID');
+    return {
+      status:
+        world.idleTimer.isDraining || lifecycle === 'draining' || lifecycle === 'stopped'
+          ? 'draining'
+          : lifecycle === 'running'
+            ? 'ok'
+            : 'starting',
+      version: identity.version,
+      bundleHash: identity.bundleHash,
+      flavor: identity.flavor,
+      namespace: identity.namespace,
+      instanceId: identity.instanceId,
+      pid: world.backendPid,
+      ...(incarnation === null ? {} : { incarnation }),
+      ...(sentinelId === undefined ? {} : { sentinel: { version: 1 as const, id: sentinelId } }),
+    };
+  };
+  const read = () => {
     const env = invocationCoralEnvSnapshot(world.coralEnvSnapshot);
     const storeServices = storeServicesRef.tryGet();
     const lifecycleState = runtimeState.getLifecycle();
@@ -399,4 +425,5 @@ export function createCoordinatorHealthReader({
           }),
     });
   };
+  return Object.assign(read, { readLiveness });
 }

@@ -458,6 +458,10 @@ export type HealthSnapshot = {
 
 interface HealthSnapshotPort {
   read(): HealthSnapshot;
+  readLiveness?(): Pick<
+    HealthSnapshot,
+    'status' | 'version' | 'bundleHash' | 'flavor' | 'namespace' | 'instanceId' | 'pid' | 'incarnation' | 'sentinel'
+  >;
 }
 
 export type RemoteHttpAccessPolicy = {

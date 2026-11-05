@@ -113,8 +113,8 @@ export function createCoordinatorTransportAssembly(input: {
       probeKbDaemon: () => kbDaemonSupervisor.probe(),
       restartKbDaemon: (reason, signal) => kbDaemonSupervisorWithTrackedShutdown.restart(reason, signal),
     },
-    health: {
-      read: createCoordinatorHealthReader({
+    health: (() => {
+      const read = createCoordinatorHealthReader({
         runtime,
         world,
         options,
@@ -131,8 +131,9 @@ export function createCoordinatorTransportAssembly(input: {
         eventStreamResponseCount: () => streamResponses.size,
         launchPermitReportAgeMs: launchPermitReportAgeMs,
         providerOperationStartupStatus: execution.services.providerOperationStartupStatus,
-      }),
-    },
+      });
+      return { read, readLiveness: read.readLiveness };
+    })(),
     events: createCoordinatorEventStreamPorts({
       runtime,
       world,

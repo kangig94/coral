@@ -68,6 +68,8 @@ clients/bridge/coral-backend.cjs
 
 The Claude helper keeps its historical bridge filename. For first launches, by default it launches `claude -p --input-format stream-json --output-format stream-json` and drives turns over JSONL. Operators can set `CORAL_CLAUDE_TRANSPORT=tui` to use the PTY transport instead; that path launches interactive `claude` through `@lydell/node-pty`, writes turns after terminal readiness, and derives completion/progress from Claude's JSONL transcript. Resume requests select TUI regardless of that env value and use the broker's `--resume <conversationRef>` path; effective transport participates in host/controller reuse so a print host cannot service a continuation.
 
+IPC `transport.ping` must establish process liveness independently of store diagnostics; a successful ping does not establish store readiness. During writer park, detailed `transport.health` may refuse with `succession_writer_parked` while ping continues to answer. See `createCoordinatorHealthReader` in `src/coordinator/composition/health-observation.ts` and `dispatchFrame` in `src/transport/ipc/server.ts`.
+
 ## Provider Usage Reporting
 
 Usage is captured at each provider boundary before provider-specific stream shapes enter the jobs domain. Providers normalize their raw counters to the canonical additive `UsageSummary`: `{ inputTokens, cacheReadTokens, cacheWriteTokens, outputTokens, costUsd }`. Token totals are derived by renderers from the four token buckets and are never stored as `totalTokens`.
@@ -149,6 +151,7 @@ Resource-oriented API. Provider launches create jobs; the `/sessions` route name
 `GET /jobs` accepts optional `projectRoot`, `phase`, `provider`, and `all=1` query filters. Without `all=1`, the list stays live-only (`queued`, `launching`, `running`) and remains sorted by `updatedAt` descending.
 
 Error responses use real HTTP status codes: 400 (validation), 403 (scope mismatch), 404 (not found), 409 (conflict / non-resumable or provider-mismatched conversation), 503 (recovering / busy).
+
 
 Accepted launches use explicit, discriminated identifiers. Provider launches return `{ kind: 'provider-session', jobId, launchState, requestedSeq, epochKey }`; workflow launches also identify `workflowId`. The committed request sequence and epoch seed launch-follow's execution selection before its first subscription. No provider-session id is returned. Owner, binding, and workflow-lifecycle conflicts are typed 409 responses rather than opaque internal errors.
 
