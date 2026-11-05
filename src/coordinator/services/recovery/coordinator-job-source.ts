@@ -1,6 +1,11 @@
 import { observeDatabaseReads } from '../../../recovery/read-observation.js';
 import type { RecoveryObservation } from '../../../recovery/phase-observation.js';
-import { PROJECTION_JOB_COLUMNS, type ProjectionJobStoredRow } from '../../../jobs/projection-row.js';
+import {
+  decodeProjectionJobStoredRow,
+  PROJECTION_JOB_COLUMNS,
+  type ProjectionJobStoredRow,
+} from '../../../jobs/projection-row.js';
+import { isTerminalPhase } from '../../../jobs/phase.js';
 import { sha256Hex } from '../../../infra/hash.js';
 import type { Database } from '../../../store/db.js';
 import { providerOperationRecordKeyPrefix } from '../../../store/provider-operation-journal.js';
@@ -86,7 +91,16 @@ function scanCoordinatorJobRecoveryEnvelopes(
         ORDER BY key ASC`,
     );
 
-    const jobEnvelopes = projections.map((projection) => {
+    const candidates = projections.filter((projection) => {
+      if (subjectKey !== undefined || !isTerminalPhase(projection.phase)) return true;
+      try {
+        decodeProjectionJobStoredRow(projection);
+        return false;
+      } catch {
+        return true;
+      }
+    });
+    const jobEnvelopes = candidates.map((projection) => {
       const facts = {
         jobId: projection.job_id,
         projection,
