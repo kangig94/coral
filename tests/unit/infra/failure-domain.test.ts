@@ -7,6 +7,7 @@ import {
   enterPayloadDomain,
   inheritedFailureDomainRoot,
   removeFailureDomain,
+  sweepHostFailureDomains,
   readRecentFailureDomainRefusals,
   retainFailureDomainRefusals,
 } from '#src/infra/failure-domain.js';
@@ -17,6 +18,8 @@ const io = vi.hoisted(() => ({
   mkdir: vi.fn(),
   write: vi.fn(),
   remove: vi.fn(),
+  list: vi.fn(),
+  token: vi.fn(),
   busctl: vi.fn(),
   calls: [] as string[],
   group: '/terminal.scope',
@@ -28,7 +31,9 @@ vi.mock('node:fs', () => ({
   mkdirSync: io.mkdir,
   writeFileSync: io.write,
   rmdirSync: io.remove,
+  readdirSync: io.list,
 }));
+vi.mock('#src/infra/custody-process-ticket.js', () => ({ findCustodyProcessToken: io.token }));
 vi.mock('node:child_process', () => ({ spawnSync: io.busctl }));
 
 const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
@@ -47,6 +52,7 @@ const result = (status: number | null = 0, stdout = '', stderr = '', signal: str
 beforeEach(() => {
   vi.resetAllMocks();
   Object.defineProperty(process, 'platform', { ...platform, value: 'linux' });
+  io.token.mockReturnValue({ kind: 'absent' });
   io.group = '/terminal.scope';
   io.controllers = 'memory pids';
   io.calls.length = 0;
@@ -437,4 +443,35 @@ describe('failure-domain leaf authorization', () => {
     enterPayloadDomain({ kind: 'unavailable', reason: 'busctl-not-found' }, null);
     expect(io.calls).toEqual(['write /proc/self/oom_score_adj 800']);
   });
+});
+
+it('sweeps unowned host leaves, protects live and entering leaves, and retries populated refusals', () => {
+  io.group = '/app.slice/app-coral-test.scope/coordinator-test';
+  io.list.mockReturnValue([
+    'host-orphan',
+    'host-populated',
+    'host-owned',
+    'host-entering',
+    'set-test',
+    'coordinator-test',
+  ]);
+  const owned = new Set([`${rootPath}/host-owned`, `${rootPath}/host-entering`]);
+  let populated = true;
+  io.remove.mockImplementation((path: string) => {
+    if (path.endsWith('host-populated') && populated) throw Object.assign(new Error('busy'), { code: 'EBUSY' });
+  });
+  sweepHostFailureDomains(root, owned);
+  expect(io.remove.mock.calls.map(([path]) => path)).toEqual([`${rootPath}/host-orphan`, `${rootPath}/host-populated`]);
+  populated = false;
+  sweepHostFailureDomains(root, owned);
+  expect(io.remove).toHaveBeenCalledTimes(4);
+});
+
+it.each(['alive', 'unknown'])('preserves an unowned predecessor leaf when its custody token is %s', (kind) => {
+  io.group = '/app.slice/app-coral-test.scope/coordinator-test';
+  io.list.mockReturnValue(['host-00000000-0000-4000-8000-000000000001']);
+  io.token.mockReturnValue({ kind });
+  sweepHostFailureDomains(root, new Set());
+  expect(io.token).toHaveBeenCalledWith('00000000-0000-4000-8000-000000000001');
+  expect(io.remove).not.toHaveBeenCalled();
 });

@@ -1,3 +1,4 @@
+import { enqueueProviderHost, providerCustodyTicket } from '#tests/helpers/provider-custody.js';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
@@ -60,7 +61,7 @@ describe('provider response silence', () => {
     observeProviderResponse: ProviderResponseObservationSink,
   ): Promise<ProviderServerHandle> {
     const runtime = new SimulationRuntime();
-    runtime.spawner.enqueueSpawn({
+    enqueueProviderHost(runtime, {
       close: null,
       onSpawn: (context) => {
         const child = context.child as MockChildProcess;
@@ -72,7 +73,7 @@ describe('provider response silence', () => {
     });
     const handle = await spawnProviderServerTransport({
       runtime,
-      options: { provider: 'codex', command: 'controlled-server', args: [] },
+      options: { custodyTicket: providerCustodyTicket, provider: 'codex', command: 'controlled-server', args: [] },
       generation: 17,
       observeProviderResponse,
       acceptFailedSpawnCleanup: acceptCleanupHold,

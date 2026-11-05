@@ -2,6 +2,7 @@ import {
   createFailureDomain,
   inheritedFailureDomainRoot,
   removeFailureDomain,
+  sweepHostFailureDomains,
   readRecentFailureDomainRefusals,
   type FailureDomainRoot,
 } from '../infra/failure-domain.js';
@@ -940,6 +941,7 @@ function createRealProcessPort({
     createFailureDomain: (relativePath, payload) =>
       createFailureDomain(capturedEnv.failureDomainRoot, relativePath, payload),
     removeFailureDomain: (path) => removeFailureDomain(capturedEnv.failureDomainRoot, path),
+    sweepHostFailureDomains: (ownedPaths) => sweepHostFailureDomains(capturedEnv.failureDomainRoot, ownedPaths),
     spawn: (options) => {
       const spawnEnv = options.env
         ? { ...options.env }

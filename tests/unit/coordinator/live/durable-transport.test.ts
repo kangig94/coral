@@ -1,3 +1,4 @@
+import { enqueueProviderHost, providerCustodyTicket } from '#tests/helpers/provider-custody.js';
 import { describe, expect, it, vi } from 'vitest';
 import type { JobRuntime } from '#src/jobs/records.js';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
@@ -95,10 +96,10 @@ describe('durable transport', () => {
 
   it('closes provider servers that emit an oversized JSONL line', async () => {
     const runtime = new SimulationRuntime();
-    runtime.spawner.enqueueSpawn({ close: null, stdout: 'x'.repeat(PROVIDER_SERVER_MAX_JSONL_LINE_BYTES + 1) });
+    enqueueProviderHost(runtime, { close: null, stdout: 'x'.repeat(PROVIDER_SERVER_MAX_JSONL_LINE_BYTES + 1) });
     const coordinator = new LaunchCoordinator({ runtime });
     const handle = await coordinator.spawnProviderServer(
-      { provider: 'codex', command: 'fixture', args: [] },
+      { custodyTicket: providerCustodyTicket, provider: 'codex', command: 'fixture', args: [] },
       undefined,
       undefined,
       undefined,
@@ -113,10 +114,10 @@ describe('durable transport', () => {
 
   it('closes provider servers that emit a malformed JSON-RPC message', async () => {
     const runtime = new SimulationRuntime();
-    runtime.spawner.enqueueSpawn({ close: null, stdout: '{}\n' });
+    enqueueProviderHost(runtime, { close: null, stdout: '{}\n' });
     const coordinator = new LaunchCoordinator({ runtime });
     const handle = await coordinator.spawnProviderServer(
-      { provider: 'codex', command: 'fixture', args: [] },
+      { custodyTicket: providerCustodyTicket, provider: 'codex', command: 'fixture', args: [] },
       undefined,
       undefined,
       undefined,
@@ -131,10 +132,10 @@ describe('durable transport', () => {
 
   it('staged launch termination drains queued launches but does not kill provider servers', async () => {
     const runtime = new SimulationRuntime();
-    runtime.spawner.enqueueSpawn({ close: null });
+    enqueueProviderHost(runtime, { close: null });
     const coordinator = new LaunchCoordinator({ runtime });
     const handle = await coordinator.spawnProviderServer(
-      { provider: 'codex', command: 'fixture', args: [] },
+      { custodyTicket: providerCustodyTicket, provider: 'codex', command: 'fixture', args: [] },
       undefined,
       undefined,
       undefined,

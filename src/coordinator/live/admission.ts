@@ -1,3 +1,4 @@
+import { parseCustodyProcessTicket } from '../../infra/custody-process-ticket.js';
 import { raceObserved } from '../../infra/promise-signal.js';
 import type { Runtime } from '../../runtime/ports.js';
 import {
@@ -178,6 +179,7 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
   private readonly cleanupAttempts = new Map<DurableProcessCleanup, CleanupAttemptState>();
   private readonly pendingDurableLaunches = new Set<PendingDurableLaunch>();
   private nextProviderServerGeneration = 1;
+  private readonly ownedProviderHostDomains = new Set<string>();
   private readonly pools: Record<LaunchPool, PoolState> = {
     default: { active: new Map(), queued: [] },
     discuss: { active: new Map(), queued: [] },
@@ -525,15 +527,47 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
   ): Promise<ContainedProviderServerHandle | HeldProviderServerSpawn> {
     if (this.shutdownRequested) throw new Error(SHUTDOWN_LAUNCH_REJECTED_MESSAGE);
     assertProviderHostPlatformSupported(this.runtime.env.platform());
-    return spawnProviderServerTransport({
-      runtime: this.runtime,
-      options,
-      generation,
-      observeProviderResponse,
-      detached: true,
-      acceptFailedSpawnCleanup,
-      ...(recordContainment === undefined ? {} : { recordContainment }),
-    });
+    if (options.custodyTicket === undefined) throw new Error('Local provider host requires a custody ticket.');
+    const ticket = parseCustodyProcessTicket(options.custodyTicket);
+    const root = this.runtime.process.failureDomainRoot;
+    this.runtime.process.sweepHostFailureDomains(this.ownedProviderHostDomains);
+    const intendedPath = root.kind === 'placed' ? `${root.root}/host-${ticket.processToken}` : null;
+    if (intendedPath !== null) this.ownedProviderHostDomains.add(intendedPath);
+    const leaf = this.runtime.process.createFailureDomain(`host-${ticket.processToken}`, true);
+    if (leaf.kind !== 'created' && intendedPath !== null) this.ownedProviderHostDomains.delete(intendedPath);
+    const domainEnv: Record<string, string> =
+      root.kind === 'placed' && leaf.kind === 'created'
+        ? { CORAL_FAILURE_DOMAIN_ROOT: root.root, CORAL_FAILURE_DOMAIN: leaf.path }
+        : {};
+    const retireLeaf = (): void => {
+      if (leaf.kind !== 'created') return;
+      this.ownedProviderHostDomains.delete(leaf.path);
+      void this.runtime.process.removeFailureDomain(leaf.path);
+    };
+    let processSpawned = false;
+    try {
+      return await spawnProviderServerTransport({
+        runtime: this.runtime,
+        options: {
+          ...options,
+          ...(options.exactEnv === undefined
+            ? { extraEnv: { ...options.extraEnv, ...domainEnv } }
+            : { exactEnv: { ...options.exactEnv, ...domainEnv } }),
+        },
+        generation,
+        observeProviderResponse,
+        detached: true,
+        observeProcessExit: (exited) => {
+          processSpawned = true;
+          void exited.then(retireLeaf);
+        },
+        acceptFailedSpawnCleanup,
+        ...(recordContainment === undefined ? {} : { recordContainment }),
+      });
+    } catch (error: unknown) {
+      if (!processSpawned) retireLeaf();
+      throw error;
+    }
   }
 
   allocateProviderServerGeneration(): number {

@@ -183,6 +183,7 @@ export interface ProcessPort {
   readRecentFailureDomainRefusals(): readonly FailureDomainRefusal[];
   createFailureDomain(relativePath: string, payload?: boolean): ReturnType<typeof createFailureDomain>;
   removeFailureDomain(path: string): ReturnType<typeof removeFailureDomain>;
+  sweepHostFailureDomains(ownedPaths: ReadonlySet<string>): void;
   spawn(options: RuntimeSpawnOptions): ChildProcessLike;
   exec(command: string, args: string[], options?: RuntimeExecOptions): Promise<ExecResult>;
   // Sync exec uses spawnSync semantics, including SIGTERM-only timeout handling.
