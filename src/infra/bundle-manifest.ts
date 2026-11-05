@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path';
 import { z } from 'zod';
 
 import type { BuildFlavor } from './build-flavor.js';
-import { nodeFsBoundedReadStorage, readBoundedFileAtIdentity } from './bounded-file-read.js';
+import { nodeFsBoundedReadStorage, observeBoundedFileAtIdentity } from './bounded-file-read.js';
 import { CLI_BUNDLE_FILE, CURRENT_STRICT_BUNDLE_MANIFEST_FILE } from './bundle-manifest-address.js';
 import { isRecord } from './json.js';
 
@@ -156,22 +156,43 @@ function embeddedBundleIdentity(): EmbeddedBundleIdentity | null {
 }
 
 export function readBoundedAdjacentManifest(activeBundleDir: string): BoundedAdjacentManifestResult {
+  const observation = observeAdjacentManifest(activeBundleDir);
+  if (observation.ok) return observation;
+  return { ok: false, reason: observation.reason === 'invalid' ? 'invalid' : 'unavailable' };
+}
+
+export function observeAdjacentManifest(
+  activeBundleDir: string,
+):
+  | Readonly<{ ok: true; value: unknown }>
+  | Readonly<{ ok: false; reason: 'missing' | 'invalid' | 'invalid-file' | 'unavailable' }> {
   const path = join(activeBundleDir, CURRENT_STRICT_BUNDLE_MANIFEST_FILE);
   let baseline: BigIntStats;
   try {
     baseline = lstatSync(path, { bigint: true });
-  } catch {
-    return { ok: false, reason: 'unavailable' };
+  } catch (error: unknown) {
+    const code = (error as NodeJS.ErrnoException).code;
+    return { ok: false, reason: code === 'ENOENT' || code === 'ENOTDIR' ? 'missing' : 'unavailable' };
   }
-  if (!baseline.isFile() || baseline.isSymbolicLink()) {
-    return { ok: false, reason: 'unavailable' };
-  }
-  const bytes = readBoundedFileAtIdentity(nodeFsBoundedReadStorage, path, baseline, MAX_STRICT_BUNDLE_MANIFEST_BYTES);
-  if (bytes === null) {
-    return { ok: false, reason: 'unavailable' };
-  }
+  if (!baseline.isFile() || baseline.isSymbolicLink()) return { ok: false, reason: 'invalid-file' };
+  const observation = observeBoundedFileAtIdentity(
+    nodeFsBoundedReadStorage,
+    path,
+    baseline,
+    MAX_STRICT_BUNDLE_MANIFEST_BYTES,
+  );
+  if (observation.kind !== 'read')
+    return {
+      ok: false,
+      reason:
+        observation.kind === 'unobservable'
+          ? 'unavailable'
+          : observation.kind === 'invalid'
+            ? 'invalid-file'
+            : observation.kind,
+    };
   try {
-    const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    const text = new TextDecoder('utf-8', { fatal: true }).decode(observation.bytes);
     return { ok: true, value: JSON.parse(text) as unknown };
   } catch {
     return { ok: false, reason: 'invalid' };
@@ -184,24 +205,26 @@ function parseStrictManifest(value: unknown): StrictBundleManifest | null {
 }
 
 export function hashStableAdjacentBundle(activeBundleDir: string, fileName: string): string | null {
+  const observation = observeStableAdjacentBundle(activeBundleDir, fileName);
+  return observation.kind === 'hashed' ? observation.hash : null;
+}
+
+export function observeStableAdjacentBundle(
+  activeBundleDir: string,
+  fileName: string,
+): { kind: 'hashed'; hash: string } | { kind: 'missing' | 'invalid' | 'unobservable' } {
   const path = join(activeBundleDir, fileName);
   let descriptor: number | null = null;
   let digest: string | undefined;
   let closeFailed = false;
   try {
     const pathBefore = lstatSync(path, { bigint: true });
-    if (!pathBefore.isFile() || pathBefore.isSymbolicLink()) return null;
+    if (!pathBefore.isFile() || pathBefore.isSymbolicLink()) return { kind: 'invalid' };
     descriptor = openSync(path, 'r');
     const before = fstatSync(descriptor, { bigint: true });
-    if (
-      !before.isFile() ||
-      before.size < 0n ||
-      before.size > BigInt(MAX_STRICT_BACKEND_BUNDLE_BYTES) ||
-      before.dev !== pathBefore.dev ||
-      before.ino !== pathBefore.ino
-    ) {
-      return null;
-    }
+    if (!before.isFile() || before.size < 0n || before.size > BigInt(MAX_STRICT_BACKEND_BUNDLE_BYTES))
+      return { kind: 'invalid' };
+    if (before.dev !== pathBefore.dev || before.ino !== pathBefore.ino) return { kind: 'unobservable' };
 
     const hash = createHash('sha256');
     const buffer = Buffer.allocUnsafe(64 * 1024);
@@ -210,7 +233,7 @@ export function hashStableAdjacentBundle(activeBundleDir: string, fileName: stri
       const bytesRead = readSync(descriptor, buffer, 0, buffer.length, null);
       if (bytesRead === 0) break;
       total += BigInt(bytesRead);
-      if (total > before.size) return null;
+      if (total > before.size) return { kind: 'unobservable' };
       hash.update(buffer.subarray(0, bytesRead));
     }
 
@@ -229,11 +252,12 @@ export function hashStableAdjacentBundle(activeBundleDir: string, fileName: stri
       pathAfter.size !== before.size ||
       pathAfter.mtimeNs !== before.mtimeNs
     ) {
-      return null;
+      return { kind: 'unobservable' };
     }
     digest = hash.digest('hex').slice(0, 16);
-  } catch {
-    return null;
+  } catch (error: unknown) {
+    const code = (error as NodeJS.ErrnoException).code;
+    return { kind: code === 'ENOENT' || code === 'ENOTDIR' ? 'missing' : 'unobservable' };
   } finally {
     if (descriptor !== null) {
       try {
@@ -243,7 +267,7 @@ export function hashStableAdjacentBundle(activeBundleDir: string, fileName: stri
       }
     }
   }
-  return closeFailed ? null : (digest ?? null);
+  return closeFailed || digest === undefined ? { kind: 'unobservable' } : { kind: 'hashed', hash: digest };
 }
 
 export function resolveStrictBundleIdentity(options?: {

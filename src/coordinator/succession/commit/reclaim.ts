@@ -61,21 +61,31 @@ export function createCommitReclaim(ports: SuccessionCommitPorts, dependencies: 
     const attemptId = failure.attempt?.attemptId ?? failure.preparation.attemptId;
     if (failure.writer === null) {
       closePause();
-      const settlement = await clearAttempt(attemptId, (intent) => ({
-        ...intent,
-        ...unservedMintOf(failure),
-        disposition: 'deferred',
-        attemptId: null,
-        attemptChild: null,
-        attemptOwner: null,
-        attemptDeadline: null,
-        successionPreparation: null,
-        blockers: [
-          { owner: 'succession-commit', reason: `incumbent retained authority after ${failure.reason}` },
-          ...childHoldBlockers(failure.childHold),
-        ],
-        ...failedAttemptRetry(intent, failure.retry, 'successor commit preparation failure', runtime.time.now()),
-      }));
+      const settlement = await clearAttempt(attemptId, (intent) => {
+        const retainedIntent: UpgradeIntent = {
+          ...intent,
+          ...unservedMintOf(failure),
+          disposition: 'deferred',
+          attemptId: null,
+          attemptChild: null,
+          attemptOwner: null,
+          attemptDeadline: null,
+          successionPreparation: null,
+          blockers: [
+            { owner: 'succession-commit', reason: `incumbent retained authority after ${failure.reason}` },
+            ...childHoldBlockers(failure.childHold),
+          ],
+        };
+        return {
+          ...retainedIntent,
+          ...failedAttemptRetry(
+            retainedIntent,
+            failure.retry,
+            'successor commit preparation failure',
+            runtime.time.now(),
+          ),
+        };
+      });
       wakeForRetry(failure.retry);
       return settlement;
     }
@@ -114,25 +124,30 @@ export function createCommitReclaim(ports: SuccessionCommitPorts, dependencies: 
     ports.providerHosts.reclaimTransferred();
     ports.setLaunchFenceActive(false);
     closePause();
-    const settlement = await clearAttempt(attemptId, (intent) => ({
-      ...intent,
-      ...unservedMintOf(failure),
-      disposition: 'deferred',
-      attemptId: null,
-      attemptChild: null,
-      attemptOwner: null,
-      attemptDeadline: null,
-      recoveryAttemptId: null,
-      recoveryBuildSetId: null,
-      recoveryGrantAttemptId: null,
-      recoveryRetry: null,
-      successionPreparation: null,
-      blockers: [
-        { owner: 'succession-commit', reason: `incumbent reclaimed after ${failure.reason}` },
-        ...childHoldBlockers(failure.childHold),
-      ],
-      ...failedAttemptRetry(intent, failure.retry, 'successor committed-open failure', runtime.time.now()),
-    }));
+    const settlement = await clearAttempt(attemptId, (intent) => {
+      const reclaimedIntent: UpgradeIntent = {
+        ...intent,
+        ...unservedMintOf(failure),
+        disposition: 'deferred',
+        attemptId: null,
+        attemptChild: null,
+        attemptOwner: null,
+        attemptDeadline: null,
+        recoveryAttemptId: null,
+        recoveryBuildSetId: null,
+        recoveryGrantAttemptId: null,
+        recoveryRetry: null,
+        successionPreparation: null,
+        blockers: [
+          { owner: 'succession-commit', reason: `incumbent reclaimed after ${failure.reason}` },
+          ...childHoldBlockers(failure.childHold),
+        ],
+      };
+      return {
+        ...reclaimedIntent,
+        ...failedAttemptRetry(reclaimedIntent, failure.retry, 'successor committed-open failure', runtime.time.now()),
+      };
+    });
     wakeForRetry(failure.retry);
     ports.log(`Succession attempt held and incumbent writer reclaimed: ${failure.reason}\n`);
     return settlement;

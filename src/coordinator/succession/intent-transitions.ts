@@ -2,6 +2,7 @@ import { compareProductVersions } from '../../infra/product-version.js';
 import { observeRecordedDeath } from './startup.js';
 import {
   revalidateUpgradeIntentTarget,
+  upgradeRetirementCommitted,
   retryUpgradeIntentCas,
   type UpgradeIntent,
   type UpgradeIntentCasOutcome,
@@ -87,6 +88,7 @@ export function requestedIntent(
   return {
     requestId: request.requestId,
     reason,
+    legacyRetirement: false,
     incumbent,
     target: request.target,
     attemptId: null,
@@ -196,7 +198,7 @@ async function requestSuccessionIntent(
     }
     const current = observed.kind === 'readable' ? observed.intent : null;
     if (current !== null && current.disposition !== 'closed' && current.disposition !== 'completed') {
-      if (current.reason === 'supervision-repair') {
+      if (upgradeRetirementCommitted(current) || current.reason === 'supervision-repair') {
         return queueBehindSuccessionAttempt(current, input, options, notifyObligationChange);
       }
       if (
@@ -261,6 +263,8 @@ async function requestSuccessionSupervisionRepair(
     const current = observed.kind === 'readable' ? observed.intent : null;
     const active = current !== null && current.disposition !== 'closed' && current.disposition !== 'completed';
     if (active) {
+      if (upgradeRetirementCommitted(current))
+        return settle({ kind: 'deferred', reason: 'committed retirement awaits ordinary startup' });
       let newerTargetCanTakeCustody = false;
       if (
         current.reason !== 'supervision-repair' &&

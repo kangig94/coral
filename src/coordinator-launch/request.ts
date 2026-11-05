@@ -7,7 +7,7 @@ import { writeAuditEvent } from '../infra/audit-log.js';
 import { createForeignTargetValidator } from '../infra/handoff-target.js';
 import type { LegacyUpgradeStart } from '../infra/legacy-upgrade-contract.js';
 import { compareProductVersions } from '../infra/product-version.js';
-import { retryUpgradeIntentCas, type UpgradeIntent } from '../infra/upgrade-intent.js';
+import { retryUpgradeIntentCas, upgradeRetirementCommitted, type UpgradeIntent } from '../infra/upgrade-intent.js';
 
 export async function recordLegacyUpgradeIntent(
   options: Readonly<{
@@ -49,7 +49,11 @@ export async function recordLegacyUpgradeIntent(
       };
     const current = observed.kind === 'readable' ? observed.intent : null;
     if (current !== null && current.disposition !== 'closed' && current.disposition !== 'completed') {
-      if (current.attemptId !== null || current.reason === 'supervision-repair') {
+      if (
+        upgradeRetirementCommitted(current) ||
+        current.attemptId !== null ||
+        current.reason === 'supervision-repair'
+      ) {
         const queued = current.nextTarget ?? null;
         const targetIsNewer =
           current.target.build.flavor === options.target.build.flavor &&

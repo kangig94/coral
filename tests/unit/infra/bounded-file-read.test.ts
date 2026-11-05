@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   readBoundedFileAtIdentity,
+  observeBoundedFileAtIdentity,
   sameFileIdentity,
   type BoundedFileReadStorage,
 } from '#src/infra/bounded-file-read.js';
@@ -52,6 +53,32 @@ describe('readBoundedFileAtIdentity', () => {
       ...overrides,
     };
   }
+
+  it.each([
+    ['ENOENT', 'missing'],
+    ['ENOTDIR', 'missing'],
+    ['EACCES', 'unobservable'],
+    ['EIO', 'unobservable'],
+  ] as const)('preserves %s from an open after a successful baseline stat as %s', (code, kind) => {
+    const storage = readingStorage({
+      openSync: () => {
+        throw Object.assign(new Error(code), { code });
+      },
+    });
+    expect(observeBoundedFileAtIdentity(storage, '/x', fakeStat(), 64)).toEqual({ kind });
+    expect(readBoundedFileAtIdentity(storage, '/x', fakeStat(), 64)).toBeNull();
+  });
+
+  it('keeps the nullable read contract when a storage port throws a non-Error value', () => {
+    const failure: unknown = null;
+    const storage = readingStorage({
+      openSync: () => {
+        throw failure;
+      },
+    });
+    expect(observeBoundedFileAtIdentity(storage, '/x', fakeStat(), 64)).toEqual({ kind: 'unobservable' });
+    expect(readBoundedFileAtIdentity(storage, '/x', fakeStat(), 64)).toBeNull();
+  });
 
   it('reads bytes matching the baseline identity, then closes the descriptor', () => {
     let closed = false;

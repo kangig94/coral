@@ -1,3 +1,4 @@
+import { quiescentCutoverAt } from '../attempt-retry.js';
 import { sameEpoch } from '../../../store/epoch/identity.js';
 import { join } from 'node:path';
 
@@ -345,6 +346,8 @@ export async function prepareObservedIntent({
   if (intent.requestId !== requestId || intent.disposition === 'closed' || intent.disposition === 'completed') {
     return settle({ kind: 'refused', reason: 'upgrade request is no longer pending' });
   }
+  if (quiescentCutoverAt(intent) !== null)
+    return settle({ kind: 'deferred', reason: 'quiescent-cutover awaits ordinary startup' });
   const self = options.incumbent();
   if (!recordsSelf(intent.incumbent, self)) {
     return settle({ kind: 'refused', reason: 'incumbent identity changed' });

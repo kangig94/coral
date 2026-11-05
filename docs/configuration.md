@@ -350,6 +350,10 @@ coral-cli backend recovery-quarantine clear --boundary <boundary> --key <key> --
 | `~/.coral/gen2/run/coordinator.json` or `~/.coral/gen2/run-dev/coordinator.json` | Active coordinator discovery record   |
 | `~/.coral/gen2/run/coordinator.lock` or `~/.coral/gen2/run-dev/coordinator.lock` | Per-flavor singleton coordinator lock |
 
+#### Upgrade deadline outcome
+
+After repeated serving-deadline misses, `coral-cli backend status` identifies the fallback with the `quiescent-cutover` blocker. The reason and automatic-action text reflect the current outcome, such as `target no longer validates`, and name the next retirement or revalidation step. Other owners' blockers, including an unresolved successor's identity and absence warning, remain visible alongside it throughout cutover. Unavailable status revalidates hourly; unobservable status continues automatic revalidation with delays capped at one hour. Both retain their visible reason and keep hot succession suppressed until a validated observation permits the revision-checked retirement path. It requires no operator action. A missing target cannot launch until its build validates again. See [Upgrade succession and administrative shutdown](./architecture.md#upgrade-succession-and-administrative-shutdown) for the transitions and mixed-build constraints, and `formatPendingUpgrade` in `src/cli/format/backend.ts`.
+
 ### Provider conversation state
 
 `job.opened` records a provider job's conversation facet: strict binding, cwd, model/effort, agent, instruction, system prompt, permissions, retention policy, name, and controller profile. Continuity checkpoints record its native `conversationRef` on the same stream. One provider conversation has one canonical UUID job id; each turn is an ordinal execution of that job. `projection_jobs` combines this facet with the latest execution's state. There is no provider-session stream, session id, claim, or `projection_sessions`. Workflow and discussion scopes remain on their own aggregates.

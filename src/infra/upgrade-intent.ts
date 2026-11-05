@@ -15,7 +15,7 @@ import { z } from 'zod';
 
 import { acquireDirectoryLock } from './fs-lock.js';
 import { writeAuditEvent } from './audit-log.js';
-import { createForeignTargetValidator, type ForeignTargetValidationResult } from './handoff-target.js';
+import { createForeignTargetObserver, type ForeignTargetObservation } from './handoff-target.js';
 import { processIncarnationSchema } from './node-process.js';
 import { upgradeIntentPath } from './path/index.js';
 import { listLaunchSubjects, observeLaunchSubject } from './launch-admission-record.js';
@@ -97,6 +97,7 @@ export const UPGRADE_BLOCKER_OWNERS = [
   'succession-commit',
   'succession-prepare',
   'succession-startup',
+  'quiescent-cutover',
 ] as const;
 
 export type UpgradeBlockerOwner = (typeof UPGRADE_BLOCKER_OWNERS)[number];
@@ -144,6 +145,7 @@ const attemptRetrySchema = z.discriminatedUnion('kind', [
       kind: z.literal('transient'),
       retryAfterMs: z.number().int().safe().nonnegative(),
       obligationChange: z.boolean().optional(),
+      servingDeadline: z.boolean().optional(),
     })
     .passthrough(),
   z.object({ kind: z.literal('target-change') }).passthrough(),
@@ -190,6 +192,24 @@ const unservedMintDiscardSchema = z
 
 const UPGRADE_INTENT_DISPOSITIONS = ['pending', 'deferred', 'attempting', 'completed', 'closed'] as const;
 
+const SERVING_DEADLINE_OUTCOMES = ['waiting', 'retiring', 'unavailable', 'unobservable'] as const;
+
+const servingDeadlineSchema = z
+  .object({
+    targetKey: z.string().min(1),
+    misses: z.number().int().safe().nonnegative(),
+    cutoverAt: z.string().datetime().nullable(),
+    retirementIncumbent: z.string().nullable().optional(),
+    outcome: z.enum(SERVING_DEADLINE_OUTCOMES).optional(),
+    targetRevalidation: z
+      .object({ attempts: z.number().int().safe().positive(), retryAt: z.string().datetime().nullable() })
+      .passthrough()
+      .nullable()
+      .optional(),
+    reason: z.string().nullable().optional(),
+  })
+  .passthrough();
+
 const upgradeIntentFields = z
   .object({
     version: z.literal('v1'),
@@ -216,6 +236,7 @@ const upgradeIntentFields = z
     retryCondition: retryConditionSchema.nullable(),
     attemptDeadline: z.string().datetime().nullable(),
     completionReceipt: servingReceiptSchema.nullable(),
+    servingDeadline: servingDeadlineSchema.optional(),
     transientRetry: transientRetrySchema.optional().catch(undefined),
     obligationRetry: obligationRetrySchema.nullable().optional().catch(undefined),
     recoveryRetry: attemptRetrySchema.nullable().optional(),
@@ -230,6 +251,7 @@ const upgradeIntentFields = z
 /** Unknown decision values belong to a newer build and must not be treated as corrupt or overwritten. */
 const newerVocabularySchema = upgradeIntentFields.extend({
   disposition: z.string().min(1),
+  servingDeadline: servingDeadlineSchema.extend({ outcome: z.string().min(1).optional() }).optional(),
   attemptOwner: attemptOwnerSchema.extend({ kind: z.string().min(1) }).nullable(),
   retryCondition: retryConditionSchema.extend({ kind: z.string().min(1) }).nullable(),
   recoveryRetry: z
@@ -242,9 +264,11 @@ const newerVocabularySchema = upgradeIntentFields.extend({
 function namesNewerVocabulary(value: unknown): boolean {
   const parsed = newerVocabularySchema.safeParse(value);
   if (!parsed.success) return false;
-  const { disposition, attemptOwner, retryCondition, recoveryRetry } = parsed.data;
+  const { disposition, attemptOwner, retryCondition, recoveryRetry, servingDeadline } = parsed.data;
   return (
     !(UPGRADE_INTENT_DISPOSITIONS as readonly string[]).includes(disposition) ||
+    (servingDeadline?.outcome !== undefined &&
+      !(SERVING_DEADLINE_OUTCOMES as readonly string[]).includes(servingDeadline.outcome)) ||
     (attemptOwner !== null && !(ATTEMPT_OWNER_KINDS as readonly string[]).includes(attemptOwner.kind)) ||
     (retryCondition !== null && !(RETRY_CONDITION_KINDS as readonly string[]).includes(retryCondition.kind)) ||
     (recoveryRetry !== null &&
@@ -375,6 +399,49 @@ export function parseUpgradeIntentSnapshot(value: unknown): UpgradeIntent | null
   const parsed = upgradeIntentSchema.safeParse(value);
   return parsed.success ? parsed.data : null;
 }
+export function upgradeTargetBuildKey(target: UpgradeIntent['target']): string {
+  const b = target.build;
+  return JSON.stringify([
+    b.version,
+    b.buildSetId,
+    b.flavor,
+    b.storeFormatFingerprint,
+    b.bundleHash,
+    b.cliBundleHash,
+    b.claudeAppserverBundleHash,
+    b.durableWrapperBundleHash,
+  ]);
+}
+
+export function servingDeadlineOf(intent: UpgradeIntent): UpgradeIntent['servingDeadline'] {
+  return intent.servingDeadline?.targetKey === upgradeTargetBuildKey(intent.target)
+    ? intent.servingDeadline
+    : undefined;
+}
+
+export function closedCutoverNeedsStartup(intent: UpgradeIntent): boolean {
+  return (
+    intent.disposition === 'closed' &&
+    intent.legacyRetirement === true &&
+    (servingDeadlineOf(intent)?.cutoverAt ?? null) !== null &&
+    !(
+      intent.incumbent.version === intent.target.build.version &&
+      intent.incumbent.bundleHash === intent.target.build.bundleHash &&
+      intent.incumbent.flavor === intent.target.build.flavor
+    )
+  );
+}
+
+export function upgradeRetirementCommitted(intent: UpgradeIntent): boolean {
+  const policy = servingDeadlineOf(intent);
+  return (
+    intent.disposition !== 'closed' &&
+    intent.disposition !== 'completed' &&
+    policy?.outcome === 'retiring' &&
+    policy.retirementIncumbent === intent.incumbent.instanceId
+  );
+}
+
 export type UpgradeIntentChange = Pick<
   UpgradeIntent,
   | 'requestId'
@@ -439,7 +506,8 @@ export function parseVisibleUpgradeIntent(value: unknown): UpgradeIntentVisibili
 }
 
 export function visibleUpgradeIntent(intent: UpgradeIntent): UpgradeIntentVisibility | null {
-  if (intent.disposition === 'closed' || intent.disposition === 'completed') return null;
+  if (intent.disposition === 'completed') return null;
+  if (intent.disposition === 'closed' && !closedCutoverNeedsStartup(intent)) return null;
   const preparation = intent.successionPreparation;
   const stage =
     typeof preparation === 'object' && preparation !== null && 'stage' in preparation ? preparation.stage : null;
@@ -578,7 +646,7 @@ export function hasQuarantinedUpgradeIntent(runDir: string): boolean {
 export function revalidateUpgradeIntentTarget(
   intent: UpgradeIntent,
   pluginRoot: string = intent.target.pluginRootLabel,
-): ForeignTargetValidationResult {
+): ForeignTargetObservation {
   const {
     version,
     buildSetId,
@@ -599,7 +667,7 @@ export function revalidateUpgradeIntentTarget(
     claudeAppserverBundleHash,
     durableWrapperBundleHash,
   };
-  return createForeignTargetValidator()(join(pluginRoot, 'bridge'), manifest);
+  return createForeignTargetObserver()(join(pluginRoot, 'bridge'), manifest);
 }
 
 function mergeUnknownKeys(oldValue: unknown, newValue: unknown, key?: string): unknown {

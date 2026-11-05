@@ -1,3 +1,7 @@
+import { superviseActiveChild } from '#src/coordinator-launch/active-child.js';
+import { watchChild } from '#src/coordinator-launch/child-watch.js';
+import { pendingIntent } from '#src/coordinator-launch/pending-upgrade.js';
+import { failedAttemptRetry } from '#src/coordinator/succession/attempt-retry.js';
 import * as epochObservation from '#src/store/epoch/observation.js';
 import type * as MockedNodeProcessModule from '#src/infra/node-process.js';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
@@ -9,6 +13,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   completeSupervisorLegacyUpgrade,
+  closeServedIntentAtCleanExit,
   heldUnservedMint,
   prepareCommittedSuccessorRecovery,
   publishAttemptServing,
@@ -23,6 +28,7 @@ import {
   compareAndSwapUpgradeIntent,
   hasQuarantinedUpgradeIntent,
   readUpgradeIntent,
+  visibleUpgradeIntent,
   type UpgradeIntentChange,
 } from '#src/infra/upgrade-intent.js';
 import { upgradeIntentPath } from '#src/infra/path/coordinator.js';
@@ -47,6 +53,8 @@ import { currentCoralStoreFormat } from '#src/store-format.js';
 import type { SuccessionAttemptChild } from '#src/coordinator/succession/attempt-child.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { authorizeFixtureStoreMint } from '#tests/helpers/store-db.js';
+
+vi.mock('#src/coordinator-launch/child-watch.js', () => ({ watchChild: vi.fn() }));
 
 vi.mock('#src/infra/node-process.js', async (importOriginal) => ({
   ...(await importOriginal<typeof MockedNodeProcessModule>()),
@@ -494,7 +502,7 @@ describe('incomplete succession at startup', () => {
 });
 
 describe('supervised legacy upgrade completion', () => {
-  it('should complete when an earlier attempt left an expired deadline on the intent', async () => {
+  it.each(['expired-deadline', 'quiescent-cutover'])('completes ordinary startup after %s', async (mode) => {
     const base = runtimeFixture();
     const format = currentCoralStoreFormat();
     const current = { ...build, version: format.productVersion, storeFormatFingerprint: format.fingerprint };
@@ -527,6 +535,27 @@ describe('supervised legacy upgrade completion', () => {
       completionReceipt: null,
     });
     if (written.kind !== 'written') throw new Error(`intent seed was ${written.kind}`);
+    if (mode === 'quiescent-cutover') {
+      let intent = written.intent;
+      for (let i = 0; i < 2; i++) {
+        const next = await compareAndSwapUpgradeIntent(runDir, intent.revision, {
+          ...intent,
+          disposition: 'deferred',
+          attemptId: null,
+          attemptOwner: null,
+          attemptDeadline: null,
+          ...failedAttemptRetry(
+            intent,
+            { kind: 'transient', retryAfterMs: 1000, servingDeadline: true },
+            'changed',
+            base.time.now(),
+          ),
+        });
+        if (next.kind !== 'written') throw new Error(next.kind);
+        intent = next.intent;
+      }
+      expect(intent.blockers[0]?.owner).toBe('quiescent-cutover');
+    }
     const launchId = base.ids.uuid();
     const self = { pid: process.pid, incarnation: testIncarnation(process.pid) };
     const admissionPath = launchAdmissionPath(runDir, launchId);
@@ -562,6 +591,34 @@ describe('supervised legacy upgrade completion', () => {
         completionReceipt: { attemptId: launchId },
       },
     });
+    if (mode === 'quiescent-cutover') {
+      await closeServedIntentAtCleanExit(runtime, 'successor', {
+        instanceId: 'successor',
+        ...self,
+        version: current.version,
+        bundleHash: current.bundleHash,
+        flavor: current.flavor,
+      });
+      expect(readUpgradeIntent(runDir)).toMatchObject({ intent: { disposition: 'closed', legacyRetirement: true } });
+      expect(pendingIntent(runDir)).toBeNull();
+      const closed = readUpgradeIntent(runDir);
+      if (closed.kind !== 'readable') throw new Error(closed.kind);
+      expect(visibleUpgradeIntent(closed.intent)).toBeNull();
+      const release = vi.fn(() => true);
+      vi.mocked(watchChild).mockResolvedValue({ served: true, exitCode: 0, signal: null, wedged: false });
+      const supervision = {
+        record: { release, childRetirement: vi.fn() },
+        owner: {},
+        initial: { child: {}, identity: self, manifest: current },
+        reservation: {},
+        runDir,
+        timing: {},
+        startupBudgetMs: 30_000,
+      } as unknown as Parameters<typeof superviseActiveChild>[0];
+      await expect(superviseActiveChild(supervision)).resolves.toBe(true);
+      expect(release).toHaveBeenCalledOnce();
+      expect(watchChild).toHaveBeenCalledOnce();
+    }
   });
 });
 

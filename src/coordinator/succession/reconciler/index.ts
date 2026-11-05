@@ -47,6 +47,7 @@ export type SuccessionReconcilerOptions = Readonly<{
   launchPrepared?: (intent: UpgradeIntent, preparation: SuccessionPreparation) => Promise<SuccessionLaunch>;
   discardUnservedMint?: (incumbentEpochKey: string, attemptId: string) => UnservedMintDiscard;
   retryIntervalMs?: number;
+  retireForCutover?: () => void;
   observation?: { bootId: string; log(message: string): void };
 }>;
 
