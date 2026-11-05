@@ -764,6 +764,18 @@ export function formatBackendStatus(
     sections.push(
       `Controller evidence refusal observed ${refusal.observedAt ?? 'at an unknown time'} at ${refusal.path}: ${refusal.observation}. This retained observation is history; current readability may have changed. It authorizes no signal or job finalization.`,
     );
+  if (daemonStatus.relaunchOutcome !== undefined) {
+    const outcome = daemonStatus.relaunchOutcome;
+    sections.push(
+      `Supervisor ${outcome.supervisorPid} recorded ${outcome.kind} after ${outcome.failedLaunches} unsuccessful launches at ${outcome.observedAt}. Namespace ownership was released; a subsequent command can start a fresh supervisor. This is historical evidence, not current service state.`,
+    );
+  }
+  if (daemonStatus.ownershipWaitOutcome !== undefined) {
+    const outcome = daemonStatus.ownershipWaitOutcome;
+    sections.push(
+      `Supervisor ${outcome.supervisorPid} recorded ${outcome.kind} at ${outcome.observedAt}. The incumbent may still be running; retry the original command to observe recovery. This is historical evidence, not current service state.`,
+    );
+  }
   const currentLaunchOwner = daemonStatus.launchStatusSource === 'authenticated-owner';
   if (!currentLaunchOwner) {
     if (daemonStatus.launchStatusSource === 'persisted')

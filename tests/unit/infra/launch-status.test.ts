@@ -1,4 +1,5 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tryAcquireDiagnosticDirectoryLock } from '#src/infra/fs-lock.js';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -13,9 +14,150 @@ import {
   readLaunchStatus,
   receiveLaunchStatus,
   updateLaunchStatus,
+  publishTerminalLaunchStatus,
 } from '#src/infra/launch-status.js';
 
 describe('launch status diagnostics', () => {
+  it.each([
+    ['relaunchOutcome', false],
+    ['relaunchOutcome', true],
+    ['ownershipWaitOutcome', false],
+    ['ownershipWaitOutcome', true],
+  ] as const)('awaits terminal %s publication (lock stays held=%s)', async (field, staysHeld) => {
+    vi.useFakeTimers();
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-terminal-status-'));
+    const lease = tryAcquireDiagnosticDirectoryLock(join(runDir, 'launch-status.v1.lock'));
+    if (lease === null) throw new Error('Fixture diagnostic lock unavailable');
+    const stderr = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
+    const outcome =
+      field === 'relaunchOutcome'
+        ? {
+            kind: 'relaunch-failed' as const,
+            supervisorPid: process.pid,
+            failedLaunches: 3,
+            observedAt: '2026-11-05',
+            retry: 'next-ensure' as const,
+          }
+        : {
+            kind: 'supervisor-lock-wait-expired' as const,
+            supervisorPid: process.pid,
+            observedAt: '2026-11-05',
+            retry: 'next-ensure' as const,
+          };
+    try {
+      let settled = false;
+      const publication = publishTerminalLaunchStatus(runDir, { [field]: outcome }).then(() => {
+        settled = true;
+      });
+      expect(currentLaunchStatus(runDir)?.publicationFailure).toBeDefined();
+      await vi.advanceTimersByTimeAsync(400);
+      expect(settled).toBe(false);
+      if (!staysHeld) lease();
+      await vi.advanceTimersByTimeAsync(1_500);
+      expect(settled).toBe(!staysHeld);
+      await vi.advanceTimersByTimeAsync(200);
+      await publication;
+      if (staysHeld) {
+        expect(readLaunchStatus(runDir).kind).toBe('absent');
+        expect(stderr).toHaveBeenCalledWith(
+          expect.stringContaining('Terminal launch outcome publication failed after 2000 ms'),
+        );
+      } else {
+        expect(readLaunchStatus(runDir)).toMatchObject({ kind: 'readable', status: { [field]: outcome } });
+        expect(stderr).not.toHaveBeenCalled();
+      }
+    } finally {
+      lease();
+      vi.restoreAllMocks();
+      vi.useRealTimers();
+      rmSync(runDir, { recursive: true, force: true });
+    }
+  });
+
+  it.each(['relaunchOutcome', 'ownershipWaitOutcome'] as const)(
+    'preserves successor fields and lists while publishing terminal %s',
+    async (field) => {
+      vi.useFakeTimers();
+      const runDir = mkdtempSync(join(tmpdir(), 'coral-terminal-successor-'));
+      let lease: ReturnType<typeof tryAcquireDiagnosticDirectoryLock> = null;
+      const stale = { launchId: 'shared', pid: 123, incarnation: 'old' };
+      const successor = { launchId: 'shared', pid: 456, incarnation: 'new' };
+      try {
+        updateLaunchStatus(runDir, (status) => ({
+          ...status,
+          hold: { kind: 'target-indeterminate', requestId: 'old' },
+          signalHolds: [stale],
+        }));
+        lease = tryAcquireDiagnosticDirectoryLock(join(runDir, 'launch-status.v1.lock'));
+        if (lease === null) throw new Error('Fixture diagnostic lock unavailable');
+        updateLaunchStatus(runDir, (status) => ({ ...status, hold: undefined, signalHolds: [] }));
+        const latest = {
+          version: 1,
+          inheritedHolds: [],
+          signalHolds: [successor],
+          hold: { kind: 'target-indeterminate', requestId: 'successor' },
+          publicationFailure: { code: 'status-publication-unavailable', detail: 'successor observation' },
+        };
+        writeFileSync(join(runDir, 'launch-status.v1.json'), JSON.stringify(latest));
+        const outcome =
+          field === 'relaunchOutcome'
+            ? {
+                relaunchOutcome: {
+                  kind: 'relaunch-failed' as const,
+                  supervisorPid: process.pid,
+                  failedLaunches: 3,
+                  observedAt: '2026-11-05',
+                  retry: 'next-ensure' as const,
+                },
+              }
+            : {
+                ownershipWaitOutcome: {
+                  kind: 'supervisor-lock-wait-expired' as const,
+                  supervisorPid: process.pid,
+                  observedAt: '2026-11-05',
+                  retry: 'next-ensure' as const,
+                },
+              };
+        const publication = publishTerminalLaunchStatus(runDir, outcome);
+        lease();
+        await vi.advanceTimersByTimeAsync(600);
+        await publication;
+        await vi.advanceTimersByTimeAsync(800);
+        expect(readLaunchStatus(runDir)).toMatchObject({ kind: 'readable', status: { ...latest, ...outcome } });
+      } finally {
+        lease?.();
+        vi.useRealTimers();
+        rmSync(runDir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it('preserves an unreadable latest record when terminal publication cannot merge it', async () => {
+    vi.useFakeTimers();
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-terminal-unreadable-'));
+    const path = join(runDir, 'launch-status.v1.json');
+    writeFileSync(path, '{');
+    const stderr = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
+    try {
+      const publication = publishTerminalLaunchStatus(runDir, {
+        ownershipWaitOutcome: {
+          kind: 'supervisor-lock-wait-expired',
+          supervisorPid: process.pid,
+          observedAt: '2026-11-05',
+          retry: 'next-ensure',
+        },
+      });
+      await vi.advanceTimersByTimeAsync(2_100);
+      await publication;
+      expect(readFileSync(path, 'utf8')).toBe('{');
+      expect(stderr).toHaveBeenCalledWith(expect.stringContaining('Latest launch status is unreadable'));
+    } finally {
+      vi.restoreAllMocks();
+      vi.useRealTimers();
+      rmSync(runDir, { recursive: true, force: true });
+    }
+  });
+
   it.each(['admissionHolds', 'controllerEvidenceRefusals'] as const)(
     'merges local %s additions and deletions over remote snapshots during publication failure',
     async (key) => {

@@ -8,7 +8,7 @@ import { resolveBuildFlavor } from '../infra/build-flavor.js';
 import { acquireFailureDomainRoot } from '../infra/failure-domain.js';
 import { closeHandle } from '../infra/ipc-handle.js';
 import { type StrictBundleManifest } from '../infra/bundle-manifest.js';
-import { currentLaunchStatus } from '../infra/launch-status.js';
+import { currentLaunchStatus, publishTerminalLaunchStatus } from '../infra/launch-status.js';
 import { probeProcessIncarnation } from '../infra/node-process.js';
 import { SENTINEL_TIMING, validSentinelTiming, type SentinelTiming } from '../infra/sentinel-timing.js';
 import { quarantineCorruptUpgradeIntent, readUpgradeIntent } from '../infra/upgrade-intent.js';
@@ -50,9 +50,9 @@ async function superviseSelectedCandidate(input: {
   timing: SentinelTiming;
   startupBudgetMs: number;
   onChild?: (child: ChildProcess) => void;
-}): Promise<boolean> {
+}): Promise<'released' | 'retry' | 'failed' | 'served-exit'> {
   const { record, owner, candidate, triedCount, args, runDir, timing, startupBudgetMs, onChild } = input;
-  if (!record.hasAuthority(owner.current)) return false;
+  if (!record.hasAuthority(owner.current)) return 'retry';
   if (readUpgradeIntent(runDir).kind === 'corrupt') {
     await quarantineCorruptUpgradeIntent(runDir);
     record.reconcileAdmissions();
@@ -67,14 +67,24 @@ async function superviseSelectedCandidate(input: {
   const reservation = record.reserve(owner.current, candidate.buildSetId, purpose);
   if (reservation === null) {
     await sleep(POLL_MS);
-    return false;
+    return 'retry';
   }
   const initial = spawnAdmittedChild(record, owner.current, reservation, candidate.executable, args, runDir);
   if (initial === null) {
     await sleep(POLL_MS);
-    return false;
+    return 'failed';
   }
-  return superviseActiveChild({ record, owner, initial, reservation, runDir, timing, startupBudgetMs, onChild });
+  const outcome = await superviseActiveChild({
+    record,
+    owner,
+    initial,
+    reservation,
+    runDir,
+    timing,
+    startupBudgetMs,
+    onChild,
+  });
+  return outcome.released ? 'released' : outcome.served ? 'served-exit' : 'failed';
 }
 
 async function selectAndSuperviseCandidate(input: {
@@ -90,7 +100,7 @@ async function selectAndSuperviseCandidate(input: {
   timing: SentinelTiming;
   startupBudgetMs: number;
   onChild?: (child: ChildProcess) => void;
-}): Promise<{ released: boolean; firstLaunch: boolean }> {
+}): Promise<{ outcome: 'released' | 'retry' | 'failed' | 'served-exit'; firstLaunch: boolean }> {
   const {
     record,
     owner,
@@ -116,13 +126,13 @@ async function selectAndSuperviseCandidate(input: {
     firstLaunch,
     unidentifiedBinder,
   });
-  if (!record.hasAuthority(authority)) return { released: false, firstLaunch };
-  if (selection.kind === 'released') return { released: true, firstLaunch };
-  if (selection.kind === 'retry') return { released: false, firstLaunch };
+  if (!record.hasAuthority(authority)) return { outcome: 'retry', firstLaunch };
+  if (selection.kind === 'released') return { outcome: 'released', firstLaunch };
+  if (selection.kind === 'retry') return { outcome: 'retry', firstLaunch };
   const candidate = selection.candidate;
   record.clearHold();
   tried.add(candidate.executable);
-  const released = await superviseSelectedCandidate({
+  const outcome = await superviseSelectedCandidate({
     record,
     owner,
     candidate,
@@ -133,7 +143,7 @@ async function selectAndSuperviseCandidate(input: {
     startupBudgetMs,
     onChild,
   });
-  return { released, firstLaunch: false };
+  return { outcome, firstLaunch: false };
 }
 
 type NamespaceSupervision = ReconcileInheritedInput & {
@@ -266,6 +276,7 @@ async function superviseInheritedLaunch(
 
 async function superviseNamespace(session: NamespaceSupervision): Promise<number> {
   const { record, owner, runDir } = session;
+  let failedLaunches = 0;
   while (true) {
     if (owner.lost) {
       session.repairBridge?.close();
@@ -285,13 +296,35 @@ async function superviseNamespace(session: NamespaceSupervision): Promise<number
       session.repairBridge = null;
       continue;
     }
+    if (failedLaunches >= 3) {
+      if (!record.release()) {
+        await sleep(POLL_MS);
+        continue;
+      }
+      owner.release();
+      await publishTerminalLaunchStatus(runDir, {
+        relaunchOutcome: {
+          kind: 'relaunch-failed',
+          supervisorPid: process.pid,
+          failedLaunches,
+          observedAt: new Date().toISOString(),
+          retry: 'next-ensure',
+        },
+      });
+      process.stderr.write(
+        'Coordinator relaunch failed three times; supervisor releasing namespace ownership. Retry the command to start a fresh supervisor.\n',
+      );
+      return 1;
+    }
     if (await releaseToInheritedSupervision(session, inherited)) return 0;
     const inheritedDisposition = await superviseInheritedLaunch(session, inherited);
     if (inheritedDisposition === 'released') return 0;
     if (inheritedDisposition === 'retry') continue;
     const selection = await selectAndSuperviseCandidate(session);
     session.firstLaunch = selection.firstLaunch;
-    if (selection.released) return 0;
+    if (selection.outcome === 'released') return 0;
+    if (selection.outcome === 'failed') failedLaunches += 1;
+    else if (selection.outcome === 'served-exit') failedLaunches = 0;
   }
 }
 

@@ -365,9 +365,9 @@ Before 0.7.1, KB boot lived inline in `coordinator/index.ts` with ad-hoc retry c
 - KB request error envelopes (`kb_initializing`, `kb_offline`, `kb_disabled`) are produced by the KB daemon request/supervisor path, not by the parent health registry.
 - Enforced by invariants (`runtime-component-contract-singleton`, `kb-daemon-error-codes`, `lifecycle-phase-monotonic`, `abort-signal-threading`, `no-kb-status-accessors`) so future components cannot drift.
 
-### 10.3 Why CLI fail-fast deadlines on Eras I and II only
+### 10.3 Why CLI readiness waits stop at Era II
 
-The CLI's wait is bounded by evidence rather than by one elapsed-time budget. `KERNEL_READY_DEADLINE_MS` (15s) bounds the cases where the CLI attaches to a startup someone else owns — an already-starting incumbent, and a nested command waiting for its exact parent — because there the CLI can observe readiness but never failure: it owns no child whose exit would report one. A coordinator this invocation did spawn is bounded instead by that child's terminal outcome, and a child that turns out to have conceded to an incumbent still starting converts the wait into the bounded attachment above rather than into a failed startup. So the CLI can hold for as long as an attempt it owns is still live, and never longer than the deadline on an attempt it does not. Both bounds stop at Era II: stretching either to accommodate a slow KB init would conflate "daemon won't start" with "KB daemon runtime not ready" — two failures with different remediation. Runtime health components surface state through `/health`, while KB callers receive `503 kb_initializing | kb_offline` from the KB daemon request path.
+See [Supervisor recovery](./architecture.md#supervisor-recovery) for coordinator readiness wait rules. Extending readiness waits for a slow KB initialization would conflate "daemon won't start" with "KB daemon runtime not ready" — two failures with different remediation. Runtime health components surface state through `/health`, while KB callers receive `503 kb_initializing | kb_offline` from the KB daemon request path.
 
 ### 10.4 Why AbortSignal as the cancellation primitive
 
