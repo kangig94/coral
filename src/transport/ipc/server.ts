@@ -258,6 +258,33 @@ async function writeEnvelope(
   return drained;
 }
 
+function observeSocketTask(
+  task: Promise<unknown>,
+  socket: Socket,
+  rpcPorts: HttpHandlerPorts,
+  finishRequest?: () => void,
+): void {
+  void task
+    .catch((error: unknown) => {
+      try {
+        rpcPorts.identity.log(`IPC socket task failure: ${formatError(error)}\n`);
+      } finally {
+        try {
+          finishRequest?.();
+        } finally {
+          socket.destroy();
+        }
+      }
+    })
+    .catch((error: unknown) => {
+      try {
+        process.stderr.write(`IPC socket task cleanup failure: ${formatError(error)}\n`);
+      } catch {
+        // A terminal rejection handler must not reject when logging is unavailable.
+      }
+    });
+}
+
 export function ipcAdapter(spec: RpcMethodSpec<unknown, unknown>, rpcPorts: HttpHandlerPorts): IpcDispatchEntry {
   return {
     method: spec.name,
@@ -366,7 +393,7 @@ function readPingSnapshot(rpcPorts: HttpHandlerPorts): {
   incarnation?: ProcessIncarnation;
   sentinel?: { version: 1; id: string };
 } {
-  const health = rpcPorts.health.read();
+  const health = rpcPorts.health.readLiveness?.() ?? rpcPorts.health.read();
   return {
     status: health.status,
     version: health.version,
@@ -792,6 +819,7 @@ async function handleIpcOperationalRequest(
       const result = lease === undefined ? await execute() : await lease.run(execute);
       await finishUnaryResponse({ kind: 'response', id: request.id, result });
     } catch (error: unknown) {
+      rpcPorts.identity.log(`IPC request error (${request.method}): ${formatError(error)}\n`);
       const response = buildTransportErrorResponse(error);
       await finishUnaryResponse(requestErrorResponse(request.id, response.message, response.data));
     } finally {
@@ -973,10 +1001,10 @@ async function dispatchIpcCatalogRequest(
       request.method === 'jobs.wait' ? null : rpcPorts.jobs.waitHandoverSignal(),
     );
   } catch (error: unknown) {
+    rpcPorts.identity.log(`IPC request error (${request.method}): ${formatError(error)}\n`);
     if (socket.destroyed) {
       return;
     }
-    rpcPorts.identity.log(`IPC request error (${request.method}): ${formatError(error)}\n`);
     if (!socket.destroyed && !socket.writableEnded) {
       const response = buildTransportErrorResponse(error);
       await finishUnaryResponse(requestErrorResponse(request.id, response.message, response.data));
@@ -1006,11 +1034,22 @@ async function dispatchFrame(
   options: { writeDrainTimeoutMs: number },
   connection: IpcConnectionChallenge,
 ): Promise<void> {
+  let responseStarted = false;
   const finishUnaryResponse = async (response: JsonRpcEnvelope, onUnwritten?: () => void): Promise<void> => {
+    if (responseStarted) throw new Error('IPC response already started');
+    responseStarted = true;
     const wroteResponse = await writeEnvelope(socket, response, {
       drainTimeoutMs: options.writeDrainTimeoutMs,
     });
-    if (!wroteResponse) onUnwritten?.();
+    if (!wroteResponse) {
+      rpcPorts.identity.log('IPC response write failed; destroying socket\n');
+      try {
+        onUnwritten?.();
+      } finally {
+        socket.destroy();
+      }
+      return;
+    }
     socket.end();
   };
 
@@ -1028,117 +1067,127 @@ async function dispatchFrame(
   }
 
   const request = envelope;
-  const operationalSpec = readIpcOperationalSpec(request.method);
-  if (operationalSpec?.dispatch.kind === 'ping') {
-    const authError = authorizeIpcOperation(request, operationalSpec, IPC_BOOTSTRAP_LIVENESS_PRINCIPAL);
-    if (authError) {
-      await finishUnaryResponse(authError);
+  try {
+    const operationalSpec = readIpcOperationalSpec(request.method);
+    if (operationalSpec?.dispatch.kind === 'ping') {
+      const authError = authorizeIpcOperation(request, operationalSpec, IPC_BOOTSTRAP_LIVENESS_PRINCIPAL);
+      if (authError) {
+        await finishUnaryResponse(authError);
+        return;
+      }
+      await finishUnaryResponse({ kind: 'response', id: request.id, result: readPingSnapshot(rpcPorts) });
       return;
     }
-    await finishUnaryResponse({ kind: 'response', id: request.id, result: readPingSnapshot(rpcPorts) });
-    return;
-  }
 
-  if (operationalSpec?.dispatch.kind === 'challenge') {
-    if (!connection.canDispatch()) {
-      await finishUnaryResponse(reauthenticationResponse(request.id));
+    if (operationalSpec?.dispatch.kind === 'challenge') {
+      if (!connection.canDispatch()) {
+        await finishUnaryResponse(reauthenticationResponse(request.id));
+        return;
+      }
+      const issuer = rpcPorts.childPrincipals;
+      if (issuer === undefined || connection.issued) {
+        await finishUnaryResponse(
+          requestErrorResponse(request.id, CHALLENGE_UNAVAILABLE_RESPONSE.message, CHALLENGE_UNAVAILABLE_RESPONSE),
+        );
+        return;
+      }
+      const challenge = issuer.issueChallenge();
+
+      connection.awaitProof(challenge);
+      responseStarted = true;
+      const answer = { kind: 'response', id: request.id, result: challenge } as const;
+      if (!(await writeEnvelope(socket, answer, { drainTimeoutMs: options.writeDrainTimeoutMs }))) {
+        socket.destroy();
+      }
       return;
     }
-    const issuer = rpcPorts.childPrincipals;
-    if (issuer === undefined || connection.issued) {
+
+    let authentication: IpcAuthentication;
+    try {
+      authentication = authenticateIpcRequest(request, connection.taken, rpcPorts);
+    } catch (error: unknown) {
+      rpcPorts.identity.log(`IPC authentication error (${request.method}): ${formatError(error)}\n`);
+      const response = buildTransportErrorResponse(error);
+      await finishUnaryResponse(requestErrorResponse(request.id, response.message, response.data));
+      return;
+    }
+    if (authentication.kind === 'credential-unreadable') {
       await finishUnaryResponse(
-        requestErrorResponse(request.id, CHALLENGE_UNAVAILABLE_RESPONSE.message, CHALLENGE_UNAVAILABLE_RESPONSE),
+        requestErrorResponse(request.id, CHILD_CREDENTIAL_UNREADABLE_RESPONSE.message, {
+          ...CHILD_CREDENTIAL_UNREADABLE_RESPONSE,
+          credentialId: authentication.credentialId,
+        }),
       );
       return;
     }
-    const challenge = issuer.issueChallenge();
-
-    connection.awaitProof(challenge);
-    const answer = { kind: 'response', id: request.id, result: challenge } as const;
-    if (!(await writeEnvelope(socket, answer, { drainTimeoutMs: options.writeDrainTimeoutMs }))) {
-      socket.destroy();
-    }
-    return;
-  }
-
-  let authentication: IpcAuthentication;
-  try {
-    authentication = authenticateIpcRequest(request, connection.taken, rpcPorts);
-  } catch (error: unknown) {
-    rpcPorts.identity.log(`IPC authentication error (${request.method}): ${formatError(error)}\n`);
-    const response = buildTransportErrorResponse(error);
-    await finishUnaryResponse(requestErrorResponse(request.id, response.message, response.data));
-    return;
-  }
-  if (authentication.kind === 'credential-unreadable') {
-    await finishUnaryResponse(
-      requestErrorResponse(request.id, CHILD_CREDENTIAL_UNREADABLE_RESPONSE.message, {
-        ...CHILD_CREDENTIAL_UNREADABLE_RESPONSE,
-        credentialId: authentication.credentialId,
-      }),
-    );
-    return;
-  }
-  if (request.auth?.kind === 'child-proof' && !connection.canDispatch()) {
-    await finishUnaryResponse(reauthenticationResponse(request.id));
-    return;
-  }
-  const principal = authentication.principal;
-  if (operationalSpec?.authentication === 'principal') {
-    const authError = authorizeIpcOperation(request, operationalSpec, principal);
-    if (authError) {
-      await finishUnaryResponse(authError);
+    if (request.auth?.kind === 'child-proof' && !connection.canDispatch()) {
+      await finishUnaryResponse(reauthenticationResponse(request.id));
       return;
     }
-  }
+    const principal = authentication.principal;
+    if (operationalSpec?.authentication === 'principal') {
+      const authError = authorizeIpcOperation(request, operationalSpec, principal);
+      if (authError) {
+        await finishUnaryResponse(authError);
+        return;
+      }
+    }
 
-  if (
-    request.auth?.kind === 'child-proof' &&
-    operationalSpec !== null &&
-    operationalSpec?.dispatch.kind !== 'catalog' &&
-    !connection.claimDispatch()
-  ) {
-    await finishUnaryResponse(reauthenticationResponse(request.id));
-    return;
-  }
-  const lifecycleState =
-    rpcPorts.admin.getLifecycleState?.() ?? (rpcPorts.admin.isLifecycleRunning() ? 'running' : 'stopped');
-  const draining = lifecycleState === 'draining' || rpcPorts.admin.isDrainRequested();
-  const backendUnavailable = draining || lifecycleState === 'stopped';
-  const drainingRecoveryIngress = draining && operationalSpec?.dispatch.kind === 'catalog';
+    if (
+      request.auth?.kind === 'child-proof' &&
+      operationalSpec !== null &&
+      operationalSpec?.dispatch.kind !== 'catalog' &&
+      !connection.claimDispatch()
+    ) {
+      await finishUnaryResponse(reauthenticationResponse(request.id));
+      return;
+    }
+    const lifecycleState =
+      rpcPorts.admin.getLifecycleState?.() ?? (rpcPorts.admin.isLifecycleRunning() ? 'running' : 'stopped');
+    const draining = lifecycleState === 'draining' || rpcPorts.admin.isDrainRequested();
+    const backendUnavailable = draining || lifecycleState === 'stopped';
+    const drainingRecoveryIngress = draining && operationalSpec?.dispatch.kind === 'catalog';
 
-  if (
-    operationalSpec &&
-    (await handleIpcOperationalRequest(
+    if (
+      operationalSpec &&
+      (await handleIpcOperationalRequest(
+        request,
+        operationalSpec,
+        rpcPorts,
+        socket,
+        backendUnavailable,
+        startRequest,
+        finishRequest,
+        finishUnaryResponse,
+      ))
+    )
+      return;
+
+    if (await refuseUnavailableIpcRequest(request, backendUnavailable, drainingRecoveryIngress, finishUnaryResponse))
+      return;
+
+    await dispatchIpcCatalogRequest(
       request,
-      operationalSpec,
+      principal,
+      dispatchMap,
       rpcPorts,
       socket,
-      backendUnavailable,
+      onShutdownRecoveryAccepted,
       startRequest,
       finishRequest,
+      options,
+      drainingRecoveryIngress,
       finishUnaryResponse,
-    ))
-  )
-    return;
-
-  if (await refuseUnavailableIpcRequest(request, backendUnavailable, drainingRecoveryIngress, finishUnaryResponse))
-    return;
-
-  await dispatchIpcCatalogRequest(
-    request,
-    principal,
-    dispatchMap,
-    rpcPorts,
-    socket,
-    onShutdownRecoveryAccepted,
-    startRequest,
-    finishRequest,
-    options,
-    drainingRecoveryIngress,
-    finishUnaryResponse,
-    connection,
-  );
+      connection,
+    );
+  } catch (error: unknown) {
+    rpcPorts.identity.log(`IPC request error (${request.method}): ${formatError(error)}\n`);
+    if (responseStarted) throw error;
+    const response = buildTransportErrorResponse(error);
+    await finishUnaryResponse(requestErrorResponse(request.id, response.message, response.data));
+  } finally {
+    finishRequest();
+  }
 }
 
 function stopHandleReads(socket: Socket): boolean {
@@ -1196,15 +1245,19 @@ function parseTrackedSocketChunk(
         `IPC frame too large (${error.observedBytes} > ${error.maxFrameBytes}); destroying socket\n`,
       );
       if (!socket.destroyed) {
-        void writeEnvelope(
+        observeSocketTask(
+          writeEnvelope(
+            socket,
+            transportErrorResponse('Request frame too large', {
+              code: error.code,
+              maxFrameBytes: error.maxFrameBytes,
+              observedBytes: error.observedBytes,
+            }),
+            { drainTimeoutMs: writeDrainTimeoutMs },
+          ).finally(() => socket.destroy()),
           socket,
-          transportErrorResponse('Request frame too large', {
-            code: error.code,
-            maxFrameBytes: error.maxFrameBytes,
-            observedBytes: error.observedBytes,
-          }),
-          { drainTimeoutMs: writeDrainTimeoutMs },
-        ).finally(() => socket.destroy());
+          rpcPorts,
+        );
       }
       return null;
     }
@@ -1214,15 +1267,19 @@ function parseTrackedSocketChunk(
     rpcPorts.identity.log(
       `IPC pending frame budget exceeded (${resources.aggregatePendingFrameBytes} > ${resources.maxAggregatePendingFrameBytes}); destroying socket\n`,
     );
-    void writeEnvelope(
+    observeSocketTask(
+      writeEnvelope(
+        socket,
+        transportErrorResponse('Too many pending IPC frame bytes', {
+          code: 'ipc_pending_frame_budget_exceeded',
+          maxAggregatePendingFrameBytes: resources.maxAggregatePendingFrameBytes,
+          observedBytes: resources.aggregatePendingFrameBytes,
+        }),
+        { drainTimeoutMs: writeDrainTimeoutMs },
+      ).finally(() => socket.destroy()),
       socket,
-      transportErrorResponse('Too many pending IPC frame bytes', {
-        code: 'ipc_pending_frame_budget_exceeded',
-        maxAggregatePendingFrameBytes: resources.maxAggregatePendingFrameBytes,
-        observedBytes: resources.aggregatePendingFrameBytes,
-      }),
-      { drainTimeoutMs: writeDrainTimeoutMs },
-    ).finally(() => socket.destroy());
+      rpcPorts,
+    );
     return null;
   }
   return frames;
@@ -1265,14 +1322,18 @@ function admitTrackedSocket(state: TrackedIpcListenerState, socket: Socket, pend
     rpcPorts.identity.log(
       `IPC connection cap exceeded (${resources.sockets.size} >= ${resources.maxOpenSockets}); destroying socket\n`,
     );
-    void writeEnvelope(
+    observeSocketTask(
+      writeEnvelope(
+        socket,
+        transportErrorResponse('Too many IPC connections', {
+          code: 'too_many_ipc_connections',
+          maxOpenSockets: resources.maxOpenSockets,
+        }),
+        { drainTimeoutMs: writeDrainTimeoutMs },
+      ).finally(() => socket.destroy()),
       socket,
-      transportErrorResponse('Too many IPC connections', {
-        code: 'too_many_ipc_connections',
-        maxOpenSockets: resources.maxOpenSockets,
-      }),
-      { drainTimeoutMs: writeDrainTimeoutMs },
-    ).finally(() => socket.destroy());
+      rpcPorts,
+    );
     return false;
   }
   resources.sockets.add(socket);
@@ -1350,8 +1411,12 @@ function acceptTrackedSocket(state: TrackedIpcListenerState, socket: Socket, pen
       pendingSockets.delete(socket);
       socket.off('data', onData);
       timers.clearTimeout(firstFrameTimer);
-      void writeEnvelope(socket, reauthenticationResponse(null), { drainTimeoutMs: writeDrainTimeoutMs }).finally(() =>
-        socket.end(),
+      observeSocketTask(
+        writeEnvelope(socket, reauthenticationResponse(null), { drainTimeoutMs: writeDrainTimeoutMs }).finally(() =>
+          socket.end(),
+        ),
+        socket,
+        rpcPorts,
       );
       return;
     }
@@ -1394,36 +1459,41 @@ function acceptTrackedSocket(state: TrackedIpcListenerState, socket: Socket, pen
       if (!challengeIssued) pendingSockets.delete(socket);
       const taken = outstandingChallenge;
       outstandingChallenge = null;
-      void dispatchFrame(
-        frame,
+      observeSocketTask(
+        dispatchFrame(
+          frame,
+          socket,
+          dispatchMap,
+          rpcPorts,
+          listenerRef.current?.onShutdownRecoveryAccepted ?? null,
+          () => {
+            inflightRequest = true;
+            rpcPorts.admin.beginRequest();
+          },
+          finishRequest,
+          { writeDrainTimeoutMs },
+          {
+            taken,
+            issued: challengeIssued,
+            canDispatch,
+            claimDispatch: () => {
+              if (!canDispatch()) return false;
+              pendingSockets.delete(socket);
+              return true;
+            },
+            awaitProof: (challenge) => {
+              challengeEpoch = state.authorityEpoch;
+              outstandingChallenge = challenge;
+              challengeIssued = true;
+              pendingSockets.set(socket, transferPending);
+              firstFrameTimer = armFrameTimer();
+              socket.on('data', onData);
+            },
+          },
+        ),
         socket,
-        dispatchMap,
         rpcPorts,
-        listenerRef.current?.onShutdownRecoveryAccepted ?? null,
-        () => {
-          rpcPorts.admin.beginRequest();
-          inflightRequest = true;
-        },
         finishRequest,
-        { writeDrainTimeoutMs },
-        {
-          taken,
-          issued: challengeIssued,
-          canDispatch,
-          claimDispatch: () => {
-            if (!canDispatch()) return false;
-            pendingSockets.delete(socket);
-            return true;
-          },
-          awaitProof: (challenge) => {
-            challengeEpoch = state.authorityEpoch;
-            outstandingChallenge = challenge;
-            challengeIssued = true;
-            pendingSockets.set(socket, transferPending);
-            firstFrameTimer = armFrameTimer();
-            socket.on('data', onData);
-          },
-        },
       );
       return;
     }
