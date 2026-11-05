@@ -11,6 +11,7 @@ import {
 import {
   ControlClientError,
   type ControlClient,
+  type ControlExchange,
   type ControlClientErrorCode,
   type ControlClientRemoteFailure,
   type ProviderEventHandler,
@@ -37,6 +38,21 @@ export type ProviderProxyRecoveryOpenMethod = Extract<
 >;
 
 export type ProviderProxyRoleControlAvailabilityIncident =
+  | Readonly<{ kind: 'role-exchange-unavailable'; role: ProviderProxyRole; method: string; exchange: ControlExchange }>
+  | Readonly<{ kind: 'role-result-unusable'; role: ProviderProxyRole; method: string; exchange: ControlExchange }>
+  | Readonly<{
+      kind: 'role-control-channel-fault';
+      role: ProviderProxyRole;
+      stage: 'connect' | 'open' | 'heartbeat';
+      method: ProviderProxyRoleOpenMethod | ProviderProxyHeartbeatMethod | null;
+      fault: ControlClientError;
+    }>
+  | Readonly<{
+      kind: 'role-open-indeterminate';
+      role: ProviderProxyRole;
+      method: ProviderProxyRoleOpenMethod;
+      exchange: Exclude<ControlExchange, { kind: 'response' }>;
+    }>
   | Readonly<{
       kind: 'paired-reaper-unavailable';
       role: 'guardian';
@@ -79,6 +95,23 @@ export class ProviderProxyRoleControlUnavailableError extends Error {
     this.incident = incident;
     Object.setPrototypeOf(this, ProviderProxyRoleControlUnavailableError.prototype);
   }
+}
+
+export function parseProviderProxyRoleResult<T>(
+  role: ProviderProxyRole,
+  method: string,
+  schema: z.ZodType<T, z.ZodTypeDef, unknown>,
+  exchange: Extract<ControlExchange, { kind: 'response' }>,
+): T {
+  if (exchange.response.kind === 'refusal') throw exchange.response.error;
+  const parsed = schema.safeParse(exchange.response.value);
+  if (!parsed.success) {
+    throw new ProviderProxyRoleControlUnavailableError(
+      { kind: 'role-result-unusable', role, method, exchange },
+      { cause: parsed.error },
+    );
+  }
+  return parsed.data;
 }
 
 function requireRemoteFailure(error: ControlClientError): ControlClientRemoteFailure {
@@ -177,6 +210,12 @@ function classifyRoleControlFailure(
     );
   }
   const remote = error.remoteFailure;
+  if (remote?.kind === 'invalid-frame') {
+    throw new ProviderProxyRoleControlUnavailableError(
+      { kind: 'role-control-channel-fault', role, stage, method, fault: error },
+      { cause: error },
+    );
+  }
   if (
     role === 'guardian' &&
     stage === 'open' &&
@@ -222,11 +261,18 @@ async function establishHeartbeat(
   let resynchronized = false;
   for (;;) {
     const observation = await heartbeatOnce(client, method, controlEpoch, challenge);
-    if (observation.kind === 'locally-unsent' || observation.kind === 'delivery-unconfirmed') {
+    if (observation.kind === 'locally-unsent' && observation.stage === 'request-encode') {
       throw observation.error;
     }
-    if (observation.kind === 'channel-fault') {
-      classifyRoleControlFailure(role, 'heartbeat', method, observation.error);
+    if (
+      observation.kind === 'locally-unsent' ||
+      observation.kind === 'delivery-unconfirmed' ||
+      observation.kind === 'channel-fault'
+    ) {
+      throw new ProviderProxyRoleControlUnavailableError(
+        { kind: 'role-heartbeat-indeterminate', role, method, observation },
+        { cause: observation.error },
+      );
     }
     if (observation.kind === 'reply') {
       if (observation.reply.kind === 'accepted') {
@@ -360,20 +406,24 @@ export async function establishRoleControl<
   opened.push(client);
   const params = plan.openParamsSchema.parse(plan.openParams) as z.output<TOpenParams>;
   signal?.throwIfAborted();
-  let raw: unknown;
+  let response: Extract<ControlExchange, { kind: 'response' }>;
   try {
     const exchange = await client.exchange(plan.openMethod, params, PROXY_CONTROL_RPC_TIMEOUT_MS);
     if (exchange.kind === 'response') {
-      if (exchange.response.kind === 'result') raw = exchange.response.value;
+      if (exchange.response.kind === 'result') response = exchange;
       else classifyRoleControlFailure(plan.role, 'open', plan.openMethod, exchange.response.error);
     } else {
-      classifyRoleControlFailure(plan.role, 'open', plan.openMethod, exchange.error);
+      if (exchange.kind === 'not-sent' && exchange.cause === 'encode-failed') throw exchange.error;
+      throw new ProviderProxyRoleControlUnavailableError(
+        { kind: 'role-open-indeterminate', role: plan.role, method: plan.openMethod, exchange },
+        { cause: exchange.error },
+      );
     }
   } catch (error: unknown) {
     signal?.throwIfAborted();
     classifyRoleControlFailure(plan.role, 'open', plan.openMethod, error);
   }
-  const result = plan.openResultSchema.parse(raw);
+  const result = parseProviderProxyRoleResult(plan.role, plan.openMethod, plan.openResultSchema, response);
   assertIdentityFieldsAgree(plan.role, plan.expectedIdentity, plan.identity(result));
   const beat = await establishHeartbeatOrChannelFault(
     plan.role,

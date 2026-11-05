@@ -11,7 +11,10 @@ vi.mock('#src/coordinator/live/provider-proxy/heartbeat.js', async (importOrigin
   return { ...original, createProviderProxyAuthorityHeartbeatAssembly: vi.fn() };
 });
 
-import { redeemProviderProxyControl } from '#src/coordinator/live/provider-proxy/control-redemption.js';
+import {
+  closeRedeemedProviderProxyControl,
+  redeemProviderProxyControl,
+} from '#src/coordinator/live/provider-proxy/control-redemption.js';
 import {
   createProviderProxyAuthorityHeartbeatAssembly,
   type ProviderProxyRoleHeartbeats,
@@ -288,4 +291,42 @@ describe('provider proxy control redemption', () => {
     expect(startRole.mock.calls.map((call) => call[0])).toEqual(['guardian', 'reaper', 'proxy']);
     expect(phases).toEqual({ guardian: 'published', reaper: 'published', proxy: 'published' });
   });
+});
+
+it('closes every candidate channel and heartbeat when an unpublished redemption is discarded', async () => {
+  const established = sessions();
+  for (const session of established) mockedEstablishRoleControl.mockResolvedValueOnce(session as never);
+  const candidateHeartbeats = { guardian: { stop: vi.fn() }, reaper: { stop: vi.fn() }, proxy: { stop: vi.fn() } };
+  complete.mockReturnValueOnce(candidateHeartbeats as unknown as ProviderProxyRoleHeartbeats);
+  const outcome = await redeemProviderProxyControl(
+    capsule,
+    setIdentity,
+    { runtime: runtimeWithNow(), coordinatorIdentity },
+    new AbortController().signal,
+  );
+  if (outcome.kind !== 'redeemed') throw new Error('expected redemption');
+  closeRedeemedProviderProxyControl(outcome);
+  for (const session of established) expect(session.client.close).toHaveBeenCalledOnce();
+  for (const heartbeat of Object.values(candidateHeartbeats)) expect(heartbeat.stop).toHaveBeenCalledOnce();
+});
+
+it('retains unusable publication result evidence without publishing a redemption', async () => {
+  const established = sessions();
+  const unusable = controlExchangeForTest({
+    kind: 'response',
+    response: { kind: 'result', value: { state: 'acquisition-published' } },
+  });
+  vi.mocked(established[0].client.exchange).mockResolvedValue(unusable);
+  for (const session of established) mockedEstablishRoleControl.mockResolvedValueOnce(session as never);
+  const outcome = await redeemProviderProxyControl(
+    capsule,
+    setIdentity,
+    { runtime: runtimeWithNow(), coordinatorIdentity },
+    new AbortController().signal,
+  );
+  expect(outcome).toMatchObject({
+    kind: 'unavailable',
+    incident: { kind: 'publication-unknown', role: 'guardian', exchange: unusable },
+  });
+  expect(established[0].client.exchange).toHaveBeenCalledTimes(2);
 });

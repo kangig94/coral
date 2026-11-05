@@ -61,3 +61,34 @@ start was unstarted. The old proxy's ineffective unpublished stop cannot be corr
 Workflow carrier evidence comes from the workflow owner's required running set. The owner adds a job
 after publishing its runtime start and removes it in a `finally` when the executor settles, including
 terminal-store failures. Launch reservations do not determine workflow liveness.
+
+## Acquisition and recovery ownership
+
+Provider acquisition must distinguish usable authority from retained lifecycle ownership. Ordinary
+reconciliation waits for owned-pending reattachment or containment through its automatic poll; channel
+uncertainty cannot authorize a competing redemption, disappearance, or containment of healthy siblings.
+Passive startup claim placeholders remain admissible. Inheritance reserves one attempt per exact
+identity, bound to the original slot; a new registration requires that token, while re-registering
+the already-established authority stays idempotent. Internal establishment
+invalidates older admission. Releasing an admission with no slot also removes its temporary identity
+index entry; expired registration must not recreate that entry. Superseded candidates release their own channels and heartbeats, while
+expired admissions return to inheritance retry. Identity aliases and programming errors remain visible.
+See `ProviderProxySetLifecycle.acquisitionFor` and `registerInheritedSet` in
+`src/coordinator/services/provider-proxy-set/index.ts`, `createProviderProxySetInheritance` in
+`src/coordinator/services/provider-proxy-set/inheritance.ts`, and `createOrdinaryProviderAuthorityAcquirer`
+in `src/coordinator/composition/execution-services.ts`.
+
+Open/redeem and first-heartbeat transport failures retain their exchange provenance as typed
+unavailability. Unattributable invalid frames retain channel-fault provenance at open, first heartbeat, and the
+first-heartbeat fault race; they produce typed unavailability rather than a definitive remote refusal.
+Encoding failures retain error semantics. Existing recovery deadlines and bounded
+reattachment followed by containment own automatic exits; silence never proves process absence.
+See `establishRoleControl` in `src/coordinator/live/provider-proxy/role-control.ts`.
+These acquisition dispositions are local runtime contracts; capsule and control protocol shapes are unchanged.
+
+Unusable remote result shapes also retain typed availability evidence, including open/redeem results,
+credential and transfer acknowledgements, succession registration, and host-control results. Undecodable heartbeat
+and publication results retain the unusable exchange. Schema validation must finish before an
+identity disagreement can be decisive. Local request validation and journal corruption remain errors.
+See `parseProviderProxyRoleResult` in `src/coordinator/live/provider-proxy/role-control.ts` and
+`installExchangeOutcome` in `src/coordinator/live/provider-proxy/set-authority.ts`.

@@ -28,7 +28,7 @@ export type PublicationReceipt = Readonly<{
 type AcquisitionPublicationStageOutcome<T> =
   | Readonly<{ kind: 'ok'; value: T }>
   | Readonly<{ kind: 'not-attempted'; reason: string }>
-  | Readonly<{ kind: 'unknown'; reason: string }>;
+  | Readonly<{ kind: 'unknown'; reason: string; exchange?: ControlExchange }>;
 
 type AcquisitionStageConfirmed<T> = Exclude<
   T,
@@ -39,7 +39,7 @@ type AcquisitionStageConfirmed<T> = Exclude<
 export type ProviderProxySetPublicationOutcome =
   | Readonly<{ kind: 'published'; receipt: PublicationReceipt }>
   | Readonly<{ kind: 'not-attempted'; role: 'guardian'; reason: string }>
-  | Readonly<{ kind: 'publication-unknown'; role: 'guardian' | 'proxy'; reason: string }>;
+  | Readonly<{ kind: 'publication-unknown'; role: 'guardian' | 'proxy'; reason: string; exchange?: ControlExchange }>;
 
 export type ProviderProxySetPublicationUnknown = Extract<
   ProviderProxySetPublicationOutcome,
@@ -84,7 +84,11 @@ export async function exchangeAcquisitionStage<T>(
     }
     const parsed = resultSchema.safeParse(exchange.response.value);
     if (!parsed.success) {
-      return { kind: 'unknown', reason: `${method} replied with an undecodable result: ${parsed.error.message}` };
+      return {
+        kind: 'unknown',
+        reason: `${method} replied with an undecodable result: ${parsed.error.message}`,
+        exchange,
+      };
     }
     return { kind: 'ok', value: parsed.data as AcquisitionStageConfirmed<T> };
   }
@@ -101,9 +105,11 @@ async function attemptAcquisitionStageWithRetry<T>(
   if (first.kind !== 'unknown') return first;
   const retry = await exchangeAcquisitionStage(client, method, params, resultSchema);
   if (retry.kind === 'ok') return retry;
+  const exchange = (retry.kind === 'unknown' ? retry.exchange : undefined) ?? first.exchange;
   return {
     kind: 'unknown',
     reason: `First attempt was unknown: ${first.reason}; retry was ${retry.kind}: ${retry.reason}`,
+    ...(exchange === undefined ? {} : { exchange }),
   };
 }
 
@@ -123,7 +129,7 @@ export async function runProviderProxySetPublicationTransaction(
   );
   if (guardianOutcome.kind !== 'ok') {
     return guardianOutcome.kind === 'unknown'
-      ? { kind: 'publication-unknown', role: 'guardian', reason: guardianOutcome.reason }
+      ? { ...guardianOutcome, kind: 'publication-unknown', role: 'guardian' }
       : { ...guardianOutcome, role: 'guardian' };
   }
 
@@ -138,7 +144,7 @@ export async function runProviderProxySetPublicationTransaction(
     proxyAcquisitionPublishResultSchema,
   );
   if (proxyOutcome.kind !== 'ok') {
-    return { kind: 'publication-unknown', role: 'proxy', reason: proxyOutcome.reason };
+    return { ...proxyOutcome, kind: 'publication-unknown', role: 'proxy' };
   }
   return {
     kind: 'published',

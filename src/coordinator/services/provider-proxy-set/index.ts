@@ -1011,9 +1011,36 @@ function operatorExitClaimDischargeAfterRelease(
     : operatorExitClaimDischarge(source, release);
 }
 
+declare const inheritanceAdmissionBrand: unique symbol;
+export type ProviderProxySetInheritanceAdmission = Readonly<{
+  identity: ProviderProxySetIdentity;
+  [inheritanceAdmissionBrand]: true;
+}>;
+export type ProviderProxySetAcquisitionJudgement =
+  | Readonly<{ kind: 'usable'; authority: DurableProviderProxyOperationAuthority }>
+  | Readonly<{
+      kind: 'owned-pending';
+      owner: 'provider-proxy-set-lifecycle';
+      identity: ProviderProxySetIdentity;
+      status: string;
+      nextObservation: 'operation-reconciliation-after-lifecycle-recovery';
+    }>
+  | Readonly<{ kind: 'unowned'; admission: { reserve(): ProviderProxySetInheritanceReservation } }>;
+export type ProviderProxySetInheritanceReservation =
+  | Exclude<ProviderProxySetAcquisitionJudgement, { kind: 'unowned' }>
+  | Readonly<{ kind: 'admitted'; token: ProviderProxySetInheritanceAdmission }>;
+export type ProviderProxySetInheritanceRegistration =
+  | Readonly<{ kind: 'accepted'; owner: 'provider-proxy-set-lifecycle' }>
+  | Readonly<{ kind: 'admission-expired'; retryOwner: 'provider-proxy-set-inheritance' }>
+  | Readonly<{ kind: 'superseded'; owner: 'provider-proxy-set-lifecycle'; identity: ProviderProxySetIdentity }>;
+
 export class ProviderProxySetLifecycle {
   readonly #deps: ProviderProxySetLifecycleDeps;
   readonly #identityIndex = new ProviderProxySetIdentityIndex();
+  readonly #inheritanceAdmissions = new Map<
+    string,
+    { token: ProviderProxySetInheritanceAdmission; slot: ProviderProxySetSlot | undefined }
+  >();
   readonly #slots = new Map<string, ProviderProxySetSlot>();
   readonly #destructiveAttemptSettlements = new WeakMap<object, Set<Promise<void>>>();
   readonly #routeIndex = new Map<string, ProviderProxySetKey>();
@@ -2034,6 +2061,7 @@ export class ProviderProxySetLifecycle {
         },
       };
     }
+    this.#inheritanceAdmissions.delete(key);
     this.#slots.set(key, slot);
     this.#slots.delete(slotId);
     void this.#setOperatorDispositions(
@@ -2074,13 +2102,73 @@ export class ProviderProxySetLifecycle {
     return { kind: 'accepted', owner: 'provider-proxy-set-lifecycle' };
   }
 
+  acquisitionFor(identity: ProviderProxySetIdentity): ProviderProxySetAcquisitionJudgement {
+    const key = providerProxySetKey(identity);
+    const authority = this.authorityFor(identity);
+    if (authority !== null) return { kind: 'usable', authority };
+    const slot = this.#slots.get(key);
+    if (
+      (slot !== undefined && !(slot.kind === 'recovering' && slot.recoveryKind === 'claim')) ||
+      this.#inheritanceAdmissions.has(key)
+    ) {
+      return {
+        kind: 'owned-pending',
+        owner: 'provider-proxy-set-lifecycle',
+        identity,
+        status: slot?.kind ?? 'inheritance-admitted',
+        nextObservation: 'operation-reconciliation-after-lifecycle-recovery',
+      };
+    }
+    return {
+      kind: 'unowned',
+      admission: {
+        reserve: () => {
+          const current = this.acquisitionFor(identity);
+          if (current.kind !== 'unowned') return current;
+          this.#identityIndex.add(identity);
+          const token = Object.freeze({
+            identity: Object.freeze({ ...identity }),
+          }) as ProviderProxySetInheritanceAdmission;
+          this.#inheritanceAdmissions.set(key, { token, slot: this.#slots.get(key) });
+          return { kind: 'admitted', token };
+        },
+      },
+    };
+  }
+
+  releaseInheritanceAdmission(token: ProviderProxySetInheritanceAdmission): void {
+    const key = providerProxySetKey(token.identity);
+    if (this.#inheritanceAdmissions.get(key)?.token !== token) return;
+    this.#inheritanceAdmissions.delete(key);
+    if (!this.#slots.has(key)) this.#identityIndex.delete(token.identity);
+  }
+
   registerInheritedSet(
     authority: DurableProviderProxyOperationAuthority,
     publicationReceipt: PublicationReceipt,
     capsulePath: string | null = null,
     protection: ProviderProxySetProtection = 'protected',
-  ): void {
+    admission: ProviderProxySetInheritanceAdmission,
+  ): ProviderProxySetInheritanceRegistration {
+    if (!providerProxySetIdentitiesEqual(admission.identity, authority.setIdentity)) {
+      throw new Error('provider_proxy_set_inheritance_admission_identity_mismatch');
+    }
+    const key = providerProxySetKey(authority.setIdentity);
+    const existing = this.#slots.get(key);
+    if (existing !== undefined && 'authority' in existing && existing.authority === authority) {
+      return { kind: 'accepted', owner: 'provider-proxy-set-lifecycle' };
+    }
+    if (
+      existing !== this.#inheritanceAdmissions.get(key)?.slot ||
+      this.#inheritanceAdmissions.get(key)?.token !== admission
+    ) {
+      return existing === undefined
+        ? { kind: 'admission-expired', retryOwner: 'provider-proxy-set-inheritance' }
+        : { kind: 'superseded', owner: 'provider-proxy-set-lifecycle', identity: authority.setIdentity };
+    }
     this.#establish(authority, publicationReceipt, null, capsulePath, 'serve', protection);
+    this.releaseInheritanceAdmission(admission);
+    return { kind: 'accepted', owner: 'provider-proxy-set-lifecycle' };
   }
 
   routeFor(routeKey: string): DurableProviderProxyOperationAuthority | null {
@@ -3920,6 +4008,7 @@ export class ProviderProxySetLifecycle {
       operatorExitObservedGate: null,
       operatorExitGeneration: 0,
     };
+    this.#inheritanceAdmissions.delete(key);
     this.#slots.set(key, recovering);
     this.#armObservedOperatorExitGate(recovering);
   }
@@ -4463,6 +4552,7 @@ export class ProviderProxySetLifecycle {
       containmentCommitStatus: null,
       controllerTransfer: null,
     };
+    this.#inheritanceAdmissions.delete(key);
     this.#slots.set(key, slot);
     this.#subscribeAuthority(slot, authority, slot.attemptToken);
     this.#classifyCapacity();

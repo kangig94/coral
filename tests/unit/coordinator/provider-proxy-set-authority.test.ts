@@ -1,3 +1,4 @@
+import { ProviderProxyRoleControlUnavailableError } from '#src/coordinator/live/provider-proxy/role-control.js';
 import type { ProcessIncarnation } from '#src/infra/node-process.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -204,4 +205,113 @@ describe('createProviderProxySetAuthority: continuous recovery', () => {
     expect(firstOutcome).toMatchObject({ kind: 'installed' });
     expect(secondOutcome).toEqual(firstOutcome);
   });
+  function resultAuthority(client: ControlClient) {
+    const tempRoot = mkdtempSync(join(tmpdir(), 'coral-unusable-result-'));
+    tempRoots.push(tempRoot);
+    return createProviderProxySetAuthority({
+      proxyInstanceId: PROXY_IDENTITY.proxyInstanceId,
+      guardianClient: client,
+      reaperClient: client,
+      proxyClient: client,
+      guardianIdentity: GUARDIAN_IDENTITY,
+      reaperIdentity: REAPER_IDENTITY,
+      proxyIdentityFields: PROXY_IDENTITY,
+      heartbeats: inactiveHeartbeats(),
+      coordinatorIdentity: COORDINATOR_IDENTITY,
+      handoffCapsulePath: join(tempRoot, 'proxy.handoff.json'),
+      runtime: createRealRuntime('prod', { baseDir: tempRoot }),
+      operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
+    });
+  }
+
+  it.each([
+    'guardian.handoff-install.v1',
+    'guardian.controller-transfer.v1',
+    'guardian.succession-register-operation.v1',
+    'provider-host.list.v2',
+  ] as const)('retains unusable %s result as availability evidence', async (method) => {
+    const unusable = controlExchangeForTest({
+      kind: 'response',
+      response: { kind: 'result', value: { state: 'unexpected' } },
+    });
+    const client: ControlClient = {
+      ...unreachableClient(),
+      exchange: async (called, params) =>
+        called === method
+          ? unusable
+          : controlExchangeForTest({
+              kind: 'response',
+              response: {
+                kind: 'result',
+                value: { state: 'installed-dormant', grantId: (params as { grantId: string }).grantId },
+              },
+            }),
+    };
+    const authority = resultAuthority(client);
+    const signal = new AbortController().signal;
+    if (method === 'guardian.handoff-install.v1') {
+      await expect(authority.installRecoveryCredential(signal)).resolves.toMatchObject({
+        kind: 'retryable',
+        incident: { role: 'guardian', method, exchange: unusable },
+      });
+    } else if (method === 'guardian.controller-transfer.v1') {
+      await expect(
+        authority.authorizeControllerTransfer(
+          {
+            attemptId: 'test-attempt',
+            successor: { generation: 'gen2', flavor: 'prod', buildSetId: COORDINATOR_IDENTITY.buildSetId },
+          },
+          signal,
+        ),
+      ).resolves.toMatchObject({ kind: 'retryable', incident: { method, exchange: unusable } });
+    } else {
+      const result =
+        method === 'provider-host.list.v2'
+          ? authority.providerHosts.list()
+          : authority.registerSuccessionOperation(
+              {
+                jobId: COORDINATOR_IDENTITY.instanceId,
+                operationId: COORDINATOR_IDENTITY.instanceId,
+                proxyInstanceId: PROXY_IDENTITY.proxyInstanceId,
+                buildSetId: PROXY_IDENTITY.buildSetId,
+              },
+              signal,
+            );
+      await expect(result).rejects.toBeInstanceOf(ProviderProxyRoleControlUnavailableError);
+      await expect(result).rejects.toMatchObject({
+        incident: { kind: 'role-result-unusable', method, exchange: unusable },
+      });
+    }
+  });
+  it.each(['refusal', 'channel-fault'] as const)(
+    'keeps validated refusal distinct from %s availability',
+    async (kind) => {
+      const failure = {
+        kind: 'json-rpc-error',
+        jsonRpcCode: -32602,
+        protocolCode: 'identity_mismatch',
+        admissionReason: null,
+        heartbeatRefusal: null,
+      } as const;
+      const error =
+        kind === 'refusal'
+          ? new ControlClientError('control_call_failed', 'identity mismatch', 'remote-response', failure)
+          : new ControlClientError('control_call_failed', 'unattributable frame', 'remote-response', {
+              kind: 'invalid-frame',
+            });
+      const exchange =
+        kind === 'refusal'
+          ? controlExchangeForTest({ kind: 'response', response: { kind: 'refusal', failure, error } })
+          : controlExchangeForTest({ kind: 'channel-fault', cause: 'invalid-unattributable-frame', error });
+      const client: ControlClient = { ...unreachableClient(), exchange: async () => exchange };
+      const result = resultAuthority(client).providerHosts.list();
+      if (kind === 'refusal') await expect(result).rejects.toBe(error);
+      else
+        await expect(result).rejects.toMatchObject({
+          name: 'ProviderProxyRoleControlUnavailableError',
+          cause: error,
+          incident: { kind: 'role-exchange-unavailable', exchange },
+        });
+    },
+  );
 });

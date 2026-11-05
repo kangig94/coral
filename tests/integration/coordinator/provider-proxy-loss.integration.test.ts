@@ -1,3 +1,4 @@
+import { registerProviderProxySetForTest } from '#tests/helpers/provider-proxy-registration.js';
 import { requestedExecution } from '#tests/helpers/job-executions.js';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -150,7 +151,9 @@ describe('provider proxy loss recovery', () => {
     lifecycle.activateDurableOperatorDispositions();
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
-    lifecycle.registerInheritedSet(authority, { kind: 'provider-proxy-set-published' } as PublicationReceipt);
+    registerProviderProxySetForTest(lifecycle, authority, {
+      kind: 'provider-proxy-set-published',
+    } as PublicationReceipt);
     try {
       faults.reportIncident({
         kind: 'control-channel-fault',

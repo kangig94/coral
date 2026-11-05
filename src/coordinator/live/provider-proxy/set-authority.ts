@@ -1,3 +1,5 @@
+import { parseProviderProxyRoleResult, ProviderProxyRoleControlUnavailableError } from './role-control.js';
+import type { ProviderProxyRole } from '../../services/provider-proxy-authority-fault.js';
 import { z } from 'zod';
 
 import {
@@ -70,13 +72,6 @@ const handoffInstallAckSchema = z
   .object({ state: z.literal('installed-dormant'), grantId: canonicalUuidSchema })
   .strict();
 
-function assertHandoffInstallAck(value: unknown, expectedGrantId: string): void {
-  const acknowledgement = handoffInstallAckSchema.parse(value);
-  if (acknowledgement.grantId !== expectedGrantId) {
-    throw new Error('provider_proxy_handoff_install_ack_grant_mismatch');
-  }
-}
-
 declare const installedRecoveryCredentialBrand: unique symbol;
 type InstalledRecoveryCredentialBrand = Readonly<{ [installedRecoveryCredentialBrand]: true }>;
 
@@ -87,12 +82,7 @@ export type InstalledRecoveryCredential = Readonly<{
   InstalledRecoveryCredentialBrand;
 
 type RecoveryCredentialInstallRole = 'guardian' | 'reaper' | 'proxy';
-type ControlResponse = Extract<ControlExchange, { kind: 'response' }>;
-type ControlRefusalExchange = Readonly<{
-  kind: 'response';
-  response: Extract<ControlResponse['response'], { kind: 'refusal' }>;
-}>;
-type ControlInstallIncidentExchange = Exclude<ControlExchange, ControlResponse> | ControlRefusalExchange;
+type ControlInstallIncidentExchange = ControlExchange;
 
 export type RecoveryCredentialInstallIncident = Readonly<{
   role: RecoveryCredentialInstallRole;
@@ -163,20 +153,32 @@ function installExchangeOutcome(
   if (exchange.response.kind === 'refusal') {
     return {
       kind: 'refused',
-      incident: { role, method, exchange: { kind: 'response', response: exchange.response } },
+      incident: { role, method, exchange },
     };
   }
-  assertHandoffInstallAck(exchange.response.value, expectedGrantId);
+  const acknowledgement = handoffInstallAckSchema.safeParse(exchange.response.value);
+  if (!acknowledgement.success) return { kind: 'retryable', incident: { role, method, exchange } };
+  if (acknowledgement.data.grantId !== expectedGrantId) {
+    throw new Error('provider_proxy_handoff_install_ack_grant_mismatch');
+  }
   return null;
 }
 
-function requireControlResult(method: string, exchange: ControlExchange): unknown {
+function requireControlResult<T>(
+  method: string,
+  exchange: ControlExchange,
+  schema: z.ZodType<T, z.ZodTypeDef, unknown>,
+  role: ProviderProxyRole = 'proxy',
+): T {
   if (exchange.kind === 'response') {
-    if (exchange.response.kind === 'result') return exchange.response.value;
+    if (exchange.response.kind === 'result') return parseProviderProxyRoleResult(role, method, schema, exchange);
     throw exchange.response.error;
   }
-  if (exchange.error instanceof Error) throw exchange.error;
-  throw new Error(`${method} could not be sent.`, { cause: exchange.error });
+  if (exchange.kind === 'not-sent' && exchange.cause === 'encode-failed') throw exchange.error;
+  throw new ProviderProxyRoleControlUnavailableError(
+    { kind: 'role-exchange-unavailable', role, method, exchange },
+    { cause: exchange.error },
+  );
 }
 
 /** A method-not-found reply must not classify any other exchange. */
@@ -240,18 +242,19 @@ function createProviderProxyHostControl(proxyClient: ControlClient): {
     return proxyClient.exchange(method, params, timeoutMs);
   };
 
-  const providerHosts: ProviderProxySetRecoveryAuthority['providerHosts'] = Object.freeze({
+  const providerHosts: ProviderProxySetRecoveryAuthority['providerHosts'] = Object.freeze<
+    ProviderProxySetRecoveryAuthority['providerHosts']
+  >({
     list: async () => {
       const params = providerHostListParamsSchema.parse({});
       const current = controlMethodAvailability(
         await sendOrRefuse('provider-host.list.v2', params, PROXY_STATUS_RPC_TIMEOUT_MS),
       );
       if (current.kind === 'answered') {
-        return providerHostListResultV2Schema.parse(requireControlResult('provider-host.list.v2', current.exchange))
-          .hosts;
+        return requireControlResult('provider-host.list.v2', current.exchange, providerHostListResultV2Schema).hosts;
       }
       const legacy = await sendOrRefuse('provider-host.list.v1', params, PROXY_STATUS_RPC_TIMEOUT_MS);
-      return providerHostListResultV1Schema.parse(requireControlResult('provider-host.list.v1', legacy)).hosts;
+      return requireControlResult('provider-host.list.v1', legacy, providerHostListResultV1Schema).hosts;
     },
     inspect: async (hostRef) => {
       const params = providerHostInspectParamsSchema.parse({ hostRef });
@@ -259,13 +262,15 @@ function createProviderProxyHostControl(proxyClient: ControlClient): {
         await sendOrRefuse('provider-host.inspect.v2', params, PROXY_STATUS_RPC_TIMEOUT_MS),
       );
       if (current.kind === 'answered') {
-        const result = providerHostInspectResultV2Schema.parse(
-          requireControlResult('provider-host.inspect.v2', current.exchange),
+        const result = requireControlResult(
+          'provider-host.inspect.v2',
+          current.exchange,
+          providerHostInspectResultV2Schema,
         );
         return result.state === 'matched' ? result.host : null;
       }
       const legacy = await sendOrRefuse('provider-host.inspect.v1', params, PROXY_STATUS_RPC_TIMEOUT_MS);
-      const result = providerHostInspectResultV1Schema.parse(requireControlResult('provider-host.inspect.v1', legacy));
+      const result = requireControlResult('provider-host.inspect.v1', legacy, providerHostInspectResultV1Schema);
       return result.state === 'matched' ? result.host : null;
     },
     terminalEviction: async (hostRef) => {
@@ -274,18 +279,19 @@ function createProviderProxyHostControl(proxyClient: ControlClient): {
         await sendOrRefuse('provider-host.terminal-eviction.v2', params, PROXY_STATUS_RPC_TIMEOUT_MS),
       );
       if (current.kind === 'method-absent') return null;
-      const result = providerHostTerminalEvictionResultV2Schema.parse(
-        requireControlResult('provider-host.terminal-eviction.v2', current.exchange),
+      const result = requireControlResult(
+        'provider-host.terminal-eviction.v2',
+        current.exchange,
+        providerHostTerminalEvictionResultV2Schema,
       );
       return result.state === 'matched' ? result.disposition : null;
     },
     evict: async (hostRef) => {
       const params = providerHostEvictParamsSchema.parse({ hostRef });
-      return providerHostEvictResultV2Schema.parse(
-        requireControlResult(
-          'provider-host.evict.v2',
-          await sendOrRefuse('provider-host.evict.v2', params, PROXY_CONTROL_RPC_TIMEOUT_MS),
-        ),
+      return requireControlResult(
+        'provider-host.evict.v2',
+        await sendOrRefuse('provider-host.evict.v2', params, PROXY_CONTROL_RPC_TIMEOUT_MS),
+        providerHostEvictResultV2Schema,
       );
     },
   });
@@ -376,10 +382,12 @@ function transferExchangeOutcome(
   if (exchange.response.kind === 'refusal') {
     return {
       kind: 'refused',
-      incident: { role, method, exchange: { kind: 'response', response: exchange.response } },
+      incident: { role, method, exchange },
     };
   }
-  const acknowledged = controllerTransferResultSchema.parse(exchange.response.value);
+  const parsed = controllerTransferResultSchema.safeParse(exchange.response.value);
+  if (!parsed.success) return { kind: 'retryable', incident: { role, method, exchange } };
+  const acknowledged = parsed.data;
   if (acknowledged.grantId !== expected.grantId || acknowledged.attemptId !== expected.attemptId) {
     throw new Error('provider_proxy_controller_transfer_ack_mismatch');
   }
@@ -440,12 +448,24 @@ function createProviderProxySuccessionMethods(
       reaperClient.exchange('reaper.succession-register-operation.v1', params, PROXY_CONTROL_RPC_TIMEOUT_MS),
       proxyClient.exchange('succession.register-operation.v1', params, PROXY_CONTROL_RPC_TIMEOUT_MS),
     ]);
-    const guardianResult = requireControlResult('guardian.succession-register-operation.v1', guardianExchange);
-    const reaperResult = requireControlResult('reaper.succession-register-operation.v1', reaperExchange);
-    const proxyResult = requireControlResult('succession.register-operation.v1', proxyExchange);
-    successionOperationRegisterResultSchema.parse(guardianResult);
-    successionOperationRegisterResultSchema.parse(reaperResult);
-    successionOperationRegisterResultSchema.parse(proxyResult);
+    requireControlResult(
+      'guardian.succession-register-operation.v1',
+      guardianExchange,
+      successionOperationRegisterResultSchema,
+      'guardian',
+    );
+    requireControlResult(
+      'reaper.succession-register-operation.v1',
+      reaperExchange,
+      successionOperationRegisterResultSchema,
+      'reaper',
+    );
+    requireControlResult(
+      'succession.register-operation.v1',
+      proxyExchange,
+      successionOperationRegisterResultSchema,
+      'proxy',
+    );
     if (signal.aborted) return { kind: 'cancelled' };
     return { kind: 'registered' };
   };
