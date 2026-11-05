@@ -371,6 +371,7 @@ describe('incomplete succession at startup', () => {
       time: { ...base.time, now: () => (++reads <= 2 ? deadline - 1 : deadline + 1_000) },
     };
     const child: SuccessionAttemptChild = {
+      deadline: null,
       attemptId,
       bootToken: 'boot-token',
       epochKey: encodeResolvedStoreEpoch(base, settled.store),

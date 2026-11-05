@@ -1,8 +1,12 @@
-/**
- * Output goes to stderr so backend logs stay separate from stdout responses.
- */
-
 let _tag = '';
+let sink = (message: string): void => {
+  process.stderr.write(message);
+};
+
+/** Supplied sinks must contain write failures. */
+export function setBackendLogSink(write: (message: string) => void): void {
+  sink = write;
+}
 
 const _lastByPrefix = new Map<string, string>();
 
@@ -21,7 +25,7 @@ function captureBracketPrefix(message: string, renderedLine: string): void {
 
 function write(level: string, message: string): void {
   const renderedLine = `${ts()} ${level}${_tag} ${message}`;
-  process.stderr.write(`${renderedLine}\n`);
+  sink(`${renderedLine}\n`);
   captureBracketPrefix(message, renderedLine);
 }
 
@@ -49,7 +53,7 @@ export const backendLog = {
   },
 
   raw(message: string): void {
-    process.stderr.write(message);
+    sink(message);
   },
 
   /**

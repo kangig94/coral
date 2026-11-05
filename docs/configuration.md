@@ -343,6 +343,8 @@ coral-cli backend recovery-quarantine clear --boundary <boundary> --key <key> --
 
 ### Backend state
 
+`<runDir>` defaults to `~/.coral/gen2/run` for prod and `~/.coral/gen2/run-dev` for dev. For an earlier attempt routed to the run-directory log, inspect both `coordinator.log` and `coordinator.log.1`. Destination selection, inherited-stderr retention and dropped diagnostics must follow the [coordinator diagnostic destination constraints](./architecture.md#coordinator-diagnostic-destinations). See `installCoordinatorLog` and `rotateLogIfLarge` (`src/infra/coordinator-log.ts`).
+
 | Path                                                                             | Purpose                               |
 | -------------------------------------------------------------------------------- | ------------------------------------- |
 | `~/.coral/gen2/run/coordinator.json` or `~/.coral/gen2/run-dev/coordinator.json` | Active coordinator discovery record   |

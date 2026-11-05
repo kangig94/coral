@@ -15,7 +15,8 @@ describe('recovery phase observation', () => {
       const time = { monotonicNow: () => now };
       const jobs = startRecoveryPhase({ time, log, bootId: 'boot-1', phase: 'jobs-startup' });
       const workflow = startRecoveryPhase({ time, log, bootId: 'boot-1', phase: 'workflow' });
-      expect(log).not.toHaveBeenCalled();
+      expect(log).toHaveBeenCalledTimes(2);
+      log.mockClear();
 
       jobs.record('launches', { subjects: 2, reads: 3 });
       jobs.record('launches', { reads: 4 });
@@ -40,7 +41,7 @@ describe('recovery phase observation', () => {
     },
   );
 
-  it('sums failed and retried attempts and emits each startup phase once at boot settlement', async () => {
+  it('starts each retry before work and sums attempt results once at boot settlement', async () => {
     let now = 0n;
     const log = vi.fn();
     const boot = createStartupPhaseObserver({ time: { monotonicNow: () => now }, log, bootId: 'boot-1' });
@@ -54,11 +55,13 @@ describe('recovery phase observation', () => {
         }),
       ).rejects.toBe(failure);
       await observeRecoveryPhase(boot.options(phase), async (observation) => {
+        expect(log.mock.calls.filter(([line]) => line.includes(`phase=${phase} event=start `))).toHaveLength(2);
         observation.record('rows', { subjects: 4, reads: 5 });
         now += 20n;
       });
     }
-    expect(log).not.toHaveBeenCalled();
+    expect(log.mock.calls.every(([line]) => line.includes('event=start'))).toBe(true);
+    log.mockClear();
     boot.finish();
     boot.finish();
     expect(log).toHaveBeenCalledTimes(4);
@@ -77,6 +80,7 @@ describe('recovery phase observation', () => {
     ).rejects.toThrow('open failed');
     await observeRecoveryPhase(boot.options('store-open'), async () => {});
     startRecoveryPhase({ ...boot.options('store-open'), attempts: 0 }).finish();
+    log.mockClear();
     boot.finish();
     expect(log).toHaveBeenCalledExactlyOnceWith(
       'recovery-phase boot=boot-1 kind=startup phase=store-open event=finish outcome=complete' +
@@ -89,6 +93,7 @@ describe('recovery phase observation', () => {
     const monotonicNow = vi.fn().mockReturnValueOnce(1n).mockReturnValueOnce(3n);
     const phase = startRecoveryPhase({ time: { monotonicNow }, log, bootId: 'boot-1', phase: 'discussion' });
 
+    log.mockClear();
     phase.finish('failed');
     phase.record('discussions', { subjects: 10, reads: 20 });
     phase.finish();
@@ -165,7 +170,7 @@ describe('recovery phase observation', () => {
           return result;
         }),
       ).resolves.toBe(result);
-      expect(input.log).toHaveBeenCalledExactlyOnceWith(
+      expect(input.log).toHaveBeenLastCalledWith(
         'recovery-phase boot=boot-1 kind=startup phase=workflow event=finish outcome=complete' +
           ' duration_ms=0.000 subjects=1 reads=2 sources={"workflows":{"subjects":1,"reads":2}}\n',
       );
@@ -180,7 +185,7 @@ describe('recovery phase observation', () => {
           return Promise.reject(error);
         }),
       ).rejects.toBe(error);
-      expect(input.log).toHaveBeenCalledExactlyOnceWith(
+      expect(input.log).toHaveBeenLastCalledWith(
         'recovery-phase boot=boot-1 kind=startup phase=workflow event=finish outcome=failed' +
           ' duration_ms=0.000 subjects=0 reads=0 sources={}\n',
       );

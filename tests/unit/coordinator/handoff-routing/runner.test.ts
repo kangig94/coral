@@ -1,10 +1,10 @@
 import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
-import type { ChildProcess } from 'node:child_process';
+import { spawnSync, type ChildProcess } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { mkdirSync, mkdtempSync, rmSync, statSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   consumeHandoffRunResult,
@@ -117,6 +117,8 @@ const readProcessIncarnation = vi.fn<(pid: number, platform: NodeJS.Platform) =>
   testIncarnation('handoff-runner'),
 );
 let runtime: Runtime;
+const handoffRunRoot = mkdtempSync(join(tmpdir(), 'coral-handoff-runner-'));
+afterAll(() => rmSync(handoffRunRoot, { recursive: true, force: true }));
 
 function deferred() {
   let resolve!: () => void;
@@ -154,7 +156,7 @@ async function createHandoffRuntime(): Promise<Runtime> {
         ...actual.paths.coral,
         coordinator: {
           ...actual.paths.coral.coordinator,
-          runDir: '/handoff/run',
+          runDir: handoffRunRoot,
           socketPath,
         },
       },
@@ -272,6 +274,39 @@ afterEach(() => {
 });
 
 describe('handoff-routing/runner', () => {
+  it('retains delegated sentinel diagnostics when inherited stderr is null', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'coral-handoff-null-stderr-'));
+    const runDir = join(root, 'run');
+    const startupRuntime: Runtime = {
+      ...runtime,
+      paths: {
+        ...runtime.paths,
+        coral: { ...runtime.paths.coral, coordinator: { ...runtime.paths.coral.coordinator, runDir } },
+      },
+    };
+    mockState.createRealRuntime.mockReturnValue(startupRuntime);
+    mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
+    mockState.spawn.mockImplementation((_executable, _args, options) => {
+      const inheritedStderr = Array.isArray(options.stdio) ? options.stdio[2] : 'ignore';
+      const sentinel = spawnSync(process.execPath, ['-e', "process.stderr.write('handoff-sentinel-diagnostic\\n')"], {
+        stdio: ['ignore', 'ignore', inheritedStderr],
+      });
+      expect(sentinel.status).toBe(0);
+      return childThatExits(7, null);
+    });
+    try {
+      await runHandoff(
+        { kind: 'backend-startup' },
+        {
+          pluginRoot: '/plugin/root',
+          activeSelectionTarget: mockState.target as ValidatedHandoffTarget,
+        },
+      );
+      expect(readFileSync(join(runDir, 'coordinator.log'), 'utf8')).toContain('handoff-sentinel-diagnostic\n');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
   it('creates a fresh run directory before delegating backend startup with that cwd', async () => {
     const root = mkdtempSync(join(tmpdir(), 'coral-handoff-startup-cwd-'));
     const runDir = join(root, 'fresh', 'run');
@@ -377,7 +412,7 @@ describe('handoff-routing/runner', () => {
     const selection = mockState.publishGenerationCoordinatedHandoffRoutingTransitions.mock.calls[0]?.[2][0];
     const terminal = mockState.publishGenerationCoordinatedHandoffRoutingTransitions.mock.calls[1]?.[2][0];
     expect(mockState.publishGenerationCoordinatedHandoffRoutingTransitions.mock.calls[0]?.[1]).toBe(
-      `/handoff/run/handoff-routing.${HANDOFF_ROUTING_STATUS_GENERATION}.db`,
+      join(handoffRunRoot, `handoff-routing.${HANDOFF_ROUTING_STATUS_GENERATION}.db`),
     );
     expect(selection).toMatchObject({
       kind: 'routing-selected',

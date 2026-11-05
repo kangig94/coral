@@ -1,3 +1,4 @@
+import { withCoordinatorLog } from '../../infra/coordinator-log.js';
 import { waitCommandPaths, waitCommandPrefix } from './wait-command.js';
 import {
   WaitBuildMismatchError,
@@ -1431,7 +1432,16 @@ async function executeResolvedHandoff(
       execution.assertExecutable();
       executionPhase.current = 'child-spawn';
       // Runtime ports do not expose the executable for the current Node process.
-      const child = spawn(process.execPath, childArguments, spawnOptions);
+      const child =
+        operation.kind === 'backend-startup'
+          ? withCoordinatorLog(runtime.paths.coral.coordinator.runDir, (stderr) =>
+              spawn(process.execPath, childArguments, {
+                ...spawnOptions,
+                stdio:
+                  waitInvocation === undefined ? ['inherit', 'inherit', stderr] : ['inherit', 'inherit', stderr, 'ipc'],
+              }),
+            )
+          : spawn(process.execPath, childArguments, spawnOptions);
       const childObservation = observeChild(child);
       if (waitInvocation !== undefined) bindMonitorChild(child, childObservation, waitInvocation, runtime);
       else if (startup === undefined) onDelegatedChild?.(child);

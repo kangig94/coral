@@ -474,7 +474,12 @@ describe('coordinator pending workflow execution recovery', () => {
       pluginRoot,
       bootSnapshot: {
         log: (message) => {
-          if (!message.startsWith('recovery-phase ') || !message.includes(' kind=startup ')) return;
+          if (
+            !message.startsWith('recovery-phase ') ||
+            !message.includes(' kind=startup ') ||
+            !message.includes(' event=finish ')
+          )
+            return;
           phaseLines.push(message);
           order.push(/ phase=(\S+) /.exec(message)?.[1] ?? 'invalid-phase');
         },

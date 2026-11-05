@@ -1,3 +1,4 @@
+import { backendLog } from '../infra/backend-log.js';
 import { claimCoordinatorLaunch } from '../infra/coordinator-admission.js';
 
 const utilityInvocation =
@@ -20,6 +21,6 @@ void (utilityInvocation ? Promise.resolve(true) : claimCoordinatorLaunch())
     else process.exitCode = 1;
   })
   .catch((error: unknown) => {
-    process.stderr.write(`${String(error)}\n`);
+    backendLog.raw(`${String(error)}\n`);
     process.exitCode = 1;
   });
