@@ -201,6 +201,45 @@ const certificateSchema = z
     terminalHighWaterSeq: z.number().int().safe().nonnegative(),
   })
   .passthrough();
+const recoveryEvidenceVersion = 'v1';
+const recoveryEvidenceFile = `recovery-evidence.${recoveryEvidenceVersion}.json`;
+const recoveryDecoder = 'retained-current-1';
+const recoveryEvidencePayloadSchema = z.object({
+  version: z.literal(recoveryEvidenceVersion),
+  decoder: z.literal(recoveryDecoder),
+  fingerprint: z.string(),
+  jobsRoot: z.string(),
+  epochKey: z.string(),
+  revision: z.number().int().safe().nonnegative(),
+  journal: z.object({ seq: z.number().int().safe().nonnegative(), count: z.number().int().safe().nonnegative() }),
+  streams: z.array(
+    z.object({
+      stream_id: z.string(),
+      seq: z.number().int().safe().nonnegative(),
+      count: z.number().int().safe().nonnegative(),
+      opened: z.number().int().safe().nonnegative(),
+    }),
+  ),
+  directory: z.string(),
+  certificateStamp: z.string(),
+  jobs: z.array(
+    z.object({
+      jobId: z.string(),
+      seq: z.number().int().safe().nonnegative(),
+      count: z.number().int().safe().nonnegative(),
+      dependency: z.string(),
+      stamp: z.string(),
+    }),
+  ),
+});
+const recoveryEvidenceSchema = recoveryEvidencePayloadSchema.extend({
+  digest: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/)
+    .optional(),
+});
+type RecoveryEvidence = z.infer<typeof recoveryEvidenceSchema>;
+
 const unknownHoldSchema = z
   .object({
     version: z.literal('v1'),
@@ -1102,6 +1141,84 @@ export class JobLocationIndex {
     return (this.locationsByEpoch.get(epochIdentity(epochKey)) ?? []).map(
       (location) => this.read(location.jobId, observation) ?? location,
     );
+  }
+
+  withRecoveryGuard<T>(epochKey: string, action: () => T): T {
+    return this.withRevisionLock(epochKey, action);
+  }
+
+  recoveryStamp(jobId?: string): string {
+    if (jobId === undefined) return this.recoveryDirectoryStamp();
+    const stamp = this.recoveryFileStamp(this.jobPath(jobId));
+    return stamp === 'absent' ? 'unobservable' : stamp;
+  }
+
+  private recoveryDirectoryStamp(): string {
+    try {
+      const stat = this.runtime.storage.lstatSync(join(this.root, 'jobs'), { bigint: true });
+      if (!stat.isDirectory()) return 'unobservable';
+      return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}:${stat.birthtimeNs}`;
+    } catch {
+      return 'unobservable';
+    }
+  }
+
+  private recoveryFileStamp(path: string): string {
+    try {
+      const stat = this.runtime.storage.lstatSync(path, { bigint: true });
+      if (!stat.isFile()) return 'unobservable';
+      return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}:${stat.birthtimeNs}`;
+    } catch (error: unknown) {
+      if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return 'absent';
+      return 'unobservable';
+    }
+  }
+
+  recoveryEvidence(epochKey: string): RecoveryEvidence | null {
+    try {
+      const evidence = optionalJson(
+        this.runtime,
+        this.epochPath(epochKey, recoveryEvidenceFile),
+        recoveryEvidenceSchema,
+      );
+      if (evidence === null) return null;
+      const { digest, ...payload } = evidence;
+      if (digest !== createHash('sha256').update(JSON.stringify(payload)).digest('hex')) return null;
+      return evidence.fingerprint === this.currentFingerprint &&
+        evidence.epochKey === epochKey &&
+        evidence.jobsRoot === this.jobsRoot &&
+        evidence.certificateStamp !== 'unobservable' &&
+        evidence.certificateStamp === this.recoveryFileStamp(this.epochPath(epochKey, 'certificate.v1.json'))
+        ? evidence
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
+  recordRecoveryEvidence(
+    epochKey: string,
+    jobs: RecoveryEvidence['jobs'],
+    journal: RecoveryEvidence['journal'],
+    streams: RecoveryEvidence['streams'],
+  ): void {
+    const evidence = recoveryEvidencePayloadSchema.parse({
+      version: recoveryEvidenceVersion,
+      journal,
+      streams,
+      decoder: recoveryDecoder,
+      jobsRoot: this.jobsRoot,
+      fingerprint: this.currentFingerprint,
+      epochKey,
+      revision: this.revision(epochKey),
+      directory: this.recoveryStamp(),
+      certificateStamp: this.recoveryFileStamp(this.epochPath(epochKey, 'certificate.v1.json')),
+      jobs,
+    });
+    atomicJson(this.runtime, this.epochPath(epochKey, recoveryEvidenceFile), {
+      ...evidence,
+      digest: createHash('sha256').update(JSON.stringify(evidence)).digest('hex'),
+    });
   }
 
   certify(

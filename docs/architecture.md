@@ -633,6 +633,16 @@ The CLI waits for a usable coordinator (`ok`, `kernel-ready`, or `running`), or 
 
 When `coordinator.sock` exceeds the platform's `sun_path` limit, the canonical relocated address is under `/tmp/coral-<state-root-hash>/`; the state root, not the caller uid or `TMPDIR`, owns that namespace. The binder still requires the directory to be owned by the calling uid with mode `0700`, so a second user of this build over the same installation refuses instead of deriving a second lock. The v0.10.9 guard uses that tag's own 104-byte Darwin/108-byte non-Darwin rule. Its path owner accepts only non-empty absolute configured and system temp directories and deduplicates the resulting addresses. If v0.10.9 would have relocated but its configured selector is empty or relative, the shipped address depended on its working directory and cannot be enumerated; this build refuses startup instead of treating that third answer as no guards. [`socket-address-ownership.md`](./todo/socket-address-ownership.md) records the remaining cross-environment limit.
 
+#### Startup recovery reuse
+
+Retained job detail may be reused only with supported, verifiable certification that its journal truth, dependent evidence and durable content are unchanged. Unverifiable or inconsistent evidence requires full reconstruction of the affected detail; missing, corrupt or foreign reconstruction markers disable reuse. Inventory uncertainty must also prevent the whole-epoch shortcut. Markers must remain ignorable by older readers without changing existing durable record meanings. See `JobLocationIndex.recoveryEvidence` in `src/jobs/location-index.ts` and `validatedRecoveryEvidence` in `src/jobs/location-recovery.ts`.
+
+A reconstruction marker never authorizes release, retirement or deletion. Retirement and deletion must rest on journal truth; release still requires the existing admission, hold and result-durability proofs. Those release requirements remain in [Storage retention](#storage-retention).
+
+When epoch evidence invalidates the whole-epoch shortcut, `recoverJobLocations` in `src/jobs/location-recovery.ts` still incurs conservative full inventory reconciliation and the full release-certification work in `JobLocationIndex.certify` in `src/jobs/location-index.ts`, even though unchanged jobs skip reconstruction. Total startup recovery cost includes that epoch-wide work and journal/metadata scans as well as changed-job reconstruction.
+
+`coordinator/services/recovery/coordinator-job-source.ts:coordinatorJobRecoverySource` omits validated terminal projections from broad discovery before fetching history. `jobs/reconcile/plan.ts:planJobRecovery` defines terminal jobs as requiring no generic recovery action. Targeted retries and malformed/unknown projections retain full hydration and quarantine; custody, provider-operation and conversation-retention owners run independently.
+
 #### Coordinator Diagnostic Destinations
 
 With null-device or unwritable inherited stderr, coordinator `backendLog` diagnostics after sink installation must use `<runDir>/coordinator.log` if opening succeeds. Sink selection must preserve a writable inherited pipe, terminal or regular file; `coordinator.log` need not exist or contain that attempt when another destination was selected. Sink selection must have one destination; the coordinator-owned sink must contain per-message write failures. The log directory must come from the same bundle-manifest-flavored runtime passed to composition, independent of ambient `CORAL_FLAVOR`. See `installCoordinatorLog` (`src/infra/coordinator-log.ts`) and `main` (`src/coordinator/bootstrap.ts`).
@@ -900,6 +910,8 @@ Job <id> errored: <sentence> [<kind>]
 The trailing `[<kind>]` tag on `errored` lines is the machine-readable classifier (regex `/\[(\w+)\]$/`).
 
 ## Storage retention
+
+For startup reconstruction and its release boundary, see [Startup recovery reuse](#startup-recovery-reuse).
 
 `jobs/location-index.ts:JobLocationIndex.compactTerminalRecords` preserves complete end evidence independently per execution while removing eligible progress. The external location record retains each ended execution's `{ execution, requestedSeq, seq, resultPath, detail }`, including outcome, diagnostics, usage, end time, and causes; its top-level terminal view remains the latest ended execution. Source-independent reads and permitted repairs address the selected record, so missing execution #2 cannot fall back to #1. Before a new request commits, admission durably invalidates the epoch's result certificate and marks the location `active-owner` with a pending admission under the location revision guard. Uncertain writes block commit. Rollback is reconciled against the Journal without restoring a stale certificate; unavailable evidence stays unresolved. Result release requires no pending/open admission, every committed end retained, and every required execution result durably released.
 
