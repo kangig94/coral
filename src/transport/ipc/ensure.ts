@@ -22,7 +22,9 @@ import { BackendUnreachableError } from '../../infra/http-errors.js';
 import { isNoEntryError } from '../../infra/fs-errors.js';
 import { isRecord } from '../../infra/json.js';
 import { readBuildFlavor, readBundleHash, resolveStrictBundleIdentity } from '../../infra/bundle-manifest.js';
-import { readLaunchAdmission } from '../../infra/launch-admission-record.js';
+import { listLaunchAdmissions, readLaunchAdmission } from '../../infra/launch-admission-record.js';
+import { STARTUP_BUDGET_MS } from '../../coordinator-launch/timing.js';
+import { recordLegacyUpgradeIntent } from '../../coordinator-launch/request.js';
 import { attemptExclusiveFileLockSync } from '../../infra/fs-lock.js';
 import { supervisorLockPath } from '../../infra/path/index.js';
 import type { CoordinatorDiscoveryRecord } from '../../infra/backend-discovery.js';
@@ -904,6 +906,31 @@ async function authenticateServingIncumbent({
   return { incumbent, accepted: supervisorAcceptedUpgrade(paths, desired, timePort.now()) === 'accepted' };
 }
 
+function admittedStartupRemainingMs(
+  paths: CoordinatorPaths,
+  desired: DesiredCoordinator,
+  timePort: TimePort,
+): number | null {
+  for (const reading of listLaunchAdmissions(paths.runDir)) {
+    if (reading.kind !== 'readable') continue;
+    const admission = reading.admission;
+    const age =
+      admission.admittedMonotonicMs === undefined
+        ? timePort.now() - admission.admittedAt
+        : Number(timePort.monotonicNow()) - admission.admittedMonotonicMs;
+    if (
+      admission.build.flavor === desired.flavor &&
+      admission.discoveredAt === undefined &&
+      age >= 0 &&
+      age < STARTUP_BUDGET_MS &&
+      probeProcessIncarnation(admission.child.pid) === admission.child.incarnation &&
+      probeProcessIncarnation(admission.parent.pid) === admission.parent.incarnation
+    )
+      return STARTUP_BUDGET_MS - age;
+  }
+  return null;
+}
+
 async function observeBackendReady(
   paths: CoordinatorPaths,
   desired: DesiredCoordinator,
@@ -913,6 +940,7 @@ async function observeBackendReady(
   expectedSocketPath: string,
 ): Promise<ReadyCoordinatorEvidence> {
   const waitStartedAt = timePort.now();
+  let lastHealthAnswerAt = timePort.monotonicNow();
   let recoveryBudgetMs =
     waitContext.kind === 'current-attempt' && waitContext.sentinel
       ? SENTINEL_RECOVERY_BUDGET_MS
@@ -923,16 +951,29 @@ async function observeBackendReady(
   // this attempt has durably claimed responsibility for the upgrade wait.
   const admission: RouteLifecycleAdmission = 'running';
   let monitoring: 'available' | 'unavailable' | 'unknown' = 'unknown';
-  while (timePort.now() - waitStartedAt < recoveryBudgetMs) {
+  while (true) {
+    const startupRemainingMs = admittedStartupRemainingMs(paths, desired, timePort);
+    const elapsedMs = timePort.now() - waitStartedAt;
+    const effectiveBudgetMs =
+      startupRemainingMs === null ? recoveryBudgetMs : Math.max(recoveryBudgetMs, elapsedMs + startupRemainingMs);
+    if (elapsedMs >= effectiveBudgetMs) break;
     const info = readDiscoverySnapshot(paths);
     const address = info?.socketPath ?? expectedSocketPath;
-    const remainingMs = recoveryBudgetMs - (timePort.now() - waitStartedAt);
+    const remainingMs = effectiveBudgetMs - elapsedMs;
     const observedReading = await readRawCoordinatorHealth(
       createIpcClient(address, timePort),
       'ping',
       Math.max(1, Math.min(HEALTH_TIMEOUT_MS, remainingMs)),
     );
     const observedHealth = answeredHealth(observedReading);
+    if (observedHealth !== null) {
+      lastHealthAnswerAt = timePort.monotonicNow();
+    } else if (
+      timePort.monotonicNow() - lastHealthAnswerAt >= BigInt(LEGACY_RECOVERY_BUDGET_MS) &&
+      startupRemainingMs === null
+    ) {
+      throw documentedCoralSetupError('coordinator_recovering', { monitoring: 'unknown' });
+    }
     monitoring = info === null ? 'unknown' : info.sentinel !== undefined ? 'available' : 'unavailable';
     if (info?.sentinel !== undefined || observedHealth?.sentinel !== undefined) {
       recoveryBudgetMs = SENTINEL_RECOVERY_BUDGET_MS;
@@ -951,7 +992,7 @@ async function observeBackendReady(
         admission,
         expectedSocketPath,
         timePort,
-        recoveryBudgetMs,
+        recoveryBudgetMs: effectiveBudgetMs,
         waitStartedAt,
         waitContext,
         desired,
@@ -965,9 +1006,6 @@ async function observeBackendReady(
     const recoveringHolder =
       startupError?.kind === 'documented' && startupError.code === 'handoff_socket_holder_unverified';
     if (recoveringHolder && info?.sentinel !== undefined && refusedHolder === null) refusedHolder = info;
-    if (recoveringHolder && terminalOutcome !== null && monitoring !== 'available') {
-      recoveryBudgetMs = Math.min(recoveryBudgetMs, LEGACY_RECOVERY_BUDGET_MS);
-    }
     if (startupError) {
       switch (startupError.kind) {
         case 'documented': {
@@ -1000,7 +1038,7 @@ async function observeBackendReady(
       // A terminal child that left no refusal is not evidence the address is dead: the incumbent it conceded
       // to may still be in `starting`, which is not a serving status and so cannot produce a serving incumbent
       // here.
-      if (mayInvocationBeServedByIncumbent(observedHealth, admission)) {
+      if (mayInvocationBeServedByIncumbent(observedHealth, admission) || startupRemainingMs !== null) {
         waitContext = { kind: 'existing-starting' };
         terminalOutcome = null;
         continue;
@@ -1008,7 +1046,7 @@ async function observeBackendReady(
       if (supervisorHasPendingUpgrade(paths, desired)) {
         monitoring = 'available';
         await timePort.sleep(
-          Math.max(1, Math.min(STARTUP_POLL_MS, recoveryBudgetMs - (timePort.now() - waitStartedAt))),
+          Math.max(1, Math.min(STARTUP_POLL_MS, effectiveBudgetMs - (timePort.now() - waitStartedAt))),
         );
         continue;
       }
@@ -1018,7 +1056,7 @@ async function observeBackendReady(
       return servingIncumbent;
     }
 
-    const pollMs = Math.max(1, Math.min(STARTUP_POLL_MS, recoveryBudgetMs - (timePort.now() - waitStartedAt)));
+    const pollMs = Math.max(1, Math.min(STARTUP_POLL_MS, effectiveBudgetMs - (timePort.now() - waitStartedAt)));
     if (waitContext.kind === 'current-attempt' && terminalOutcome === null) {
       terminalOutcome = await raceObserved([waitContext.terminal, timePort.sleep(pollMs).then(() => null)]);
     } else {
@@ -1169,7 +1207,7 @@ async function reuseServingIncumbent(
   health: RawCoordinatorHealth,
   admission: RouteLifecycleAdmission,
   timePort: TimePort,
-): Promise<EnsuredIpcClient | null> {
+): Promise<ReadyCoordinatorEvidence | null> {
   const info = readDiscoverySnapshot(paths);
   if (info !== null) {
     const authenticatedHealth = await readIdentityCheckedAuthenticatedHealth(
@@ -1187,7 +1225,7 @@ async function reuseServingIncumbent(
     }
     const answeredHealth = authenticatedHealth.health;
     if (isServingStatus(answeredHealth.status, admission)) {
-      return summarizeBackend(mergeDiscoveryWithHealth(info, answeredHealth), answeredHealth, timePort, 'boot');
+      return { info: mergeDiscoveryWithHealth(info, answeredHealth), health: answeredHealth };
     }
     if (answeredHealth.status !== 'starting') {
       return null;
@@ -1196,7 +1234,7 @@ async function reuseServingIncumbent(
     return null;
   }
 
-  const ready = await waitForBackendReady(
+  return waitForBackendReady(
     paths,
     desired,
     KERNEL_READY_DEADLINE_MS,
@@ -1204,7 +1242,6 @@ async function reuseServingIncumbent(
     { kind: 'existing-starting' },
     socketPath,
   );
-  return summarizeBackend(ready.info, ready.health, timePort, 'boot');
 }
 
 async function prepareTopLevelSpawn(
@@ -1222,9 +1259,9 @@ async function spawnTopLevelCoordinator(
   paths: CoordinatorPaths,
   desired: DesiredCoordinator,
   timePort: TimePort,
-): Promise<EnsuredIpcClient> {
+): Promise<ReadyCoordinatorEvidence> {
   const spawned = spawnCoordinator(backendBin, paths);
-  const ready = await waitForBackendReady(
+  return waitForBackendReady(
     paths,
     desired,
     KERNEL_READY_DEADLINE_MS,
@@ -1239,32 +1276,19 @@ async function spawnTopLevelCoordinator(
     },
     paths.socketPath,
   );
-  return summarizeBackend(ready.info, ready.health, timePort, 'boot');
 }
 
-async function ensureTopLevelCoordinator(
+async function waitForTopLevelCoordinator(
   reach: CoordinatorReach,
   admission: RouteLifecycleAdmission,
-): Promise<EnsuredIpcClient> {
-  const { root, flavor, paths, timePort } = reach;
+  desired: DesiredCoordinator,
+): Promise<ReadyCoordinatorEvidence> {
+  const { root, paths, timePort } = reach;
   const { socketPath, health } = reach.observation;
-  const strictIdentity = resolveStrictBundleIdentity();
-  const manifest = strictIdentity.ok ? strictIdentity.manifest : null;
-  const bundleHash = manifest?.bundleHash ?? readBundleHash(root);
-  const namespace = pluginRootNamespace(root);
-  const desired: DesiredCoordinator = {
-    version: manifest?.version ?? currentVersion(root),
-    bundleHash,
-    flavor,
-    namespace,
-  };
   let replacementEvidence = health;
   if (mayInvocationBeServedByIncumbent(health, admission)) {
     const incumbent = await reuseServingIncumbent(paths, socketPath, desired, health, admission, timePort);
-    if (incumbent !== null) {
-      await resumeLegacyUpgradeObservation(paths.runDir, root, manifest, HEALTH_TIMEOUT_MS);
-      return incumbent;
-    }
+    if (incumbent !== null) return incumbent;
     // `reuseServingIncumbent` failing is not proof the incumbent is gone — an
     // unauthenticated `ping` already showed it live moments ago, and a single
     // dropped authenticated round-trip looks identical to a dead incumbent.
@@ -1275,10 +1299,7 @@ async function ensureTopLevelCoordinator(
     replacementEvidence = answeredHealth(await readRawCoordinatorHealth(createIpcClient(socketPath, timePort)));
     if (mayInvocationBeServedByIncumbent(replacementEvidence, admission)) {
       const retried = await reuseServingIncumbent(paths, socketPath, desired, replacementEvidence, admission, timePort);
-      if (retried !== null) {
-        await resumeLegacyUpgradeObservation(paths.runDir, root, manifest, HEALTH_TIMEOUT_MS);
-        return retried;
-      }
+      if (retried !== null) return retried;
     }
     if (!mayProcessReplaceIncumbent(replacementEvidence)) {
       throw new BackendUnreachableError(
@@ -1287,9 +1308,48 @@ async function ensureTopLevelCoordinator(
       );
     }
   }
+  if (admittedStartupRemainingMs(paths, desired, timePort) !== null) {
+    return waitForBackendReady(paths, desired, STARTUP_BUDGET_MS, timePort, { kind: 'existing-starting' }, socketPath);
+  }
   await prepareTopLevelSpawn(socketPath, replacementEvidence, timePort);
-
   return spawnTopLevelCoordinator(resolveBackendBin(root), paths, desired, timePort);
+}
+
+async function ensureTopLevelCoordinator(
+  reach: CoordinatorReach,
+  admission: RouteLifecycleAdmission,
+): Promise<EnsuredIpcClient> {
+  const { root, flavor, paths, timePort } = reach;
+  const strictIdentity = resolveStrictBundleIdentity();
+  const manifest = strictIdentity.ok ? strictIdentity.manifest : null;
+  const bundleHash = manifest?.bundleHash ?? readBundleHash(root);
+  const namespace = pluginRootNamespace(root);
+  const desired: DesiredCoordinator = {
+    version: manifest?.version ?? currentVersion(root),
+    bundleHash,
+    flavor,
+    namespace,
+  };
+  const ready = await waitForTopLevelCoordinator(reach, admission, desired);
+  if (manifest !== null) {
+    const requested = await recordLegacyUpgradeIntent({
+      runDir: paths.runDir,
+      requestId: randomUUID(),
+      incumbent: {
+        instanceId: ready.info.instanceId,
+        pid: ready.info.pid,
+        incarnation: ready.info.incarnation ?? null,
+        version: ready.health.version,
+        bundleHash: ready.health.bundleHash,
+        flavor: ready.health.flavor,
+      },
+      target: { build: manifest, pluginRootLabel: root },
+    });
+    if (requested.kind === 'refused' && requested.disposition !== 'redundant')
+      throw new BackendUnreachableError(`Coordinator upgrade request was refused: ${requested.reason}`);
+  }
+  await resumeLegacyUpgradeObservation(paths.runDir, root, manifest, HEALTH_TIMEOUT_MS);
+  return summarizeBackend(ready.info, ready.health, timePort, 'boot');
 }
 
 async function observeCoordinator(

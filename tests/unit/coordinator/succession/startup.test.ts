@@ -615,7 +615,7 @@ describe('supervised legacy upgrade completion', () => {
         timing: {},
         startupBudgetMs: 30_000,
       } as unknown as Parameters<typeof superviseActiveChild>[0];
-      await expect(superviseActiveChild(supervision)).resolves.toBe(true);
+      await expect(superviseActiveChild(supervision)).resolves.toEqual({ released: true, served: true });
       expect(release).toHaveBeenCalledOnce();
       expect(watchChild).toHaveBeenCalledOnce();
     }

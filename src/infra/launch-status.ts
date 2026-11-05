@@ -4,12 +4,31 @@ import { closeSync, fsyncSync, openSync, readFileSync, renameSync, unlinkSync, w
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
 
-import { tryAcquireDiagnosticDirectoryLock } from './fs-lock.js';
+import { tryAcquireDiagnosticDirectoryLock, type DirectoryLockLease } from './fs-lock.js';
 
 const childSchema = z.object({ launchId: z.string().min(1), pid: z.number().int().safe().positive() });
 const statusSchema = z
   .object({
     version: z.literal(1),
+    relaunchOutcome: z
+      .object({
+        kind: z.literal('relaunch-failed'),
+        supervisorPid: z.number().int().positive(),
+        failedLaunches: z.number().int().positive(),
+        observedAt: z.string(),
+        retry: z.literal('next-ensure'),
+      })
+      .passthrough()
+      .optional(),
+    ownershipWaitOutcome: z
+      .object({
+        kind: z.literal('supervisor-lock-wait-expired'),
+        supervisorPid: z.number().int().positive(),
+        observedAt: z.string(),
+        retry: z.literal('next-ensure'),
+      })
+      .passthrough()
+      .optional(),
     publicationFailure: z.object({ code: z.literal('status-publication-unavailable'), detail: z.string() }).optional(),
     admissionHolds: z
       .array(z.object({ path: z.string(), disposition: z.enum(['unknown', 'acquisition-window', 'cleanup-pending']) }))
@@ -198,6 +217,58 @@ export function updateLaunchStatus(runDir: string, change: (current: LaunchStatu
   publishPendingStatus(runDir, pending);
 }
 
+/** Terminal callers must await publication before process.exit; background retries alone cannot survive it. */
+export async function publishTerminalLaunchStatus(
+  runDir: string,
+  outcome: Pick<LaunchStatus, 'relaunchOutcome' | 'ownershipWaitOutcome'>,
+): Promise<void> {
+  const deadline = performance.now() + 2_000;
+  const previous = pendingStatuses.get(runDir);
+  if (previous?.retry !== null && previous?.retry !== undefined) clearTimeout(previous.retry);
+  const fields = {
+    ...(outcome.relaunchOutcome === undefined ? {} : { relaunchOutcome: outcome.relaunchOutcome }),
+    ...(outcome.ownershipWaitOutcome === undefined ? {} : { ownershipWaitOutcome: outcome.ownershipWaitOutcome }),
+  };
+  const pending: PendingStatus = {
+    status: statusSchema.parse({ version: 1, ...fields }),
+    ownedFields: new Set(Object.keys(fields)),
+    lists: new Map(),
+    retry: null,
+  };
+  pendingStatuses.set(runDir, pending);
+  while (true) {
+    let lease: DirectoryLockLease | null = null;
+    try {
+      lease = tryAcquireDiagnosticDirectoryLock(join(runDir, 'launch-status.v1.lock'));
+      if (lease === null) throw new Error('Status serialization is contended or unobservable');
+      const observed = readLaunchStatus(runDir);
+      if (observed.kind === 'unreadable') throw new Error('Latest launch status is unreadable');
+      const next = statusSchema.parse({
+        ...(observed.kind === 'readable' ? observed.status : { version: 1 }),
+        ...fields,
+      });
+      writeLaunchStatusFile(runDir, next, lease);
+      pending.status = next;
+      return;
+    } catch (error: unknown) {
+      pending.status = {
+        ...pending.status,
+        publicationFailure: { code: 'status-publication-unavailable', detail: String(error) },
+      };
+    } finally {
+      lease?.();
+    }
+    const remainingMs = deadline - performance.now();
+    if (remainingMs <= 0) {
+      process.stderr.write(
+        `Terminal launch outcome publication failed after 2000 ms: ${pending.status.publicationFailure?.detail}\n`,
+      );
+      return;
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, Math.min(200, remainingMs)));
+  }
+}
+
 function indexedStatusList(value: unknown): Map<string, unknown> {
   if (!Array.isArray(value)) return new Map();
   return new Map(
@@ -238,31 +309,7 @@ function publishPendingStatus(runDir: string, pending: PendingStatus): void {
         ? { previousStatus: 'unavailable' }
         : {}),
     });
-    const path = join(runDir, 'launch-status.v1.json');
-    const temporary = join(runDir, `.launch-status-${randomUUID()}.tmp`);
-    try {
-      writeFileSync(temporary, JSON.stringify(next), { mode: 0o600, flag: 'wx' });
-      const file = openSync(temporary, 'r');
-      try {
-        fsyncSync(file);
-      } finally {
-        closeSync(file);
-      }
-      release.assertOwned();
-      renameSync(temporary, path);
-      const directory = openSync(dirname(path), 'r');
-      try {
-        fsyncSync(directory);
-      } finally {
-        closeSync(directory);
-      }
-    } finally {
-      try {
-        unlinkSync(temporary);
-      } catch {
-        // Diagnostic cleanup failure must not reject status publication.
-      }
-    }
+    writeLaunchStatusFile(runDir, next, release);
     pending.status = next;
     if (pending.retry !== null) clearTimeout(pending.retry);
     pending.retry = null;
@@ -283,6 +330,34 @@ function publishPendingStatus(runDir: string, pending: PendingStatus): void {
     }
   } finally {
     release?.();
+  }
+}
+
+function writeLaunchStatusFile(runDir: string, next: LaunchStatus, lease: DirectoryLockLease): void {
+  const path = join(runDir, 'launch-status.v1.json');
+  const temporary = join(runDir, `.launch-status-${randomUUID()}.tmp`);
+  try {
+    writeFileSync(temporary, JSON.stringify(next), { mode: 0o600, flag: 'wx' });
+    const file = openSync(temporary, 'r');
+    try {
+      fsyncSync(file);
+    } finally {
+      closeSync(file);
+    }
+    lease.assertOwned();
+    renameSync(temporary, path);
+    const directory = openSync(dirname(path), 'r');
+    try {
+      fsyncSync(directory);
+    } finally {
+      closeSync(directory);
+    }
+  } finally {
+    try {
+      unlinkSync(temporary);
+    } catch {
+      // Diagnostic cleanup failure must not reject status publication.
+    }
   }
 }
 

@@ -103,6 +103,20 @@ function fixture(originalVersion?: string) {
   return { runtime, runDir, installed, build, capsule, path, input, clock };
 }
 
+it('selects the newer eligible build when refusal-only grace expires for an older original', async () => {
+  const f = fixture('0.0.1');
+  writeFileSync(f.path, '{', { mode: 0o600 });
+  expect(controllerBuild(f.runDir)).toMatchObject({ kind: 'unknown', refusalOnly: true });
+  expect(await selectNextCandidate(f.input)).toEqual({ kind: 'retry' });
+  f.clock.mockReturnValue(1_999_000_000n);
+  expect(await selectNextCandidate(f.input)).toEqual({ kind: 'retry' });
+  f.clock.mockReturnValue(2_000_000_000n);
+  expect(await selectNextCandidate(f.input)).toEqual({
+    kind: 'candidate',
+    candidate: { executable: join(f.installed, 'bridge/coral-backend.cjs'), buildSetId: f.build.buildSetId },
+  });
+});
+
 it.each(['installed', 'missing'] as const)(
   'selects newer original C with a %s completed A-to-B receipt and no refusals',
   async (availability) => {

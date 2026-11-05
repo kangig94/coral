@@ -460,6 +460,8 @@ export type SupersededEpochClosures =
 export type BackendStatusFull = BackendStatusFullBase & {
   launchStatusSource?: 'authenticated-owner' | 'persisted';
   controllerEvidenceRefusals?: LaunchStatus['controllerEvidenceRefusals'];
+  relaunchOutcome?: LaunchStatus['relaunchOutcome'];
+  ownershipWaitOutcome?: LaunchStatus['ownershipWaitOutcome'];
   launchStatusProblem?: 'unreadable' | 'previous-status-unavailable' | 'publication-unavailable';
   launchStatusPublicationFailure?: LaunchStatus['publicationFailure'];
   launchAdmissionHolds?: LaunchStatus['admissionHolds'];
@@ -1190,13 +1192,16 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
   const disposition = readLaunchStatus(runDir);
   const unreadableAdmission = listLaunchAdmissions(runDir).find((entry) => entry.kind === 'unreadable');
   const current = status.status === 'ok' ? status.health.launchStatus : undefined;
-  const state = current ?? (disposition.kind === 'readable' ? disposition.status : null);
+  const persisted = disposition.kind === 'readable' ? disposition.status : null;
+  const state = current ?? persisted;
   return {
     ...status,
     ...(state === null
       ? {}
       : { launchStatusSource: current === undefined ? ('persisted' as const) : ('authenticated-owner' as const) }),
     controllerEvidenceRefusals: state?.controllerEvidenceRefusals,
+    relaunchOutcome: persisted?.relaunchOutcome ?? current?.relaunchOutcome,
+    ownershipWaitOutcome: persisted?.ownershipWaitOutcome ?? current?.ownershipWaitOutcome,
     ...(state?.hold !== undefined
       ? { launchHold: state.hold }
       : unreadableAdmission?.kind === 'unreadable'

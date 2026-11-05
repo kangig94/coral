@@ -179,7 +179,9 @@ async function startActiveSuccession(
   }
 }
 
-export async function superviseActiveChild(input: ActiveChildSupervision): Promise<boolean> {
+export async function superviseActiveChild(
+  input: ActiveChildSupervision,
+): Promise<Readonly<{ released: boolean; served: boolean }>> {
   const { record, owner, initial, reservation, runDir, timing, startupBudgetMs, onChild } = input;
   onChild?.(initial.child);
   let current = initial;
@@ -213,8 +215,10 @@ export async function superviseActiveChild(input: ActiveChildSupervision): Promi
     500,
   );
   let result: WatchResult;
+  let served = false;
   while (true) {
     result = await watched;
+    served ||= result.served;
     await Promise.resolve(startingAttempt);
     const successor = pending.value;
     if (successor === null || successor.running.child.exitCode !== null || successor.running.child.signalCode !== null)
@@ -226,7 +230,7 @@ export async function superviseActiveChild(input: ActiveChildSupervision): Promi
     pending.value = null;
   }
   clearInterval(requestPoll);
-  return releaseAfterSettledServedExit(record, runDir, result);
+  return { released: releaseAfterSettledServedExit(record, runDir, result), served };
 }
 
 function releaseAfterSettledServedExit(record: SupervisorLaunchMemory, runDir: string, result: WatchResult): boolean {

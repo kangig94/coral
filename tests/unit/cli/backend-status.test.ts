@@ -1,7 +1,12 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import * as runtimeModule from '#src/runtime/real.js';
+import { updateLaunchStatus } from '#src/infra/launch-status.js';
 import { Command } from 'commander';
 import { afterEach, expect, it, vi } from 'vitest';
 import { registerBackendCommands, type BackendStatusCommandOperations } from '#src/cli/commands/backend.js';
-import { statusFromStartupDiagnostic } from '#src/cli/backend-status.js';
+import { getBackendStatusFull, statusFromStartupDiagnostic } from '#src/cli/backend-status.js';
 import type { BackendStatusFull } from '#src/cli/backend-status.js';
 import { executeRenderedCommand } from '#tests/helpers/rendered-command.js';
 import { formatBackendStatus } from '#src/cli/format/backend.js';
@@ -26,6 +31,88 @@ function health(
     skippedProviderProxySetTokens: [],
   };
 }
+
+const statusRoots: string[] = [];
+
+it.each([
+  {
+    field: 'relaunchOutcome',
+    outcome: {
+      kind: 'relaunch-failed',
+      supervisorPid: 123,
+      failedLaunches: 3,
+      observedAt: '2026-11-05',
+      retry: 'next-ensure',
+    },
+    text: 'relaunch-failed after 3 unsuccessful launches',
+  },
+  {
+    field: 'ownershipWaitOutcome',
+    outcome: {
+      kind: 'supervisor-lock-wait-expired',
+      supervisorPid: 456,
+      observedAt: '2026-11-05',
+      retry: 'next-ensure',
+    },
+    text: 'supervisor-lock-wait-expired',
+  },
+] as const)('reads persisted $field independently of authenticated current holds', async ({ field, outcome, text }) => {
+  const root = mkdtempSync(join(tmpdir(), 'coral-historical-status-'));
+  statusRoots.push(root);
+  const runtime = runtimeModule.createRealRuntime('prod', { baseDir: root });
+  vi.spyOn(runtimeModule, 'createRealRuntime').mockReturnValue(runtime);
+  const paths = runtime.paths.coral.coordinator;
+  mkdirSync(paths.runDir, { recursive: true });
+  writeFileSync(
+    paths.infoFile,
+    JSON.stringify({
+      pid: process.pid,
+      port: 4321,
+      host: '127.0.0.1',
+      socketPath: paths.socketPath,
+      token: 'test-token',
+      bootToken: 'test-boot-token',
+      version: '0.10.17',
+      bundleHash: 'test',
+      flavor: 'prod',
+      namespace: 'test-namespace',
+      instanceId: 'test',
+      startedAt: Date.now(),
+    }),
+  );
+  const currentHold = { kind: 'target-indeterminate', requestId: 'current-request' } as const;
+  const snapshot = {
+    ...health('running'),
+    namespace: 'test-namespace',
+    flavor: 'prod',
+    pid: process.pid,
+    launchStatus: { version: 1, hold: currentHold, inheritedHolds: [], signalHolds: [] },
+  };
+  const fetch = vi.fn(async (_url: unknown, options?: RequestInit) => {
+    if (options?.headers !== undefined) {
+      expect(options.headers).toEqual({ 'X-Coral-Boot-Token': 'test-boot-token' });
+      updateLaunchStatus(paths.runDir, () => ({
+        version: 1,
+        inheritedHolds: [],
+        signalHolds: [],
+        hold: { kind: 'target-indeterminate', requestId: 'stale-request' },
+        [field]: outcome,
+      }));
+    }
+    return new Response(JSON.stringify(snapshot));
+  });
+  vi.stubGlobal('fetch', fetch);
+  const status = await getBackendStatusFull(root);
+  expect(status).toMatchObject({ status: 'ok', launchStatusSource: 'authenticated-owner', launchHold: currentHold });
+  expect(status[field]).toEqual(outcome);
+  expect(fetch).toHaveBeenCalledTimes(2);
+  const output = formatBackendStatus(status, { kind: 'absent' }, null);
+  expect(output).toContain(text);
+  expect(output).toContain('historical evidence, not current service state');
+  expect(output).toContain('current-request');
+  expect(output).not.toContain('stale-request');
+  if (field === 'ownershipWaitOutcome') expect(output).toContain('The incumbent may still be running');
+});
 
 it.each(['live-retry', 'recovery-quarantine'] as const)(
   'renders a blocked execution with its %s successor',
@@ -158,6 +245,8 @@ it('keeps a stronger publication failure at 70 when authenticated health is star
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+  for (const root of statusRoots.splice(0)) rmSync(root, { recursive: true, force: true });
   process.exitCode = undefined;
 });
 

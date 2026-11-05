@@ -38,7 +38,6 @@ function candidates(
   originalManifest: StrictBundleManifest,
   originalOutstanding: boolean,
   controller: ReturnType<typeof controllerBuild>,
-  refusalGraceExpired: boolean,
 ): Candidate[] {
   if (controller.kind === 'unknown') return [];
   const committedIntent = completedServingIntent(runDir);
@@ -65,16 +64,15 @@ function candidates(
       ? []
       : [{ executable: join(root, 'bridge', 'coral-backend.cjs'), buildSetId: build.buildSetId }];
   });
-  const requiredBuild = controller.kind === 'required' ? controller.buildSetId : (committed?.buildSetId ?? null);
-  if (refusalGraceExpired && requiredBuild === null)
-    return validatedExecutable(original.executable)?.buildSetId === original.buildSetId ? [original] : [];
   const choices = [
     ...new Map(
       [
         ...requested,
         ...(committed === null ? [] : [committed]),
         ...recovery,
-        ...(originalOutstanding ? [original] : []),
+        ...(originalOutstanding && validatedExecutable(original.executable)?.buildSetId === original.buildSetId
+          ? [original]
+          : []),
         ...(originalRoot === null
           ? []
           : [{ executable: join(originalRoot, 'bridge', 'coral-backend.cjs'), buildSetId: original.buildSetId }]),
@@ -176,15 +174,17 @@ export async function selectNextCandidate(input: {
     if (committed !== null)
       controller = { kind: 'required', buildSetId: committed.target.build.buildSetId, refusals: controller.refusals };
   }
-  const eligible = candidates(
-    runDir,
-    original,
-    originalManifest,
-    !record.hasServed(original.buildSetId),
-    controller,
-    refusalGraceExpired,
-  );
-  const available = eligible.filter((candidate) => !tried.has(candidate.executable));
+  const eligible = candidates(runDir, original, originalManifest, !record.hasServed(original.buildSetId), controller);
+  const newest = eligible[0] === undefined ? null : validatedExecutable(eligible[0].executable);
+  const available = eligible.filter((candidate) => {
+    const manifest = validatedExecutable(candidate.executable);
+    return (
+      !tried.has(candidate.executable) &&
+      newest !== null &&
+      manifest !== null &&
+      compareProductVersions(manifest.version, newest.version) === 0
+    );
+  });
   if (available.length === 0) {
     const state = record.read();
     if (

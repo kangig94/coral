@@ -12,7 +12,7 @@ import {
   repairMalformedFileLockSync,
   type FileLockLease,
 } from '../infra/fs-lock.js';
-import { currentLaunchStatus, updateLaunchStatus } from '../infra/launch-status.js';
+import { currentLaunchStatus, publishTerminalLaunchStatus, updateLaunchStatus } from '../infra/launch-status.js';
 import { probeProcessIncarnation } from '../infra/node-process.js';
 import { supervisorLockPath } from '../infra/path/index.js';
 import { readUpgradeIntent } from '../infra/upgrade-intent.js';
@@ -236,7 +236,8 @@ export async function acquireLaunchOwnership(
     const holdLock = (cause: unknown): void => recordLaunchLockHold(runDir, path, gate, cause);
     const context = { runDir, manifest, incarnation, gate, path, holdLock };
     let requested = false;
-    for (let retry = 0; !gate.replacement || retry < 150; retry += 1) {
+    const startedAt = Number(process.hrtime.bigint() / 1_000_000n);
+    for (let retry = 0; retry < 150 && Number(process.hrtime.bigint() / 1_000_000n) - startedAt < 30_000; retry += 1) {
       if (launchParentAuthorityLost(gate)) return { kind: 'finished', exitCode: 1 };
       if (gate.replacement && !gate.offered()) {
         await sleep(POLL_MS);
@@ -256,6 +257,17 @@ export async function acquireLaunchOwnership(
       }
       await sleep(POLL_MS);
     }
+    await publishTerminalLaunchStatus(runDir, {
+      ownershipWaitOutcome: {
+        kind: 'supervisor-lock-wait-expired',
+        supervisorPid: process.pid,
+        observedAt: new Date().toISOString(),
+        retry: 'next-ensure',
+      },
+    });
+    process.stderr.write(
+      'Namespace supervisor ownership was not acquired within 30 seconds. The incumbent may still be running; retry the command to observe recovery.\n',
+    );
     return { kind: 'finished', exitCode: 1 };
   } finally {
     gate.release();
