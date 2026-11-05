@@ -310,96 +310,124 @@ describe('provider proxy set sharing', () => {
   }, 180_000);
 });
 
-it('settles a killed host mid-turn as provider failure without holding or disturbing its sibling', async (context) => {
-  if (process.platform !== 'linux') {
-    console.warn('Skipping host failure-domain settlement integration: Linux is required');
-    context.skip('Linux cgroup v2 is required');
-  }
-  const bus = spawnSync('busctl', ['--user', 'status'], { encoding: 'utf8', timeout: 2_000 });
-  if (bus.error !== undefined || bus.status !== 0) {
-    const reason = `busctl --user status unavailable: ${bus.error?.message ?? bus.stderr.trim()}`;
-    console.warn(`Skipping host failure-domain settlement integration: ${reason}`);
-    context.skip(reason);
-  }
-  assertBuildArtifactsAvailable();
-  const world = createWorld({ [CORAL_MAX_PROVIDER_PROXY_SETS_ENV]: '1', CORAL_KB_ENABLE: '0' });
-  const runDir = coordinatorFilesForHome(world.home, 'prod').runDir;
-  const digest = createHash('sha256').update(runDir).digest('hex').slice(0, 20);
-  const unit = `app-coral-prod-${digest}.scope`;
-  let coordinator: SpawnedCoordinator | undefined;
-  let coordinatorIdentity: { pid: number; incarnation: ProcessIncarnation | null } | null = null;
-  let ownRoot: string | null = null;
-  try {
-    coordinator = spawnCoordinator({
-      fixture: world.fixture,
-      home: world.home,
-      tempRoots: roots,
-      env: world.env,
-      supervised: true,
-    });
-    coordinators.push(coordinator);
-    const coordinatorPid = (await waitForDiscoveryRecord(world.home, 'prod', 15_000)).pid;
-    coordinatorIdentity = { pid: coordinatorPid, incarnation: probeProcessIncarnation(coordinatorPid) };
-    ownRoot = testScopeRoot(unit, coordinator.child.pid);
-    expect(ownRoot).not.toBeNull();
-    const group = readFileSync(`/proc/${coordinatorPid}/cgroup`, 'utf8').trim();
-    expect(group).toContain(`/${unit}/coordinator-`);
-    expect(existsSync(ownRoot!)).toBe(true);
-    const doomed = await launchHeldJob(world);
-    const sibling = await launchHeldJob(world);
-    const roles = proxyRoleProcesses(world.home);
-    expect(roles).toHaveLength(3);
-    for (const role of roles) {
-      expect(readFileSync(`/proc/${role.pid}/cgroup`, 'utf8').trim()).toBe(
-        `0::${join(ownRoot!, role.leaf).slice('/sys/fs/cgroup'.length)}`,
-      );
+for (const placement of ['proxy', 'local']) {
+  it(`settles a killed ${placement} host mid-turn as provider failure without holding or disturbing its sibling`, async (context) => {
+    if (process.platform !== 'linux') {
+      console.warn('Skipping host failure-domain settlement integration: Linux is required');
+      context.skip('Linux cgroup v2 is required');
     }
-    expect(hostOwnerPid(doomed.codexPid)).toBe(hostOwnerPid(sibling.codexPid));
-    const hostGroup = readFileSync(`/proc/${doomed.codexPid}/cgroup`, 'utf8').trim().slice(3);
-    const hostLeaf = join('/sys/fs/cgroup', hostGroup);
-    expect(hostLeaf.startsWith(`${ownRoot}/set-`)).toBe(true);
-    expect(hostLeaf).toMatch(/\/containment\/host-[0-9a-f-]+$/u);
-    writeFileSync(join(hostLeaf, 'cgroup.kill'), '1');
-    const db = new DatabaseSync(storeDbPathForHome(world.home, 'prod'), { readOnly: true });
+    const bus = spawnSync('busctl', ['--user', 'status'], { encoding: 'utf8', timeout: 2_000 });
+    if (bus.error !== undefined || bus.status !== 0) {
+      const reason = `busctl --user status unavailable: ${bus.error?.message ?? bus.stderr.trim()}`;
+      console.warn(`Skipping host failure-domain settlement integration: ${reason}`);
+      context.skip(reason);
+    }
+    assertBuildArtifactsAvailable();
+    const world = createWorld({ [CORAL_MAX_PROVIDER_PROXY_SETS_ENV]: '1', CORAL_KB_ENABLE: '0' });
+    const runDir = coordinatorFilesForHome(world.home, 'prod').runDir;
+    const digest = createHash('sha256').update(runDir).digest('hex').slice(0, 20);
+    const unit = `app-coral-prod-${digest}.scope`;
+    let coordinator: SpawnedCoordinator | undefined;
+    let coordinatorIdentity: { pid: number; incarnation: ProcessIncarnation | null } | null = null;
+    let ownRoot: string | null = null;
     try {
-      await vi.waitFor(
-        () => {
-          expect(
-            db.prepare('SELECT phase, finishing, terminal FROM projection_jobs WHERE job_id = ?').get(doomed.jobId),
-          ).toMatchObject({ phase: 'error', finishing: 0, terminal: expect.any(String) });
-        },
-        { timeout: 30_000 },
-      );
-      const row = db.prepare('SELECT terminal FROM projection_jobs WHERE job_id = ?').get(doomed.jobId)!;
-      const terminal = JSON.parse(String(row.terminal)) as { outcome: { kind: string; causeRef: { seq: number } } };
-      expect(terminal.outcome.kind).toBe('failed');
-      expect(db.prepare('SELECT type FROM events WHERE seq = ?').get(terminal.outcome.causeRef.seq)).toMatchObject({
-        type: 'job.provider_failed',
+      coordinator = spawnCoordinator({
+        fixture: world.fixture,
+        home: world.home,
+        tempRoots: roots,
+        env: world.env,
+        supervised: true,
       });
-      expect(
-        db.prepare('SELECT phase, finishing FROM projection_jobs WHERE job_id = ?').get(sibling.jobId),
-      ).toMatchObject({ phase: 'running', finishing: 0 });
-      expect(observeProcessLiveness(sibling.codexPid)).toBe('alive');
-      writeFileSync(join(sibling.workDir, 'release'), '');
-      await runCli(world, sibling.workDir, ['jobs', 'wait', sibling.jobId]);
-      expect(
-        db.prepare('SELECT phase, finishing FROM projection_jobs WHERE job_id = ?').get(sibling.jobId),
-      ).toMatchObject({ phase: 'completed', finishing: 0 });
-    } finally {
-      db.close();
-    }
-  } finally {
-    ownRoot ??= testScopeRoot(unit, coordinator?.child.pid);
-    if (ownRoot === null && coordinator !== undefined) {
-      await stopCoordinator(coordinator);
+      coordinators.push(coordinator);
+      const coordinatorPid = (await waitForDiscoveryRecord(world.home, 'prod', 15_000)).pid;
+      coordinatorIdentity = { pid: coordinatorPid, incarnation: probeProcessIncarnation(coordinatorPid) };
       ownRoot = testScopeRoot(unit, coordinator.child.pid);
-      if (ownRoot === null && coordinatorIdentity !== null) await stopRecordedProcesses([coordinatorIdentity]);
+      expect(ownRoot).not.toBeNull();
+      const group = readFileSync(`/proc/${coordinatorPid}/cgroup`, 'utf8').trim();
+      expect(group).toContain(`/${unit}/coordinator-`);
+      expect(existsSync(ownRoot!)).toBe(true);
+      const sibling = await launchHeldJob(world);
+      const doomed = await launchHeldJob(world, placement === 'local' ? 'local' : null);
+      const roles = proxyRoleProcesses(world.home);
+      expect(roles).toHaveLength(3);
+      for (const role of roles) {
+        expect(readFileSync(`/proc/${role.pid}/cgroup`, 'utf8').trim()).toBe(
+          `0::${join(ownRoot!, role.leaf).slice('/sys/fs/cgroup'.length)}`,
+        );
+      }
+      expect(hostOwnerPid(doomed.codexPid)).toBe(
+        placement === 'local' ? coordinatorPid : hostOwnerPid(sibling.codexPid),
+      );
+      const hostGroup = readFileSync(`/proc/${doomed.codexPid}/cgroup`, 'utf8').trim().slice(3);
+      const hostLeaf = join('/sys/fs/cgroup', hostGroup);
+      expect(hostLeaf.startsWith(placement === 'local' ? `${ownRoot}/host-` : `${ownRoot}/set-`)).toBe(true);
+      expect(hostLeaf).toMatch(/\/host-[0-9a-f-]+$/u);
+      const wrapperPid = parentPid(doomed.codexPid);
+      expect(readFileSync(`/proc/${wrapperPid}/cgroup`, 'utf8').trim()).toBe(`0::${hostGroup}`);
+      for (const pid of [wrapperPid, doomed.codexPid]) {
+        expect(Number(readFileSync(`/proc/${pid}/oom_score_adj`, 'utf8'))).toBeGreaterThanOrEqual(500);
+      }
+      expect(readFileSync(join(hostLeaf, 'memory.oom.group'), 'utf8').trim()).toBe('1');
+      writeFileSync(join(hostLeaf, 'cgroup.kill'), '1');
+      const db = new DatabaseSync(storeDbPathForHome(world.home, 'prod'), { readOnly: true });
+      try {
+        await vi.waitFor(
+          () => {
+            expect(
+              db.prepare('SELECT phase, finishing, terminal FROM projection_jobs WHERE job_id = ?').get(doomed.jobId),
+            ).toMatchObject({ phase: 'error', finishing: 0, terminal: expect.any(String) });
+          },
+          { timeout: 30_000 },
+        );
+        const row = db.prepare('SELECT terminal FROM projection_jobs WHERE job_id = ?').get(doomed.jobId)!;
+        const terminal = JSON.parse(String(row.terminal)) as {
+          outcome: { kind: string; code?: number; note?: string; causeRef: { seq: number } };
+        };
+        if (placement === 'local') {
+          expect(terminal.outcome).toMatchObject({
+            kind: 'provider_exit',
+            code: 1,
+            note: expect.stringContaining('SIGKILL'),
+          });
+        } else {
+          expect(terminal.outcome.kind).toBe('failed');
+          expect(db.prepare('SELECT type FROM events WHERE seq = ?').get(terminal.outcome.causeRef.seq)).toMatchObject({
+            type: 'job.provider_failed',
+          });
+        }
+        expect(
+          db.prepare('SELECT phase, finishing FROM projection_jobs WHERE job_id = ?').get(sibling.jobId),
+        ).toMatchObject({ phase: 'running', finishing: 0 });
+        expect(observeProcessLiveness(coordinatorPid)).toBe('alive');
+        expect(observeProcessLiveness(sibling.codexPid)).toBe('alive');
+        if (placement === 'local') {
+          const replacement = await launchHeldJob(world, 'replacement-local');
+          expect(hostOwnerPid(replacement.codexPid)).toBe(coordinatorPid);
+          await vi.waitFor(() => expect(existsSync(hostLeaf)).toBe(false), { timeout: 5_000 });
+          writeFileSync(join(replacement.workDir, 'release'), '');
+          await runCli(world, replacement.workDir, ['jobs', 'wait', replacement.jobId]);
+        }
+        writeFileSync(join(sibling.workDir, 'release'), '');
+        await runCli(world, sibling.workDir, ['jobs', 'wait', sibling.jobId]);
+        expect(
+          db.prepare('SELECT phase, finishing FROM projection_jobs WHERE job_id = ?').get(sibling.jobId),
+        ).toMatchObject({ phase: 'completed', finishing: 0 });
+      } finally {
+        db.close();
+      }
+    } finally {
+      ownRoot ??= testScopeRoot(unit, coordinator?.child.pid);
+      if (ownRoot === null && coordinator !== undefined) {
+        await stopCoordinator(coordinator);
+        ownRoot = testScopeRoot(unit, coordinator.child.pid);
+        if (ownRoot === null && coordinatorIdentity !== null) await stopRecordedProcesses([coordinatorIdentity]);
+      }
+      // Cleanup must never address a unit outside this test's temporary namespace.
+      if (ownRoot !== null && ownRoot.endsWith(`/${unit}`)) {
+        if (existsSync(join(ownRoot, 'cgroup.kill'))) writeFileSync(join(ownRoot, 'cgroup.kill'), '1');
+        const root = ownRoot;
+        await vi.waitFor(() => expect(existsSync(root)).toBe(false), { timeout: 5_000 });
+      }
     }
-    // Cleanup must never address a unit outside this test's temporary namespace.
-    if (ownRoot !== null && ownRoot.endsWith(`/${unit}`)) {
-      if (existsSync(join(ownRoot, 'cgroup.kill'))) writeFileSync(join(ownRoot, 'cgroup.kill'), '1');
-      const root = ownRoot;
-      await vi.waitFor(() => expect(existsSync(root)).toBe(false), { timeout: 5_000 });
-    }
-  }
-}, 120_000);
+  }, 120_000);
+}

@@ -1,3 +1,4 @@
+import { enqueueProviderHost, providerCustodyTicket } from '#tests/helpers/provider-custody.js';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -87,7 +88,8 @@ function createHostManager(
   });
   return new DefaultProviderHostManager({
     runtime,
-    spawnProviderServer: launchCoordinator.spawnProviderServer.bind(launchCoordinator),
+    spawnProviderServer: (options, ...rest) =>
+      launchCoordinator.spawnProviderServer({ ...options, custodyTicket: providerCustodyTicket }, ...rest),
     carrierBlocksRetirement: () => false,
     reapContainment: createProviderHostContainmentReaper(runtime, { clock }),
   });
@@ -96,7 +98,7 @@ function createHostManager(
 describe('provider transport concurrency hardening', () => {
   it('rejects and kills a provider server that never answers initialize', async () => {
     const runtime = new SimulationRuntime();
-    runtime.spawner.enqueueSpawn({ close: null });
+    enqueueProviderHost(runtime, { close: null });
     const launchCoordinator = new LaunchCoordinator({ runtime });
     const hostManager = createHostManager(runtime, launchCoordinator);
 
@@ -120,7 +122,7 @@ describe('provider transport concurrency hardening', () => {
 
   it('honors a provider-specific initialize timeout', async () => {
     const runtime = new SimulationRuntime();
-    runtime.spawner.enqueueSpawn({ close: null });
+    enqueueProviderHost(runtime, { close: null });
     const launchCoordinator = new LaunchCoordinator({ runtime });
     const hostManager = createHostManager(runtime, launchCoordinator);
 
@@ -161,7 +163,7 @@ describe('provider transport concurrency hardening', () => {
 
   it('threads acquire abort into provider-server initialize and kills the child', async () => {
     const runtime = new SimulationRuntime();
-    runtime.spawner.enqueueSpawn({ close: null });
+    enqueueProviderHost(runtime, { close: null });
     const launchCoordinator = new LaunchCoordinator({ runtime });
     const hostManager = createHostManager(runtime, launchCoordinator);
     const controller = new AbortController();
@@ -183,7 +185,7 @@ describe('provider transport concurrency hardening', () => {
   it('faults the provider transport instead of rethrowing notification handler errors', async () => {
     const runtime = new SimulationRuntime();
     const logError = vi.spyOn(backendLog, 'error').mockImplementation(() => {});
-    runtime.spawner.enqueueSpawn({
+    enqueueProviderHost(runtime, {
       close: null,
       onSpawn: ({ child, schedule }) => {
         schedule(1, () => {
@@ -194,6 +196,7 @@ describe('provider transport concurrency hardening', () => {
     const launchCoordinator = new LaunchCoordinator({ runtime });
     const handle = await launchCoordinator.spawnProviderServer(
       {
+        custodyTicket: providerCustodyTicket,
         provider: 'codex',
         command: 'codex',
         args: ['app-server'],
@@ -242,6 +245,7 @@ describe('provider transport concurrency hardening', () => {
         return launchCoordinator.terminateRegisteredChildren();
       }),
     );
+    await flushMicrotasks();
     expect(termination.settled).toBe(false);
 
     runtime.time.tick(5);

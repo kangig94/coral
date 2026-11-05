@@ -1,6 +1,7 @@
+import { findCustodyProcessToken } from './custody-process-ticket.js';
 import { performance } from 'node:perf_hooks';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, readFileSync, realpathSync, rmdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, realpathSync, rmdirSync, writeFileSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 
@@ -189,6 +190,27 @@ export function removeFailureDomain(root: FailureDomainRoot, path: string): Doma
     return { kind: 'removed' };
   } catch (error) {
     return { kind: 'refused', errno: errno(error) };
+  }
+}
+
+/** Housekeeping never establishes process absence; owned leaves may still be awaiting entry. */
+export function sweepHostFailureDomains(root: FailureDomainRoot, ownedPaths: ReadonlySet<string>): void {
+  if (root.kind !== 'placed') return;
+  try {
+    verifiedPath(root, root.root, true);
+    for (const name of readdirSync(root.root)) {
+      if (!name.startsWith('host-')) continue;
+      const path = join(root.root, name);
+      if (ownedPaths.has(path)) continue;
+      try {
+        if (findCustodyProcessToken(name.slice('host-'.length)).kind !== 'absent') continue;
+      } catch {
+        continue;
+      }
+      void removeFailureDomain(root, path);
+    }
+  } catch {
+    /* A refused sweep cannot block placement. */
   }
 }
 

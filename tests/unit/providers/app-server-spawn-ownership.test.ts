@@ -1,3 +1,4 @@
+import { enqueueProviderHost, providerCustodyTicket } from '#tests/helpers/provider-custody.js';
 import type { EventEmitter } from 'node:events';
 
 import { describe, expect, it, vi } from 'vitest';
@@ -91,11 +92,11 @@ describe('provider app-server spawn ownership', () => {
       return true;
     });
     const child = delayedClose();
-    runtime.spawner.enqueueSpawn(child.script);
+    enqueueProviderHost(runtime, child.script);
 
     const launch = spawnProviderServerTransport({
       runtime,
-      options: { provider: 'codex', command: 'codex', args: ['app-server'] },
+      options: { custodyTicket: providerCustodyTicket, provider: 'codex', command: 'codex', args: ['app-server'] },
       generation: 1,
       observeProviderResponse: () => {},
       detached: true,
@@ -111,11 +112,11 @@ describe('provider app-server spawn ownership', () => {
     const runtime = new SimulationRuntime();
     vi.spyOn(runtime.process, 'observeLiveness').mockReturnValue('alive');
     const child = delayedClose();
-    runtime.spawner.enqueueSpawn(child.script);
+    enqueueProviderHost(runtime, child.script);
 
     const launch = spawnProviderServerTransport({
       runtime,
-      options: { provider: 'codex', command: 'codex', args: ['app-server'] },
+      options: { custodyTicket: providerCustodyTicket, provider: 'codex', command: 'codex', args: ['app-server'] },
       generation: 1,
       observeProviderResponse: () => {},
       detached: true,
@@ -135,6 +136,7 @@ describe('provider app-server spawn ownership', () => {
     await flushMicrotasks();
     const abandonment = held.operatorExit.abandon();
     const abandonmentObservation = observePromise(abandonment);
+    await flushMicrotasks();
     expect(abandonmentObservation.settled).toBe(false);
     await expect(abandonment).resolves.toMatchObject({ kind: 'operator-abandoned' });
     await expect(retry).resolves.toMatchObject({ kind: 'operator-abandoned' });
@@ -151,11 +153,11 @@ describe('provider app-server spawn ownership', () => {
     const child = delayedClose((spawned) => {
       (spawned as { stdout: null }).stdout = null;
     });
-    runtime.spawner.enqueueSpawn(child.script);
+    enqueueProviderHost(runtime, child.script);
 
     const launch = spawnProviderServerTransport({
       runtime,
-      options: { provider: 'codex', command: 'codex', args: ['app-server'] },
+      options: { custodyTicket: providerCustodyTicket, provider: 'codex', command: 'codex', args: ['app-server'] },
       generation: 1,
       observeProviderResponse: () => {},
       acceptFailedSpawnCleanup: acceptCleanupHold,
@@ -182,11 +184,11 @@ describe('provider app-server spawn ownership', () => {
     const child = delayedClose((spawned) => {
       (spawned as { pid: number | undefined }).pid = undefined;
     });
-    runtime.spawner.enqueueSpawn(child.script);
+    enqueueProviderHost(runtime, child.script);
 
     const launch = spawnProviderServerTransport({
       runtime,
-      options: { provider: 'codex', command: 'codex', args: ['app-server'] },
+      options: { custodyTicket: providerCustodyTicket, provider: 'codex', command: 'codex', args: ['app-server'] },
       generation: 1,
       observeProviderResponse: () => {},
       detached: true,
@@ -217,11 +219,11 @@ describe('provider app-server spawn ownership', () => {
       pid < 0 && processGroupAlive ? 'alive' : 'absent',
     );
     const child = delayedClose();
-    runtime.spawner.enqueueSpawn(child.script);
+    enqueueProviderHost(runtime, child.script);
 
     const launch = spawnProviderServerTransport({
       runtime,
-      options: { provider: 'codex', command: 'codex', args: ['app-server'] },
+      options: { custodyTicket: providerCustodyTicket, provider: 'codex', command: 'codex', args: ['app-server'] },
       generation: 1,
       observeProviderResponse: () => {},
       detached: true,
@@ -254,10 +256,10 @@ describe('provider app-server spawn ownership', () => {
     const runtime = new SimulationRuntime();
     vi.spyOn(runtime.process, 'observeLiveness').mockReturnValue('unknown');
     const child = delayedClose();
-    runtime.spawner.enqueueSpawn(child.script);
+    enqueueProviderHost(runtime, child.script);
     const handle = await spawnProviderServerTransport({
       runtime,
-      options: { provider: 'codex', command: 'codex', args: ['app-server'] },
+      options: { custodyTicket: providerCustodyTicket, provider: 'codex', command: 'codex', args: ['app-server'] },
       generation: 1,
       observeProviderResponse: () => {},
       acceptFailedSpawnCleanup: acceptCleanupHold,
@@ -279,6 +281,7 @@ describe('provider app-server spawn ownership', () => {
     });
     if (held.kind !== 'held-unobservable') throw new Error('Expected an attached process close hold.');
     const settlement = observePromise(held.settled);
+    await flushMicrotasks();
     expect(settlement.settled).toBe(false);
 
     child.close();
@@ -322,6 +325,8 @@ it('retains custody when a wrapper exits after spawn without a verifiable provid
   expect(outcome.kind).toBe('held-unobservable');
   expect(kill).not.toHaveBeenCalled();
   if (outcome.kind !== 'held-unobservable') throw new Error('Expected custody hold.');
-  expect(observePromise(outcome.settled).settled).toBe(false);
+  const settlement = observePromise(outcome.settled);
+  await flushMicrotasks();
+  expect(settlement.settled).toBe(false);
   await outcome.operatorExit.abandon();
 });

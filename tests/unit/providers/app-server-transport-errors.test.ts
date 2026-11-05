@@ -1,3 +1,4 @@
+import { enqueueProviderHost, providerCustodyTicket } from '#tests/helpers/provider-custody.js';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   ProviderHostFault,
@@ -51,7 +52,7 @@ describe('provider app-server transport errors', () => {
     const runtime = new SimulationRuntime();
     let child!: MockChildProcess;
     let close!: () => void;
-    runtime.spawner.enqueueSpawn({
+    enqueueProviderHost(runtime, {
       close: null,
       onSpawn: (context) => {
         child = context.child as MockChildProcess;
@@ -60,7 +61,7 @@ describe('provider app-server transport errors', () => {
     });
     const handle = await spawnProviderServerTransport({
       runtime,
-      options: { provider: 'test', command: 'controlled-server', args: [] },
+      options: { custodyTicket: providerCustodyTicket, provider: 'test', command: 'controlled-server', args: [] },
       generation: 17,
       observeProviderResponse: () => {},
       acceptFailedSpawnCleanup: acceptCleanupHold,

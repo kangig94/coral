@@ -48,6 +48,7 @@ export class SimulationRuntime implements Runtime {
       readRecentFailureDomainRefusals: () => [],
       createFailureDomain: () => ({ kind: 'refused', errno: 'ENOTSUP' }),
       removeFailureDomain: () => ({ kind: 'refused', errno: 'ENOTSUP' }),
+      sweepHostFailureDomains: () => {},
     } as unknown as ProcessPort;
     simulationProcess.spawn = (spawnOptions) => {
       const child = this.spawner.spawn(spawnOptions);
