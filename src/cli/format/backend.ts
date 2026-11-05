@@ -953,7 +953,9 @@ export function formatUpgradeRecordProblem(problem: UpgradeIntentProblem): strin
 
 export function formatPendingUpgrade(upgrade: UpgradeIntentVisibility): string {
   let next: string;
-  if (upgrade.phase === 'committing') {
+  if (upgrade.blockers.some((blocker) => blocker.owner === 'quiescent-cutover')) {
+    next = upgrade.reason;
+  } else if (upgrade.phase === 'committing') {
     next = 'The incumbent finishes or recovers the bounded commit, then verifies that the successor is serving.';
   } else if (upgrade.phase === 'ready') {
     next = 'The incumbent starts the bounded commit after verifying the ready successor.';

@@ -58,15 +58,29 @@ export function readBoundedFileAtIdentity(
   baseline: StorageBigIntStat,
   maxBytes: number,
 ): Buffer | null {
+  const observation = observeBoundedFileAtIdentity(storage, path, baseline, maxBytes);
+  return observation.kind === 'read' ? observation.bytes : null;
+}
+
+type BoundedFileObservation =
+  | Readonly<{ kind: 'read'; bytes: Buffer }>
+  | Readonly<{ kind: 'missing' | 'invalid' | 'unobservable' }>;
+
+export function observeBoundedFileAtIdentity(
+  storage: BoundedFileReadStorage,
+  path: string,
+  baseline: StorageBigIntStat,
+  maxBytes: number,
+): BoundedFileObservation {
   if (!baseline.isFile() || baseline.size < 0n || baseline.size > BigInt(maxBytes)) {
-    return null;
+    return { kind: 'invalid' };
   }
   let descriptor: number | null = null;
   try {
     descriptor = storage.openSync(path, 'r');
     const opened = storage.fstatSync(descriptor, { bigint: true });
     if (!opened.isFile() || !sameFileIdentity(baseline, opened)) {
-      return null;
+      return { kind: 'unobservable' };
     }
 
     const bytes = Buffer.allocUnsafe(maxBytes + 1);
@@ -77,7 +91,7 @@ export function readBoundedFileAtIdentity(
       offset += read;
     }
     if (offset > maxBytes) {
-      return null;
+      return { kind: 'unobservable' };
     }
 
     const openedAfter = storage.fstatSync(descriptor, { bigint: true });
@@ -95,12 +109,13 @@ export function readBoundedFileAtIdentity(
       // returns a silently truncated buffer instead of refusing it.
       openedAfter.size !== BigInt(offset)
     ) {
-      return null;
+      return { kind: 'unobservable' };
     }
 
-    return bytes.subarray(0, offset);
-  } catch {
-    return null;
+    return { kind: 'read', bytes: bytes.subarray(0, offset) };
+  } catch (error: unknown) {
+    const code = (error as NodeJS.ErrnoException | null | undefined)?.code;
+    return { kind: code === 'ENOENT' || code === 'ENOTDIR' ? 'missing' : 'unobservable' };
   } finally {
     if (descriptor !== null) {
       try {

@@ -1,6 +1,12 @@
 import { join } from 'node:path';
 
-import { readUpgradeIntent, retryUpgradeIntentCas, type UpgradeIntent } from '../infra/upgrade-intent.js';
+import {
+  readUpgradeIntent,
+  retryUpgradeIntentCas,
+  servingDeadlineOf,
+  closedCutoverNeedsStartup,
+  type UpgradeIntent,
+} from '../infra/upgrade-intent.js';
 import { targetValidation } from './executable.js';
 import { type LaunchProcess } from './state.js';
 
@@ -18,7 +24,8 @@ export function pendingIntent(runDir: string): UpgradeIntent | null {
     observed.intent.legacyRetirement === true &&
     (observed.intent.disposition === 'pending' ||
       observed.intent.disposition === 'deferred' ||
-      observed.intent.disposition === 'attempting')
+      observed.intent.disposition === 'attempting' ||
+      closedCutoverNeedsStartup(observed.intent))
     ? observed.intent
     : null;
 }
@@ -32,6 +39,7 @@ export async function closeUnavailableLegacyRequest(runDir: string, requestId: s
     if (observed.kind !== 'readable') return { kind: 'settle', value: undefined };
     const intent = observed.intent;
     if (
+      (servingDeadlineOf(intent)?.cutoverAt ?? null) !== null ||
       intent.requestId !== requestId ||
       intent.legacyRetirement !== true ||
       intent.disposition === 'closed' ||

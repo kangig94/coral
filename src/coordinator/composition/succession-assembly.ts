@@ -277,6 +277,11 @@ export function createCoordinatorSuccessionAssembly(input: SuccessionAssemblyInp
       kbDaemonSupervisorWithTrackedShutdown.parkWriterTurn !== undefined &&
       kbDaemonSupervisorWithTrackedShutdown.reclaimWriterTurn !== undefined,
     launchPrepared: successionCommitter.launchPrepared,
+    retireForCutover: () => {
+      void state.lifecycleController
+        ?.shutdown('replaced')
+        .catch((error: unknown) => world.log(`Quiescent cutover handoff failed: ${formatError(error)}\n`));
+    },
     discardUnservedMint: (incumbentEpochKey, attemptId) =>
       discardUnservedRetirementMint(runtime, incumbentEpochKey, attemptId),
     subscribeObligationChanges: (notify) => {

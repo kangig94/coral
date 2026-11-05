@@ -154,6 +154,39 @@ describe('upgrade intent', () => {
     await expect(compareAndSwapUpgradeIntent(dir, 1, pendingIntent('third'))).resolves.toEqual({ kind: 'unsupported' });
   });
 
+  it('softly refuses an unfamiliar deadline outcome without quarantining or overwriting it', async () => {
+    const dir = runDir();
+    await compareAndSwapUpgradeIntent(dir, null, pendingIntent('newer-policy'));
+    const path = upgradeIntentPath(dir);
+    const stored = JSON.parse(readFileSync(path, 'utf8'));
+    stored.servingDeadline = {
+      targetKey: 'target',
+      misses: 2,
+      cutoverAt: '2026-11-05T00:10:00.000Z',
+      outcome: 'future-cutover-outcome',
+    };
+    const bytes = JSON.stringify(stored);
+    writeFileSync(path, bytes);
+
+    expect(readUpgradeIntent(dir)).toMatchObject({ kind: 'unsupported' });
+    await quarantineCorruptUpgradeIntent(dir);
+    expect(readdirSync(dir).filter((name) => name.startsWith('upgrade.v1.corrupt-'))).toEqual([]);
+    await expect(compareAndSwapUpgradeIntent(dir, 0, pendingIntent('replacement'))).resolves.toEqual({
+      kind: 'unsupported',
+    });
+    expect(readFileSync(path, 'utf8')).toBe(bytes);
+  });
+
+  it.each(['', null, 42])('keeps a malformed deadline outcome (%s) corrupt', async (outcome) => {
+    const dir = runDir();
+    await compareAndSwapUpgradeIntent(dir, null, pendingIntent('malformed-policy'));
+    const path = upgradeIntentPath(dir);
+    const stored = JSON.parse(readFileSync(path, 'utf8'));
+    stored.servingDeadline = { targetKey: 'target', misses: 2, cutoverAt: null, outcome };
+    writeFileSync(path, JSON.stringify(stored));
+    expect(readUpgradeIntent(dir).kind).toBe('corrupt');
+  });
+
   it('remains pending after a successor spawn without a serving receipt', async () => {
     const dir = runDir();
     await compareAndSwapUpgradeIntent(dir, null, pendingIntent('first'));

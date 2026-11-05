@@ -5,9 +5,11 @@ import {
   quarantineCorruptUpgradeIntent,
   retryUpgradeIntentCas,
   revalidateUpgradeIntentTarget,
+  upgradeRetirementCommitted,
+  servingDeadlineOf,
   type UpgradeIntent,
 } from '../../../infra/upgrade-intent.js';
-import { attemptRetryAtMs } from '../attempt-retry.js';
+import { attemptRetryAtMs, quiescentCutoverAt, withQuiescentCutoverBlocker } from '../attempt-retry.js';
 import { readSuccessionCapabilities } from '../protocol.js';
 import {
   endedUnder,
@@ -25,6 +27,8 @@ import type {
   SuccessionStatus,
 } from './index.js';
 import type { SuccessionReconcilerState } from './state.js';
+
+const TARGET_REVALIDATION_MAX_MS = 60 * 60_000;
 
 type ReconciliationContext = Readonly<{
   options: SuccessionReconcilerOptions;
@@ -182,7 +186,12 @@ async function reconcileOwnedIntent(
 ): Promise<SuccessionDecision> {
   const { options, state, adoptNextTarget, close } = context;
 
-  if (intent.attemptId === null && queued !== null && intent.reason !== 'supervision-repair')
+  if (
+    intent.attemptId === null &&
+    queued !== null &&
+    intent.reason !== 'supervision-repair' &&
+    !upgradeRetirementCommitted(intent)
+  )
     return adoptNextTarget(intent, queued);
   let applies: boolean;
   try {
@@ -198,6 +207,8 @@ async function reconcileOwnedIntent(
   ) {
     return { kind: 'deferred', reason: 'successor target must change after failed attempt' };
   }
+  const cutover = await reconcileQuiescentCutover(context, intent);
+  if (cutover !== null) return cutover;
   const retryAtMs = intent.attemptId === null ? attemptRetryAtMs(intent) : null;
   if (retryAtMs !== null && retryAtMs > options.runtime.time.now()) {
     wakeAt(context, retryAtMs);
@@ -268,4 +279,160 @@ async function launchPreparedAttempt(
       notifyObligationChange();
     });
   return { kind: 'deferred', reason: 'successor launch is awaiting readiness' };
+}
+
+async function recordCutoverOutcome(
+  context: ReconciliationContext,
+  intent: UpgradeIntent,
+  policy: NonNullable<UpgradeIntent['servingDeadline']>,
+  outcome: 'waiting' | 'retiring' | 'unavailable' | 'unobservable',
+  reason: string,
+): Promise<SuccessionDecision> {
+  const retryAt = outcome === 'unavailable' ? context.options.runtime.time.now() + TARGET_REVALIDATION_MAX_MS : null;
+  const nextPolicy =
+    retryAt === null
+      ? policy
+      : {
+          ...policy,
+          retirementIncumbent: null,
+          targetRevalidation: {
+            attempts: (policy.targetRevalidation?.attempts ?? 0) + 1,
+            retryAt: new Date(retryAt).toISOString(),
+          },
+        };
+  const outcomeReason =
+    retryAt === null ? reason : `${reason}; automatic revalidation at ${new Date(retryAt).toISOString()}`;
+  const written = await retryUpgradeIntentCas(context.options.runDir, (observed) =>
+    observed.kind === 'readable' && observed.intent.revision === intent.revision
+      ? {
+          kind: 'write',
+          expectedRevision: intent.revision,
+          change: {
+            ...intent,
+            servingDeadline: {
+              ...nextPolicy,
+              reason: outcomeReason,
+              outcome,
+              retirementIncumbent:
+                outcome === 'retiring'
+                  ? (nextPolicy.retirementIncumbent ?? context.options.incumbent().instanceId)
+                  : (nextPolicy.retirementIncumbent ?? null),
+            },
+            retryCondition: { kind: 'incumbent-retirement', evidence: outcomeReason },
+            blockers: withQuiescentCutoverBlocker(intent.blockers, outcomeReason),
+          },
+          settle: () => {
+            if (outcome === 'retiring') {
+              context.state.retirementRequested = true;
+              context.options.retireForCutover?.();
+            }
+            return true;
+          },
+        }
+      : { kind: 'settle', value: false },
+  );
+  if (written.kind !== 'settled' || !written.value)
+    return { kind: 'deferred', reason: 'upgrade intent changed before cutover outcome was committed' };
+  if (outcome !== 'retiring') context.notifyObligationChange();
+  return { kind: 'deferred', reason: outcomeReason };
+}
+
+async function reconcileQuiescentCutover(
+  context: ReconciliationContext,
+  intent: UpgradeIntent,
+): Promise<SuccessionDecision | null> {
+  const { options } = context;
+  const self = options.incumbent();
+  const policy = servingDeadlineOf(intent);
+  const cutoverAt = intent.attemptId === null ? quiescentCutoverAt(intent) : null;
+  if (cutoverAt !== null && policy !== undefined) {
+    if (intent.legacyRetirement !== true || !intent.blockers.some((entry) => entry.owner === 'quiescent-cutover')) {
+      void (await retryUpgradeIntentCas(options.runDir, (observed) =>
+        observed.kind === 'readable' && observed.intent.revision === intent.revision
+          ? {
+              kind: 'write',
+              expectedRevision: intent.revision,
+              change: {
+                ...intent,
+                legacyRetirement: true,
+                disposition: 'deferred',
+                blockers: withQuiescentCutoverBlocker(
+                  intent.blockers,
+                  policy.reason ?? 'ordinary startup after incumbent retirement',
+                ),
+                retryCondition: {
+                  kind: 'incumbent-retirement',
+                  evidence: policy.reason ?? `quiescent-cutover; handoff drain by ${new Date(cutoverAt).toISOString()}`,
+                },
+              },
+              settle: () => undefined,
+            }
+          : { kind: 'settle', value: undefined },
+      ));
+      context.notifyObligationChange();
+      return { kind: 'deferred', reason: 'quiescent-cutover restored after request renewal' };
+    }
+    if ((policy.retirementIncumbent ?? null) !== null && policy.retirementIncumbent !== self.instanceId) {
+      return recordCutoverOutcome(
+        context,
+        intent,
+        policy,
+        'unavailable',
+        'ordinary startup retained the incumbent build under controller custody; hot succession suppressed; target remains selected for a later ordinary startup',
+      );
+    }
+    if (context.state.retirementRequested && policy.retirementIncumbent === self.instanceId)
+      return { kind: 'deferred', reason: 'committed retirement awaits ordinary startup' };
+    if (options.runtime.time.now() >= cutoverAt || options.liveJobIds?.().length === 0) {
+      const validation = await revalidateCutoverTarget(context, intent, policy);
+      if (validation !== null) return validation;
+      return recordCutoverOutcome(
+        context,
+        intent,
+        policy,
+        'retiring',
+        'quiescent-cutover requests one incumbent handoff; supervisor owns ordinary startup',
+      );
+    } else {
+      wakeAt(context, cutoverAt);
+    }
+    return { kind: 'deferred', reason: intent.retryCondition?.evidence ?? 'quiescent-cutover awaits retirement' };
+  }
+  return null;
+}
+
+async function revalidateCutoverTarget(
+  context: ReconciliationContext,
+  intent: UpgradeIntent,
+  policy: NonNullable<UpgradeIntent['servingDeadline']>,
+): Promise<SuccessionDecision | null> {
+  const retry = policy.targetRevalidation;
+  const now = context.options.runtime.time.now();
+  if (retry?.retryAt !== undefined && retry.retryAt !== null && Date.parse(retry.retryAt) > now) {
+    wakeAt(context, Date.parse(retry.retryAt));
+    return { kind: 'deferred', reason: policy.reason ?? 'target evidence awaits paced revalidation' };
+  }
+  const validation = revalidateUpgradeIntentTarget(intent);
+  if (validation.kind === 'validated') return null;
+  if (validation.kind === 'invalid')
+    return recordCutoverOutcome(
+      context,
+      intent,
+      policy,
+      'unavailable',
+      'target no longer validates; hot succession suppressed',
+    );
+  const attempts = (retry?.attempts ?? 0) + 1;
+  const delayMs = attempts < 3 ? 5_000 : Math.min(TARGET_REVALIDATION_MAX_MS, 60_000 * 2 ** (attempts - 3));
+  const retryAt = new Date(now + delayMs).toISOString();
+  const reason = `target evidence is unobservable after ${attempts} observations; automatic revalidation at ${retryAt}; hot succession suppressed`;
+  const result = await recordCutoverOutcome(
+    context,
+    intent,
+    { ...policy, targetRevalidation: { attempts, retryAt } },
+    attempts >= 3 ? 'unobservable' : 'waiting',
+    reason,
+  );
+  wakeAt(context, Date.parse(retryAt));
+  return result;
 }

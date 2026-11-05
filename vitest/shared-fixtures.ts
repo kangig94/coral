@@ -16,7 +16,7 @@ export async function buildSharedFixture(name: string, directory: string): Promi
     "import { createRealRuntime } from '#src/runtime/real.js';\nimport { registerStoreEpochHolder } from '#src/store/epoch/holder.js';\nconst runtime = createRealRuntime('prod', { baseDir: process.argv[2] });\nconst write = runtime.storage.writeAtomicDurableSync;\nruntime.storage.writeAtomicDurableSync = (path, data, options) => write(path, data, {\n  ...options, beforeRename: () => { runtime.storage.writeFileSync(process.argv[2] + '/crashed-stage-path', options?.stagePath ?? runtime.storage.readdirSync(process.argv[3]).find((name) => name.startsWith('.epoch-holder-'))); process.kill(process.pid, 'SIGKILL'); return true; }\n});\nconst storeRoot = process.argv[3];\nruntime.storage.mkdirSync(storeRoot + '/epoch-1', { recursive: true });\nregisterStoreEpochHolder(runtime, { storeRoot, epoch: '1', path: storeRoot + '/epoch-1/store.db' },\n  runtime.storage.openSqliteDatabaseSync(':memory:'), () => {});",
   );
   add('holder', join(directory, 'holder.ts'));
-  for (const tag of ['v0.10.15', 'v0.10.16', 'v0.10.17', 'v0.10.18']) {
+  for (const tag of ['v0.10.15', 'v0.10.16', 'v0.10.17', 'v0.10.18', 'v0.10.25']) {
     if (tag !== name) continue;
     const releaseRoot = join(directory, tag);
     mkdirSync(releaseRoot);
@@ -24,10 +24,12 @@ export async function buildSharedFixture(name: string, directory: string): Promi
       input: execFileSync('git', ['archive', tag, 'src'], { maxBuffer: 50 * 1024 * 1024 }),
     });
     const durableExports =
-      tag === 'v0.10.15'
-        ? "export { sweepStoreEpochsPostReady } from './src/store/epoch.ts';"
-        : "export { JobLocationIndex } from './src/jobs/location-index.ts'; export { readPendingProtections } from './src/store/epoch/pending-protection.ts'; export { sweepStoreEpochsPostReady } from './src/store/epoch/post-ready-sweep.ts';" +
-          (tag === 'v0.10.16' ? '' : "export { pruneStoreEpochHolders } from './src/store/epoch/holder.ts';");
+      tag === 'v0.10.25'
+        ? "export { readUpgradeIntent, compareAndSwapUpgradeIntent } from './src/infra/upgrade-intent.ts'; export { requestedIntent } from './src/coordinator/succession/intent-transitions.ts';"
+        : tag === 'v0.10.15'
+          ? "export { sweepStoreEpochsPostReady } from './src/store/epoch.ts';"
+          : "export { JobLocationIndex } from './src/jobs/location-index.ts'; export { readPendingProtections } from './src/store/epoch/pending-protection.ts'; export { sweepStoreEpochsPostReady } from './src/store/epoch/post-ready-sweep.ts';" +
+            (tag === 'v0.10.16' ? '' : "export { pruneStoreEpochHolders } from './src/store/epoch/holder.ts';");
     const entry = join(releaseRoot, 'released.ts');
     writeFileSync(entry, durableExports);
     add(tag, entry);

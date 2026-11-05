@@ -12,6 +12,8 @@ import { TransientCommitFailure } from './failure.js';
 
 const SERVING_POLL_MS = 25;
 
+class ServingDeadlineFailure extends Error {}
+
 type ServingDependencies = Readonly<{
   retirementServes: (attemptId: string, incumbentEpochKey: string) => boolean;
   retryAfterFailure: (error: unknown) => AttemptRetry;
@@ -54,13 +56,13 @@ function createServingObservation(
         await acceptServing(window, writer, serving);
         return;
       }
-      if (window.hold !== null) throw new Error(window.hold);
       if (state.attemptAbort.signal.aborted) throw new Error('Incumbent shutdown aborted the uncommitted attempt.');
       if (attempt.child.exitCode !== null || attempt.child.signalCode !== null) {
         throw new TransientCommitFailure('Successor exited before durable serving.');
       }
+      if (window.hold !== null) throw new Error(window.hold);
       if (Number(runtime.time.monotonicNow()) >= deadlineMonotonicMs)
-        throw new Error('Successor missed its serving deadline.');
+        throw new ServingDeadlineFailure('Successor missed its serving deadline.');
       await runtime.time.sleep(SERVING_POLL_MS);
     }
   }
@@ -80,8 +82,8 @@ export function createCommitServing(
   const retryAfterWindowFailure = (window: CommitWindow, error: unknown): AttemptRetry =>
     error instanceof TransientCommitFailure && error.obligationChange
       ? retryAfterFailure(error)
-      : !state.attemptAbort.signal.aborted && Number(runtime.time.monotonicNow()) >= window.deadlineMonotonicMs
-        ? { kind: 'transient', retryAfterMs: TRANSIENT_RETRY_BASE_MS }
+      : error instanceof ServingDeadlineFailure && !window.recovering && !state.attemptAbort.signal.aborted
+        ? { kind: 'transient', retryAfterMs: TRANSIENT_RETRY_BASE_MS, servingDeadline: true }
         : retryAfterFailure(error);
 
   async function successorServesBeforeRefusal(window: CommitWindow): Promise<'serving' | 'refused' | 'unresolved'> {

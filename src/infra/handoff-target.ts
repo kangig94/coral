@@ -4,7 +4,8 @@ import { isAbsolute, join, resolve } from 'node:path';
 
 import {
   hashStableAdjacentBundle,
-  readBoundedAdjacentManifest,
+  observeAdjacentManifest,
+  observeStableAdjacentBundle,
   strictBundleManifestSchema,
   type StrictBundleManifest,
 } from './bundle-manifest.js';
@@ -39,6 +40,10 @@ export type ForeignTargetValidationResult =
   | { readonly kind: 'validated'; readonly target: ValidatedHandoffTarget }
   | { readonly kind: 'invalid'; readonly evidence: InvalidTargetEvidence };
 
+export type ForeignTargetObservation =
+  | ForeignTargetValidationResult
+  | { readonly kind: 'unobservable'; readonly evidence: InvalidTargetEvidence };
+
 export type ForeignTargetValidator = (
   bundleDir: string,
   expectedManifest: StrictBundleManifest,
@@ -72,13 +77,14 @@ function copyCandidate(bundleDir: string, manifest: StrictBundleManifest): Targe
   return Object.freeze({ bundleDir, expectedManifest: copyManifest(manifest) });
 }
 
-function invalidTarget(
+function rejectedTarget(
+  kind: 'invalid' | 'unobservable',
   bundleDir: string,
   expectedManifest: StrictBundleManifest | null,
   failure: InvalidTargetFailure,
-): ForeignTargetValidationResult {
+): ForeignTargetObservation {
   return {
-    kind: 'invalid',
+    kind,
     evidence: Object.freeze({
       bundleDir,
       expectedManifest: expectedManifest === null ? null : copyManifest(expectedManifest),
@@ -87,26 +93,33 @@ function invalidTarget(
   };
 }
 
-function resolveCanonicalBundleDir(
-  bundleDir: string,
-):
+function resolveCanonicalBundleDir(bundleDir: string):
   | { readonly ok: true; readonly bundleDir: string }
-  | { readonly ok: false; readonly failure: 'bundle-dir-not-canonical' | 'bundle-dir-unavailable' } {
+  | {
+      readonly ok: false;
+      readonly kind: 'invalid' | 'unobservable';
+      readonly failure: 'bundle-dir-not-canonical' | 'bundle-dir-unavailable';
+    } {
   if (!isAbsolute(bundleDir) || resolve(bundleDir) !== bundleDir) {
-    return { ok: false, failure: 'bundle-dir-not-canonical' };
+    return { ok: false, kind: 'invalid', failure: 'bundle-dir-not-canonical' };
   }
 
   try {
     const stat = lstatSync(bundleDir);
     if (!stat.isDirectory() || stat.isSymbolicLink()) {
-      return { ok: false, failure: 'bundle-dir-not-canonical' };
+      return { ok: false, kind: 'invalid', failure: 'bundle-dir-not-canonical' };
     }
     const canonical = realpathSync(bundleDir);
     return canonical === bundleDir
       ? { ok: true, bundleDir: canonical }
-      : { ok: false, failure: 'bundle-dir-not-canonical' };
-  } catch {
-    return { ok: false, failure: 'bundle-dir-unavailable' };
+      : { ok: false, kind: 'invalid', failure: 'bundle-dir-not-canonical' };
+  } catch (error: unknown) {
+    const code = (error as NodeJS.ErrnoException).code;
+    return {
+      ok: false,
+      kind: code === 'ENOENT' || code === 'ENOTDIR' ? 'invalid' : 'unobservable',
+      failure: 'bundle-dir-unavailable',
+    };
   }
 }
 
@@ -132,46 +145,73 @@ function validateAdjacentTarget(
   evidence: TargetCandidateEvidence,
 ):
   | { readonly ok: true; readonly verifiedHashes: VerifiedBundleHashes }
-  | { readonly ok: false; readonly failure: InvalidTargetFailure } {
-  const adjacent = readBoundedAdjacentManifest(evidence.bundleDir);
+  | { readonly ok: false; readonly kind: 'invalid' | 'unobservable'; readonly failure: InvalidTargetFailure } {
+  const adjacent = observeAdjacentManifest(evidence.bundleDir);
   if (!adjacent.ok) {
     return {
       ok: false,
+      kind: adjacent.reason === 'unavailable' ? 'unobservable' : 'invalid',
       failure: adjacent.reason === 'invalid' ? 'adjacent-manifest-invalid' : 'adjacent-manifest-unavailable',
     };
   }
 
   const parsed = strictBundleManifestSchema.safeParse(adjacent.value);
   if (!parsed.success) {
-    return { ok: false, failure: 'adjacent-manifest-invalid' };
+    return { ok: false, kind: 'invalid', failure: 'adjacent-manifest-invalid' };
   }
   if (!manifestsMatch(parsed.data, evidence.expectedManifest)) {
-    return { ok: false, failure: 'adjacent-manifest-mismatch' };
+    return { ok: false, kind: 'invalid', failure: 'adjacent-manifest-mismatch' };
   }
 
-  const bundleHash = hashStableAdjacentBundle(evidence.bundleDir, 'coral-backend.cjs');
-  const cliBundleHash = hashStableAdjacentBundle(evidence.bundleDir, CLI_BUNDLE_FILE);
-  const claudeAppserverBundleHash = hashStableAdjacentBundle(evidence.bundleDir, 'coral-claude-appserver.cjs');
-  const durableWrapperBundleHash = hashStableAdjacentBundle(evidence.bundleDir, 'coral-durable-wrapper.cjs');
-  if (
-    bundleHash === null ||
-    cliBundleHash === null ||
-    claudeAppserverBundleHash === null ||
-    durableWrapperBundleHash === null ||
-    bundleHash !== evidence.expectedManifest.bundleHash ||
-    cliBundleHash !== evidence.expectedManifest.cliBundleHash ||
-    claudeAppserverBundleHash !== evidence.expectedManifest.claudeAppserverBundleHash ||
-    durableWrapperBundleHash !== evidence.expectedManifest.durableWrapperBundleHash
-  ) {
-    return { ok: false, failure: 'adjacent-bundle-mismatch' };
-  }
-  const verifiedHashes = Object.freeze({
-    bundleHash,
-    cliBundleHash,
-    claudeAppserverBundleHash,
-    durableWrapperBundleHash,
-  });
-  return { ok: true, verifiedHashes };
+  const bundleHash = validateAdjacentBundle(
+    evidence.bundleDir,
+    'coral-backend.cjs',
+    evidence.expectedManifest.bundleHash,
+  );
+  if (!bundleHash.ok) return bundleHash;
+  const cliBundleHash = validateAdjacentBundle(
+    evidence.bundleDir,
+    CLI_BUNDLE_FILE,
+    evidence.expectedManifest.cliBundleHash,
+  );
+  if (!cliBundleHash.ok) return cliBundleHash;
+  const claudeAppserverBundleHash = validateAdjacentBundle(
+    evidence.bundleDir,
+    'coral-claude-appserver.cjs',
+    evidence.expectedManifest.claudeAppserverBundleHash,
+  );
+  if (!claudeAppserverBundleHash.ok) return claudeAppserverBundleHash;
+  const durableWrapperBundleHash = validateAdjacentBundle(
+    evidence.bundleDir,
+    'coral-durable-wrapper.cjs',
+    evidence.expectedManifest.durableWrapperBundleHash,
+  );
+  if (!durableWrapperBundleHash.ok) return durableWrapperBundleHash;
+  return {
+    ok: true,
+    verifiedHashes: Object.freeze({
+      bundleHash: bundleHash.hash,
+      cliBundleHash: cliBundleHash.hash,
+      claudeAppserverBundleHash: claudeAppserverBundleHash.hash,
+      durableWrapperBundleHash: durableWrapperBundleHash.hash,
+    }),
+  };
+}
+
+function validateAdjacentBundle(
+  bundleDir: string,
+  file: string,
+  expectedHash: string,
+): { ok: true; hash: string } | { ok: false; kind: 'invalid' | 'unobservable'; failure: InvalidTargetFailure } {
+  const observation = observeStableAdjacentBundle(bundleDir, file);
+  if (observation.kind !== 'hashed')
+    return {
+      ok: false,
+      kind: observation.kind === 'unobservable' ? 'unobservable' : 'invalid',
+      failure: 'adjacent-bundle-mismatch',
+    };
+  if (observation.hash !== expectedHash) return { ok: false, kind: 'invalid', failure: 'adjacent-bundle-mismatch' };
+  return { ok: true, hash: observation.hash };
 }
 
 function sameVerifiedHashes(left: VerifiedBundleHashes, right: VerifiedBundleHashes): boolean {
@@ -192,24 +232,35 @@ function sealValidatedTarget(
   return target;
 }
 
-export function createForeignTargetValidator(): ForeignTargetValidator {
+export function createForeignTargetObserver(): (
+  bundleDir: string,
+  expectedManifest: StrictBundleManifest,
+) => ForeignTargetObservation {
   return (bundleDir, expectedManifest) => {
     const parsedExpected = strictBundleManifestSchema.safeParse(expectedManifest);
     if (!parsedExpected.success) {
-      return invalidTarget(bundleDir, null, 'expected-manifest-invalid');
+      return rejectedTarget('invalid', bundleDir, null, 'expected-manifest-invalid');
     }
 
     const canonical = resolveCanonicalBundleDir(bundleDir);
     if (!canonical.ok) {
-      return invalidTarget(bundleDir, parsedExpected.data, canonical.failure);
+      return rejectedTarget(canonical.kind, bundleDir, parsedExpected.data, canonical.failure);
     }
 
     const evidence = copyCandidate(canonical.bundleDir, parsedExpected.data);
     const validation = validateAdjacentTarget(evidence);
     if (!validation.ok) {
-      return invalidTarget(evidence.bundleDir, evidence.expectedManifest, validation.failure);
+      return rejectedTarget(validation.kind, evidence.bundleDir, evidence.expectedManifest, validation.failure);
     }
     return { kind: 'validated', target: sealValidatedTarget(evidence, validation.verifiedHashes) };
+  };
+}
+
+export function createForeignTargetValidator(): ForeignTargetValidator {
+  const observe = createForeignTargetObserver();
+  return (bundleDir, expectedManifest) => {
+    const observation = observe(bundleDir, expectedManifest);
+    return observation.kind === 'unobservable' ? { kind: 'invalid', evidence: observation.evidence } : observation;
   };
 }
 

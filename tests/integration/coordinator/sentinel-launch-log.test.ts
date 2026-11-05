@@ -1,3 +1,5 @@
+import { compareAndSwapUpgradeIntent, readUpgradeIntent } from '#src/infra/upgrade-intent.js';
+import { failedAttemptRetry } from '#src/coordinator/succession/attempt-retry.js';
 import { spawn } from 'node:child_process';
 import type * as ChildProcessModule from 'node:child_process';
 import { once } from 'node:events';
@@ -118,4 +120,46 @@ it('retains legacy-upgrade observer sentinel stderr in the run-dir log', async (
   expect(result.kind).toBe('waiting');
   await resumeLegacyUpgradeObservation(runDir, root, manifest, 5_000);
   await expectSentinelDiagnostics();
+});
+
+it('queues a legacy request behind committed retirement without losing ordinary startup', async () => {
+  const target = { build: manifest, pluginRootLabel: root };
+  expect((await recordLegacyUpgradeIntent({ runDir, requestId: 'retiring', incumbent, target })).kind).toBe('waiting');
+  const read = readUpgradeIntent(runDir);
+  if (read.kind !== 'readable') throw new Error(read.kind);
+  let intent = read.intent;
+  for (let i = 0; i < 2; i++)
+    intent = {
+      ...intent,
+      ...failedAttemptRetry(
+        intent,
+        { kind: 'transient', retryAfterMs: 1000, servingDeadline: true },
+        'changed',
+        Date.now(),
+      ),
+    };
+  const policy = intent.servingDeadline;
+  if (policy === undefined) throw new Error('missing deadline policy');
+  expect(
+    (
+      await compareAndSwapUpgradeIntent(runDir, intent.revision, {
+        ...intent,
+        servingDeadline: { ...policy, outcome: 'retiring', retirementIncumbent: incumbent.instanceId },
+      })
+    ).kind,
+  ).toBe('written');
+  const newer = { ...target, build: { ...manifest, version: '0.10.29', buildSetId: 'queued-build' } };
+  expect(await recordLegacyUpgradeIntent({ runDir, requestId: 'queued', incumbent, target: newer })).toMatchObject({
+    kind: 'waiting',
+    requestId: 'queued',
+  });
+  expect(readUpgradeIntent(runDir)).toMatchObject({
+    intent: {
+      requestId: 'retiring',
+      target,
+      legacyRetirement: true,
+      nextTarget: { requestId: 'queued', target: newer },
+    },
+  });
+  expect(spawn).not.toHaveBeenCalled();
 });
