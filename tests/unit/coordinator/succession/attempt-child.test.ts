@@ -353,3 +353,14 @@ it.each([false, true])('bounds child parking with an additive elapsed budget (le
   await flushMicrotasks();
   expect(channel.failures).toEqual([false]);
 });
+
+it('retains the received absolute deadline for failure diagnostics', async () => {
+  const { ports, channel, time } = fakePorts();
+  const received = receiveSuccessionAttemptChild(ports);
+  channel.deliver(start());
+  const child = await received;
+  expect(child?.deadline).toBeNull();
+  const deadline = time.now() + 100;
+  channel.deliver({ kind: 'deadline', attemptId: ATTEMPT_ID, at: deadline, timeoutMs: 100 });
+  expect(child?.deadline).toBe(deadline);
+});

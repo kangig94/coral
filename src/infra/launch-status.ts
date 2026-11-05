@@ -1,3 +1,4 @@
+import { backendLog } from './backend-log.js';
 import { randomUUID } from 'node:crypto';
 import { closeSync, fsyncSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -293,10 +294,10 @@ export function recordControllerEvidenceRefusals(
     const previous = new Map((status.controllerEvidenceRefusals ?? []).map((entry) => [entry.path, entry.observation]));
     for (const entry of refusals) {
       if (previous.get(entry.path) !== entry.observation)
-        process.stderr.write(`Controller evidence refused path=${entry.path} observation=${entry.observation}\n`);
+        backendLog.raw(`Controller evidence refused path=${entry.path} observation=${entry.observation}\n`);
       previous.delete(entry.path);
     }
-    for (const path of previous.keys()) process.stderr.write(`Controller evidence readable or absent path=${path}\n`);
+    for (const path of previous.keys()) backendLog.raw(`Controller evidence readable or absent path=${path}\n`);
     return { ...status, controllerEvidenceRefusals: refusals };
   });
 }

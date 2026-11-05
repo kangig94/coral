@@ -29,7 +29,7 @@ export function startRecoveryPhase(options: {
       // Observability cannot select a recovery disposition.
     }
   };
-  if (options.kind === 'background') report(`${prefix} event=start subjects=0 reads=0 sources={}`);
+  report(`${prefix} event=start subjects=0 reads=0 sources={}`);
   return {
     record(source, counts): void {
       if (finished) return;

@@ -1,3 +1,6 @@
+import { installCoordinatorLog } from '../infra/coordinator-log.js';
+import { readUpgradeIntent } from '../infra/upgrade-intent.js';
+declare const __VERSION__: string | undefined;
 import {
   enterFailureDomain,
   inheritedFailureDomainRoot,
@@ -26,7 +29,6 @@ import { createCoordinatorServer } from './index.js';
 import { installSuccessionAttemptChild, receiveSuccessionAttemptChild } from './succession/attempt-child.js';
 import { parseRetainedEpochArgv, runRetainedEpochCommand } from './services/retained-epoch-executor.js';
 import { StartupStoreHandoffError } from './lifecycle.js';
-import { SuccessionAttemptStartupHoldError } from './succession/startup.js';
 import type { SuccessionInterposition } from './succession/interposition.js';
 import { runKbDaemonMain } from '../kb-daemon/daemon-main.js';
 import { backendLog } from '../infra/backend-log.js';
@@ -37,7 +39,7 @@ import { createRealRuntime } from '../runtime/real.js';
 import { startReplacementSupervisor } from '../runtime/supervisor-loss.js';
 import { createRealSuccessionAttemptPorts } from '../runtime/succession-attempt.js';
 import { resolveBuildFlavor } from '../infra/build-flavor.js';
-import { resolveStrictBundleIdentity } from '../infra/bundle-manifest.js';
+import { readBuildFlavor, resolveStrictBundleIdentity } from '../infra/bundle-manifest.js';
 import { SENTINEL_TIMING } from '../infra/sentinel-timing.js';
 import { updateLaunchStatus } from '../infra/launch-status.js';
 import { authenticatedLaunchParent } from '../infra/coordinator-admission.js';
@@ -494,14 +496,22 @@ async function armSupervisorSentinel(replaceSupervisor: () => void, onSentinelLo
 
 async function handleCoordinatorStartupFailure(
   pluginRoot: string,
+  runDir: string,
+  instanceId: string,
   successionAttempt: Awaited<ReturnType<typeof receiveSuccessionAttemptChild>>,
   error: unknown,
 ): Promise<number> {
   if (successionAttempt !== null) {
-    backendLog.warn(
-      error instanceof SuccessionAttemptStartupHoldError
-        ? error.message
-        : `Succession attempt startup failed: ${error instanceof Error ? error.message : String(error)}`,
+    const observed = readUpgradeIntent(runDir);
+    const durableDeadline =
+      observed.kind === 'readable' && observed.intent.attemptId === successionAttempt.attemptId
+        ? observed.intent.attemptDeadline
+        : null;
+    const deadline = successionAttempt.deadline ?? (durableDeadline === null ? null : Date.parse(durableDeadline));
+    backendLog.error(
+      `recovery-phase boot=${instanceId} kind=startup phase=succession event=finish outcome=failed` +
+        ` attempt=${successionAttempt.attemptId} attempt_token=${successionAttempt.bootToken} version=${typeof __VERSION__ === 'string' ? __VERSION__ : 'unknown'}` +
+        ` pid=${process.pid} deadline=${deadline ?? 'unknown'} error=${error instanceof Error ? (error.stack ?? error.message) : String(error)}`,
     );
     return 1;
   }
@@ -555,7 +565,9 @@ export async function main(harness: BackendHarness = {}): Promise<number> {
   const dispatched = await dispatchBackendRole();
   if (dispatched !== null) return dispatched;
   const inheritedRefusals = process.env.CORAL_FAILURE_DOMAIN_REFUSALS;
+  const failureDomain = process.env.CORAL_FAILURE_DOMAIN;
   delete process.env.CORAL_FAILURE_DOMAIN_REFUSALS;
+  delete process.env.CORAL_FAILURE_DOMAIN;
   if (inheritedRefusals !== undefined) {
     try {
       const parsed = z
@@ -573,13 +585,14 @@ export async function main(harness: BackendHarness = {}): Promise<number> {
       // Diagnostic launch context cannot prevent coordinator startup.
     }
   }
-  const failureDomain = process.env.CORAL_FAILURE_DOMAIN;
   if (failureDomain !== undefined) void enterFailureDomain(inheritedFailureDomainRoot(), failureDomain);
-  delete process.env.CORAL_FAILURE_DOMAIN;
 
   if (typeof __PLUGIN_ROOT__ !== 'string') {
     throw new Error('Coral backend bootstrap requires __PLUGIN_ROOT__ to be defined at build time.');
   }
+  const runtime = createRealRuntime(readBuildFlavor(__PLUGIN_ROOT__));
+  const runDir = runtime.paths.coral.coordinator.runDir;
+  installCoordinatorLog(runDir);
 
   const runningIdentity = resolveStrictBundleIdentity();
   let repairAfterSupervisorAccepted = (_pluginRoot: string): Promise<void> => Promise.resolve();
@@ -608,6 +621,7 @@ export async function main(harness: BackendHarness = {}): Promise<number> {
 
   const successionAttempt = await receiveSuccessionAttemptChild(createRealSuccessionAttemptPorts());
   installSuccessionAttemptChild(successionAttempt);
+  const instanceId = runtime.ids.uuid();
 
   // Startup must retain a referenced handle until `start()` resolves.
   const startupKeepalive = setInterval(() => {}, 60_000);
@@ -615,8 +629,12 @@ export async function main(harness: BackendHarness = {}): Promise<number> {
   try {
     const coordinator = createCoordinatorServer({
       ...harness,
+      runtime,
       pluginRoot: __PLUGIN_ROOT__,
-      ...(successionAttempt === null ? {} : { bootSnapshot: { bootToken: successionAttempt.bootToken } }),
+      bootSnapshot: {
+        instanceId,
+        ...(successionAttempt === null ? {} : { bootToken: successionAttempt.bootToken }),
+      },
       onStopped: (exitCode = 0) => {
         bootstrapProbeExitGate.requestExit(exitCode);
       },
@@ -658,7 +676,7 @@ export async function main(harness: BackendHarness = {}): Promise<number> {
     backendLog.info(`Running on ${info.host}:${info.port}`);
     return 0;
   } catch (error: unknown) {
-    return await handleCoordinatorStartupFailure(__PLUGIN_ROOT__, successionAttempt, error);
+    return await handleCoordinatorStartupFailure(__PLUGIN_ROOT__, runDir, instanceId, successionAttempt, error);
   } finally {
     clearInterval(startupKeepalive);
   }

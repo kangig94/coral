@@ -1,3 +1,4 @@
+import { withCoordinatorLog } from '../../infra/coordinator-log.js';
 import { raceObserved } from '../../infra/promise-signal.js';
 import { observeProcessLiveness, probeProcessIncarnation } from '../../infra/node-process.js';
 import { processIncarnationSchema, type ProcessIncarnation } from '../../infra/node-process.js';
@@ -7,7 +8,7 @@ declare const __VERSION__: string;
 
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync } from 'node:fs';
+import { existsSync, readFileSync, statSync, unlinkSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
@@ -70,7 +71,7 @@ export const STARTUP_POLL_MS = 200;
  * budget may cut that wait short.
  */
 export const KERNEL_READY_DEADLINE_MS = 15_000;
-export const LOG_ROTATE_THRESHOLD_BYTES = 2 * 1024 * 1024;
+
 export const SENTINEL_RECOVERY_BUDGET_MS = 660_000;
 export const LEGACY_RECOVERY_BUDGET_MS = 30_000;
 
@@ -639,22 +640,6 @@ function matchingStartupError(
   return readOperatorFacingCoralSetupError(sentinel.error, sentinelAuthorship(sentinel, desired));
 }
 
-function rotateLogIfLarge(runDir: string): void {
-  const path = join(runDir, 'coordinator.log');
-  const archive = `${path}.1`;
-  try {
-    if (statSync(path).size < LOG_ROTATE_THRESHOLD_BYTES) return;
-    try {
-      unlinkSync(archive);
-    } catch {
-      // no prior archive
-    }
-    renameSync(path, archive);
-  } catch {
-    // no current log, or fs error: fail-open and let openSync create a fresh one
-  }
-}
-
 function observeSpawnedCoordinatorTerminal(child: ChildProcess): Promise<SpawnedCoordinatorTerminal> {
   return new Promise((resolve) => {
     let settled = false;
@@ -682,17 +667,8 @@ function observeSpawnedCoordinatorTerminal(child: ChildProcess): Promise<Spawned
 function spawnCoordinator(backendBin: string, paths: CoordinatorPaths): SpawnedCoordinator {
   const attemptId = randomUUID();
   const spawnedAt = Date.now();
-  let stderr: 'ignore' | number = 'ignore';
-  try {
-    mkdirSync(paths.runDir, { recursive: true });
-    clearStartupErrorSentinel(paths);
-    rotateLogIfLarge(paths.runDir);
-    stderr = openSync(join(paths.runDir, 'coordinator.log'), 'a');
-  } catch {
-    // fail-open: spawn without log if dir creation fails
-  }
-
-  try {
+  clearStartupErrorSentinel(paths);
+  return withCoordinatorLog(paths.runDir, (stderr) => {
     const sentinel = join(dirname(backendBin), 'coral-sentinel.cjs');
     if (!existsSync(sentinel)) throw new BackendUnreachableError('The bundled coordinator supervisor is unavailable.');
     const child = spawn(process.execPath, [sentinel, backendBin], {
@@ -709,11 +685,7 @@ function spawnCoordinator(backendBin: string, paths: CoordinatorPaths): SpawnedC
     const terminal = observeSpawnedCoordinatorTerminal(child);
     child.unref();
     return { attemptId, spawnedAt, pid: child.pid, terminal, sentinel: true };
-  } finally {
-    if (typeof stderr === 'number') {
-      closeSync(stderr);
-    }
-  }
+  });
 }
 
 /**

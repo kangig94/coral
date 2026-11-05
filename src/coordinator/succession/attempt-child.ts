@@ -418,6 +418,7 @@ export async function createSuccessionAttemptChannel(
 }
 
 export type SuccessionAttemptChild = Readonly<{
+  deadline: number | null;
   attemptId: string;
   bootToken: string;
   epochKey: string;
@@ -456,6 +457,7 @@ type AttemptChildState = {
   servingListener: IpcListener | null;
   servingResolve: (() => void) | null;
   servingPromise: Promise<void>;
+  deadline: number | null;
   deadlineTimer: ReturnType<SuccessionAttemptPorts['time']['setTimeout']> | null;
   pendingConnections: ParkedConnection[];
   stopParking: Array<() => void>;
@@ -611,6 +613,7 @@ function handleAttemptChildMessage(
     return;
   }
   if (message.kind === 'deadline' && !state.serving && Number.isFinite(message.at)) {
+    state.deadline = message.at;
     state.windowOpen = true;
     ports.time.clearTimeout(state.deadlineTimer);
     state.deadlineTimer = ports.time.setTimeout(
@@ -693,6 +696,7 @@ export async function receiveSuccessionAttemptChild(
     servingListener: null,
     servingResolve: null,
     servingPromise: Promise.resolve(),
+    deadline: null,
     deadlineTimer: null,
     pendingConnections: [],
     stopParking: [],
@@ -732,6 +736,9 @@ export async function receiveSuccessionAttemptChild(
   state.socketPaths = start.socketPaths;
   return {
     attemptId,
+    get deadline() {
+      return state.deadline;
+    },
     bootToken: start.bootToken,
     epochKey: start.epochKey,
     receiptIds: start.receiptIds,

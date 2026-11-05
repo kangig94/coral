@@ -1,3 +1,4 @@
+import { withCoordinatorLog } from '../infra/coordinator-log.js';
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
@@ -120,12 +121,14 @@ export async function requestLegacyUpgrade(
   const bundleDir = join(options.target.pluginRootLabel, 'bridge');
   const executable = join(bundleDir, 'coral-backend.cjs');
   const supervisor = join(bundleDir, 'coral-sentinel.cjs');
-  const child = spawn(process.execPath, [supervisor, executable], {
-    cwd: options.runDir,
-    detached: true,
-    stdio: 'ignore',
-    env: { ...process.env, CORAL_SENTINEL_RUN_DIR: options.runDir },
-  });
+  const child = withCoordinatorLog(options.runDir, (stderr) =>
+    spawn(process.execPath, [supervisor, executable], {
+      cwd: options.runDir,
+      detached: true,
+      stdio: ['ignore', 'ignore', stderr],
+      env: { ...process.env, CORAL_SENTINEL_RUN_DIR: options.runDir },
+    }),
+  );
   child.once('error', () => undefined);
   child.unref();
   return { ...accepted, supervisorPid: child.pid ?? null };

@@ -1,3 +1,4 @@
+import { withCoordinatorLog } from '../infra/coordinator-log.js';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
@@ -324,20 +325,18 @@ function launchReplacementSupervisor(control: ReplacementSupervisorControl): voi
   )
     updateLaunchStatus(control.runDir, (status) => ({ ...status, hold: undefined }));
   const challenge = randomUUID();
-  const supervisor = spawn(
-    process.execPath,
-    [join(root, 'bridge', 'coral-sentinel.cjs'), join(root, 'bridge', 'coral-backend.cjs')],
-    {
+  const supervisor = withCoordinatorLog(control.runDir, (stderr) =>
+    spawn(process.execPath, [join(root, 'bridge', 'coral-sentinel.cjs'), join(root, 'bridge', 'coral-backend.cjs')], {
       cwd: control.runDir,
       detached: true,
-      stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+      stdio: ['ignore', 'ignore', stderr, 'ipc'],
       env: {
         ...control.env,
         CORAL_RECOVERY_SOURCE_PID: String(process.pid),
         CORAL_RECOVERY_SOURCE_INCARNATION: sourceIncarnation,
         CORAL_RECOVERY_CHALLENGE: challenge,
       },
-    },
+    }),
   );
   const launchedIncarnation = supervisor.pid === undefined ? null : probeProcessIncarnation(supervisor.pid);
   const attempt: ReplacementSupervisorAttempt = {
@@ -472,15 +471,13 @@ export async function resumeLegacyUpgradeObservation(
     if (performance.now() >= deadline) return report('acknowledgement-budget-exhausted');
     const bundleDir = join(root, 'bridge');
     const challenge = randomUUID();
-    const child = spawn(
-      process.execPath,
-      [join(bundleDir, 'coral-sentinel.cjs'), join(bundleDir, 'coral-backend.cjs')],
-      {
+    const child = withCoordinatorLog(runDir, (stderr) =>
+      spawn(process.execPath, [join(bundleDir, 'coral-sentinel.cjs'), join(bundleDir, 'coral-backend.cjs')], {
         cwd: runDir,
         detached: true,
-        stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+        stdio: ['ignore', 'ignore', stderr, 'ipc'],
         env: { ...process.env, CORAL_SENTINEL_RUN_DIR: runDir, CORAL_OBSERVATION_CHALLENGE: challenge },
-      },
+      }),
     );
     try {
       const failure = await new Promise<string | null>((resolve) => {

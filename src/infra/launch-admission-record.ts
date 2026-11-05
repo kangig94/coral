@@ -1,3 +1,4 @@
+import { backendLog } from './backend-log.js';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   closeSync,
@@ -140,7 +141,7 @@ export function removeOwnLaunchAdmission(runDir: string, launchId: string): void
   try {
     unlinkSync(launchAdmissionPath(runDir, launchId));
   } catch (error: unknown) {
-    if (!isNoEntryError(error)) process.stderr.write(`Coordinator admission cleanup failed: ${String(error)}\n`);
+    if (!isNoEntryError(error)) backendLog.raw(`Coordinator admission cleanup failed: ${String(error)}\n`);
   }
 }
 
