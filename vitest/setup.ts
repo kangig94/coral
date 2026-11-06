@@ -1,6 +1,16 @@
+import { createRequire } from 'node:module';
 import { join } from 'node:path';
 
-import { beforeEach } from 'vitest';
+import { beforeEach, expect } from 'vitest';
+
+const guardConfig = process.env.CORAL_TEST_WRITE_GUARD;
+if (!guardConfig) throw new Error('Test write guard requires global setup.');
+const installGuard = createRequire(import.meta.url)('./coral-write-guard.cjs') as (config: unknown) => {
+  setTestFile(file: string | undefined): void;
+};
+const guard = installGuard(JSON.parse(guardConfig));
+guard.setTestFile(expect.getState().testPath);
+beforeEach(() => guard.setTestFile(expect.getState().testPath));
 
 {
   const home = process.env.CORAL_TEST_HOME;

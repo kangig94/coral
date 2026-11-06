@@ -206,3 +206,11 @@ The **Release** workflow creates the GitHub release with `gh release create --ge
 ## Claude Code Integration
 
 Claude Code reaches Coral through the plugin directory, hooks, and Bash-invoked `coral-cli`. There is no separate server-registration file and no stdio proxy bundle in the build.
+
+## Test Write Isolation
+
+All test tiers retain an isolated HOME. The write guard resolves the protected account home with `os.userInfo().homedir`, independently of the runner’s HOME. It blocks filesystem mutations under that home’s `.coral`, including symlink aliases and ancestor deletion, rename, or recursive-copy destinations, and records the path, operation, PID, command, stack, and test file when available. Teardown fails on these records even when code catches the write error. It never scans the real tree, so concurrent live backend activity does not create false positives.
+
+Worker setup installs `vitest/coral-write-guard.cjs`. Node child launches receive the preload through `NODE_OPTIONS`, including launches with explicit environments that omit it. Worker-thread constructors also supply the preload through `execArgv` and carry its configuration, including eval workers and explicit environments. This covers bundled CommonJS coordinators and helpers as well as hooks launched through Node child-process APIs, without changing production environment policy.
+
+This is a test regression guard, not an OS sandbox. Native filesystem calls (including SQLite), non-Node executables, native PTY launches, inherited writable descriptors, and later execs that discard the preload can bypass it. Symlink checks cannot prevent concurrent link replacement or a symlink planted inside a recursive-copy destination subtree that points into the protected root. Keep fixture roots explicit even with the guard. Diagnostics live in a per-run temporary directory that teardown removes.
