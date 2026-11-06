@@ -1,6 +1,5 @@
-import { startRecoveryPhase } from '../../recovery/phase-observation.js';
+import { createBackgroundPhaseObserver } from '../../recovery/phase-observation.js';
 import { sameEpoch } from '../../store/epoch/identity.js';
-import { formatError } from '../../infra/error-format.js';
 import type { TimerHandle } from '../../infra/port-types.js';
 import {
   registerPresentHistoricalEpochs,
@@ -30,6 +29,12 @@ export function createStoreEpochSweepScheduler(input: {
   let settlement = Promise.resolve();
   let lastSweepStart = -Infinity;
   let lastSweepDuration = 0;
+  const startPhase = createBackgroundPhaseObserver({
+    time: runtime.time,
+    log: world.log,
+    bootId: input.bootId,
+    phase: 'store-epoch-sweep',
+  });
 
   return {
     schedule: (openStore) => {
@@ -43,23 +48,20 @@ export function createStoreEpochSweepScheduler(input: {
         timer = runtime.time.setTimeout(() => {
           timer = null;
           lastSweepStart = Number(runtime.time.monotonicNow());
-          const observation = startRecoveryPhase({
-            time: runtime.time,
-            log: world.log,
-            bootId: input.bootId,
-            kind: 'background',
-            phase: 'store-epoch-sweep',
-          });
+          const observation = startPhase(controller.signal);
+          let cancelled = false;
+          let observed = false;
+          const holds: { identity: string; reason: string }[] = [];
           let failed = false;
           void (async () => {
             const budget = { remaining: 0 };
             try {
               const epochs = listStoreEpochs(runtime);
-              observation.record('store-epochs', { subjects: epochs.length, reads: epochs.length });
+              observation.record('store-epochs', { reads: epochs.length });
               registerPresentHistoricalEpochs(runtime, jobLocationIndex, epochs, input.selectedStoreEpochKey(), budget);
             } catch (error) {
               failed = true;
-              world.log(`Historical epoch registration could not complete: ${formatError(error)}\n`);
+              holds.push({ identity: openStore.path, reason: `historical-registration: ${String(error)}` });
             }
             await retryUnknownHistoricalEpochs(jobLocationIndex, budget);
             try {
@@ -73,11 +75,11 @@ export function createStoreEpochSweepScheduler(input: {
               );
             } catch (error) {
               failed = true;
-              world.log(`Superseded epoch closure could not complete: ${formatError(error)}\n`);
+              holds.push({ identity: openStore.path, reason: `epoch-closure: ${String(error)}` });
             }
             if (!controller.signal.aborted) {
               await refreshHistoricalEpochs(jobLocationIndex, budget);
-              void (await sweepStoreEpochsPostReady(
+              const result = await sweepStoreEpochsPostReady(
                 runtime,
                 { ...openStore, storeRoot: openStore.canonicalStoreRoot ?? openStore.storeRoot },
                 {
@@ -86,15 +88,25 @@ export function createStoreEpochSweepScheduler(input: {
                   resultsReleased: (epochKey, closedSource) =>
                     jobLocationIndex.resultsReleasedAsync(epochKey, controller.signal, closedSource),
                 },
-              ));
+              );
+              cancelled = result === 'cancelled';
+              observed = !cancelled;
+              if (result !== 'complete' && !cancelled) holds.push({ identity: openStore.path, reason: result });
             }
           })()
             .catch((error: unknown) => {
               failed = true;
-              world.log(`Store epoch closure or retention sweep could not complete: ${formatError(error)}\n`);
+              holds.push({ identity: openStore.path, reason: `store-epoch-sweep: ${String(error)}` });
             })
             .finally(() => {
-              observation.finish(failed ? 'failed' : 'complete');
+              if (!cancelled && !controller.signal.aborted && (observed || holds.length > 0)) {
+                holds.sort(
+                  (left, right) =>
+                    left.identity.localeCompare(right.identity) || left.reason.localeCompare(right.reason),
+                );
+                observation.reportState(holds.length === 0 ? null : JSON.stringify(holds));
+              }
+              observation.finish(cancelled ? 'cancelled' : failed ? 'failed' : 'complete');
               lastSweepDuration = Number(runtime.time.monotonicNow()) - lastSweepStart;
               settleScheduled?.();
               settleScheduled = null;

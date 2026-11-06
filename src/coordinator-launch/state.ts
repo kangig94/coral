@@ -1,3 +1,4 @@
+import { backendLog } from '../infra/backend-log.js';
 import { randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
 
@@ -1039,7 +1040,7 @@ export class SupervisorLaunchMemory {
     try {
       updateLaunchStatus(this.#runDir, change);
     } catch (error: unknown) {
-      process.stderr.write(`Coordinator launch status could not be written: ${String(error)}\n`);
+      backendLog.raw(`Coordinator launch status could not be written: ${String(error)}\n`);
     }
   }
 

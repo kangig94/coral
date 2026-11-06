@@ -49,6 +49,16 @@ const SHUTDOWN_PROJECTION = {
 } as const satisfies ShutdownRemainderProjection;
 
 describe('/health typed shape (AC10a)', () => {
+  it('keeps the coordinator log path while tolerating an unavailable optional path', () => {
+    const path = '/state/coordinator-logs/serving-writer/current.log';
+    expect(
+      parseBackendHealth({ ...HEALTHY_BASE, diagnostics: { coordinatorLogPath: path } })?.health.diagnostics,
+    ).toMatchObject({ coordinatorLogPath: path });
+    const unavailable = parseBackendHealth({ ...HEALTHY_BASE, diagnostics: { coordinatorLogPath: 42 } });
+    expect(unavailable?.health).toBeDefined();
+    expect(unavailable?.health.diagnostics).not.toHaveProperty('coordinatorLogPath');
+  });
+
   it('accepts an older payload without a shutdown projection', () => {
     const parsed = parseBackendHealth(HEALTHY_BASE);
     expect(parsed?.health).toMatchObject(HEALTHY_BASE);

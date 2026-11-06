@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -44,6 +44,41 @@ it.each([false, true])('handles a deleted invoking directory (missing run dir: %
       expect(result.stdout.trim()).not.toBe('');
       expect(result.stderr).not.toContain('Coordinator spawn failed');
     }
+  } finally {
+    for (const path of roots) rmSync(path, { recursive: true, force: true });
+  }
+});
+
+it('routes a failed child launch through the installed backend sink instead of native stderr', async () => {
+  const roots: string[] = [];
+  const root = mkdtempSync(join(tmpdir(), 'coral-failed-launch-log-'));
+  roots.push(root);
+  try {
+    const fixture = createPluginFixture(roots, { flavor: 'prod' });
+    const harness = join(root, 'spawn.cjs');
+    buildSync({
+      entryPoints: [fileURLToPath(new URL('./fixtures/deleted-launch-cwd.ts', import.meta.url))],
+      outfile: harness,
+      bundle: true,
+      platform: 'node',
+      format: 'cjs',
+      external: ['node:*'],
+      banner: { js: 'var __importMetaUrl=require("url").pathToFileURL(__filename).href;' },
+      define: { 'import.meta.url': '__importMetaUrl' },
+    });
+    const invokingDir = join(root, 'worktree');
+    const runDir = join(root, 'run');
+    const diagnosticPath = join(root, 'backend.log');
+    mkdirSync(invokingDir);
+    mkdirSync(runDir);
+    await expect(
+      promisify(execFile)(
+        process.execPath,
+        [harness, join(fixture.root, 'bridge', 'coral-backend.cjs'), runDir, invokingDir, '1', diagnosticPath],
+        { cwd: invokingDir, timeout: 15_000 },
+      ),
+    ).rejects.toMatchObject({ code: 1, stderr: '' });
+    expect(readFileSync(diagnosticPath, 'utf8')).toContain(`cwd ${JSON.stringify(runDir)} is unavailable`);
   } finally {
     for (const path of roots) rmSync(path, { recursive: true, force: true });
   }

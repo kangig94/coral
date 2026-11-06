@@ -423,6 +423,7 @@ export type HealthSnapshot = {
    */
   listCounts?: Readonly<Record<string, number>>;
   diagnostics?: LaunchPermitDiagnostics & {
+    coordinatorLogPath?: string;
     hostPressure?: HostPressure;
     failureDomainRoot?: FailureDomainRoot;
     coordinatorObservedFailureDomainRefusalHistory?: Readonly<{

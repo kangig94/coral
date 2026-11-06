@@ -3,6 +3,7 @@ import { listExecutionRetryStatuses } from '../../jobs/finishing.js';
 import type { RetentionRunStatus } from '../../store/retention-outcome.js';
 import { invocationCoralEnvSnapshot } from '../../infra/env-sanitize.js';
 import { currentLaunchStatus } from '../../infra/launch-status.js';
+import { getCoordinatorLogPath } from '../../infra/coordinator-log.js';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 
 import { type resolveStrictBundleIdentity } from '../../infra/bundle-manifest.js';
@@ -377,6 +378,7 @@ export function createCoordinatorHealthReader({
     });
 
     const sentinelId = runtime.env.get('CORAL_SENTINEL_ID');
+    const coordinatorLogPath = getCoordinatorLogPath();
     const retention = retentionStatus?.() ?? null;
     return boundHealthLists({
       status: coarseStatus,
@@ -412,6 +414,7 @@ export function createCoordinatorHealthReader({
       ...(shutdownObservation === undefined ? {} : { shutdown: shutdownObservation }),
       diagnostics: {
         ...diagnostics,
+        ...(coordinatorLogPath === undefined ? {} : { coordinatorLogPath }),
         hostPressure: runtime.process.readHostPressure(),
         failureDomainRoot: runtime.process.failureDomainRoot,
         coordinatorObservedFailureDomainRefusalHistory: {

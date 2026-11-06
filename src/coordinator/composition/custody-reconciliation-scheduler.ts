@@ -1,4 +1,4 @@
-import { startRecoveryPhase } from '../../recovery/phase-observation.js';
+import { createBackgroundPhaseObserver } from '../../recovery/phase-observation.js';
 import { observeDatabaseReads } from '../../recovery/read-observation.js';
 import { join } from 'node:path';
 
@@ -16,20 +16,19 @@ export function createCustodyReconciliationScheduler(input: {
 }): Readonly<{ arm: () => void }> {
   const { runtime, world } = input;
   let armed = false;
-  let lastError: string | null = null;
+  const startPhase = createBackgroundPhaseObserver({
+    time: runtime.time,
+    log: world.log,
+    bootId: input.bootId,
+    phase: 'custody-reconciliation',
+  });
   const reconcile = (): void => {
     const store = world.storeServicesRef.tryGet();
     if (store === null) {
       armed = false;
       return;
     }
-    const observation = startRecoveryPhase({
-      time: runtime.time,
-      log: world.log,
-      bootId: input.bootId,
-      kind: 'background',
-      phase: 'custody-reconciliation',
-    });
+    const observation = startPhase();
     let failed = false;
     try {
       const dbDir = runtime.paths.coral.store.dbDir;
@@ -49,8 +48,8 @@ export function createCustodyReconciliationScheduler(input: {
           capsuleExists: (path) => runtime.storage.existsSync(path),
         },
         observation,
+        world.log,
       );
-      lastError = null;
       if (!entries.some((entry) => entry.kind === 'holding' || entry.kind === 'unreadable')) {
         armed = false;
         return;
@@ -58,8 +57,7 @@ export function createCustodyReconciliationScheduler(input: {
     } catch (error: unknown) {
       failed = true;
       const reason = formatError(error);
-      if (reason !== lastError) world.log(`Custody reconciliation remains undecidable: ${reason}\n`);
-      lastError = reason;
+      observation.reportState(JSON.stringify([{ identity: runtime.paths.coral.coordinator.runDir, reason }]));
     } finally {
       observation.finish(failed ? 'failed' : 'complete');
     }

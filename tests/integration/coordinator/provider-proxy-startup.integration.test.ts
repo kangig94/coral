@@ -1147,7 +1147,7 @@ it('observes each scheduled durable disposition pass and its containment journal
     for (let pass = 1; pass <= 2; pass++) {
       time.tick(60_000);
       await drainMicrotasks(100);
-      expect(lines('start')).toHaveLength(pass);
+      expect(lines('start')).toHaveLength(0);
       expect(lines('finish')).toHaveLength(pass);
       expect(lines('finish')[pass - 1]).toContain('outcome=complete');
       expect(lines('finish')[pass - 1]).toContain('subjects=1 reads=1');
@@ -1163,7 +1163,7 @@ it('observes each scheduled durable disposition pass and its containment journal
     });
     time.tick(60_000);
     await drainMicrotasks(100);
-    expect(lines('start')).toHaveLength(3);
+    expect(lines('start')).toHaveLength(0);
     expect(lines('finish')).toHaveLength(3);
     expect(lines('finish')[2]).toContain('outcome=failed');
     reconcile.mockRestore();

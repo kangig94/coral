@@ -1,3 +1,4 @@
+import { observeRecoveryPhase } from '#src/recovery/phase-observation.js';
 import { createCommitWriterPreparation } from '#src/coordinator/succession/commit/writer-preparation.js';
 import { TransientCommitFailure } from '#src/coordinator/succession/commit/failure.js';
 import { observeRetirementDisposition } from '#src/coordinator/succession/retirement-disposition.js';
@@ -118,13 +119,29 @@ describe('epoch closure reclamation', () => {
       observedAtMs: 1,
     });
 
-    await sweepStoreEpochsPostReady(runtime, resolvedStoreEpoch(root, '3'), {
-      resultsReleased: async (epochKey) => epochKey === jobKey,
-    });
+    const logs: string[] = [];
+    const result = await observeRecoveryPhase(
+      {
+        time: { ...runtime.time, monotonicNow: () => 0n },
+        kind: 'background',
+        bootId: 'epoch-removal',
+        phase: 'store-epoch-sweep',
+        log: (line) => logs.push(line),
+      },
+      (observation) =>
+        sweepStoreEpochsPostReady(runtime, resolvedStoreEpoch(root, '3'), {
+          resultsReleased: async (epochKey) => epochKey === jobKey,
+          observation,
+        }),
+    );
+
+    expect(result).toBe('complete');
 
     expect(existsSync(epochDirectory(root, '1'))).toBe(false);
     expect(existsSync(epochDirectory(root, '3'))).toBe(true);
     expect(existsSync(join(stateRoot, 'epoch-closure.v1'))).toBe(true);
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).toContain('event=finish outcome=complete duration_ms=0.000 subjects=1 ');
   });
 });
 

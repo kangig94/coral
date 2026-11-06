@@ -2284,6 +2284,7 @@ export async function reconcileHandoffRoutingStatus(
   path: string,
   signal: AbortSignal,
   observation?: RecoveryObservation,
+  reportHolds?: (holds: readonly { identity: string; reason: string }[]) => void,
 ): Promise<readonly HandoffRoutingResolveResult[]> {
   const observationDeadline = runtime.time.monotonicNow() + BigInt(MAX_HANDOFF_ROUTING_OWNER_SWEEP_MS);
   const budget = new AbortController();
@@ -2291,9 +2292,21 @@ export async function reconcileHandoffRoutingStatus(
   const timer = runtime.time.setTimeout(() => budget.abort(), MAX_HANDOFF_ROUTING_OWNER_SWEEP_MS);
   try {
     const statusRead = await readHandoffRoutingStatusWithOwnerObservations(runtime, path);
-    if (statusRead.kind !== 'current') return [];
-    // Routing status metadata is outside the journal/projection and location-read counters.
-    observation?.record('handoff-routing-statuses', { subjects: statusRead.statuses.length });
+    if (statusRead.kind !== 'current') {
+      if (!boundedSignal.aborted)
+        reportHolds?.(
+          handoffRoutingStatusExitContribution(statusRead) === 0
+            ? []
+            : [{ identity: path, reason: JSON.stringify(statusRead) }],
+        );
+      return [];
+    }
+    const holds: { identity: string; reason: string }[] = statusRead.statuses.flatMap((status) =>
+      status.kind === 'unresolved' && status.ownerLiveness.kind === 'unobservable'
+        ? [{ identity: status.selection.invocationId, reason: status.ownerLiveness.cause }]
+        : [],
+    );
+    observation?.record('handoff-routing-statuses', { reads: statusRead.statuses.length });
     const outcomes: HandoffRoutingResolveResult[] = [];
     for (const status of statusRead.statuses) {
       if (boundedSignal.aborted || runtime.time.monotonicNow() >= observationDeadline) break;
@@ -2309,6 +2322,20 @@ export async function reconcileHandoffRoutingStatus(
         ),
       );
     }
+    observation?.record('handoff-routing-resolutions', {
+      subjects: outcomes.filter((outcome) => outcome.kind === 'resolved').length,
+    });
+    for (const outcome of outcomes) {
+      if (
+        outcome.kind === 'not-published' ||
+        outcome.kind === 'artifact-refused' ||
+        outcome.kind === 'commit-outcome-unknown' ||
+        outcome.kind === 'status-unavailable' ||
+        outcome.kind === 'unauthorized-unobservable'
+      )
+        holds.push({ identity: outcome.invocationId, reason: JSON.stringify(outcome) });
+    }
+    if (!boundedSignal.aborted && runtime.time.monotonicNow() < observationDeadline) reportHolds?.(holds);
     return outcomes;
   } finally {
     runtime.time.clearTimeout(timer);

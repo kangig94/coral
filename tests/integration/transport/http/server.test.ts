@@ -1077,6 +1077,26 @@ describe('execution backend server', () => {
       });
     });
 
+    it('carries the coordinator segment path in authenticated detailed health only', async () => {
+      const { deps } = createHttpHandlerDeps();
+      const read = deps.health.read;
+      const coordinatorLogPath = '/state/coordinator-logs/serving-writer/current.log';
+      deps.health.read = () => ({ ...read(), diagnostics: { coordinatorLogPath } });
+      const started = await startHttpHandlerServer(deps);
+      try {
+        const detailed = await fetch(`${started.baseUrl}/health?detailed=1`, {
+          headers: { 'X-Coral-Boot-Token': 'test-boot-token' },
+        });
+        expect(detailed.status).toBe(200);
+        expect(await detailed.json()).toMatchObject({ diagnostics: { coordinatorLogPath } });
+        const liveness = await fetch(`${started.baseUrl}/health`);
+        expect(liveness.status).toBe(200);
+        expect(await liveness.json()).not.toHaveProperty('diagnostics');
+      } finally {
+        await _closeHttpServer(started.server);
+      }
+    });
+
     it('rejects authenticated remote HTTP requests outside the configured address allowlist', async () => {
       await withBaseCoralEnv(async () => {
         const { deps } = createHttpHandlerDeps({

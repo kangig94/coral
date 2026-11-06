@@ -1,4 +1,8 @@
-import { startRecoveryPhase, type RecoveryObservation } from '../../recovery/phase-observation.js';
+import {
+  createBackgroundPhaseObserver,
+  startRecoveryPhase,
+  type RecoveryObservation,
+} from '../../recovery/phase-observation.js';
 import { observeDatabaseReads } from '../../recovery/read-observation.js';
 import { readRetentionCursor } from '../../store/retention-meta.js';
 import { errorMessage } from '../../infra/error-format.js';
@@ -18,7 +22,7 @@ import {
   type RetentionRunStatus,
 } from '../../store/retention-outcome.js';
 import { vacuumRetainedJournal } from '../../store/retention-vacuum.js';
-import { pruneCustodyLedger } from '../../store/custody-ledger.js';
+import { pruneCustodyLedger, readCustodyLedgerAsync } from '../../store/custody-ledger.js';
 import { reconcileFinishedCustody } from '../services/recovery/custody-reconciliation.js';
 
 const DAILY_MS = 24 * 60 * 60 * 1000;
@@ -106,6 +110,12 @@ export function createStorageRetentionScheduler(input: {
       if (replace >= 0) outcomes[replace] = outcome;
     }
   };
+  const startCustodyPhase = createBackgroundPhaseObserver({
+    time: runtime.time,
+    log: input.log,
+    bootId: input.bootId,
+    phase: 'storage-retention.custody-reconciliation',
+  });
   const startRetentionObservations = () => {
     const observation = startRecoveryPhase({
       time: runtime.time,
@@ -118,20 +128,24 @@ export function createStorageRetentionScheduler(input: {
     let failed = false;
     return {
       observation,
-      startOwner(subject: string) {
-        const owner = startRecoveryPhase({
-          time: runtime.time,
-          log: input.log,
-          bootId: input.bootId,
-          kind: 'background',
-          phase: `storage-retention.${subject}`,
-        });
+      startOwner(subject: string, signal: AbortSignal) {
+        const owner =
+          subject === 'custody-reconciliation'
+            ? startCustodyPhase(signal)
+            : startRecoveryPhase({
+                time: runtime.time,
+                log: input.log,
+                bootId: input.bootId,
+                kind: 'background',
+                phase: `storage-retention.${subject}`,
+              });
         const finish = (incomplete: boolean): void => {
           failed ||= incomplete;
           owner.finish(incomplete ? 'failed' : 'complete');
         };
         return {
           observation: owner,
+          reportState: (state: string | null) => owner.reportState(state),
           record: ((source, counts) => {
             observation.record(source, counts);
             owner.record(source, counts);
@@ -235,7 +249,7 @@ export function createStorageRetentionScheduler(input: {
             const cancelled = new Promise<void>((resolve) =>
               ownerAbort.signal.addEventListener('abort', () => resolve(), { once: true }),
             );
-            const ownerObservation = observations.startOwner(subject);
+            const ownerObservation = observations.startOwner(subject, ownerAbort.signal);
             let operations = 0;
             let finished = false;
             let executed = false;
@@ -399,12 +413,21 @@ export function createStorageRetentionScheduler(input: {
             if (!signal.aborted) mutate(() => saveCursor('locations', next));
             if (next !== '') budget.record({ kind: 'kept', subject: 'job-locations', reason: 'scan-pending' });
           });
+          const custodyEntries =
+            dueOwners.has('custody-reconciliation') && !outstandingOwners.has('custody-reconciliation')
+              ? await readCustodyLedgerAsync(runtime, runtime.paths.coral.coordinator.runDir, observation, () => {
+                  if (abort.signal.aborted) throw new Error('custody-discovery-aborted');
+                  writer.assertCurrent();
+                })
+              : undefined;
           await step('custody-reconciliation', async (budget, signal, mutate) => {
             const next = await reconcileFinishedCustody({
+              log: input.log,
               runtime,
               runDir: runtime.paths.coral.coordinator.runDir,
               index: input.jobLocations,
               afterId: readCursor('custody-reconciliation', mutate),
+              entries: custodyEntries,
               checkpoint: (value) => {
                 if (!signal.aborted) mutate(() => saveCursor('custody-reconciliation', value));
               },

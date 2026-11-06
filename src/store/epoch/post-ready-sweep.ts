@@ -331,6 +331,7 @@ async function cleanPostReadyStoreEpochHolders(
       if (holder?.path !== undefined) {
         mutations.pending = true;
         const removed = await removeDuringPostReadySweep(runtime.storage, dbDir, holder.path);
+        if (removed) context.observation?.record('sweep-holder-removals', { subjects: 1 });
         deletionFailed ||= !removed;
       }
     } finally {
@@ -386,6 +387,8 @@ async function reapPostReadyStoreEpochEntries(
         await yieldSweepTurn();
         continue;
       }
+      if (removal === 'removed' || removal === 'retained')
+        context.observation?.record('sweep-residue-removals', { subjects: 1 });
       lockReleaseFailed ||= removal === 'lock-release-failed';
       complete = (removal === 'removed' || removal === 'retained') && complete;
     }
@@ -428,7 +431,7 @@ async function preparePostReadyStoreEpochSweep(
   let entries: readonly string[];
   try {
     entries = await runtime.storage.readdir(dbDir);
-    context.observation?.record('sweep-entries', { subjects: entries.length, reads: entries.length });
+    context.observation?.record('sweep-entries', { reads: entries.length });
   } catch (error: unknown) {
     auditSweepFailure(dbDir, error);
     return { kind: 'interrupted', result: 'unobservable-metadata' };
@@ -518,6 +521,7 @@ export async function sweepStoreEpochsPostReady(
         continue;
       mutations.pending = true;
       const removal = removeEpochEntry(runtime, dbDir, epoch, epochKey);
+      if (removal === 'removed') options.observation?.record('sweep-epoch-removals', { subjects: 1 });
       complete = removal === 'removed' && complete;
       await yieldSweepTurn();
     }
@@ -534,6 +538,7 @@ export async function sweepStoreEpochsPostReady(
         )
           continue;
         const removal = removeClosedProtectedEpoch(runtime, address);
+        if (removal === 'removed') options.observation?.record('sweep-protected-removals', { subjects: 1 });
         complete = removal === 'removed' && complete;
         await yieldSweepTurn();
       }
@@ -549,7 +554,9 @@ export async function sweepStoreEpochsPostReady(
         !(await options.resultsReleased(lineageJobEpochKey(dbDir, address.epochKey)))
       )
         continue;
-      complete = removeClosedProtectedEpoch(runtime, address) === 'removed' && complete;
+      const removal = removeClosedProtectedEpoch(runtime, address);
+      complete = removal === 'removed' && complete;
+      if (removal === 'removed') options.observation?.record('sweep-protected-residue-removals', { subjects: 1 });
       await yieldSweepTurn();
     }
   }

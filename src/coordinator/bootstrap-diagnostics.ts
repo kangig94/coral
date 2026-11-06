@@ -3,6 +3,7 @@ import { dirname } from 'node:path';
 
 import { writeAuditEvent } from '../infra/audit-log.js';
 import { backendLog } from '../infra/backend-log.js';
+import { getCoordinatorLogPath } from '../infra/coordinator-log.js';
 import { resolveBuildFlavor } from '../infra/build-flavor.js';
 import { readBundleHash } from '../infra/bundle-manifest.js';
 import { errorMessage, SERIALIZED_THROWN_CAUSE_MAX_DEPTH, serializeThrown } from '../infra/error-format.js';
@@ -94,6 +95,7 @@ export function writeBootstrapDiagnostic(
       attemptId,
       startedAt: startupStartedAt(),
       socketPath: runtime.paths.coral.coordinator.socketPath,
+      coordinatorLogPath: getCoordinatorLogPath(),
       bundleHash: readBundleHash(pluginRoot),
       flavor,
       namespace: pluginRootNamespace(pluginRoot),
@@ -107,9 +109,8 @@ export function writeBootstrapDiagnostic(
           return diagnosticFile;
         }
       } catch (readError: unknown) {
-        // A record that could not be read is not known to be the better one, and this process may not pay
-        // for that uncertainty with its own: a generic startup failure writes no sentinel, so declining to
-        // write here would leave the failure this process did observe on no durable surface at all.
+        // A record that could not be read is not known to be the better one; uncertainty cannot suppress
+        // the failure observed by this process.
         if (!(isNoEntryError(readError) || readError instanceof SyntaxError)) {
           backendLog.warn(
             `Could not read the existing startup diagnostic at ${diagnosticFile} (${errorMessage(readError)}); ` +

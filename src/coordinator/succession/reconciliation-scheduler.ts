@@ -1,4 +1,4 @@
-import { startRecoveryPhase, type RecoveryObservation } from '../../recovery/phase-observation.js';
+import { createBackgroundPhaseObserver, type RecoveryObservation } from '../../recovery/phase-observation.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { SuccessionDecision } from './reconciler/index.js';
 
@@ -14,6 +14,15 @@ export function createSuccessionReconciliationScheduler(input: {
   notifyObligationChange: () => void;
   dispose: () => void;
 }> {
+  const lifetime = new AbortController();
+  const startPhase =
+    input.observation === undefined
+      ? undefined
+      : createBackgroundPhaseObserver({
+          ...input.observation,
+          time: input.time,
+          phase: 'succession-reconciliation',
+        });
   let disposed = false;
   let running: Promise<SuccessionDecision> | null = null;
   let changedDuringPass = false;
@@ -30,19 +39,11 @@ export function createSuccessionReconciliationScheduler(input: {
       changedDuringPass = true;
       return running;
     }
-    const observation =
-      input.observation === undefined
-        ? undefined
-        : startRecoveryPhase({
-            ...input.observation,
-            time: input.time,
-            kind: 'background',
-            phase: 'succession-reconciliation',
-          });
+    const observation = startPhase?.(lifetime.signal);
     const pass = input.runPass(observation);
     void pass.then(
-      () => observation?.finish(),
-      () => observation?.finish('failed'),
+      () => observation?.finish(disposed ? 'cancelled' : 'complete'),
+      () => observation?.finish(disposed ? 'cancelled' : 'failed'),
     );
     const pending = pass.finally(() => {
       running = null;
@@ -63,6 +64,7 @@ export function createSuccessionReconciliationScheduler(input: {
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      lifetime.abort();
       changedDuringPass = false;
       input.time.clearInterval(retryTimer);
       unsubscribe?.();

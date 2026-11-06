@@ -3,6 +3,7 @@ import { providerOperationRecordSchema } from '#src/store/provider-operation-rec
 import {
   compareAndSwapProviderOperation,
   ProviderOperationMutationSetClosedError,
+  providerOperationMutationAdmission,
 } from '#src/store/provider-operation-journal.js';
 import { ProviderOperationAtomicTerminalizationError } from '#src/jobs/provider-operation-terminalization.js';
 import { ControlClientError } from '#src/provider-proxy/control-client.js';
@@ -942,5 +943,110 @@ it('counts settlement failure with the monotonic clock and excludes coordinator 
   } finally {
     h.reconciler.stop();
     h.db.close();
+  }
+});
+
+it('reports provider hold changes and exact recovery while partial polls and cancellation stay quiet', async () => {
+  let now = 100;
+  let reason = 'authority unavailable';
+  let acquire: (() => Promise<{ kind: 'temporarily-unavailable'; reason: string }>) | null = null;
+  let release: (result: { kind: 'temporarily-unavailable'; reason: string }) => void = () => {};
+  const log = vi.fn();
+  const onError = vi.fn();
+  const h = createHarness({
+    onError,
+    observation: { bootId: 'provider-hold-test', log },
+    time: { now: () => now, monotonicNow: () => 0n },
+    authorityFor: () => null,
+    acquireAuthority: async () => (acquire === null ? { kind: 'temporarily-unavailable', reason } : acquire()),
+  });
+  const admission = providerOperationMutationAdmission(h.db);
+  const runDetached = admission.runDetached.bind(admission);
+  let completed = 0;
+  const run = vi
+    .spyOn(admission, 'runDetached')
+    .mockImplementation(async <Result>(label: string, mutation: () => Result | Promise<Result>): Promise<Result> => {
+      try {
+        return await runDetached(label, mutation);
+      } finally {
+        if (label === 'provider-operation-due-poll') completed++;
+      }
+    });
+  const poll = async (advance = 0) => {
+    now += advance;
+    const next = completed + 1;
+    h.reconciler.wake();
+    await vi.waitFor(() => expect(completed).toBe(next));
+  };
+  try {
+    await poll();
+    expect(log).not.toHaveBeenCalled();
+    insertProviderOperation(h.db, h.record);
+    await poll();
+    expect(log).toHaveBeenCalledExactlyOnceWith(expect.stringContaining('state=held'));
+    expect(log).toHaveBeenCalledWith(expect.stringContaining(reason));
+    log.mockClear();
+    await poll();
+    expect(log).not.toHaveBeenCalled();
+    await poll(10_000);
+    expect(log).not.toHaveBeenCalled();
+    reason = 'authority marker unreadable';
+    await poll(10_000);
+    expect(log).toHaveBeenCalledExactlyOnceWith(expect.stringContaining(reason));
+    log.mockClear();
+    acquire = async () => {
+      throw new Error('acquisition read failure');
+    };
+    await poll(10_000);
+    expect(log).toHaveBeenCalledExactlyOnceWith(expect.stringContaining('acquisition read failure'));
+    log.mockClear();
+    await poll(10_000);
+    expect(log).not.toHaveBeenCalled();
+    expect(onError).not.toHaveBeenCalled();
+    acquire = null;
+    const current = readProviderOperation(h.db, h.record.operation);
+    if (current === null) throw new Error('Expected held operation');
+    await h.reconciler.reconcile(current, h.authority);
+    expect(log.mock.calls.filter(([line]) => line.includes('state=cleared'))).toHaveLength(1);
+    log.mockClear();
+    await poll(10_000);
+    expect(log).not.toHaveBeenCalled();
+
+    const pending = providerOperationRecordSchema.parse({
+      ...h.record,
+      operation: { ...h.record.operation, jobId: '00000000-0000-4000-8000-000000000099' },
+    });
+    insertProviderOperation(h.db, pending);
+    await poll();
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('state=held'));
+    log.mockClear();
+    const waiting = new Promise<{ kind: 'temporarily-unavailable'; reason: string }>((resolve) => {
+      release = resolve;
+    });
+    const acquisition = vi.fn(() => waiting);
+    acquire = acquisition;
+    now += 10_000;
+    const next = completed + 1;
+    h.reconciler.wake();
+    await vi.waitFor(() => expect(acquisition).toHaveBeenCalledOnce());
+    h.reconciler.stop();
+    release({ kind: 'temporarily-unavailable', reason: 'cancelled observation' });
+    await vi.waitFor(() => expect(completed).toBe(next));
+    expect(log).not.toHaveBeenCalled();
+  } finally {
+    release({ kind: 'temporarily-unavailable', reason: 'fixture cleanup' });
+    const stopped = h.reconciler.stop();
+    try {
+      if (stopped.kind === 'holding') {
+        let drained = false;
+        void stopped.retryAfter.then(() => {
+          drained = true;
+        });
+        await vi.waitFor(() => expect(drained).toBe(true));
+      }
+    } finally {
+      run.mockRestore();
+      h.db.close();
+    }
   }
 });

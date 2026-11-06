@@ -46,6 +46,10 @@ vi.mock('node:child_process', () => ({
   spawn: mockState.spawn,
 }));
 
+vi.mock('#src/infra/coordinator-log.js', () => ({
+  withCoordinatorLog: <T>(_runDir: string, launch: (stderr: number) => T): T => launch(2),
+}));
+
 vi.mock('node:os', async () => {
   const actual = await vi.importActual<typeof NodeOs>('node:os');
   return {

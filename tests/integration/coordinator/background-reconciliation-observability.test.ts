@@ -6,13 +6,16 @@ import { createStorageRetentionScheduler } from '#src/coordinator/composition/st
 import { createCustodyReconciliationScheduler } from '#src/coordinator/composition/custody-reconciliation-scheduler.js';
 import { createStoreEpochSweepScheduler } from '#src/coordinator/composition/store-epoch-sweep-scheduler.js';
 import { createSuccessionReconciler } from '#src/coordinator/succession/reconciler/index.js';
+import * as SuccessionPasses from '#src/coordinator/succession/reconciler/pass.js';
 import { createStoreServicesRef } from '#src/coordinator/composition/store-services-ref.js';
 import { JobLocationIndex } from '#src/jobs/location-index.js';
-import { recordCustodyIntent } from '#src/store/custody-ledger.js';
-import { insertProviderOperation } from '#src/store/provider-operation-journal.js';
+import { pruneCustodyLedger, recordCustodyIntent } from '#src/store/custody-ledger.js';
+import type * as CustodyLedger from '#src/store/custody-ledger.js';
+import { insertProviderOperation, ProviderOperationMutationAdmission } from '#src/store/provider-operation-journal.js';
 import { compareAndSwapUpgradeIntent } from '#src/infra/upgrade-intent.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { encodeResolvedStoreEpoch, resolveCurrentStoreEpoch, resolvedStoreEpoch } from '#src/store/epoch/index.js';
+import * as StoreEpochs from '#src/store/epoch/index.js';
 import { createRetentionFixture } from '#tests/helpers/storage-retention.js';
 import { openSettledTestStoreDb } from '#tests/helpers/store-db.js';
 import { initTestJob } from '#tests/helpers/session.js';
@@ -20,9 +23,17 @@ import { commitJobTerminal } from '#tests/helpers/job-commits.js';
 import { createProviderOperationReconcilerHarness } from '#tests/helpers/provider-operation-reconciler-harness.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
-afterEach(() => vi.useRealTimers());
+vi.mock('#src/store/custody-ledger.js', async (original) => {
+  const actual = await original<typeof CustodyLedger>();
+  return { ...actual, pruneCustodyLedger: vi.fn(actual.pruneCustodyLedger) };
+});
 
-it('reports real retention owners, custody passes and repeated epoch sweeps with storage counters', async () => {
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
+
+it('reports retention work while completed inventory-only custody and epoch sweeps stay silent', async () => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
   const f = createRetentionFixture();
   let monotonic = 0n;
@@ -80,6 +91,20 @@ it('reports real retention owners, custody passes and repeated epoch sweeps with
     publish: () => {},
     cleanupScratch: () => {},
   });
+  const completedCustodyPasses: string[] = [];
+  const actualCustody = await vi.importActual<typeof CustodyLedger>('#src/store/custody-ledger.js');
+  vi.mocked(pruneCustodyLedger).mockImplementation(async (...args) => {
+    const cursor = await actualCustody.pruneCustodyLedger(...args);
+    completedCustodyPasses.push(cursor);
+    return cursor;
+  });
+  const completedSweeps: string[] = [];
+  const realSweep = StoreEpochs.sweepStoreEpochsPostReady;
+  vi.spyOn(StoreEpochs, 'sweepStoreEpochsPostReady').mockImplementation(async (...args) => {
+    const result = await realSweep(...args);
+    completedSweeps.push(result);
+    return result;
+  });
   const sweep = createStoreEpochSweepScheduler({
     runtime,
     bootId: 'background-boot',
@@ -99,11 +124,13 @@ it('reports real retention owners, custody passes and repeated epoch sweeps with
     custody.arm();
     await vi.advanceTimersByTimeAsync(0);
     await vi.waitFor(() => {
+      expect(completedSweeps).toEqual(['complete']);
+      expect(completedCustodyPasses).toEqual(['']);
       expect(lines('storage-retention', 'finish')).toHaveLength(1);
-      expect(lines('store-epoch-sweep', 'finish')).toHaveLength(1);
+      expect(lines('store-epoch-sweep', 'finish')).toHaveLength(0);
     });
-    for (const phase of ['storage-retention', 'custody-reconciliation', 'store-epoch-sweep']) {
-      expect(lines(phase, 'start'), phase).toHaveLength(1);
+    for (const phase of ['storage-retention', 'custody-reconciliation']) {
+      expect(lines(phase, 'start'), phase).toHaveLength(0);
       expect(lines(phase, 'finish')[0], phase).toMatch(/subjects=[1-9]\d* reads=[1-9]\d*/);
     }
     for (const owner of [
@@ -117,24 +144,23 @@ it('reports real retention owners, custody passes and repeated epoch sweeps with
       'custody-reconciliation',
       'custody',
     ]) {
-      expect(lines(`storage-retention.${owner}`, 'start'), owner).toHaveLength(1);
-      expect(lines(`storage-retention.${owner}`, 'finish'), owner).toHaveLength(1);
+      expect(lines(`storage-retention.${owner}`, 'start'), owner).toHaveLength(0);
     }
-    expect(lines('storage-retention.exports', 'finish')[0]).toContain(`subjects=${exportSubjects} `);
+    if (exportSubjects > 0)
+      expect(lines('storage-retention.exports', 'finish')[0]).toContain(`subjects=${exportSubjects} `);
+    else expect(lines('storage-retention.exports', 'finish')).toHaveLength(0);
     expect(lines('storage-retention.journal-progress', 'finish')[0]).toContain('subjects=1 ');
-    expect(lines('storage-retention.scratch-jobs', 'finish')[0]).toContain('subjects=0 ');
-    expect(lines('storage-retention.result-repair', 'finish')[0]).toContain('subjects=0 ');
-    expect(lines('storage-retention.epoch-holders', 'finish')[0]).toContain('subjects=0 ');
-    expect(lines('storage-retention.job-locations', 'finish')[0]).toContain('subjects=0 ');
-    expect(lines('storage-retention.custody', 'finish')[0]).toContain('subjects=1 ');
+    expect(lines('storage-retention.scratch-jobs', 'finish')).toHaveLength(0);
+    expect(lines('storage-retention.result-repair', 'finish')).toHaveLength(0);
+    expect(lines('storage-retention.epoch-holders', 'finish')).toHaveLength(0);
+    expect(lines('storage-retention.job-locations', 'finish')).toHaveLength(0);
+    expect(lines('storage-retention.custody', 'finish')).toHaveLength(0);
     custody.arm();
     monotonic += 5_000n;
     await vi.advanceTimersByTimeAsync(5_000);
-    await vi.waitFor(() => expect(lines('store-epoch-sweep', 'finish')).toHaveLength(2));
-    for (const phase of ['custody-reconciliation', 'store-epoch-sweep']) {
-      expect(lines(phase, 'start')).toHaveLength(2);
-      expect(lines(phase, 'finish')).toHaveLength(2);
-    }
+    await vi.waitFor(() => expect(completedSweeps).toEqual(['complete', 'complete']));
+    expect(lines('store-epoch-sweep', 'start')).toHaveLength(0);
+    expect(lines('store-epoch-sweep', 'finish')).toHaveLength(0);
   } finally {
     await retention.stop();
     await sweep.stop();
@@ -142,11 +168,22 @@ it('reports real retention owners, custody passes and repeated epoch sweeps with
   }
 });
 
-it('reports initial and repeating succession and provider-operation passes, including empty passes', async () => {
+it('keeps initial and repeating empty succession and provider-operation passes silent', async () => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
   const f = createRetentionFixture();
   const logs: string[] = [];
   const observation = { bootId: 'reconciliation-boot', log: (line: string) => logs.push(line) };
+  let completedProviderPasses = 0;
+  const realRunDetached = ProviderOperationMutationAdmission.prototype.runDetached;
+  vi.spyOn(ProviderOperationMutationAdmission.prototype, 'runDetached').mockImplementation(async function (
+    this: ProviderOperationMutationAdmission,
+    label,
+    mutation,
+  ) {
+    const result = await realRunDetached.call(this, label, mutation);
+    if (label === 'provider-operation-due-poll') completedProviderPasses++;
+    return result;
+  });
   const provider = createProviderOperationReconcilerHarness({
     observation,
     time: f.runtime.time,
@@ -160,6 +197,16 @@ it('reports initial and repeating succession and provider-operation passes, incl
     bundleHash: '0123456789abcdef',
     flavor: 'prod' as const,
   };
+  const completedSuccessionPasses: string[] = [];
+  const realCreatePass = SuccessionPasses.createSuccessionReconciliationPass;
+  vi.spyOn(SuccessionPasses, 'createSuccessionReconciliationPass').mockImplementation((context) => {
+    const realPass = realCreatePass(context);
+    return async (observation) => {
+      const result = await realPass(observation);
+      completedSuccessionPasses.push(result.kind);
+      return result;
+    };
+  });
   const succession = createSuccessionReconciler({
     runtime: f.runtime,
     runDir: f.runtime.paths.coral.coordinator.runDir,
@@ -174,18 +221,20 @@ it('reports initial and repeating succession and provider-operation passes, incl
   try {
     provider.reconciler.start();
     await vi.advanceTimersByTimeAsync(25);
+    await vi.waitFor(() => {
+      expect(completedSuccessionPasses).toEqual(['deferred']);
+      expect(completedProviderPasses).toBe(1);
+    });
     for (const phase of ['succession-reconciliation', 'provider-operation-reconciliation']) {
-      expect(lines(phase, 'start')).toHaveLength(1);
-      expect(lines(phase, 'finish')).toHaveLength(1);
-      expect(lines(phase, 'finish')[0]).toContain('outcome=complete');
-      expect(lines(phase, 'finish')[0]).toContain('subjects=0 reads=0');
+      expect(lines(phase, 'start')).toHaveLength(0);
+      expect(lines(phase, 'finish')).toHaveLength(0);
     }
     await vi.advanceTimersByTimeAsync(2_000);
-    for (const phase of ['succession-reconciliation', 'provider-operation-reconciliation']) {
-      expect(lines(phase, 'start')).toHaveLength(2);
-      expect(lines(phase, 'finish')).toHaveLength(2);
-      expect(lines(phase, 'finish')[1]).toContain('boot=reconciliation-boot kind=background');
-    }
+    await vi.waitFor(() => {
+      expect(completedSuccessionPasses).toEqual(['deferred', 'deferred']);
+      expect(completedProviderPasses).toBe(2);
+    });
+    expect(logs).toEqual([]);
     expect(
       (
         await compareAndSwapUpgradeIntent(f.runtime.paths.coral.coordinator.runDir, null, {
@@ -218,11 +267,11 @@ it('reports initial and repeating succession and provider-operation passes, incl
     provider.reconciler.wake();
     await succession.reconcile();
     await vi.advanceTimersByTimeAsync(0);
-    for (const phase of ['succession-reconciliation', 'provider-operation-reconciliation']) {
-      expect(lines(phase, 'start')).toHaveLength(3);
-      expect(lines(phase, 'finish')).toHaveLength(3);
-      expect(lines(phase, 'finish')[2]).toMatch(/subjects=1 reads=[1-9]\d*/);
-    }
+    expect(lines('succession-reconciliation', 'start')).toHaveLength(0);
+    expect(lines('succession-reconciliation', 'finish')).toHaveLength(0);
+    expect(lines('provider-operation-reconciliation', 'start')).toHaveLength(0);
+    expect(lines('provider-operation-reconciliation', 'finish')).toHaveLength(1);
+    expect(lines('provider-operation-reconciliation', 'finish')[0]).toMatch(/subjects=1 reads=[1-9]\d*/);
     expect(provider.fatalErrors).toEqual([]);
   } finally {
     succession.dispose();

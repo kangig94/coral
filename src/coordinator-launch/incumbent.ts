@@ -1,3 +1,4 @@
+import { backendLog } from '../infra/backend-log.js';
 import { readFileSync } from 'node:fs';
 import { createConnection } from 'node:net';
 import { dirname, join } from 'node:path';
@@ -44,10 +45,10 @@ export function removeExitedChildDiscovery(runDir: string, identity: LaunchProce
       discovery.record.instanceId !== undefined
     ) {
       const removal = removeBackendInfoIfOwner(discovery.record.instanceId, runtime);
-      if (removal.kind === 'refused') process.stderr.write(`Coordinator discovery cleanup failed: ${removal.code}\n`);
+      if (removal.kind === 'refused') backendLog.raw(`Coordinator discovery cleanup failed: ${removal.code}\n`);
     }
   } catch (error: unknown) {
-    process.stderr.write(`Coordinator discovery cleanup failed: ${String(error)}\n`);
+    backendLog.raw(`Coordinator discovery cleanup failed: ${String(error)}\n`);
   }
 }
 

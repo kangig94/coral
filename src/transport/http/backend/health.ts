@@ -161,6 +161,7 @@ export interface BackendHealth {
   launchStatus?: LaunchStatus;
   listCounts?: Readonly<Record<string, number>>;
   diagnostics?: LaunchPermitDiagnostics & {
+    coordinatorLogPath?: string;
     hostPressure?: HostPressure;
     executionFinishing?: Array<{ jobId: string; execution: number; status: ExecutionRetryStatus }>;
     skippedExecutionFinishingStatuses?: number;
@@ -831,6 +832,7 @@ function parseDiagnostics(value: unknown): DiagnosticsParseResult | null {
     return parsed.success ? [parsed.data] : [];
   });
   const diagnostics = { ...value };
+  delete diagnostics.coordinatorLogPath;
   delete diagnostics.executionFinishing;
   delete diagnostics.skippedExecutionFinishingStatuses;
   delete diagnostics.providerOperationStartupReconciliation;
@@ -844,6 +846,9 @@ function parseDiagnostics(value: unknown): DiagnosticsParseResult | null {
     skippedSettlementRefusalRecordingFailures,
     diagnostics: {
       ...diagnostics,
+      ...(typeof value.coordinatorLogPath === 'string' && value.coordinatorLogPath.length > 0
+        ? { coordinatorLogPath: value.coordinatorLogPath }
+        : {}),
       ...launchPermitDiagnostics,
       executionFinishing,
       skippedExecutionFinishingStatuses:

@@ -1398,7 +1398,9 @@ function acceptTrackedSocket(state: TrackedIpcListenerState, socket: Socket, pen
   socket.once('close', onClose);
 
   const onError = (error: Error) => {
-    rpcPorts.identity.log(`IPC socket error: ${formatError(error)}\n`);
+    const code = (error as NodeJS.ErrnoException).code;
+    const diagnostic = code === 'EPIPE' || code === 'ECONNRESET' ? code : formatError(error);
+    rpcPorts.identity.log(`IPC socket error: ${diagnostic}\n`);
     finishRequest();
   };
   socket.on('error', onError);

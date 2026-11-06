@@ -139,6 +139,55 @@ function servingReconciler(runDir: string) {
   });
 }
 
+it('keeps unchanged target-change holds silent and reports a real intent transition', async () => {
+  const runDir = mkdtempSync(join(tmpdir(), 'coral-succession-held-observation-'));
+  const held = await seedHeldIntent(runDir, serving);
+  const logs: string[] = [];
+  const reconciler = createSuccessionReconciler({
+    runtime,
+    runDir,
+    incumbent: () => serving,
+    owners: [],
+    epochKey: () => null,
+    admissionRevision: () => 0,
+    observation: {
+      bootId: 'held-intent-test',
+      log: (line) => logs.push(line),
+    },
+  });
+  try {
+    await reconciler.reconcile();
+    await flushMicrotasks();
+    expect(logs.filter((line) => line.includes('event=finish'))).toHaveLength(1);
+    const initialHold = [...logs];
+    for (let attempt = 0; attempt < 3; attempt++)
+      expect(await reconciler.reconcile()).toMatchObject({
+        kind: 'deferred',
+        reason: 'successor target must change after failed attempt',
+      });
+    await flushMicrotasks();
+    expect(logs).toEqual(initialHold);
+    expect(readUpgradeIntent(runDir)).toMatchObject({ intent: { revision: held.revision, disposition: 'deferred' } });
+    const changed = await compareAndSwapUpgradeIntent(runDir, held.revision, {
+      ...held,
+      target: { ...held.target, build: { ...held.target.build, version: serving.version } },
+    });
+    expect(changed.kind).toBe('written');
+    expect(await reconciler.reconcile()).toMatchObject({
+      kind: 'refused',
+      reason: 'target does not strictly outrank the incumbent',
+    });
+    expect(readUpgradeIntent(runDir)).toMatchObject({ intent: { disposition: 'closed' } });
+    expect(logs).toHaveLength(initialHold.length + 1);
+    expect(logs.at(-1)).toContain('state=cleared');
+    expect(await reconciler.reconcile()).toMatchObject({ kind: 'deferred', reason: 'upgrade intent has ended' });
+    expect(logs).toHaveLength(initialHold.length + 1);
+  } finally {
+    reconciler.dispose();
+    rmSync(runDir, { recursive: true, force: true });
+  }
+});
+
 describe('succession reconciler', () => {
   const directories: string[] = [];
   afterEach(() => {
@@ -1062,6 +1111,68 @@ describe('succession reconciler', () => {
         kind: 'deferred',
         reason: 'successor target must change after failed attempt',
       });
+    } finally {
+      reconciler.dispose();
+    }
+  });
+
+  it('reports changed mint-discard hold reasons once without changing the held decision', async () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-succession-discard-observation-'));
+    directories.push(runDir);
+    const held = await seedHeldIntent(runDir, serving);
+    const seeded = await compareAndSwapUpgradeIntent(runDir, held.revision, {
+      ...held,
+      target: { ...held.target, build: { ...build, storeFormatFingerprint: `sha256:${'1'.repeat(64)}` } },
+      unservedMintDiscard: { attemptId: 'failed-retirement', incumbentEpochKey: 'retired-epoch' },
+    });
+    if (seeded.kind !== 'written') throw new Error(`intent seed was ${seeded.kind}`);
+    let reason = 'retirement source is unproven';
+    const logs: string[] = [];
+    const reconciler = createSuccessionReconciler({
+      runtime,
+      runDir,
+      incumbent: () => serving,
+      owners: [],
+      storeFormatFingerprint: build.storeFormatFingerprint,
+      epochKey: () => 'serving-epoch',
+      admissionRevision: () => 0,
+      discardUnservedMint: () => ({ kind: 'held', reason }),
+      observation: { bootId: 'discard-hold-test', log: (line) => logs.push(line) },
+    });
+    const pass = async () => {
+      expect(await reconciler.reconcile()).toEqual({
+        kind: 'deferred',
+        reason: `unserved retirement mint is not yet discarded (${reason})`,
+      });
+      await flushMicrotasks();
+    };
+    try {
+      await pass();
+      expect(logs.some((line) => line.includes(reason))).toBe(true);
+      const first = [...logs];
+      await pass();
+      expect(logs).toEqual(first);
+      reason = 'retirement marker is unreadable';
+      await pass();
+      expect(logs.slice(first.length).some((line) => line.includes(reason))).toBe(true);
+      expect(logs.filter((line) => line.includes('event=finish'))).toHaveLength(2);
+      const changed = [...logs];
+      await pass();
+      expect(logs).toEqual(changed);
+      expect(readUpgradeIntent(runDir)).toMatchObject({ intent: seeded.intent });
+      const closed = await compareAndSwapUpgradeIntent(runDir, seeded.intent.revision, {
+        ...seeded.intent,
+        unservedMintDiscard: null,
+        disposition: 'closed',
+      });
+      expect(closed.kind).toBe('written');
+      expect(await reconciler.reconcile()).toMatchObject({ kind: 'deferred', reason: 'upgrade intent has ended' });
+      await flushMicrotasks();
+      expect(logs.at(-1)).toContain('state=cleared');
+      const cleared = [...logs];
+      await reconciler.reconcile();
+      await flushMicrotasks();
+      expect(logs).toEqual(cleared);
     } finally {
       reconciler.dispose();
     }

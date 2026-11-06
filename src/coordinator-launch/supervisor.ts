@@ -1,3 +1,4 @@
+import { backendLog } from '../infra/backend-log.js';
 import { type ChildProcess } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { dirname } from 'node:path';
@@ -311,7 +312,7 @@ async function superviseNamespace(session: NamespaceSupervision): Promise<number
           retry: 'next-ensure',
         },
       });
-      process.stderr.write(
+      backendLog.raw(
         'Coordinator relaunch failed three times; supervisor releasing namespace ownership. Retry the command to start a fresh supervisor.\n',
       );
       return 1;

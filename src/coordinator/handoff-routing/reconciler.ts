@@ -1,4 +1,4 @@
-import { startRecoveryPhase } from '../../recovery/phase-observation.js';
+import { createBackgroundPhaseObserver } from '../../recovery/phase-observation.js';
 import type { TimerHandle } from '../../infra/port-types.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { reconcileHandoffRoutingStatus } from './status.js';
@@ -15,23 +15,29 @@ export function createHandoffRoutingReconciler(
   let timer: TimerHandle | null = null;
   let sweep: Promise<void> | null = null;
   let failed = false;
+  const startPhase = createBackgroundPhaseObserver({
+    time: runtime.time,
+    log: observation?.log ?? (() => {}),
+    bootId: observation?.bootId ?? 'unknown',
+    phase: 'handoff-routing-reconciliation',
+  });
 
   function tick(): void {
     if (lifetime === null || sweep !== null) return;
     const signal = lifetime.signal;
-    const phase = startRecoveryPhase({
-      time: runtime.time,
-      log: observation?.log ?? (() => {}),
-      bootId: observation?.bootId ?? 'unknown',
-      kind: 'background',
-      phase: 'handoff-routing-reconciliation',
-    });
-    sweep = reconcileHandoffRoutingStatus(runtime, path, signal, phase)
+    const phase = startPhase(signal);
+    sweep = reconcileHandoffRoutingStatus(runtime, path, signal, phase, (holds) => {
+      const sorted = [...holds].sort(
+        (left, right) => left.identity.localeCompare(right.identity) || left.reason.localeCompare(right.reason),
+      );
+      phase.reportState(sorted.length === 0 ? null : JSON.stringify(sorted));
+    })
       .then(() => {
         phase.finish();
         failed = false;
       })
-      .catch(() => {
+      .catch((error: unknown) => {
+        phase.reportState(JSON.stringify([{ identity: path, reason: String(error) }]));
         phase.finish('failed');
         if (!failed && !signal.aborted) onError();
         failed = true;
