@@ -69,6 +69,7 @@ const waitQueuedEventBaseSchema = z.object({
   type: z.literal('queued'),
   jobId: z.string().min(1),
   queuePosition: z.number(),
+  reason: z.string().optional(),
   runningJobIds: z.array(z.string().min(1)).max(MAX_WAIT_JOB_IDS),
   timing: jobProgressTimingSchema,
   ...nonFinalFields,

@@ -14,7 +14,7 @@ export default defineConfig({
   plugins: [rawSqlPlugin()],
   resolve: { alias },
   test: {
-    env: testEnv('integration'),
+    env: { ...testEnv('integration'), CORAL_HOST_PRESSURE: 'ignore' },
     include: ['tests/integration/**/*.test.ts'],
     setupFiles: ['vitest/setup.ts'],
     testTimeout: 120_000,

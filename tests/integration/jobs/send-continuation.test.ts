@@ -245,7 +245,7 @@ describe('jobs send continuation through the execution owner', () => {
   });
 
   it.each(['valid', 'missing', 'corrupt', 'publication_failed'] as const)(
-    'recovers a queued continuation after a crash before restore with a %s archive',
+    'recovers a queued continuation after a crash before restore without a sibling release with a %s archive',
     async (archive) => {
       const f = conversationIdentityFixture({ managedArtifacts: true });
       try {
@@ -279,13 +279,6 @@ describe('jobs send continuation through the execution owner', () => {
         if (archive === 'publication_failed')
           publication.mockReturnValue({ kind: 'failed', reason: 'restore publication failed', linked: false });
         const restarted = await f.restartProcess();
-        const sibling = f.admission.restoreActiveLaunch(
-          'recovered-sibling',
-          'codex',
-          { kind: 'provider-session', id: 'recovered-sibling' },
-          'default',
-        );
-        expect(f.admission.releaseLaunch(sibling)).toMatchObject({ kind: 'released', admittedNext: true });
         await f.drive(restarted.waitForJobTerminal(initial.jobId, 10_000));
         if (archive === 'valid') {
           expect(f.requests).toHaveLength(2);

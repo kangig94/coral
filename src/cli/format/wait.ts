@@ -100,7 +100,7 @@ export function formatWaitProgress(event: WaitProgressEvent, label?: string): st
 }
 
 export function formatWaitQueued(event: WaitQueuedEvent, label?: string): string {
-  const body = `queued at position ${event.queuePosition}`;
+  const body = `queued at position ${event.queuePosition}${event.reason === undefined ? '' : ` (${event.reason})`}`;
   return formatTimedMessage(event.timing.elapsedMs, body, label);
 }
 

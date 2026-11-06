@@ -71,6 +71,7 @@ export type LaunchReservationView =
       provider: string;
       executionOwner: ExecutionOwner;
       position: number;
+      reason?: string;
     }>
   | Readonly<{
       kind: 'active';

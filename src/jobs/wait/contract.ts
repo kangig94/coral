@@ -48,6 +48,7 @@ type QueuedWaitEventBase = {
   type: 'queued';
   jobId: string;
   queuePosition: number;
+  reason?: string;
   runningJobIds: string[];
   timing: JobProgressTiming;
 };

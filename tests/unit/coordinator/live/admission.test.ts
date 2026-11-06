@@ -1,3 +1,6 @@
+import { createDeferred } from '#tools/testing/deferred.js';
+import type { LaunchPermit } from '#src/jobs/contracts/admission.js';
+import type { HostPressure } from '#src/infra/host-pressure.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -31,7 +34,11 @@ afterEach(() => {
 function createAdmissionRuntime(): Runtime {
   const baseDir = mkdtempSync(join(tmpdir(), 'coral-launch-admission-'));
   runtimeRoots.push(baseDir);
-  return createRealRuntime('prod', { baseDir });
+  const runtime = createRealRuntime('prod', { baseDir });
+  runtime.process.readHostPressure = () => ({ kind: 'calm' });
+  runtime.process.refreshHostPressure = async () => {};
+  runtime.process.stopHostPressure = async () => {};
+  return runtime;
 }
 
 describe('succession admission pause', () => {
@@ -615,5 +622,333 @@ describe('launch admission', () => {
     resolveExit(exitRecord);
     await expect(spawn).resolves.toMatchObject({ code: 0, aborted: true });
     expect(clearInterval).toHaveBeenCalledWith(retryHandle);
+  });
+});
+
+describe('pressure-paused admission', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  function pressureFixture() {
+    const base = createAdmissionRuntime();
+    const readHostPressure = vi.fn<Runtime['process']['readHostPressure']>(() => ({
+      kind: 'pressured',
+      signal: 'io',
+      reading: 'full avg10=12.00',
+    }));
+    const runtime: Runtime = {
+      ...base,
+      process: { ...base.process, readHostPressure },
+      env: { ...base.env, get: (key) => (key.endsWith('MAX_WORKERS') ? '3' : base.env.get(key)) },
+    };
+    const coordinator = new LaunchCoordinator({ runtime });
+    const launch = (id: string, pool: 'default' | 'discuss' | 'curate' = 'default') =>
+      coordinator.requestLaunch(id, 'codex', providerOwner(id), pool);
+    return { coordinator, launch, readHostPressure };
+  }
+
+  it.each(['default', 'discuss'] as const)(
+    'admits a floor of one and queues further %s work with reason',
+    async (pool) => {
+      const { coordinator, launch } = pressureFixture();
+      const first = launch('first', pool);
+      const second = launch('second', pool);
+      expect(first).toMatchObject({ type: 'immediate' });
+      expect(second).toMatchObject({ type: 'queued' });
+      expect(coordinator.reservationFor('second')).toMatchObject({ reason: 'pressure: io full avg10=12.00' });
+      expect(vi.getTimerCount()).toBe(1);
+      if (first === 'queue_full' || first.type !== 'immediate' || second === 'queue_full' || second.type !== 'queued')
+        throw new Error('Expected pressure queue');
+      expect(coordinator.releaseLaunch(first.permit).kind).toBe('released');
+      expect(await second.waitForPermit()).toMatchObject({ jobId: 'second' });
+      expect(vi.getTimerCount()).toBe(0);
+    },
+  );
+
+  it('admits queued heads on the five-second calm recheck and clears the timer', async () => {
+    const { coordinator, launch, readHostPressure } = pressureFixture();
+    launch('first');
+    const second = launch('second');
+    const third = launch('third');
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(coordinator.queueDepth()).toBe(2);
+    expect(vi.getTimerCount()).toBe(1);
+    readHostPressure.mockReturnValue({ kind: 'calm' });
+    await vi.advanceTimersByTimeAsync(4999);
+    expect(coordinator.queueDepth()).toBe(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(coordinator.queueDepth()).toBe(0);
+    expect(second).toMatchObject({ type: 'queued' });
+    expect(third).toMatchObject({ type: 'queued' });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('preserves the default pressure recheck when discuss observes calm', async () => {
+    const { coordinator, launch, readHostPressure } = pressureFixture();
+    expect(launch('default-active')).toMatchObject({ type: 'immediate' });
+    const held = launch('default-held');
+    if (held === 'queue_full' || held.type !== 'queued') throw new Error('Expected pressure-held default launch');
+    let admitted: string | null = null;
+    const completed = held.waitForPermit().then(
+      (permit) => {
+        admitted = permit.jobId;
+      },
+      () => {},
+    );
+    try {
+      expect(launch('discuss-active', 'discuss')).toMatchObject({ type: 'immediate' });
+      readHostPressure.mockReturnValue({ kind: 'calm' });
+      expect(launch('discuss-second', 'discuss')).toMatchObject({ type: 'immediate' });
+      expect(launch('discuss-third', 'discuss')).toMatchObject({ type: 'immediate' });
+      expect(launch('discuss-held', 'discuss')).toMatchObject({ type: 'queued' });
+      expect(coordinator.queueDepth('default')).toBe(1);
+      expect(coordinator.queueDepth('discuss')).toBe(1);
+      await vi.advanceTimersByTimeAsync(4999);
+      expect(admitted).toBeNull();
+      expect(coordinator.queueDepth('default')).toBe(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(admitted).toBe('default-held');
+      expect(coordinator.queueDepth('default')).toBe(0);
+      expect(coordinator.queueDepth('discuss')).toBe(1);
+    } finally {
+      await coordinator.settlePendingLaunches();
+      await completed;
+    }
+  });
+
+  it.each(['pressured', 'calm'] as const)(
+    'waits for pending refresh before using an expired cache, then handles %s',
+    async (kind) => {
+      const runtime = createAdmissionRuntime();
+      runtime.env.get = (key) => (key.endsWith('MAX_WORKERS') ? '3' : undefined);
+      let cache: HostPressure = { kind: 'pressured', signal: 'io', reading: 'full avg10=12' };
+      const read = vi.fn(() => cache);
+      runtime.process.readHostPressure = read;
+      const coordinator = new LaunchCoordinator({ runtime });
+      const admitted: string[] = [];
+      const settlement: Promise<void>[] = [];
+      for (const pool of ['default', 'discuss'] as const) {
+        expect(coordinator.requestLaunch(`${pool}-active`, 'codex', providerOwner(pool), pool)).toMatchObject({
+          type: 'immediate',
+        });
+        const queued = coordinator.requestLaunch(`${pool}-queued`, 'codex', providerOwner(pool), pool);
+        if (queued === 'queue_full' || queued.type !== 'queued') throw new Error('Expected pressure-held head');
+        settlement.push(
+          queued.waitForPermit().then(
+            (permit) => {
+              admitted.push(permit.jobId);
+            },
+            () => {},
+          ),
+        );
+      }
+      const refresh = createDeferred();
+      const refreshPressure = vi.fn(() => refresh.promise);
+      runtime.process.refreshHostPressure = refreshPressure;
+      try {
+        expect(vi.getTimerCount()).toBe(1);
+        await vi.advanceTimersByTimeAsync(4999);
+        cache = { kind: 'unobservable', reason: 'pressure observation stale' };
+        await vi.advanceTimersByTimeAsync(1);
+        expect(refreshPressure).toHaveBeenCalledOnce();
+        expect(admitted).toEqual([]);
+        expect(coordinator.active).toBe(2);
+        expect(coordinator.queueDepth('default')).toBe(1);
+        expect(coordinator.queueDepth('discuss')).toBe(1);
+        expect(vi.getTimerCount()).toBe(0);
+        cache = kind === 'pressured' ? { kind, signal: 'io', reading: 'full avg10=12' } : { kind };
+        refresh.resolve();
+        await vi.advanceTimersByTimeAsync(0);
+        if (kind === 'pressured') {
+          expect(admitted).toEqual([]);
+          expect(coordinator.active).toBe(2);
+          expect(coordinator.queueDepth('default')).toBe(1);
+          expect(coordinator.queueDepth('discuss')).toBe(1);
+          expect(vi.getTimerCount()).toBe(1);
+          await vi.advanceTimersByTimeAsync(4999);
+          expect(refreshPressure).toHaveBeenCalledOnce();
+          await vi.advanceTimersByTimeAsync(1);
+          expect(refreshPressure).toHaveBeenCalledTimes(2);
+          expect(admitted).toEqual([]);
+          expect(vi.getTimerCount()).toBe(1);
+        } else {
+          expect(admitted).toEqual(expect.arrayContaining(['default-queued', 'discuss-queued']));
+          expect(admitted).toHaveLength(2);
+          expect(coordinator.active).toBe(4);
+          expect(coordinator.queueDepth('default')).toBe(0);
+          expect(coordinator.queueDepth('discuss')).toBe(0);
+          expect(vi.getTimerCount()).toBe(0);
+          await vi.advanceTimersByTimeAsync(5000);
+          expect(refreshPressure).toHaveBeenCalledOnce();
+        }
+      } finally {
+        refresh.resolve();
+        await coordinator.settlePendingLaunches();
+        await Promise.all(settlement);
+        expect(vi.getTimerCount()).toBe(0);
+      }
+    },
+  );
+
+  it('admits unobservable pressure and leaves curate unaffected', () => {
+    const { launch, readHostPressure } = pressureFixture();
+    expect(launch('c1', 'curate')).toMatchObject({ type: 'immediate' });
+    expect(launch('c2', 'curate')).toMatchObject({ type: 'queued' });
+    readHostPressure.mockReturnValue({ kind: 'unobservable', reason: 'missing' });
+    expect(launch('first')).toMatchObject({ type: 'immediate' });
+    expect(launch('second')).toMatchObject({ type: 'immediate' });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('clears the timer when the last queued launch is cancelled', () => {
+    const { launch } = pressureFixture();
+    launch('first');
+    const queued = launch('second');
+    if (queued === 'queue_full' || queued.type !== 'queued') throw new Error('Expected queued');
+    expect(queued.cancel().kind).toBe('cancelled');
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('clears the timer and drains queued work on shutdown', async () => {
+    const { coordinator, launch } = pressureFixture();
+    launch('first');
+    const queued = launch('second');
+    if (queued === 'queue_full' || queued.type !== 'queued') throw new Error('Expected queued');
+    const rejected = expect(queued.waitForPermit()).rejects.toThrow('queue was drained');
+    await coordinator.settlePendingLaunches();
+    await rejected;
+    expect(vi.getTimerCount()).toBe(0);
+    expect(coordinator.queueDepth()).toBe(0);
+  });
+});
+
+describe('queue reconsideration after pressure changes', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it.each(
+    (['release', 'cancel', 'reclaim'] as const).flatMap((path) =>
+      (['calm', 'unobservable'] as const).map((kind) => ({ path, kind })),
+    ),
+  )('fills FIFO capacity on $path after pressure becomes $kind', async ({ path, kind }) => {
+    const runtime = createAdmissionRuntime();
+    runtime.env.get = (key) => (key.endsWith('MAX_WORKERS') ? '4' : undefined);
+    let pressure: HostPressure = {
+      kind: 'pressured',
+      signal: 'io',
+      reading: 'full avg10=12',
+    };
+    runtime.process.readHostPressure = () => pressure;
+    const coordinator = new LaunchCoordinator({ runtime });
+    const first = coordinator.requestLaunch('first', 'codex', providerOwner('first'), 'default');
+    const queued = ['q1', 'q2', 'q3'].map((id) => coordinator.requestLaunch(id, 'codex', providerOwner(id), 'default'));
+    if (first === 'queue_full' || first.type !== 'immediate') throw new Error('Expected first permit');
+    const resolvedOrder: string[] = [];
+    const waiting = path === 'cancel' ? queued.slice(1) : queued;
+    const completion = waiting.map((entry) => {
+      if (entry === 'queue_full' || entry.type !== 'queued') throw new Error('Expected queued entry');
+      return entry.waitForPermit().then((permit) => {
+        resolvedOrder.push(permit.jobId);
+      });
+    });
+    pressure = kind === 'calm' ? { kind } : { kind, reason: 'stale' };
+    if (path === 'release') expect(coordinator.releaseLaunch(first.permit).kind).toBe('released');
+    if (path === 'reclaim') {
+      coordinator.connectLaunchReclamationOracle('local-execution', () => ({ kind: 'job-absent' }));
+      expect(coordinator.reclaimLaunchPermit(first.permit)).toBe(true);
+    }
+    if (path === 'cancel') {
+      const head = queued.shift();
+      if (head === undefined || head === 'queue_full' || head.type !== 'queued') throw new Error('Expected queue head');
+      expect(head.cancel().kind).toBe('cancelled');
+    }
+    expect(coordinator.queueDepth()).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+    await Promise.all(completion);
+    expect(resolvedOrder).toEqual(path === 'cancel' ? ['q2', 'q3'] : ['q1', 'q2', 'q3']);
+  });
+
+  it.each(['default', 'discuss'] as const)('admits FIFO heads one slot at a time in %s', async (pool) => {
+    const runtime = createAdmissionRuntime();
+    let limit = '4';
+    let pressure: HostPressure = { kind: 'pressured', signal: 'io', reading: 'full avg10=12' };
+    runtime.env.get = (key) => (key.endsWith('MAX_WORKERS') ? limit : undefined);
+    runtime.process.readHostPressure = () => pressure;
+    const coordinator = new LaunchCoordinator({ runtime });
+    const first = coordinator.requestLaunch('first', 'codex', providerOwner('first'), pool);
+    const resolved: LaunchPermit[] = [];
+    const completion = ['q1', 'q2', 'q3'].map((id) => {
+      const entry = coordinator.requestLaunch(id, 'codex', providerOwner(id), pool);
+      if (entry === 'queue_full' || entry.type !== 'queued') throw new Error('Expected pressure-held entry');
+      return entry.waitForPermit().then((permit) => {
+        resolved.push(permit);
+      });
+    });
+    if (first === 'queue_full' || first.type !== 'immediate') throw new Error('Expected first permit');
+    limit = '1';
+    pressure = { kind: 'calm' };
+    let active = first.permit;
+    for (let index = 0; index < 3; index++) {
+      expect(coordinator.releaseLaunch(active).kind).toBe('released');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(resolved.map((permit) => permit.jobId)).toEqual(['q1', 'q2', 'q3'].slice(0, index + 1));
+      expect(coordinator.queueDepth(pool)).toBe(2 - index);
+      const next = resolved[index];
+      if (next === undefined) throw new Error('Expected the next FIFO permit');
+      active = next;
+    }
+    await Promise.all(completion);
+    expect(coordinator.releaseLaunch(active).kind).toBe('released');
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('reconsiders a restored queue head and preserves the floor of one', async () => {
+    const runtime = createAdmissionRuntime();
+    runtime.process.readHostPressure = () => ({ kind: 'pressured', signal: 'io', reading: 'full avg10=12' });
+    const coordinator = new LaunchCoordinator({ runtime });
+    const first = coordinator.restoreQueuedLaunch('first', 'codex', providerOwner('first'), 'default');
+    expect(await first.waitForPermit()).toMatchObject({ jobId: 'first' });
+    const second = coordinator.restoreQueuedLaunch('second', 'codex', providerOwner('second'), 'default');
+    expect(coordinator.queueDepth()).toBe(1);
+    expect(vi.getTimerCount()).toBe(1);
+    runtime.process.readHostPressure = () => ({ kind: 'calm' });
+    const third = coordinator.restoreQueuedLaunch('third', 'codex', providerOwner('third'), 'default');
+    expect(await second.waitForPermit()).toMatchObject({ jobId: 'second' });
+    expect(await third.waitForPermit()).toMatchObject({ jobId: 'third' });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('skips pressure observation when capacity or the one-launch floor decides', () => {
+    const runtime = createAdmissionRuntime();
+    runtime.env.get = (key) => (key.endsWith('MAX_WORKERS') ? '1' : undefined);
+    const read = vi.spyOn(runtime.process, 'readHostPressure');
+    const refresh = vi.spyOn(runtime.process, 'refreshHostPressure');
+    const coordinator = new LaunchCoordinator({ runtime });
+    coordinator.requestLaunch('first', 'codex', providerOwner('first'), 'default');
+    coordinator.requestLaunch('second', 'codex', providerOwner('second'), 'default');
+    expect(read).not.toHaveBeenCalled();
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
+  it('stops an in-flight refresh on shutdown and ignores its late completion', async () => {
+    const runtime = createAdmissionRuntime();
+    runtime.process.readHostPressure = () => ({ kind: 'pressured', signal: 'io', reading: 'full avg10=12' });
+    const stop = vi.spyOn(runtime.process, 'stopHostPressure');
+    const coordinator = new LaunchCoordinator({ runtime });
+    coordinator.requestLaunch('first', 'codex', providerOwner('first'), 'default');
+    coordinator.requestLaunch('second', 'codex', providerOwner('second'), 'default');
+    let finish = () => {};
+    runtime.process.refreshHostPressure = () =>
+      new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+    await vi.advanceTimersByTimeAsync(5000);
+    await coordinator.settlePendingLaunches();
+    expect(stop).toHaveBeenCalledOnce();
+    finish();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(coordinator.queueDepth()).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(coordinator.active).toBe(1);
   });
 });
