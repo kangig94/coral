@@ -17,6 +17,7 @@ import {
   jobRetentionDiscardFailedBodySchema,
 } from '../event-bodies.js';
 import type { JobConversation, ProviderArtifactHandle, RetentionDiscardAttempt } from './entry.js';
+import { ConversationReadError } from './contracts.js';
 
 export type ConversationEvidence = {
   readonly projection: ProjectionJobStoredRow;
@@ -48,11 +49,18 @@ export function hydrateJobConversation(evidence: ConversationEvidence): JobConve
   const attempts = new Map<string, RetentionDiscardAttempt>();
   let lastUsedAt = row.created_at;
   for (const event of events) {
-    const raw = decodeEventBody(event.body);
     lastUsedAt = event.ts;
     if (event.type === 'job.continuity.checkpointed') {
-      providerContinuity = jobContinuityCheckpointedBodySchema.parse(raw).snapshot.providerContinuity;
-    } else if (event.type === 'job.artifact.recorded') {
+      try {
+        providerContinuity = jobContinuityCheckpointedBodySchema.parse(decodeEventBody(event.body)).snapshot
+          .providerContinuity;
+      } catch (cause) {
+        throw new ConversationReadError('malformed', jobId, { cause });
+      }
+      continue;
+    }
+    const raw = decodeEventBody(event.body);
+    if (event.type === 'job.artifact.recorded') {
       const { provider: _provider, ...artifact } = jobArtifactRecordedBodySchema.parse(raw);
       artifactHandles.push({ ...artifact, sourceJobId: jobId, recordedAt: event.ts });
     } else if (

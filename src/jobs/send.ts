@@ -51,9 +51,14 @@ export const jobSendOutcomeSchema = z.discriminatedUnion('state', [
       'execution_superseded',
       'work_directory_unobservable',
       'provider_preflight_undetermined',
+      'conversation_unobservable',
+      'conversation_owner_mismatch',
+      'conversation_missing',
+      'conversation_malformed',
+      'conversation_provider_mismatch',
     ]),
   }),
-  providerSendUnknownSchema,
+  providerSendUnknownSchema.extend({ conversationEvidenceFailure: z.literal(true).optional() }),
   z.object({ state: z.literal('launched'), launch: acceptedLaunchResponseSchema.options[0] }).strict(),
 ]);
 
@@ -70,4 +75,12 @@ export function missingJobSendRefusal(location: JobLocation | null): Extract<Job
         code: 'pre_generation_job',
         reason: 'The job predates the current store format generation and cannot be continued.',
       };
+}
+
+export function malformedConversationSendRefusal(jobId: string): Extract<JobSendOutcome, { state: 'refused' }> {
+  return {
+    state: 'refused',
+    code: 'conversation_malformed',
+    reason: `Saved conversation evidence for ${jobId} is malformed. This attempt admitted no continuation and delivered no input.`,
+  };
 }

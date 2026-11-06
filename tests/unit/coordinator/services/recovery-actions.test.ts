@@ -1,3 +1,6 @@
+import { RecoveryService } from '#src/coordinator/services/recovery/service.js';
+import { ConversationManager } from '#src/jobs/conversation/shell.js';
+import { executionHarness, openedJob, requestedExecution, EXECUTION_JOB_ID } from '#tests/helpers/job-executions.js';
 import { describe, expect, it, vi } from 'vitest';
 import { applyRecoveryAction, COORDINATOR_NOT_APPLICABLE_FACTS } from '#src/coordinator/services/recovery/actions.js';
 import { writeDurableCliContainmentStatus, writeDurableCliProcessRuntimeMeta } from '#src/jobs/runtime-meta-store.js';
@@ -323,3 +326,53 @@ it.each(['populated', 'unknown'] as const)(
     }
   },
 );
+
+it('keeps missing owner conversation evidence distinct without settling queued recovery', async () => {
+  const h = executionHarness();
+  const runtime = new SimulationRuntime();
+  const rehydrateBinding = vi.fn();
+  const settleFault = vi.fn(() => COORDINATOR_NOT_APPLICABLE_FACTS);
+  const registry = new RecoveryRegistry();
+  const queuedRecoverable: Parameters<typeof applyRecoveryAction>[1]['queuedRecoverable'] = [];
+  const launch = { ...launchRecord(), jobId: EXECUTION_JOB_ID };
+  const service = new RecoveryService({
+    conversationManager: new ConversationManager('/project', runtime, h.commit, h.db).forExecutionOwner(),
+    providerRegistry: { rehydrateBinding },
+  } as never);
+  try {
+    h.append(openedJob({ projectRoot: '/project' }), requestedExecution());
+    const history = h.events();
+    h.db.prepare('DELETE FROM projection_jobs WHERE job_id = ?').run(EXECUTION_JOB_ID);
+    await expect(
+      applyRecoveryAction(
+        { type: 'registerQueued', jobId: EXECUTION_JOB_ID, launchRecord: launch },
+        {
+          runtime,
+          progressStore: { getDb: () => h.db } as never,
+          recoveryRegistry: registry,
+          queuedRecoverable,
+          runningRecoverable: [],
+          log: vi.fn(),
+          createInvocationContext: () => ({}) as never,
+          getRecoveryService: () => service as never,
+          signal: new AbortController().signal,
+          settleFault,
+          setProcessLocalCleanup: vi.fn(),
+          clearProcessLocalCleanup: vi.fn(),
+        },
+      ),
+    ).rejects.toMatchObject({ name: 'ConversationReadError', reason: 'missing' });
+    expect(settleFault).not.toHaveBeenCalled();
+    expect(rehydrateBinding).not.toHaveBeenCalled();
+    expect(queuedRecoverable).toEqual([]);
+    expect(registry.has(EXECUTION_JOB_ID)).toBe(true);
+    expect(h.events()).toEqual(history);
+    expect(
+      h
+        .events()
+        .some((event) => event.type === 'job.execution.outcome.accepted' || event.type === 'job.execution.ended'),
+    ).toBe(false);
+  } finally {
+    h.db.close();
+  }
+});

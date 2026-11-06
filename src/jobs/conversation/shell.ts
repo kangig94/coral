@@ -5,29 +5,28 @@ import { nowIsoString } from '../../infra/time.js';
 import { hashToken } from '../../infra/hash.js';
 import { canonicalWorkDirWireSchema, type CanonicalWorkDir } from '../../runtime/canonical-work-dir.js';
 import { jobInCallerScope } from '../scope.js';
+import { ProjectionConversationMalformedError } from '../records.js';
 import { providerArtifactIdentityKey } from '../../providers/artifact-identity.js';
 import type { JobConversation } from './entry.js';
-import type {
-  ConversationAllocateOptions,
-  ConversationArtifactHandleRecordOptions,
-  ConversationWriteResult,
+import {
+  ConversationReadError,
+  type ConversationExecutionPort,
+  type ConversationRecoveryPort,
+  type ConversationAllocateOptions,
+  type ConversationArtifactHandleRecordOptions,
+  type ConversationWriteResult,
 } from './contracts.js';
 import type { ProviderValidatedContinuitySnapshot } from './continuity.js';
 import { listProjectionConversationEntries, readProjectionJobConversation } from './read-queries.js';
 
 export class ConversationManager {
-  private readonly workingDirectory: CanonicalWorkDir;
+  private readonly projectRoot: CanonicalWorkDir;
   private readonly runtime: Pick<Runtime, 'time' | 'ids'>;
   private readonly commitEvents: CommitEventsFn;
   private readonly db: Database;
 
-  constructor(
-    workingDirectory: string,
-    runtime: Pick<Runtime, 'time' | 'ids'>,
-    commitEvents: CommitEventsFn,
-    db: Database,
-  ) {
-    this.workingDirectory = canonicalWorkDirWireSchema.parse(workingDirectory);
+  constructor(projectRoot: string, runtime: Pick<Runtime, 'time' | 'ids'>, commitEvents: CommitEventsFn, db: Database) {
+    this.projectRoot = canonicalWorkDirWireSchema.parse(projectRoot);
     this.runtime = runtime;
     this.commitEvents = commitEvents;
     this.db = db;
@@ -64,8 +63,7 @@ export class ConversationManager {
 
   readById(jobId: string): JobConversation | null {
     const entry = readProjectionJobConversation(this.db, jobId);
-    return entry !== null &&
-      jobInCallerScope({ jobKind: 'provider', workDir: entry.cwd }, this.workingDirectory, 'contains')
+    return entry !== null && jobInCallerScope({ jobKind: 'provider', workDir: entry.cwd }, this.projectRoot, 'contains')
       ? entry
       : null;
   }
@@ -75,8 +73,37 @@ export class ConversationManager {
     return entry?.binding.provider === provider ? entry : null;
   }
 
+  forExecutionOwner(): ConversationExecutionPort & ConversationRecoveryPort {
+    return {
+      prepare: (options) => this.prepare(options),
+      readById: (jobId) => this.readOwnedById(jobId),
+      get: (provider, jobId) => {
+        const entry = this.readOwnedById(jobId);
+        if (entry !== null && entry.provider !== provider) throw new ConversationReadError('provider_mismatch', jobId);
+        return entry;
+      },
+      list: (provider) => this.list(provider),
+      checkpointJobContinuityAtomic: (jobId, options) => this.checkpointJobContinuityAtomic(jobId, options),
+      recordArtifactHandleAtomic: (jobId, options) => this.recordArtifactHandleAtomic(jobId, options),
+    };
+  }
+
+  private readOwnedById(jobId: string): JobConversation | null {
+    let entry: JobConversation | null;
+    try {
+      entry = readProjectionJobConversation(this.db, jobId);
+    } catch (cause) {
+      if (cause instanceof ConversationReadError) throw cause;
+      const reason = cause instanceof ProjectionConversationMalformedError ? 'malformed' : 'unreadable';
+      throw new ConversationReadError(reason, jobId, { cause });
+    }
+    if (entry !== null && entry.projectRoot !== this.projectRoot)
+      throw new ConversationReadError('owner_mismatch', jobId);
+    return entry;
+  }
+
   list(provider: string): JobConversation[] {
-    return listProjectionConversationEntries(this.db, provider, hashToken(this.workingDirectory, 12));
+    return listProjectionConversationEntries(this.db, provider, hashToken(this.projectRoot, 12));
   }
 
   checkpointJobContinuityAtomic(
@@ -89,7 +116,7 @@ export class ConversationManager {
     return Promise.resolve().then(() => {
       let result: ConversationWriteResult = { ok: false };
       this.commitEvents((commit) => {
-        const entry = this.readById(jobId);
+        const entry = this.readOwnedById(jobId);
         if (entry === null || !entry.open || entry.finishing || entry.execution !== options.execution) return undefined;
         commit.append({
           type: 'job.continuity.checkpointed',
@@ -111,7 +138,7 @@ export class ConversationManager {
     return Promise.resolve().then(() => {
       let result: ConversationWriteResult = { ok: false };
       this.commitEvents((commit) => {
-        const entry = this.readById(jobId);
+        const entry = this.readOwnedById(jobId);
         if (entry === null || !entry.open || entry.finishing || entry.execution !== options.execution) return undefined;
         const identityKey = providerArtifactIdentityKey(entry.provider, options.identity);
         if (

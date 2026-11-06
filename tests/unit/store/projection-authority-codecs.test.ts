@@ -250,7 +250,10 @@ describe('persisted projection authority codecs', () => {
         }),
       ).toThrowError(
         expect.objectContaining({
-          issues: expect.arrayContaining([expect.objectContaining({ path: ['cwd'] })]),
+          name: 'ProjectionConversationMalformedError',
+          cause: expect.objectContaining({
+            issues: expect.arrayContaining([expect.objectContaining({ path: ['cwd'] })]),
+          }),
         }),
       );
       expect(db.prepare('SELECT COUNT(*) AS count FROM projection_jobs').get()).toEqual({ count: 0 });

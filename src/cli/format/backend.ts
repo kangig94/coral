@@ -29,6 +29,7 @@ import type {
 import type { OperatorFacingCoralSetupError, SetupErrorAuthorshipKind } from '../../runtime/errors.js';
 import type { ShutdownResult } from '../../transport/http/backend/shutdown.js';
 import {
+  COORDINATOR_JOB_RECOVERY_BOUNDARY,
   UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
   type RecoveryQuarantineClearResult,
 } from '../../recovery/source-registry.js';
@@ -1909,7 +1910,9 @@ export function formatRecoveryQuarantineList(result: RecoveryQuarantineListResul
       entry.updatedAt !== null;
     const remedyProvidesClear =
       entry.remedy?.kind === 'recovery-quarantine-clear' && entry.remedy.command.kind === 'clear';
-    if (isClearable && !remedyProvidesClear) {
+    const projectionDiagnosis =
+      entry.boundary === COORDINATOR_JOB_RECOVERY_BOUNDARY && entry.remedy?.kind === 'external-repair';
+    if (isClearable && !remedyProvidesClear && !projectionDiagnosis) {
       lines.push(
         `  ${formatRecoveryQuarantineCommand(
           {
@@ -1922,7 +1925,11 @@ export function formatRecoveryQuarantineList(result: RecoveryQuarantineListResul
         )}`,
       );
     }
-    if (entry.remedy !== null && recoveryRecordRemedyMatchesEntry(entry.remedy, entry, isClearable)) {
+    if (
+      !projectionDiagnosis &&
+      entry.remedy !== null &&
+      recoveryRecordRemedyMatchesEntry(entry.remedy, entry, isClearable)
+    ) {
       lines.push(
         ...formatRecoveryRecordRemedy(entry.remedy)
           .split('\n')

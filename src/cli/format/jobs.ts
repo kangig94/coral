@@ -1,3 +1,4 @@
+import type { CanonicalWorkDir } from '../../runtime/canonical-work-dir.js';
 import { formatRecoveryQuarantineCommand } from './backend.js';
 import { waitCommandPrefix } from '../../coordinator/handoff-routing/wait-command.js';
 import { formatResultAvailability } from './result-availability.js';
@@ -77,16 +78,26 @@ export function formatJobSendResult(
       return {
         text: [
           `Message refused (${result.code}): ${result.reason.replace(/\r\n|[\r\n\u2028\u2029]/gu, '\n  ')}`,
-          ...(result.priorDeliveryUncertain === true
-            ? [
-                'An earlier invocation may have delivered this message. This refusal does not resolve that uncertainty.',
-                ...targetExecutionEvidence(jobId, result.targetExecution),
-              ]
-            : jobSendRefusalRemedy(jobId, result, context)),
+          ...(jobSendRemedyPolicies[result.code].kind === 'conversation-evidence'
+            ? conversationEvidenceFacts(result)
+            : result.priorDeliveryUncertain === true
+              ? [
+                  'An earlier invocation may have delivered this message. This refusal does not resolve that uncertainty.',
+                  ...targetExecutionEvidence(jobId, result.targetExecution),
+                ]
+              : jobSendRefusalRemedy(jobId, result, context)),
         ].join('\n'),
         exitCode: 1,
       };
     case 'unknown':
+      if (result.conversationEvidenceFailure === true)
+        return {
+          text: [
+            `Unknown: ${result.reason.replace(/\r\n|[\r\n\u2028\u2029]/gu, '\n  ')}`,
+            'An earlier invocation may have delivered this message. This observation does not resolve that uncertainty.',
+          ].join('\n'),
+          exitCode: 75,
+        };
       return {
         text: [
           "Unknown: message may have been delivered. Check the job's progress for evidence.",
@@ -101,7 +112,9 @@ export function formatJobSendResult(
 type JobSendRefusalCode = Extract<JobSendOutcome, { state: 'refused' }>['code'];
 
 type RemedyPolicy =
-  | Readonly<{ kind: 'invalid-request' | 'retry' | 'terminal' | 'target-changed' | 'uncertain' }>
+  | Readonly<{
+      kind: 'invalid-request' | 'retry' | 'terminal' | 'target-changed' | 'uncertain' | 'conversation-evidence';
+    }>
   | Readonly<{
       kind: 'inspect';
       message: string;
@@ -113,6 +126,11 @@ type RemedyPolicy =
 
 const jobSendRemedyPolicies = {
   invalid_request: { kind: 'invalid-request' },
+  conversation_unobservable: { kind: 'conversation-evidence' },
+  conversation_owner_mismatch: { kind: 'conversation-evidence' },
+  conversation_missing: { kind: 'conversation-evidence' },
+  conversation_malformed: { kind: 'conversation-evidence' },
+  conversation_provider_mismatch: { kind: 'conversation-evidence' },
   session_busy: { kind: 'uncertain' },
   execution_finishing: { kind: 'uncertain' },
   continuation_target_changed: { kind: 'target-changed' },
@@ -195,7 +213,7 @@ const jobSendRemedyPolicies = {
     message: 'Read job detail before a new send attempt.',
     command: 'jobs-detail',
   },
-  session_not_found: { kind: 'inspect', message: 'Read job detail before a new send attempt.', command: 'jobs-detail' },
+  session_not_found: { kind: 'conversation-evidence' },
   unsupported_by_running_build: {
     kind: 'inspect',
     message:
@@ -203,6 +221,24 @@ const jobSendRemedyPolicies = {
     command: 'backend-status',
   },
 } satisfies Record<JobSendRefusalCode, RemedyPolicy>;
+
+function conversationEvidenceFacts(result: Extract<CliJobSendOutcome, { state: 'refused' }>): readonly string[] {
+  const owner = result.owner ?? null;
+  return [
+    'This attempt was not admitted and delivered no input.',
+    ...(result.priorDeliveryUncertain === true
+      ? ['An earlier invocation may have delivered this message. This refusal does not resolve that uncertainty.']
+      : []),
+    result.workDir === undefined || result.workDir === null
+      ? 'The recorded work directory is unavailable.'
+      : `Recorded work directory: ${JSON.stringify(result.workDir)}.`,
+    owner === null
+      ? 'Execution ownership is unknown. This failure belongs to the operation that owns this job.'
+      : owner.kind === 'provider-session'
+        ? `Execution owner: provider-session ${owner.id}.`
+        : `This failure belongs to the owning ${owner.kind} operation ${owner.id}.`,
+  ];
+}
 
 function jobSendRefusalRemedy(
   jobId: string,
@@ -219,14 +255,16 @@ function jobSendRefusalRemedy(
       return jobSendTargetChangedRemedy(jobId, context);
     case 'retry':
       return jobSendRetryRemedy(jobId, context);
+    case 'conversation-evidence':
+      return conversationEvidenceFacts(result);
     case 'terminal':
       return jobSendTerminalRemedy(jobId, context);
     case 'inspect':
       return jobSendInspectionRemedy(jobId, policy);
     case 'unrestorable':
-      return jobSendUnrestorableRemedy(jobId, policy.diagnosis, context);
+      return jobSendUnrestorableRemedy(jobId, policy.diagnosis, context, result.workDir ?? null);
     case 'fresh-provider':
-      return [...policy.diagnosis, ...jobSendFreshProviderRemedy(context)];
+      return [...policy.diagnosis, ...jobSendFreshProviderRemedy(context, result.workDir ?? null)];
     default:
       return assertNever(policy);
   }
@@ -312,22 +350,30 @@ function jobSendUnrestorableRemedy(
   jobId: string,
   diagnosis: string,
   context: JobSendOutputContext | undefined,
+  workDir: CanonicalWorkDir | null,
 ): readonly string[] {
   return [
     diagnosis,
     'Read the execution result.',
     formatJobsOperatorCommand({ kind: 'wait-job', jobId, grammar: 'current' }),
     'Start a new conversation with a fresh provider job. This does not continue this conversation.',
-    ...jobSendFreshProviderRemedy(context),
+    ...jobSendFreshProviderRemedy(context, workDir),
   ];
 }
 
-function jobSendFreshProviderRemedy(context: JobSendOutputContext | undefined): readonly string[] {
+function jobSendFreshProviderRemedy(
+  context: JobSendOutputContext | undefined,
+  workDir: CanonicalWorkDir | null,
+): readonly string[] {
+  if (workDir === null)
+    return [
+      'The recorded work directory is unavailable. Choose and verify the intended work directory before starting a separate conversation.',
+    ];
   if (context === undefined) return [];
   return [
     ...jobSendStdinReminder(context),
     ...(['codex', 'claude'] as const).map((provider) =>
-      formatJobsOperatorCommand({ kind: 'fresh-provider', provider, ...context }),
+      formatJobsOperatorCommand({ kind: 'fresh-provider', provider, workDir, ...context }),
     ),
   ];
 }
@@ -688,14 +734,15 @@ export type JobsOperatorCommand =
   | Readonly<{ kind: 'wait-job'; jobId: string; grammar?: 'current' }>
   | (Readonly<{ kind: 'send-job'; jobId: string }> & JobSendOutputContext)
   | Readonly<{ kind: 'jobs-list'; all?: boolean }>
-  | (Readonly<{ kind: 'fresh-provider'; provider: 'codex' | 'claude' }> & JobSendOutputContext);
+  | (Readonly<{ kind: 'fresh-provider'; provider: 'codex' | 'claude'; workDir: CanonicalWorkDir }> &
+      JobSendOutputContext);
 
 export function renderJobsOperatorCommand(command: JobsOperatorCommand): string {
   switch (command.kind) {
     case 'backend-status':
       return 'coral-cli backend status';
     case 'fresh-provider':
-      return `coral-cli ${command.provider}${command.detach === true ? ' -d' : ''} ${renderJobsInputTokens(command.inputTokens)}`;
+      return `coral-cli ${command.provider} --work-dir ${quoteCommandArgument(command.workDir)}${command.detach === true ? ' -d' : ''} ${renderCommandInputTokens(command.inputTokens)}`;
     case 'abort-job':
       return `coral-cli jobs abort ${command.jobId}`;
     case 'jobs-detail-full':
@@ -703,22 +750,24 @@ export function renderJobsOperatorCommand(command: JobsOperatorCommand): string 
     case 'jobs-detail':
       return `coral-cli jobs detail ${command.jobId}`;
     case 'wait-job':
-      return `${command.grammar === 'current' ? 'coral-cli jobs wait' : waitCommandPrefix()} ${quoteJobsCommandArgument(command.jobId)}`;
+      return `${command.grammar === 'current' ? 'coral-cli jobs wait' : waitCommandPrefix()} ${quoteCommandArgument(command.jobId)}`;
     case 'send-job':
-      return `coral-cli jobs send ${quoteJobsCommandArgument(command.jobId)}${command.detach === true ? ' -d' : ''} ${renderJobsInputTokens(command.inputTokens)}`;
+      return `coral-cli jobs send ${quoteCommandArgument(command.jobId)}${command.detach === true ? ' -d' : ''} ${renderCommandInputTokens(command.inputTokens)}`;
     case 'jobs-list':
       return `coral-cli jobs list${command.all === true ? ' --all' : ''}`;
   }
 }
 
-function renderJobsInputTokens(inputTokens: readonly string[]): string {
+/** Option-looking input tokens must not become provider flags. */
+function renderCommandInputTokens(inputTokens: readonly string[]): string {
   if (inputTokens.length === 1 && inputTokens[0] === '-') return '-i -';
   return inputTokens.some((token) => token.startsWith('-'))
-    ? inputTokens.map((token) => `--input=${quoteJobsCommandArgument(token)}`).join(' ')
-    : `-i ${inputTokens.map(quoteJobsCommandArgument).join(' ')}`;
+    ? inputTokens.map((token) => `--input=${quoteCommandArgument(token)}`).join(' ')
+    : `-i ${inputTokens.map(quoteCommandArgument).join(' ')}`;
 }
 
-function quoteJobsCommandArgument(value: string): string {
+/** Shell parsing must preserve an argument without expansion or token splitting. */
+function quoteCommandArgument(value: string): string {
   if (/^[a-zA-Z0-9_./:@%+=,-]+$/.test(value)) return value;
   if (/[\r\n]/.test(value)) {
     return `$'${value.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\r/g, '\\r').replace(/\n/g, '\\n')}'`;

@@ -1,3 +1,15 @@
+import {
+  ADMISSION_READ_TIMEOUT_MS,
+  AdmissionProjectionReadUnavailableError,
+  readAdmissionProjection,
+} from '../../jobs/admission-read.js';
+import type { TimePort } from '../../infra/port-types.js';
+import type { Database } from '../../store/db.js';
+import type { JobSendRequest } from '../services/job-send.js';
+import type { InvocationContext } from '../../runtime/invocation-context.js';
+import { readProjectionJobAddress, readProjectionJobRow } from '../../jobs/projection-row.js';
+import { malformedConversationSendRefusal, type JobSendResult } from '../../jobs/send.js';
+import { findCommittedExecutionRequest } from '../../jobs/execution-journal.js';
 import { ZodError } from 'zod';
 
 import { throwIfRequestAborted } from '../../runtime/request-lease-identity.js';
@@ -8,7 +20,11 @@ import { isLivePhase } from '../../jobs/phase.js';
 import { jobInCallerScope } from '../../jobs/scope.js';
 import { type JobAddressing } from '../../jobs/addressing.js';
 import type { JobAttention } from '../services/job-attention.js';
-import type { JobsListResponse, JobsReleaseResult } from '../../jobs/records.js';
+import {
+  ProjectionConversationMalformedError,
+  type JobsListResponse,
+  type JobsReleaseResult,
+} from '../../jobs/records.js';
 import type { JobStore } from '../../jobs/store.js';
 import {
   providerHostEvictResponseSchema,
@@ -142,6 +158,83 @@ function createCoordinatorJobLister(
   };
 }
 
+function malformedConversationSendOutcome(
+  db: Database,
+  request: JobSendRequest,
+  error: ProjectionConversationMalformedError,
+): JobSendResult {
+  const uncertain = (evidence: string): JobSendResult => ({
+    state: 'unknown',
+    conversationEvidenceFailure: true,
+    reason: `${evidence} This retry did not admit another execution or deliver input. An earlier attempt may have delivered this message. ${conversationSendEvidenceFacts(error)}`,
+  });
+  try {
+    const replay = findCommittedExecutionRequest(db, request.jobId, request.clientMessageId);
+    if (replay !== null)
+      return uncertain(
+        'Saved conversation evidence is malformed and a committed execution request already exists for this message identity.',
+      );
+    if (request.target.mode === 'steer')
+      return uncertain(
+        'Saved conversation evidence is malformed and prior steering delivery could not be established.',
+      );
+  } catch {
+    return uncertain(
+      'Saved conversation evidence is malformed and committed-request replay evidence could not be read.',
+    );
+  }
+  return malformedConversationSendRefusal(request.jobId);
+}
+
+type SendReadEvidence = Pick<NonNullable<ReturnType<typeof readProjectionJobAddress>>, 'workDir' | 'owner'>;
+
+function conversationSendEvidenceFacts(evidence: SendReadEvidence | null): string {
+  const location =
+    evidence === null || evidence.workDir === null
+      ? 'The recorded work directory is unavailable.'
+      : `Recorded work directory: ${JSON.stringify(evidence.workDir)}.`;
+  const ownership =
+    evidence === null || evidence.owner === null
+      ? 'Ownership could not be established. This failure belongs to the owning operation.'
+      : evidence.owner.kind === 'provider-session'
+        ? `Execution owner: provider-session ${evidence.owner.id}.`
+        : `This failure belongs to the owning ${evidence.owner.kind} operation ${evidence.owner.id}.`;
+  return `${location} ${ownership}`.trim();
+}
+
+function unavailableSendReadOutcome(
+  error: AdmissionProjectionReadUnavailableError,
+  evidence: SendReadEvidence | null,
+): JobSendResult {
+  return {
+    state: 'unknown',
+    conversationEvidenceFailure: true,
+    reason: `${error.message} This attempt did not admit an execution or deliver input. An earlier attempt may have delivered this message. ${conversationSendEvidenceFacts(evidence)}`,
+  };
+}
+
+async function readSendPrerequisites(
+  db: Database,
+  request: JobSendRequest,
+  time: Pick<TimePort, 'now' | 'sleep'>,
+): Promise<{ address: ReturnType<typeof readProjectionJobAddress>; deadline: number } | { outcome: JobSendResult }> {
+  const deadline = time.now() + ADMISSION_READ_TIMEOUT_MS;
+  let address: ReturnType<typeof readProjectionJobAddress> = null;
+  try {
+    address = await readAdmissionProjection(() => readProjectionJobAddress(db, request.jobId), time, deadline);
+    if (address !== null && !jobInCallerScope(address, request.projectRoot, 'contains'))
+      return { outcome: { state: 'refused', code: 'scope_mismatch', reason: 'The job belongs to another project.' } };
+    await readAdmissionProjection(() => readProjectionJobRow(db, request.jobId), time, deadline);
+    return { address, deadline };
+  } catch (error) {
+    if (error instanceof ProjectionConversationMalformedError)
+      return { outcome: malformedConversationSendOutcome(db, request, error) };
+    if (error instanceof AdmissionProjectionReadUnavailableError)
+      return { outcome: unavailableSendReadOutcome(error, address) };
+    throw error;
+  }
+}
+
 export function createCoordinatorRpcPorts({
   services,
   jobAddressing,
@@ -154,8 +247,12 @@ export function createCoordinatorRpcPorts({
   kbRpcPort,
   discuss,
   expansion,
+  createOwnerInvocationContext,
+  time,
 }: {
   services: ReturnType<typeof createExecutionServices>;
+  createOwnerInvocationContext(projectRoot: string): InvocationContext;
+  time: Pick<TimePort, 'now' | 'sleep'>;
   jobAddressing: JobAddressing;
   waitHandoverSignal: () => AbortSignal;
   getProgressStore: () => JobStore;
@@ -180,9 +277,36 @@ export function createCoordinatorRpcPorts({
     jobs: {
       admitWait: (request) => jobAddressing.admitWait(request),
       snapshot: (request) => jobAddressing.snapshot(request),
-      scopeCheck: (jobIds, callerRoot, relation) => jobAddressing.scopeCheck(jobIds, callerRoot, relation),
+      scopeCheck: (jobIds, callerRoot, relation) => {
+        const result = { valid: [] as string[], missing: [] as string[], mismatch: [] as string[] };
+        for (const jobId of jobIds) {
+          const address = readProjectionJobAddress(getProgressStore().getDb(), jobId);
+          if (address === null) {
+            const historical = jobAddressing.scopeCheck([jobId], callerRoot, relation);
+            result.valid.push(...historical.valid);
+            result.missing.push(...historical.missing);
+            result.mismatch.push(...historical.mismatch);
+          } else if (jobInCallerScope(address, callerRoot, relation)) result.valid.push(jobId);
+          else result.mismatch.push(jobId);
+        }
+        return result;
+      },
       abort: (jobIds) => jobAddressing.abort(jobIds),
-      send: (request, ctx) => services.getExecutionService(ctx).send(request, ctx),
+      send: async (request, ctx) => {
+        const prerequisite = await readSendPrerequisites(getProgressStore().getDb(), request, time);
+        if ('outcome' in prerequisite) return prerequisite.outcome;
+        const ownerContext =
+          prerequisite.address === null ? ctx : createOwnerInvocationContext(prerequisite.address.projectRoot);
+        try {
+          return await services
+            .getExecutionService(ownerContext)
+            .send({ ...request, conversationReadDeadline: prerequisite.deadline }, ctx);
+        } catch (error) {
+          if (error instanceof AdmissionProjectionReadUnavailableError)
+            return unavailableSendReadOutcome(error, prerequisite.address);
+          throw error;
+        }
+      },
       release: (jobIds) => {
         const result: JobsReleaseResult = { released: [], unknown: [], terminal: [] };
         for (const jobId of jobIds) {

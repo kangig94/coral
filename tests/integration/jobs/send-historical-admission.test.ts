@@ -188,10 +188,9 @@ it.each(['missing', 'unreadable'] as const)(
     expect(client.request).toHaveBeenCalledOnce();
     const output = formatJobSendResult(jobId, result, { inputTokens: ['continue'] });
     expect(output.exitCode).toBe(1);
-    expect(output.text.split('\n').filter((line) => line.startsWith('command='))).toEqual([
-      'command=coral-cli codex -i continue',
-      'command=coral-cli claude -i continue',
-    ]);
+    expect(output.text).toContain('The recorded work directory is unavailable');
+    expect(output.text).toContain('Choose and verify the intended work directory');
+    expect(output.text.split('\n').filter((line) => line.startsWith('command='))).toEqual([]);
     expect(output.text).not.toContain('jobs wait');
   },
 );

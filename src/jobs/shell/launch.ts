@@ -1,5 +1,6 @@
+import { readProjectionJobAddress } from '../projection-row.js';
 import { recordDurableCliExecution, markDurableCliExecutionEntered } from '../durable-cli-execution.js';
-import { EXECUTION_RETRY_MS } from '../finishing.js';
+import { EXECUTION_RETRY_MS, ExecutionAcceptanceRefusedError } from '../finishing.js';
 import { raceWithSignal } from '../../infra/promise-signal.js';
 import { executionKey } from '../execution-address.js';
 import { matchesContinuationEnvelope, matchesContinuationTarget, type JobSendTarget } from '../send-target.js';
@@ -73,7 +74,13 @@ import {
   undeterminedLaunch,
 } from '../launch.js';
 import { isTerminalPhase, type JobPhase } from '../phase.js';
-import type { JobLaunch, JobStatus, JobTerminal } from '../records.js';
+import {
+  ProjectionConversationMalformedError,
+  ProjectionJobDecodeError,
+  type JobLaunch,
+  type JobStatus,
+  type JobTerminal,
+} from '../records.js';
 import {
   hasUnterminalRetentionDiscardRequest,
   type RetentionPolicy,
@@ -117,10 +124,11 @@ import type {
   DurableProvisionalProcessSubject,
   Runtime,
 } from '../../runtime/ports.js';
-import type {
-  ConversationInitialLaunchPort,
-  ConversationContinuityPort,
-  ConversationWriteResult,
+import {
+  ConversationReadError,
+  type ConversationInitialLaunchPort,
+  type ConversationContinuityPort,
+  type ConversationWriteResult,
 } from '../conversation/contracts.js';
 import type { CoralEventInput } from '../../store/envelope.js';
 import type { ExecutionFinisher } from '../finishing.js';
@@ -184,6 +192,8 @@ type LauncherJobEventBody =
   | Omit<JobQueueAdmittedBody, 'execution'>
   | Omit<JobQueueQueuedBody, 'execution'>
   | Omit<JobAbortedBody, 'execution'>;
+class PreActivationConversationReadError extends Error {}
+
 type JobExecutionDisposition =
   | 'settled'
   | 'suspended'
@@ -1238,7 +1248,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
     }
   }
 
-  private executeRecoveredQueuedJob(
+  private async executeRecoveredQueuedJob(
     provider: BoundProvider,
     launchRecord: JobLaunch,
     signal: AbortSignal,
@@ -1251,10 +1261,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
       throw new Error(`Recovered launch permit for ${jobId} does not match its admitted pool.`);
     }
 
-    const session = this.deps.conversationManager.get(provider.name, jobId);
-    if (session === null) {
-      throw new Error(`Recovered queued job ${jobId} has no provider conversation snapshot.`);
-    }
+    const session = await this.readCommittedConversation(provider.name, jobId);
     return this.executeJob(
       provider,
       toProviderRequest(launchRecord, session.conversationRef),
@@ -1375,8 +1382,8 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
     protectedEnv?: ProviderOperationEnvironmentInput,
   ): Promise<JobExecutionDisposition> {
     await this.restoreCommittedConversation(provider, jobId, execution);
-    const persistedContinuity = this.readProviderContinuity(provider, jobId);
-    this.readExecutionOrdinal(provider.name, jobId, execution);
+    const persistedContinuity = await this.readProviderContinuity(provider, jobId);
+    await this.readExecutionOrdinal(provider.name, jobId, execution);
     const readiness = await provider.readiness('launch', this.deps.runtime.storage);
     if (this.preserveAppServerJobForHandoff(provider, jobId, execution)) return 'handed-off';
     if (!readiness.ok) {
@@ -1403,10 +1410,65 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
     }
   }
 
+  private conversationReadFailureFacts(jobId: string): string {
+    let address: ReturnType<typeof readProjectionJobAddress>;
+    try {
+      address = readProjectionJobAddress(this.deps.progressStore.getDb(), jobId);
+    } catch {
+      address = null;
+    }
+    let owner: ExecutionOwner | null;
+    try {
+      owner = this.deps.launchAdmission.reservationFor(jobId)?.executionOwner ?? address?.owner ?? null;
+    } catch {
+      owner = address?.owner ?? null;
+    }
+    const location =
+      address?.workDir === null || address === null
+        ? 'The recorded work directory is unavailable.'
+        : `Recorded work directory: ${JSON.stringify(address.workDir)}.`;
+    if (owner === null)
+      return `${location} Execution ownership could not be established. This failure belongs to the operation that owns this job.`;
+    if (owner.kind !== 'provider-session')
+      return `${location} This failure belongs to the owning ${owner.kind} operation ${owner.id}.`;
+    return `${location} Recorded execution owner: ${owner.kind} ${owner.id}.`;
+  }
+
+  private async readCommittedConversation(provider: string, jobId: string): Promise<JobConversation> {
+    const diagnosis = {
+      missing: 'The saved conversation record is missing.',
+      malformed: 'The saved conversation evidence is malformed.',
+      owner_mismatch: 'The conversation project owner does not match this execution service.',
+      provider_mismatch: 'The conversation provider does not match the requested provider.',
+      unreadable: 'Conversation evidence remains undetermined because its bounded read attempts were exhausted.',
+    };
+    const failure = (reason: keyof typeof diagnosis, cause: unknown): Error =>
+      new PreActivationConversationReadError(
+        `This execution attempt was admitted, but its input was NOT delivered to the provider. ${diagnosis[reason]} Continuation eligibility could not be established. ${this.conversationReadFailureFacts(jobId)}`,
+        { cause },
+      );
+    const deadline = this.deps.runtime.time.now() + 1_000;
+    let lastError: unknown;
+    for (let attempt = 0; ; attempt++) {
+      if (attempt > 0 && (attempt >= 3 || this.deps.runtime.time.now() >= deadline))
+        throw failure('unreadable', lastError);
+      try {
+        const conversation = this.deps.conversationManager.get(provider, jobId);
+        if (conversation === null) throw new ConversationReadError('missing', jobId);
+        return conversation;
+      } catch (error) {
+        if (!(error instanceof ConversationReadError)) throw error;
+        if (error.reason !== 'unreadable') throw failure(error.reason, error);
+        lastError = error;
+        if (attempt < 2 && this.deps.runtime.time.now() < deadline) await this.deps.runtime.time.sleep(100);
+      }
+    }
+  }
+
   private async restoreCommittedConversation(provider: BoundProvider, jobId: string, execution: number): Promise<void> {
     if (execution === 1 || provider.artifacts.kind !== 'managed') return;
-    const conversation = this.deps.conversationManager.get(provider.name, jobId);
-    if (conversation === null || conversation.execution !== execution)
+    const conversation = await this.readCommittedConversation(provider.name, jobId);
+    if (conversation.execution !== execution)
       throw new Error(`Committed execution ${jobId}#${execution} has no current provider conversation.`);
     const verification = await this.verifyManagedConversationRestore(provider, conversation);
     if ('status' in verification) throw new Error(`Committed conversation restore failed: ${verification.message}`);
@@ -1419,14 +1481,11 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
     if (restored.kind === 'unrestorable') throw new Error(`Committed conversation restore failed: ${restored.message}`);
   }
 
-  private readProviderContinuity(provider: BoundProvider, jobId: string): ProviderContinuityBlob | undefined {
-    const session = this.deps.conversationManager.get(provider.name, jobId);
-    if (!session) {
-      throw new ProviderBindingRuntimeError(
-        { reason: 'invalid-persisted-binding', provider: provider.name },
-        `Provider conversation ${jobId} has no binding.`,
-      );
-    }
+  private async readProviderContinuity(
+    provider: BoundProvider,
+    jobId: string,
+  ): Promise<ProviderContinuityBlob | undefined> {
+    const session = await this.readCommittedConversation(provider.name, jobId);
     const identity = provider.compareIdentity(session.binding);
     if (!identity.ok) {
       const failure = identity.failure;
@@ -1612,6 +1671,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
         jobId,
         cause,
         failure: errorMessage(error),
+        projectionRejected: true,
       });
       if (!recorded) throw new Error('The recovery quarantine write did not persist.');
       return { kind: 'settlement-refused', cause, quarantine: 'recorded' };
@@ -1624,15 +1684,47 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
     }
   }
 
-  private async handleProviderJobError(
+  private readTerminalAcceptanceStatus(jobId: string, failure: unknown): JobStatus | null {
+    try {
+      return this.deps.progressStore.readStatus(jobId);
+    } catch (error) {
+      if (
+        failure instanceof PreActivationConversationReadError &&
+        (error instanceof ProjectionConversationMalformedError || error instanceof ProjectionJobDecodeError)
+      )
+        throw new ExecutionAcceptanceRefusedError('The invalid job projection refuses terminal acceptance.', {
+          cause: error,
+        });
+      throw error;
+    }
+  }
+
+  private async quarantineConversationReadFailure(jobId: string, failure: Error): Promise<SettlementRefusal> {
+    const deadline = this.deps.runtime.time.now() + 1_000;
+    let refusal: SettlementRefusal = {
+      kind: 'settlement-refused',
+      cause: 'terminal-persist-failed',
+      quarantine: 'recording-failed',
+    };
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (attempt > 0 && this.deps.runtime.time.now() >= deadline) break;
+      refusal = await this.recordSettlementRefusal(jobId, 'terminal-persist-failed', failure);
+      if (refusal.quarantine === 'recorded') return refusal;
+      if (attempt < 2 && this.deps.runtime.time.now() < deadline)
+        await this.deps.runtime.time.sleep(100, { signal: this.deps.executionFinisher.signal });
+    }
+    return refusal;
+  }
+
+  private async acceptProviderJobFailure(
     jobId: string,
     execution: number,
     signal: AbortSignal,
     error: unknown,
-  ): Promise<JobExecutionDisposition> {
+  ): Promise<void> {
     const aborted = signal.aborted || isAbortError(error);
     await this.deps.executionFinisher.accept({ jobId, execution }, (commit) => {
-      const status = this.deps.progressStore.readStatus(jobId);
+      const status = this.readTerminalAcceptanceStatus(jobId, error);
       if (error instanceof CliBusyError) {
         this.appendLaunchRejectedOutcome(commit, jobId, execution, {
           reason: 'busy',
@@ -1660,6 +1752,30 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
       }
       return undefined;
     });
+  }
+
+  private async handleProviderJobError(
+    jobId: string,
+    execution: number,
+    signal: AbortSignal,
+    error: unknown,
+  ): Promise<JobExecutionDisposition> {
+    try {
+      await this.acceptProviderJobFailure(jobId, execution, signal, error);
+    } catch (acceptanceError) {
+      if (
+        !(error instanceof PreActivationConversationReadError) ||
+        !(acceptanceError instanceof ExecutionAcceptanceRefusedError) ||
+        !(
+          acceptanceError.cause instanceof ProjectionConversationMalformedError ||
+          acceptanceError.cause instanceof ProjectionJobDecodeError
+        )
+      )
+        throw acceptanceError;
+      const refusal = await this.quarantineConversationReadFailure(jobId, error);
+      this.releaseTerminalJob(jobId, execution);
+      return refusal;
+    }
     this.releaseTerminalJob(jobId, execution);
     return 'terminalized';
   }
@@ -2098,9 +2214,9 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
     });
   }
 
-  private readExecutionOrdinal(providerName: string, jobId: string, execution: number): number {
-    const session = this.deps.conversationManager.get(providerName, jobId);
-    if (!session || !session.open || session.jobId !== jobId || session.execution !== execution) {
+  private async readExecutionOrdinal(providerName: string, jobId: string, execution: number): Promise<number> {
+    const session = await this.readCommittedConversation(providerName, jobId);
+    if (!session.open || session.jobId !== jobId || session.execution !== execution) {
       throw new Error(`Expected open execution of ${jobId} for job ${jobId}.`);
     }
     return session.execution;

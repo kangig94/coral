@@ -28,7 +28,7 @@ import type {
   QueuedHandle,
 } from '../../../jobs/contracts/admission.js';
 import type { JobProgressStore } from '../../../jobs/contracts/job-store.js';
-import type { ConversationRecoveryPort } from '../../../jobs/conversation/contracts.js';
+import { ConversationReadError, type ConversationRecoveryPort } from '../../../jobs/conversation/contracts.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import type { BoundProvider, BoundProviderHostPreparationInput } from '../../../providers/bound-provider-contract.js';
 import type { JobAbortRegistryPort } from '../../../jobs/contracts/abort-registry.js';
@@ -144,17 +144,17 @@ export class RecoveryService {
   > {
     const provider = launchRecord.provider;
     if (provider === null || launchRecord.jobId === null) {
-      return { ok: false, failure: { reason: 'invalid-persisted-binding', provider: provider ?? 'unknown' } };
+      throw new TypeError('Provider recovery requires a provider launch record with a job id.');
     }
     const session = this.deps.conversationManager.readById(launchRecord.jobId);
-    if (session === null) return { ok: false, failure: { reason: 'invalid-persisted-binding', provider } };
+    if (session === null) throw new ConversationReadError('missing', launchRecord.jobId);
     if (jobConversationProvider(session) !== launchRecord.provider) {
-      return { ok: false, failure: { reason: 'invalid-persisted-binding', provider } };
+      throw new ConversationReadError('provider_mismatch', launchRecord.jobId);
     }
     const binding = this.deps.providerRegistry.rehydrateBinding(session.binding);
     if (!binding.ok) return { ok: false, failure: binding.failure };
     if (binding.value.name !== provider) {
-      return { ok: false, failure: { reason: 'invalid-persisted-binding', provider } };
+      throw new ConversationReadError('provider_mismatch', launchRecord.jobId);
     }
     const continuity = binding.value.decodeContinuity(session.providerContinuity);
     if (!continuity.ok) return { ok: false, failure: continuity.failure };

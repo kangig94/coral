@@ -22,6 +22,25 @@ import type { WaitExecutionSelection } from './wait/execution-selection.js';
  */
 export type LaunchReadiness = 'pending' | 'queued' | 'ready' | 'error';
 
+export class ProjectionJobDecodeError extends Error {
+  constructor(jobId: string | null, cause: unknown) {
+    super(`Saved job projection${jobId === null ? '' : ` for ${jobId}`} could not be decoded.`, { cause });
+    this.name = 'ProjectionJobDecodeError';
+  }
+}
+
+export class ProjectionConversationMalformedError extends TypeError {
+  readonly workDir: CanonicalWorkDir | null;
+  readonly owner: ExecutionOwner | null;
+
+  constructor(jobId: string, cause: unknown, workDir: CanonicalWorkDir | null, owner: ExecutionOwner | null) {
+    super(`Saved conversation evidence for ${jobId} is malformed.`, { cause });
+    this.name = 'ProjectionConversationMalformedError';
+    this.workDir = workDir;
+    this.owner = owner;
+  }
+}
+
 export const jobKindSchema = z.enum(['provider', 'workflow', 'kb']);
 export type JobKind = z.infer<typeof jobKindSchema>;
 

@@ -1,3 +1,4 @@
+import { ADMISSION_READ_TIMEOUT_MS, readAdmissionProjection } from '../jobs/admission-read.js';
 import type { ProgressVisit } from '../jobs/wait/contract.js';
 import { currentEventMetadata, withInvocationScope } from './invocation-scope.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
@@ -21,6 +22,7 @@ import type { CanonicalWorkflowCommand } from '../workflow/compile.js';
 import type { CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
 import type { AbortResult } from '../jobs/contracts/abort-registry.js';
 import { AbortRegistry } from '../jobs/shell/abort-registry.js';
+import type { ConversationExecutionPort, ConversationRecoveryPort } from '../jobs/conversation/contracts.js';
 import { ConversationManager } from '../jobs/conversation/shell.js';
 import { LaunchOrchestrator } from '../jobs/shell/launch.js';
 import { WaitCoordinator } from '../jobs/shell/wait.js';
@@ -51,7 +53,7 @@ export interface HandoffQuiescePort {
 
 export class ExecutionService implements RecoveryCapableService, ProjectRequestPort, HandoffQuiescePort {
   private readonly runtime: ExecutionServiceDeps['runtime'];
-  private readonly conversationManager: ConversationManager;
+  private readonly conversationManager: ConversationExecutionPort & ConversationRecoveryPort;
   private readonly abortRegistry: AbortRegistry;
   private readonly backendNamespace: string;
   private readonly bundleHash: string;
@@ -72,12 +74,13 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     this.runtime = deps.runtime;
     this.eventBus = deps.eventBus;
     const coordinatorCommit = deps.coordinatorCommit;
-    this.conversationManager = new ConversationManager(
+    const scopedConversations = new ConversationManager(
       ctx.projectRoot,
       deps.runtime,
       coordinatorCommit,
       deps.progressStore.getDb(),
     );
+    this.conversationManager = scopedConversations.forExecutionOwner();
     this.abortRegistry = new AbortRegistry();
     this.backendNamespace = deps.backendNamespace;
     this.bundleHash = deps.bundleHash ?? 'unknown';
@@ -111,7 +114,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     });
     deps.providerOperationCleanup?.register(this.launchOrchestrator);
     const waitCoordinator = new WaitCoordinator({
-      conversationManager: this.conversationManager,
+      conversationManager: scopedConversations,
       launchQueue: deps.launchCoordinator,
       eventBus: this.eventBus,
       time: this.runtime.time,
@@ -199,6 +202,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
       readStatus: (jobId) => this.progressStore.readStatus(jobId),
     });
     this.sendService = new JobSendService({
+      time: this.runtime.time,
       progressStore: this.progressStore,
       jobLocations: deps.jobLocations,
       attempts: deps.jobSendAttempts,
@@ -208,8 +212,15 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     });
   }
 
-  private resumeContinuation(request: JobSendRequest, ctx: InvocationContext): Promise<ProviderJobLaunchDecision> {
-    const status = this.progressStore.readStatus(request.jobId);
+  private async resumeContinuation(
+    request: JobSendRequest,
+    ctx: InvocationContext,
+  ): Promise<ProviderJobLaunchDecision> {
+    const status = await readAdmissionProjection(
+      () => this.progressStore.readStatus(request.jobId),
+      this.runtime.time,
+      request.conversationReadDeadline ?? this.runtime.time.now() + ADMISSION_READ_TIMEOUT_MS,
+    );
     if (status?.provider === null || status?.provider === undefined)
       return Promise.resolve(refuseLaunch('transport_unsupported', 'The job has no provider.'));
     return this.launchService.resume(
@@ -219,6 +230,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
         prompt: request.input,
         originatingClientMessageId: request.clientMessageId,
         continuationTarget: request.target,
+        conversationReadDeadline: request.conversationReadDeadline,
       },
       ctx,
     );

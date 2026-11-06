@@ -1,3 +1,4 @@
+import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { JobSendService, type JobSendRequest, type JobSendServiceDeps } from '#src/coordinator/services/job-send.js';
@@ -98,6 +99,7 @@ function harness({
     };
   });
   const deps: JobSendServiceDeps = {
+    time: new SimulationRuntime().time,
     attempts: new Map(),
     progressStore: { getDb: () => journal.db, readStatus },
     jobLocations: { read: vi.fn(() => null) },
@@ -340,14 +342,18 @@ describe('JobSendService bound admission', () => {
       const pendingAdmission = new Promise<void>((resolve) => {
         admit = resolve;
       });
+      let resumed!: () => void;
+      const started = new Promise<void>((resolve) => {
+        resumed = resolve;
+      });
       h.resume.mockImplementation(async (...args) => {
+        resumed();
         await pendingAdmission;
         return resume(...args);
       });
       const request = h.request();
       const first = h.service().send(request, ctx);
-      await Promise.resolve();
-      await Promise.resolve();
+      await started;
       expect(h.resume).toHaveBeenCalledTimes(1);
       const second = h
         .service()
@@ -355,8 +361,6 @@ describe('JobSendService bound admission', () => {
           { ...request, clientMessageId: identical ? request.clientMessageId : '44444444-4444-4444-8444-444444444444' },
           ctx,
         );
-      await Promise.resolve();
-      await Promise.resolve();
       expect(h.resume).toHaveBeenCalledTimes(1);
       admit();
       const winner = await first;
@@ -473,15 +477,19 @@ describe('jobs send typed continuation refusals', () => {
     const result = await h.service().send(h.request(), ctx);
     expect(result).toEqual({ state: 'refused', code: 'profile_mismatch', reason });
     for (const inputTokens of [['original input'], ['-']]) {
-      const output = formatJobSendResult(EXECUTION_JOB_ID, result, { inputTokens });
+      const output = formatJobSendResult(
+        EXECUTION_JOB_ID,
+        { ...result, workDir: h.readStatus()!.workDir },
+        { inputTokens },
+      );
       expect(output.exitCode).toBe(1);
       expect(output.text).toContain(reason);
       expect(output.text).toContain('CODEX_HOME (Codex) or CLAUDE_CONFIG_DIR (Claude)');
       expect(output.text).toContain('This does not continue this conversation');
       expect(output.text).not.toContain('jobs wait');
       expect(output.text.split('\n').filter((line) => line.startsWith('command='))).toEqual([
-        `command=coral-cli codex -i ${inputTokens[0] === '-' ? '-' : "'original input'"}`,
-        `command=coral-cli claude -i ${inputTokens[0] === '-' ? '-' : "'original input'"}`,
+        `command=coral-cli codex --work-dir /workspace -i ${inputTokens[0] === '-' ? '-' : "'original input'"}`,
+        `command=coral-cli claude --work-dir /workspace -i ${inputTokens[0] === '-' ? '-' : "'original input'"}`,
       ]);
     }
     expect(h.events()).toEqual(before);
@@ -571,14 +579,17 @@ describe('jobs send typed continuation refusals', () => {
     h.resume.mockResolvedValue({ status: 'refused', code: launchCode, message: 'Decisive admission refusal.' });
     const result = await h.service().send(h.request(), ctx);
     expect(result).toEqual({ state: 'refused', code, reason: 'Decisive admission refusal.' });
-    if (code === 'profile_mismatch')
-      expect(formatJobSendResult(EXECUTION_JOB_ID, result).text).toContain(
-        'Continuation is impossible from this environment',
-      );
-    else
-      expect(formatJobSendResult(EXECUTION_JOB_ID, result, { inputTokens: ['next input'] }).text).toMatch(
-        /^command=coral-cli /m,
-      );
+    const output = formatJobSendResult(
+      EXECUTION_JOB_ID,
+      { ...result, workDir: h.readStatus()!.workDir },
+      { inputTokens: ['next input'] },
+    ).text;
+    if (code === 'profile_mismatch') expect(output).toContain('Continuation is impossible from this environment');
+    else if (code === 'session_not_found') {
+      expect(output).toContain('This attempt was not admitted and delivered no input.');
+      expect(output).toContain('/workspace');
+      expect(output).not.toMatch(/command=|coral-cli|start a new|resend/iu);
+    } else expect(output).toMatch(/^command=coral-cli /m);
     expect(h.events()).toEqual(before);
     expect(h.sendOperation).not.toHaveBeenCalled();
     expect(h.restore).not.toHaveBeenCalled();
@@ -715,15 +726,21 @@ describe('JobSendService operation guards', () => {
   it('writes no durable intent or progress while the provider answer is pending', async () => {
     const h = harness();
     let answer!: (outcome: ProxyOperationSendResult) => void;
-    h.sendOperation.mockReturnValue(
-      new Promise<ProxyOperationSendResult>((resolve) => {
-        answer = resolve;
-      }),
-    );
+    let sent!: () => void;
+    const started = new Promise<void>((resolve) => {
+      sent = resolve;
+    });
+    const response = new Promise<ProxyOperationSendResult>((resolve) => {
+      answer = resolve;
+    });
+    h.sendOperation.mockImplementation(() => {
+      sent();
+      return response;
+    });
     const before = totalChanges(h.db);
 
     const pending = h.service().send(h.request(), ctx);
-    await Promise.resolve();
+    await started;
 
     expect(h.sendOperation).toHaveBeenCalledTimes(1);
     expect(totalChanges(h.db)).toBe(before);

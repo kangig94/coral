@@ -74,6 +74,8 @@ export function createCoordinatorRequestPorts(input: {
 
   const rpcPorts = createCoordinatorRpcPorts({
     services,
+    createOwnerInvocationContext: core.createRecoveryInvocationContext,
+    time: runtime.time,
     jobAddressing,
     waitHandoverSignal: () => state.waitHandover.signal,
     getProgressStore,

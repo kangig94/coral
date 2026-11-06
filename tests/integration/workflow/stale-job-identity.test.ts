@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import * as conversationReads from '#src/jobs/conversation/read-queries.js';
 import { parseExpression } from '#src/workflow/parser.js';
 import { buildWorkflowPlan, compileWorkflowPlan } from '#src/workflow/plan.js';
 import { launchAtomWithRetry } from '#src/workflow/launch.js';
@@ -14,6 +15,80 @@ import { TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
 import { conversationIdentityFixture } from '#tests/integration/jobs/conversation-identity-fixture.js';
 
 describe('workflow stale replacement conversation identity', () => {
+  it('retries a transient first workflow conversation probe without duplicating the launch', async () => {
+    const f = conversationIdentityFixture({ managedArtifacts: true });
+    const workflowId = f.runtime.ids.uuid();
+    const plan = buildWorkflowPlan(workflowId, parseExpression('architect'), { defaultProvider: 'codex' });
+    const jobId = f.runtime.ids.uuid();
+    const slot = compileWorkflowPlan(plan, { jobIds: new Map([[plan.slots[0].slotId, jobId]]) })[0];
+    f.runtime.storage.mkdirSync('/plugin/agents', { recursive: true });
+    f.runtime.storage.writeFileSync('/plugin/agents/architect.md', '---\n---\nWorkflow probe fixture');
+    try {
+      f.commit((commit) => {
+        commit.append(workflowPlanDeclaredEvent(workflowId, plan, TEST_PROVIDER_SCOPE));
+        return undefined;
+      });
+      vi.spyOn(conversationReads, 'readProjectionJobConversation').mockImplementationOnce(() => {
+        throw new Error('temporary conversation read failure');
+      });
+      const atom = await f.drive(
+        launchAtomWithRetry({
+          slot,
+          atomIndex: 0,
+          stepPrompt: 'first',
+          executionSvc: f.service,
+          ctx: f.ctx,
+          workflowJobId: workflowId,
+          completedStepDetails: [],
+        }),
+      );
+      await f.drive(f.service.waitForJobTerminal(jobId, 10_000));
+      expect(atom.jobId).toBe(jobId);
+      expect(f.requests).toHaveLength(1);
+      f.assertIdentity(jobId, [1]);
+      expect(f.events(jobId).filter((event) => event.type === 'job.execution.requested')).toHaveLength(1);
+    } finally {
+      vi.restoreAllMocks();
+      await f.dispose();
+    }
+  });
+
+  it.each(['workflow probe', 'resume'] as const)(
+    'stops %s reads at the admission deadline after an overslept retry',
+    async (operation) => {
+      const f = conversationIdentityFixture();
+      let jobId = f.runtime.ids.uuid();
+      try {
+        if (operation === 'resume') {
+          const first = await f.drive(f.service.start('codex', { prompt: 'first' }, f.ctx));
+          if (first.status !== 'running' && first.status !== 'queued') throw new Error(first.message);
+          jobId = first.jobId;
+          await f.drive(f.service.waitForJobTerminal(jobId, 10_000));
+        }
+        const before = f.events(jobId);
+        const requests = f.requests.length;
+        const read = vi.spyOn(conversationReads, 'readProjectionJobConversation').mockImplementationOnce(() => {
+          throw new Error('temporary conversation read failure');
+        });
+        vi.spyOn(f.runtime.time, 'sleep').mockImplementation(async () => {
+          f.runtime.time.tick(1_001);
+        });
+        const decision =
+          operation === 'resume'
+            ? await f.service.resume('codex', { jobId, prompt: 'second' }, f.ctx)
+            : await f.service.coralDispatch('codex', 'architect', { jobId, prompt: 'first' }, f.ctx);
+        expect(decision).toMatchObject({ status: 'undetermined', code: 'conversation_unobservable' });
+        expect(read).toHaveBeenCalledTimes(1);
+        expect(f.events(jobId)).toEqual(before);
+        expect(f.requests).toHaveLength(requests);
+        expect(f.admission.reservationFor(jobId)).toBeNull();
+      } finally {
+        vi.restoreAllMocks();
+        await f.dispose();
+      }
+    },
+  );
+
   it.each([false, true])(
     'ignores delayed and duplicate old ends while the replacement fails=%s',
     async (failOnResume) => {

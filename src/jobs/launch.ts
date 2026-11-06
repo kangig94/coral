@@ -69,9 +69,14 @@ export type LaunchRefusalCode =
   | 'transport_unsupported'
   | 'scope_mismatch'
   | 'provider_mismatch'
+  | 'conversation_owner_mismatch'
+  | 'conversation_missing'
+  | 'conversation_malformed'
+  | 'conversation_provider_mismatch'
   | 'launch_failed';
 
 export type LaunchUndeterminedCode =
+  | 'conversation_unobservable'
   | 'work_directory_unobservable'
   | 'provider_preflight_undetermined'
   | 'discuss_launch_undetermined'
@@ -153,6 +158,7 @@ export interface JobResumeRequest extends Omit<JobLaunchRequest, 'retention' | '
   originatingClientMessageId?: string;
   provider?: string;
   continuationTarget?: JobSendTarget;
+  conversationReadDeadline?: number;
 }
 
 const controllerProfileSchema = z

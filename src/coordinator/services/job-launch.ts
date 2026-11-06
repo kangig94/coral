@@ -1,3 +1,8 @@
+import {
+  ADMISSION_READ_MAX_ATTEMPTS,
+  ADMISSION_READ_RETRY_MS,
+  ADMISSION_READ_TIMEOUT_MS,
+} from '../../jobs/admission-read.js';
 import type { ProviderRequest } from '../../providers/contract.js';
 import { hasUnterminalRetentionDiscardRequest, type JobConversation } from '../../jobs/conversation/entry.js';
 import { resolveEffort } from '../../providers/request-policy.js';
@@ -13,7 +18,7 @@ import type { Runtime } from '../../runtime/ports.js';
 import { CoralSetupError } from '../../runtime/errors.js';
 import { assertNever, thrownErrnoCode } from '../../infra/error-format.js';
 import { throwIfRequestAborted } from '../../runtime/request-lease-identity.js';
-import type { ConversationExecutionPort } from '../../jobs/conversation/contracts.js';
+import { ConversationReadError, type ConversationExecutionPort } from '../../jobs/conversation/contracts.js';
 import type { ProviderJobLaunchPort } from '../../jobs/contracts/job-runner.js';
 import {
   refuseLaunch,
@@ -22,6 +27,7 @@ import {
   type JobResumeRequest,
   type ProviderJobLaunchDecision,
   type RefusedLaunchDecision,
+  type UndeterminedLaunchDecision,
 } from '../../jobs/launch.js';
 import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
 import type { ListResult } from '../contracts.js';
@@ -211,13 +217,14 @@ export class JobLaunchService {
       return refuseLaunch('unknown_provider', `Unknown provider: ${providerName}`);
     }
 
-    const session = this.deps.conversationManager.get(providerName, input.jobId);
-    if (!session) {
-      return refuseLaunch(
-        'session_not_found',
-        `Conversation job not found: ${input.jobId}. Use exec to open a new conversation job.`,
-      );
-    }
+    const session = await this.readConversationBeforeAdmission(
+      input.jobId,
+      () => this.deps.conversationManager.get(providerName, input.jobId),
+      input.conversationReadDeadline,
+    );
+    if (session === null)
+      return refuseLaunch('conversation_missing', `Saved conversation evidence is missing for job ${input.jobId}.`);
+    if ('status' in session) return session;
 
     const persisted = this.deps.providerRegistry.rehydrateBinding(session.binding);
     if (!persisted.ok) return this.refuseBinding(persisted.failure);
@@ -230,6 +237,42 @@ export class JobLaunchService {
     if (!identity.ok) return this.refuseBinding(identity.failure);
 
     return this.resumeResolved(providerName, persisted.value, session, input, ctx);
+  }
+
+  private async readConversationBeforeAdmission(
+    jobId: string,
+    read: () => JobConversation | null,
+    inheritedDeadline?: number,
+  ): Promise<JobConversation | null | RefusedLaunchDecision | UndeterminedLaunchDecision> {
+    const deadline = inheritedDeadline ?? this.deps.runtime.time.now() + ADMISSION_READ_TIMEOUT_MS;
+    const exhausted = (attempts: number): UndeterminedLaunchDecision =>
+      undeterminedLaunch(
+        'conversation_unobservable',
+        `Conversation evidence remains undetermined for ${jobId}; conversation admission stopped after ${attempts} read attempts with a 1000ms deadline; this attempt admitted no execution.`,
+      );
+    for (let attempt = 0; ; attempt++) {
+      if (this.deps.runtime.time.now() >= deadline) return exhausted(attempt);
+      try {
+        return read();
+      } catch (error) {
+        if (!(error instanceof ConversationReadError)) throw error;
+        switch (error.reason) {
+          case 'unreadable':
+            if (attempt >= ADMISSION_READ_MAX_ATTEMPTS - 1 || this.deps.runtime.time.now() >= deadline)
+              return exhausted(attempt + 1);
+            await this.deps.runtime.time.sleep(ADMISSION_READ_RETRY_MS);
+            break;
+          case 'owner_mismatch':
+            return refuseLaunch('conversation_owner_mismatch', error.message);
+          case 'provider_mismatch':
+            return refuseLaunch('conversation_provider_mismatch', error.message);
+          case 'missing':
+            return refuseLaunch('conversation_missing', error.message);
+          case 'malformed':
+            return refuseLaunch('conversation_malformed', error.message);
+        }
+      }
+    }
   }
 
   private bindingRuntime(): ProviderBindingRuntime {
@@ -267,11 +310,17 @@ export class JobLaunchService {
     const forcedIdent = coralName.startsWith('coral:') ? coralName : `coral:${coralName}`;
     const bypassPermissions = input.bypassPermissions ?? true;
 
-    if (input.jobId !== undefined && this.deps.conversationManager.readById(input.jobId) !== null) {
+    const jobId = input.jobId;
+    const existing =
+      jobId === undefined
+        ? null
+        : await this.readConversationBeforeAdmission(jobId, () => this.deps.conversationManager.readById(jobId));
+    if (existing !== null && 'status' in existing) return existing;
+    if (existing !== null) {
       return this.resume(
         providerName,
         {
-          jobId: input.jobId,
+          jobId: existing.jobId,
           prompt: input.prompt,
           workflowSlotId: input.workflowSlotId,
           agent: forcedIdent,

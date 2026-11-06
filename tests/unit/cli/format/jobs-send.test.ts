@@ -4,9 +4,11 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { formatJobSendResult, renderJobsOperatorCommand } from '#src/cli/format/jobs.js';
 import type { ProviderSendOutcome } from '#src/providers/contract.js';
 import { jobSendOutcomeSchema, type JobSendOutcome } from '#src/jobs/send.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { CLI_HANDOFF_GUARD_ENV } from '#src/coordinator/handoff-routing/wait-invocation.js';
 
 const context = { inputTokens: ['original', 'message'] };
+const workDir = fixtureCanonicalWorkDir('/recorded/workspace');
 
 afterEach(() => vi.unstubAllEnvs());
 
@@ -146,12 +148,12 @@ it.each([
 ] as const)('preserves detach in both fresh-provider commands for %s', (code) => {
   const output = formatJobSendResult(
     'job-1',
-    { state: 'refused', code, reason: 'Cannot continue.' },
+    { state: 'refused', code, reason: 'Cannot continue.', workDir },
     { inputTokens: ['message with spaces'], detach: true },
   );
   expect(output.text.split('\n').filter((line) => /^command=coral-cli (codex|claude) /u.test(line))).toEqual([
-    "command=coral-cli codex -d -i 'message with spaces'",
-    "command=coral-cli claude -d -i 'message with spaces'",
+    "command=coral-cli codex --work-dir /recorded/workspace -d -i 'message with spaces'",
+    "command=coral-cli claude --work-dir /recorded/workspace -d -i 'message with spaces'",
   ]);
 });
 
@@ -190,7 +192,6 @@ it.each([
   ['provider_preflight_failed', 'Read job detail', 'jobs detail job-1'],
   ['provider_preflight_undetermined', 'Read job detail', 'jobs detail job-1'],
   ['work_directory_unobservable', 'Read job detail', 'jobs detail job-1'],
-  ['session_not_found', 'Read job detail', 'jobs detail job-1'],
 ] satisfies [Extract<JobSendOutcome, { state: 'refused' }>['code'], string, string][])(
   'renders %s with its own reason and a runnable next step',
   (code, remedy, command) => {
@@ -203,6 +204,52 @@ it.each([
       `command=coral-cli ${command}`,
     ]);
     expect(output.text).not.toMatch(/start a new job/i);
+  },
+);
+
+it.each([
+  'conversation_unobservable',
+  'conversation_owner_mismatch',
+  'conversation_missing',
+  'conversation_malformed',
+  'conversation_provider_mismatch',
+  'session_not_found',
+] as const)('reports %s as attempt-scoped facts without commands or solicitations', (code) => {
+  for (const priorDeliveryUncertain of [undefined, true] as const) {
+    const output = formatJobSendResult(
+      'job-1',
+      {
+        state: 'refused',
+        code,
+        reason: 'Conversation evidence unavailable.',
+        workDir,
+        owner: { kind: 'workflow', id: 'workflow-1' },
+        priorDeliveryUncertain,
+      },
+      context,
+    );
+    expect(output.exitCode).toBe(1);
+    expect(output.text).toContain('This attempt was not admitted and delivered no input.');
+    expect(output.text).toContain(workDir);
+    expect(output.text).toContain('failure belongs to the owning workflow operation workflow-1');
+    expect(output.text.includes('An earlier invocation may have delivered')).toBe(priorDeliveryUncertain === true);
+    expect(output.text).not.toMatch(/command=|coral-cli|start a new|retry|resend|choose|verify|pipe|resupply/iu);
+  }
+});
+
+it.each(['Execution ownership is unknown.', 'Execution owner: provider-session job-1.'])(
+  'preserves conversation-evidence replay uncertainty and %s as facts without commands',
+  (ownership) => {
+    const output = formatJobSendResult('job-1', {
+      state: 'unknown',
+      conversationEvidenceFailure: true,
+      reason: `Saved conversation evidence is malformed. This retry admitted no new execution. Earlier delivery is unresolved. Recorded work directory: /recorded/workspace. ${ownership}`,
+    });
+    expect(output.exitCode).toBe(75);
+    expect(output.text).toContain('An earlier invocation may have delivered');
+    expect(output.text).toContain('Recorded work directory: /recorded/workspace');
+    expect(output.text).toContain(ownership);
+    expect(output.text).not.toMatch(/command=|coral-cli|start a new|safe to resend/iu);
   },
 );
 
@@ -266,14 +313,14 @@ it.each(['command', 'clear', 'discard', 'action'])('prevents a provider rejectio
 it('offers fresh provider launches for pre-generation jobs without a wait', () => {
   const output = formatJobSendResult(
     'job-1',
-    { state: 'refused', code: 'pre_generation_job', reason: 'Historical job' },
+    { state: 'refused', code: 'pre_generation_job', reason: 'Historical job', workDir },
     context,
   );
   expect(output.text).toContain('not continuable');
   expect(output.text).not.toContain('jobs wait');
   expect(output.text.split('\n').filter((line) => line.startsWith('command='))).toEqual([
-    'command=coral-cli codex -i original message',
-    'command=coral-cli claude -i original message',
+    'command=coral-cli codex --work-dir /recorded/workspace -i original message',
+    'command=coral-cli claude --work-dir /recorded/workspace -i original message',
   ]);
 });
 
@@ -338,7 +385,7 @@ it('rejects CLI-local uncertainty metadata on the wire', () => {
 it('explains profile selection without promising an unavailable detail binding', () => {
   const output = formatJobSendResult(
     'job-1',
-    { state: 'refused', code: 'profile_mismatch', reason: 'Different profile' },
+    { state: 'refused', code: 'profile_mismatch', reason: 'Different profile', workDir },
     context,
   );
   expect(output.text).toContain('Continuation is impossible from this environment');
@@ -346,8 +393,8 @@ it('explains profile selection without promising an unavailable detail binding',
   expect(output.text).not.toContain('job detail');
   expect(output.text).toContain('This does not continue this conversation');
   expect(output.text.split('\n').filter((line) => line.startsWith('command='))).toEqual([
-    'command=coral-cli codex -i original message',
-    'command=coral-cli claude -i original message',
+    'command=coral-cli codex --work-dir /recorded/workspace -i original message',
+    'command=coral-cli claude --work-dir /recorded/workspace -i original message',
   ]);
 });
 
@@ -356,15 +403,15 @@ it.each(['profile_mismatch', 'pre_generation_job'] as const)(
   (code) => {
     const output = formatJobSendResult(
       'job-1',
-      { state: 'refused', code, reason: 'Cannot continue.' },
+      { state: 'refused', code, reason: 'Cannot continue.', workDir },
       { inputTokens: ['-'] },
     );
     expect(output.text).toContain(
       'Coral does not retain stdin content. Pipe the same original input into the command you run.',
     );
     expect(output.text.split('\n').filter((line) => line.startsWith('command='))).toEqual([
-      'command=coral-cli codex -i -',
-      'command=coral-cli claude -i -',
+      'command=coral-cli codex --work-dir /recorded/workspace -i -',
+      'command=coral-cli claude --work-dir /recorded/workspace -i -',
     ]);
   },
 );
@@ -416,7 +463,11 @@ it.each([
   ['archive_invalid', 'structure or identity'],
 ] as const)('offers a new conversation and the retained result for %s', (code, diagnosis) => {
   for (const inputTokens of [context.inputTokens, ['-']]) {
-    const output = formatJobSendResult('job-1', { state: 'refused', code, reason: 'Cannot restore.' }, { inputTokens });
+    const output = formatJobSendResult(
+      'job-1',
+      { state: 'refused', code, reason: 'Cannot restore.', workDir },
+      { inputTokens },
+    );
     expect(output.exitCode).toBe(1);
     expect(output.text).toContain(`Message refused (${code}): Cannot restore.`);
     expect(output.text).toContain(diagnosis);
@@ -425,8 +476,8 @@ it.each([
     expect(output.text).toContain('Read the execution result.');
     expect(output.text.split('\n').filter((line) => line.startsWith('command='))).toEqual([
       'command=coral-cli jobs wait job-1',
-      `command=coral-cli codex -i ${inputTokens.join(' ')}`,
-      `command=coral-cli claude -i ${inputTokens.join(' ')}`,
+      `command=coral-cli codex --work-dir /recorded/workspace -i ${inputTokens.join(' ')}`,
+      `command=coral-cli claude --work-dir /recorded/workspace -i ${inputTokens.join(' ')}`,
     ]);
     expect(
       output.text.includes(
@@ -459,3 +510,47 @@ it.each([
     expect(output.text).toContain('command=coral-cli jobs wait job-1');
   },
 );
+
+it.each([undefined, null])('reports the unavailable work directory when it is %s', (recordedWorkDir) => {
+  const output = formatJobSendResult(
+    'job-1',
+    {
+      state: 'refused',
+      code: 'conversation_missing',
+      reason: 'Missing conversation evidence.',
+      workDir: recordedWorkDir,
+    },
+    { inputTokens: ['../original prompt.txt'], detach: true },
+  );
+  expect(output.exitCode).toBe(1);
+  expect(output.text).toContain('recorded work directory is unavailable');
+  expect(output.text).toContain('Execution ownership is unknown');
+  expect(output.text).not.toMatch(/choose|verify|start a new|resend/iu);
+  expect(output.text.split('\n').filter((line) => line.startsWith('command='))).toEqual([]);
+});
+
+it('quotes the recorded provider work directory without changing how caller-relative input tokens resolve', () => {
+  const recordedWorkDir = fixtureCanonicalWorkDir("/recorded project/agent's $HOME; $(printf expanded)");
+  const inputTokens = ['../original prompt.txt', '--model=literal', '$caller-file'];
+  const command = renderJobsOperatorCommand({
+    kind: 'fresh-provider',
+    provider: 'codex',
+    workDir: recordedWorkDir,
+    inputTokens,
+    detach: true,
+  });
+  const values = execFileSync('bash', ['-c', `function coral-cli() { printf '%s\\0' "$PWD" "$@"; }\n${command}`])
+    .toString()
+    .split('\0')
+    .slice(0, -1);
+  expect(values).toEqual([
+    process.cwd(),
+    'codex',
+    '--work-dir',
+    recordedWorkDir,
+    '-d',
+    '--input=../original prompt.txt',
+    '--input=--model=literal',
+    '--input=$caller-file',
+  ]);
+});
