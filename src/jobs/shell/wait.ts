@@ -310,6 +310,7 @@ export class WaitCoordinator {
       type: 'queued' as const,
       jobId,
       queuePosition: reservation?.kind === 'queued' ? reservation.position : 0,
+      ...(reservation?.kind === 'queued' && reservation.reason !== undefined ? { reason: reservation.reason } : {}),
       runningJobIds: reservation === null ? [] : this.deps.launchQueue.getActiveJobIds(reservation.pool),
       timing: queuedProgressTiming(status, this.deps.time.now()),
     };

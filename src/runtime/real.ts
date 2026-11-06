@@ -1,3 +1,4 @@
+import { createHostPressureMonitor } from '../infra/host-pressure.js';
 import { z } from 'zod';
 import {
   failureDomainContainment,
@@ -343,15 +344,6 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
     observeLiveness: observeProcessLiveness,
   });
 
-  const runtimeProcess = createRealProcessPort({
-    capturedEnv,
-    time,
-    durable,
-    buildSpawnEnv,
-    resolveExecEnv,
-    observeRecordedProcessAsync,
-  });
-
   const ids: IdPort = {
     uuid: () => randomUUID(),
     randomBytes: (size) => randomBytesNode(size),
@@ -369,6 +361,16 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
     fullSnapshot: () => capturedEnv.fullEnv,
     coralSnapshot: () => capturedEnv.coralEnv,
   };
+
+  const runtimeProcess = createRealProcessPort({
+    capturedEnv,
+    env,
+    time,
+    durable,
+    buildSpawnEnv,
+    resolveExecEnv,
+    observeRecordedProcessAsync,
+  });
 
   return {
     flavor,
@@ -930,6 +932,7 @@ function spawnDurableWrapper(
 
 function createRealProcessPort({
   capturedEnv,
+  env,
   time,
   durable,
   buildSpawnEnv,
@@ -937,13 +940,18 @@ function createRealProcessPort({
   observeRecordedProcessAsync,
 }: {
   capturedEnv: CapturedEnvState;
+  env: Pick<EnvPort, 'get'>;
   time: TimePort;
   durable: DurableExecutionTransport;
   buildSpawnEnv: (envAdditions?: Record<string, string>) => Record<string, string>;
   resolveExecEnv: (options?: RuntimeExecOptions) => Record<string, string>;
   observeRecordedProcessAsync: ReturnType<typeof createAsyncRecordedProcessObserver>;
 }): ProcessPort {
+  const pressure = createHostPressureMonitor(capturedEnv.platform, time, env);
   const runtimeProcess = {
+    readHostPressure: pressure.read,
+    refreshHostPressure: pressure.refresh,
+    stopHostPressure: pressure.stop,
     failureDomainRoot: capturedEnv.failureDomainRoot,
     failureDomainContainment: (name) => failureDomainContainment(capturedEnv.failureDomainRoot, name),
     readRecentFailureDomainRefusals,

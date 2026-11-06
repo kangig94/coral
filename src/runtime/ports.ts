@@ -1,3 +1,4 @@
+import type { HostPressure } from '../infra/host-pressure.js';
 import type { AsyncRecordedProcessObserver, ProcessIncarnation, ProcessLiveness } from '../infra/node-process.js';
 import type {
   failureDomainContainment,
@@ -182,6 +183,9 @@ export type RuntimeExecOptions = {
 };
 
 export interface ProcessPort {
+  readHostPressure(): HostPressure;
+  refreshHostPressure(): Promise<void>;
+  stopHostPressure(): Promise<void>;
   readonly failureDomainRoot: FailureDomainRoot;
   failureDomainContainment(name: string): ReturnType<typeof failureDomainContainment>;
   readRecentFailureDomainRefusals(): readonly FailureDomainRefusal[];

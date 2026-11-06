@@ -90,6 +90,13 @@ it('reports timestamped coordinator-observed refusal history and its observation
     providerOperationStartupStatus: () => null,
   } as unknown as Parameters<typeof createCoordinatorHealthReader>[0];
   const health = createCoordinatorHealthReader(input)();
+  expect(health.diagnostics?.hostPressure).toEqual({ kind: 'unobservable', reason: 'simulation' });
+  runtime.process.readHostPressure = () => ({ kind: 'pressured', signal: 'io', reading: 'full avg10=12' });
+  expect(createCoordinatorHealthReader(input)().diagnostics?.hostPressure).toEqual({
+    kind: 'pressured',
+    signal: 'io',
+    reading: 'full avg10=12',
+  });
   expect(health.diagnostics?.failureDomainRoot).toEqual({ kind: 'placed', root: '/inherited' });
   expect(health.diagnostics?.coordinatorObservedFailureDomainRefusalHistory?.entries).toEqual(
     expect.arrayContaining([

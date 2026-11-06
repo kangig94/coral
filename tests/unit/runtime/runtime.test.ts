@@ -79,6 +79,15 @@ async function confirmExitGraceAcrossWallClockJump(wallClockJumpMs: number): Pro
 }
 
 describe('createRealRuntime', () => {
+  it('composes the ignored pressure disposition from its Runtime environment', async () => {
+    vi.stubEnv('CORAL_HOST_PRESSURE', 'ignore');
+    const runtime = createRealRuntime('prod', { baseDir: createTempDir('coral-pressure-env-') });
+    expect(runtime.process.readHostPressure()).toEqual({ kind: 'unobservable', reason: 'ignored' });
+    await runtime.process.refreshHostPressure();
+    expect(runtime.process.readHostPressure()).toEqual({ kind: 'unobservable', reason: 'ignored' });
+    await runtime.process.stopHostPressure();
+  });
+
   it('rejects a silent durable wrapper after a late zero-delay post-wake turn', async () => {
     let monotonicMs = 0n;
     const pending: Array<{ callback: () => void; delayMs: number }> = [];

@@ -51,6 +51,7 @@ function makeRuntime(): Runtime {
       writeAtomicSync: () => {},
     },
     process: {
+      readHostPressure: () => ({ kind: 'unobservable', reason: 'test' }),
       failureDomainRoot: { kind: 'unavailable', reason: 'root-not-inherited' },
       readRecentFailureDomainRefusals: () => [],
       observeLiveness: () => 'absent' as const,

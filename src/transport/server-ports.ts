@@ -1,3 +1,4 @@
+import type { HostPressure } from '../infra/host-pressure.js';
 import type { FailureDomainRoot, FailureDomainRefusal } from '../infra/failure-domain.js';
 import type { ExecutionRetryStatus } from '../jobs/records.js';
 import type { RetentionRunStatus } from '../store/retention-outcome.js';
@@ -422,6 +423,7 @@ export type HealthSnapshot = {
    */
   listCounts?: Readonly<Record<string, number>>;
   diagnostics?: LaunchPermitDiagnostics & {
+    hostPressure?: HostPressure;
     failureDomainRoot?: FailureDomainRoot;
     coordinatorObservedFailureDomainRefusalHistory?: Readonly<{
       entries: readonly FailureDomainRefusal[];

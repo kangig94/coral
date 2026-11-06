@@ -1,3 +1,4 @@
+import type { HostPressure } from '../../infra/host-pressure.js';
 import { hostFailureDomainName } from '../../infra/failure-domain.js';
 import { parseCustodyProcessTicket } from '../../infra/custody-process-ticket.js';
 import { raceObserved } from '../../infra/promise-signal.js';
@@ -192,6 +193,13 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
   private readonly reclaimedLaunches = new Map<string, LaunchPermitReclamationDiagnostic>();
   private readonly launchReclamationOracles = new Map<ReclaimablePermitHolderKind, LaunchReclamationOracle>();
   private readonly internalAbortRegistry: AbortRegistry;
+  private readonly poolPressure: Record<LaunchPool, HostPressure> = {
+    default: { kind: 'unobservable', reason: 'not sampled' },
+    discuss: { kind: 'unobservable', reason: 'not sampled' },
+    curate: { kind: 'unobservable', reason: 'not sampled' },
+  };
+  private pressureTimer: TimerHandle | null = null;
+  private pressureRefreshPending = false;
   private shutdownRequested = false;
   private successionAdmissionRevision = 0;
   private readonly successionObligationListeners = new Set<() => void>();
@@ -386,6 +394,7 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
       cancellation: null,
     };
     queuedLaunches.push(entry);
+    this.syncPressureTimer();
     this.successionAdmissionRevision++;
     return this.queuedHandle(entry, pool);
   }
@@ -407,7 +416,7 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
     this.successionAdmissionRevision++;
     this.cancelPreparedBindingsForPermit(permit);
     this.notifySuccessionObligationChange();
-    return { kind: 'released', pool: permit.pool, admittedNext: this.admitQueueHead(permit.pool) };
+    return { kind: 'released', pool: permit.pool, admittedNext: this.admitQueuedLaunches(permit.pool) };
   }
 
   queueDepth(pool: LaunchPool = 'default'): number {
@@ -507,6 +516,7 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
           provider: queued.provider,
           executionOwner: queued.executionOwner,
           position: position + 1,
+          ...(this.pressureReason(pool) === undefined ? {} : { reason: this.pressureReason(pool) }),
         };
       }
     }
@@ -657,6 +667,7 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
       holder: permitHolder,
     });
     this.getActiveMap(pool).set(jobId, { permit, executionOwner });
+    this.admitQueuedLaunches(pool);
     return permit;
   }
 
@@ -693,7 +704,7 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
       evidence,
       reclaimedAtMs,
     });
-    this.admitQueueHead(permit.pool);
+    this.admitQueuedLaunches(permit.pool);
     this.notifySuccessionObligationChange();
     return true;
   }
@@ -777,6 +788,7 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
       cancellation: null,
     };
     queuedLaunches.push(entry);
+    this.admitQueuedLaunches(pool);
     this.successionAdmissionRevision++;
 
     return this.queuedHandle(entry, pool);
@@ -972,7 +984,9 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
 
   async settlePendingLaunches(signal?: AbortSignal): Promise<PendingLaunchSettlementDisposition> {
     this.shutdownRequested = true;
+    this.syncPressureTimer();
     this.drainQueuedLaunches(QUEUE_DRAINED_MESSAGE);
+    await this.runtime.process.stopHostPressure();
     const pendingLaunches = [...this.pendingDurableLaunches];
     if (pendingLaunches.length === 0) return { kind: 'all-pending-launches-settled' };
 
@@ -1326,8 +1340,55 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
     }
   }
 
-  private hasLaunchCapacity(pool: LaunchPool): boolean {
-    return this.getActiveMap(pool).size < getActiveLimit(pool, this.runtime.env);
+  private hasLaunchCapacity(pool: LaunchPool, pressure?: HostPressure): boolean {
+    const active = this.getActiveMap(pool).size;
+    if (active >= getActiveLimit(pool, this.runtime.env)) return false;
+    if (pool === 'curate' || active === 0) return true;
+    this.poolPressure[pool] = pressure ?? this.readAdmissionPressure();
+    return this.poolPressure[pool].kind !== 'pressured';
+  }
+
+  private readAdmissionPressure(): HostPressure {
+    void this.runtime.process.refreshHostPressure();
+    return this.runtime.process.readHostPressure();
+  }
+
+  private pressureReason(pool: LaunchPool): string | undefined {
+    const pressure = this.poolPressure[pool];
+    if (pool === 'curate' || this.getActiveMap(pool).size === 0 || pressure.kind !== 'pressured') return undefined;
+    return `pressure: ${pressure.signal} ${pressure.reading}`;
+  }
+
+  private syncPressureTimer(): void {
+    const paused =
+      !this.shutdownRequested &&
+      (['default', 'discuss'] as const).some(
+        (pool) =>
+          this.getQueue(pool).length > 0 &&
+          this.pressureReason(pool) !== undefined &&
+          this.getActiveMap(pool).size < getActiveLimit(pool, this.runtime.env),
+      );
+    if (!paused && this.pressureTimer !== null) {
+      this.runtime.time.clearTimeout(this.pressureTimer);
+      this.pressureTimer = null;
+    }
+    if (!paused || this.pressureTimer !== null || this.pressureRefreshPending) return;
+    this.pressureTimer = this.runtime.time.setTimeout(() => {
+      this.pressureTimer = null;
+      this.pressureRefreshPending = true;
+      void this.runtime.process
+        .refreshHostPressure()
+        .then(() => {
+          if (this.shutdownRequested) return;
+          const pressure = this.runtime.process.readHostPressure();
+          for (const pool of ['default', 'discuss'] as const) this.admitQueuedLaunches(pool, pressure);
+        })
+        .finally(() => {
+          this.pressureRefreshPending = false;
+          this.syncPressureTimer();
+        });
+    }, 5_000);
+    this.pressureTimer.unref?.();
   }
 
   private reserveInternalPermitOrThrow(
@@ -1393,7 +1454,7 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
       this.successionAdmissionRevision++;
       entry.cancellation = { kind: 'cancelled' };
       entry.reject(new Error(QUEUE_CANCELED_MESSAGE));
-      this.admitQueueHead(pool);
+      this.admitQueuedLaunches(pool);
       return entry.cancellation;
     }
     const permit = entry.claimedPermit ?? entry.admittedPermit;
@@ -1413,11 +1474,23 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
     }
   }
 
-  private admitQueueHead(pool: LaunchPool): boolean {
+  private admitQueuedLaunches(pool: LaunchPool, pressure?: HostPressure): boolean {
+    let admitted = false;
+    if (!this.shutdownRequested) {
+      while (this.getQueue(pool).length > 0 && this.getActiveMap(pool).size < getActiveLimit(pool, this.runtime.env)) {
+        if (pool !== 'curate' && this.getActiveMap(pool).size > 0) pressure ??= this.readAdmissionPressure();
+        if (!this.admitQueueHead(pool, pressure)) break;
+        admitted = true;
+      }
+    }
+    this.syncPressureTimer();
+    return admitted;
+  }
+
+  private admitQueueHead(pool: LaunchPool, pressure?: HostPressure): boolean {
     const queue = this.getQueue(pool);
     const head = queue[0];
-    if (!head) return false;
-    if (!this.hasLaunchCapacity(pool)) return false;
+    if (!head || !this.hasLaunchCapacity(pool, pressure)) return false;
     queue.shift();
     this.rejectDuplicateReservation(head.jobId);
     const permit = this.createPermit({

@@ -44,6 +44,9 @@ export class SimulationRuntime implements Runtime {
       runtimePid: this.env.pid(),
     });
     const simulationProcess = {
+      readHostPressure: () => ({ kind: 'unobservable', reason: 'simulation' }),
+      refreshHostPressure: async () => {},
+      stopHostPressure: async () => {},
       failureDomainRoot: { kind: 'unavailable', reason: 'simulation' },
       failureDomainContainment: () => undefined,
       readRecentFailureDomainRefusals: () => [],

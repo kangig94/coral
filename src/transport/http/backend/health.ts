@@ -1,3 +1,4 @@
+import type { HostPressure } from '../../../infra/host-pressure.js';
 import { z } from 'zod';
 import { executionRetryStatusSchema, type ExecutionRetryStatus } from '../../../jobs/records.js';
 import { retentionRunStatusSchema, type RetentionRunStatus } from '../../../store/retention-outcome.js';
@@ -160,6 +161,7 @@ export interface BackendHealth {
   launchStatus?: LaunchStatus;
   listCounts?: Readonly<Record<string, number>>;
   diagnostics?: LaunchPermitDiagnostics & {
+    hostPressure?: HostPressure;
     executionFinishing?: Array<{ jobId: string; execution: number; status: ExecutionRetryStatus }>;
     skippedExecutionFinishingStatuses?: number;
     providerOperationStartupReconciliation?: ProviderOperationStartupStatus;

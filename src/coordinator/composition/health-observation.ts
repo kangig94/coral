@@ -412,6 +412,7 @@ export function createCoordinatorHealthReader({
       ...(shutdownObservation === undefined ? {} : { shutdown: shutdownObservation }),
       diagnostics: {
         ...diagnostics,
+        hostPressure: runtime.process.readHostPressure(),
         failureDomainRoot: runtime.process.failureDomainRoot,
         coordinatorObservedFailureDomainRefusalHistory: {
           entries: runtime.process.readRecentFailureDomainRefusals(),

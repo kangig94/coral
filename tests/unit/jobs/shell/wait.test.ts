@@ -1,3 +1,6 @@
+import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
+import { formatWaitQueued } from '#src/cli/format/wait.js';
+import { parseWaitStreamEventValue } from '#src/jobs/wait/stream-event.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { testJobConversation } from '#tests/helpers/session.js';
 import { StoreCodecError } from '#src/store/body-codec.js';
@@ -101,6 +104,9 @@ function fixture() {
     pollStarted: pollStarted.promise,
     terminalize: () => {
       status = { ...status, phase: 'completed' };
+    },
+    queue: () => {
+      status = { ...status, phase: 'queued' };
     },
     releaseClaim: () => {
       activeJobId = undefined;
@@ -264,4 +270,22 @@ it('settles an active-journal decode failure as unreadable and propagates a code
     { jobId: 'job-1', disposition: 'admitted' },
   ]);
   expect(() => f.wait.readWaitAdmissions(['defect'], 'epoch', {})).toThrow(TypeError);
+});
+
+it('shows the live pressure reason in queued jobs wait progress', async () => {
+  const f = fixture();
+  f.runtime.process.readHostPressure = () => ({ kind: 'pressured', signal: 'memory', reading: 'full avg10=15.00' });
+  const coordinator = new LaunchCoordinator({ runtime: f.runtime });
+  coordinator.requestLaunch('running', 'codex', { kind: 'provider-session', id: 's' }, 'default');
+  coordinator.requestLaunch('job-1', 'codex', { kind: 'provider-session', id: 's' }, 'default');
+  f.deps.launchQueue = coordinator;
+  f.queue();
+  const stream = f.clientWait({ jobIds: ['job-1'], timeoutSeconds: 1 });
+  const delivered = (await nextDelivered(stream)).value;
+  const event = parseWaitStreamEventValue(delivered);
+  expect(event).toMatchObject({ type: 'queued', reason: 'pressure: memory full avg10=15.00' });
+  if (event?.type !== 'queued') throw new Error('Expected queued event');
+  expect(formatWaitQueued(event)).toContain('queued at position 1 (pressure: memory full avg10=15.00)');
+  await stream.return(undefined);
+  await coordinator.settlePendingLaunches();
 });
