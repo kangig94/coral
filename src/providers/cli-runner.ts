@@ -1,3 +1,4 @@
+import { durableCliFailureDomainName } from '../infra/failure-domain.js';
 import { type DurableCliRuntimeRecord, isDurableCliRuntime } from '../runtime/durable-runtime.js';
 import type {
   DurableCliProcessSubject,
@@ -15,13 +16,14 @@ export type DurableContainmentOperatorControl = Readonly<{
 }>;
 
 export type DurableProcessPublicationDisposition =
-  | Readonly<{ kind: 'published' }>
+  | Readonly<{ kind: 'published'; failureDomainReady?: boolean; failureDomainEntered?: boolean }>
   | Readonly<{ kind: 'retained'; reason: string }>;
 
 export type DurableProcessIdentityCallback = (
   identity: DurableCliProcessSubject | DurableProvisionalProcessSubject,
   status?: DurableContainmentStatus,
   control?: DurableContainmentOperatorControl,
+  placement?: 'entered',
 ) => DurableProcessPublicationDisposition;
 
 export type DurableLaunchCallerOwnership = Readonly<{
@@ -72,7 +74,7 @@ export function bindProviderRunner(
       signal,
       pool,
       jobDir,
-      failureDomainName: `job-${executionAddress.jobId}-${executionAddress.execution}`,
+      failureDomainName: durableCliFailureDomainName(executionAddress.jobId, executionAddress.execution),
       jobId: executionAddress.jobId,
       command: request.command,
       args: request.args,

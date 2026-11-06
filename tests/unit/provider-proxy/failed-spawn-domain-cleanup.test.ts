@@ -3,6 +3,7 @@ import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { createProxyAppServerHostAuthority } from '#src/provider-proxy/provider-root-authority.js';
 import type * as ProviderTransport from '#src/providers/app-server-transport.js';
+import { composeChildEnv } from '#src/infra/env-sanitize.js';
 
 const boundary = vi.hoisted(() => ({ spawn: vi.fn(), nextToken: 0 }));
 vi.mock('#src/providers/app-server-transport.js', async (original) => ({
@@ -51,7 +52,7 @@ function createHarness() {
       { signal },
     );
   };
-  return { authority, create, remove, open, root };
+  return { authority, create, remove, open, root, runtime };
 }
 
 describe('failed provider startup leaf cleanup', () => {
@@ -130,4 +131,55 @@ describe('failed provider startup leaf cleanup', () => {
       expect(harness.authority.admissionSnapshot().state.size).toBe(0);
     },
   );
+});
+
+it.each(['entered', 'unobservable'] as const)(
+  'retains a host leaf with %s entry evidence after startup failure',
+  async (kind) => {
+    const h = createHarness();
+    boundary.spawn.mockImplementation(async () => {
+      const directory = '/fixture/run/custody.v1/00000000-0000-4000-8000-000000000001';
+      h.runtime.storage.mkdirSync(directory, { recursive: true });
+      h.runtime.storage.writeAtomicSync(
+        `${directory}/payload-entry.v1.json`,
+        kind === 'entered'
+          ? JSON.stringify({
+              version: 'v1',
+              intentId: '00000000-0000-4000-8000-000000000001',
+              processToken: '00000000-0000-4000-8000-000000000001',
+              process: { pid: 42, incarnation: 'incarnation', processGroupId: 42 },
+            })
+          : '{',
+      );
+      throw new Error('startup failed after placement');
+    });
+    await expect(h.open()).rejects.toThrow('startup failed after placement');
+    expect(h.remove).not.toHaveBeenCalled();
+  },
+);
+
+it('starts unplaced when leaf creation fails after making an empty directory', async () => {
+  const h = createHarness();
+  h.create.mockImplementation((name) => {
+    h.runtime.storage.mkdirSync(`${h.root}/${name}`, { recursive: true });
+    return { kind: 'refused', errno: 'EACCES' };
+  });
+  boundary.spawn.mockImplementation(
+    async (params: Parameters<typeof ProviderTransport.spawnProviderServerTransport>[0]) => {
+      expect(params.options.extraEnv?.CORAL_FAILURE_DOMAIN).toBeUndefined();
+      expect(params.options.exactEnv?.CORAL_FAILURE_DOMAIN).toBeUndefined();
+      const inheritedProxyEnv = {
+        PATH: '/bin',
+        CORAL_FAILURE_DOMAIN_ROOT: h.root,
+        CORAL_FAILURE_DOMAIN: `${h.root}/set-set-id/containment/proxy`,
+      };
+      const childEnv = composeChildEnv(inheritedProxyEnv, params.options.extraEnv ?? {}, 100_000, new Set());
+      expect(childEnv.CORAL_FAILURE_DOMAIN_ROOT).toBeUndefined();
+      expect(childEnv.CORAL_FAILURE_DOMAIN).toBeUndefined();
+      throw new Error('unplaced startup attempted');
+    },
+  );
+  await expect(h.open()).rejects.toThrow('unplaced startup attempted');
+  expect(h.runtime.storage.existsSync(`${h.root}/${h.create.mock.calls[0][0]}`)).toBe(true);
+  expect(h.remove).not.toHaveBeenCalled();
 });

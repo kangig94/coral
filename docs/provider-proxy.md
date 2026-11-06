@@ -36,7 +36,8 @@ fencing, named decisions, proof collection and ordinary disappearance delivery. 
 requires zero live claims. A request while claims remain records a hold whose exit is single-operation
 release or a containment-qualified authority fault; it cannot destroy healthy siblings. A
 `teardown-latched` authority fault still permits the lifecycle's established containment path.
-Unknown observations never prove absence or finalize a job.
+Unknown observations never prove absence or finalize a job. Reaping must stay within the applicable
+[containment scope and evidence contract](./architecture.md#containment-evidence-and-reclamation).
 
 ## Released v0.10.16/17 incumbents
 
@@ -49,8 +50,9 @@ required automatic contender cleanup, so this change does not attempt or claim i
 
 An affected machine needs the old coordinator stopped externally (for example by a machine restart),
 then the fixed coordinator started. Stopping only the old coordinator leaves the old guardians to
-apply their orphan deadline; let them confirm and reap their exact process trees before recovery
-terminalizes the stale records. Do not infer process absence merely from a closed socket or missing
+apply their orphan deadline; recovery must retain the stale records until their recorded process/group
+obligations are confirmed. Those legacy bounds do not prove escaped descendants are gone; see
+[containment scope and evidence](./architecture.md#containment-evidence-and-reclamation). Do not infer process absence merely from a closed socket or missing
 coordinator. The fixed reconciler recognizes the released refinement error when it actually acquires
 ownership or receives ordinary confirmed disappearance; that recognition is not upgrade cleanup.
 
@@ -83,6 +85,8 @@ unavailability. Unattributable invalid frames retain channel-fault provenance at
 first-heartbeat fault race; they produce typed unavailability rather than a definitive remote refusal.
 Encoding failures retain error semantics. Existing recovery deadlines and bounded
 reattachment followed by containment own automatic exits; silence never proves process absence.
+Physical reclamation and absence must follow the
+[containment scope and evidence contract](./architecture.md#containment-evidence-and-reclamation).
 See `establishRoleControl` in `src/coordinator/live/provider-proxy/role-control.ts`.
 These acquisition dispositions are local runtime contracts; capsule and control protocol shapes are unchanged.
 

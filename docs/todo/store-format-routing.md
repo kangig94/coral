@@ -14,7 +14,7 @@ The old illustrative flat path `formats/<fingerprint>/store.db` predates write-o
 
 ## Crash recovery that must precede routing
 
-Coordinator-local provider hosts still have no boot-time containment recovery. `ensureProviderServerHandle` in `src/coordinator/live/provider-hosts/recovery.ts` repairs a host held by the current process; it does not discover one orphaned by a dead coordinator. `routeOrOpenBackendStoreAtStartup` can select a successor epoch before `runStartupRecovery` in `src/coordinator/lifecycle.ts`, so a containment record stored only in the old SQL epoch could disappear from the recovery view while its process group remains alive.
+Coordinator-local provider hosts still have no boot-time containment recovery. `ensureProviderServerHandle` in `src/coordinator/live/provider-hosts/recovery.ts` repairs a host held by the current process; it does not discover one orphaned by a dead coordinator. `routeOrOpenBackendStoreAtStartup` can select a successor epoch before `runStartupRecovery` in `src/coordinator/lifecycle.ts`, so a containment record stored only in the old SQL epoch could disappear from the recovery view while its owned containment remains live. Its platform/placement scope and absence proof must follow the [containment contract](../architecture.md#containment-evidence-and-reclamation).
 
 That recovery needs a format-neutral pre-routing record naming both the exact host containment and the coordinator that owned it. A successor may reap only after positive evidence that the owning coordinator is absent. Keep this terminal, non-inheritable host record distinct from a proxy-set handoff capsule, which a successor can redeem.
 

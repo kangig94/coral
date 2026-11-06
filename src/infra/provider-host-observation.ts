@@ -3,6 +3,7 @@ import { processIncarnationSchema } from './node-process.js';
 
 /** Private wrapper IPC distinguishes provider cessation from wrapper disappearance. */
 export const providerHostObservationSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('provider-host-placed'), processToken: z.string() }),
   z.object({
     kind: z.literal('provider-host-started'),
     processToken: z.string(),

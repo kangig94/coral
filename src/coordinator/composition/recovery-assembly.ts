@@ -110,8 +110,8 @@ function registerRecoverySources(input: RecoveryAssemblyInput): void {
       getCloseProxySetForEpochClosure(),
     ),
   );
-  recoverySources.register(SETTLED_UNBOUND_STATUS_BOUNDARY, (subject, _signal, quarantine) =>
-    createSettledUnboundStatusRetryPlan(recoveryDb(), subject, quarantine, (absence) =>
+  recoverySources.register(SETTLED_UNBOUND_STATUS_BOUNDARY, (subject) =>
+    createSettledUnboundStatusRetryPlan(recoveryDb(), subject, (absence) =>
       world.launchCoordinator.releaseSettledUnboundStatusAfterObservedAbsence(absence),
     ),
   );

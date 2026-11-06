@@ -5,6 +5,17 @@ import { mkdirSync, readdirSync, readFileSync, realpathSync, rmdirSync, writeFil
 import { setTimeout as sleep } from 'node:timers/promises';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 
+/** The owning proxy set is part of a host's failure-domain identity. */
+export function hostFailureDomainName(processToken: string, proxyInstanceId: string | null): string {
+  const host = `host-${processToken}`;
+  return proxyInstanceId === null ? host : `set-${proxyInstanceId}/containment/${host}`;
+}
+
+/** Different executions of one job must never share a payload failure domain. */
+export function durableCliFailureDomainName(jobId: string, execution: number): string {
+  return `job-${jobId}-${execution}`;
+}
+
 export type FailureDomainRoot =
   | Readonly<{ kind: 'placed'; root: string }>
   | Readonly<{ kind: 'unavailable'; reason: string }>
@@ -384,4 +395,56 @@ export async function acquireFailureDomainRoot(unit: string, supervisorLeaf: str
   );
   if (placement.kind === 'unknown') return placement;
   return enableRootControllers(placement.root, deadline);
+}
+
+export type FailureDomainObservation =
+  | Readonly<{ kind: 'absent' }>
+  | Readonly<{ kind: 'populated' }>
+  | Readonly<{ kind: 'missing' }>
+  | Readonly<{ kind: 'unknown'; reason: string }>
+  | Readonly<{ kind: 'unresolved'; reason: string }>;
+
+export type FailureDomainContainment = Readonly<{
+  /** An empty leaf proves tree absence only after this subject's payload entered it. */
+  hasEntered?: () => boolean;
+  observe(): FailureDomainObservation;
+  kill(): DomainEntry;
+}>;
+
+/** ENOENT is compatibility evidence only, never proof of whole-tree absence. */
+export function failureDomainContainment(root: FailureDomainRoot, name: string): FailureDomainContainment | undefined {
+  if (process.platform !== 'linux' || root.kind !== 'placed') return undefined;
+  const path = resolve(root.root, name);
+  return {
+    observe: () => {
+      try {
+        verifiedPath(root, root.root, true);
+      } catch (error) {
+        return { kind: 'unknown', reason: errno(error) };
+      }
+      try {
+        if (!below(root.root, path) || !below(root.root, realpathSync(path)))
+          return { kind: 'unknown', reason: 'EPERM' };
+      } catch (error) {
+        return errno(error) === 'ENOENT' ? { kind: 'missing' } : { kind: 'unknown', reason: errno(error) };
+      }
+      try {
+        const events = readFileSync(join(path, 'cgroup.events'), 'utf8');
+        const populated = /^populated ([01])$/m.exec(events)?.[1];
+        if (populated === undefined) return { kind: 'unknown', reason: 'malformed population evidence' };
+        return { kind: populated === '0' ? 'absent' : 'populated' };
+      } catch (error) {
+        return { kind: 'unknown', reason: errno(error) };
+      }
+    },
+    kill: () => {
+      try {
+        verifiedPath(root, path);
+        writeFileSync(join(path, 'cgroup.kill'), '1');
+        return { kind: 'entered' };
+      } catch (error) {
+        return { kind: 'refused', errno: errno(error) };
+      }
+    },
+  };
 }

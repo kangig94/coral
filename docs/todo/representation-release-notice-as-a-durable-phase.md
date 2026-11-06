@@ -13,7 +13,9 @@ the set and calls `recoverSetAtStartup`; production composition invokes `recover
 whose `set-inheritance` producer calls `inheritProviderProxySet`. Recorded containment absence returns
 `containment-disappeared`; composition passes that observation to `containmentAbsent`, which dispatches the
 same disappearance consumer. The restart path does not remember an old observation. It re-derives a current
-one.
+one. Re-observation must satisfy the applicable
+[containment evidence contract](../architecture.md#containment-evidence-and-reclamation); a recorded decision
+cannot replace the required external evidence.
 
 That is the named exit for the post-bound disappearance park described in
 [`design-rationale`](../design-rationale.md) §12.7. Storing the notice would create durable evidence for a fact

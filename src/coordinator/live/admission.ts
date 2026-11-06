@@ -1,3 +1,4 @@
+import { hostFailureDomainName } from '../../infra/failure-domain.js';
 import { parseCustodyProcessTicket } from '../../infra/custody-process-ticket.js';
 import { raceObserved } from '../../infra/promise-signal.js';
 import type { Runtime } from '../../runtime/ports.js';
@@ -530,10 +531,11 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
     if (options.custodyTicket === undefined) throw new Error('Local provider host requires a custody ticket.');
     const ticket = parseCustodyProcessTicket(options.custodyTicket);
     const root = this.runtime.process.failureDomainRoot;
+    const failureDomainName = hostFailureDomainName(ticket.processToken, null);
     this.runtime.process.sweepHostFailureDomains(this.ownedProviderHostDomains);
-    const intendedPath = root.kind === 'placed' ? `${root.root}/host-${ticket.processToken}` : null;
+    const intendedPath = root.kind === 'placed' ? `${root.root}/${failureDomainName}` : null;
     if (intendedPath !== null) this.ownedProviderHostDomains.add(intendedPath);
-    const leaf = this.runtime.process.createFailureDomain(`host-${ticket.processToken}`, true);
+    const leaf = this.runtime.process.createFailureDomain(failureDomainName, true);
     if (leaf.kind !== 'created' && intendedPath !== null) this.ownedProviderHostDomains.delete(intendedPath);
     const domainEnv: Record<string, string> =
       root.kind === 'placed' && leaf.kind === 'created'
@@ -546,10 +548,11 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
     };
     let processSpawned = false;
     try {
-      return await spawnProviderServerTransport({
+      const handle = await spawnProviderServerTransport({
         runtime: this.runtime,
         options: {
           ...options,
+          failureDomainName: failureDomainName,
           ...(options.exactEnv === undefined
             ? { extraEnv: { ...options.extraEnv, ...domainEnv } }
             : { exactEnv: { ...options.exactEnv, ...domainEnv } }),
@@ -559,11 +562,14 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
         detached: true,
         observeProcessExit: (exited) => {
           processSpawned = true;
-          void exited.then(retireLeaf);
+          if (this.runtime.process.failureDomainContainment(failureDomainName) === undefined)
+            void exited.then(retireLeaf);
         },
         acceptFailedSpawnCleanup,
         ...(recordContainment === undefined ? {} : { recordContainment }),
       });
+      if (!('kind' in handle)) void handle.processCessation.then(retireLeaf);
+      return handle;
     } catch (error: unknown) {
       if (!processSpawned) retireLeaf();
       throw error;

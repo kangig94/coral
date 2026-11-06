@@ -1,3 +1,5 @@
+import { ExecutionAcceptanceRefusedError } from '../../../jobs/finishing.js';
+import { ProcessContainmentError } from '../../../infra/process-containment.js';
 import type { RecoveryObservation } from '../../../recovery/phase-observation.js';
 import { ZodError } from 'zod';
 
@@ -149,6 +151,13 @@ export function settleCoordinatorRecoveryItemWithProvenance(
   ]);
 }
 
+function containmentRefusal(error: unknown): ProcessContainmentError | undefined {
+  if (error instanceof ProcessContainmentError) return error;
+  return error instanceof ExecutionAcceptanceRefusedError && error.cause instanceof ProcessContainmentError
+    ? error.cause
+    : undefined;
+}
+
 export function createRecoveryWalk(
   deps: Readonly<{
     progressStore: JobStore;
@@ -207,6 +216,8 @@ export function createRecoveryWalk(
             processLocalCleanup?.();
             return { kind: 'released' as const };
           } catch (error: unknown) {
+            const refusal = containmentRefusal(error);
+            if (refusal !== undefined) return { kind: 'held' as const, detail: refusal.message };
             return { kind: 'incomplete' as const, error };
           } finally {
             processLocalCleanup = null;
@@ -294,6 +305,11 @@ export function createRecoveryWalk(
     coordinatorCommit: CommitEventsFn,
     report: (message: string) => void,
   ): RecoveryDisposition => {
+    const refusal = containmentRefusal(error);
+    if (refusal !== undefined) {
+      report(`${summary} for ${jobId}: ${refusal.message}. Containment ownership remains held.\n`);
+      return { kind: 'quarantine', detail: `${summary}: ${refusal.message}` };
+    }
     if (isUninterpretableRecord(error)) {
       report(`${summary} for ${jobId}: ${errorMessage(error)}. Left for a build that can read it.\n`);
       return { kind: 'quarantine', detail: `${summary}: record unreadable by this build` };

@@ -1,3 +1,6 @@
+import type { FailureDomainContainment } from '../../../infra/failure-domain.js';
+import { recordedHostFailureDomain } from './host-failure-domain.js';
+import { durableCliFailureDomain } from '../durable-cli-failure-domain.js';
 import { sameEpoch } from '../../../store/epoch/identity.js';
 import { dirname, join } from 'node:path';
 
@@ -6,7 +9,11 @@ import {
   decodeDurableCliProcessRuntimeMetaV1,
   decodeDurableCliProvisionalProcessRuntimeMeta,
 } from '../../../jobs/runtime-meta.js';
-import { observeRecordedContainment, reapRecordedContainment } from '../../../infra/process-containment.js';
+import {
+  observeRecordedContainment,
+  reapRecordedContainment,
+  createFailureDomainContainmentObservation,
+} from '../../../infra/process-containment.js';
 import { observeCustodyProcess } from '../../../infra/custody-process-ticket.js';
 import { createMonotonicClock } from '../../../infra/monotonic-clock.js';
 import { isProcessIncarnation, type ProcessIncarnation } from '../../../infra/node-process.js';
@@ -184,6 +191,7 @@ function observePreCoverageCustody(
   entries: readonly CustodyEntry[],
   ambiguousOriginalPath: boolean,
 ): Readonly<{ kind: 'alive' | 'undecidable' | 'discharged' }> {
+  const leaves: Array<() => boolean> = [];
   for (const entry of entries) {
     if (entry.kind === 'unreadable') return { kind: 'undecidable' };
     const keyed = entry.intent.epochKey !== undefined;
@@ -198,6 +206,13 @@ function observePreCoverageCustody(
     if (entry.binding.process === null) return { kind: 'undecidable' };
     const process = entry.binding.process;
     if (!isProcessIncarnation(process.incarnation)) return { kind: 'undecidable' };
+    if (entry.intent.owner === 'provider-host') {
+      const { permitsIndependentAbsenceDecision: leafAbsent } = createFailureDomainContainmentObservation(
+        recordedHostFailureDomain(runtime, runtime.paths.coral.coordinator.runDir, entry, entries),
+      );
+      leaves.push(leafAbsent);
+      if (!leafAbsent()) return { kind: 'undecidable' };
+    }
     const observed = observeCustodyProcess(
       entry.intent.owner,
       { pid: process.pid, incarnation: process.incarnation, processGroupId: process.processGroupId, childRoot: null },
@@ -210,14 +225,15 @@ function observePreCoverageCustody(
     if (observed.kind === 'alive') return { kind: 'alive' };
     if (observed.kind !== 'absent') return { kind: 'undecidable' };
   }
-  const shipped = observeShippedDurableCliProcesses(runtime, candidate);
+  const shipped = observeShippedDurableCliProcesses(runtime, candidate, leaves);
   if (shipped !== 'absent') return { kind: shipped === 'alive' ? 'alive' : 'undecidable' };
-  return { kind: 'discharged' };
+  return leaves.every((observe) => observe()) ? { kind: 'discharged' } : { kind: 'undecidable' };
 }
 
 function observeShippedDurableCliProcesses(
   runtime: Runtime,
   candidate: ClosureCandidate,
+  leaves: Array<() => boolean>,
 ): 'alive' | 'unknown' | 'absent' {
   let db: ReturnType<Runtime['storage']['openSqliteDatabaseSync']>;
   try {
@@ -243,6 +259,11 @@ function observeShippedDurableCliProcesses(
       const record = full ?? predecessor ?? provisionalRecord;
       if (record === null || record.jobId !== (version?.[2] ?? provisional?.[1])) return 'unknown';
       if ('processGroupId' in record) {
+        const failureDomain = durableCliFailureDomain(runtime, db, record.jobId, record);
+        const { permitsIndependentAbsenceDecision: leafAbsent, failureDomain: trackedFailureDomain } =
+          createFailureDomainContainmentObservation(failureDomain);
+        leaves.push(leafAbsent);
+        if (!leafAbsent()) return 'unknown';
         const contained = observeRecordedContainment(
           {
             pid: record.pid,
@@ -251,6 +272,7 @@ function observeShippedDurableCliProcesses(
             childRoot: full?.childRoot ?? null,
           },
           {
+            failureDomain: trackedFailureDomain,
             process: runtime.process,
             platform: runtime.env.platform() as NodeJS.Platform,
             readProcessIncarnation: (pid, platform) => runtime.process.readProcessIncarnation(pid, platform),
@@ -267,7 +289,7 @@ function observeShippedDurableCliProcesses(
       if (incarnation === null) return 'unknown';
       if (incarnation === record.incarnation) return 'alive';
     }
-    return 'absent';
+    return leaves.every((observe) => observe()) ? 'absent' : 'unknown';
   } catch {
     return 'unknown';
   } finally {
@@ -275,15 +297,21 @@ function observeShippedDurableCliProcesses(
   }
 }
 
-type AbsenceProof =
-  | Readonly<{ kind: 'reap'; confirmed: Set<string> }>
-  | Readonly<{ kind: 'confirmed-only'; confirmed: ReadonlySet<string> }>;
+type LeafObservation = ReturnType<typeof createFailureDomainContainmentObservation<FailureDomainContainment>>;
+
+type AbsenceProof = Readonly<{ leaves: Map<string, LeafObservation> }> &
+  (
+    | Readonly<{ kind: 'reap'; confirmed: Set<string> }>
+    | Readonly<{ kind: 'confirmed-only'; confirmed: ReadonlySet<string> }>
+  );
 
 type RecordedProcess = Readonly<{ pid: number; incarnation: ProcessIncarnation; processGroupId: number }>;
 type AbsenceDecisionContext = Readonly<{
   runtime: Runtime;
   signal: AbortSignal;
   absence: AbsenceProof;
+  candidate: ClosureCandidate;
+  entries: readonly CustodyEntry[];
 }>;
 
 /** Only an owner's decisive absence discharges a bound process; a live or unanswered observation never does. */
@@ -291,14 +319,61 @@ type RecordedAbsence = Readonly<{ kind: 'absent' }> | Readonly<{ kind: 'not-prov
 const ABSENT: RecordedAbsence = { kind: 'absent' };
 const NOT_PROVEN_ABSENT: RecordedAbsence = { kind: 'not-proven-absent' };
 
+function observeRecordedAbsenceDomains(
+  { runtime, absence, candidate, entries }: Omit<AbsenceDecisionContext, 'signal'>,
+  entry: Extract<CustodyEntry, { kind: 'bound' }>,
+  identity: RecordedProcess,
+): Readonly<{ host: LeafObservation; durable: LeafObservation }> {
+  const hostKey = `host:${entry.intent.id}`;
+  let host = absence.leaves.get(hostKey);
+  if (host === undefined) {
+    host = createFailureDomainContainmentObservation(
+      entry.intent.owner === 'provider-host'
+        ? recordedHostFailureDomain(runtime, runtime.paths.coral.coordinator.runDir, entry, entries)
+        : undefined,
+    );
+    absence.leaves.set(hostKey, host);
+  }
+  const durableKey = `durable:${entry.intent.id}`;
+  let durable = absence.leaves.get(durableKey);
+  if (durable === undefined) {
+    let failureDomain: FailureDomainContainment | undefined;
+    if (entry.intent.owner === 'durable-cli' && runtime.process.failureDomainRoot.kind === 'placed') {
+      try {
+        const db = runtime.storage.openSqliteDatabaseSync(candidate.epoch.path, { readOnly: true });
+        try {
+          failureDomain = durableCliFailureDomain(runtime, db, entry.intent.operationId, identity);
+        } finally {
+          db.close();
+        }
+      } catch {
+        failureDomain = {
+          observe: () => ({ kind: 'unknown', reason: 'execution identity unavailable' }),
+          kill: () => ({ kind: 'refused', errno: 'EPERM' }),
+        };
+      }
+    }
+    durable = createFailureDomainContainmentObservation(failureDomain);
+    absence.leaves.set(durableKey, durable);
+  }
+  return { host, durable };
+}
+
 async function decideRecordedAbsence(
-  { runtime, signal, absence }: AbsenceDecisionContext,
+  { runtime, signal, absence, candidate, entries }: AbsenceDecisionContext,
   entry: Extract<CustodyEntry, { kind: 'bound' }>,
   identity: RecordedProcess,
 ): Promise<RecordedAbsence> {
+  const { host, durable } = observeRecordedAbsenceDomains({ runtime, absence, candidate, entries }, entry, identity);
+  if (!host.permitsIndependentAbsenceDecision()) return NOT_PROVEN_ABSENT;
+  if (absence.kind === 'confirmed-only' && !durable.permitsIndependentAbsenceDecision()) return NOT_PROVEN_ABSENT;
   const absenceKey = JSON.stringify([entry.intent.id, identity.pid, identity.incarnation, identity.processGroupId]);
   if (entry.intent.owner === 'durable-cli' && absence.kind === 'confirmed-only') {
-    return absence.confirmed.has(absenceKey) ? ABSENT : NOT_PROVEN_ABSENT;
+    return absence.confirmed.has(absenceKey) &&
+      durable.permitsIndependentAbsenceDecision() &&
+      host.permitsIndependentAbsenceDecision()
+      ? ABSENT
+      : NOT_PROVEN_ABSENT;
   }
   if (entry.intent.owner === 'durable-cli' && absence.kind === 'reap') {
     const clock = createMonotonicClock(closureClockScope, {
@@ -311,6 +386,7 @@ async function decideRecordedAbsence(
         [],
         clock.shiftMilliseconds(clock.now(), REAP_DEADLINE_MS),
         {
+          failureDomain: durable.failureDomain,
           maxRecordedRoots: 0,
           clock,
           process: runtime.process,
@@ -319,7 +395,12 @@ async function decideRecordedAbsence(
           signal,
         },
       );
-      if (outcome.kind !== 'containment-absent') return NOT_PROVEN_ABSENT;
+      if (
+        outcome.kind !== 'containment-absent' ||
+        !durable.permitsIndependentAbsenceDecision() ||
+        !host.permitsIndependentAbsenceDecision()
+      )
+        return NOT_PROVEN_ABSENT;
       absence.confirmed.add(absenceKey);
       return ABSENT;
     } catch {
@@ -335,7 +416,11 @@ async function decideRecordedAbsence(
       readProcessIncarnation: (pid, platform) => runtime.process.readProcessIncarnation(pid, platform),
     },
   );
-  return observed.kind === 'absent' ? ABSENT : NOT_PROVEN_ABSENT;
+  return observed.kind === 'absent' &&
+    host.permitsIndependentAbsenceDecision() &&
+    durable.permitsIndependentAbsenceDecision()
+    ? ABSENT
+    : NOT_PROVEN_ABSENT;
 }
 
 function providerOperationCustodyReason(
@@ -393,6 +478,16 @@ async function certifyMatchedCustody(options: {
   const { runtime, index, candidate, matching, signal, closeProxySet, jobEpochKey, absence } = options;
   const receipts = readDurableCliControllerReceipts(runtime, runtime.paths.coral.coordinator.runDir);
   const obligations: EpochClosureEvidence['obligations'][number][] = [];
+  for (const entry of matching) {
+    if (entry.kind !== 'bound' || entry.binding.process === null) continue;
+    const process = entry.binding.process;
+    if (!isProcessIncarnation(process.incarnation)) continue;
+    observeRecordedAbsenceDomains({ runtime, absence, candidate, entries: matching }, entry, {
+      pid: process.pid,
+      incarnation: process.incarnation,
+      processGroupId: process.processGroupId,
+    });
+  }
   if (closeProxySet !== undefined) await closeRecordedProxySets(matching, closeProxySet, signal);
   for (const entry of matching) {
     if (entry.kind === 'unreadable') {
@@ -477,7 +572,11 @@ async function certifyMatchedCustody(options: {
       };
     }
     const identity = { pid: process.pid, incarnation: process.incarnation, processGroupId: process.processGroupId };
-    const recorded = await decideRecordedAbsence({ runtime, signal, absence }, entry, identity);
+    const recorded = await decideRecordedAbsence(
+      { runtime, signal, absence, candidate, entries: matching },
+      entry,
+      identity,
+    );
     if (recorded.kind !== 'absent') {
       return {
         executionDischarge: 'undecidable',
@@ -492,7 +591,9 @@ async function certifyMatchedCustody(options: {
       evidence: `recorded process ${process.pid}/${process.incarnation} and group ${process.processGroupId} absent`,
     });
   }
-  return { executionDischarge: 'certified', obligations, reason: 'owners certified every recorded custody obligation' };
+  return [...absence.leaves.values()].every((leaf) => leaf.permitsIndependentAbsenceDecision())
+    ? { executionDischarge: 'certified', obligations, reason: 'owners certified every recorded custody obligation' }
+    : { executionDischarge: 'undecidable', obligations, reason: 'recorded leaf absence changed during certification' };
 }
 
 async function certifyCustody(
@@ -504,7 +605,7 @@ async function certifyCustody(
   signal: AbortSignal,
   closeProxySet: CloseProxySet | undefined,
   jobEpochKey: string,
-  absence: AbsenceProof = { kind: 'reap', confirmed: new Set() },
+  absence: AbsenceProof = { kind: 'reap', confirmed: new Set(), leaves: new Map() },
 ): Promise<Pick<EpochClosureEvidence, 'executionDischarge' | 'obligations' | 'reason'>> {
   if (!hasEpochCustodyCoverage(runtime, dirname(candidate.epoch.path), runtime.paths.coral.coordinator.runDir)) {
     return {
@@ -579,17 +680,22 @@ async function certifyRetiringEpochCustody(
     epochKey,
     absence,
   );
-  return settlement.executionDischarge === 'certified';
+  return (
+    settlement.executionDischarge === 'certified' &&
+    [...absence.leaves.values()].every((leaf) => leaf.permitsIndependentAbsenceDecision())
+  );
 }
 
 /** Only `certify` may discharge custody; `confirm` must neither wait on a process nor discharge a new obligation. */
 export class RetiringCustodyCertificate {
   readonly #epochKey: string;
   readonly #confirmedAbsent: ReadonlySet<string>;
+  readonly #leaves: Map<string, LeafObservation>;
 
-  private constructor(epochKey: string, confirmedAbsent: ReadonlySet<string>) {
+  private constructor(epochKey: string, confirmedAbsent: ReadonlySet<string>, leaves: Map<string, LeafObservation>) {
     this.#epochKey = epochKey;
     this.#confirmedAbsent = confirmedAbsent;
+    this.#leaves = leaves;
   }
 
   static async certify(
@@ -599,15 +705,27 @@ export class RetiringCustodyCertificate {
     signal: AbortSignal,
   ): Promise<RetiringCustodyCertificate | null> {
     const confirmed = new Set<string>();
-    const certified = await certifyRetiringEpochCustody(runtime, index, epochKey, signal, { kind: 'reap', confirmed });
-    return certified ? new RetiringCustodyCertificate(epochKey, confirmed) : null;
+    const leaves = new Map<string, LeafObservation>();
+    const certified = await certifyRetiringEpochCustody(runtime, index, epochKey, signal, {
+      kind: 'reap',
+      confirmed,
+      leaves,
+    });
+    return certified && [...leaves.values()].every((leaf) => leaf.permitsIndependentAbsenceDecision())
+      ? new RetiringCustodyCertificate(epochKey, confirmed, leaves)
+      : null;
   }
 
   confirm(runtime: Runtime, index: JobLocationIndex, signal: AbortSignal): Promise<boolean> {
     return certifyRetiringEpochCustody(runtime, index, this.#epochKey, signal, {
       kind: 'confirmed-only',
       confirmed: this.#confirmedAbsent,
+      leaves: this.#leaves,
     });
+  }
+
+  confirmLeafAbsence(): boolean {
+    return [...this.#leaves.values()].every((leaf) => leaf.permitsIndependentAbsenceDecision());
   }
 }
 
@@ -730,6 +848,7 @@ export async function settleSupersededEpochClosures(
         (address) =>
           !sameEpoch(address.epochKey, candidate.epochKey) && address.originalPath === candidate.originalPath,
       );
+    const absence: AbsenceProof = { kind: 'reap', confirmed: new Set(), leaves: new Map() };
     const settlement = predatesCustodyCoverage(runtime, candidate)
       ? settlePreCoverageCustody(runtime, candidate, custody, ambiguousOriginalPath)
       : await certifyCustody(
@@ -741,7 +860,12 @@ export async function settleSupersededEpochClosures(
           closureSignal,
           dataOutcome === 'retained' ? closeProxySet : undefined,
           jobEpochKey,
+          absence,
         );
+    if (![...absence.leaves.values()].every((leaf) => leaf.permitsIndependentAbsenceDecision())) {
+      settlement.executionDischarge = 'undecidable';
+      settlement.reason = 'recorded leaf absence changed before epoch closure';
+    }
     if (isUncertifiable(candidate.epochKey)) continue;
     keepRecorded(
       recordEpochClosure(runtime, stateRoot, {

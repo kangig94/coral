@@ -1,6 +1,11 @@
+import type { FailureDomainContainment } from '../../../infra/failure-domain.js';
 import { errorMessage } from '../../../infra/error-format.js';
 import { createMonotonicClock } from '../../../infra/monotonic-clock.js';
-import { reapRecordedContainment } from '../../../infra/process-containment.js';
+import {
+  reapRecordedContainment,
+  type createFailureDomainAbsenceObserver,
+  createFailureDomainContainmentObservation,
+} from '../../../infra/process-containment.js';
 import type { ProviderProxySetContainmentEvidence } from '../../../provider-proxy/containment-proof-contract.js';
 import { MAX_PROXY_RECORDED_PROVIDER_ROOTS } from '../../../provider-proxy/enforcement.js';
 import { providerProxyDisappearanceReceipt } from '../../../provider-proxy/protocol.js';
@@ -36,6 +41,7 @@ export type ProviderProxySetRecordedContainmentReaper = (
   signal: AbortSignal,
   onSignal: (signal: ProviderProxySetContainmentSignal) => void,
   assertSignalAuthorized?: () => void,
+  absenceObserver?: ReturnType<typeof createFailureDomainAbsenceObserver>,
 ) => Promise<ProviderProxySetRecordedContainmentReapResult>;
 
 export type DurableProviderProxySetContainmentReobservation =
@@ -57,6 +63,8 @@ export async function reobserveDurableProviderProxySetContainment(
     proof: ProviderProxySetFencedContainmentProof;
     signal: AbortSignal;
     reapRecordedContainment: ProviderProxySetRecordedContainmentReaper;
+    failureDomain?: Pick<FailureDomainContainment, 'observe'>;
+    absenceObserver?: ReturnType<typeof createFailureDomainAbsenceObserver>;
   }>,
 ): Promise<DurableProviderProxySetContainmentReobservation> {
   const evidence = providerProxySetContainmentEvidenceFor(options.proof, options.identity);
@@ -65,14 +73,23 @@ export async function reobserveDurableProviderProxySetContainment(
     return { kind: 'retry', reason: `containment evidence was ${evidence.kind}` };
   }
   let transferred = false;
+  const observation = createFailureDomainContainmentObservation(options.failureDomain, options.absenceObserver);
+  let signalDelivered = false;
   try {
     const outcome = await options.reapRecordedContainment(
       options.identity,
       options.proof,
       options.signal,
-      () => undefined,
+      () => {
+        signalDelivered = true;
+      },
+      undefined,
+      observation.permitsIndependentAbsenceDecision,
     );
+    options.signal.throwIfAborted();
     if (outcome.kind === 'containment-absent') {
+      if (!observation.permitsIndependentAbsenceDecision())
+        return { kind: 'publish-hold', evidence, reapOutcome: { kind: 'identity-unobservable', signalDelivered } };
       transferred = true;
       return {
         kind: 'retire',
@@ -88,21 +105,24 @@ export async function reobserveDurableProviderProxySetContainment(
   }
 }
 
-/** Builds the only reaper that can turn an identity-bound proof into recorded-target signal authority. */
 export function createProviderProxySetRecordedContainmentReaper(
   runtime: Runtime,
 ): ProviderProxySetRecordedContainmentReaper {
-  return async (identity, proof, signal, onSignal, assertSignalAuthorized) => {
+  return async (identity, proof, signal, onSignal, assertSignalAuthorized, absenceObserver) => {
     const evidence = providerProxySetContainmentEvidenceFor(proof, identity);
     if (evidence.kind !== 'reap-required') {
       throw new Error('provider_proxy_set_containment_reap_proof_not_reap_required');
     }
     const clock = createMonotonicClock(providerSetDisappearanceClockScope);
+    let signalDelivered = false;
+    const failureDomain = runtime.process.failureDomainContainment(`set-${identity.proxyInstanceId}/containment`);
+    const observation = createFailureDomainContainmentObservation(failureDomain, absenceObserver);
     const outcome = await reapRecordedContainment(
       evidence.containment,
       evidence.recordedRoots,
       clock.shiftMilliseconds(clock.now(), PROXY_TEARDOWN_RESERVE_MS),
       {
+        failureDomain: observation.failureDomain,
         maxRecordedRoots: MAX_PROXY_RECORDED_PROVIDER_ROOTS,
         clock,
         process: runtime.process,
@@ -111,6 +131,7 @@ export function createProviderProxySetRecordedContainmentReaper(
         signal,
         assertSignalAuthorized,
         onSignal: ({ signal: delivered }) => {
+          signalDelivered = true;
           if (delivered === 'SIGTERM' || delivered === 'SIGKILL') onSignal(delivered);
         },
       },
@@ -119,6 +140,7 @@ export function createProviderProxySetRecordedContainmentReaper(
     if (outcome.kind !== 'containment-absent') return outcome;
     const currentness = verifyProviderProxySetContainmentProofCurrent(proof, identity);
     if (currentness.kind !== 'current') return currentness;
+    if (!observation.permitsIndependentAbsenceDecision()) return { kind: 'identity-unobservable', signalDelivered };
     return {
       kind: 'containment-absent',
       disappearanceReceipt: providerProxyDisappearanceReceipt(evidence.containment, evidence.recordedRoots),

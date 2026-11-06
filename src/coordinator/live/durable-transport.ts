@@ -28,6 +28,7 @@ import type {
 import { type GracefulKillByPidOutcome, type GracefulKillOutcome } from '../../infra/process-supervision.js';
 import { createMonotonicClock, createObservedDuration } from '../../infra/monotonic-clock.js';
 import {
+  createFailureDomainContainmentObservation,
   observeRecordedContainment,
   ProcessContainmentError,
   reapRecordedContainment,
@@ -97,6 +98,7 @@ export type DurableProcessPublication =
 
 export type DurableProcessRetention = Readonly<{
   kind: 'recorded-wrapper-group';
+  failureDomainName?: string;
   provider: string;
   jobDir: string;
   jobId?: string;
@@ -149,6 +151,7 @@ function resolveDurableProcessContainment(
   runtime: Runtime,
   retained: DurableProcessRetention,
   operation: Readonly<{ kind: 'observe' }>,
+  leaf: DurableTransportState['leaf'],
 ): Promise<DurableContainmentObservationOutcome>;
 function resolveDurableProcessContainment(
   runtime: Runtime,
@@ -158,11 +161,13 @@ function resolveDurableProcessContainment(
     signalAuthority: DurableLaunchSignalAuthority | undefined;
     signal: AbortSignal;
   }>,
+  leaf: DurableTransportState['leaf'],
 ): Promise<DurableProcessTerminationOutcome>;
 async function resolveDurableProcessContainment(
   runtime: Runtime,
   retained: DurableProcessRetention,
   operation: DurableContainmentOperation,
+  leaf: DurableTransportState['leaf'],
 ): Promise<DurableContainmentObservationOutcome | DurableProcessTerminationOutcome> {
   const containment = retained.containment;
   const pid = containment.pid;
@@ -175,6 +180,7 @@ async function resolveDurableProcessContainment(
     const observation = observeRecordedContainment(
       { ...containment, childRoot: containment.childRoot },
       {
+        failureDomain: leaf.failureDomain,
         process: runtime.process,
         platform: runtime.env.platform() as NodeJS.Platform,
         readProcessIncarnation: (targetPid, platform) => runtime.process.readProcessIncarnation(targetPid, platform),
@@ -201,6 +207,7 @@ async function resolveDurableProcessContainment(
         recordedRoots,
         clock.shiftMilliseconds(clock.now(), DURABLE_PROCESS_CLEANUP_DEADLINE_MS),
         {
+          failureDomain: leaf.failureDomain,
           maxRecordedRoots: 1,
           clock,
           process: runtime.process,
@@ -247,6 +254,9 @@ async function resolveDurableProcessContainment(
     }
   }
 
+  if (outcome.kind === 'absence-observed' && !leaf.permitsIndependentAbsenceDecision()) {
+    return { kind: 'target-unobservable', pid, stage: 'after-sigkill' };
+  }
   return outcome.kind === 'absence-observed'
     ? // eslint-disable-next-line no-restricted-syntax -- DurableContainmentAbsenceCapability may only be minted by resolveDurableProcessContainment.
       (Object.freeze({ kind: 'observed-absent', pid, retention: retained }) as DurableContainmentAbsenceCapability)
@@ -321,6 +331,11 @@ type PendingWrapperHold = {
 };
 
 type DurableTransportState = {
+  placement: { entered: boolean };
+  leaf: Readonly<{
+    failureDomain: ReturnType<Runtime['process']['failureDomainContainment']>;
+    permitsIndependentAbsenceDecision: () => boolean;
+  }>;
   forwardExternalAbort: (() => void) | null;
   abortHandler: (() => void) | null;
   abortedBySignal: boolean;
@@ -351,8 +366,15 @@ type DurableTransportState = {
   pendingSettlement: Promise<void>;
 };
 
-function createDurableTransportState(): DurableTransportState {
+function createDurableTransportState(params: SpawnDurableJobTransportParams): DurableTransportState {
+  const placement = { entered: false };
+  const domain = params.runtime.process.failureDomainContainment(params.options.failureDomainName);
+  const leaf = createFailureDomainContainmentObservation(
+    domain === undefined ? undefined : { ...domain, hasEntered: () => placement.entered },
+  );
   return {
+    placement,
+    leaf,
     forwardExternalAbort: null,
     abortHandler: null,
     abortedBySignal: false,
@@ -547,6 +569,7 @@ async function settleDurableProviderResultContainment(
     if (childRoot !== null) {
       const subject = { ...state.retainedProcess.containment, childRoot };
       const observation = observeRecordedContainment(subject, {
+        failureDomain: state.leaf.failureDomain,
         process: runtime.process,
         platform: runtime.env.platform() as NodeJS.Platform,
         readProcessIncarnation: (pid, platform) => runtime.process.readProcessIncarnation(pid, platform),
@@ -555,9 +578,14 @@ async function settleDurableProviderResultContainment(
         await raceObserved([runtime.time.sleep(CONTAINMENT_DISAPPEARANCE_CONFIRM_MS), state.containmentAbsence]);
         if (state.containmentAbsenceConfirmed) return { kind: 'absence-confirmed' };
         if (state.containmentAbandoned) return { kind: 'operator-abandoned' };
-        const confirmation = await resolveDurableProcessContainment(runtime, state.retainedProcess, {
-          kind: 'observe',
-        });
+        const confirmation = await resolveDurableProcessContainment(
+          runtime,
+          state.retainedProcess,
+          {
+            kind: 'observe',
+          },
+          state.leaf,
+        );
         if (confirmation.kind === 'observed-absent') {
           const release = releaseCleanupOwnership(confirmation);
           return release.kind === 'released' ? { kind: 'absence-confirmed' } : { kind: 'held', reason: release.reason };
@@ -616,6 +644,7 @@ function prepareDurableWrapperPublication(
   state.signalAuthority = launch.signalAuthority;
   const wrapperGroup = {
     kind: 'recorded-wrapper-group',
+    failureDomainName: options.failureDomainName,
     provider: options.provider,
     jobDir: options.jobDir,
     ...(options.jobId === undefined ? {} : { jobId: options.jobId }),
@@ -840,7 +869,7 @@ async function executeDurableLaunch(
   state: DurableTransportState,
   signal: AbortSignal | undefined,
   acceptPendingWrapper: (obligation: DurablePendingLaunchObligation) => Readonly<{ kind: 'accepted' }>,
-  publishWrapperSpawned: (launch: DurableWrapperSpawned) => void,
+  publishWrapperSpawned: (launch: DurableWrapperSpawned) => boolean,
   publishSpawned: (launch: DurableReadySpawn) => void,
   enterPendingWrapperHold: (obligation: DurablePendingLaunchObligation | null) => void,
   enterContainmentHold: (reason: string) => void,
@@ -861,6 +890,12 @@ async function executeDurableLaunch(
     env: options.exactEnv,
     onWrapperSpawned: acceptPendingWrapper,
     onWrapperIdentified: publishWrapperSpawned,
+    onWrapperEntered: () => {
+      const subject = state.provisionalSubject;
+      if (subject === null) return;
+      const publication = options.onDurableProcessIdentity?.(subject, undefined, undefined, 'entered');
+      state.placement.entered ||= publication?.kind === 'published' && publication.failureDomainEntered === true;
+    },
     onSpawned: publishSpawned,
   };
   if (signal) {
@@ -960,11 +995,16 @@ function cleanupDurableContainment(
   const generation = ++state.cleanupGeneration;
   const abortController = new AbortController();
   state.cleanupAbortController = abortController;
-  const cleanupAttempt = resolveDurableProcessContainment(runtime, cleanupRetention, {
-    kind: 'terminate',
-    signalAuthority: state.signalAuthority,
-    signal: abortController.signal,
-  });
+  const cleanupAttempt = resolveDurableProcessContainment(
+    runtime,
+    cleanupRetention,
+    {
+      kind: 'terminate',
+      signalAuthority: state.signalAuthority,
+      signal: abortController.signal,
+    },
+    state.leaf,
+  );
   state.unsettledCleanupAttempts.add(cleanupAttempt);
   const cleanupPromise = cleanupAttempt.then(
     (outcome) => {
@@ -1022,10 +1062,16 @@ function releaseDurableCleanupOwnership(
   if (absence.retention !== state.retainedProcess) {
     return { kind: 'retained', reason: 'durable containment identity changed after absence observation' };
   }
+  if (!state.leaf.permitsIndependentAbsenceDecision()) {
+    return { kind: 'retained', reason: 'durable job leaf absence is no longer observable' };
+  }
   const wasHeld = state.providerResultHeld;
   if (wasHeld) {
     const publication = publishContainmentStatus({ kind: 'absence-confirmed' });
     if (publication.kind === 'retained') return publication;
+  }
+  if (!state.leaf.permitsIndependentAbsenceDecision()) {
+    return { kind: 'retained', reason: 'durable job leaf absence is no longer observable' };
   }
   state.cleanupAbortController?.abort();
   state.cleanupAbortController = null;
@@ -1160,12 +1206,13 @@ function publishDurableContainmentStatus(
 function publishDurableProcessIdentity(
   params: SpawnDurableJobTransportParams,
   subject: DurableCliProcessSubject | DurableProvisionalProcessSubject,
-): void {
+): boolean {
   const { options } = params;
   const disposition = options.onDurableProcessIdentity?.(subject) ?? { kind: 'published' as const };
   if (disposition.kind === 'retained') {
     throw new Error(`durable process identity publication retained: ${disposition.reason}`);
   }
+  return disposition.failureDomainReady === true;
 }
 
 function createDurablePendingWrapperControl(params: SpawnDurableJobTransportParams, state: DurableTransportState) {
@@ -1300,7 +1347,7 @@ async function runDurableTransportLaunch(
   signal: AbortSignal | undefined,
   control: {
     acceptPendingWrapper: (obligation: DurablePendingLaunchObligation) => Readonly<{ kind: 'accepted' }>;
-    publishWrapperSpawned: (launch: DurableWrapperSpawned) => void;
+    publishWrapperSpawned: (launch: DurableWrapperSpawned) => boolean;
     publishSpawned: (launch: DurableReadySpawn) => void;
     enterPendingWrapperHold: (obligation: DurablePendingLaunchObligation | null) => void;
     enterContainmentHold: (reason: string) => void;
@@ -1352,7 +1399,7 @@ async function runDurableTransportLaunch(
 }
 
 export async function spawnDurableJobTransport(params: SpawnDurableJobTransportParams): Promise<CliExecResult> {
-  const state = createDurableTransportState();
+  const state = createDurableTransportState(params);
   const signal = createDurableTransportAbortSignal(params, state);
   state.containmentAbsence = new Promise<void>((resolve) => {
     state.resolveContainmentAbsence = resolve;
@@ -1378,7 +1425,7 @@ export async function spawnDurableJobTransport(params: SpawnDurableJobTransportP
 
   const publishContainmentStatus = (status: DurableContainmentStatus): DurableProcessPublicationDisposition =>
     publishDurableContainmentStatus(params, state, status, operatorControl);
-  const publishProcessIdentity = (subject: DurableCliProcessSubject | DurableProvisionalProcessSubject): void =>
+  const publishProcessIdentity = (subject: DurableCliProcessSubject | DurableProvisionalProcessSubject): boolean =>
     publishDurableProcessIdentity(params, subject);
 
   const abandonCleanupOwnership = (): AbortHoldDisposition =>
@@ -1413,9 +1460,9 @@ export async function spawnDurableJobTransport(params: SpawnDurableJobTransportP
   const settleProviderResultContainment = (): Promise<DurableProviderResultDisposition> =>
     settleDurableProviderResultContainment(params, state, cleanup, releaseCleanupOwnership);
 
-  const publishWrapperSpawned = (launch: DurableWrapperSpawned): void => {
+  const publishWrapperSpawned = (launch: DurableWrapperSpawned): boolean => {
     const initialRetention = prepareDurableWrapperPublication(params, state, launch);
-    if (initialRetention === null) return;
+    if (initialRetention === null) return false;
     params.cleanupRetentions.set(cleanup, initialRetention);
     params.cleanupHandles.set(state.cleanupKey as symbol, cleanup);
     const setPublication = (publication: DurableProcessPublication): DurableProcessRetention => {
@@ -1430,7 +1477,7 @@ export async function spawnDurableJobTransport(params: SpawnDurableJobTransportP
         state.provisionalSubject as DurableProvisionalProcessSubject,
         setPublication,
       );
-      publishProcessIdentity(state.provisionalSubject as DurableProvisionalProcessSubject);
+      const failureDomainReady = publishProcessIdentity(state.provisionalSubject as DurableProvisionalProcessSubject);
       if (runtimePublicationFailure !== null) throw runtimePublicationFailure.error;
       if (state.abortedBySignal) {
         enterContainmentHold('termination requested; process absence is not yet proven');
@@ -1439,6 +1486,7 @@ export async function spawnDurableJobTransport(params: SpawnDurableJobTransportP
           enterContainmentHold(errorMessage(error));
         });
       }
+      return failureDomainReady;
     } finally {
       releasePendingLaunch();
     }

@@ -1,11 +1,12 @@
+import type { FailureDomainContainment } from '../../../infra/failure-domain.js';
 import type { ProcessIncarnation } from '../../../infra/node-process.js';
 
-import { backendLog } from '../../../infra/backend-log.js';
-import { errorMessage, formatError } from '../../../infra/error-format.js';
+import { formatError } from '../../../infra/error-format.js';
 import type { MonotonicClock } from '../../../infra/monotonic-clock.js';
 import {
   ProcessContainmentError,
   reapRecordedContainment,
+  createFailureDomainContainmentObservation,
   type RecordedContainmentIdentity,
   type RecordedProcessIdentity,
 } from '../../../infra/process-containment.js';
@@ -18,8 +19,6 @@ import {
 } from '../../../provider-proxy/orphan-deadline.js';
 import type { ProviderArtifactHandleInput, ProviderTerminalEventBody } from '../../../providers/contract.js';
 import type { BoundProvider } from '../../../providers/bound-provider-contract.js';
-import type { Database } from '../../../store/db.js';
-import { deleteProviderOperation } from '../../../store/provider-operation-journal.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import { readContinuityRef } from '../../../jobs/conversation/continuity.js';
 import type { ContinuitySnapshot } from '../../../jobs/conversation/continuity.js';
@@ -58,23 +57,16 @@ type PerformerRuntime = Readonly<{
 
 /** Keeps process observation injectable because recovery must distinguish a recycled pid from its recorded process. */
 export type CarrierReapDeps<Scope extends symbol> = Readonly<{
-  process: Pick<Runtime['process'], 'kill' | 'observeLiveness'>;
+  process: Pick<Runtime['process'], 'kill' | 'observeLiveness'> &
+    Partial<Pick<Runtime['process'], 'failureDomainContainment'>>;
   platform: NodeJS.Platform;
-  db: Database;
   clock: MonotonicClock<Scope>;
+  observation?: ReturnType<typeof createFailureDomainContainmentObservation<FailureDomainContainment>>;
   signal: AbortSignal;
   /** Tests replace the platform probe so ambiguous process identity can be exercised without real children. */
   readProcessIncarnation?(pid: number, platform: NodeJS.Platform): ProcessIncarnation | null;
 }>;
 
-/**
- * Only the proxy containment and provider root are reaped here because guardian and reaper own their own
- * orphan clocks and exit after observing containment absence. The budget matches that orphan window plus
- * teardown reserve, so recovery does not mistake a still-protected carrier for an orphan.
- *
- * Saga retirement is best-effort only after absence is proven; a leftover name is safe, while finalizing a
- * job before absence is proven could permit a second kernel.
- */
 export async function reapProviderOperationCarrier<Scope extends symbol>(
   record: ProviderOperationCarrierRecord,
   deps: CarrierReapDeps<Scope>,
@@ -91,7 +83,10 @@ export async function reapProviderOperationCarrier<Scope extends symbol>(
     DEFAULT_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS + PROXY_TEARDOWN_RESERVE_MS,
   );
 
+  const failureDomain = deps.process.failureDomainContainment?.(`set-${record.locator.proxy.instanceId}/containment`);
+  const observation = deps.observation ?? createFailureDomainContainmentObservation(failureDomain);
   const reapResult = await reapRecordedContainment(containment, recordedRoots, exitDeadline, {
+    failureDomain: observation.failureDomain,
     maxRecordedRoots: MAX_PROXY_RECORDED_PROVIDER_ROOTS,
     clock: deps.clock,
     process: deps.process,
@@ -123,13 +118,11 @@ export async function reapProviderOperationCarrier<Scope extends symbol>(
     );
   }
 
-  try {
-    void deleteProviderOperation(deps.db, record);
-  } catch (error: unknown) {
-    backendLog.warn(
-      `Failed to retire provider operation saga for job '${record.operation.jobId}'/operation '${record.operation.operationId}': ${errorMessage(error)}`,
+  if (!observation.permitsIndependentAbsenceDecision())
+    throw new ProcessContainmentError(
+      'process_containment_reap_failed',
+      'Carrier leaf absence changed after reclamation.',
     );
-  }
 }
 
 export async function performInterruptedAppServerRecovery(

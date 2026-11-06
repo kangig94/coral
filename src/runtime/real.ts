@@ -1,4 +1,6 @@
+import { z } from 'zod';
 import {
+  failureDomainContainment,
   createFailureDomain,
   inheritedFailureDomainRoot,
   removeFailureDomain,
@@ -618,6 +620,8 @@ function createRealDurableExecutionTransport({
   return durable;
 }
 
+const durablePayloadEnteredSchema = z.object({ kind: z.literal('durable-payload-entered') }).strict();
+
 async function launchDurableProcess(
   options: Parameters<DurableExecutionTransport['launch']>[0],
   {
@@ -674,15 +678,27 @@ async function launchDurableProcess(
     time,
     wrapper,
   });
+  wrapper.on('message', (message: unknown) => {
+    if (!durablePayloadEnteredSchema.safeParse(message).success) return;
+    try {
+      options.onWrapperEntered?.();
+    } catch {
+      // Failed entry publication cannot deny payload availability or become entry proof.
+    }
+  });
   try {
-    options.onWrapperIdentified?.({
+    const failureDomainReady = options.onWrapperIdentified?.({
       runtimeRecord: provisionalRuntimeRecord,
       pid: wrapper.pid,
       leaderIncarnation: initiallyObservedLeaderIncarnation,
       ...(signalAuthority === undefined ? {} : { signalAuthority }),
     });
+    const root = capturedEnv.failureDomainRoot;
+    const leaf = failureDomainReady === true ? createFailureDomain(root, options.failureDomainName, true) : null;
+    const failureDomain =
+      root.kind === 'placed' && leaf?.kind === 'created' ? { root: root.root, path: leaf.path } : null;
     await new Promise<void>((resolve, reject) => {
-      wrapper.send('runtime-start-published', (error) => {
+      wrapper.send({ kind: 'runtime-start-published', failureDomain }, (error) => {
         if (error) reject(error);
         else resolve();
       });
@@ -889,12 +905,11 @@ function spawnDurableWrapper(
     { mode: 0o600 },
   );
 
-  const root = capturedEnv.failureDomainRoot;
-  const leaf = createFailureDomain(root, options.failureDomainName, true);
-  const placementEnv: Record<string, string> =
-    root.kind === 'placed' && leaf.kind === 'created'
-      ? { CORAL_FAILURE_DOMAIN_ROOT: root.root, CORAL_FAILURE_DOMAIN: leaf.path }
-      : {};
+  const wrapperEnv = buildSpawnEnv(
+    options.custodyTicket === undefined ? {} : { [CUSTODY_PROCESS_TICKET_ENV]: options.custodyTicket },
+  );
+  delete wrapperEnv.CORAL_FAILURE_DOMAIN;
+  delete wrapperEnv.CORAL_FAILURE_DOMAIN_ROOT;
   const wrapper = spawnChild(
     process.execPath,
     [
@@ -907,16 +922,9 @@ function spawnDurableWrapper(
     {
       detached: true,
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
-      env: buildSpawnEnv({
-        ...(options.custodyTicket === undefined ? {} : { [CUSTODY_PROCESS_TICKET_ENV]: options.custodyTicket }),
-        ...placementEnv,
-      }),
+      env: wrapperEnv,
     },
   );
-  if (leaf.kind === 'created')
-    wrapper.once('close', () => {
-      void removeFailureDomain(root, leaf.path);
-    });
   return { wrapper, startTime };
 }
 
@@ -937,6 +945,7 @@ function createRealProcessPort({
 }): ProcessPort {
   const runtimeProcess = {
     failureDomainRoot: capturedEnv.failureDomainRoot,
+    failureDomainContainment: (name) => failureDomainContainment(capturedEnv.failureDomainRoot, name),
     readRecentFailureDomainRefusals,
     createFailureDomain: (relativePath, payload) =>
       createFailureDomain(capturedEnv.failureDomainRoot, relativePath, payload),

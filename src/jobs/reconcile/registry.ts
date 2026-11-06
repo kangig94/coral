@@ -37,6 +37,7 @@ type RecoveryAbortPendingDisposition = Readonly<{
   reason: string;
   nextStep: AbortNextStep;
   settlement: Promise<RecoveryAbortSettledDisposition>;
+  confirmAcceptance?: () => boolean;
 }>;
 
 export type RecoveryAbortDisposition = RecoveryAbortSettledDisposition | RecoveryAbortPendingDisposition;
@@ -144,7 +145,7 @@ export class RecoveryRegistry {
           kind: 'held',
           reason: disposition.reason,
           nextStep: disposition.nextStep,
-          ...(settlement === undefined ? {} : { settlement }),
+          ...(settlement === undefined ? {} : { settlement, confirmAcceptance: disposition.confirmAcceptance }),
         };
         this.abortDispositions.set(jobId, activeDisposition);
         if (settlement !== undefined) this.trackAbortSettlement(jobId, settlement);
@@ -167,8 +168,22 @@ export class RecoveryRegistry {
   private trackAbortSettlement(jobId: string, settlement: Promise<RecoveryAbortSettledDisposition>): void {
     void settlement.then(
       (disposition) => {
-        if (this.abortDispositions.get(jobId)?.settlement !== settlement) return;
+        const pending = this.abortDispositions.get(jobId);
+        if (pending?.settlement !== settlement) return;
         if (disposition.kind === 'accepted') {
+          try {
+            if (pending.confirmAcceptance?.() === false) {
+              this.abortDispositions.set(jobId, { kind: 'held', reason: pending.reason, nextStep: pending.nextStep });
+              return;
+            }
+          } catch (error: unknown) {
+            this.abortDispositions.set(jobId, {
+              kind: 'refused',
+              reason: error instanceof Error ? error.message : String(error),
+              nextStep: pending.nextStep,
+            });
+            return;
+          }
           this.cancelledJobIds.add(jobId);
           this.remove(jobId);
           return;

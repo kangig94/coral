@@ -1,3 +1,4 @@
+import { readDurableCliExecution, readDurableCliExecutionReceipt } from '#src/jobs/durable-cli-execution.js';
 import { appendJobExecutionOutcomeAccepted } from '#src/jobs/terminal/recording.js';
 import { ExecutionFinisher, readExecutionFinishingState } from '#src/jobs/finishing.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
@@ -519,6 +520,98 @@ describe('LaunchOrchestrator', () => {
     expect(f.execute).not.toHaveBeenCalled();
     expect(f.sessions.get('codex', f.session.jobId)?.open).toBe(false);
   });
+
+  it.each(['none', 'planned', 'entered'] as const)(
+    'records planned/entered authority with %s receipt write failure',
+    async (failure) => {
+      const failReceipt = failure === 'planned';
+      const failEntered = failure === 'entered';
+      const published = createDeferred<void>();
+      let provisionalExecution: number | null = null;
+      let readyExecution: number | null = null;
+      let publicationError: unknown;
+      const provisional = {
+        kind: 'provisional-wrapper' as const,
+        provider: 'codex',
+        jobDir: '/job',
+        pid: 42,
+        incarnation: testIncarnation('wrapper'),
+        processGroupId: 42,
+      };
+      const durableSpawner: ProviderDurableSpawner = {
+        spawnDurableJob: async (options) => {
+          try {
+            options.onRuntimeRecord!(
+              {
+                transport: 'durable-cli',
+                pid: 42,
+                stdoutPath: '/stdout',
+                stderrPath: '/stderr',
+                startTime: new Date(f.runtime.time.now()).toISOString(),
+              },
+              provisional,
+            );
+            expect(readDurableCliExecution(f.db, JOB_ID, provisional)).toBeNull();
+            expect(options.onDurableProcessIdentity!(provisional)).toEqual({
+              kind: 'published',
+              failureDomainReady: !failReceipt,
+            });
+            provisionalExecution = readDurableCliExecution(f.db, JOB_ID, provisional);
+            expect(readDurableCliExecutionReceipt(f.db, JOB_ID, provisional)?.phase ?? null).toBe(
+              failReceipt ? null : 'planned',
+            );
+            expect(options.onDurableProcessIdentity!(provisional, undefined, undefined, 'entered')).toEqual({
+              kind: 'published',
+              failureDomainEntered: !failReceipt && !failEntered,
+            });
+            expect(readDurableCliExecutionReceipt(f.db, JOB_ID, provisional)?.phase ?? null).toBe(
+              failReceipt ? null : failEntered ? 'planned' : 'entered',
+            );
+            expect(
+              options.onDurableProcessIdentity!({
+                pid: 42,
+                incarnation: provisional.incarnation,
+                processGroupId: 42,
+                childRoot: { pid: 43, incarnation: testIncarnation('child') },
+              }),
+            ).toEqual({ kind: 'published', failureDomainReady: !failReceipt });
+            readyExecution = readDurableCliExecution(f.db, JOB_ID, provisional);
+            expect(readDurableCliExecutionReceipt(f.db, JOB_ID, provisional)?.phase ?? null).toBe(
+              failReceipt ? null : failEntered ? 'planned' : 'entered',
+            );
+          } catch (error: unknown) {
+            publicationError = error;
+          }
+          published.resolve();
+          return new Promise(() => {});
+        },
+      };
+      const f = fixture({ durableSpawner });
+      if (failReceipt)
+        f.db.exec(
+          "CREATE TRIGGER fail_receipt BEFORE INSERT ON meta WHEN NEW.key LIKE 'durable_cli_execution.v1:%' BEGIN SELECT RAISE(ABORT, 'receipt write failed'); END",
+        );
+      if (failEntered)
+        f.db.exec(
+          "CREATE TRIGGER fail_entered BEFORE UPDATE ON meta WHEN OLD.key LIKE 'durable_cli_execution.v1:%' BEGIN SELECT RAISE(ABORT, 'entered write failed'); END",
+        );
+      Object.assign(f.provider, {
+        appServer: undefined,
+        prepareExecution: () => ({
+          kind: 'standalone',
+          prepareCliRequest: (request: unknown) => request,
+          execute: async function* (providerRuntime: BoundProviderStandaloneExecutionRuntime) {
+            await providerRuntime.runCli({ command: 'fixture', args: [] });
+          },
+        }),
+      });
+      await f.launch();
+      await published.promise;
+      expect(publicationError).toBeUndefined();
+      expect(provisionalExecution).toBe(failReceipt ? null : 1);
+      expect(readyExecution).toBe(failReceipt ? null : 1);
+    },
+  );
 
   it('preserves durable abandonment when its progress diagnostic fails', async () => {
     const published = createDeferred<void>();

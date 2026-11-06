@@ -1,14 +1,20 @@
 import { randomUUID } from 'node:crypto';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createSettledUnboundStatusPort,
   MAX_SETTLED_UNBOUND_STATUS_ENTRIES,
 } from '#src/coordinator/services/recovery/settled-unbound-status.js';
 import { RecoveryQuarantineStore } from '#src/recovery/quarantine.js';
-import { SETTLED_UNBOUND_STATUS_BOUNDARY } from '#src/recovery/source-registry.js';
+import type { SettledUnboundStatusAbsence } from '#src/jobs/contracts/provider-operation-lifecycle.js';
+import {
+  createRecoveryQuarantineRetryService,
+  createRecoverySourceRegistry,
+  SETTLED_UNBOUND_STATUS_BOUNDARY,
+} from '#src/recovery/source-registry.js';
+import { createSettledUnboundStatusRetryPlan } from '#src/coordinator/services/recovery/index.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { applyBundledStoreSchema, type Database } from '#src/store/db.js';
-import { insertProviderOperation } from '#src/store/provider-operation-journal.js';
+import { deleteProviderOperation, insertProviderOperation } from '#src/store/provider-operation-journal.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 
@@ -95,6 +101,66 @@ describe('settled unbound status', () => {
     expect(status.clear(record.operation, recorded.ownership)).toBe(false);
     expect(quarantine.list()).toEqual([expect.objectContaining({ state: 'continuation' })]);
   });
+
+  it.each(['release-refused', 'reappeared', 'unreadable'] as const)(
+    'retains exact retry ownership after %s and completes once repaired',
+    async (failure) => {
+      const record = providerOperationRecord('settlement-pending');
+      insertProviderOperation(db, record);
+      const status = createSettledUnboundStatusPort(() => db, { now: () => 100 });
+      const recorded = status.record(record.operation);
+      if (recorded.kind !== 'recorded') throw new Error('expected durable status ownership');
+      const [subject] = recorded.ownership.subjects;
+      if (subject === undefined) throw new Error('expected durable subject');
+      expect(deleteProviderOperation(db, record)).toMatchObject({ kind: 'deleted' });
+      const metaSchema = db.prepare("SELECT sql FROM sqlite_master WHERE name = 'meta'").get() as { sql: string };
+      let ready = failure !== 'release-refused';
+      const release = vi.fn((absence: SettledUnboundStatusAbsence) => {
+        expect(absence.identity).toEqual({ jobId: record.operation.jobId, operationId: record.operation.operationId });
+        expect(quarantine.read(subject.boundary, subject.key)).not.toBeNull();
+        return ready;
+      });
+      let first = true;
+      const sources = createRecoverySourceRegistry();
+      sources.register(SETTLED_UNBOUND_STATUS_BOUNDARY, (retrySubject) => {
+        const plan = createSettledUnboundStatusRetryPlan(db, retrySubject, release);
+        return {
+          ...plan,
+          policy: {
+            ...plan.policy,
+            hydrate: async (raw: Parameters<typeof plan.policy.hydrate>[0]) => {
+              const item = await plan.policy.hydrate(raw);
+              if (first) {
+                first = false;
+                if (failure === 'reappeared') insertProviderOperation(db, record);
+                if (failure === 'unreadable') db.exec('DROP TABLE meta');
+              }
+              return item;
+            },
+          },
+        };
+      });
+      const retry = createRecoveryQuarantineRetryService({
+        instanceId: 'retry-owner',
+        ids: { uuid: randomUUID },
+        sources,
+        quarantine,
+        isRetryAdmitted: () => true,
+      });
+      const request = { boundary: subject.boundary, key: subject.key, revision: subject.revision };
+      await expect(retry.clear(request)).rejects.toBeDefined();
+      expect(quarantine.read(subject.boundary, subject.key)).toMatchObject({ state: 'active' });
+      if (failure === 'release-refused') expect(release).toHaveBeenCalledOnce();
+      else expect(release).not.toHaveBeenCalled();
+
+      if (failure === 'reappeared') expect(deleteProviderOperation(db, record)).toMatchObject({ kind: 'deleted' });
+      if (failure === 'unreadable') db.exec(metaSchema.sql);
+      ready = true;
+      await expect(retry.clear(request)).resolves.toMatchObject({ disposition: 'advanced' });
+      expect(release).toHaveBeenCalled();
+      expect(quarantine.read(subject.boundary, subject.key)).toBeNull();
+    },
+  );
 
   it('refuses a new identity without exceeding the durable status capacity', () => {
     for (let index = 0; index < MAX_SETTLED_UNBOUND_STATUS_ENTRIES; index += 1) {

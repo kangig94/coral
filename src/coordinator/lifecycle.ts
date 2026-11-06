@@ -685,11 +685,11 @@ function createCrashedJobTerminalizationPolicy(
       if (status.execution === null) throw new Error(`Job '${status.jobId}' has no requested execution.`);
       const execution = status.execution;
       const runtimeRecord = progressStore.readRuntimeProjection(status.jobId);
-      if (
-        runtimeRecord?.transport === 'durable-cli' &&
-        observeDurableRecoveryContainmentFor(progressStore, context.runtime, status.jobId, runtimeRecord).observation
-          .kind !== 'absent'
-      )
+      const containment =
+        runtimeRecord?.transport === 'durable-cli'
+          ? observeDurableRecoveryContainmentFor(progressStore, context.runtime, status.jobId, runtimeRecord)
+          : undefined;
+      if (containment !== undefined && containment.observation.kind !== 'absent')
         return {
           kind: 'deferred',
           authoritativeSource: { kind: 'unchanged-and-still-enumerable' },
@@ -704,6 +704,12 @@ function createCrashedJobTerminalizationPolicy(
         >("SELECT seq FROM events WHERE stream_kind = 'job' AND stream_id = ? AND json_extract(CAST(body AS TEXT), '$.execution') = ? AND type IN ('job.provider_failed', 'job.adapter_unparseable', 'job.interrupted') ORDER BY seq DESC LIMIT 1")
         .get(status.jobId, execution);
       const durationMs = elapsedDurationMs(item.launchCreatedAt, endTimeMs, `job ${status.jobId}`);
+      if (containment !== undefined && !containment.permitsIndependentAbsenceDecision())
+        return {
+          kind: 'deferred',
+          authoritativeSource: { kind: 'unchanged-and-still-enumerable' },
+          detail: 'Durable process containment absence changed before terminalization.',
+        };
       coordinatorCommit((c) => {
         const outcome =
           recordedFault === undefined

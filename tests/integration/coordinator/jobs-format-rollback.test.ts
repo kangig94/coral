@@ -171,6 +171,7 @@ describe('jobs store generation with the shipped v0.10.21 bundle', () => {
 
 function rollbackFixture(available: boolean) {
   const f = retainedExecutionsFixture(roots, 1);
+  const fixtureAgeDays = Math.max(0, Math.ceil((Date.now() - f.runtime.time.now()) / (24 * 60 * 60 * 1000)));
   pendingSecondRequest(f);
   const before = sourceSnapshot(f);
   const newer = createPluginFixture(roots, { flavor: 'prod', version: '0.10.22', accepts: 'bundled' });
@@ -188,6 +189,7 @@ function rollbackFixture(available: boolean) {
           .map((name) => [name, undefined]),
       ),
       CORAL_KB_PATH: join(f.root, 'kb'),
+      CORAL_JOBS_RETENTION_DAYS: String(fixtureAgeDays + 7),
     },
   });
   children.push(handle);

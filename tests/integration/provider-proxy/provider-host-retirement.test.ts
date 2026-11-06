@@ -16,18 +16,14 @@ function alive(pid: number): boolean {
   }
 }
 
-it.each([
-  { wrapped: false, loseWrapper: false },
-  { wrapped: true, loseWrapper: false },
-  { wrapped: true, loseWrapper: true },
-])('reclaims only its own resistant provider: %j', async ({ wrapped, loseWrapper }) => {
+it.each([false, true])('reclaims only its own resistant provider (lose wrapper: %s)', async (loseWrapper) => {
   const root = mkdtempSync('/tmp/coral-provider-retirement-');
   const base = createRealRuntime('prod', { baseDir: root });
   const runtime = {
     ...base,
     env: {
       ...base.env,
-      get: (key: string) => (key === 'CORAL_CUSTODY_EPOCH' ? (wrapped ? '1' : undefined) : base.env.get(key)),
+      get: (key: string) => (key === 'CORAL_CUSTODY_EPOCH' ? '1' : base.env.get(key)),
     },
   };
   const kill = vi.spyOn(runtime.process, 'kill');
@@ -89,6 +85,39 @@ it.each([
     await delay(100);
     for (const host of hosts) if (alive(host.wrapperPid)) process.kill(host.wrapperPid, 'SIGKILL');
     kill.mockRestore();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it('refuses to start a provider root without custody authority', async () => {
+  const root = mkdtempSync('/tmp/coral-provider-retirement-');
+  const base = createRealRuntime('prod', { baseDir: root });
+  const runtime = {
+    ...base,
+    env: {
+      ...base.env,
+      get: (key: string) => (key === 'CORAL_CUSTODY_EPOCH' ? undefined : base.env.get(key)),
+    },
+  };
+  const spawn = vi.spyOn(runtime.process, 'spawn');
+  try {
+    const authority = createProxyAppServerHostAuthority(runtime);
+    const scope = authority.beginOperation({ jobId: 'unbound', operationId: 'operation-unbound' });
+    scope.selectCancellationMode('shared-acknowledged-interrupt');
+    await expect(
+      scope.openSession({
+        provider: 'codex',
+        command: 'must-not-start',
+        args: [],
+        cwd: fixtureCanonicalWorkDir(process.cwd()),
+        leaseMode: 'shared',
+        idleRetirement: 'unleased',
+      }),
+    ).rejects.toThrow();
+    expect(spawn).not.toHaveBeenCalled();
+    expect(authority.listProviderHosts()).toEqual([]);
+  } finally {
+    spawn.mockRestore();
     rmSync(root, { recursive: true, force: true });
   }
 });

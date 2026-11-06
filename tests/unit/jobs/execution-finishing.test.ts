@@ -1,3 +1,11 @@
+import { observeDurableRecoveryContainmentFor } from '#src/coordinator/services/recovery/lifecycle.js';
+import { writeDurableCliProvisionalProcessRuntimeMeta } from '#src/jobs/runtime-meta-store.js';
+import { recordDurableCliExecution, markDurableCliExecutionEntered } from '#src/jobs/durable-cli-execution.js';
+import type { JobStore } from '#src/jobs/store.js';
+import { SimulationRuntime } from '#tools/simulation/runtime.js';
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
+import { createFailureDomainContainmentObservation } from '#src/infra/process-containment.js';
+import type { FailureDomainObservation } from '#src/infra/failure-domain.js';
 import { createRecoverySourceRegistry, createRecoveryQuarantineRetryService } from '#src/recovery/source-registry.js';
 import { SuccessionWriterParkedError } from '#src/store/db.js';
 import { RecoveryQuarantineStore } from '#src/recovery/quarantine.js';
@@ -985,4 +993,205 @@ it('releases a cancelled retry claim so the same serving coordinator can retry a
     terminal: { content: 'original result' },
   });
   await f.owner.dispose();
+});
+
+it.each(['populated', 'missing', 'unknown'] as const)(
+  'retains execution ownership when its leaf becomes %s during retention settlement',
+  async (kind) => {
+    const h = harness();
+    accept(h);
+    let observation: FailureDomainObservation = { kind: 'absent' };
+    let changed = false;
+    const quiesce = vi.fn(async () => {
+      const leaf = createFailureDomainContainmentObservation({ observe: () => observation });
+      return { kind: 'quiescence-proof' as const, confirm: () => leaf.permitsIndependentAbsenceDecision() };
+    });
+    const f = finisher(h, {
+      quiesce,
+      settleRetention: async () => {
+        await Promise.resolve();
+        if (!changed) {
+          changed = true;
+          observation = kind === 'unknown' ? { kind, reason: 'EACCES' } : { kind };
+        }
+        return { kind: 'completed', outcome: 'discarded' };
+      },
+    });
+    const finished = f.owner.finish(address);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(changed).toBe(true);
+    expect(f.owner.owns(address)).toBe(true);
+    expect(h.events().some((event) => event.type === 'job.execution.ended')).toBe(false);
+    expect(h.events().some((event) => event.type === 'job.retention.discard.completed')).toBe(false);
+    expect(quiesce).toHaveBeenCalledOnce();
+    observation = { kind: 'absent' };
+    await vi.advanceTimersByTimeAsync(500);
+    await finished;
+    assertClosed(h);
+    await f.owner.dispose();
+  },
+);
+
+it('automatically ends with its cached quiescence proof after unavailable ownership evidence is repaired', async () => {
+  const h = harness(false);
+  accept(h);
+  const runtime = new SimulationRuntime();
+  vi.spyOn(runtime.env, 'platform').mockReturnValue('linux');
+  Object.defineProperty(runtime.process, 'failureDomainRoot', { value: { kind: 'placed', root: '/test' } });
+  vi.spyOn(runtime.process, 'failureDomainContainment').mockReturnValue({
+    observe: () => ({ kind: 'absent' }),
+    kill: () => ({ kind: 'refused', errno: 'EPERM' }),
+  });
+  const record = { jobId, pid: 4242, incarnation: testIncarnation('repair'), processGroupId: 4242 };
+  const runtimeRecord = {
+    transport: 'durable-cli' as const,
+    pid: record.pid,
+    stdoutPath: '/out',
+    stderrPath: '/err',
+    startTime: '2026-10-22T00:00:00.000Z',
+  };
+  const store = { getDb: () => h.db } as JobStore;
+  const quiesce = vi.fn(async () => {
+    const observed = observeDurableRecoveryContainmentFor(store, runtime, jobId, runtimeRecord);
+    return {
+      kind: 'quiescence-proof' as const,
+      confirm: () => observed.refresh().kind === 'absent' && observed.permitsIndependentAbsenceDecision(),
+    };
+  });
+  const f = finisher(h, { quiesce });
+  const finished = f.owner.finish(address);
+  void finished.catch(() => undefined);
+  try {
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.owner.owns(address)).toBe(true);
+    expect(f.owner.state(address).kind).toBe('finishing');
+    writeDurableCliProvisionalProcessRuntimeMeta(h.db, record);
+    recordDurableCliExecution(h.db, { jobId, pid: record.pid, incarnation: record.incarnation, execution: 1 });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(f.owner.state(address).kind).toBe('ended');
+    await finished;
+    expect(quiesce).toHaveBeenCalledOnce();
+    assertClosed(h);
+  } finally {
+    await f.owner.dispose();
+    vi.restoreAllMocks();
+  }
+});
+
+it('preserves existing-leaf history while refreshing repaired containment evidence', () => {
+  const h = harness(false);
+  const runtime = new SimulationRuntime();
+  vi.spyOn(runtime.env, 'platform').mockReturnValue('linux');
+  Object.defineProperty(runtime.process, 'failureDomainRoot', { value: { kind: 'placed', root: '/test' } });
+  let leaf: FailureDomainObservation = { kind: 'absent' };
+  vi.spyOn(runtime.process, 'failureDomainContainment').mockReturnValue({
+    observe: () => leaf,
+    kill: () => ({ kind: 'refused', errno: 'EPERM' }),
+  });
+  const record = { jobId, pid: 4242, incarnation: testIncarnation('repair-history'), processGroupId: 4242 };
+  writeDurableCliProvisionalProcessRuntimeMeta(h.db, record);
+  recordDurableCliExecution(h.db, { jobId, pid: record.pid, incarnation: record.incarnation, execution: 1 });
+  const observed = observeDurableRecoveryContainmentFor({ getDb: () => h.db } as JobStore, runtime, jobId, {
+    transport: 'durable-cli',
+    pid: record.pid,
+    stdoutPath: '/out',
+    stderrPath: '/err',
+    startTime: '2026-10-22T00:00:00.000Z',
+  });
+  try {
+    expect(observed.observation.kind).toBe('absent');
+    leaf = { kind: 'missing' };
+    expect(observed.refresh().kind).toBe('unobservable');
+    expect(observed.permitsIndependentAbsenceDecision()).toBe(false);
+    leaf = { kind: 'absent' };
+    expect(observed.refresh().kind).toBe('absent');
+    expect(observed.permitsIndependentAbsenceDecision()).toBe(true);
+    const receipt = h.db
+      .prepare<[], { key: string }>("SELECT key FROM meta WHERE key LIKE 'durable_cli_execution.v1:%'")
+      .get();
+    if (receipt === undefined || receipt === null) throw new Error('execution receipt fixture missing');
+    h.db
+      .prepare('UPDATE meta SET value = ? WHERE key = ?')
+      .run(JSON.stringify({ jobId, execution: 2, pid: record.pid, incarnation: record.incarnation }), receipt.key);
+    expect(observed.refresh().kind).toBe('unobservable');
+  } finally {
+    vi.restoreAllMocks();
+  }
+});
+
+it('does not move an established provided leaf to a repaired metadata address', () => {
+  const h = harness(false);
+  const runtime = new SimulationRuntime();
+  vi.spyOn(runtime.env, 'platform').mockReturnValue('linux');
+  Object.defineProperty(runtime.process, 'failureDomainRoot', { value: { kind: 'placed', root: '/test' } });
+  const original = createFailureDomainContainmentObservation({
+    observe: () => ({ kind: 'populated' as const }),
+    kill: () => ({ kind: 'refused' as const, errno: 'EPERM' }),
+  });
+  vi.spyOn(runtime.process, 'failureDomainContainment').mockReturnValue({
+    observe: () => ({ kind: 'absent' }),
+    kill: () => ({ kind: 'refused', errno: 'EPERM' }),
+  });
+  const record = { jobId, pid: 4242, incarnation: testIncarnation('provided-original'), processGroupId: 4242 };
+  writeDurableCliProvisionalProcessRuntimeMeta(h.db, record);
+  recordDurableCliExecution(h.db, { jobId, execution: 2, pid: record.pid, incarnation: record.incarnation });
+  try {
+    const observed = observeDurableRecoveryContainmentFor(
+      { getDb: () => h.db } as JobStore,
+      runtime,
+      jobId,
+      {
+        transport: 'durable-cli',
+        pid: record.pid,
+        stdoutPath: '/out',
+        stderrPath: '/err',
+        startTime: '2026-10-22T00:00:00.000Z',
+      },
+      original,
+    );
+    expect(observed.refresh().kind).toBe('alive');
+    expect(observed.permitsIndependentAbsenceDecision()).toBe(false);
+  } finally {
+    vi.restoreAllMocks();
+  }
+});
+
+it('ends an entered durable execution through entry-aware recovery proof', async () => {
+  const h = harness(false);
+  accept(h);
+  const runtime = new SimulationRuntime();
+  vi.spyOn(runtime.env, 'platform').mockReturnValue('linux');
+  Object.defineProperty(runtime.process, 'failureDomainRoot', { value: { kind: 'placed', root: '/scope' } });
+  const identity = { pid: 123, incarnation: testIncarnation('entered-wrapper') };
+  writeDurableCliProvisionalProcessRuntimeMeta(h.db, { jobId, ...identity, processGroupId: identity.pid });
+  const receipt = { jobId, execution: address.execution, ...identity };
+  recordDurableCliExecution(h.db, receipt);
+  markDurableCliExecutionEntered(h.db, receipt);
+  vi.spyOn(runtime.process, 'failureDomainContainment').mockReturnValue({
+    observe: () => ({ kind: 'absent' }),
+    kill: () => ({ kind: 'entered' }),
+  });
+  vi.spyOn(runtime.process, 'observeLiveness').mockImplementation((pid) => (pid < 0 ? 'alive' : 'absent'));
+  const proof = observeDurableRecoveryContainmentFor({ getDb: () => h.db } as JobStore, runtime, jobId, {
+    transport: 'durable-cli',
+    pid: identity.pid,
+    stdoutPath: '/stdout',
+    stderrPath: '/stderr',
+    startTime: 'now',
+  });
+  const f = finisher(h, {
+    quiesce: async () => ({
+      kind: 'quiescence-proof',
+      confirm: () => proof.refresh().kind === 'absent' && proof.permitsIndependentAbsenceDecision(),
+    }),
+  });
+  const finished = f.owner.finish(address);
+  void finished.catch(() => undefined);
+  try {
+    await vi.advanceTimersByTimeAsync(0);
+    assertClosed(h);
+    await finished;
+  } finally {
+    await f.owner.dispose();
+  }
 });

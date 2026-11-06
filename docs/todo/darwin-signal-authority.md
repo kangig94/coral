@@ -4,7 +4,7 @@
 
 `probeMacProcessIncarnation` in `src/infra/node-process.ts` runs `ps -o lstart=` and parses its local-time, second-resolution output. The boot-session UUID separates reboots, but a clock step can still make two processes started in one boot produce the same token if a pid is reused. The autumn daylight-saving fallback gives that alias a predictable one-hour window.
 
-`incarnationMayAuthorizeSignal` in the same module permits recorded-token signal authority only on Linux. `reapRecordedContainment` in `src/infra/process-containment.ts` requires either that authority or an exact retained child handle before signalling; the Darwin token alone remains conservative observation, not permission to kill. Preserve this rule.
+`incarnationMayAuthorizeSignal` in the same module permits recorded-token signal authority only on Linux. `reapRecordedContainment` in `src/infra/process-containment.ts` requires either that authority or an exact retained child handle before signalling; the Darwin token alone remains conservative observation, not permission to kill. Preserve this process-group fallback rule; see the [platform and placement containment contract](../architecture.md#containment-evidence-and-reclamation).
 
 ## Remaining work
 

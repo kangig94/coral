@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import type { FailureDomainContainment, FailureDomainObservation } from '#src/infra/failure-domain.js';
 import type * as ProcessContainmentModule from '#src/infra/process-containment.js';
 
 const reapRecordedContainment = vi.hoisted(() => vi.fn());
@@ -25,6 +26,7 @@ import type { DurableProcessExit } from '#src/runtime/durable-runtime.js';
 import type { DurableContainmentOperatorControl, DurableProcessIdentityCallback } from '#src/providers/cli-runner.js';
 import { createDurableTestRuntime } from '#tests/helpers/durable-runtime.js';
 import type { DurableLaunchResult, Runtime } from '#src/runtime/ports.js';
+import { flushMicrotasks } from '#tools/simulation/core/virtual-time.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
 const roots: string[] = [];
@@ -94,6 +96,7 @@ function launchResult(paths: ReturnType<typeof durableFixturePaths>): DurableLau
 
 function startWrapperPublication(
   callbacks: Pick<SpawnDurableJobOptions, 'onRuntimeRecord' | 'onDurableProcessIdentity'>,
+  failureDomain?: FailureDomainContainment,
 ) {
   const paths = durableFixturePaths('publication');
   const launched = launchResult(paths);
@@ -108,6 +111,7 @@ function startWrapperPublication(
     ...base,
     process: {
       ...base.process,
+      failureDomainContainment: () => failureDomain,
       durable: {
         launch: async (options) => {
           options.onWrapperIdentified?.({
@@ -152,6 +156,55 @@ function startWrapperPublication(
 }
 
 describe('durable transport observer timing and cleanup ownership', () => {
+  it.each(['populated', 'missing', 'unknown'] as const)(
+    'retains cleanup when a leaf observed by the reaper becomes %s before its awaited result',
+    async (transition) => {
+      let observation: FailureDomainObservation = { kind: 'missing' };
+      let changeAfterProof = false;
+      let outerHold = false;
+      const fixture = startWrapperPublication(
+        {
+          onRuntimeRecord: vi.fn(),
+          onDurableProcessIdentity: (_subject, status) => {
+            if (status?.kind === 'held') outerHold = true;
+            if (status?.kind === 'absence-confirmed') outerHold = false;
+            return { kind: 'published' };
+          },
+        },
+        {
+          observe: () => {
+            if (changeAfterProof && observation.kind === 'absent') {
+              queueMicrotask(() => {
+                observation = { kind: 'populated' };
+              });
+            }
+            return observation;
+          },
+          kill: () => ({ kind: 'refused', errno: 'EACCES' }),
+        },
+      );
+      const rejection = fixture.result.catch((error: unknown) => error);
+      await vi.waitFor(() => expect(reapRecordedContainment).toHaveBeenCalledOnce());
+      observation = { kind: 'absent' };
+      reapRecordedContainment.mock.calls[0][3].failureDomain.observe();
+      observation = transition === 'unknown' ? { kind: 'unknown', reason: 'EACCES' } : { kind: transition };
+      fixture.cleanup.resolve({ kind: 'containment-absent' });
+      await flushMicrotasks(64);
+      expect(fixture.cleanupHandles.size).toBe(1);
+      expect(fixture.cleanupRetentions.size).toBe(1);
+      observation = { kind: 'absent' };
+      reapRecordedContainment.mockResolvedValue({ kind: 'containment-absent' });
+      changeAfterProof = true;
+      await [...fixture.cleanupRetentions.keys()][0]();
+      expect(outerHold).toBe(true);
+      expect(fixture.cleanupHandles.size).toBe(1);
+      changeAfterProof = false;
+      observation = { kind: 'absent' };
+      await [...fixture.cleanupRetentions.keys()][0]();
+      await expect(rejection).resolves.toBe(fixture.readinessError);
+    },
+  );
+
   it('names failed runtime publication and releases the pending launch after publishing identity', async () => {
     const publicationError = new Error('synthetic runtime publication failure');
     const onDurableProcessIdentity = vi.fn(() => ({ kind: 'published' as const }));
@@ -400,4 +453,69 @@ describe('durable transport observer timing and cleanup ownership', () => {
     wake?.();
     await expect(result).resolves.toMatchObject({ code: null, aborted: true });
   });
+});
+
+it.each([false, true])('carries entered publication result %s into live containment evidence', async (persisted) => {
+  const paths = durableFixturePaths('entry-publication');
+  const base = createDurableTestRuntime();
+  const cleanupHandles = new Map<symbol, DurableProcessCleanup>();
+  const cleanupRetentions = new Map<DurableProcessCleanup, DurableProcessRetention>();
+  let publishedEntry = false;
+  let observedEntry: boolean | undefined;
+  const failure = new Error('entry-wiring-failed');
+  const runtime: Runtime = {
+    ...base,
+    process: {
+      ...base.process,
+      failureDomainRoot: { kind: 'placed', root: '/scope' },
+      removeFailureDomain: vi.fn(() => ({ kind: 'removed' }) as const),
+      failureDomainContainment: () => ({ observe: () => ({ kind: 'absent' }), kill: () => ({ kind: 'entered' }) }),
+      durable: {
+        ...base.process.durable,
+        launch: async (options) => {
+          options.onWrapperIdentified?.({
+            runtimeRecord: launchResult(paths).runtimeRecord,
+            pid: 82_001,
+            leaderIncarnation: testIncarnation('durable-wrapper'),
+          });
+          options.onWrapperEntered?.();
+          throw failure;
+        },
+      },
+    },
+  };
+  reapRecordedContainment.mockImplementation(async (_subject, _roots, _deadline, environment) => {
+    observedEntry = environment.failureDomain.hasEntered();
+    return { kind: 'containment-absent' };
+  });
+  await expect(
+    spawnDurableJobTransport({
+      runtime,
+      options: {
+        provider: 'codex',
+        command: 'fixture',
+        args: [],
+        jobDir: paths.jobDir,
+        failureDomainName: 'job-entry-1',
+        onDurableProcessIdentity: (_identity, _status, _control, placement) => {
+          if (placement === 'entered') {
+            publishedEntry = true;
+            return { kind: 'published', failureDomainEntered: persisted };
+          }
+          return { kind: 'published', failureDomainReady: true };
+        },
+      },
+      pool: 'default',
+      cleanupHandles,
+      cleanupRetentions,
+      pendingLaunches: new Set<PendingDurableLaunch>(),
+      releaseLaunch: () => ({ kind: 'released', pool: 'default', admittedNext: false }),
+      ownership: callerOwnership(runtime, 'default'),
+    }),
+  ).rejects.toThrow('entry-wiring-failed');
+  expect(publishedEntry).toBe(true);
+  expect(observedEntry).toBe(persisted);
+  expect(reapRecordedContainment).toHaveBeenCalled();
+  expect(cleanupHandles.size).toBe(0);
+  expect(runtime.process.removeFailureDomain).not.toHaveBeenCalled();
 });

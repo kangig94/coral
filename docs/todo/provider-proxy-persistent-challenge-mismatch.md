@@ -28,6 +28,7 @@ semantics can produce a persistent sequence of accepted fresh challenges that ne
 
 If cross-build endpoints can be shown to repeat mismatch after the coordinator adopts each fresh challenge,
 decide whether that sequence belongs in the existing answered-but-unusable disposition or needs a separate
-independent-absence one. Such a disposition sends no destructive control RPC, but may reap an orphaned proxy
-group after both enforcers are proven absent. Its evidence and operator status must name repeated
+independent-absence one. Such a disposition sends no destructive control RPC, but may authorize orphaned-set
+reclamation after both enforcers are proven absent, within the applicable
+[containment scope and evidence contract](../architecture.md#containment-evidence-and-reclamation). Its evidence and operator status must name repeated
 answered-but-unaccepted echoes; it must not reuse `heartbeat_hold_exhausted` or its silence clock.

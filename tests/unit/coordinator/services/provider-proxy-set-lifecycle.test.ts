@@ -39,6 +39,7 @@ import {
 } from '#src/coordinator/services/provider-proxy-set/identity.js';
 import type { ProviderProxySetContainmentEvidence } from '#src/provider-proxy/containment-proof-contract.js';
 import { createRealRuntime } from '#src/runtime/real.js';
+import type { FailureDomainObservation } from '#src/infra/failure-domain.js';
 import { applyBundledStoreSchema, type Database } from '#src/store/db.js';
 import {
   insertProviderOperation,
@@ -110,6 +111,7 @@ function lifecycleFor(deps: {
     signal: AbortSignal,
   ) => Promise<ProviderProxySetContainmentEvidence>;
   reapRecordedContainment?: ProviderProxySetRecordedContainmentReaper;
+  failureDomainContainment?: ProviderProxySetLifecycleDeps['failureDomainContainment'];
   fenceProviderOperationMutations?: ProviderProxySetLifecycleDeps['fenceProviderOperationMutations'];
   reportLifecycle?: ProviderProxySetLifecycleDeps['reportLifecycle'];
   capacity?: ProviderProxySetLifecycleDeps['capacity'];
@@ -152,6 +154,7 @@ function lifecycleFor(deps: {
       'disappearance-consumer': ({ notice }) => deps.disappearanceConsumer.containmentDisappeared(notice),
     }),
     reapRecordedContainment: deps.reapRecordedContainment ?? reapContainmentEvidence,
+    ...(deps.failureDomainContainment === undefined ? {} : { failureDomainContainment: deps.failureDomainContainment }),
     reportLifecycle: deps.reportLifecycle ?? (() => undefined),
     operatorDispositionStore: new ProviderProxySetOperatorDispositionStore(
       new InMemoryStorage(deps.time),
@@ -330,6 +333,7 @@ function containmentProofRuntime(
 async function authorizedOperatorExitForProof(
   record: ReturnType<typeof providerOperationRecord>,
   reapRecordedContainment: ProviderProxySetRecordedContainmentReaper,
+  failureDomainContainment?: ProviderProxySetLifecycleDeps['failureDomainContainment'],
 ): Promise<
   Readonly<{
     capability: ProviderProxySetOperatorExitCapability;
@@ -364,6 +368,7 @@ async function authorizedOperatorExitForProof(
     time: clock,
     proveContainmentAbsent: noContainmentProof,
     reapRecordedContainment,
+    ...(failureDomainContainment === undefined ? {} : { failureDomainContainment }),
     fenceProviderOperationMutations: (identity) => {
       mutationFence = mutationAdmission.closeSet(identity);
       return mutationFence;
@@ -605,6 +610,74 @@ describe('ProviderProxySetLifecycle', () => {
     }
   });
 });
+
+it.each([
+  { kind: 'populated', stage: 'after-reaper' },
+  { kind: 'missing', stage: 'after-reaper' },
+  { kind: 'unknown', stage: 'after-reaper' },
+  { kind: 'absent', stage: 'after-reaper' },
+  { kind: 'missing', stage: 'prior-attempt-await' },
+] as const)(
+  'refreshes the same set leaf before releasing representation when it becomes $kind during $stage',
+  async ({ kind, stage }) => {
+    const record = providerOperationRecord('executing');
+    const identity = providerProxySetIdentityFromRecord(record);
+    const db = containmentProofDatabase(record);
+    const process = containmentProofRuntime(identity, { guardian: 'absent', reaper: 'absent' });
+    let observation: FailureDomainObservation = { kind: stage === 'prior-attempt-await' ? 'missing' : 'absent' };
+    let reaped = false;
+    let transitionQueued = false;
+    const reap: ProviderProxySetRecordedContainmentReaper = async () => {
+      reaped = true;
+      return { kind: 'containment-absent', disappearanceReceipt: 'post-reaper-set-absence' };
+    };
+    const harness = await authorizedOperatorExitForProof(record, reap, () => ({
+      observe: () => {
+        if (stage === 'after-reaper' && reaped && !transitionQueued) {
+          transitionQueued = true;
+          queueMicrotask(() => {
+            observation = kind === 'unknown' ? { kind, reason: 'EACCES' } : { kind };
+          });
+        }
+        return observation;
+      },
+    }));
+    try {
+      const proof = await createProviderProxySetContainmentProver(process.runtime).collectContainmentProof(
+        harness.capability.containmentProofAuthorization,
+        db,
+        new AbortController().signal,
+      );
+      if (stage === 'prior-attempt-await') {
+        observation = { kind: 'absent' };
+        transitionQueued = true;
+        queueMicrotask(() => {
+          observation = { kind };
+        });
+      }
+      const outcome = await harness.lifecycle.completeOperatorExit(harness.capability, proof, false);
+      expect(transitionQueued).toBe(true);
+      if (kind === 'absent') {
+        expect(outcome.kind).toBe('contained');
+      } else {
+        expect(outcome).toEqual(
+          expect.objectContaining({
+            kind: stage === 'prior-attempt-await' ? 'identity-unobservable' : 'containment-unconfirmed',
+            effect: { signalsSent: [], containmentAbsent: false, representationAction: 'none' },
+          }),
+        );
+        expect(harness.lifecycle.snapshot().represented).toBe(1);
+        expect(harness.lifecycle.snapshot().states).toEqual(['containment-wait']);
+        observation = { kind: 'missing' };
+        expect(harness.lifecycle.containmentAbsenceObserver(identity)()).toBe(false);
+        expect(harness.lifecycle.containmentAbsent(identity, 'later-control-receipt').kind).toBe('held');
+        expect(harness.lifecycle.snapshot().represented).toBe(1);
+      }
+    } finally {
+      db.close();
+    }
+  },
+);
 
 it('owns an operation containment request through route removal, the mutation fence and ordinary absence delivery', async () => {
   const record = providerOperationRecord('proxy-activation-pending');

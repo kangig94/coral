@@ -28,9 +28,9 @@ by #324.
 
 The earlier account also treated the guardian as the recorder whose observation the reaper compared.
 In fact the guardian forwarded its token to the reaper, which compared it with a fresh probe in
-`src/provider-proxy/reaper.ts`; that was another cross-process comparison. A lost leader identity also
-does not prove group absence: `observeContainment` in `src/infra/process-containment.ts` can answer
-`recorded-group-unattributable`, which authorizes no signal or disappearance receipt. The independent
+`src/provider-proxy/reaper.ts`; that was another cross-process comparison. In the process-group fallback,
+a lost leader identity cannot authorize a group signal or prove group absence; see the
+[containment scope and evidence contract](../architecture.md#containment-evidence-and-reclamation). The independent
 guardian/proxy comparison in `src/coordinator/live/provider-proxy/control-redemption.ts` is an intended
 cross-check once its values are sound; calling the comparison itself defective was another wrong claim.
 

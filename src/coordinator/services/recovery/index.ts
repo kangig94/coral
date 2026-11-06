@@ -105,12 +105,11 @@ export function createUnreadableProviderOperationRetryPlan(
 export function createSettledUnboundStatusRetryPlan(
   db: Database,
   subject: RecoverySubject,
-  quarantine: RecoveryQuarantinePort,
   releaseAbsent: (absence: SettledUnboundStatusAbsence) => boolean,
 ): RecoverySourceFactoryPlan<RawSettledUnboundStatusRecovery, RawSettledUnboundStatusRecovery> {
   return {
     source: settledUnboundStatusRecoverySource(db, subject),
-    policy: createSettledUnboundStatusRetryPolicy(quarantine, releaseAbsent),
+    policy: createSettledUnboundStatusRetryPolicy(db, releaseAbsent),
   };
 }
 

@@ -73,6 +73,8 @@ export function createCommitWriterPreparation(ports: SuccessionCommitPorts, stat
     );
     if (protection.kind === 'opener-held') throw new TransientCommitFailure(protection.reason);
     await ports.interposition.at('retirement-authorization', { recovery: false });
+    if (!custody.confirmLeafAbsence())
+      throw new TransientCommitFailure('Retiring epoch leaf absence changed after its custody confirmation.');
     recordRetirementDisposition(runtime, {
       version: 'v1',
       attemptId: attempt.attemptId,

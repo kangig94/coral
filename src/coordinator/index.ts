@@ -953,12 +953,25 @@ export function createCoordinatorServer(options: CoordinatorServerOptions): Coor
         const containment = readDurableCliContainmentStatus(getQueryDb(), address.jobId);
         if (containment.kind === 'corrupt') return false;
         const abandoned = containment.kind === 'valid' && containment.status.disposition.kind === 'operator-abandoned';
-        if (
-          !abandoned &&
-          observeDurableRecoveryContainmentFor(progressStore, runtime, address.jobId, jobRuntime).observation.kind !==
-            'absent'
-        )
-          return false;
+        if (!abandoned) {
+          const observed = observeDurableRecoveryContainmentFor(progressStore, runtime, address.jobId, jobRuntime);
+          return {
+            kind: 'quiescence-proof' as const,
+            confirm: () => {
+              if (core === null || core.holdsInternalExecution(address.jobId, address.execution)) return false;
+              const current = readDurableCliContainmentStatus(getQueryDb(), address.jobId);
+              if (current.kind === 'corrupt') return false;
+              const abandoned = current.kind === 'valid' && current.status.disposition.kind === 'operator-abandoned';
+              if (!abandoned && observed.refresh().kind !== 'absent') return false;
+              return (
+                !hasProviderOperationForJob(getQueryDb(), address.jobId) &&
+                operationRegistry.stateForJob(address.jobId) === null &&
+                core.launchCoordinator.reservationFor(address.jobId) === null &&
+                (abandoned || observed.permitsIndependentAbsenceDecision())
+              );
+            },
+          };
+        }
       }
       if (jobRuntime?.transport === 'internal' && jobRuntime.owner === 'kb-daemon') {
         const daemon = kbDaemonSupervisor.read();

@@ -49,11 +49,21 @@ type InterruptedFinalizerDeps = Readonly<{
   abortRegistry: JobAbortRegistryPort;
   launchAdmission: Pick<JobAdmissionPort, 'releaseLaunch'>;
   launchPermit: LaunchPermit | null;
+  finalizationFence: Readonly<{ signal: AbortSignal; onCommitStart(): void }>;
 }>;
 
 type RecoveryCommitPlan = Pick<AppServerInterruptedRecoveryPlan | DurableInterruptedRecoveryPlan, 'launchRecord'>;
 
 type TerminalAppender = <Scope>(commit: CommitContext<Scope>) => void;
+
+function assertFinalizationAuthorized(deps: InterruptedFinalizerDeps): void {
+  try {
+    deps.finalizationFence.signal.throwIfAborted();
+    deps.finalizationFence.onCommitStart();
+  } catch (cause: unknown) {
+    throw new ExecutionAcceptanceRefusedError('Interrupted recovery finalization is no longer authorized.', { cause });
+  }
+}
 
 async function acceptRecoveryOutcome(
   plan: RecoveryCommitPlan,
@@ -65,6 +75,7 @@ async function acceptRecoveryOutcome(
   const { jobId, execution } = plan.launchRecord;
   const address = { jobId, execution };
   await deps.executionFinisher.accept(address, (commit) => {
+    assertFinalizationAuthorized(deps);
     const entry = deps.conversationManager.readById(jobId);
     if (entry === null || !entry.open || entry.finishing || entry.execution !== execution) {
       throw new InterruptedRecoveryCommitError(jobId, 'execution-checkpoint');
@@ -115,6 +126,7 @@ async function acceptRecoveryOutcome(
     appendTerminal(commit);
     return undefined;
   });
+  assertFinalizationAuthorized(deps);
   releaseLocalOwnership(plan, deps);
   deps.executionFinisher.schedule(address);
 }

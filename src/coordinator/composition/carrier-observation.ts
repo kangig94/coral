@@ -1,6 +1,7 @@
+import type { FailureDomainContainment } from '../../infra/failure-domain.js';
 import type { Database } from '../../store/db.js';
 import { observeProcessLiveness, probeProcessIncarnation } from '../../infra/node-process.js';
-import { observeRecordedContainment } from '../../infra/process-containment.js';
+import { observeRecordedContainment, type RecordedProcessIdentity } from '../../infra/process-containment.js';
 import {
   classifyCarrier,
   type CarrierEvidence,
@@ -35,6 +36,7 @@ export type LocalCarrierRegistries = Readonly<{
   getDb: () => Database;
   loadJobProjectionDetail: (jobId: string) => JobProjectionDetail;
   platform: NodeJS.Platform;
+  failureDomainForJob?: (jobId: string, identity: RecordedProcessIdentity) => FailureDomainContainment | undefined;
   /** Keeps the mutation authority out of every carrier consumer while letting each job resolve durable
    *  recovery ownership only after lifecycle has published the one-way startup boundary. */
   hasStartupRecoveryPassed: () => boolean;
@@ -61,6 +63,7 @@ function durableCliEvidence(
   jobId: string,
   journalPid: number,
   platform: NodeJS.Platform,
+  failureDomainForJob?: LocalCarrierRegistries['failureDomainForJob'],
 ): CarrierEvidence {
   const meta = readMatchingDurableCliProcessRuntimeMeta(db, jobId, journalPid);
   if (meta === null) {
@@ -68,6 +71,7 @@ function durableCliEvidence(
   }
 
   const observation = observeRecordedContainment(meta, {
+    failureDomain: failureDomainForJob?.(jobId, meta),
     process: { observeLiveness: observeProcessLiveness },
     platform,
     readProcessIncarnation: probeProcessIncarnation,
@@ -108,7 +112,13 @@ function evidenceFor(jobId: string, detail: JobProjectionDetail, registries: Loc
     case 'internal':
       return { carrierClass: 'internal-hosted-kb', memberOfSupervisor: registries.isAdmittedByThisCoordinator(jobId) };
     case 'durable-cli':
-      return durableCliEvidence(registries.getDb(), jobId, runtime.pid, registries.platform);
+      return durableCliEvidence(
+        registries.getDb(),
+        jobId,
+        runtime.pid,
+        registries.platform,
+        registries.failureDomainForJob,
+      );
   }
 }
 

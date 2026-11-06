@@ -4,7 +4,7 @@
 
 `recordedProcessesAllAbsent` in `src/coordinator/services/provider-proxy-set/index.ts` skips a V1 capsule because it records no processes. For V2 it observes pids without incarnations; a recycled pid can appear alive. V3 and V4 carry incarnations, but an observer that repeatedly returns `unknown` still cannot prove absence. The current writer uses V4 (`CURRENT_HANDOFF_CAPSULE_VERSION` in `src/provider-proxy/handoff-capsule.ts`); this entry concerns retained older capsules and persistent observation failures, not a new capsule format.
 
-These retained capsules do not consume proxy-set admission capacity. A later boot can try observation again, but the same missing fields or persistent probe refusal may keep producing the same answer. Absence alone permits automatic retirement today; neither age nor a failed probe is absence.
+These retained capsules do not consume proxy-set admission capacity. A later boot can try observation again, but the same missing fields or persistent probe refusal may keep producing the same answer. Recorded-process absence permits credential retirement within that legacy record’s scope; it must not be read as whole-tree absence. See the [containment evidence and reclamation](../architecture.md#containment-evidence-and-reclamation) contract; neither age nor a failed probe is absence.
 
 ## Remaining decision
 

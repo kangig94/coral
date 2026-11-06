@@ -88,6 +88,7 @@ export type RecoveryQuarantineRemedy = RecoveryRecordRemedy;
 
 export type RecoveryProcessLocalCleanupResult =
   | { readonly kind: 'released' }
+  | { readonly kind: 'held'; readonly detail: string }
   | { readonly kind: 'incomplete'; readonly error: unknown };
 
 /** Declares only boundary-required ownership release; best-effort caller work stays outside the walk. */
@@ -326,22 +327,22 @@ async function settleAndReleaseSubject<Raw, Item>(
   report: MutableReport<Item>,
   policy: RecoveryPolicy<Raw, Item>,
 ): Promise<void> {
-  // Cleanup runs on every path but must not become the reported failure: a settlement fault is the
-  // originating cause, and throwing from a `finally` would silently replace it with whatever the
-  // release reported. Both abort the walk, so precedence is the only thing at stake — and losing the
-  // origin is exactly the diagnostic loss this boundary exists to prevent.
+  // A cleanup failure must not replace the originating settlement failure.
   let settlementFailure: { readonly error: unknown } | null = null;
+  let pendingAdvance: Awaited<ReturnType<typeof settlePhase<Raw, Item>>> | null = null;
   try {
     const settlement = await settlePhase(boundary, hydrated, policy);
-    await applyDisposition(report, policy, {
-      boundary,
-      disposition: settlement.disposition,
-      error: settlement.error,
-      stage: 'settle',
-      subject: hydrated.subject,
-      hydrated,
-      obligations: settlement.obligations,
-    });
+    if (settlement.disposition.kind === 'advanced') pendingAdvance = settlement;
+    else
+      await applyDisposition(report, policy, {
+        boundary,
+        disposition: settlement.disposition,
+        error: settlement.error,
+        stage: 'settle',
+        subject: hydrated.subject,
+        hydrated,
+        obligations: settlement.obligations,
+      });
   } catch (error: unknown) {
     settlementFailure = { error };
   }
@@ -355,6 +356,30 @@ async function settleAndReleaseSubject<Raw, Item>(
     );
   }
   if (settlementFailure !== null) throw settlementFailure.error;
+  if (cleanup.kind === 'held') {
+    if (pendingAdvance === null) return;
+    await applyDisposition(report, policy, {
+      boundary,
+      disposition: { kind: 'quarantine', detail: cleanup.detail },
+      error: undefined,
+      stage: 'settle',
+      subject: hydrated.subject,
+      hydrated,
+      obligations: pendingAdvance?.obligations ?? [],
+    });
+    return;
+  }
+  if (pendingAdvance !== null && cleanup.kind === 'released') {
+    await applyDisposition(report, policy, {
+      boundary,
+      disposition: pendingAdvance.disposition,
+      error: pendingAdvance.error,
+      stage: 'settle',
+      subject: hydrated.subject,
+      hydrated,
+      obligations: pendingAdvance.obligations,
+    });
+  }
   if (cleanup.kind === 'incomplete') {
     const cleanupContext = `Recovery process-local cleanup did not complete for ${boundary}:${hydrated.subject.key}`;
     if (cleanup.error instanceof Error) {
@@ -983,7 +1008,7 @@ async function releaseBoundaryOwnership<Raw, Item>(
 
   try {
     const result = await policy.processLocalCleanup.release(item);
-    if (result.kind === 'released' || result.kind === 'incomplete') return result;
+    if (result.kind === 'released' || result.kind === 'held' || result.kind === 'incomplete') return result;
     return { kind: 'incomplete', error: new Error('Recovery process-local cleanup returned an invalid result') };
   } catch (error: unknown) {
     return { kind: 'incomplete', error };

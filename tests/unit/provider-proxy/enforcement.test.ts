@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
 import { type AsyncRecordedProcessObserver, type ProcessLiveness } from '#src/infra/node-process.js';
 import type { RecordedProcessIdentity } from '#src/infra/process-containment.js';
+import type { FailureDomainContainment, FailureDomainObservation } from '#src/infra/failure-domain.js';
 import type { ActiveControlAuthorization } from '#src/provider-proxy/control-endpoint.js';
 import {
   createArmedEnforcer,
@@ -61,12 +62,11 @@ function createHarness(options: {
   accelerated?: boolean;
   observeContainmentLiveness?(pid: number): ProcessLiveness;
   readContainmentIncarnation?(pid: number): RecordedProcessIdentity['incarnation'] | null;
+  failureDomain?: FailureDomainContainment;
 }) {
   let elapsedMs = 0n;
   const clock = createMonotonicClock(enforcementClockScope, {
     readMilliseconds: () => elapsedMs,
-    // Sleeping advances this clock, so a grace or confirmation wait actually consumes its budget instead
-    // of spinning against a frozen reading.
     sleep: (milliseconds: number) => {
       elapsedMs += BigInt(milliseconds);
       return Promise.resolve();
@@ -87,7 +87,11 @@ function createHarness(options: {
   };
   const latchTeardown = vi.fn();
   const markContainmentAbsent = vi.fn();
-  const renewHolderCheck = vi.fn();
+  let completeDecision!: () => void;
+  const decisionCompleted = new Promise<void>((resolve) => {
+    completeDecision = resolve;
+  });
+  const renewHolderCheck = vi.fn(() => completeDecision());
   const alive = options.alive ?? new Set<number>();
   const stubborn = options.stubborn ?? new Set<number>();
   const scheduler = createManualScheduler();
@@ -123,6 +127,7 @@ function createHarness(options: {
     deadlines: { bounds: () => bounds, latchTeardown, markContainmentAbsent, renewHolderCheck },
     containment: CONTAINMENT,
     containmentEnvironment: {
+      failureDomain: options.failureDomain,
       clock,
       process: {
         kill: signalContainment,
@@ -136,7 +141,6 @@ function createHarness(options: {
       },
       platform: 'linux',
       maxRecordedRoots: MAX_PROXY_RECORDED_PROVIDER_ROOTS,
-      // A incarnation is only readable while the process exists, which is what makes it identity evidence.
       readProcessIncarnation: readContainmentIncarnation,
     },
     scheduler,
@@ -144,7 +148,10 @@ function createHarness(options: {
     observeHolder,
     acceleratedCheckMayAuthorizeAbsence: options.acceleratedCheckMayAuthorizeAbsence ?? false,
     pairingLossObserved: options.pairingLossObserved,
-    onOutcome: (outcome) => outcomes.push(outcome),
+    onOutcome: (outcome) => {
+      outcomes.push(outcome);
+      completeDecision();
+    },
     onProgressViolation: (lateness) => violations.push(lateness),
   });
 
@@ -154,6 +161,7 @@ function createHarness(options: {
     enforcer,
     scheduler,
     outcomes,
+    decisionCompleted,
     violations,
     signalContainment,
     observeContainmentLiveness,
@@ -227,3 +235,82 @@ describe('stopAndReap / reapAbsentHolder — capability currency (AC2, AC4)', ()
     expect(harness.markContainmentAbsent).toHaveBeenCalledOnce();
   });
 });
+
+it.each([
+  ['populated', 1],
+  ['missing', 1],
+  ['unknown', 1],
+  ['populated', 2],
+  ['missing', 2],
+  ['unknown', 2],
+] as const)(
+  'holds enforcement when the leaf becomes %s after post-target observation %s',
+  async (kind, transitionAt) => {
+    let observation: FailureDomainObservation = { kind: 'absent' };
+    let exactTargetObserved = false;
+    let postTargetObservations = 0;
+    const harness = createHarness({
+      adoptionInMs: 0,
+      observeContainmentLiveness: () => {
+        exactTargetObserved = true;
+        return 'absent';
+      },
+      failureDomain: {
+        hasEntered: () => true,
+        observe: () => {
+          if (exactTargetObserved && ++postTargetObservations === transitionAt)
+            queueMicrotask(() => {
+              observation = kind === 'unknown' ? { kind, reason: 'EACCES' } : { kind };
+            });
+          return observation;
+        },
+        kill: () => ({ kind: 'refused', errno: 'EACCES' }),
+      },
+    });
+    const result = await harness.enforcer.stopAndReap(harness.mintExplicit());
+    expect(result.kind).toBe('holding');
+    expect(harness.markContainmentAbsent).not.toHaveBeenCalled();
+    expect(harness.outcomes.map(({ kind }) => kind)).toEqual(['reap-failed']);
+    observation = { kind: 'missing' };
+    expect(await harness.enforcer.retryUnattributable()).toMatchObject({ kind: 'reap-failed' });
+    expect(harness.markContainmentAbsent).not.toHaveBeenCalled();
+  },
+);
+
+it.each(['populated', 'missing', 'unknown'] as const)(
+  'never publishes pairing-loss absence when the existing leaf becomes %s after its final probe',
+  async (kind) => {
+    let observation: FailureDomainObservation = { kind: 'absent' };
+    let exactTargetObserved = false;
+    let postTargetObservations = 0;
+    const harness = createHarness({
+      adoptionInMs: 0,
+      published: true,
+      pairingLossObserved: () => true,
+      observeContainmentLiveness: () => {
+        exactTargetObserved = true;
+        return 'absent';
+      },
+      failureDomain: {
+        hasEntered: () => true,
+        observe: () => {
+          if (exactTargetObserved && ++postTargetObservations === 2)
+            queueMicrotask(() => {
+              observation = kind === 'unknown' ? { kind, reason: 'EACCES' } : { kind };
+            });
+          return observation;
+        },
+        kill: () => ({ kind: 'refused', errno: 'EACCES' }),
+      },
+    });
+    harness.enforcer.arm();
+    harness.scheduler.runDue();
+    harness.scheduler.runDue();
+    await harness.decisionCompleted;
+    expect(postTargetObservations).toBeGreaterThanOrEqual(2);
+    expect(harness.markContainmentAbsent).not.toHaveBeenCalled();
+    expect(harness.outcomes.some(({ kind }) => kind === 'containment-absent')).toBe(false);
+    expect(harness.signalContainment).not.toHaveBeenCalled();
+    harness.enforcer.disarm();
+  },
+);

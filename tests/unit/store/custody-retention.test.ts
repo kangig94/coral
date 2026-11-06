@@ -1,5 +1,8 @@
+import { processIncarnationSchema } from '#src/infra/node-process.js';
 import { reconcileFinishedCustody } from '#src/coordinator/services/recovery/custody-reconciliation.js';
 import {
+  bindCustodyIdentity,
+  recordCustodyIntent,
   custodyLedgerDir,
   dischargeCustodyEntry,
   pruneCustodyLedger,
@@ -258,3 +261,115 @@ it('bounds custody cleanup and resumes its owned stage after the budget expires'
   });
   expect(readdirSync(custodyLedgerDir(f.runDir))).toEqual(['root.v1.json']);
 });
+
+const proxyInstanceId = 'f4f88595-b227-4b3a-ae75-9a222b7d4317';
+
+it.each(['populated', 'unknown', 'missing'] as const)(
+  'uses the durable owning proxy address before deciding host custody with a %s leaf',
+  async (population) => {
+    const f = fixture();
+    const proxy = recordCustodyIntent(f.runtime, f.runDir, {
+      effect: 'process-spawn',
+      epoch: 'epoch-1',
+      owner: 'provider-proxy-set',
+      operationId: `${proxyInstanceId}:proxy`,
+      capsule: null,
+      nowMs: 50,
+      bindWithinMs: 1000,
+    });
+    bindCustodyIdentity(f.runtime, f.runDir, proxy, {
+      process: { pid: 9876, incarnation: processIncarnationSchema.parse('linux:boot:122'), processGroupId: 9876 },
+      capsule: null,
+      observedAtMs: 60,
+    });
+    const host = f.bound('provider-host', 9876);
+    Object.defineProperty(f.runtime.process, 'failureDomainRoot', { value: { kind: 'placed', root: '/test' } });
+    const name = `set-${proxyInstanceId}/containment/host-${host.intent.processToken}`;
+    const lookup = vi.spyOn(f.runtime.process, 'failureDomainContainment').mockImplementation((address) => ({
+      observe: () =>
+        address === name
+          ? population === 'unknown'
+            ? { kind: 'unknown', reason: 'EACCES' }
+            : { kind: population }
+          : { kind: 'missing' },
+      kill: () => {
+        throw new Error('custody must never signal');
+      },
+    }));
+    await f.reconcile();
+    expect(
+      readCustodyLedger(f.runtime, f.runDir).find(
+        (entry) => entry.kind !== 'unreadable' && entry.intent.id === host.intent.id,
+      )?.kind,
+    ).toBe(population === 'missing' ? 'absent' : 'bound');
+    if (population !== 'missing') {
+      await f.reconcile();
+      expect(
+        readCustodyLedger(f.runtime, f.runDir).find(
+          (entry) => entry.kind !== 'unreadable' && entry.intent.id === host.intent.id,
+        )?.kind,
+      ).toBe('bound');
+    }
+    expect(lookup).toHaveBeenCalledWith(name);
+    expect(lookup).not.toHaveBeenCalledWith(`host-${host.intent.processToken}`);
+    expect(f.runtime.process.kill).not.toHaveBeenCalled();
+  },
+);
+
+it('holds proxy-host custody without a durable owning set instead of probing the local address', async () => {
+  const f = fixture();
+  const host = f.bound('provider-host', 9876);
+  Object.defineProperty(f.runtime.process, 'failureDomainRoot', { value: { kind: 'placed', root: '/test' } });
+  const lookup = vi.spyOn(f.runtime.process, 'failureDomainContainment');
+  await f.reconcile();
+  expect(readCustodyLedger(f.runtime, f.runDir)).toMatchObject([{ kind: 'bound', intent: { id: host.intent.id } }]);
+  expect(lookup).not.toHaveBeenCalled();
+});
+
+it.each(['unknown', 'missing', 'populated'] as const)(
+  'retains host custody when its existing leaf becomes %s during process confirmation',
+  async (after) => {
+    const f = fixture();
+    const proxy = recordCustodyIntent(f.runtime, f.runDir, {
+      effect: 'process-spawn',
+      epoch: 'epoch-1',
+      owner: 'provider-proxy-set',
+      operationId: `${proxyInstanceId}:proxy`,
+      capsule: null,
+      nowMs: 50,
+      bindWithinMs: 1000,
+    });
+    bindCustodyIdentity(f.runtime, f.runDir, proxy, {
+      process: { pid: 9876, incarnation: processIncarnationSchema.parse('linux:boot:122'), processGroupId: 9876 },
+      capsule: null,
+      observedAtMs: 60,
+    });
+    const host = f.bound('provider-host', 9876);
+    Object.defineProperty(f.runtime.process, 'failureDomainRoot', { value: { kind: 'placed', root: '/test' } });
+    let changed = false;
+    vi.spyOn(f.runtime.process, 'failureDomainContainment').mockReturnValue({
+      observe: () =>
+        !changed ? { kind: 'absent' } : after === 'unknown' ? { kind: 'unknown', reason: 'EACCES' } : { kind: after },
+      kill: () => {
+        throw new Error('observation must not signal');
+      },
+    });
+    let confirmingHost = false;
+    f.runtime.process.readProcessIncarnation = (pid) => {
+      if (pid === 4321) confirmingHost = true;
+      return null;
+    };
+    const sleep = f.runtime.time.sleep;
+    f.runtime.time.sleep = async (ms) => {
+      await sleep(ms);
+      if (confirmingHost) changed = true;
+    };
+    await f.reconcile();
+    expect(changed).toBe(true);
+    expect(
+      readCustodyLedger(f.runtime, f.runDir).find(
+        (entry) => entry.kind !== 'unreadable' && entry.intent.id === host.intent.id,
+      )?.kind,
+    ).toBe('bound');
+  },
+);

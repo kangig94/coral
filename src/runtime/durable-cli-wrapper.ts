@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import { enterPayloadDomain, inheritedFailureDomainRoot } from '../infra/failure-domain.js';
 import { spawn } from 'node:child_process';
 import { closeSync, openSync, readFileSync, unlinkSync } from 'node:fs';
@@ -10,6 +11,7 @@ import {
   CUSTODY_PROCESS_TICKET_ENV,
   custodyProcessArgument,
   parseCustodyProcessTicket,
+  recordCustodyPayloadEntry,
 } from '../infra/custody-process-ticket.js';
 import type { ChildProcessLike } from '../infra/port-types.js';
 import {
@@ -61,7 +63,13 @@ type PendingExit = Readonly<{
   wrapperExitCode: number;
 }>;
 
-type RuntimeStartPublicationDisposition = Readonly<{ kind: 'published' }> | Readonly<{ kind: 'terminated' }>;
+const runtimeStartPublicationSchema = z.object({
+  kind: z.literal('runtime-start-published'),
+  failureDomain: z.object({ root: z.string().min(1), path: z.string().min(1) }).nullable(),
+});
+type RuntimeStartPublicationDisposition =
+  | Readonly<{ kind: 'published'; failureDomain: { root: string; path: string } | null }>
+  | Readonly<{ kind: 'terminated' }>;
 
 export type GroupMemberObservationSubject = Readonly<{
   kind: 'process';
@@ -361,10 +369,10 @@ function waitForRuntimeStartPublication(terminationSignal: AbortSignal): Promise
       reject(new Error('Durable wrapper lost its coordinator before launch publication completed.'));
     };
     const onMessage = (message: unknown): void => {
-      if (message !== 'runtime-start-published') return;
+      const parsed = runtimeStartPublicationSchema.safeParse(message);
+      if (!parsed.success && message !== 'runtime-start-published') return;
       cleanup();
-      process.disconnect();
-      resolve({ kind: 'published' });
+      resolve({ kind: 'published', failureDomain: parsed.success ? parsed.data.failureDomain : null });
     };
     const onTermination = (): void => {
       cleanup();
@@ -669,7 +677,22 @@ async function runWrapper(payloadPath: string | undefined): Promise<void> {
     closeOutputFiles();
     return;
   }
-  void enterPayloadDomain(inheritedFailureDomainRoot(), process.env.CORAL_FAILURE_DOMAIN ?? null);
+  const placement = publicationDisposition.failureDomain;
+  delete process.env.CORAL_FAILURE_DOMAIN;
+  delete process.env.CORAL_FAILURE_DOMAIN_ROOT;
+  if (placement !== null) process.env.CORAL_FAILURE_DOMAIN_ROOT = placement.root;
+  const placementRoot = inheritedFailureDomainRoot();
+  const entry = enterPayloadDomain(placementRoot, placement?.path ?? null);
+  if (placement !== null && placementRoot.kind === 'placed' && entry.kind === 'entered') {
+    try {
+      process.send?.({ kind: 'durable-payload-entered' }, () => {
+        if (process.connected) process.disconnect();
+      });
+    } catch {
+      // Missing entry publication retains process-group evidence without denying payload availability.
+      if (process.connected) process.disconnect();
+    }
+  } else if (process.connected) process.disconnect();
   delete process.env.CORAL_FAILURE_DOMAIN;
   delete process.env.CORAL_FAILURE_DOMAIN_ROOT;
   delete env.CORAL_FAILURE_DOMAIN;
@@ -738,7 +761,50 @@ function runProviderHost(command: string | undefined, args: string[]): void {
         },
       );
   };
-  let child: ReturnType<typeof spawn>;
+  const spawnProvider = (providerCommand: string): void => {
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(providerCommand, args.slice(0, -1), {
+        stdio: 'inherit',
+        env: process.env,
+        shell: shouldUseWindowsCommandShell(providerCommand, process.platform),
+      });
+    } catch (error: unknown) {
+      publishAbsent(1);
+      process.stderr.write(`${String(error)}\n`);
+      return;
+    }
+    const time = createRealTimePort();
+    const retainedChild = child as unknown as ChildProcessLike;
+    const terminate = (): void => {
+      if (child.exitCode !== null || child.signalCode !== null) return;
+      requestObservedChildKill(retainedChild, time);
+      retry ??= setInterval(
+        () => requestObservedChildKill(retainedChild, time),
+        RETAINED_GROUP_TERMINATION_INTERVAL_MS,
+      );
+    };
+    for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP'] as const) process.on(signal, terminate);
+    process.once('disconnect', terminate);
+    let childStarted = false;
+    child.once('spawn', () => {
+      childStarted = true;
+      if (process.connected)
+        process.send?.(
+          providerHostObservationSchema.parse({
+            kind: 'provider-host-started',
+            processToken: ticket.processToken,
+            pid: child.pid,
+            incarnation: child.pid === undefined ? null : probeProcessIncarnation(child.pid, process.platform),
+          }),
+        );
+    });
+    child.on('error', () => {
+      if (!childStarted) publishAbsent(1);
+      else terminate();
+    });
+    child.once('exit', (code, signal) => publishAbsent(code ?? (signal === null ? 1 : 128)));
+  };
   try {
     if (args.at(-1) !== custodyProcessArgument(ticket.processToken)) {
       throw new Error('Provider host wrapper process token does not match its ticket.');
@@ -750,46 +816,35 @@ function runProviderHost(command: string | undefined, args: string[]): void {
     delete process.env[CUSTODY_PROCESS_TICKET_ENV];
     delete process.env.CORAL_CUSTODY_EPOCH;
     delete process.env.CORAL_CUSTODY_EPOCH_KEY;
-    void enterPayloadDomain(inheritedFailureDomainRoot(), process.env.CORAL_FAILURE_DOMAIN ?? null);
+    const root = inheritedFailureDomainRoot();
+    const leaf = process.env.CORAL_FAILURE_DOMAIN ?? null;
+    const placement = enterPayloadDomain(root, leaf);
     delete process.env.CORAL_FAILURE_DOMAIN;
     delete process.env.CORAL_FAILURE_DOMAIN_ROOT;
-    child = spawn(command, args.slice(0, -1), {
-      stdio: 'inherit',
-      env: process.env,
-      shell: shouldUseWindowsCommandShell(command, process.platform),
-    });
+    const payloadEntered = placement.kind === 'entered';
+    if (payloadEntered) {
+      try {
+        recordCustodyPayloadEntry(ticket, { pid: process.pid, incarnation });
+      } catch {
+        // Entry-proof publication failure must not prevent payload startup.
+      }
+      if (!process.connected || process.send === undefined)
+        throw new Error('Provider host placement channel is unavailable.');
+      process.send(
+        providerHostObservationSchema.parse({ kind: 'provider-host-placed', processToken: ticket.processToken }),
+        (error) => {
+          if (error !== null || !process.connected) {
+            publishAbsent(1);
+            return;
+          }
+          spawnProvider(command);
+        },
+      );
+    } else spawnProvider(command);
   } catch (error: unknown) {
     publishAbsent(1);
     process.stderr.write(`${String(error)}\n`);
-    return;
   }
-  const time = createRealTimePort();
-  const retainedChild = child as unknown as ChildProcessLike;
-  const terminate = (): void => {
-    if (child.exitCode !== null || child.signalCode !== null) return;
-    requestObservedChildKill(retainedChild, time);
-    retry ??= setInterval(() => requestObservedChildKill(retainedChild, time), RETAINED_GROUP_TERMINATION_INTERVAL_MS);
-  };
-  for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP'] as const) process.on(signal, terminate);
-  process.once('disconnect', terminate);
-  let childStarted = false;
-  child.once('spawn', () => {
-    childStarted = true;
-    if (process.connected)
-      process.send?.(
-        providerHostObservationSchema.parse({
-          kind: 'provider-host-started',
-          processToken: ticket.processToken,
-          pid: child.pid,
-          incarnation: child.pid === undefined ? null : probeProcessIncarnation(child.pid, process.platform),
-        }),
-      );
-  });
-  child.on('error', () => {
-    if (!childStarted) publishAbsent(1);
-    else terminate();
-  });
-  child.once('exit', (code, signal) => publishAbsent(code ?? (signal === null ? 1 : 128)));
 }
 
 if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

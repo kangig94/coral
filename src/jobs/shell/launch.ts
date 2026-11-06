@@ -1,3 +1,4 @@
+import { recordDurableCliExecution, markDurableCliExecutionEntered } from '../durable-cli-execution.js';
 import { EXECUTION_RETRY_MS } from '../finishing.js';
 import { raceWithSignal } from '../../infra/promise-signal.js';
 import { executionKey } from '../execution-address.js';
@@ -1924,8 +1925,8 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
               },
         );
       },
-      (identity, containmentStatus, control) =>
-        this.publishDurableProcessIdentity(launch, identity, containmentStatus, control),
+      (identity, containmentStatus, control, placement) =>
+        this.publishDurableProcessIdentity(launch, identity, containmentStatus, control, placement),
       {
         permit,
         abortHoldOwner: {
@@ -1942,17 +1943,43 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
     identity: DurableCliProcessSubject | DurableProvisionalProcessSubject,
     containmentStatus?: DurableContainmentStatus,
     control?: DurableContainmentOperatorControl,
+    placement?: 'entered',
   ): DurableProcessPublicationDisposition {
     const { jobId, execution } = launch;
     const provisional = 'kind' in identity;
+    if (placement === 'entered') {
+      try {
+        markDurableCliExecutionEntered(this.deps.progressStore.getDb(), {
+          jobId,
+          execution,
+          pid: identity.pid,
+          incarnation: identity.incarnation,
+        });
+        return { kind: 'published', failureDomainEntered: true };
+      } catch {
+        return { kind: 'published', failureDomainEntered: false };
+      }
+    }
     if (containmentStatus === undefined) {
+      let failureDomainReady = false;
+      try {
+        recordDurableCliExecution(this.deps.progressStore.getDb(), {
+          jobId,
+          execution,
+          pid: identity.pid,
+          incarnation: identity.incarnation,
+        });
+        failureDomainReady = true;
+      } catch {
+        // No durable receipt means no job leaf may be created; the launch remains unplaced.
+      }
       if (!provisional) {
         writeDurableCliProcessRuntimeMeta(this.deps.progressStore.getDb(), {
           jobId,
           ...identity,
         });
       }
-      return { kind: 'published' };
+      return { kind: 'published', failureDomainReady };
     }
     const evidence = provisional
       ? { kind: 'unavailable' as const, reason: 'missing' as const }
