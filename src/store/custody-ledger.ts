@@ -423,7 +423,7 @@ function readObservedCustodyEntry(
   observation?: RecoveryObservation,
 ): CustodyEntry {
   const entry = readCustodyEntry(runtime, runDir, name, observation);
-  observation?.record('custody-ledger', { subjects: 1 });
+  observation?.record('custody-ledger', { reads: 1 });
   return entry;
 }
 
@@ -437,20 +437,28 @@ export function readCustodyLedger(
   return listing.names.map((name) => readObservedCustodyEntry(runtime, runDir, name, observation));
 }
 
-/** `readCustodyLedger` for a caller on the event loop: reading yields between batches of entries. */
+declare const completeCustodyLedger: unique symbol;
+
+export type CompleteCustodyLedger = readonly CustodyEntry[] & { readonly [completeCustodyLedger]: true };
+
 export async function readCustodyLedgerAsync(
   runtime: Pick<Runtime, 'storage'>,
   runDir: string,
   observation?: RecoveryObservation,
-): Promise<CustodyEntry[]> {
+  assertContinue?: () => void,
+): Promise<CompleteCustodyLedger> {
+  assertContinue?.();
   const listing = listCustodyLedger(runtime, runDir);
-  if (listing.kind === 'entries') return listing.entries;
+  assertContinue?.();
+  if (listing.kind === 'entries') return listing.entries as unknown as CompleteCustodyLedger;
   const entries: CustodyEntry[] = [];
   for (const [position, name] of listing.names.entries()) {
     if (position > 0 && position % CUSTODY_READ_BATCH === 0) await setImmediate();
+    assertContinue?.();
     entries.push(readObservedCustodyEntry(runtime, runDir, name, observation));
   }
-  return entries;
+  assertContinue?.();
+  return entries as unknown as CompleteCustodyLedger;
 }
 
 function readCustodyEntry(
@@ -540,6 +548,7 @@ export function reconcileCustodyLedger(
         evidence: observation.evidence,
       });
       writeOnce(runtime, join(intentDir(runDir, entry.intent.id), 'absence.v1.json'), absence);
+      metrics?.record('custody-ledger', { subjects: 1 });
       return { kind: 'absent', intent: entry.intent, evidence: observation.evidence };
     } finally {
       release();
@@ -705,6 +714,7 @@ export async function pruneCustodyLedger(input: {
           else runtime.storage.unlinkSync(child);
           directories.delete(child);
         });
+        budget.observation?.record('custody', { subjects: 1 });
         await setImmediate();
         return true;
       };
@@ -724,6 +734,7 @@ export async function pruneCustodyLedger(input: {
           runtime.storage.rmdirSync(path);
           syncDirectory(runtime, root);
         });
+        budget.observation?.record('custody', { subjects: 1 });
         budget.record({ kind: 'deleted', subject: match[1], count: 1 });
       }
       mutate(() => {
@@ -732,6 +743,7 @@ export async function pruneCustodyLedger(input: {
         runtime.storage.unlinkSync(receiptPath);
         syncDirectory(runtime, root);
       });
+      budget.observation?.record('custody', { subjects: 1 });
       return true;
     } finally {
       release();
@@ -740,10 +752,7 @@ export async function pruneCustodyLedger(input: {
   let cursor = input.afterId;
   let scanned = 0;
   const names = runtime.storage.readdirSync(root).sort();
-  budget.observation?.record('custody', {
-    subjects: names.filter((name) => name !== 'root.v1.json').length,
-    reads: names.length,
-  });
+  budget.observation?.record('custody', { reads: names.length });
   for (const name of names) {
     if (name === 'root.v1.json') continue;
     const staged = retirementStagePattern.test(name);
@@ -792,7 +801,10 @@ export async function pruneCustodyLedger(input: {
             release();
           }
         });
-        if (stage !== null && !(await cleanup(stage))) return cursor;
+        if (stage !== null) {
+          budget.observation?.record('custody', { subjects: 1 });
+          if (!(await cleanup(stage))) return cursor;
+        }
       } else if (entry.kind === 'unreadable' || entry.kind === 'holding')
         budget.record({ kind: 'kept', subject: name, reason: 'custody-awaits-reconciliation' });
       cursor = name;

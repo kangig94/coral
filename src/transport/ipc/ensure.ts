@@ -8,7 +8,7 @@ declare const __VERSION__: string;
 
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { existsSync, readFileSync, statSync, unlinkSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, statSync, unlinkSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
@@ -140,9 +140,8 @@ type SpawnedCoordinator = {
 
 /**
  * No code and no signal: an exit code is not evidence about whether a coordinator is serving, and the only
- * consumer must not be handed one to reason from. `reason` is safe to surface because it is authored here —
- * `spawnCoordinator` gives the child `stdio: ['ignore', 'ignore', <coordinator.log fd>]`, so no child-authored
- * text can reach this process.
+ * consumer must not be handed one to reason from. `reason` must contain only launcher errors, never
+ * child-authored diagnostics.
  */
 type SpawnedCoordinatorTerminal = Readonly<{ kind: 'exited' }> | Readonly<{ kind: 'never-started'; reason: string }>;
 
@@ -667,6 +666,7 @@ function observeSpawnedCoordinatorTerminal(child: ChildProcess): Promise<Spawned
 }
 
 function spawnCoordinator(backendBin: string, paths: CoordinatorPaths): SpawnedCoordinator {
+  mkdirSync(paths.runDir, { recursive: true });
   const attemptId = randomUUID();
   const spawnedAt = Date.now();
   clearStartupErrorSentinel(paths);

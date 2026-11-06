@@ -1,9 +1,11 @@
 import { spawnAdmittedChild } from '#src/coordinator-launch/child-process.js';
 import { SupervisorLaunchMemory } from '#src/coordinator-launch/state.js';
 import { probeProcessIncarnation } from '#src/infra/node-process.js';
-import { rmSync } from 'node:fs';
+import { appendFileSync, rmSync } from 'node:fs';
+import { setBackendLogSink } from '#src/infra/backend-log.js';
 
-const [executable, runDir, invokingDir, removeRunDir] = process.argv.slice(2);
+const [executable, runDir, invokingDir, removeRunDir, diagnosticPath] = process.argv.slice(2);
+if (diagnosticPath !== undefined) setBackendLogSink((message) => appendFileSync(diagnosticPath, message));
 const incarnation = probeProcessIncarnation(process.pid);
 if (incarnation === null) throw new Error('Missing process incarnation');
 const memory = new SupervisorLaunchMemory(runDir, { pid: process.pid, incarnation }, 'fixture');

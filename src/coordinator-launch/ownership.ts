@@ -1,3 +1,4 @@
+import { backendLog } from '../infra/backend-log.js';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -265,7 +266,7 @@ export async function acquireLaunchOwnership(
         retry: 'next-ensure',
       },
     });
-    process.stderr.write(
+    backendLog.raw(
       'Namespace supervisor ownership was not acquired within 30 seconds. The incumbent may still be running; retry the command to observe recovery.\n',
     );
     return { kind: 'finished', exitCode: 1 };

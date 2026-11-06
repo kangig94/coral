@@ -344,7 +344,9 @@ coral-cli backend recovery-quarantine clear --boundary <boundary> --key <key> --
 
 ### Backend state
 
-`<runDir>` defaults to `~/.coral/gen2/run` for prod and `~/.coral/gen2/run-dev` for dev. For an earlier attempt routed to the run-directory log, inspect both `coordinator.log` and `coordinator.log.1`. Destination selection, inherited-stderr retention and dropped diagnostics must follow the [coordinator diagnostic destination constraints](./architecture.md#coordinator-diagnostic-destinations). See `installCoordinatorLog` and `rotateLogIfLarge` (`src/infra/coordinator-log.ts`).
+`<runDir>` defaults to `~/.coral/gen2/run` for prod and `~/.coral/gen2/run-dev` for dev. Start with the exact `coordinatorLogPath` in detailed `/health` or the startup diagnostic, when present. Next inspect the retained `coordinator-logs/<writer>/writer.json` identities and read both `current.log` and `current.log.1` in the matching writer directory. For native stderr, check `coordinator-logs/native-stderr.log` when that destination opened successfully; see the [native-stderr open-failure limitation](./architecture.md#coordinator-diagnostic-destinations).
+
+`coordinator-logs/latest-coordinator.json` and `latest-supervisor.json` are best-effort shortcuts: each writer makes a single publication attempt, so a pointer may name an earlier writer. Legacy `coordinator.log` and `coordinator.log.1` remain separate files for older-build diagnostics. See the [coordinator diagnostic policy](./architecture.md#coordinator-diagnostic-destinations) for ownership, bounds and retention.
 
 | Path                                                                             | Purpose                               |
 | -------------------------------------------------------------------------------- | ------------------------------------- |

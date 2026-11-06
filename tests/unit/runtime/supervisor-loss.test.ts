@@ -16,6 +16,7 @@ import { validatedRunningBuildRoot } from '#src/infra/installed-build-root.js';
 import { probeProcessIncarnation, type ProcessIncarnation } from '#src/infra/node-process.js';
 import type * as nodeProcessModule from '#src/infra/node-process.js';
 import { startReplacementSupervisor } from '#src/runtime/supervisor-loss.js';
+import { createRealRuntime } from '#src/runtime/real.js';
 
 vi.mock('#src/infra/backend-discovery.js', () => ({
   readDiscoveryRecordDisposition: vi.fn(() => ({ kind: 'missing' })),
@@ -24,6 +25,9 @@ vi.mock('#src/infra/backend-discovery.js', () => ({
 vi.mock('#src/infra/upgrade-intent.js', () => ({ readUpgradeIntent: vi.fn(() => ({ kind: 'absent' })) }));
 
 vi.mock('node:child_process', () => ({ spawn: vi.fn() }));
+vi.mock('#src/infra/coordinator-log.js', () => ({
+  withCoordinatorLog: vi.fn(<T>(_runDir: string, launch: (stderr: number) => T): T => launch(2)),
+}));
 vi.mock('#src/infra/installed-build-root.js', () => ({ validatedRunningBuildRoot: vi.fn(() => '/fixture') }));
 vi.mock('node:fs', async (importOriginal) => {
   const original = await importOriginal<typeof fsModule>();
@@ -59,7 +63,15 @@ it('reports namespace contention during replacement retries and nominates only a
   const lock = attemptExclusiveFileLockSync(supervisorLockPath(runDir));
   if (lock.kind !== 'acquired') throw new Error('Missing namespace holder');
   try {
-    startReplacementSupervisor('/fixture', runDir, { buildSetId: 'build' } as StrictBundleManifest, vi.fn(), vi.fn());
+    const logPorts = createRealRuntime('prod', { baseDir: runDir });
+    startReplacementSupervisor(
+      '/fixture',
+      runDir,
+      { buildSetId: 'build' } as StrictBundleManifest,
+      vi.fn(),
+      vi.fn(),
+      logPorts,
+    );
     replacement.emit('exit', 1, null);
     await vi.advanceTimersByTimeAsync(1_000);
     expect(spawn).toHaveBeenCalledOnce();
@@ -102,7 +114,14 @@ it('refuses nominee retirement while fresh identity is unknown', async () => {
     (pid) => (pid === process.pid ? 'source' : 'launch') as ProcessIncarnation | null,
   );
   try {
-    startReplacementSupervisor('/fixture', runDir, { buildSetId: 'build' } as StrictBundleManifest, vi.fn(), vi.fn());
+    startReplacementSupervisor(
+      '/fixture',
+      runDir,
+      { buildSetId: 'build' } as StrictBundleManifest,
+      vi.fn(),
+      vi.fn(),
+      createRealRuntime('prod', { baseDir: runDir }),
+    );
     vi.mocked(probeProcessIncarnation).mockImplementation(
       (pid) => (pid === process.pid ? 'source' : null) as ProcessIncarnation | null,
     );
@@ -148,7 +167,14 @@ it('retries repair after source identity recovers while the accepted replacement
     sourceKnown = false;
   });
   try {
-    startReplacementSupervisor('/fixture', runDir, { buildSetId: 'build' } as StrictBundleManifest, vi.fn(), repair);
+    startReplacementSupervisor(
+      '/fixture',
+      runDir,
+      { buildSetId: 'build' } as StrictBundleManifest,
+      vi.fn(),
+      repair,
+      createRealRuntime('prod', { baseDir: runDir }),
+    );
     const challenge = vi.mocked(spawn).mock.calls.at(-1)?.[2]?.env?.CORAL_RECOVERY_CHALLENGE;
     replacement.emit('message', { kind: 'coral-recovery-owned', challenge });
     replacement.emit('message', { kind: 'coral-repair-bridge-ready', challenge });

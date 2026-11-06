@@ -1,3 +1,4 @@
+import { backendLog } from '../infra/backend-log.js';
 import { type ChildProcess } from 'node:child_process';
 
 import { type StrictBundleManifest } from '../infra/bundle-manifest.js';
@@ -109,7 +110,7 @@ function dispatchPendingRequest(input: PendingRequestDispatch): void {
       if (pending.value?.running.child === running.child && current.child !== running.child) pending.value = null;
     });
   } catch (error: unknown) {
-    process.stderr.write(`Coordinator request observation failed: ${String(error)}\n`);
+    backendLog.raw(`Coordinator request observation failed: ${String(error)}\n`);
   }
 }
 
@@ -277,7 +278,7 @@ export async function superviseAdoptedChild(input: {
         () => record.hasAuthority(authority),
       );
     } catch (error: unknown) {
-      process.stderr.write(`Inherited successor request observation failed: ${String(error)}\n`);
+      backendLog.raw(`Inherited successor request observation failed: ${String(error)}\n`);
     }
   }, 500);
   let result: WatchResult;

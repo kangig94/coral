@@ -1195,3 +1195,35 @@ it('ends an entered durable execution through entry-aware recovery proof', async
     await f.owner.dispose();
   }
 });
+
+it('logs finishing holds once per reason change for the same execution', async () => {
+  const h = harness(false);
+  accept(h);
+  const log = vi.fn();
+  let reason: 'quiescence' | 'retention' = 'quiescence';
+  const f = finisher(h, {
+    log,
+    quiesce: async () => {
+      if (reason === 'retention') throw new Error('retention issuer unavailable');
+      return false;
+    },
+  });
+  const finishing = f.owner.finish(address);
+  const stopped = expect(finishing).rejects.toBeDefined();
+  try {
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(log).toHaveBeenCalledTimes(1);
+    expect(log.mock.calls[0][0]).toContain('Awaiting authoritative operation release');
+    reason = 'retention';
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(log).toHaveBeenCalledTimes(2);
+    expect(log.mock.calls[1][0]).toContain('retention issuer unavailable');
+    reason = 'quiescence';
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(log).toHaveBeenCalledTimes(3);
+    expect(log.mock.calls[2][0]).toContain('Awaiting authoritative operation release');
+  } finally {
+    await f.owner.dispose();
+    await stopped;
+  }
+});

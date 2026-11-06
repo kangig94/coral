@@ -2,15 +2,19 @@ import * as locks from '#src/infra/fs-lock.js';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, existsSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { clearImmediate, setImmediate } from 'node:timers';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { bindCustodyProcessTicket, parseCustodyProcessTicket } from '../../../src/infra/custody-process-ticket.js';
 import { processIncarnationSchema } from '../../../src/infra/node-process.js';
 import { createRealRuntime } from '../../../src/runtime/real.js';
+import { createBackgroundPhaseObserver, startRecoveryPhase } from '#src/recovery/phase-observation.js';
+import type { RetentionOutcome } from '#src/store/retention-outcome.js';
 
 import {
   bindCustodyChild,
   bindCustodyIdentity,
   custodyLedgerDir,
+  pruneCustodyLedger,
   readCustodyLedger,
   readCustodyLedgerAsync,
   reconcileCustodyLedger,
@@ -34,6 +38,135 @@ afterEach(() => {
 });
 
 describe('custody ledger', () => {
+  it('keeps stable retention inventories silent and reports an actual retirement', async () => {
+    const run = runDir();
+    const runtime = runtimeFor(run);
+    const retained = recordCustodyIntent(runtime, run, {
+      effect: 'provider-operation-publication',
+      epoch: 'epoch-2',
+      owner: 'provider-operation',
+      operationId: 'retained-operation',
+      capsule: null,
+      bindWithinMs: 1_000,
+      nowMs: 100,
+    });
+    bindCustodyIdentity(runtime, run, retained, { process: null, capsule: null, observedAtMs: 200 });
+    const log = vi.fn();
+    const startPhase = createBackgroundPhaseObserver({
+      time: { ...runtime.time, monotonicNow: () => 0n },
+      log,
+      bootId: 'retention-test',
+      phase: 'custody-retention',
+    });
+    const outcomes: RetentionOutcome[] = [];
+    const pass = async () => {
+      const phase = startPhase();
+      const counts = { reads: 0, subjects: 0 };
+      await expect(
+        pruneCustodyLedger({
+          runtime,
+          runDir: run,
+          cutoff: 2_000,
+          afterId: '',
+          budget: {
+            canContinue: () => true,
+            record: (outcome) => outcomes.push(outcome),
+            observation: {
+              record: (source, observed) => {
+                counts.reads += observed.reads ?? 0;
+                counts.subjects += observed.subjects ?? 0;
+                phase.record(source, observed);
+              },
+            },
+          },
+          mutate: (operation) => operation(),
+        }),
+      ).resolves.toBe('');
+      phase.finish();
+      expect(counts.reads).toBeGreaterThan(0);
+      return counts.subjects;
+    };
+    for (let attempt = 0; attempt < 3; attempt++) expect(await pass()).toBe(0);
+    expect(log).not.toHaveBeenCalled();
+    const retired = recordCustodyIntent(runtime, run, {
+      effect: 'process-spawn',
+      epoch: 'epoch-2',
+      owner: 'durable-cli',
+      operationId: 'retired-operation',
+      capsule: null,
+      bindWithinMs: 1_000,
+      nowMs: 100,
+    });
+    reconcileCustodyLedger(runtime, run, 1_200, 100, (intent) => ({
+      kind: 'absent',
+      processToken: intent.processToken,
+      evidence: 'exact process token absent',
+    }));
+    expect(await pass()).toBeGreaterThan(0);
+    expect(outcomes).toContainEqual({ kind: 'deleted', subject: retired.id, count: 1 });
+    expect(existsSync(join(custodyLedgerDir(run), retired.id))).toBe(false);
+    expect(readCustodyLedger(runtime, run)).toMatchObject([{ kind: 'bound', intent: { id: retained.id } }]);
+    expect(log).toHaveBeenCalledOnce();
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('event=finish outcome=complete'));
+    log.mockClear();
+    expect(await pass()).toBe(0);
+    expect(log).not.toHaveBeenCalled();
+  });
+
+  it('stops reading an interrupted multi-batch discovery without returning a partial ledger', async () => {
+    const run = runDir();
+    const runtime = runtimeFor(run);
+    vi.spyOn(runtime.storage, 'fdatasyncSync').mockImplementation(() => undefined);
+    vi.spyOn(runtime.storage, 'syncDirectoryDurableSync').mockReturnValue(true);
+    const intentPaths = Array.from({ length: 600 }, (_, entry) => {
+      const intent = recordCustodyIntent(runtime, run, {
+        effect: 'process-spawn',
+        epoch: 'epoch-2',
+        owner: 'durable-cli',
+        operationId: `job-${entry}`,
+        capsule: null,
+        bindWithinMs: 1_000,
+        nowMs: 100,
+      });
+      return join(custodyLedgerDir(run), intent.id, 'intent.v1.json');
+    });
+    const readPaths: string[] = [];
+    const fileReads: string[] = [];
+    let interruptedReads: { intents: string[]; files: string[] } | undefined;
+    let interrupt: NodeJS.Immediate | undefined;
+    const failure = new Error('discovery-aborted');
+    const readFile = runtime.storage.readFileSync.bind(runtime.storage);
+    const reads = vi.spyOn(runtime.storage, 'readFileSync').mockImplementation((path, encoding) => {
+      fileReads.push(String(path));
+      const content = readFile(path, encoding);
+      if (typeof path === 'string' && path.endsWith('/intent.v1.json')) {
+        readPaths.push(path);
+        if (readPaths.length === 300) {
+          interrupt = setImmediate(() => {
+            interruptedReads = { intents: [...readPaths], files: [...fileReads] };
+          });
+        }
+      }
+      return content;
+    });
+    try {
+      await expect(
+        readCustodyLedgerAsync(runtime, run, undefined, () => {
+          if (interruptedReads !== undefined) throw failure;
+        }),
+      ).rejects.toBe(failure);
+      expect(interruptedReads).toBeDefined();
+      expect(interruptedReads!.intents.length).toBeGreaterThanOrEqual(300);
+      expect(interruptedReads!.intents.length).toBeLessThan(intentPaths.length);
+      expect(readPaths).toEqual(interruptedReads!.intents);
+      expect(fileReads).toEqual(interruptedReads!.files);
+      expect(intentPaths.some((path) => !readPaths.includes(path))).toBe(true);
+    } finally {
+      clearImmediate(interrupt);
+      reads.mockRestore();
+    }
+  });
+
   it('should read the same ledger while yielding as it reads without yielding', async () => {
     const run = runDir();
     const runtime = runtimeFor(run);
@@ -54,6 +187,52 @@ describe('custody ledger', () => {
     const read = await readCustodyLedgerAsync(runtime, run);
     expect(read).toHaveLength(300);
     expect(read).toEqual(readCustodyLedger(runtime, run));
+  });
+
+  it('keeps unchanged held custody silent and reports its transition to proven absence once', () => {
+    const run = runDir();
+    const runtime = runtimeFor(run);
+    const intent = recordCustodyIntent(runtime, run, {
+      effect: 'process-spawn',
+      epoch: 'epoch-2',
+      owner: 'durable-cli',
+      operationId: 'job-1',
+      capsule: null,
+      bindWithinMs: 1_000,
+      nowMs: 100,
+    });
+    const logs: string[] = [];
+    const pass = (absent: boolean) => {
+      const phase = startRecoveryPhase({
+        kind: 'background',
+        phase: 'custody-reconciliation',
+        bootId: 'custody-test',
+        time: { ...runtime.time, monotonicNow: () => 0n },
+        log: (line) => logs.push(line),
+      });
+      const result = reconcileCustodyLedger(
+        runtime,
+        run,
+        1_200,
+        100,
+        () =>
+          absent
+            ? { kind: 'absent', processToken: intent.processToken, evidence: 'exact token absent' }
+            : { kind: 'unknown' },
+        phase,
+      );
+      phase.finish();
+      return result;
+    };
+    for (let attempt = 0; attempt < 3; attempt++) {
+      expect(pass(false)).toMatchObject([{ kind: 'holding', intent: { id: intent.id } }]);
+    }
+    expect(logs).toEqual([]);
+    expect(pass(true)).toMatchObject([{ kind: 'absent', intent: { id: intent.id } }]);
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).toMatch(/event=finish outcome=complete.*subjects=1 reads=[1-9]\d*/);
+    expect(pass(true)).toMatchObject([{ kind: 'absent', intent: { id: intent.id } }]);
+    expect(logs).toHaveLength(1);
   });
 
   it('should hold a crash after intent until deadline, grace, and absence evidence', () => {

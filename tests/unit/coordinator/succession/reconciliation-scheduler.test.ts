@@ -79,13 +79,13 @@ it('drops a follow-up pass requested while an active pass settles after disposal
   scheduler.notifyObligationChange();
   await setImmediate();
   scheduler.dispose();
-  expect(log.mock.calls.filter(([line]) => line.includes('event=start'))).toHaveLength(1);
+  expect(log.mock.calls.filter(([line]) => line.includes('event=start'))).toHaveLength(0);
   expect(log.mock.calls.filter(([line]) => line.includes('event=finish'))).toHaveLength(0);
   finish({ kind: 'deferred', reason: 'test' });
   await active;
   await setImmediate();
   expect(runPass).toHaveBeenCalledOnce();
-  expect(log.mock.calls.filter(([line]) => line.includes('event=finish outcome=complete'))).toHaveLength(1);
+  expect(log.mock.calls.filter(([line]) => line.includes('event=finish outcome=complete'))).toHaveLength(0);
 });
 
 it('reports a failed pass and retries without changing the reported error', async () => {
@@ -118,8 +118,59 @@ it('reports a failed pass and retries without changing the reported error', asyn
     interval();
     await setImmediate();
     expect(runPass).toHaveBeenCalledTimes(2);
-    expect(log.mock.calls.filter(([line]) => line.includes('event=start'))).toHaveLength(2);
-    expect(log.mock.calls.filter(([line]) => line.includes('event=finish outcome=complete'))).toHaveLength(1);
+    await runPass.mock.results[1].value;
+    expect(log.mock.calls.filter(([line]) => line.includes('event=start'))).toHaveLength(0);
+    expect(log.mock.calls.filter(([line]) => line.includes('event=finish outcome=complete'))).toHaveLength(0);
+    expect(log.mock.calls.filter(([line]) => line.includes('event=finish outcome=failed'))).toHaveLength(1);
+  } finally {
+    scheduler.dispose();
+  }
+});
+
+it('reports hold transitions once and does not clear a hold when disposal cancels its observation', async () => {
+  const log = vi.fn();
+  let state: string | null = null;
+  let finish: (() => void) | undefined;
+  let pending = false;
+  const scheduler = createSuccessionReconciliationScheduler({
+    time: { ...createRealTimePort(), monotonicNow: () => 0n },
+    observation: { bootId: 'scheduler-state-test', log },
+    retryIntervalMs: 60_000,
+    runPass: async (observation) => {
+      if (pending)
+        await new Promise<void>((resolve) => {
+          finish = resolve;
+        });
+      observation?.reportState?.(state);
+      return { kind: 'deferred', reason: 'test' };
+    },
+  });
+  try {
+    await setImmediate();
+    expect(log).not.toHaveBeenCalled();
+    for (const [next, changed] of [
+      ['hold-a', true],
+      ['hold-a', false],
+      ['hold-b', true],
+      ['hold-b', false],
+      [null, true],
+      [null, false],
+      ['hold-c', true],
+    ] as const) {
+      state = next;
+      log.mockClear();
+      await scheduler.reconcile();
+      expect(log).toHaveBeenCalledTimes(changed ? 1 : 0);
+      if (changed) expect(log).toHaveBeenCalledWith(expect.stringContaining(next ?? 'state=cleared'));
+    }
+    log.mockClear();
+    state = null;
+    pending = true;
+    const active = scheduler.reconcile();
+    scheduler.dispose();
+    finish!();
+    await active;
+    expect(log).not.toHaveBeenCalled();
   } finally {
     scheduler.dispose();
   }

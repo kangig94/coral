@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
-import { createConnection, type Socket } from 'node:net';
+import { createConnection, Socket } from 'node:net';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -197,6 +197,26 @@ afterEach(() => {
 });
 
 describe('ipc server', () => {
+  it.each(['EPIPE', 'ECONNRESET', 'EIO'])('keeps %s socket diagnostics at the appropriate detail', async (code) => {
+    const ports = createPorts();
+    const listener = createIpcServer(ports);
+    const socket = new Socket();
+    if (listener.acceptSocket === undefined) throw new Error('fixture listener cannot accept sockets');
+    listener.acceptSocket(socket);
+    const error = Object.assign(new Error('peer disconnected'), { code });
+    try {
+      socket.emit('error', error);
+      if (code === 'EIO') {
+        expect(ports.identity.log).toHaveBeenCalledWith(`IPC socket error: ${error.stack}\n`);
+      } else {
+        expect(ports.identity.log).toHaveBeenCalledExactlyOnceWith(`IPC socket error: ${code}\n`);
+      }
+    } finally {
+      socket.destroy();
+      await closeIpcServer(listener);
+    }
+  });
+
   it('serves and closes the same IPC surface at compatibility addresses', async () => {
     const ports = createPorts();
     const listener = createIpcServer(ports);

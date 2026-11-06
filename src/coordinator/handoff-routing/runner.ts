@@ -1431,15 +1431,19 @@ async function executeResolvedHandoff(
       executionPhase.current = 'executable-check';
       execution.assertExecutable();
       executionPhase.current = 'child-spawn';
-      // Runtime ports do not expose the executable for the current Node process.
       const child =
         operation.kind === 'backend-startup'
-          ? withCoordinatorLog(runtime.paths.coral.coordinator.runDir, (stderr) =>
-              spawn(process.execPath, childArguments, {
-                ...spawnOptions,
-                stdio:
-                  waitInvocation === undefined ? ['inherit', 'inherit', stderr] : ['inherit', 'inherit', stderr, 'ipc'],
-              }),
+          ? withCoordinatorLog(
+              runtime.paths.coral.coordinator.runDir,
+              (stderr) =>
+                spawn(process.execPath, childArguments, {
+                  ...spawnOptions,
+                  stdio:
+                    waitInvocation === undefined
+                      ? ['inherit', 'inherit', stderr]
+                      : ['inherit', 'inherit', stderr, 'ipc'],
+                }),
+              runtime,
             )
           : spawn(process.execPath, childArguments, spawnOptions);
       const childObservation = observeChild(child);

@@ -26,6 +26,7 @@ import {
   type HandoffRoutingTransition,
   type PublicationOutcome,
 } from '#src/coordinator/handoff-routing/status.js';
+import type * as HandoffStatusModule from '#src/coordinator/handoff-routing/status.js';
 import { createHandoffRoutingReconciler } from '#src/coordinator/handoff-routing/reconciler.js';
 import { formatHandoffRoutingStatus } from '#src/cli/format/backend.js';
 import {
@@ -42,6 +43,11 @@ import {
   handoffRoutingStatusGeneration,
   quarantineHandoffRoutingStoreArtifact,
 } from '#src/store/handoff-routing-status-store/index.js';
+
+vi.mock('#src/coordinator/handoff-routing/status.js', async (original) => {
+  const actual = await original<typeof HandoffStatusModule>();
+  return { ...actual, reconcileHandoffRoutingStatus: vi.fn(actual.reconcileHandoffRoutingStatus) };
+});
 
 const HANDOFF_ROUTING_STATUS_GENERATION = handoffRoutingStatusGeneration(handoffRoutingStatusStoreSchema());
 const BASE_TIME = Date.parse('2026-01-01T00:00:00.000Z');
@@ -421,6 +427,7 @@ describe('handoff-routing/status', () => {
     };
     const interval = vi.spyOn(stoppedRuntime.time, 'setInterval');
     const clearInterval = vi.spyOn(stoppedRuntime.time, 'clearInterval');
+    const timeout = vi.spyOn(stoppedRuntime.time, 'setTimeout');
     const clearTimeout = vi.spyOn(stoppedRuntime.time, 'clearTimeout');
     const onError = vi.fn();
     const reconciler = createHandoffRoutingReconciler(stoppedRuntime, path, onError);
@@ -433,7 +440,9 @@ describe('handoff-routing/status', () => {
       reconciler.stop();
       expect(clearInterval).toHaveBeenCalledWith(timer);
       releaseObservation();
-      await vi.waitFor(() => expect(clearTimeout).toHaveBeenCalledTimes(1));
+      await vi.waitFor(() => {
+        for (const result of timeout.mock.results) expect(clearTimeout).toHaveBeenCalledWith(result.value);
+      });
       expect(readHandoffRoutingStatus(path)).toMatchObject({ kind: 'current', statuses: [{ kind: 'unresolved' }] });
       expect(records(path)).toEqual(before);
       tick();
@@ -733,4 +742,95 @@ it('claims a regular quarantine coordinate and retains its payload', () => {
   expect(result.kind).toBe('quarantined');
   expect(existsSync(path)).toBe(false);
   expect(readFileSync(quarantinePath, 'utf-8')).toBe('routing status evidence');
+});
+
+it('reports handoff hold transitions once and never treats cancellation as cleared', async () => {
+  const path = databasePath();
+  await committed(path, [selection('held-owner', 1)]);
+  const journal = readFileSync(path);
+  let reason: 'probe-failed' | 'incarnation-unavailable' | null = null;
+  let tick!: () => void;
+  let completed = 0;
+  let observing = 0;
+  let gate: Promise<void> | null = null;
+  const log = vi.fn();
+  const realReconcile = (
+    await vi.importActual<typeof HandoffStatusModule>('#src/coordinator/handoff-routing/status.js')
+  ).reconcileHandoffRoutingStatus;
+  vi.mocked(reconcileHandoffRoutingStatus).mockImplementation(async (...args) => {
+    const result = await realReconcile(...args);
+    completed++;
+    return result;
+  });
+  const observedRuntime: Runtime = {
+    ...runtime,
+    time: {
+      ...runtime.time,
+      monotonicNow: () => 0n,
+      setInterval: (callback) => {
+        tick = callback;
+        return {};
+      },
+      clearInterval: () => {},
+    },
+    process: {
+      ...runtime.process,
+      observeProcessIdentities: async (owners) => {
+        observing++;
+        await gate;
+        return owners.map((owner) => ({
+          owner,
+          evidence:
+            reason === null
+              ? { kind: 'incarnation' as const, incarnation: owner.incarnation }
+              : { kind: 'unobservable' as const, cause: reason },
+        }));
+      },
+    },
+  };
+  const reconciler = createHandoffRoutingReconciler(observedRuntime, path, vi.fn(), { bootId: 'hold-test', log });
+  const cases = [
+    [null, null],
+    ['probe-failed', 'probe-failed'],
+    ['probe-failed', null],
+    ['incarnation-unavailable', 'incarnation-unavailable'],
+    ['incarnation-unavailable', null],
+    [null, 'cleared'],
+    [null, null],
+    ['damaged', path],
+    ['damaged', null],
+    [null, 'cleared'],
+    ['probe-failed', 'probe-failed'],
+  ] as const;
+  let unblock = () => {};
+  try {
+    for (const [index, [state, reported]] of cases.entries()) {
+      reason = state === 'damaged' ? null : state;
+      writeFileSync(path, state === 'damaged' ? 'damaged journal' : journal);
+      if (index === 0) reconciler.start();
+      else tick();
+      await vi.waitFor(() => expect(completed).toBe(index + 1));
+      if (reported === null) {
+        expect(log).not.toHaveBeenCalled();
+      } else {
+        expect(log.mock.calls.filter(([line]) => line.includes('event=finish'))).toHaveLength(1);
+        expect(log).toHaveBeenCalledWith(expect.stringContaining(reported));
+      }
+      log.mockClear();
+    }
+    const observations = observing;
+    gate = new Promise<void>((resolve) => {
+      unblock = resolve;
+    });
+    reason = null;
+    tick();
+    await vi.waitFor(() => expect(observing).toBe(observations + 1));
+    reconciler.stop();
+    unblock();
+    await vi.waitFor(() => expect(completed).toBe(cases.length + 1));
+    expect(log).not.toHaveBeenCalled();
+  } finally {
+    unblock();
+    reconciler.stop();
+  }
 });

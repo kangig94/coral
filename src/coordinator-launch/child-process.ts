@@ -1,3 +1,5 @@
+import { backendLog } from '../infra/backend-log.js';
+import { withCoordinatorLog } from '../infra/coordinator-log.js';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync, statSync } from 'node:fs';
@@ -123,14 +125,16 @@ export function spawnAdmittedChild(
   delete env.CORAL_LAUNCH_ID;
   if (attemptId === undefined) delete env.CORAL_SUCCESSION_ATTEMPT_ID;
   else env.CORAL_SUCCESSION_ATTEMPT_ID = attemptId;
-  const child = spawn(
-    process.execPath,
-    legacy ? [process.argv[1], '--launch-legacy', executable, ...args] : [executable, ...args],
-    {
-      cwd: runDir,
-      env,
-      stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
-    },
+  const child = withCoordinatorLog(runDir, (stderr) =>
+    spawn(
+      process.execPath,
+      legacy ? [process.argv[1], '--launch-legacy', executable, ...args] : [executable, ...args],
+      {
+        cwd: runDir,
+        env,
+        stdio: ['ignore', 'inherit', stderr, 'ipc'],
+      },
+    ),
   );
   child.on('error', (error) => {
     let cwdProblem: string | null = null;
@@ -139,7 +143,7 @@ export function spawnAdmittedChild(
     } catch (cause: unknown) {
       cwdProblem = String(cause);
     }
-    process.stderr.write(
+    backendLog.raw(
       cwdProblem === null
         ? `Coordinator spawn failed (cwd ${JSON.stringify(runDir)}): ${String(error)}\n`
         : `Coordinator spawn failed: cwd ${JSON.stringify(runDir)} is unavailable (${cwdProblem}); ${String(error)}\n`,

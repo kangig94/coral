@@ -1,5 +1,5 @@
 import { isTerminalPhase } from '../../jobs/phase.js';
-import { startRecoveryPhase } from '../../recovery/phase-observation.js';
+import { createBackgroundPhaseObserver, type RecoveryPhaseObservation } from '../../recovery/phase-observation.js';
 import { observeDatabaseReads } from '../../recovery/read-observation.js';
 import { ControlClientError } from '../../provider-proxy/control-client.js';
 import type { ProcessIncarnation } from '../../infra/node-process.js';
@@ -618,10 +618,46 @@ type StartupSetAttempt = {
   incident: StartupReconciliationIncident | null;
 };
 
+type ProviderOperationHold = { identity: string; reason: string };
+type ProviderOperationPollObservation = {
+  observation: RecoveryPhaseObservation | undefined;
+  holds: Map<string, ProviderOperationHold | null>;
+};
+
+function providerOperationHold(record: ProviderOperationRecord): ProviderOperationHold | null {
+  return record.phase === 'executing' && record.lastError === null
+    ? null
+    : {
+        identity: operationKey(record.operation),
+        reason: JSON.stringify({
+          phase: record.phase,
+          code: record.lastError?.code ?? null,
+          reason: record.lastError?.message ?? null,
+        }),
+      };
+}
+
+function updateProviderOperationHolds(
+  previous: string | null,
+  observations: ReadonlyMap<string, ProviderOperationHold | null>,
+): string | null {
+  const current = new Map<string, ProviderOperationHold>(
+    ((previous === null ? [] : JSON.parse(previous)) as ProviderOperationHold[]).map((hold) => [hold.identity, hold]),
+  );
+  for (const [identity, hold] of observations) {
+    if (hold === null) current.delete(identity);
+    else current.set(identity, hold);
+  }
+  const state = [...current.values()].sort((left, right) => left.identity.localeCompare(right.identity));
+  return state.length === 0 ? null : JSON.stringify(state);
+}
+
 export class ProviderOperationReconciler
   implements ProviderContainmentDisappearanceConsumer, ProviderRepresentationAbandonmentConsumer
 {
   readonly #deps: ProviderOperationReconcilerDeps;
+  readonly #startPollObservation: ReturnType<typeof createBackgroundPhaseObserver> | undefined;
+  #activePollObservation: ProviderOperationPollObservation | null = null;
   readonly #failureWindows = new Map<
     string,
     { phase: ProviderOperationRecord['phase']; elapsedMs: number; observedAt: bigint | null }
@@ -681,6 +717,14 @@ export class ProviderOperationReconciler
       throw new RangeError('batchSize must be a positive safe integer.');
     }
     this.#deps = deps;
+    this.#startPollObservation =
+      deps.observation === undefined
+        ? undefined
+        : createBackgroundPhaseObserver({
+            ...deps.observation,
+            time: deps.time,
+            phase: 'provider-operation-reconciliation',
+          });
     this.#batchSize = batchSize;
   }
 
@@ -1815,6 +1859,7 @@ export class ProviderOperationReconciler
 
       const rotation = compareAndSwapProviderOperation(this.#deps.getProgressStore().getDb(), record, rotated);
       if (rotation.kind === 'conflict') return rotation.current;
+      this.#recordPollProgress(record, rotation.record);
 
       try {
         const send = await this.#sendJournaledPrepare(rotated, attempt, authority);
@@ -2503,6 +2548,7 @@ export class ProviderOperationReconciler
       throw new Error('Provider operation journal changed before execution could be committed.');
     }
 
+    this.#recordPollProgress(record, next);
     return next;
   }
 
@@ -2629,10 +2675,12 @@ export class ProviderOperationReconciler
     );
     switch (result.kind) {
       case 'completed':
-      case 'already-completed':
+      case 'already-completed': {
+        this.#observeKnownChange(operationKey(record.operation), null, result.kind === 'completed');
         this.#attachments.delete(operationKey(record.operation));
         if (completePublication) this.#complete(record.operation, { kind: 'remote-executing' });
         return null;
+      }
       case 'advanced':
         this.#attachments.delete(operationKey(record.operation));
         this.#deps.registry.settled(record.operation);
@@ -2885,20 +2933,58 @@ export class ProviderOperationReconciler
     }, report);
   }
 
+  #observePollRecord(record: ProviderOperationRecord): void {
+    this.#observeKnownChange(operationKey(record.operation), record, false);
+  }
+
+  #observeKnownChange(identity: string, record: ProviderOperationRecord | null, work: boolean): void {
+    const poll = this.#activePollObservation;
+    const observation = poll?.observation ?? this.#startPollObservation?.(this.#startupAbort.signal);
+    const holds = poll?.holds ?? new Map<string, ProviderOperationHold | null>();
+    holds.set(identity, record === null ? null : providerOperationHold(record));
+    if (work) observation?.record('provider-operations', { subjects: 1 });
+    if (poll === null || poll === undefined) {
+      observation?.reportState((previous) => updateProviderOperationHolds(previous, holds));
+      observation?.finish();
+    }
+  }
+
+  #recordPollProgress(expected: ProviderOperationRecord, next: ProviderOperationRecord): void {
+    const progress = (record: ProviderOperationRecord): string => {
+      const {
+        revision: _revision,
+        retryCount: _retryCount,
+        retryNotBeforeMs: _retryAt,
+        lastError: _error,
+        ...state
+      } = record;
+      return JSON.stringify(
+        record.phase === 'settlement-pending'
+          ? { ...state, settlementFailure: { containmentRequested: record.settlementFailure.containmentRequested } }
+          : state,
+      );
+    };
+    this.#observeKnownChange(operationKey(next.operation), next, progress(expected) !== progress(next));
+  }
+
   #transition(expected: ProviderOperationRecord, next: ProviderOperationRecord): ProviderOperationRecord | null {
     this.#assertActiveDrive();
     const result = compareAndSwapProviderOperation(this.#deps.getProgressStore().getDb(), expected, next);
     if (result.kind === 'updated') {
+      this.#recordPollProgress(expected, result.record);
       if (next.phase !== expected.phase || next.lastError === null)
         this.#failureWindows.delete(operationKey(expected.operation));
       return result.record;
     }
+    if (result.current !== null) this.#observePollRecord(result.current);
+    else this.#observeKnownChange(operationKey(expected.operation), null, false);
     return result.current;
   }
 
   #deleteRecord(record: ProviderOperationRecord): ReturnType<typeof deleteProviderOperation> {
     const deleted = deleteProviderOperation(this.#deps.getProgressStore().getDb(), record);
     if (deleted.kind === 'deleted') {
+      this.#observeKnownChange(operationKey(record.operation), null, true);
       this.#failureWindows.delete(operationKey(record.operation));
       this.#deps.onRecordRemoved?.();
     }
@@ -3156,15 +3242,10 @@ export class ProviderOperationReconciler
         return;
       }
       this.#polling = true;
-      const observation =
-        this.#deps.observation === undefined
-          ? undefined
-          : startRecoveryPhase({
-              ...this.#deps.observation,
-              time: this.#deps.time,
-              kind: 'background',
-              phase: 'provider-operation-reconciliation',
-            });
+      const observation = this.#startPollObservation?.(this.#startupAbort.signal);
+      const holds = new Map<string, ProviderOperationHold | null>();
+      const poll = { observation, holds };
+      this.#activePollObservation = poll;
       let failed = false;
       try {
         const progressStore = this.#deps.getProgressStore();
@@ -3196,20 +3277,27 @@ export class ProviderOperationReconciler
           throw error;
         }
         for (const selection of selections) {
-          observation?.record('provider-operations', { subjects: 1 });
+          this.#observePollRecord(selection.record);
           const startup = this.#startupSets.get(
             providerProxySetKey(providerProxySetIdentityFromRecord(selection.record)),
           );
           if (startup !== undefined) continue;
           const result = await this.#reconcileDueSelection(selection, scanCutoffMs, preferredAuthority);
           failed ||= result === 'fatal' || result === 'finished-with-drive-error';
+          if (result === 'deferred-to-set-fence') {
+            holds.set(operationKey(selection.record.operation), {
+              identity: operationKey(selection.record.operation),
+              reason: 'provider-operation-set-fence',
+            });
+          }
           if (result === 'fatal') return;
         }
         if (this.#fatal) return;
         for (const [key, identity] of this.#settlements) {
           const record = readProviderOperation(getDb(), identity);
-          if (record !== null) observation?.record('provider-operations', { subjects: 1 });
+          if (record !== null) this.#observePollRecord(record);
           if (record === null) {
+            holds.set(key, null);
             this.#settlements.delete(key);
             continue;
           }
@@ -3220,8 +3308,9 @@ export class ProviderOperationReconciler
         }
         for (const [key, identity] of this.#attachments) {
           const record = readProviderOperation(getDb(), identity);
-          if (record !== null) observation?.record('provider-operations', { subjects: 1 });
+          if (record !== null) this.#observePollRecord(record);
           if (record === null || record.phase !== 'executing') {
+            if (record === null) holds.set(key, null);
             this.#attachments.delete(key);
             continue;
           }
@@ -3230,13 +3319,22 @@ export class ProviderOperationReconciler
           if (preferredAuthority !== undefined && !sameAuthority(record, preferredAuthority)) continue;
           await this.reconcile(record, preferredAuthority);
         }
+        holds.set('provider-operation-poll', null);
       } catch (error: unknown) {
         failed = true;
         if (!this.#observeFatal(error)) {
-          this.#deps.onError?.(`Provider operation reconciliation failed: ${providerOperationErrorReason(error)}`);
+          const reason = providerOperationErrorReason(error);
+          holds.set('provider-operation-poll', { identity: 'provider-operation-poll', reason });
+          if (observation === undefined) this.#deps.onError?.(`Provider operation reconciliation failed: ${reason}`);
         }
       } finally {
-        observation?.finish(failed || this.#fatal ? 'failed' : 'complete');
+        if (this.#admissionClosed || this.#startupAbort.signal.aborted) {
+          observation?.finish('cancelled');
+        } else {
+          observation?.reportState((previous) => updateProviderOperationHolds(previous, holds));
+          observation?.finish(failed || this.#fatal ? 'failed' : 'complete');
+        }
+        this.#activePollObservation = null;
         this.#polling = false;
         const pollRequested = this.#pollRequested;
         this.#pollRequested = false;
@@ -3281,8 +3379,7 @@ export class ProviderOperationReconciler
         scanCutoffMs + TIMER_MIN_MS,
       );
     } catch (repairError: unknown) {
-      // A fenced set is a refusal, not corruption: the due row stays unfinished and is reselected on a later pass,
-      // which settles once the fence holder releases or retires the set.
+      // A fenced set is a refusal, not corruption.
       if (repairError instanceof ProviderOperationMutationSetClosedError) {
         if (driveError !== undefined && this.#observeFatal(driveError)) return 'fatal';
         return 'deferred-to-set-fence';
@@ -3305,9 +3402,12 @@ export class ProviderOperationReconciler
 
     if (driveError === undefined) return 'finished';
     if (this.#observeFatal(driveError)) return 'fatal';
-    this.#deps.onError?.(
-      `Provider operation reconciliation failed for '${operationKey(selection.record.operation)}': ${providerOperationErrorReason(driveError)}`,
-    );
+    const poll = this.#activePollObservation;
+    const identity = operationKey(selection.record.operation);
+    const reason = providerOperationErrorReason(driveError);
+    poll?.holds.set(identity, { identity, reason });
+    if (poll?.observation === undefined)
+      this.#deps.onError?.(`Provider operation reconciliation failed for '${identity}': ${reason}`);
     return 'finished-with-drive-error';
   }
 

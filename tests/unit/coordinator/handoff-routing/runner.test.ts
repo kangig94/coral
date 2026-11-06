@@ -1,5 +1,6 @@
 import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
-import { spawnSync, type ChildProcess } from 'node:child_process';
+import { type ChildProcess } from 'node:child_process';
+import type * as ChildProcessMod from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -49,8 +50,12 @@ const mockState = vi.hoisted(() => ({
 }));
 
 vi.mock('node:child_process', async () => {
-  const actual = await vi.importActual('node:child_process');
-  return { ...actual, spawn: mockState.spawn, execFile: mockState.execFile };
+  const actual = await vi.importActual<typeof ChildProcessMod>('node:child_process');
+  return {
+    ...actual,
+    spawn: mockState.spawn,
+    execFile: mockState.execFile,
+  };
 });
 
 vi.mock('#src/infra/plugin-identity.js', () => ({ pluginRootNamespace: () => 'handoff-runner' }));
@@ -277,8 +282,12 @@ describe('handoff-routing/runner', () => {
   it('retains delegated sentinel diagnostics when inherited stderr is null', async () => {
     const root = mkdtempSync(join(tmpdir(), 'coral-handoff-null-stderr-'));
     const runDir = join(root, 'run');
+    const { createRealRuntime } = await vi.importActual<typeof RealRuntimeMod>('#src/runtime/real.js');
+    const actual = createRealRuntime('prod', { baseDir: root });
     const startupRuntime: Runtime = {
       ...runtime,
+      ids: actual.ids,
+      storage: { ...actual.storage, existsSync: runtime.storage.existsSync },
       paths: {
         ...runtime.paths,
         coral: { ...runtime.paths.coral, coordinator: { ...runtime.paths.coral.coordinator, runDir } },
@@ -286,13 +295,16 @@ describe('handoff-routing/runner', () => {
     };
     mockState.createRealRuntime.mockReturnValue(startupRuntime);
     mockState.probeCoordinator.mockReturnValue({ kind: 'absent' });
+    const { spawn: realSpawn } = await vi.importActual<typeof ChildProcessMod>('node:child_process');
     mockState.spawn.mockImplementation((_executable, _args, options) => {
       const inheritedStderr = Array.isArray(options.stdio) ? options.stdio[2] : 'ignore';
-      const sentinel = spawnSync(process.execPath, ['-e', "process.stderr.write('handoff-sentinel-diagnostic\\n')"], {
-        stdio: ['ignore', 'ignore', inheritedStderr],
-      });
-      expect(sentinel.status).toBe(0);
-      return childThatExits(7, null);
+      return realSpawn(
+        process.execPath,
+        ['-e', "process.stderr.write('handoff-sentinel-diagnostic\\n');process.exitCode=7"],
+        {
+          stdio: ['ignore', 'ignore', inheritedStderr],
+        },
+      );
     });
     try {
       await runHandoff(
@@ -302,7 +314,8 @@ describe('handoff-routing/runner', () => {
           activeSelectionTarget: mockState.target as ValidatedHandoffTarget,
         },
       );
-      expect(readFileSync(join(runDir, 'coordinator.log'), 'utf8')).toContain('handoff-sentinel-diagnostic\n');
+      const native = join(runDir, 'coordinator-logs', 'native-stderr.log');
+      await expect.poll(() => readFileSync(native, 'utf8')).toContain('handoff-sentinel-diagnostic\n');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

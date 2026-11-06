@@ -1,4 +1,4 @@
-import { withCoordinatorLog } from '../infra/coordinator-log.js';
+import { withCoordinatorLog, type CoordinatorLogPorts } from '../infra/coordinator-log.js';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
@@ -28,6 +28,7 @@ type ReplacementSupervisorControl = {
   onAccepted: (pluginRoot: string) => Promise<void>;
   env: NodeJS.ProcessEnv;
   failing: boolean;
+  logPorts: CoordinatorLogPorts;
 };
 
 type ReplacementSupervisorAttempt = {
@@ -325,18 +326,21 @@ function launchReplacementSupervisor(control: ReplacementSupervisorControl): voi
   )
     updateLaunchStatus(control.runDir, (status) => ({ ...status, hold: undefined }));
   const challenge = randomUUID();
-  const supervisor = withCoordinatorLog(control.runDir, (stderr) =>
-    spawn(process.execPath, [join(root, 'bridge', 'coral-sentinel.cjs'), join(root, 'bridge', 'coral-backend.cjs')], {
-      cwd: control.runDir,
-      detached: true,
-      stdio: ['ignore', 'ignore', stderr, 'ipc'],
-      env: {
-        ...control.env,
-        CORAL_RECOVERY_SOURCE_PID: String(process.pid),
-        CORAL_RECOVERY_SOURCE_INCARNATION: sourceIncarnation,
-        CORAL_RECOVERY_CHALLENGE: challenge,
-      },
-    }),
+  const supervisor = withCoordinatorLog(
+    control.runDir,
+    (stderr) =>
+      spawn(process.execPath, [join(root, 'bridge', 'coral-sentinel.cjs'), join(root, 'bridge', 'coral-backend.cjs')], {
+        cwd: control.runDir,
+        detached: true,
+        stdio: ['ignore', 'ignore', stderr, 'ipc'],
+        env: {
+          ...control.env,
+          CORAL_RECOVERY_SOURCE_PID: String(process.pid),
+          CORAL_RECOVERY_SOURCE_INCARNATION: sourceIncarnation,
+          CORAL_RECOVERY_CHALLENGE: challenge,
+        },
+      }),
+    control.logPorts,
   );
   const launchedIncarnation = supervisor.pid === undefined ? null : probeProcessIncarnation(supervisor.pid);
   const attempt: ReplacementSupervisorAttempt = {
@@ -411,6 +415,7 @@ export function startReplacementSupervisor(
   manifest: StrictBundleManifest,
   onError: (error: Error) => void,
   onAccepted: (pluginRoot: string) => Promise<void>,
+  logPorts: CoordinatorLogPorts,
 ): void {
   const env: NodeJS.ProcessEnv = { ...process.env, CORAL_SENTINEL_RUN_DIR: runDir };
   delete env.CORAL_LAUNCH_ADMISSION;
@@ -419,7 +424,7 @@ export function startReplacementSupervisor(
   delete env.CORAL_SENTINEL_ID;
   delete env.CORAL_STARTUP_ATTEMPT_ID;
   delete env.CORAL_SUCCESSION_ATTEMPT_ID;
-  launchReplacementSupervisor({ pluginRoot, runDir, manifest, onError, onAccepted, env, failing: false });
+  launchReplacementSupervisor({ pluginRoot, runDir, manifest, onError, onAccepted, env, failing: false, logPorts });
 }
 
 export async function resumeLegacyUpgradeObservation(

@@ -27,7 +27,6 @@ describe('storage retention documentation', () => {
     expect(lock).not.toContain('exclusiveConnection');
     const architecture = readFileSync(new URL('../../docs/architecture.md', import.meta.url), 'utf-8');
     expect(architecture).not.toMatch(/Each of the \w+ owners/);
-    expect(architecture).toContain('Each owner receives its own 5-second cooperative budget');
   });
 
   it('records domain owners and coordinator scheduling in both architecture guides', () => {

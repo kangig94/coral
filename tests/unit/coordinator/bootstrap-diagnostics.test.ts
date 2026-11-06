@@ -2,12 +2,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type * as BundleManifestModule from '#src/infra/bundle-manifest.js';
 
+const getCoordinatorLogPath = vi.hoisted(() => vi.fn<() => string | undefined>());
+
 const storage = vi.hoisted(() => ({
   readFileSync: vi.fn(),
   mkdirSync: vi.fn(),
   writeFileSync: vi.fn(),
   renameSync: vi.fn(),
 }));
+
+vi.mock('#src/infra/coordinator-log.js', () => ({ getCoordinatorLogPath }));
 
 vi.mock('#src/runtime/real.js', () => ({
   createRealRuntime: () => ({
@@ -35,6 +39,7 @@ import { serializeCoralSetupError } from '#src/runtime/errors.js';
 
 beforeEach(() => {
   vi.clearAllMocks();
+  getCoordinatorLogPath.mockReturnValue(undefined);
   storage.readFileSync.mockImplementation(() => {
     throw Object.assign(new Error('missing diagnostic'), { code: 'ENOENT' });
   });
@@ -86,6 +91,18 @@ describe('serializeBootstrapError', () => {
 });
 
 describe('writeBootstrapDiagnostic', () => {
+  it.each(['/state/coordinator-logs/writer/current.log', undefined])(
+    'adds the current coordinator segment only when it was installed (%s)',
+    (path) => {
+      getCoordinatorLogPath.mockReturnValue(path);
+      writeBootstrapDiagnostic('/plugin', 'startup_failed', new Error('startup failure'), 1);
+      const written = JSON.parse(String(storage.writeFileSync.mock.calls[0]?.[1])) as Record<string, unknown>;
+      expect(written.schemaVersion).toBe(1);
+      if (path === undefined) expect(written).not.toHaveProperty('coordinatorLogPath');
+      else expect(written.coordinatorLogPath).toBe(path);
+    },
+  );
+
   // The guard may not depend on CORAL_STARTUP_ATTEMPT_ID: an ancestor and the build it delegates to carry the
   // same one, so it separates neither of them from the other, and a spawn exporting none leaves both sides
   // absent. Either way the refusal the delegated build recorded keeps its code and remediation.

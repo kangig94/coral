@@ -2,16 +2,7 @@
 
 import { spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import {
-  existsSync,
-  mkdirSync,
-  openSync,
-  readFileSync,
-  renameSync,
-  statSync,
-  unlinkSync,
-  writeFileSync,
-} from 'node:fs';
+import { existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import {
@@ -33,28 +24,12 @@ import { projectIgnoreOutcomeNotice, renderProjectIgnoreResultNotices } from './
 import { isProjectIgnoreResult } from './lib/project-ignore/result.mjs';
 import { LOCK_CONFLICT_EXIT_CODE, LOCK_UNAVAILABLE_EXIT_CODE, SPAWN_TIMEOUT_MS } from './lib/project-ignore/arena.mjs';
 
-const LOG_ROTATE_THRESHOLD_BYTES = 2 * 1024 * 1024;
+const COORDINATOR_NATIVE_STDERR_PATH = 'coordinator-logs/native-stderr.log';
 const MAX_REPORTED_FLAVOR_BYTES = 160;
 const PROJECT_IGNORE_OWNER_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), 'project-ignore-owner.mjs');
 const STARTUP_FAILURE_NOTICE_WINDOW_MS = 5 * 60 * 1000;
 const STARTUP_FAILURE_CODE_PATTERN = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/;
 const MAX_STARTUP_FAILURE_CODE_LENGTH = 128;
-
-function rotateLogIfLarge(runDir) {
-  const path = join(runDir, 'coordinator.log');
-  const archive = `${path}.1`;
-  try {
-    if (statSync(path).size < LOG_ROTATE_THRESHOLD_BYTES) return;
-    try {
-      unlinkSync(archive);
-    } catch {
-      // no prior archive
-    }
-    renameSync(path, archive);
-  } catch {
-    // no current log, or fs error: fail-open and let openSync create a fresh one
-  }
-}
 
 function coordinatorRunDir(flavor = buildFlavor(), stateRoot = coralStateRoot()) {
   return join(stateRoot, 'gen2', flavor === 'dev' ? 'run-dev' : 'run');
@@ -66,9 +41,9 @@ function spawnBackend(pluginRoot) {
   const backendBin = join(pluginRoot, 'bridge', 'coral-backend.cjs');
   let stderr = 'ignore';
   try {
-    mkdirSync(runDir, { recursive: true });
-    rotateLogIfLarge(runDir);
-    stderr = openSync(join(runDir, 'coordinator.log'), 'a');
+    const nativeStderr = join(runDir, COORDINATOR_NATIVE_STDERR_PATH);
+    mkdirSync(dirname(nativeStderr), { recursive: true });
+    stderr = openSync(nativeStderr, 'a', 0o600);
   } catch {}
   try {
     // A backend spawned without an attempt id cannot be told apart from anyone else's once it delegates: the

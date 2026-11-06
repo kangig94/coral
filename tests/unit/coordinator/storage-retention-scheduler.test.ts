@@ -1,3 +1,4 @@
+import type { CustodyEntry } from '#src/store/custody-ledger.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createStorageRetentionScheduler } from '#src/coordinator/composition/storage-retention-scheduler.js';
@@ -20,6 +21,17 @@ const owners = vi.hoisted(() => ({
   reconciliation: vi.fn(async (_input: { budget: RetentionRunBudget }) => ''),
   custody: vi.fn(async (_input: { budget: RetentionRunBudget }) => ''),
   scratch: vi.fn(async (_signal: AbortSignal, _budget: RetentionRunBudget) => {}),
+  discovery: vi.fn(
+    async (
+      _runtime: unknown,
+      _runDir: string,
+      _observation: unknown,
+      assertContinue?: () => void,
+    ): Promise<CustodyEntry[]> => {
+      assertContinue?.();
+      return [];
+    },
+  ),
   parked: false,
 }));
 vi.mock('#src/jobs/export-retention.js', async (original) => ({
@@ -39,6 +51,7 @@ vi.mock('#src/coordinator/services/recovery/custody-reconciliation.js', async (o
 vi.mock('#src/store/custody-ledger.js', async (original) => ({
   ...(await original<Record<string, unknown>>()),
   pruneCustodyLedger: owners.custody,
+  readCustodyLedgerAsync: owners.discovery,
 }));
 vi.mock('#src/store/succession-writer-generation.js', async (original) => ({
   ...(await original<Record<string, unknown>>()),
@@ -95,6 +108,56 @@ function fixture(f = createRetentionFixture(), getProgressStore: () => typeof f.
 }
 
 describe('storage retention schedule', () => {
+  it('gives custody reconciliation its full mutation turn after slow complete discovery', async () => {
+    const { f, scheduler, statuses } = fixture();
+    let monotonic = 0n;
+    f.runtime.time.monotonicNow = () => monotonic;
+    const entries: CustodyEntry[] = [{ kind: 'unreadable', path: '/held-entry', reason: 'unknown' }];
+    owners.discovery.mockImplementationOnce(async (_runtime, _runDir, _observation, assertContinue) => {
+      monotonic = 6000n;
+      assertContinue?.();
+      return entries;
+    });
+    owners.reconciliation.mockImplementationOnce(async ({ budget }) => {
+      expect(budget.canContinue()).toBe(true);
+      return '';
+    });
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(owners.discovery).toHaveBeenCalledOnce();
+    expect(owners.reconciliation).toHaveBeenCalledWith(expect.objectContaining({ entries }));
+    expect(statuses.at(-1)?.phase).toBe('completed');
+  });
+
+  it('discards custody discovery when the writer parks before it finishes', async () => {
+    const { scheduler, statuses } = fixture();
+    owners.discovery.mockImplementationOnce(async (_runtime, _runDir, _observation, assertContinue) => {
+      owners.parked = true;
+      assertContinue?.();
+      return [];
+    });
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(owners.reconciliation).not.toHaveBeenCalled();
+    expect(owners.custody).not.toHaveBeenCalled();
+    expect(statuses.at(-1)?.outcomes).toContainEqual(expect.objectContaining({ kind: 'failed', reason: 'parked' }));
+  });
+
+  it('discards custody discovery when shutdown interrupts its read', async () => {
+    const { scheduler } = fixture();
+    let stopping: Promise<void> | undefined;
+    owners.discovery.mockImplementationOnce(async (_runtime, _runDir, _observation, assertContinue) => {
+      stopping = scheduler.stop();
+      assertContinue?.();
+      return [];
+    });
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(0);
+    await stopping;
+    expect(owners.reconciliation).not.toHaveBeenCalled();
+    expect(owners.custody).not.toHaveBeenCalled();
+  });
+
   it('uses the wall-clock cutoff across idle restarts without a boot anchor', async () => {
     const first = fixture();
     first.f.setNow(first.f.runtime.time.now() + 30 * 86_400_000);

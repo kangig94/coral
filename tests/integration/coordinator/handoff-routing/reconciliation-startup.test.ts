@@ -2,6 +2,7 @@ import { createTestExecutionFinisher } from '#tests/helpers/execution-finisher.j
 import { createServer } from 'node:http';
 import { expect, it, vi } from 'vitest';
 import { createCoordinatorCore } from '#src/coordinator/composition/index.js';
+import type * as HandoffStatusModule from '#src/coordinator/handoff-routing/status.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { createRetentionFixture } from '#tests/helpers/storage-retention.js';
 import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-supervisor.js';
@@ -15,156 +16,204 @@ import {
   handoffRoutingStatusStoreSchema,
   publishGenerationCoordinatedHandoffRoutingTransitions,
   readHandoffRoutingStatus,
+  reconcileHandoffRoutingStatus,
 } from '#src/coordinator/handoff-routing/status.js';
+
+vi.mock('#src/coordinator/handoff-routing/status.js', async (original) => {
+  const actual = await original<typeof HandoffStatusModule>();
+  return { ...actual, reconcileHandoffRoutingStatus: vi.fn(actual.reconcileHandoffRoutingStatus) };
+});
+
+async function withinDeadline<T>(work: Promise<T>): Promise<T> {
+  const signal = AbortSignal.timeout(10_000);
+  let expired = () => {};
+  const deadline = new Promise<never>((_, reject) => {
+    expired = () => reject(new Error('Fixture operation timed out', { cause: signal.reason }));
+    signal.addEventListener('abort', expired, { once: true });
+  });
+  try {
+    return await Promise.race([work, deadline]);
+  } finally {
+    signal.removeEventListener('abort', expired);
+  }
+}
 
 async function verifyReconciliationStartup(gateBeforeReadiness: boolean): Promise<void> {
   const f = createRetentionFixture();
-  const runtime = {
-    ...f.runtime,
-    process: {
-      ...f.runtime.process,
-      observeProcessIdentities: vi.fn<typeof f.runtime.process.observeProcessIdentities>(async (owners) =>
-        owners.map((owner) => ({ owner, evidence: { kind: 'pid-absent' } })),
-      ),
-    },
-  };
-  const interval = vi.spyOn(runtime.time, 'setInterval');
-  const clearInterval = vi.spyOn(runtime.time, 'clearInterval');
-  const path = handoffRoutingStatusPathForRunDir(
-    runtime.paths.coral.coordinator.runDir,
-    handoffRoutingStatusGeneration(handoffRoutingStatusStoreSchema()),
-  );
-  expect(
-    await publishGenerationCoordinatedHandoffRoutingTransitions(runtime, path, [
-      {
-        kind: 'routing-selected',
-        eventId: 'selection',
-        invocationId: 'pending',
-        observedAt: new Date(runtime.time.now()).toISOString(),
-        owner: { pid: 101, incarnation: testIncarnation(101) },
-        disposition: {
-          kind: 'continue-current',
-          basis: { kind: 'same-build-set', buildSetId: '123e4567-e89b-42d3-a456-426614174000' },
-        },
-      },
-    ]),
-  ).toMatchObject({ kind: 'committed' });
-  let releaseRecovery = () => {};
-  const recovery = new Promise<void>((resolve) => {
-    releaseRecovery = resolve;
-  });
-  let enteredRecovery = () => {};
-  const entered = new Promise<void>((resolve) => {
-    enteredRecovery = resolve;
-  });
-  let releaseListener = () => {};
-  const listener = new Promise<void>((resolve) => {
-    releaseListener = resolve;
-  });
-  let enteredListener = () => {};
-  const listening = new Promise<void>((resolve) => {
-    enteredListener = resolve;
-  });
-  const logs: string[] = [];
-  const routingPhases = (event: string) =>
-    logs.filter((line) => line.includes(`kind=background phase=handoff-routing-reconciliation event=${event}`));
-  const core = createCoordinatorCore(
-    {
-      executionFinisher: createTestExecutionFinisher(
-        (): JobStore => core.storeServicesRef.get().progressStore,
-        runtime,
-      ),
-      onFatalShutdownError: vi.fn(),
-      storeFormat: currentCoralStoreFormat(),
-      runtime,
-      backendNamespace: 'routing-startup',
-      bootSnapshot: {
-        version: '0.10.17',
-        buildSetId: '123e4567-e89b-42d3-a456-426614174000',
-        bundleHash: '0123456789abcdef',
-        flavor: 'prod',
-        instanceId: 'routing-startup',
-        token: 'test-token',
-        now: runtime.time.now,
-        log: (line) => logs.push(line),
-      },
-      kbDaemonSupervisor: createMockKbDaemonSupervisor(),
-      createStoreServicesFromDbFn: (db) => ({
-        storeDb: db,
-        progressStore: new JobStore('routing-startup', runtime, createEventBodyCodec(), {
-          db,
-          reducers: f.reducers,
-          providers: permissiveProviderLookupPort,
-        }),
-        consumerDriver: null,
-      }),
-      createServerFn: (handler) => createServer(handler),
-      listenFn: async () => {
-        enteredListener();
-        if (gateBeforeReadiness) await listener;
-        return { port: 0, host: '127.0.0.1' };
-      },
-      closeServerFn: async () => {},
-      writeBackendInfoFn: () => {},
-      removeBackendInfoIfOwnerFn: () => {},
-      cleanupStaleJobsFn: () => {},
-      registerBuiltInProvidersFn: () => {},
-      settlePendingLaunchesFn: async () => ({ kind: 'all-pending-launches-settled' }),
-      terminateRegisteredChildrenFn: async () => ({ kind: 'all-children-observed-absent' }),
-      getConsumerStuck: () => [],
-    },
-    async () => {
-      enteredRecovery();
-      await recovery;
-    },
-  );
-  const starting = core.lifecycleController.start();
   try {
-    if (gateBeforeReadiness) {
-      await listening;
-      expect(core.runtimeState.getLifecycle()).toBe('starting');
-      await new Promise<void>((resolve) => setImmediate(resolve));
-      expect(runtime.process.observeProcessIdentities).not.toHaveBeenCalled();
-      expect(routingPhases('start')).toHaveLength(0);
-      expect(interval.mock.calls.some(([, ms]) => ms === 1_000)).toBe(false);
-      expect(readHandoffRoutingStatus(runtime, path)).toMatchObject({
-        kind: 'current',
-        statuses: [{ kind: 'unresolved' }],
-      });
-      releaseListener();
-    }
-    await entered;
-    expect(core.runtimeState.getLifecycle()).toBe('kernel-ready');
-    await vi.waitFor(() =>
-      expect(readHandoffRoutingStatus(runtime, path)).toMatchObject({
-        kind: 'current',
-        statuses: [{ kind: 'retired', tombstone: { resolutionReason: 'owner-absent' } }],
-      }),
+    const runtime = {
+      ...f.runtime,
+      process: {
+        ...f.runtime.process,
+        observeProcessIdentities: vi.fn<typeof f.runtime.process.observeProcessIdentities>(async (owners) =>
+          owners.map((owner) => ({ owner, evidence: { kind: 'pid-absent' } })),
+        ),
+      },
+    };
+    const interval = vi.spyOn(runtime.time, 'setInterval');
+    const timeout = vi.spyOn(runtime.time, 'setTimeout');
+    const clearInterval = vi.spyOn(runtime.time, 'clearInterval');
+    const path = handoffRoutingStatusPathForRunDir(
+      runtime.paths.coral.coordinator.runDir,
+      handoffRoutingStatusGeneration(handoffRoutingStatusStoreSchema()),
     );
-    const index = interval.mock.calls.findIndex(([, ms]) => ms === 1_000);
-    expect(index).toBeGreaterThanOrEqual(0);
-    const timer = interval.mock.results[index].value;
-    await vi.waitFor(() => expect(routingPhases('finish')).toHaveLength(1));
-    expect(routingPhases('start')).toHaveLength(1);
-    expect(routingPhases('finish')[0]).toContain('boot=routing-startup');
-    expect(routingPhases('finish')[0]).toContain('subjects=1 reads=0');
-    expect(routingPhases('finish')[0]).toContain('"handoff-routing-statuses":{"subjects":1,"reads":0}');
-    const tick = interval.mock.calls[index][0];
-    tick();
-    await vi.waitFor(() => expect(routingPhases('finish')).toHaveLength(2));
-    expect(routingPhases('start')).toHaveLength(2);
-    expect(routingPhases('finish')[1]).toContain('outcome=complete');
-    expect(routingPhases('finish')[1]).toContain('subjects=1 reads=0');
-    releaseRecovery();
-    await starting;
-    expect(core.runtimeState.getLifecycle()).toBe('running');
-    await core.lifecycleController.shutdown('test-teardown');
-    expect(clearInterval).toHaveBeenCalledWith(timer);
+    expect(
+      await withinDeadline(
+        publishGenerationCoordinatedHandoffRoutingTransitions(runtime, path, [
+          {
+            kind: 'routing-selected',
+            eventId: 'selection',
+            invocationId: 'pending',
+            observedAt: new Date(runtime.time.now()).toISOString(),
+            owner: { pid: 101, incarnation: testIncarnation(101) },
+            disposition: {
+              kind: 'continue-current',
+              basis: { kind: 'same-build-set', buildSetId: '123e4567-e89b-42d3-a456-426614174000' },
+            },
+          },
+        ]),
+      ),
+    ).toMatchObject({ kind: 'committed' });
+    let releaseRecovery = () => {};
+    const recovery = new Promise<void>((resolve) => {
+      releaseRecovery = resolve;
+    });
+    let enteredRecovery = () => {};
+    const entered = new Promise<void>((resolve) => {
+      enteredRecovery = resolve;
+    });
+    let releaseListener = () => {};
+    const listener = new Promise<void>((resolve) => {
+      releaseListener = resolve;
+    });
+    let enteredListener = () => {};
+    const listening = new Promise<void>((resolve) => {
+      enteredListener = resolve;
+    });
+    const logs: string[] = [];
+    const routingPhases = (event: string) =>
+      logs.filter((line) => line.includes(`kind=background phase=handoff-routing-reconciliation event=${event}`));
+    const core = createCoordinatorCore(
+      {
+        executionFinisher: createTestExecutionFinisher(
+          (): JobStore => core.storeServicesRef.get().progressStore,
+          runtime,
+        ),
+        onFatalShutdownError: vi.fn(),
+        storeFormat: currentCoralStoreFormat(),
+        runtime,
+        backendNamespace: 'routing-startup',
+        bootSnapshot: {
+          version: '0.10.17',
+          buildSetId: '123e4567-e89b-42d3-a456-426614174000',
+          bundleHash: '0123456789abcdef',
+          flavor: 'prod',
+          instanceId: 'routing-startup',
+          token: 'test-token',
+          now: runtime.time.now,
+          log: (line) => logs.push(line),
+        },
+        kbDaemonSupervisor: createMockKbDaemonSupervisor(),
+        createStoreServicesFromDbFn: (db) => ({
+          storeDb: db,
+          progressStore: new JobStore('routing-startup', runtime, createEventBodyCodec(), {
+            db,
+            reducers: f.reducers,
+            providers: permissiveProviderLookupPort,
+          }),
+          consumerDriver: null,
+        }),
+        createServerFn: (handler) => createServer(handler),
+        listenFn: async () => {
+          enteredListener();
+          if (gateBeforeReadiness) await withinDeadline(listener);
+          return { port: 0, host: '127.0.0.1' };
+        },
+        closeServerFn: async () => {},
+        writeBackendInfoFn: () => {},
+        removeBackendInfoIfOwnerFn: () => {},
+        cleanupStaleJobsFn: () => {},
+        registerBuiltInProvidersFn: () => {},
+        settlePendingLaunchesFn: async () => ({ kind: 'all-pending-launches-settled' }),
+        terminateRegisteredChildrenFn: async () => ({ kind: 'all-children-observed-absent' }),
+        getConsumerStuck: () => [],
+      },
+      async () => {
+        enteredRecovery();
+        await withinDeadline(recovery);
+      },
+    );
+    const starting = core.lifecycleController.start();
+    void starting.catch(() => {});
+    try {
+      if (gateBeforeReadiness) {
+        await withinDeadline(listening);
+        expect(core.runtimeState.getLifecycle()).toBe('starting');
+        await withinDeadline(new Promise<void>((resolve) => setImmediate(resolve)));
+        expect(runtime.process.observeProcessIdentities).not.toHaveBeenCalled();
+        expect(routingPhases('start')).toHaveLength(0);
+        expect(interval.mock.calls.some(([, ms]) => ms === 1_000)).toBe(false);
+        expect(readHandoffRoutingStatus(runtime, path)).toMatchObject({
+          kind: 'current',
+          statuses: [{ kind: 'unresolved' }],
+        });
+        releaseListener();
+      }
+      await withinDeadline(entered);
+      expect(core.runtimeState.getLifecycle()).toBe('kernel-ready');
+      await vi.waitFor(() =>
+        expect(readHandoffRoutingStatus(runtime, path)).toMatchObject({
+          kind: 'current',
+          statuses: [{ kind: 'retired', tombstone: { resolutionReason: 'owner-absent' } }],
+        }),
+      );
+      const index = interval.mock.calls.findIndex(([, ms]) => ms === 1_000);
+      expect(index).toBeGreaterThanOrEqual(0);
+      const timer = interval.mock.results[index].value;
+      await vi.waitFor(() => expect(routingPhases('finish')).toHaveLength(1));
+      expect(routingPhases('start')).toHaveLength(0);
+      expect(routingPhases('finish')[0]).toContain('boot=routing-startup');
+      expect(routingPhases('finish')[0]).toContain('subjects=1 reads=1');
+      expect(routingPhases('finish')[0]).toContain('"handoff-routing-statuses":{"subjects":0,"reads":1}');
+      const actual = await vi.importActual<typeof HandoffStatusModule>('#src/coordinator/handoff-routing/status.js');
+      let completeTick = () => {};
+      const completedTick = new Promise<void>((resolve) => {
+        completeTick = resolve;
+      });
+      vi.mocked(reconcileHandoffRoutingStatus).mockImplementation(async (...args) => {
+        const result = await actual.reconcileHandoffRoutingStatus(...args);
+        completeTick();
+        return result;
+      });
+      const tick = interval.mock.calls[index][0];
+      tick();
+      await withinDeadline(completedTick);
+      expect(routingPhases('finish')).toHaveLength(1);
+      expect(routingPhases('start')).toHaveLength(0);
+      releaseRecovery();
+      await withinDeadline(starting);
+      expect(core.runtimeState.getLifecycle()).toBe('running');
+      await withinDeadline(core.lifecycleController.shutdown('test-teardown'));
+      expect(clearInterval).toHaveBeenCalledWith(timer);
+    } finally {
+      releaseListener();
+      releaseRecovery();
+      try {
+        await withinDeadline(starting);
+      } finally {
+        try {
+          await withinDeadline(core.lifecycleController.shutdown('test-teardown'));
+        } finally {
+          for (const result of interval.mock.results) {
+            if (result.type === 'return') runtime.time.clearInterval(result.value);
+          }
+          for (const result of timeout.mock.results) {
+            if (result.type === 'return') runtime.time.clearTimeout(result.value);
+          }
+        }
+      }
+    }
   } finally {
-    releaseListener();
-    releaseRecovery();
-    await starting;
-    await core.lifecycleController.shutdown('test-teardown');
     vi.restoreAllMocks();
     f.close();
   }

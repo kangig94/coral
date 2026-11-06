@@ -98,11 +98,11 @@ describe('retention startup composition', () => {
       await vi.advanceTimersByTimeAsync(0);
       expect(cleanup).toHaveBeenCalledOnce();
       expect(logs.filter((line) => line.includes('kind=background phase=storage-retention event=start'))).toHaveLength(
-        1,
+        0,
       );
       expect(
         logs.filter((line) => line.includes('kind=background phase=storage-retention.scratch-jobs event=start')),
-      ).toHaveLength(1);
+      ).toHaveLength(0);
       expect((await core.lifecycleController.shutdown('test-teardown')).disposition).toBe('finalized');
       await core.lifecycleController.waitForShutdown();
       const finishes = (phase: string) =>

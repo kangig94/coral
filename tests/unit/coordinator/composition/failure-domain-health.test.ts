@@ -3,6 +3,7 @@ import { main } from '#src/coordinator/bootstrap.js';
 import { createCoordinatorHealthReader } from '#src/coordinator/composition/health-observation.js';
 import { readRecentFailureDomainRefusals } from '#src/infra/failure-domain.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
+import * as CoordinatorLog from '#src/infra/coordinator-log.js';
 
 vi.mock('#src/infra/failure-domain.js', async (original) => ({
   ...(await original<Record<string, unknown>>()),
@@ -37,6 +38,8 @@ it('reports timestamped coordinator-observed refusal history and its observation
   expect(process.env.CORAL_FAILURE_DOMAIN_REFUSALS).toBeUndefined();
   expect(process.env.CORAL_FAILURE_DOMAIN).toBeUndefined();
 
+  const coordinatorLogPath = '/state/coordinator-logs/serving-writer/current.log';
+  const logPath = vi.spyOn(CoordinatorLog, 'getCoordinatorLogPath').mockReturnValue(coordinatorLogPath);
   const runtime = new SimulationRuntime();
   Object.defineProperty(runtime.process, 'failureDomainRoot', {
     value: { kind: 'placed', root: '/inherited' },
@@ -89,7 +92,12 @@ it('reports timestamped coordinator-observed refusal history and its observation
     launchPermitReportAgeMs: 0,
     providerOperationStartupStatus: () => null,
   } as unknown as Parameters<typeof createCoordinatorHealthReader>[0];
-  const health = createCoordinatorHealthReader(input)();
+  const readHealth = createCoordinatorHealthReader(input);
+  const health = readHealth();
+  expect(health.diagnostics?.coordinatorLogPath).toBe(coordinatorLogPath);
+  expect(readHealth.readLiveness()).not.toHaveProperty('diagnostics');
+  logPath.mockReturnValue(undefined);
+  expect(readHealth().diagnostics).not.toHaveProperty('coordinatorLogPath');
   expect(health.diagnostics?.hostPressure).toEqual({ kind: 'unobservable', reason: 'simulation' });
   runtime.process.readHostPressure = () => ({ kind: 'pressured', signal: 'io', reading: 'full avg10=12' });
   expect(createCoordinatorHealthReader(input)().diagnostics?.hostPressure).toEqual({

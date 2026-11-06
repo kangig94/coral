@@ -32,6 +32,8 @@ const TARGET_REVALIDATION_MAX_MS = 60 * 60_000;
 
 type ReconciliationContext = Readonly<{
   options: SuccessionReconcilerOptions;
+  observation?: RecoveryObservation;
+  clearObservedHold?: () => void;
   state: SuccessionReconcilerState;
   status: (requestId?: string) => SuccessionStatus;
   notifyObligationChange: () => void;
@@ -49,7 +51,50 @@ type ReconciliationContext = Readonly<{
 export function createSuccessionReconciliationPass(
   context: ReconciliationContext,
 ): (observation?: RecoveryObservation) => Promise<SuccessionDecision> {
-  return (observation) => reconcilePending(context, observation);
+  return async (observation) => {
+    let subject:
+      | { owedAttemptId: string }
+      | { path: string; kind: 'unreadable' | 'corrupt' | 'unsupported' }
+      | Pick<UpgradeIntent, 'requestId' | 'attemptId' | 'unservedMintDiscard'>
+      | null = context.state.owedClear === null ? null : { owedAttemptId: context.state.owedClear.attemptId };
+    const status: ReconciliationContext['status'] = (requestId) => {
+      const observed = context.status(requestId);
+      subject =
+        observed.kind === 'readable' &&
+        ((observed.intent.unservedMintDiscard ?? null) !== null ||
+          !['closed', 'completed'].includes(observed.intent.disposition))
+          ? {
+              requestId: observed.intent.requestId,
+              attemptId: observed.intent.attemptId,
+              unservedMintDiscard: observed.intent.unservedMintDiscard ?? null,
+            }
+          : observed.kind === 'unreadable' || observed.kind === 'corrupt' || observed.kind === 'unsupported'
+            ? { path: context.options.runDir, kind: observed.kind }
+            : null;
+      return observed;
+    };
+    const decision = await reconcilePending(
+      {
+        ...context,
+        status,
+        observation,
+        clearObservedHold: () => {
+          subject = null;
+        },
+      },
+      observation,
+    );
+    const hold =
+      subject !== null && decision.kind === 'deferred'
+        ? JSON.stringify([{ identity: JSON.stringify(subject), reason: decision.reason }])
+        : null;
+    observation?.reportState?.(hold);
+    return decision;
+  };
+}
+
+function recordActivity(context: ReconciliationContext): void {
+  context.observation?.record('active-upgrade-intents', { subjects: 1 });
 }
 
 function wakeAt(context: ReconciliationContext, atMs: number): void {
@@ -90,6 +135,8 @@ async function retryUnservedMintDiscard(
       : { kind: 'settle', value: false },
   );
   if (cleared.kind !== 'settled' || !cleared.value) return null;
+  context.clearObservedHold?.();
+  recordActivity(context);
   notifyObligationChange();
   return { kind: 'deferred', reason: `unserved retirement mint was ${discarded.kind}` };
 }
@@ -134,6 +181,7 @@ async function landOwedClear(
     };
   }
   state.owedClear = null;
+  context.clearObservedHold?.();
   if (!outcome.value) return null;
   options.onIntentChanged?.();
   notifyObligationChange();
@@ -150,9 +198,10 @@ async function reconcilePending(
     if (owed !== null) return owed;
   }
   const observed = status();
-  if (observed.kind === 'readable') observation?.record('upgrade-intents', { subjects: 1, reads: 1 });
+  if (observed.kind === 'readable') observation?.record('upgrade-intents', { reads: 1 });
   if (!state.disposed && observed.kind === 'corrupt' && state.launchedAttempt === null && state.owedClear === null) {
     if ((await quarantineCorruptUpgradeIntent(options.runDir)) === 'quarantined') {
+      context.clearObservedHold?.();
       options.onIntentChanged?.();
       notifyObligationChange();
       return { kind: 'deferred', reason: 'corrupt upgrade intent was quarantined for a fresh request' };
@@ -258,6 +307,7 @@ async function launchPreparedAttempt(
   }
   const attemptId = current.preparation.attemptId;
   state.launchedAttempt = attemptId;
+  recordActivity(context);
   let launch: SuccessionLaunch;
   try {
     launch = await options.launchPrepared(current.intent, current.preparation);
@@ -333,6 +383,7 @@ async function recordCutoverOutcome(
   );
   if (written.kind !== 'settled' || !written.value)
     return { kind: 'deferred', reason: 'upgrade intent changed before cutover outcome was committed' };
+  recordActivity(context);
   if (outcome !== 'retiring') context.notifyObligationChange();
   return { kind: 'deferred', reason: outcomeReason };
 }
@@ -347,7 +398,7 @@ async function reconcileQuiescentCutover(
   const cutoverAt = intent.attemptId === null ? quiescentCutoverAt(intent) : null;
   if (cutoverAt !== null && policy !== undefined) {
     if (intent.legacyRetirement !== true || !intent.blockers.some((entry) => entry.owner === 'quiescent-cutover')) {
-      void (await retryUpgradeIntentCas(options.runDir, (observed) =>
+      const restored = await retryUpgradeIntentCas(options.runDir, (observed) =>
         observed.kind === 'readable' && observed.intent.revision === intent.revision
           ? {
               kind: 'write',
@@ -365,10 +416,11 @@ async function reconcileQuiescentCutover(
                   evidence: policy.reason ?? `quiescent-cutover; handoff drain by ${new Date(cutoverAt).toISOString()}`,
                 },
               },
-              settle: () => undefined,
+              settle: () => true,
             }
-          : { kind: 'settle', value: undefined },
-      ));
+          : { kind: 'settle', value: false },
+      );
+      if (restored.kind === 'settled' && restored.value) recordActivity(context);
       context.notifyObligationChange();
       return { kind: 'deferred', reason: 'quiescent-cutover restored after request renewal' };
     }

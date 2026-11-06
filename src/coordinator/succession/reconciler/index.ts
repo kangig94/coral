@@ -1,4 +1,5 @@
 import type { Runtime } from '../../../runtime/ports.js';
+import type { RecoveryObservation } from '../../../recovery/phase-observation.js';
 import {
   readUpgradeIntent,
   retryUpgradeIntentCas,
@@ -91,7 +92,15 @@ export type SuccessionReconciler = Readonly<{
   dispose: () => void;
 }>;
 
-export function createSuccessionReconciler(options: SuccessionReconcilerOptions): SuccessionReconciler {
+export function createSuccessionReconciler(input: SuccessionReconcilerOptions): SuccessionReconciler {
+  let activeObservation: RecoveryObservation | undefined;
+  const options: SuccessionReconcilerOptions = {
+    ...input,
+    onIntentChanged: () => {
+      activeObservation?.record('active-upgrade-intents', { subjects: 1 });
+      input.onIntentChanged?.();
+    },
+  };
   const newAttemptId = options.newAttemptId ?? (() => options.runtime.ids.uuid());
   const state = createSuccessionReconcilerState();
   const scheduler = createSuccessionReconciliationScheduler({
@@ -99,7 +108,14 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
     retryIntervalMs: options.retryIntervalMs ?? 30_000,
     observation: options.observation,
     subscribe: options.subscribeObligationChanges,
-    runPass: (observation) => reconcilePending(observation),
+    runPass: async (observation) => {
+      activeObservation = observation;
+      try {
+        return await reconcilePending(observation);
+      } finally {
+        activeObservation = undefined;
+      }
+    },
     onError: options.onReconcileError,
   });
   const { reconcile, notifyObligationChange } = scheduler;

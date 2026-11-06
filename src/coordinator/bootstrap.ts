@@ -592,7 +592,8 @@ export async function main(harness: BackendHarness = {}): Promise<number> {
   }
   const runtime = createRealRuntime(readBuildFlavor(__PLUGIN_ROOT__));
   const runDir = runtime.paths.coral.coordinator.runDir;
-  installCoordinatorLog(runDir);
+  runtime.storage.mkdirSync(runDir, { recursive: true });
+  installCoordinatorLog(runDir, runtime);
 
   const runningIdentity = resolveStrictBundleIdentity();
   let repairAfterSupervisorAccepted = (_pluginRoot: string): Promise<void> => Promise.resolve();
@@ -611,6 +612,7 @@ export async function main(harness: BackendHarness = {}): Promise<number> {
       runningIdentity.manifest,
       (error) => backendLog.error('Could not replace coordinator supervisor', error),
       (pluginRoot) => repairAfterSupervisorAccepted(pluginRoot),
+      runtime,
     );
   };
   let shutdownAfterSentinelLoss = (): void => {

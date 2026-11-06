@@ -18,7 +18,7 @@ import type * as StoreEpoch from '#src/store/epoch/index.js';
   }));
   vi.mock('#src/store/epoch/index.js', async (original) => ({
     ...(await original<typeof StoreEpoch>()),
-    sweepStoreEpochsPostReady: vi.fn(async () => undefined),
+    sweepStoreEpochsPostReady: vi.fn(async () => 'complete' as const),
   }));
   vi.mock('#src/coordinator/services/recovery/epoch-closure.js', () => ({
     settleSupersededEpochClosures: vi.fn(async () => undefined),
@@ -91,7 +91,7 @@ it('registration runs first and its failure does not skip closure or retention',
   });
   vi.mocked(epochs.sweepStoreEpochsPostReady).mockImplementation(async () => {
     order.push('sweep');
-    return {} as never;
+    return 'complete';
   });
   const log = vi.fn();
   const scheduler = createStoreEpochSweepScheduler({
@@ -110,7 +110,7 @@ it('registration runs first and its failure does not skip closure or retention',
     expect(log).toHaveBeenCalledWith(expect.stringContaining('event=finish outcome=failed'));
     await vi.advanceTimersByTimeAsync(5000);
     expect(order).toEqual(['register', 'closure', 'sweep', 'register', 'closure', 'sweep']);
-    expect(log.mock.calls.filter(([line]) => line.includes('event=finish outcome=failed'))).toHaveLength(2);
+    expect(log.mock.calls.filter(([line]) => line.includes('event=finish outcome=failed'))).toHaveLength(1);
   } finally {
     await scheduler.stop();
     f.close();
@@ -133,7 +133,7 @@ it('a persistently failing closure settlement does not skip historical refresh o
   });
   vi.mocked(epochs.sweepStoreEpochsPostReady).mockImplementation(async () => {
     order.push('sweep');
-    return {} as never;
+    return 'complete';
   });
   const log = vi.fn();
   const scheduler = createStoreEpochSweepScheduler({
@@ -151,10 +151,71 @@ it('a persistently failing closure settlement does not skip historical refresh o
     await vi.advanceTimersByTimeAsync(5000);
     expect(order).toEqual(['closure', 'refresh', 'sweep', 'closure', 'refresh', 'sweep']);
     expect(log).toHaveBeenCalledWith(expect.stringContaining('closure settlement failed'));
-    expect(log.mock.calls.filter(([line]) => line.includes('event=finish outcome=failed'))).toHaveLength(2);
+    expect(log.mock.calls.filter(([line]) => line.includes('event=finish outcome=failed'))).toHaveLength(1);
   } finally {
     await scheduler.stop();
     f.close();
     vi.mocked(closure.settleSupersededEpochClosures).mockReset();
+  }
+});
+
+it('reports each sweep hold transition once and keeps cancellation and shutdown silent', async () => {
+  vi.useFakeTimers();
+  const epochs = await import('#src/store/epoch/index.js');
+  const f = createTerminalExportFixture();
+  const log = vi.fn();
+  const scheduler = createStoreEpochSweepScheduler({
+    bootId: 'hold-test',
+    runtime: { ...f.runtime, time: { ...f.runtime.time, monotonicNow: () => 0n } },
+    world: { log },
+    jobLocationIndex: f.index,
+    selectedStoreEpochKey: () => f.epochKey,
+    onOpen: vi.fn(),
+    closeProxySetForEpochClosure: vi.fn(),
+  });
+  const sweep = vi.mocked(epochs.sweepStoreEpochsPostReady);
+  const cases = [
+    ['complete', null],
+    ['unobservable-metadata', 'unobservable-metadata'],
+    ['unobservable-metadata', null],
+    ['live-holder', 'live-holder'],
+    ['live-holder', null],
+    ['cancelled', null],
+    ['complete', 'cleared'],
+    ['complete', null],
+    ['live-holder', 'live-holder'],
+  ] as const;
+  let finishSweep: ((result: 'complete') => void) | undefined;
+  try {
+    for (const [index, [result, reported]] of cases.entries()) {
+      sweep.mockResolvedValue(result);
+      if (index === 0) scheduler.schedule(f.epoch);
+      await vi.advanceTimersByTimeAsync(index === 0 ? 0 : 5_000);
+      expect(sweep).toHaveBeenCalledTimes(index + 1);
+      if (reported === null) {
+        expect(log).not.toHaveBeenCalled();
+      } else {
+        expect(log.mock.calls.filter(([line]) => line.includes('event=finish'))).toHaveLength(1);
+        expect(log).toHaveBeenCalledWith(expect.stringContaining(reported));
+      }
+      log.mockClear();
+    }
+    sweep.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishSweep = resolve;
+        }),
+    );
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(sweep).toHaveBeenCalledTimes(cases.length + 1);
+    const stopped = scheduler.stop();
+    finishSweep?.('complete');
+    await stopped;
+    expect(log).not.toHaveBeenCalled();
+  } finally {
+    finishSweep?.('complete');
+    await scheduler.stop();
+    sweep.mockReset();
+    f.close();
   }
 });
