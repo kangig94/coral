@@ -26,8 +26,9 @@ an unrelated cleanup failure.
 The enforcers. `consumeHolderObservation` in `createArmedEnforcer` (`src/provider-proxy/enforcement.ts`)
 observes the control holder at anchor + `orphanTimeoutMs − teardownReserveMs`; each coordinator in the loop
 dies before renewing, the holder is observed absent, and the guardian and reaper tear the set down through
-`reapRecordedContainment` within one adoption window. After that the capsule's three recorded processes are
-absent and the capsule is retirable on the next discovery. Under hard mode every iteration also reaped every
+`reapRecordedContainment` within one adoption window. Capsule retirement still requires decisive absence
+under the applicable [containment evidence contract](../architecture.md#containment-evidence-and-reclamation);
+a teardown attempt or deadline alone cannot supply it. Under hard mode every iteration also reaped every
 healthy set on the way down; under handoff it costs the bad set and nothing else.
 
 ## Why it was left
@@ -35,7 +36,7 @@ healthy set on the way down; under handoff it costs the bad set and nothing else
 Ending the loop earlier means a successor deciding not to redeem a capsule because a predecessor reported a
 fatal from it. That is a retirement decided on the evidence the predecessor just declared it could not
 interpret, and [`design-philosophy`](../../.claude/rules/design-philosophy.md) §11 forbids finalizing on
-evidence that did not decide. The enforcers' teardown is the decisive evidence, and it arrives by itself.
+evidence that did not decide. Confirmed disappearance under the [containment evidence contract](../architecture.md#containment-evidence-and-reclamation) is decisive evidence; the enforcers retain responsibility for obtaining it.
 Buying the iterations back would require a coordinator to hold a judgement the fatal says it does not have.
 
 ## What closing it requires

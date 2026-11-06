@@ -1,3 +1,4 @@
+import type { FailureDomainContainment, FailureDomainObservation } from './failure-domain.js';
 import { z } from 'zod';
 
 import {
@@ -18,6 +19,45 @@ import {
   SIGTERM_GRACE_MS,
 } from './process-constants.js';
 import type { ProcessIdentityObservation } from './port-types.js';
+
+/** Once a leaf exists, its disappearance cannot restore legacy process-group authority. */
+export function createFailureDomainAbsenceObserver(
+  domain: Pick<FailureDomainContainment, 'observe'> | undefined,
+): (observation?: FailureDomainObservation) => boolean {
+  let existing = false;
+  return (observation = domain?.observe()) => {
+    if (observation === undefined) return !existing;
+    if (observation.kind === 'missing') return !existing;
+    if (observation.kind === 'unresolved') return false;
+    existing = true;
+    return observation.kind === 'absent';
+  };
+}
+
+/** A true predicate result alone does not prove containment absence; independent absence evidence is required. */
+export function createFailureDomainContainmentObservation<Domain extends Pick<FailureDomainContainment, 'observe'>>(
+  failureDomain: Domain | undefined,
+  permitsIndependentAbsenceDecision = createFailureDomainAbsenceObserver(failureDomain),
+): Readonly<{
+  permitsIndependentAbsenceDecision: ReturnType<typeof createFailureDomainAbsenceObserver>;
+  failureDomain: Domain | undefined;
+}> {
+  permitsIndependentAbsenceDecision(failureDomain?.observe());
+  return {
+    permitsIndependentAbsenceDecision,
+    failureDomain:
+      failureDomain === undefined
+        ? undefined
+        : {
+            ...failureDomain,
+            observe: () => {
+              const observation = failureDomain.observe();
+              permitsIndependentAbsenceDecision(observation);
+              return observation;
+            },
+          },
+  };
+}
 
 /** How often a disappearance wait re-observes its targets. Shared by every caller that polls for a signalled
  *  process or process group to disappear, so the poll interval has exactly one owner rather than being
@@ -62,6 +102,7 @@ export type RecordedContainmentObservationSubject = RecordedContainmentIdentity 
 
 /** Observation authority must not expose process-control capability. */
 export type ProcessContainmentObservationEnvironment = {
+  readonly failureDomain?: Pick<FailureDomainContainment, 'observe' | 'hasEntered'>;
   readonly process: {
     observeLiveness(pid: number): ProcessLiveness;
     readonly observeRecordedProcessAsync?: AsyncRecordedProcessObserver;
@@ -76,6 +117,7 @@ export type ProcessContainmentObservationEnvironment = {
 
 /** Runtime capabilities required to reap one recorded containment. */
 export type ProcessContainmentEnvironment<Scope extends symbol> = ProcessContainmentObservationEnvironment & {
+  readonly failureDomain?: FailureDomainContainment;
   /**
    * The largest recorded set this containment will act on. It is injected because "how many targets" is the
    * caller's bound, not a process-control constant — naming a provider concept here would put a domain
@@ -477,7 +519,7 @@ function recordedSetAbsenceVerdict(observation: RecordedSetObservation): Recorde
   return allRecordedTargetsAbsent(observation) ? 'absent' : 'not-confirmed';
 }
 
-/** Absence requires the group and every recorded root to be absent; unanswerable evidence remains unobservable. */
+/** Unanswerable evidence must never establish recorded containment absence. */
 export function observeRecordedContainment(
   subject: RecordedContainmentObservationSubject,
   environment: ProcessContainmentObservationEnvironment,
@@ -485,8 +527,45 @@ export function observeRecordedContainment(
   try {
     const recordedRoots = subject.childRoot === null ? [] : [subject.childRoot];
     assertRecordedSet(subject, recordedRoots, 1);
+    const domain = environment.platform === 'linux' ? environment.failureDomain : undefined;
+    const leaf = domain?.observe();
+    const leafAllowsAbsence = createFailureDomainAbsenceObserver(domain);
+    leafAllowsAbsence(leaf);
+    if (domain !== undefined && leaf !== undefined && leaf.kind !== 'missing') {
+      if (leaf.kind === 'absent' && domain.hasEntered?.() === true) {
+        const identities = subject.childRoot === null ? [subject] : [subject, subject.childRoot];
+        if (!identities.every((identity) => observeProcessIdentity(identity, environment) === 'absent'))
+          return { kind: 'alive' };
+        const confirmed = domain.observe();
+        leafAllowsAbsence(confirmed);
+        if (confirmed.kind === 'absent' && domain.hasEntered?.() === true) return { kind: 'absent' };
+        if (confirmed.kind === 'populated') return { kind: 'alive' };
+        if (confirmed.kind !== 'absent')
+          return {
+            kind: 'unobservable',
+            reason:
+              confirmed.kind === 'unknown' || confirmed.kind === 'unresolved'
+                ? confirmed.reason
+                : 'the observed failure domain disappeared',
+          };
+      }
+      if (leaf.kind === 'populated') return { kind: 'alive' };
+      if (leaf.kind !== 'absent')
+        return {
+          kind: 'unobservable',
+          reason: leaf.kind === 'unknown' || leaf.kind === 'unresolved' ? leaf.reason : 'population unobservable',
+        };
+    }
     const verdict = recordedSetAbsenceVerdict(observeRecordedSetSynchronously(subject, recordedRoots, environment));
-    if (verdict === 'absent') return { kind: 'absent' };
+    if (verdict === 'absent') {
+      const confirmed = domain?.observe();
+      const leafAbsent = leafAllowsAbsence(confirmed);
+      if (confirmed?.kind === 'populated') return { kind: 'alive' };
+      if (confirmed?.kind === 'unknown' || confirmed?.kind === 'unresolved')
+        return { kind: 'unobservable', reason: confirmed.reason };
+      if (!leafAbsent) return { kind: 'unobservable', reason: 'the observed failure domain disappeared' };
+      return { kind: 'absent' };
+    }
     if (verdict === 'not-confirmed') return { kind: 'alive' };
     return { kind: 'unobservable', reason: 'the recorded process group is no longer attributable' };
   } catch (error: unknown) {
@@ -506,6 +585,10 @@ export function observeRecordedGroupMember(
   environment: ProcessContainmentObservationEnvironment,
 ): RecordedContainmentObservation {
   try {
+    const leafAbsent = createFailureDomainAbsenceObserver(
+      environment.platform === 'linux' ? environment.failureDomain : undefined,
+    );
+    if (!leafAbsent()) return { kind: 'unobservable', reason: 'recorded leaf absence is not established' };
     assertProcessIdentity(subject, 'member');
     assertPositiveSafeInteger(subject.processGroupId, 'member.processGroupId');
     const processes = subject.childRoot === null ? [subject] : [subject, subject.childRoot];
@@ -513,7 +596,10 @@ export function observeRecordedGroupMember(
       return { kind: 'alive' };
     }
     const groupLiveness = environment.process.observeLiveness(-subject.processGroupId);
-    if (groupLiveness === 'absent') return { kind: 'absent' };
+    if (groupLiveness === 'absent')
+      return leafAbsent()
+        ? { kind: 'absent' }
+        : { kind: 'unobservable', reason: 'recorded leaf absence changed during process probes' };
     return {
       kind: 'unobservable',
       reason:
@@ -536,6 +622,12 @@ export async function confirmRecordedGroupMemberAbsence<Scope extends symbol>(
   environment: ProcessContainmentObservationEnvironment &
     Readonly<{ clock: MonotonicClock<Scope>; signal?: AbortSignal }>,
 ): Promise<RecordedContainmentObservation> {
+  const observation = createFailureDomainContainmentObservation(
+    environment.platform === 'linux' ? environment.failureDomain : undefined,
+  );
+  const leafAbsent = observation.permitsIndependentAbsenceDecision;
+  const observedEnvironment = { ...environment, failureDomain: observation.failureDomain };
+  if (!leafAbsent()) return { kind: 'unobservable', reason: 'recorded leaf absence is not established' };
   const subjects = [null, ...recordedRoots].map((childRoot) => ({ ...member, childRoot }));
   const confirmationDeadline = environment.clock.shiftMilliseconds(
     environment.clock.now(),
@@ -543,11 +635,14 @@ export async function confirmRecordedGroupMemberAbsence<Scope extends symbol>(
   );
   while (true) {
     const notAbsent = subjects
-      .map((subject) => observeRecordedGroupMember(subject, environment))
+      .map((subject) => observeRecordedGroupMember(subject, observedEnvironment))
       .find((observed) => observed.kind !== 'absent');
     if (notAbsent !== undefined) return notAbsent;
     const remainingMs = environment.clock.millisecondsBetween(environment.clock.now(), confirmationDeadline);
-    if (remainingMs <= 0) return { kind: 'absent' };
+    if (remainingMs <= 0)
+      return leafAbsent()
+        ? { kind: 'absent' }
+        : { kind: 'unobservable', reason: 'recorded leaf absence changed during confirmation' };
     await sleepWhileAuthorized(Math.min(ABSENCE_POLL_MS, remainingMs), environment);
   }
 }
@@ -711,7 +806,10 @@ export function abortRecordedContainment<Scope extends symbol>(
     if (verdict === 'recorded-group-unattributable') {
       return { kind: 'refused', reason: 'the recorded process group is no longer attributable' };
     }
-    if (verdict === 'absent') return { kind: 'accepted' };
+    if (verdict === 'absent')
+      return observeRecordedContainment(subject, environment).kind === 'absent'
+        ? { kind: 'accepted' }
+        : { kind: 'refused', reason: 'recorded leaf absence is not established' };
 
     const delivery = signalRecordedSetSynchronously(
       subject,
@@ -816,8 +914,22 @@ async function confirmAbsence<Scope extends symbol>(
   );
 }
 
+async function observeLeafTargets<Scope extends symbol>(
+  identities: readonly RecordedProcessIdentity[],
+  deadline: MonotonicInstant<Scope>,
+  environment: ProcessContainmentEnvironment<Scope>,
+): Promise<'absent' | 'present' | 'unobservable'> {
+  for (const identity of identities) {
+    const observation = await observeProcessIdentityAsync(identity, deadline, environment, true);
+    if (observation.kind === 'unobservable') return 'unobservable';
+    if (observation.observation !== 'absent') return 'present';
+  }
+  return 'absent';
+}
+
 /**
- * Reaps exactly the recorded group and additional recorded process identities before one absolute deadline.
+ * An empty leaf proves whole-tree absence only with positive payload-entry evidence.
+ * Without it, `containment-absent` is bounded by process-group evidence and does not prove escaped descendants are gone.
  */
 export async function reapRecordedContainment<Scope extends symbol>(
   containment: RecordedContainmentIdentity,
@@ -836,9 +948,63 @@ export async function reapRecordedContainment<Scope extends symbol>(
       environment.onSignal?.(effect);
     },
   };
+  const domain = environment.platform === 'linux' ? environment.failureDomain : undefined;
+  const leafAbsent = createFailureDomainAbsenceObserver(domain);
+  const leaf = domain?.observe();
+  leafAbsent(leaf);
+  const hasLeaf = domain !== undefined && leaf !== undefined && leaf.kind !== 'missing';
+  if (hasLeaf) {
+    if (leaf.kind === 'unknown' || leaf.kind === 'unresolved')
+      return { kind: 'identity-unobservable', signalDelivered };
+    let leafKillAttempted = false;
+    const killLeaf = (): boolean => {
+      assertContainmentAuthorized(environment.signal);
+      environment.assertSignalAuthorized?.();
+      assertContainmentAuthorized(environment.signal);
+      const callStartedAt = environment.clock.now();
+      if (environment.clock.compare(callStartedAt, exitDeadline) >= 0)
+        throw reapFailure('Recorded containment had no time remaining for SIGKILL.');
+      leafKillAttempted = true;
+      const killed = domain.kill();
+      if (killed.kind !== 'refused') trackedEnvironment.onSignal?.({ pid: containment.pid, signal: 'SIGKILL' });
+      assertSignalCallWithinBounds(callStartedAt, exitDeadline, trackedEnvironment);
+      return killed.kind !== 'refused';
+    };
+    if (leaf.kind === 'populated' && !killLeaf()) return { kind: 'identity-unobservable', signalDelivered };
+    while (true) {
+      assertContainmentAuthorized(environment.signal);
+      const observation = domain.observe();
+      if (observation.kind === 'absent') {
+        if (domain.hasEntered?.() !== true) break;
+        const targets = await observeLeafTargets([containment, ...recordedRoots], exitDeadline, trackedEnvironment);
+        if (targets === 'absent') {
+          assertContainmentAuthorized(environment.signal);
+          const confirmed = domain.observe();
+          if (confirmed.kind === 'absent' && domain.hasEntered?.() === true) return { kind: 'containment-absent' };
+          if (confirmed.kind === 'absent') break;
+          if (confirmed.kind !== 'populated') return { kind: 'identity-unobservable', signalDelivered };
+          const remainingMs = environment.clock.millisecondsBetween(environment.clock.now(), exitDeadline);
+          if (remainingMs <= 0) throw reapFailure('Recorded failure domain remained populated at the exit deadline.');
+          if (!killLeaf()) return { kind: 'identity-unobservable', signalDelivered };
+          await sleepWhileAuthorized(Math.min(ABSENCE_POLL_MS, remainingMs), environment);
+          continue;
+        }
+        if (targets === 'unobservable') return { kind: 'identity-unobservable', signalDelivered };
+        break;
+      }
+      if (observation.kind !== 'populated') return { kind: 'identity-unobservable', signalDelivered };
+      if (environment.clock.millisecondsBetween(environment.clock.now(), exitDeadline) <= 0)
+        throw reapFailure('Recorded failure domain remained populated at the exit deadline.');
+      if (!leafKillAttempted && !killLeaf()) return { kind: 'identity-unobservable', signalDelivered };
+      await environment.clock.sleep(ABSENCE_POLL_MS);
+    }
+  }
 
   try {
-    return await reapObservedRecordedContainment(containment, recordedRoots, exitDeadline, trackedEnvironment);
+    const result = await reapObservedRecordedContainment(containment, recordedRoots, exitDeadline, trackedEnvironment);
+    if (result.kind === 'containment-absent' && !leafAbsent())
+      return { kind: 'identity-unobservable', signalDelivered };
+    return result;
   } catch (error: unknown) {
     if (error instanceof ContainmentIdentityObservationError) {
       return { kind: 'identity-unobservable', signalDelivered };

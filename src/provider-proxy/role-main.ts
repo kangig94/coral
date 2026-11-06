@@ -1,4 +1,8 @@
-import { enterFailureDomain, inheritedFailureDomainRoot } from '../infra/failure-domain.js';
+import {
+  enterFailureDomain,
+  inheritedFailureDomainRoot,
+  type FailureDomainContainment,
+} from '../infra/failure-domain.js';
 import { localProviderHostRoot } from '../infra/bundle-manifest.js';
 import { z } from 'zod';
 import {
@@ -25,6 +29,7 @@ import { SIGTERM_GRACE_MS } from '../infra/process-constants.js';
 import { providerProxyBootstrapCapsulePath, providerReaperBootstrapCapsulePath } from '../infra/path/index.js';
 import {
   reapRecordedContainment,
+  createFailureDomainContainmentObservation,
   type ProcessContainmentEnvironment,
   type RecordedContainmentIdentity,
   type RecordedProcessIdentity,
@@ -160,8 +165,13 @@ function buildScheduler(runtime: Runtime): EnforcementScheduler {
 function buildContainmentEnvironment<Scope extends symbol>(
   clock: MonotonicClock<Scope>,
   ports: ProviderRoleMainPorts,
+  proxyInstanceId?: string,
 ): ProcessContainmentEnvironment<Scope> {
   return {
+    failureDomain:
+      proxyInstanceId === undefined
+        ? undefined
+        : ports.runtime.process.failureDomainContainment(`set-${proxyInstanceId}/containment`),
     maxRecordedRoots: MAX_PROXY_RECORDED_PROVIDER_ROOTS,
     clock,
     process: {
@@ -291,9 +301,15 @@ type GuardianConstructionReaperProcessSubject = Readonly<{
   identity: RecordedProcessIdentity;
 }>;
 
+type GuardianConstructionFailureDomainSubject = Readonly<{
+  kind: 'failure-domain';
+  name: string;
+}>;
+
 type GuardianConstructionOperatorSubject =
   | GuardianConstructionProxyProcessGroupSubject
-  | GuardianConstructionReaperProcessSubject;
+  | GuardianConstructionReaperProcessSubject
+  | GuardianConstructionFailureDomainSubject;
 
 type GuardianConstructionOperatorExit<Subject extends GuardianConstructionOperatorSubject> = Readonly<{
   kind: 'abandon-guardian-construction-cleanup';
@@ -307,6 +323,12 @@ type GuardianConstructionOperatorExit<Subject extends GuardianConstructionOperat
 }>;
 
 type GuardianConstructionCleanupObligation =
+  | Readonly<{
+      kind: 'failure-domain';
+      subject: GuardianConstructionFailureDomainSubject;
+      operatorExit: GuardianConstructionOperatorExit<GuardianConstructionFailureDomainSubject>;
+      reason: string;
+    }>
   | Readonly<{
       kind: 'proxy-process-group';
       identity: RecordedContainmentIdentity;
@@ -342,8 +364,13 @@ function guardianConstructionOperatorExit<Subject extends GuardianConstructionOp
   };
 }
 
+type GuardianConstructionAbsenceProof = Readonly<{
+  confirm(): boolean;
+  retain(): Extract<GuardianConstructionCleanupDisposition, { kind: 'holding' }>;
+}>;
+
 export type GuardianConstructionCleanupDisposition =
-  | Readonly<{ kind: 'settled' }>
+  | Readonly<{ kind: 'settled'; absenceProof?: GuardianConstructionAbsenceProof }>
   | Readonly<{
       kind: 'holding';
       pending: readonly [GuardianConstructionCleanupObligation, ...GuardianConstructionCleanupObligation[]];
@@ -357,6 +384,8 @@ function guardianConstructionCleanupHoldDetail(
   return disposition.pending
     .map((obligation) => {
       switch (obligation.kind) {
+        case 'failure-domain':
+          return `failure-domain name=${obligation.subject.name} reason=${obligation.reason}`;
         case 'proxy-process-group':
           return (
             `proxy-process-group pgid=${obligation.identity.processGroupId} pid=${obligation.identity.pid} ` +
@@ -435,6 +464,7 @@ async function reapUnheldProcessGroup<Scope extends symbol>(
   containment: RecordedContainmentIdentity,
   clock: MonotonicClock<Scope>,
   environment: ProcessContainmentEnvironment<Scope>,
+  leafAbsent: () => boolean,
 ): Promise<GuardianConstructionCleanupDisposition> {
   if (containment.processGroupId !== containment.pid) {
     throw new Error(
@@ -457,7 +487,8 @@ async function reapUnheldProcessGroup<Scope extends symbol>(
         clock.shiftMilliseconds(clock.now(), PROXY_TEARDOWN_RESERVE_MS),
         environment,
       );
-      if (outcome.kind === 'containment-absent') return { kind: 'settled' };
+      if (outcome.kind === 'containment-absent')
+        return leafAbsent() ? { kind: 'settled' } : holding('the recorded leaf absence changed after reclamation');
       if (outcome.kind === 'recorded-group-unattributable') {
         return holding('the recorded proxy group became unattributable');
       }
@@ -546,22 +577,15 @@ export class GuardianConstructionCleanupHeldError extends Error {
   }
 }
 
-const settledGuardianConstructionFailures = new WeakSet<object>();
+const settledGuardianConstructionFailures = new WeakMap<object, GuardianConstructionAbsenceProof>();
 
-function markGuardianConstructionCleanupSettled(error: unknown): unknown {
+function markGuardianConstructionCleanupSettled(error: unknown, proof: GuardianConstructionAbsenceProof): unknown {
   const failure =
     (typeof error === 'object' && error !== null) || typeof error === 'function'
       ? error
       : new Error('Guardian construction failed after spawned process cleanup settled.', { cause: error });
-  settledGuardianConstructionFailures.add(failure);
+  settledGuardianConstructionFailures.set(failure, proof);
   return failure;
-}
-
-function isGuardianConstructionCleanupSettled(error: unknown): boolean {
-  return (
-    ((typeof error === 'object' && error !== null) || typeof error === 'function') &&
-    settledGuardianConstructionFailures.has(error)
-  );
 }
 
 export type RoleEnforcementOutcomeHandlers = Readonly<{
@@ -691,16 +715,38 @@ export function buildEnforcementOutcomeHandlers<Scope extends symbol>(
 }
 
 /** Every created process remains owned until absence is confirmed or a retry capability retains it. */
+type GuardianConstructionPartial = Readonly<{
+  proxyInstanceId: string;
+  close: (() => Promise<void>) | null;
+  reaperChannel: Pick<ControlClient, 'close'> | null;
+  reaperSpawn: SpawnedRoleProcess | null;
+  proxySpawn: SpawnedRoleProcess | null;
+  failedRoleSpawn: HeldRoleSpawn | null;
+}>;
+
+function holdGuardianConstructionLeaf(
+  ports: ProviderRoleMainPorts,
+  partial: GuardianConstructionPartial,
+  leaf: ReturnType<typeof createFailureDomainContainmentObservation<FailureDomainContainment>>,
+): Extract<GuardianConstructionCleanupDisposition, { kind: 'holding' }> {
+  const subject = { kind: 'failure-domain', name: `set-${partial.proxyInstanceId}/containment` } as const;
+  const reason = 'the recorded leaf is populated or its absence is unobservable';
+  return {
+    kind: 'holding',
+    pending: [{ kind: 'failure-domain', subject, operatorExit: guardianConstructionOperatorExit(subject), reason }],
+    reason,
+    retry: () => unwindGuardianConstruction(ports, partial, leaf),
+  };
+}
+
 async function unwindGuardianConstruction(
   ports: ProviderRoleMainPorts,
-  partial: Readonly<{
-    close: (() => Promise<void>) | null;
-    reaperChannel: Pick<ControlClient, 'close'> | null;
-    reaperSpawn: SpawnedRoleProcess | null;
-    proxySpawn: SpawnedRoleProcess | null;
-    failedRoleSpawn: HeldRoleSpawn | null;
-  }>,
+  partial: GuardianConstructionPartial,
+  leaf: ReturnType<typeof createFailureDomainContainmentObservation<FailureDomainContainment>>,
 ): Promise<GuardianConstructionCleanupDisposition> {
+  const clock = createMonotonicClock(guardianConstructionUnwindClockScope);
+  const containmentEnvironment = buildContainmentEnvironment(clock, ports, partial.proxyInstanceId);
+  const environment = { ...containmentEnvironment, failureDomain: leaf.failureDomain };
   const stranded: string[] = [];
   let proxyCleanup: GuardianConstructionCleanupDisposition = { kind: 'settled' };
   const attempt = async (label: string, run: () => Promise<void> | void): Promise<void> => {
@@ -719,8 +765,6 @@ async function unwindGuardianConstruction(
     await attempt('close the reaper control channel', () => reaperChannel.close());
   }
 
-  const clock = createMonotonicClock(guardianConstructionUnwindClockScope);
-  const environment = buildContainmentEnvironment(clock, ports);
   let reaperCleanup: GuardianConstructionCleanupDisposition = { kind: 'settled' };
   const failedRoleSpawnCleanup =
     partial.failedRoleSpawn === null ? { kind: 'settled' as const } : holdFailedRoleSpawn(partial.failedRoleSpawn);
@@ -734,6 +778,7 @@ async function unwindGuardianConstruction(
       },
       clock,
       environment,
+      leaf.permitsIndependentAbsenceDecision,
     );
     if (proxyCleanup.kind === 'holding') {
       const detail = guardianConstructionCleanupHoldDetail(proxyCleanup);
@@ -757,7 +802,26 @@ async function unwindGuardianConstruction(
   if (stranded.length > 0) {
     backendLog.error(`guardian construction failed and could not clean up: ${stranded.join(', ')}`);
   }
-  return combineGuardianConstructionCleanup([proxyCleanup, reaperCleanup, failedRoleSpawnCleanup]);
+  const retainLeafOwnership = (
+    combined: GuardianConstructionCleanupDisposition,
+  ): GuardianConstructionCleanupDisposition => {
+    if (combined.kind === 'holding') {
+      return {
+        ...combined,
+        retry: async () => retainLeafOwnership(await combined.retry()),
+      };
+    }
+    if (leaf.permitsIndependentAbsenceDecision())
+      return {
+        kind: 'settled',
+        absenceProof: {
+          confirm: leaf.permitsIndependentAbsenceDecision,
+          retain: () => holdGuardianConstructionLeaf(ports, partial, leaf),
+        },
+      };
+    return holdGuardianConstructionLeaf(ports, partial, leaf);
+  };
+  return retainLeafOwnership(combineGuardianConstructionCleanup([proxyCleanup, reaperCleanup, failedRoleSpawnCleanup]));
 }
 
 /**
@@ -881,7 +945,7 @@ function prepareGuardianRoleConstruction(capsulePath: string, ports: ProviderRol
   // Guardian deadlines and enforcement must share one holder authority.
   const holderAuthority = createControlHolderAuthority({ wallClockNow: ports.runtime.time.now });
   const deadlines = buildDeadlines(clock, deadlineConfiguration, ports, holderAuthority);
-  const containmentEnvironment = buildContainmentEnvironment(clock, ports);
+  const containmentEnvironment = buildContainmentEnvironment(clock, ports, capsule.proxyInstanceId);
   const timer = runtimeControlTimer(ports.runtime);
   const spawnPorts = buildSpawnPorts(ports);
   const roleEnv = {
@@ -961,6 +1025,7 @@ export async function startProviderGuardianRole(
     schedule,
     self,
   } = prepareGuardianRoleConstruction(capsulePath, ports);
+  const constructionLeaf = createFailureDomainContainmentObservation(containmentEnvironment.failureDomain);
   let reaperSpawn: SpawnedRoleProcess | null = null;
   let reaperChannel: ControlClient | null = null;
   let close: (() => Promise<void>) | null = null;
@@ -991,8 +1056,6 @@ export async function startProviderGuardianRole(
       timer,
     );
     const pairedReaperChannel = reaperChannel;
-    // Forward-referenced by `close` below (assigned into `createGuardian`'s own `onOutcome` before the
-    // guardian it closes exists), then assigned exactly once — `let` is load-bearing here, not a style choice.
     // eslint-disable-next-line prefer-const
     let guardianRef!: Guardian;
     close = async (): Promise<void> => {
@@ -1015,7 +1078,7 @@ export async function startProviderGuardianRole(
       capsule,
       clock,
       deadlines,
-      containmentEnvironment,
+      containmentEnvironment: { ...containmentEnvironment, failureDomain: constructionLeaf.failureDomain },
       scheduler: buildScheduler(ports.runtime),
       timer,
       mintReceipt: () => ports.runtime.ids.uuid(),
@@ -1053,15 +1116,25 @@ export async function startProviderGuardianRole(
 
     return createGuardianRoleHandle(guardian, reaperSpawn, proxySpawn, close, enforcer);
   } catch (error: unknown) {
-    const cleanup = await unwindGuardianConstruction(ports, {
+    const partial = {
+      proxyInstanceId: capsule.proxyInstanceId,
       close,
       reaperChannel,
       reaperSpawn,
       proxySpawn,
       failedRoleSpawn,
-    });
+    };
+    const cleanup = await unwindGuardianConstruction(ports, partial, constructionLeaf);
     if (cleanup.kind === 'holding') throw new GuardianConstructionCleanupHeldError(error, cleanup);
-    throw markGuardianConstructionCleanupSettled(error);
+    if (!constructionLeaf.permitsIndependentAbsenceDecision())
+      throw new GuardianConstructionCleanupHeldError(
+        error,
+        holdGuardianConstructionLeaf(ports, partial, constructionLeaf),
+      );
+    throw markGuardianConstructionCleanupSettled(error, {
+      confirm: constructionLeaf.permitsIndependentAbsenceDecision,
+      retain: () => holdGuardianConstructionLeaf(ports, partial, constructionLeaf),
+    });
   }
 }
 
@@ -1105,7 +1178,7 @@ export async function startProviderReaperRole(
     capsule,
     clock,
     deadlines,
-    containmentEnvironment: buildContainmentEnvironment(clock, ports),
+    containmentEnvironment: buildContainmentEnvironment(clock, ports, capsule.proxyInstanceId),
     scheduler: buildScheduler(ports.runtime),
     timer: runtimeControlTimer(ports.runtime),
     mintReceipt: () => ports.runtime.ids.uuid(),
@@ -1475,18 +1548,16 @@ function createRoleShutdownProbeGate(
 
 let activeRoleShutdownDispose: (() => void) | null = null;
 
-/**
- * The `bootstrap.ts` dispatch target: composes the real runtime and runs whichever role `argv` named,
- * staying up for the lifetime of the process via its own open control socket — the same pattern the ordinary
- * coordinator's own `main()` uses. A `'none'` mode is a defensive no-op; `bootstrap.ts` never reaches this
- * function without a role already confirmed.
- */
-
 async function settleGuardianConstructionFailure(
   error: unknown,
   runtime: Runtime,
   disposeRoleLifecycle: () => void,
 ): Promise<number> {
+  const proof =
+    (typeof error === 'object' && error !== null) || typeof error === 'function'
+      ? settledGuardianConstructionFailures.get(error)
+      : undefined;
+  if (proof !== undefined && !proof.confirm()) error = new GuardianConstructionCleanupHeldError(error, proof.retain());
   let constructionExitCode = GUARDIAN_CONSTRUCTION_CONTAINMENT_SETTLED_EXIT_CODE;
   if (error instanceof GuardianConstructionCleanupHeldError) {
     backendLog.error('guardian: construction failed and spawned process cleanup remains held', error);
@@ -1498,6 +1569,8 @@ async function settleGuardianConstructionFailure(
       attempts += 1;
       try {
         disposition = await heldBeforeRetry.retry();
+        if (disposition.kind === 'settled' && disposition.absenceProof?.confirm() === false)
+          disposition = disposition.absenceProof.retain();
         if (disposition.kind === 'holding') {
           backendLog.error(
             `guardian: construction cleanup retry remains held: ${guardianConstructionCleanupHoldDetail(disposition)}`,
@@ -1510,6 +1583,8 @@ async function settleGuardianConstructionFailure(
         );
       }
     }
+    if (disposition.kind === 'settled' && disposition.absenceProof?.confirm() === false)
+      disposition = disposition.absenceProof.retain();
     if (disposition.kind === 'holding') {
       constructionExitCode = ROLE_ENFORCEMENT_FAILURE_EXIT_CODE;
       backendLog.error(
@@ -1517,7 +1592,7 @@ async function settleGuardianConstructionFailure(
       );
     }
   } else {
-    if (!isGuardianConstructionCleanupSettled(error)) {
+    if (proof === undefined) {
       disposeRoleLifecycle();
       throw error;
     }

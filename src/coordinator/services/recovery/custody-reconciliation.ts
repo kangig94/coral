@@ -1,3 +1,6 @@
+import { recordedHostFailureDomain } from './host-failure-domain.js';
+import { durableCliFailureDomain } from '../durable-cli-failure-domain.js';
+import type { FailureDomainContainment } from '../../../infra/failure-domain.js';
 import type { RecoveryObservation } from '../../../recovery/phase-observation.js';
 import { sameEpoch } from '../../../store/epoch/identity.js';
 import { dirname } from 'node:path';
@@ -9,6 +12,7 @@ import {
 } from '../../../infra/process-constants.js';
 import {
   confirmRecordedGroupMemberAbsence,
+  createFailureDomainContainmentObservation,
   observeRecordedContainment,
   reapRecordedContainment,
   type RecordedProcessIdentity,
@@ -224,14 +228,22 @@ export function reconcileStartupCustody(
   return reconcileCustodyLedger(runtime, runDir, nowMs, CUSTODY_ABSENCE_GRACE_MS, observe, observation);
 }
 
-function readFinishedCarrierEvidence(runtime: Runtime, epoch: ResolvedStoreEpoch, jobId: string) {
+function readFinishedCarrierEvidence(
+  runtime: Runtime,
+  epoch: ResolvedStoreEpoch,
+  jobId: string,
+  identity: RecordedProcessIdentity | null,
+) {
   const release = acquireStoreEpochReadLock(runtime, epoch, 0);
   if (release === null) return null;
   try {
     if (epoch.lineageKey === undefined || !sameEpoch(inspectEpochKey(runtime, epoch), epoch.lineageKey)) return null;
     const db = runtime.storage.openSqliteDatabaseSync(epoch.path, { readOnly: true });
     try {
-      return readDurableCliPreReadyOwnershipEvidence(db as unknown as Database, jobId);
+      return {
+        evidence: readDurableCliPreReadyOwnershipEvidence(db as unknown as Database, jobId),
+        failureDomain: durableCliFailureDomain(runtime, db, jobId, identity ?? undefined),
+      };
     } finally {
       db.close();
     }
@@ -259,7 +271,8 @@ export async function reconcileFinishedCustody(input: {
     readMilliseconds: () => runtime.time.monotonicNow(),
     sleep: (milliseconds) => runtime.time.sleep(milliseconds),
   });
-  for (const entry of (await readCustodyLedgerAsync(runtime, runDir, budget.observation)).sort((left, right) =>
+  const entries = await readCustodyLedgerAsync(runtime, runDir, budget.observation);
+  for (const entry of entries.sort((left, right) =>
     (left.kind === 'unreadable' ? left.path : left.intent.id).localeCompare(
       right.kind === 'unreadable' ? right.path : right.intent.id,
     ),
@@ -281,6 +294,7 @@ export async function reconcileFinishedCustody(input: {
         const needsResult = entry.intent.effect === 'provider-operation-publication' || jobId !== undefined;
         let resultReady = !needsResult;
         const recordedRoots: RecordedProcessIdentity[] = [];
+        let failureDomain: FailureDomainContainment | undefined;
         if (jobId !== undefined) {
           const location = index.read(jobId);
           const epoch = location === null ? null : decodeResolvedStoreEpoch(runtime, location.epochKey);
@@ -294,8 +308,12 @@ export async function reconcileFinishedCustody(input: {
               ? entry.intent.epoch === dirname(epoch.path)
               : sameEpoch(entry.intent.epochKey, epoch.lineageKey));
           if (entry.intent.owner === 'durable-cli') {
-            const initial =
-              epoch === null || epoch === undefined ? null : readFinishedCarrierEvidence(runtime, epoch, jobId);
+            const finished =
+              epoch === null || epoch === undefined
+                ? null
+                : readFinishedCarrierEvidence(runtime, epoch, jobId, entry.binding.process);
+            const initial = finished?.evidence;
+            failureDomain = finished?.failureDomain;
             const identity = entry.binding.process;
             const initialMatches =
               initial?.kind === 'current' &&
@@ -338,14 +356,23 @@ export async function reconcileFinishedCustody(input: {
         } else {
           let absent = entry.intent.effect === 'provider-operation-publication';
           const identity = entry.binding.process;
+          const durableLeaf = createFailureDomainContainmentObservation(failureDomain);
+          let hostLeaf = createFailureDomainContainmentObservation<FailureDomainContainment>(undefined);
           if (identity !== null) {
+            const hostDomain =
+              entry.intent.owner === 'provider-host'
+                ? recordedHostFailureDomain(runtime, runDir, entry, entries)
+                : undefined;
+            hostLeaf = createFailureDomainContainmentObservation(hostDomain);
+            const hostAbsent = hostLeaf.permitsIndependentAbsenceDecision();
             const environment = {
+              failureDomain: durableLeaf.failureDomain,
               process: runtime.process,
               platform: runtime.env.platform() as NodeJS.Platform,
               readProcessIncarnation: (pid: number, platform: NodeJS.Platform) =>
                 runtime.process.readProcessIncarnation(pid, platform),
             };
-            if (custodyBindsGroupMember(entry.intent.owner, identity)) {
+            if (hostAbsent && custodyBindsGroupMember(entry.intent.owner, identity)) {
               const confirmed = await confirmRecordedGroupMemberAbsence(identity, recordedRoots, {
                 ...environment,
                 clock,
@@ -353,6 +380,7 @@ export async function reconcileFinishedCustody(input: {
               });
               absent = confirmed.kind === 'absent';
             } else if (
+              hostAbsent &&
               observeRecordedContainment({ ...identity, childRoot: null }, environment).kind === 'absent' &&
               recordedRoots.every(
                 (root) => observeRecordedContainment({ ...identity, childRoot: root }, environment).kind === 'absent',
@@ -379,7 +407,11 @@ export async function reconcileFinishedCustody(input: {
             }
           }
           if (signal.aborted || budget.canMutate?.() === false) return cursor;
-          if (absent) {
+          if (
+            absent &&
+            hostLeaf.permitsIndependentAbsenceDecision() &&
+            durableLeaf.permitsIndependentAbsenceDecision()
+          ) {
             const discharged = dischargeCustodyEntry(
               runtime,
               runDir,

@@ -1,3 +1,4 @@
+import { readDurableCliExecution } from '#src/jobs/durable-cli-execution.js';
 import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -31,7 +32,7 @@ export async function launchStandaloneJob(
   pid: number;
   cli: number;
 }> {
-  const db = newRawDatabase(':memory:');
+  const db = newRawDatabase(join(workDir, 'job-store.sqlite'));
   applyBundledStoreSchema(db, currentCoralStoreFormat());
   const store = new JobStore('failure-domain-test', runtime, createEventBodyCodec(), {
     db,
@@ -147,5 +148,8 @@ export async function launchStandaloneJob(
   const pid = Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[1]);
   const execution = store.readStatus(jobId)?.execution;
   if (typeof execution !== 'number') throw new Error('Standalone launch has no execution ordinal');
+  const incarnation = runtime.process.readProcessIncarnation(pid, 'linux');
+  if (incarnation === null || readDurableCliExecution(db, jobId, { pid, incarnation }) !== execution)
+    throw new Error('Payload entered without its durable execution association');
   return { jobId, execution, pid, cli };
 }

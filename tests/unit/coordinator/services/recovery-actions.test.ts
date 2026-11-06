@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { applyRecoveryAction, COORDINATOR_NOT_APPLICABLE_FACTS } from '#src/coordinator/services/recovery/actions.js';
 import { writeDurableCliContainmentStatus, writeDurableCliProcessRuntimeMeta } from '#src/jobs/runtime-meta-store.js';
+import { recordDurableCliExecution } from '#src/jobs/durable-cli-execution.js';
+import type { RecoveryAction } from '#src/jobs/reconcile/plan.js';
 import { RecoveryRegistry } from '#src/jobs/reconcile/registry.js';
 import type { ProviderJobLaunch } from '#src/jobs/records.js';
 import type { DurableCliRuntimeRecord } from '#src/runtime/durable-runtime.js';
@@ -81,40 +83,45 @@ function recoveryFixture(
   const runningRecoverable: Array<{ jobId: string }> = [];
   let cleanup: (() => void) | null = null;
 
-  const run = () =>
-    applyRecoveryAction(
-      { type: 'registerRunning', jobId: JOB_ID, launchRecord: launchRecord(), runtimeRecord: runtimeRecord() },
-      {
-        progressStore: { getDb: () => db } as never,
-        recoveryRegistry,
-        queuedRecoverable: [],
-        runningRecoverable: runningRecoverable as never,
-        log: vi.fn(),
-        runtime,
-        createInvocationContext: () => ({}) as never,
-        getRecoveryService: () =>
-          ({
-            captureProviderRecoveryAuthority: async () =>
-              options.captureSucceeds
-                ? { ok: true, authority: { launchRecord: launchRecord() } }
-                : {
-                    ok: false,
-                    failure: { provider: 'codex', reason: 'profile-unavailable', selector: 'default' },
-                  },
-          }) as never,
-        signal: new AbortController().signal,
-        settleFault,
-        setProcessLocalCleanup: (nextCleanup: () => void) => {
-          cleanup = nextCleanup;
-        },
-        clearProcessLocalCleanup: () => {
-          cleanup = null;
-        },
-        abandonHeldJob,
+  const run = (
+    action: RecoveryAction = {
+      type: 'registerRunning',
+      jobId: JOB_ID,
+      launchRecord: launchRecord(),
+      runtimeRecord: runtimeRecord(),
+    },
+  ) =>
+    applyRecoveryAction(action, {
+      progressStore: { getDb: () => db } as never,
+      recoveryRegistry,
+      queuedRecoverable: [],
+      runningRecoverable: runningRecoverable as never,
+      log: vi.fn(),
+      runtime,
+      createInvocationContext: () => ({}) as never,
+      getRecoveryService: () =>
+        ({
+          captureProviderRecoveryAuthority: async () =>
+            options.captureSucceeds
+              ? { ok: true, authority: { launchRecord: launchRecord() } }
+              : {
+                  ok: false,
+                  failure: { provider: 'codex', reason: 'profile-unavailable', selector: 'default' },
+                },
+        }) as never,
+      signal: new AbortController().signal,
+      settleFault,
+      setProcessLocalCleanup: (nextCleanup: () => void) => {
+        cleanup = nextCleanup;
       },
-    );
+      clearProcessLocalCleanup: () => {
+        cleanup = null;
+      },
+      abandonHeldJob,
+    });
 
   return {
+    runtime,
     db,
     kill,
     readProcessIncarnation,
@@ -262,3 +269,57 @@ describe('registerRunningRecovery provider-binding holds', () => {
     }
   });
 });
+
+it.each(['populated', 'unknown'] as const)(
+  'does not finalize pre-ready recovery with an absent recorded group and a %s execution leaf',
+  async (kind) => {
+    const fixture = recoveryFixture('absent');
+    try {
+      const identity = { pid: PID, incarnation: testIncarnation('receipt') };
+      writeDurableCliProcessRuntimeMeta(fixture.db, {
+        jobId: JOB_ID,
+        ...identity,
+        processGroupId: PID,
+        childRoot: { pid: PID + 1, incarnation: testIncarnation('child') },
+      });
+      recordDurableCliExecution(fixture.db, { jobId: JOB_ID, execution: 1, ...identity });
+      Object.defineProperty(fixture.runtime.process, 'failureDomainRoot', { value: { kind: 'placed', root: '/test' } });
+      const killLeaf = vi.fn(() => ({ kind: 'refused' as const, errno: 'EACCES' }));
+      const lookup = vi.spyOn(fixture.runtime.process, 'failureDomainContainment').mockReturnValue({
+        observe: () => (kind === 'unknown' ? { kind, reason: 'EACCES' } : { kind }),
+        kill: killLeaf,
+      });
+      expect(fixture.runtime.process.observeLiveness(-PID)).toBe('absent');
+      expect(fixture.runtime.process.observeLiveness(PID)).toBe('absent');
+      expect(fixture.runtime.process.observeLiveness(PID + 1)).toBe('absent');
+      const launch = launchRecord();
+      const disposition = await fixture.run({
+        type: 'resolvePreReadyLaunch',
+        jobId: JOB_ID,
+        launchRecord: launch,
+        status: {
+          jobId: JOB_ID,
+          execution: 1,
+          owner: launch.owner,
+          sessionId: null,
+          provider: 'codex',
+          projectRoot: '/project',
+          workDir: null,
+          backendNamespace: 'namespace',
+          jobKind: 'provider',
+          phase: 'launching',
+          updatedAt: launch.createdAt,
+        },
+      });
+      expect(disposition.kind).toBe('quarantine');
+      expect(lookup).toHaveBeenCalledWith(`job-${JOB_ID}-1`);
+      expect(fixture.settleFault).not.toHaveBeenCalled();
+      expect(fixture.recoveryRegistry.has(JOB_ID)).toBe(true);
+      expect(fixture.kill).not.toHaveBeenCalled();
+      if (kind === 'populated') expect(killLeaf).toHaveBeenCalledOnce();
+      else expect(killLeaf).not.toHaveBeenCalled();
+    } finally {
+      fixture.db.close();
+    }
+  },
+);

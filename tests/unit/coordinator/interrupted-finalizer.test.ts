@@ -1,3 +1,10 @@
+import { RecoveryService } from '#src/coordinator/services/recovery/service.js';
+import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
+import {
+  insertProviderOperation,
+  readProviderOperation,
+  readProviderOperationForJob,
+} from '#src/store/provider-operation-journal.js';
 import { afterEach } from 'vitest';
 import { executionHarness, openedJob, requestedExecution } from '#tests/helpers/job-executions.js';
 import { TEST_CODEX_BINDING } from '#tests/helpers/provider-credentials.js';
@@ -5,7 +12,11 @@ import { testJobConversation } from '#tests/helpers/session.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { JobStore } from '#src/jobs/store.js';
 import { ConversationManager } from '#src/jobs/conversation/shell.js';
-import { ExecutionFinisher, readExecutionFinishingState } from '#src/jobs/finishing.js';
+import {
+  ExecutionAcceptanceRefusedError,
+  ExecutionFinisher,
+  readExecutionFinishingState,
+} from '#src/jobs/finishing.js';
 import { AbortRegistry } from '#src/jobs/shell/abort-registry.js';
 import type { ProviderRecoveryLaunch } from '#src/jobs/reconcile/contracts.js';
 import { describe, expect, it, vi } from 'vitest';
@@ -34,6 +45,8 @@ import { claudeRecoveryLifecycle } from '#src/providers/claude/provider-facets.j
 import type { ProviderValidatedSessionContinuityMutation } from '#src/jobs/conversation/continuity-mutation.js';
 import { validatedTestContinuityBlob } from '#tests/helpers/session.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
+import type { FailureDomainObservation } from '#src/infra/failure-domain.js';
+import { ProcessContainmentError, createFailureDomainAbsenceObserver } from '#src/infra/process-containment.js';
 
 const launchRecord: ProviderRecoveryLaunch = {
   jobId: '0589caa7-f637-5cc3-834e-aa56ebcb2ac5',
@@ -151,7 +164,12 @@ afterEach(() => {
 });
 
 function createHarness(
-  options: { artifactRecorded?: boolean; sessionFinalized?: boolean; sessionFinalizeError?: Error } = {},
+  options: {
+    artifactRecorded?: boolean;
+    sessionFinalized?: boolean;
+    sessionFinalizeError?: Error;
+    requireOperationRelease?: boolean;
+  } = {},
 ) {
   const runtime = new SimulationRuntime({ epochMs: Date.parse('2026-07-22T00:01:00.000Z') });
   const journal = executionHarness();
@@ -208,7 +226,9 @@ function createHarness(
     commit: (write) => store.commit(write),
     read: (address) => readExecutionFinishingState(journal.db, address, store),
     quiesce: async (address) =>
-      !abortRegistry.has(address.jobId, address.execution) && launchCoordinator.reservationFor(address.jobId) === null,
+      !abortRegistry.has(address.jobId, address.execution) &&
+      launchCoordinator.reservationFor(address.jobId) === null &&
+      (!options.requireOperationRelease || readProviderOperationForJob(journal.db, address.jobId) === null),
     retentionAction: async () => ({ attempt: 0, handles: [] }),
     settleRetention: async () => ({ kind: 'completed', outcome: 'skipped_no_handles' }),
   });
@@ -258,6 +278,7 @@ function createHarness(
       abortRegistry,
       launchAdmission: launchCoordinator,
       launchPermit,
+      finalizationFence: { signal: new AbortController().signal, onCommitStart: () => {} },
     },
   };
 }
@@ -595,6 +616,63 @@ describe('interrupted app-server recovery finalizer', () => {
 });
 
 describe('interrupted durable recovery finalizer', () => {
+  it.each<FailureDomainObservation>([
+    { kind: 'populated' },
+    { kind: 'missing' },
+    { kind: 'unknown', reason: 'EACCES' },
+  ])('retains ownership when the leaf becomes $kind before the actual acceptance commit', async (changed) => {
+    const harness = createHarness();
+    let observation: FailureDomainObservation = { kind: 'absent' };
+    const permitsIndependentAbsenceDecision = createFailureDomainAbsenceObserver({ observe: () => observation });
+    expect(permitsIndependentAbsenceDecision()).toBe(true);
+    const pending = finalizeInterruptedDurableRecovery(durablePlan, durablePerformed, status, {
+      ...harness.deps,
+      finalizationFence: {
+        signal: new AbortController().signal,
+        onCommitStart: () => {
+          if (!permitsIndependentAbsenceDecision()) throw new Error('Leaf absence is no longer observable.');
+        },
+      },
+    });
+    observation = changed;
+    await expect(pending).rejects.toBeInstanceOf(ExecutionAcceptanceRefusedError);
+    expect(harness.append).not.toHaveBeenCalled();
+    expect(harness.remove).not.toHaveBeenCalled();
+    expect(harness.releaseLaunch).not.toHaveBeenCalled();
+    expect(harness.launchCoordinator.reservationFor(launchRecord.jobId)).toMatchObject({ kind: 'active' });
+    expect(harness.deps.abortRegistry.has(launchRecord.jobId, 1)).toBe(true);
+  });
+
+  it.each<FailureDomainObservation>([
+    { kind: 'populated' },
+    { kind: 'missing' },
+    { kind: 'unknown', reason: 'EACCES' },
+  ])('retains local ownership when the leaf becomes $kind after acceptance commits', async (changed) => {
+    const harness = createHarness();
+    let observation: FailureDomainObservation = { kind: 'absent' };
+    const permitsIndependentAbsenceDecision = createFailureDomainAbsenceObserver({ observe: () => observation });
+    expect(permitsIndependentAbsenceDecision()).toBe(true);
+    harness.append.mockImplementation((event) => {
+      if (event.type === 'job.execution.outcome.accepted') observation = changed;
+    });
+    await expect(
+      finalizeInterruptedDurableRecovery(durablePlan, durablePerformed, status, {
+        ...harness.deps,
+        finalizationFence: {
+          signal: new AbortController().signal,
+          onCommitStart: () => {
+            if (!permitsIndependentAbsenceDecision()) throw new Error('Leaf absence is no longer observable.');
+          },
+        },
+      }),
+    ).rejects.toBeInstanceOf(ExecutionAcceptanceRefusedError);
+    expect(harness.journal.events().filter((event) => event.type === 'job.execution.outcome.accepted')).toHaveLength(1);
+    expect(harness.remove).not.toHaveBeenCalled();
+    expect(harness.releaseLaunch).not.toHaveBeenCalled();
+    expect(harness.launchCoordinator.reservationFor(launchRecord.jobId)).toMatchObject({ kind: 'active' });
+    expect(harness.deps.abortRegistry.has(launchRecord.jobId, 1)).toBe(true);
+  });
+
   it('records artifact evidence and continuity in the outcome acceptance transaction before releasing ownership', async () => {
     const harness = createHarness();
     await finalizeInterruptedDurableRecovery(durablePlan, durablePerformed, status, harness.deps);
@@ -647,4 +725,212 @@ describe('interrupted durable recovery finalizer', () => {
     await harness.finish();
     expect(harness.journal.events().filter((event) => event.type === 'job.artifact.recorded')).toHaveLength(1);
   });
+});
+
+it.each(
+  (['before-commit', 'after-accept', 'after-finalizer'] as const).flatMap((stage) =>
+    (['populated', 'missing', 'unknown'] as const).map((kind) => ({ stage, kind })),
+  ),
+)(
+  'retains detached carrier ownership when its leaf becomes $kind $stage until recovery retries',
+  async ({ stage, kind }) => {
+    const h = createHarness({ requireOperationRelease: true });
+    try {
+      const provider = createRecoveryProvider();
+      const base = providerOperationRecord('executing');
+      const record = providerOperationRecord('executing', {
+        operation: { ...base.operation, jobId: launchRecord.jobId },
+      }) as ProviderOperationCarrierRecord;
+      insertProviderOperation(h.journal.db, record);
+      let observation: FailureDomainObservation = { kind: 'absent' };
+      vi.spyOn(h.deps.runtime.env, 'platform').mockReturnValue('linux');
+      vi.spyOn(h.deps.runtime.process, 'failureDomainContainment').mockReturnValue({
+        observe: () => observation,
+        kill: () => ({ kind: 'refused', errno: 'EACCES' }),
+      });
+      Object.defineProperty(h.deps.runtime.process, 'observeRecordedProcessAsync', {
+        value: vi.fn(async () => 'absent' as const),
+      });
+      const service = new RecoveryService({
+        runtime: h.deps.runtime,
+        executionFinisher: h.deps.executionFinisher,
+        conversationManager: h.deps.conversationManager,
+        abortRegistry: h.deps.abortRegistry,
+        progressStore: h.store,
+        launchAdmission: h.deps.launchAdmission,
+        backendNamespace: 'namespace',
+        bundleHash: 'bundle',
+        launchRecovery: {} as never,
+        providerRegistry: {} as never,
+        launchOrchestrator: {} as never,
+        childPrincipalRegistry: {} as never,
+        parentPrincipal: {} as never,
+      });
+      const authority = {
+        launchRecord,
+        session: recoveredSession,
+        boundProvider: provider.boundProvider,
+      } as ProviderRecoveryAuthority;
+      const changeLeaf = () => {
+        observation = kind === 'unknown' ? { kind, reason: 'EACCES' } : { kind };
+      };
+      if (stage === 'after-accept')
+        h.append.mockImplementation((event) => {
+          if (event.type === 'job.execution.outcome.accepted') changeLeaf();
+        });
+      let first = true;
+      let restoreRemoval: (() => void) | undefined;
+      if (stage === 'after-finalizer') {
+        const remove = h.remove.getMockImplementation();
+        if (remove === undefined) throw new Error('fixture removal implementation missing');
+        restoreRemoval = () => {
+          h.remove.mockImplementation(remove);
+        };
+        h.remove.mockImplementation((jobId, execution) => {
+          remove(jobId, execution);
+          if (observation.kind === 'absent') queueMicrotask(changeLeaf);
+        });
+      }
+      await expect(
+        service.finalizeInterruptedAppServerJob(authority, plan.runtimeRecord, {
+          reason: 'restart',
+          signal: new AbortController().signal,
+          onCommitStart: () => {
+            if (stage === 'before-commit' && first) {
+              first = false;
+              queueMicrotask(changeLeaf);
+            }
+          },
+        }),
+      ).rejects.toBeInstanceOf(stage === 'after-finalizer' ? ProcessContainmentError : ExecutionAcceptanceRefusedError);
+      expect(readProviderOperation(h.journal.db, record.operation)).toEqual(record);
+      expect(h.deps.abortRegistry.has(launchRecord.jobId, 1)).toBe(stage !== 'after-finalizer');
+      expect(h.launchCoordinator.reservationFor(launchRecord.jobId)).not.toBeNull();
+      expect(h.append.mock.calls.some(([event]) => event.type === 'job.execution.outcome.accepted')).toBe(
+        stage !== 'before-commit',
+      );
+      if (kind === 'missing') {
+        await expect(
+          service.finalizeInterruptedAppServerJob(authority, plan.runtimeRecord, {
+            reason: 'restart',
+            signal: new AbortController().signal,
+            onCommitStart: () => {},
+          }),
+        ).rejects.toMatchObject({ code: 'process_containment_reap_failed' });
+        expect(readProviderOperation(h.journal.db, record.operation)).toEqual(record);
+        expect(h.deps.abortRegistry.has(launchRecord.jobId, 1)).toBe(stage !== 'after-finalizer');
+      }
+      observation = { kind: 'absent' };
+      restoreRemoval?.();
+      h.append.mockImplementation(() => {});
+      await service.finalizeInterruptedAppServerJob(authority, plan.runtimeRecord, {
+        reason: 'restart',
+        signal: new AbortController().signal,
+        onCommitStart: () => {},
+      });
+      expect(readProviderOperation(h.journal.db, record.operation)).toBeNull();
+      expect(h.deps.abortRegistry.has(launchRecord.jobId, 1)).toBe(false);
+      const released = h.deps.launchAdmission.releaseLaunch(h.launchPermit);
+      expect(released.kind).toBe('released');
+      await h.finish();
+      expect(readExecutionFinishingState(h.journal.db, launchRecord, h.store).kind).toBe('ended');
+    } finally {
+      await h.deps.executionFinisher.dispose();
+    }
+  },
+);
+
+it('does not reclaim a healthy carrier set while finalizing an acknowledged user abort', async () => {
+  const h = createHarness({ requireOperationRelease: true });
+  const provider = createRecoveryProvider();
+  const base = providerOperationRecord('executing');
+  const record = providerOperationRecord('executing', {
+    operation: { ...base.operation, jobId: launchRecord.jobId },
+  }) as ProviderOperationCarrierRecord;
+  insertProviderOperation(h.journal.db, record);
+  const kill = vi.fn(() => ({ kind: 'refused' as const, errno: 'EPERM' }));
+  vi.spyOn(h.deps.runtime.process, 'failureDomainContainment').mockReturnValue({
+    observe: () => ({ kind: 'populated' }),
+    kill,
+  });
+  const numericKill = vi.spyOn(h.deps.runtime.process, 'kill');
+  const service = new RecoveryService({
+    runtime: h.deps.runtime,
+    executionFinisher: h.deps.executionFinisher,
+    conversationManager: h.deps.conversationManager,
+    abortRegistry: h.deps.abortRegistry,
+    progressStore: h.store,
+    launchAdmission: h.deps.launchAdmission,
+    backendNamespace: 'namespace',
+    bundleHash: 'bundle',
+    launchRecovery: {} as never,
+    providerRegistry: {} as never,
+    launchOrchestrator: {} as never,
+    childPrincipalRegistry: {} as never,
+    parentPrincipal: {} as never,
+  });
+  await service.finalizeInterruptedAppServerJob(
+    { launchRecord, session: recoveredSession, boundProvider: provider.boundProvider } as ProviderRecoveryAuthority,
+    plan.runtimeRecord,
+    { reason: 'user_abort', signal: new AbortController().signal, onCommitStart: () => {} },
+  );
+  expect(kill).not.toHaveBeenCalled();
+  expect(numericKill).not.toHaveBeenCalled();
+  expect(readProviderOperation(h.journal.db, record.operation)).toEqual(record);
+  await h.deps.executionFinisher.dispose();
+});
+
+it('retains the carrier row and retry authority after transient operation retirement failure', async () => {
+  const h = createHarness({ requireOperationRelease: true });
+  const provider = createRecoveryProvider();
+  const base = providerOperationRecord('executing');
+  const record = providerOperationRecord('executing', {
+    operation: { ...base.operation, jobId: launchRecord.jobId },
+  }) as ProviderOperationCarrierRecord;
+  insertProviderOperation(h.journal.db, record);
+  vi.spyOn(h.deps.runtime.env, 'platform').mockReturnValue('linux');
+  vi.spyOn(h.deps.runtime.process, 'failureDomainContainment').mockReturnValue({
+    observe: () => ({ kind: 'absent' }),
+    kill: () => ({ kind: 'entered' }),
+  });
+  Object.defineProperty(h.deps.runtime.process, 'observeRecordedProcessAsync', { value: async () => 'absent' });
+  h.journal.db.exec(
+    "CREATE TEMP TRIGGER carrier_retirement_failure BEFORE DELETE ON meta WHEN OLD.key LIKE 'provider_operation_saga.%' BEGIN SELECT RAISE(ABORT, 'temporary carrier retirement failure'); END",
+  );
+  const service = new RecoveryService({
+    runtime: h.deps.runtime,
+    executionFinisher: h.deps.executionFinisher,
+    conversationManager: h.deps.conversationManager,
+    abortRegistry: h.deps.abortRegistry,
+    progressStore: h.store,
+    launchAdmission: h.deps.launchAdmission,
+    backendNamespace: 'namespace',
+    bundleHash: 'bundle',
+    launchRecovery: {} as never,
+    providerRegistry: {} as never,
+    launchOrchestrator: {} as never,
+    childPrincipalRegistry: {} as never,
+    parentPrincipal: {} as never,
+  });
+  const authority = {
+    launchRecord,
+    session: recoveredSession,
+    boundProvider: provider.boundProvider,
+  } as ProviderRecoveryAuthority;
+  const options = { reason: 'restart' as const, signal: new AbortController().signal, onCommitStart: () => {} };
+  try {
+    await expect(service.finalizeInterruptedAppServerJob(authority, plan.runtimeRecord, options)).rejects.toMatchObject(
+      { code: 'process_containment_reap_failed' },
+    );
+    expect(readProviderOperation(h.journal.db, record.operation)).toEqual(record);
+    expect(h.launchCoordinator.reservationFor(launchRecord.jobId)).not.toBeNull();
+    h.journal.db.exec('DROP TRIGGER carrier_retirement_failure');
+    await service.finalizeInterruptedAppServerJob(authority, plan.runtimeRecord, options);
+    expect(readProviderOperation(h.journal.db, record.operation)).toBeNull();
+    expect(h.deps.launchAdmission.releaseLaunch(h.launchPermit).kind).toBe('released');
+    await h.finish();
+    expect(readExecutionFinishingState(h.journal.db, launchRecord, h.store).kind).toBe('ended');
+  } finally {
+    await h.deps.executionFinisher.dispose();
+  }
 });

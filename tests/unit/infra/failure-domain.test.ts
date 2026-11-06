@@ -1,7 +1,10 @@
 import { performance } from 'node:perf_hooks';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { observeRecordedContainment } from '#src/infra/process-containment.js';
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import {
   acquireFailureDomainRoot,
+  failureDomainContainment,
   createFailureDomain,
   enterFailureDomain,
   enterPayloadDomain,
@@ -474,4 +477,120 @@ it.each(['alive', 'unknown'])('preserves an unowned predecessor leaf when its cu
   sweepHostFailureDomains(root, new Set());
   expect(io.token).toHaveBeenCalledWith('00000000-0000-4000-8000-000000000001');
   expect(io.remove).not.toHaveBeenCalled();
+});
+
+describe('failure-domain containment IO', () => {
+  it('does not accept an empty directory left by failed payload leaf creation as tree absence', () => {
+    io.write.mockImplementation((path: string) => {
+      if (path.endsWith('/memory.oom.group'))
+        throw Object.assign(new Error('refused payload marking'), { code: 'EACCES' });
+    });
+    expect(createFailureDomain(root, 'host-test', true)).toEqual({ kind: 'refused', errno: 'EACCES' });
+    expect(io.mkdir).toHaveBeenCalledWith(leaf);
+    const read = io.read.getMockImplementation()!;
+    io.read.mockImplementation((path: string) => {
+      if (path === `${leaf}/cgroup.events`) return 'populated 0\n';
+      return read(path);
+    });
+    const domain = failureDomainContainment(root, 'host-test');
+    expect(domain?.observe()).toEqual({ kind: 'absent' });
+    const observed = observeRecordedContainment(
+      { pid: 4100, incarnation: testIncarnation(4100), processGroupId: 4100, childRoot: null },
+      {
+        failureDomain: domain,
+        process: { observeLiveness: (pid) => (pid < 0 ? 'alive' : 'absent') },
+        platform: 'linux',
+        readProcessIncarnation: () => null,
+      },
+    );
+    expect(observed.kind).not.toBe('absent');
+  });
+
+  beforeEach(() => {
+    io.group = '/app.slice/app-coral-test.scope/coordinator-test';
+  });
+
+  it.each([
+    ['populated 0\nfrozen 0\n', 'absent'],
+    ['populated 1\nfrozen 0\n', 'populated'],
+    ['frozen 0\n', 'unknown'],
+  ] as const)('classifies events %j as %s', (events, kind) => {
+    const read = io.read.getMockImplementation()!;
+    io.read.mockImplementation((path: string) => (path === `${leaf}/cgroup.events` ? events : read(path)));
+    expect(failureDomainContainment(root, 'host-test')?.observe()).toMatchObject({ kind });
+    expect(io.write).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['ENOENT', 'unknown'],
+    ['EACCES', 'unknown'],
+  ] as const)('classifies read failure %s as %s', (code, kind) => {
+    const read = io.read.getMockImplementation()!;
+    io.read.mockImplementation((path: string) => {
+      if (path === `${leaf}/cgroup.events`) throw Object.assign(new Error(), { code });
+      return read(path);
+    });
+    expect(failureDomainContainment(root, 'host-test')?.observe()).toMatchObject({ kind });
+  });
+
+  it.each([
+    ['observer membership', 'ENOENT'],
+    ['observer membership', 'EACCES'],
+    ['root resolution', 'ENOENT'],
+    ['root resolution', 'EACCES'],
+  ] as const)('holds containment when %s fails with %s despite an existing populated leaf', (source, code) => {
+    let unavailable = true;
+    const read = io.read.getMockImplementation()!;
+    io.read.mockImplementation((path: string) => {
+      if (path === `${leaf}/cgroup.events`) return 'populated 1\n';
+      if (unavailable && source === 'observer membership' && path === '/proc/self/cgroup')
+        throw Object.assign(new Error(), { code });
+      return read(path);
+    });
+    io.realpath.mockImplementation((path: string) => {
+      if (unavailable && source === 'root resolution' && path === rootPath) throw Object.assign(new Error(), { code });
+      return path;
+    });
+    const domain = failureDomainContainment(root, 'host-test');
+    expect(domain?.observe()).toEqual({ kind: 'unknown', reason: code });
+    const observed = observeRecordedContainment(
+      { pid: 4100, incarnation: testIncarnation(4100), processGroupId: 4100, childRoot: null },
+      {
+        failureDomain: domain,
+        process: { observeLiveness: () => 'absent' },
+        platform: 'linux',
+        readProcessIncarnation: () => null,
+      },
+    );
+    expect(observed.kind).toBe('unobservable');
+    unavailable = false;
+    expect(domain?.observe()).toEqual({ kind: 'populated' });
+  });
+
+  it.each([
+    ['ENOENT', 'missing'],
+    ['EACCES', 'unknown'],
+  ] as const)('classifies subject leaf resolution failure %s as %s', (code, kind) => {
+    io.realpath.mockImplementation((path: string) => {
+      if (path === leaf) throw Object.assign(new Error(), { code });
+      return path;
+    });
+    expect(failureDomainContainment(root, 'host-test')?.observe()).toMatchObject({ kind });
+  });
+
+  it('writes the atomic recursive kill only inside the inherited root', () => {
+    expect(failureDomainContainment(root, 'host-test')?.kill()).toMatchObject({ kind: 'entered' });
+    expect(io.calls).toEqual([`write ${leaf}/cgroup.kill 1`]);
+  });
+
+  it.each(['../foreign/leaf', rootPath, '/sys/fs/cgroup/foreign/leaf'])('refuses foreign containment %s', (name) => {
+    expect(failureDomainContainment(root, name)?.observe()).toMatchObject({ kind: 'unknown' });
+    expect(failureDomainContainment(root, name)?.kill()).toMatchObject({ kind: 'refused' });
+    expect(io.write).not.toHaveBeenCalled();
+  });
+
+  it.each(['unavailable', 'unknown'] as const)('does not offer leaf evidence for %s roots', (kind) => {
+    expect(failureDomainContainment({ kind, reason: 'not-placed' }, 'host-test')).toBeUndefined();
+    expect(io.read).not.toHaveBeenCalled();
+  });
 });

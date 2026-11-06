@@ -54,7 +54,6 @@ describe('interrupted provider-operation carrier reclamation', () => {
 
     try {
       const reclamation = reapProviderOperationCarrier(record, {
-        db,
         clock,
         platform: 'linux',
         signal: controller.signal,

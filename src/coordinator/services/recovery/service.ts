@@ -1,3 +1,8 @@
+import type { FailureDomainContainment } from '../../../infra/failure-domain.js';
+import {
+  createFailureDomainContainmentObservation,
+  ProcessContainmentError,
+} from '../../../infra/process-containment.js';
 import { localProviderHostRoot } from '../../../infra/bundle-manifest.js';
 import type { ProviderRequest } from '../../../providers/contract.js';
 import type { ProviderContinuityBlob } from '../../../jobs/conversation/continuity.js';
@@ -6,7 +11,11 @@ import { createMonotonicClock } from '../../../infra/monotonic-clock.js';
 import type { AppServerRuntime, JobLaunch, JobRuntime, JobTerminal } from '../../../jobs/records.js';
 import type { ExecutionFinisher } from '../../../jobs/finishing.js';
 import { isTerminalPhase } from '../../../jobs/phase.js';
-import { hasProviderOperationForJob, readProviderOperationForJob } from '../../../store/provider-operation-journal.js';
+import {
+  deleteProviderOperation,
+  hasProviderOperationForJob,
+  readProviderOperationForJob,
+} from '../../../store/provider-operation-journal.js';
 import { isDurableCliRuntime } from '../../../runtime/durable-runtime.js';
 import type { DurableCliRuntimeRecord, DurableProcessExit } from '../../../runtime/durable-runtime.js';
 import { jobConversationProvider, type JobConversation } from '../../../jobs/conversation/entry.js';
@@ -79,6 +88,10 @@ export interface RecoveryServiceDeps {
 
 export class RecoveryService {
   private readonly deps: RecoveryServiceDeps;
+  private readonly carrierObservations = new Map<
+    string,
+    ReturnType<typeof createFailureDomainContainmentObservation<FailureDomainContainment>>
+  >();
   constructor(deps: RecoveryServiceDeps) {
     this.deps = deps;
   }
@@ -244,16 +257,6 @@ export class RecoveryService {
       return;
     }
 
-    if (status.finishing === true && status.execution === launchRecord.execution) {
-      options.signal.throwIfAborted();
-      options.onCommitStart();
-      this.deps.abortRegistry.remove(launchRecord.jobId, launchRecord.execution);
-      this.deps.executionFinisher.schedule({ jobId: launchRecord.jobId, execution: launchRecord.execution });
-      return;
-    }
-
-    if (this.deps.executionFinisher.owns({ jobId: launchRecord.jobId, execution: launchRecord.execution })) return;
-
     const providerOperation = readProviderOperationForJob(this.deps.progressStore.getDb(), launchRecord.jobId);
     if (
       providerOperation !== null &&
@@ -273,22 +276,79 @@ export class RecoveryService {
       },
       providerOperation,
     );
+    const carrier = plan.kind === 'carrier-detached' && options.reason !== 'user_abort' ? plan.carrier : null;
+    const key =
+      carrier === null
+        ? undefined
+        : JSON.stringify([
+            carrier.operation.jobId,
+            carrier.operation.operationId,
+            carrier.operation.proxyInstanceId,
+            carrier.operation.buildSetId,
+          ]);
+    let observation: ReturnType<typeof createFailureDomainContainmentObservation<FailureDomainContainment>> | undefined;
+    if (carrier !== null && key !== undefined) {
+      observation =
+        this.carrierObservations.get(key) ??
+        createFailureDomainContainmentObservation(
+          this.deps.runtime.process.failureDomainContainment(`set-${carrier.locator.proxy.instanceId}/containment`),
+        );
+      this.carrierObservations.set(key, observation);
+    }
+    const fence = {
+      signal: options.signal,
+      onCommitStart: () => {
+        options.signal.throwIfAborted();
+        if (observation !== undefined && !observation.permitsIndependentAbsenceDecision()) {
+          throw new ProcessContainmentError(
+            'process_containment_reap_failed',
+            'Carrier leaf absence changed; automatic recovery polling will retry reclamation and finalization.',
+          );
+        }
+        options.onCommitStart();
+      },
+    };
+    const reapCarrier = (record: NonNullable<typeof carrier>) =>
+      reapProviderOperationCarrier(record, {
+        process: this.deps.runtime.process,
+        platform: this.deps.runtime.env.platform() as NodeJS.Platform,
+        clock: createMonotonicClock(carrierDetachedRecoveryClockScope),
+        signal: options.signal,
+        observation,
+      });
+    const retireCarrier = () => {
+      if (carrier === null) return;
+      fence.onCommitStart();
+      try {
+        const deletion = deleteProviderOperation(this.deps.progressStore.getDb(), carrier);
+        if (deletion.kind === 'conflict' && deletion.current !== null) {
+          throw new Error('the provider operation changed before retirement');
+        }
+        if (key !== undefined) this.carrierObservations.delete(key);
+      } catch (error: unknown) {
+        throw new ProcessContainmentError(
+          'process_containment_reap_failed',
+          `Carrier operation retirement is unconfirmed: ${String(error)}. Automatic recovery polling will retry retirement.`,
+        );
+      }
+    };
+    if (status.finishing === true && status.execution === launchRecord.execution) {
+      if (carrier !== null) await reapCarrier(carrier);
+      fence.onCommitStart();
+      this.deps.abortRegistry.remove(launchRecord.jobId, launchRecord.execution);
+      retireCarrier();
+      this.deps.executionFinisher.schedule({ jobId: launchRecord.jobId, execution: launchRecord.execution });
+      return;
+    }
+    if (this.deps.executionFinisher.owns({ jobId: launchRecord.jobId, execution: launchRecord.execution })) return;
     options.signal.throwIfAborted();
     const performed =
       options.reason === 'user_abort'
         ? ({ kind: 'user-aborted' } as const)
         : await performInterruptedAppServerRecovery(plan, boundProvider, {
-            reapCarrier: (record) =>
-              reapProviderOperationCarrier(record, {
-                process: this.deps.runtime.process,
-                platform: this.deps.runtime.env.platform() as NodeJS.Platform,
-                db: this.deps.progressStore.getDb(),
-                clock: createMonotonicClock(carrierDetachedRecoveryClockScope),
-                signal: options.signal,
-              }),
+            reapCarrier,
           });
-    options.signal.throwIfAborted();
-    options.onCommitStart();
+    fence.onCommitStart();
     await finalizeInterruptedAppServerRecovery(plan, performed, status, {
       runtime: this.deps.runtime,
       conversationManager: this.deps.conversationManager,
@@ -296,7 +356,9 @@ export class RecoveryService {
       abortRegistry: this.deps.abortRegistry,
       launchAdmission: this.deps.launchAdmission,
       launchPermit: null,
+      finalizationFence: fence,
     });
+    retireCarrier();
   }
 
   async recoverQueuedJob(authority: ProviderRecoveryAuthority): Promise<string> {
@@ -370,6 +432,7 @@ export class RecoveryService {
       abortRegistry: this.deps.abortRegistry,
       launchAdmission: this.deps.launchAdmission,
       launchPermit: null,
+      finalizationFence: fence,
     });
   }
 

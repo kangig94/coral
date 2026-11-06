@@ -1,5 +1,6 @@
 import type { AsyncRecordedProcessObserver, ProcessIncarnation, ProcessLiveness } from '../infra/node-process.js';
 import type {
+  failureDomainContainment,
   FailureDomainRoot,
   FailureDomainRefusal,
   createFailureDomain,
@@ -77,6 +78,7 @@ export type DurableLaunchOptions = {
   /** Complete child environment; when present, envAdditions is ignored. */
   env?: Record<string, string>;
   onWrapperSpawned?(obligation: DurablePendingLaunchObligation): DurableLaunchOwnershipAcceptance;
+  /** Only a durable execution receipt authorizes creating the job leaf. */
   onWrapperIdentified?(
     launch: Readonly<{
       runtimeRecord: DurableCliRuntimeRecord;
@@ -84,7 +86,8 @@ export type DurableLaunchOptions = {
       leaderIncarnation: ProcessIncarnation;
       signalAuthority?: DurableLaunchSignalAuthority;
     }>,
-  ): void;
+  ): boolean | void;
+  onWrapperEntered?(): void;
   /** Launch readiness must not be returned before this callback completes. */
   onSpawned?(launch: DurableProvisionalLaunch): void;
 };
@@ -180,6 +183,7 @@ export type RuntimeExecOptions = {
 
 export interface ProcessPort {
   readonly failureDomainRoot: FailureDomainRoot;
+  failureDomainContainment(name: string): ReturnType<typeof failureDomainContainment>;
   readRecentFailureDomainRefusals(): readonly FailureDomainRefusal[];
   createFailureDomain(relativePath: string, payload?: boolean): ReturnType<typeof createFailureDomain>;
   removeFailureDomain(path: string): ReturnType<typeof removeFailureDomain>;

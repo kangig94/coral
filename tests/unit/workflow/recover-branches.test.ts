@@ -761,6 +761,7 @@ describe('workflow recovery without execution', () => {
             abortRegistry: new AbortRegistry(),
             launchAdmission,
             launchPermit,
+            finalizationFence: { signal: new AbortController().signal, onCommitStart: () => {} },
           },
         );
         expect(harness.progressStore.readTerminalProjection(childJobId)).toMatchObject(completed);

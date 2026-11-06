@@ -3,6 +3,7 @@ import { PROCESS_INCARNATION_PROBE_TIMEOUT_MS, type AsyncRecordedProcessObserver
 import type { MonotonicClock, MonotonicInstant } from '../infra/monotonic-clock.js';
 import {
   ProcessContainmentError,
+  createFailureDomainContainmentObservation,
   reapRecordedContainment,
   type ProcessContainmentEnvironment,
   type RecordedContainmentIdentity,
@@ -166,16 +167,28 @@ function createEnforcementReap<Scope extends symbol>(
   orderedRecordedRoots: () => readonly RecordedProcessIdentity[],
 ) {
   const { clock, deadlines, containment, containmentEnvironment, onOutcome } = options;
+  const leaf = createFailureDomainContainmentObservation(containmentEnvironment.failureDomain);
+  const environment = { ...containmentEnvironment, failureDomain: leaf.failureDomain };
   const confirmedContainmentAbsentOutcome = (): Extract<EnforcementOutcome, { kind: 'containment-absent' }> => {
-    deadlines.markContainmentAbsent();
     return {
       kind: 'containment-absent',
       disappearanceReceipt: providerProxyDisappearanceReceipt(containment, orderedRecordedRoots()),
     };
   };
 
-  const settle = (outcome: SettledEnforcementOutcome): SettledEnforcementOutcome => {
+  const settle = (outcome: SettledEnforcementOutcome): EnforcementOutcome => {
     if (state.settledOutcome === null) {
+      if (!leaf.permitsIndependentAbsenceDecision()) {
+        const held = {
+          kind: 'reap-failed',
+          reason: 'Recorded leaf absence changed before enforcement settlement.',
+        } as const;
+        state.holdingUnconfirmed = true;
+        state.teardownInFlight = null;
+        onOutcome(held);
+        return held;
+      }
+      deadlines.markContainmentAbsent();
       state.settledOutcome = outcome;
       onOutcome(outcome);
     }
@@ -187,12 +200,7 @@ function createEnforcementReap<Scope extends symbol>(
     // the set were still adoptable.
     deadlines.latchTeardown();
     try {
-      const outcome = await reapRecordedContainment(
-        containment,
-        orderedRecordedRoots(),
-        exitDeadline,
-        containmentEnvironment,
-      );
+      const outcome = await reapRecordedContainment(containment, orderedRecordedRoots(), exitDeadline, environment);
       if (outcome.kind === 'recorded-group-unattributable') {
         return {
           kind: 'recorded-group-unattributable',
@@ -216,7 +224,9 @@ function createEnforcementReap<Scope extends symbol>(
     } catch (error: unknown) {
       return { kind: 'reap-failed', reason: error instanceof Error ? error.message : 'reap failed' };
     }
-    return confirmedContainmentAbsentOutcome();
+    return leaf.permitsIndependentAbsenceDecision()
+      ? confirmedContainmentAbsentOutcome()
+      : { kind: 'reap-failed', reason: 'Recorded leaf absence changed after enforcement reaping.' };
   };
 
   /** Pairing loss authorizes observation only; this path must never deliver a process-control signal. */
@@ -231,16 +241,21 @@ function createEnforcementReap<Scope extends symbol>(
         orderedRecordedRoots(),
         containmentExecutionDeadline(clock, clock.now()),
         {
-          ...containmentEnvironment,
+          ...environment,
+          assertSignalAuthorized: () => {
+            throw containmentPresent;
+          },
           process: {
-            ...containmentEnvironment.process,
+            ...environment.process,
             kill: () => {
               throw containmentPresent;
             },
           },
         },
       );
-      return outcome.kind === 'containment-absent' ? 'absent' : 'unobservable';
+      return outcome.kind === 'containment-absent' && leaf.permitsIndependentAbsenceDecision()
+        ? 'absent'
+        : 'unobservable';
     } catch (error: unknown) {
       return error === containmentPresent ? 'present' : 'unobservable';
     }
@@ -253,7 +268,7 @@ function createEnforcementTeardown<Scope extends symbol>(
   options: ArmedEnforcerOptions<Scope>,
   state: ArmedEnforcerState<Scope>,
   runTeardown: (exitDeadline: MonotonicInstant<Scope>) => Promise<EnforcementOutcome>,
-  settle: (outcome: SettledEnforcementOutcome) => SettledEnforcementOutcome,
+  settle: (outcome: SettledEnforcementOutcome) => EnforcementOutcome,
 ) {
   const { clock, scheduler, holderAuthority, onOutcome } = options;
   /** Concurrent teardown callers must join one reap; only confirmed absence may prevent a later reap. */
@@ -378,7 +393,7 @@ function createEnforcementScheduler<Scope extends symbol>(
     authorization: ObservedHolderAbsenceAuthorization,
   ) => Promise<EnforcementConsumptionDisposition<ObservedHolderAbsenceAuthorization>>,
   probeContainmentAfterPairingLoss: () => Promise<PairingLossContainmentObservation>,
-  settle: (outcome: SettledEnforcementOutcome) => SettledEnforcementOutcome,
+  settle: (outcome: SettledEnforcementOutcome) => EnforcementOutcome,
   confirmedContainmentAbsentOutcome: () => Extract<EnforcementOutcome, { kind: 'containment-absent' }>,
 ) {
   const { clock, deadlines, holderAuthority, observeHolder, scheduler } = options;
@@ -460,7 +475,7 @@ function createEnforcementScheduler<Scope extends symbol>(
         state.consuming = false;
         if (state.teardownInFlight !== null || state.settledOutcome !== null) return;
         deadlines.latchTeardown();
-        settle(confirmedContainmentAbsentOutcome());
+        void settle(confirmedContainmentAbsentOutcome());
       });
     });
   };

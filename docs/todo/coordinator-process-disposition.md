@@ -18,7 +18,8 @@ The wider recovery contract still has terminal and session-claim obligations wit
 `coordinator-process-disposition` obligation. Every path that terminalizes a runtime-bearing job must
 first prove the exact process absent or transfer custody to an owner that accepted it. Unknown liveness
 cannot authorize a terminal fact. Process-local cleanup may release in-memory references after that
-disposition; it cannot serve as proof of absence.
+disposition; it cannot serve as proof of absence. Exact process absence must not substitute for additional
+[containment evidence](../architecture.md#containment-evidence-and-reclamation) required by placement.
 
 ## Start condition
 

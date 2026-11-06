@@ -203,6 +203,7 @@ export interface ChildProcessLike {
   readonly stdin: ChildStdinLike | null;
   readonly stdout: ChildReadableLike | null;
   readonly stderr: ChildReadableLike | null;
+  on(event: 'spawn', listener: () => void): this;
   on(event: 'close', listener: (code: number | null, signal: NodeJS.Signals | null) => void): this;
   on(event: 'exit', listener: (code: number | null, signal: NodeJS.Signals | null) => void): this;
   on(event: 'error', listener: (error: Error) => void): this;

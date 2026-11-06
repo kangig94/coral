@@ -1,5 +1,5 @@
 import { ExecutionFinisher } from '#src/jobs/finishing.js';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { createCoordinatorWorld } from '#src/coordinator/composition/world.js';
 import type { BackendDefaultsPlan } from '#src/coordinator/composition/defaults.js';
@@ -7,6 +7,20 @@ import { CoralSetupError } from '#src/runtime/errors.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-supervisor.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
+import type { FailureDomainObservation } from '#src/infra/failure-domain.js';
+import { ProviderProxySetLifecycle } from '#src/coordinator/services/provider-proxy-set/index.js';
+import { ProviderProxySetOperatorDispositionStore } from '#src/coordinator/services/provider-proxy-set/operator-disposition-store.js';
+import {
+  authorizeProviderProxySetContainmentProof,
+  releaseProviderProxySetContainmentProofFence,
+} from '#src/coordinator/services/provider-proxy-set/containment-proof.js';
+import { providerProxySetIdentityFromRecord } from '#src/coordinator/services/provider-proxy-set/identity.js';
+import { applyBundledStoreSchema } from '#src/store/db.js';
+import { insertProviderOperation, providerOperationMutationAdmission } from '#src/store/provider-operation-journal.js';
+import { newRawDatabase } from '#tests/helpers/test-db.js';
+import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
+import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
+import { SimulationRuntime } from '#tools/simulation/runtime.js';
 
 function idleExecutionFinisher(runtime: Pick<Runtime, 'time'>): ExecutionFinisher {
   return new ExecutionFinisher({
@@ -104,9 +118,9 @@ function createDefaultsPlan(): BackendDefaultsPlan {
 
 function createWorld(
   env: Readonly<Record<string, string | undefined>>,
-  overrides: { uuid?: () => string; buildSetId?: string } = {},
+  overrides: { uuid?: () => string; buildSetId?: string; runtime?: Runtime } = {},
 ): ReturnType<typeof createCoordinatorWorld> {
-  const runtime = createRuntime(env, overrides.uuid);
+  const runtime = overrides.runtime ?? createRuntime(env, overrides.uuid);
   return createCoordinatorWorld(
     {
       runtime,
@@ -140,6 +154,82 @@ function createWorld(
     createDefaultsPlan(),
   );
 }
+
+it.each(['missing', 'absent'] as const)(
+  'preserves lifecycle leaf history through the world reaper before a final %s observation',
+  async (after) => {
+    const runtime = new SimulationRuntime();
+    const record = providerOperationRecord('executing');
+    const identity = providerProxySetIdentityFromRecord(record);
+    let observation: FailureDomainObservation = { kind: 'missing' };
+    let reaping = false;
+    const kill = vi.fn(() => ({ kind: 'entered' as const }));
+    vi.spyOn(runtime.process, 'failureDomainContainment').mockImplementation(() => {
+      if (reaping) observation = { kind: 'absent' };
+      return { observe: () => observation, kill };
+    });
+    const world = createWorld({}, { runtime });
+    world.providerProxyClaims.initialize([record]);
+    const unexpected = (): never => {
+      throw new Error('Unexpected recovery operation during world reaping.');
+    };
+    const lifecycle = new ProviderProxySetLifecycle({
+      buildSetId: identity.buildSetId,
+      claims: world.providerProxyClaims,
+      capacity: { maxSets: 1, idleRetirement: { kind: 'never' } },
+      time: runtime.time,
+      controlEstablished: unexpected,
+      recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
+        'disappearance-consumer': async () => ({
+          kind: 'accepted',
+          acceptance: { kind: 'accepted', operation: record.operation, disposition: 'record-absent' },
+        }),
+      }),
+      reapRecordedContainment: world.reapRecordedContainment,
+      failureDomainContainment: runtime.process.failureDomainContainment,
+      operatorDispositionStore: new ProviderProxySetOperatorDispositionStore(runtime.storage, '/world/run'),
+      writerIncarnation: 'world-test-writer',
+      collectOperatorDispositionContainmentProof: unexpected,
+      reobserveAcquisitionContainment: unexpected,
+      reportLifecycle: () => {},
+    });
+    world.providerProxyLifecycleRef.connect(lifecycle);
+    expect(lifecycle.activateDurableOperatorDispositions()).toEqual({ kind: 'recorded' });
+    lifecycle.initializeClaimSlots();
+    const leafAbsent = lifecycle.containmentAbsenceObserver(identity);
+    expect(leafAbsent()).toBe(true);
+    const db = newRawDatabase(':memory:');
+    applyBundledStoreSchema(db, currentCoralStoreFormat());
+    insertProviderOperation(db, record);
+    const signal = new AbortController().signal;
+    const proof = await world.providerProxySetContainmentProver.collectContainmentProof(
+      authorizeProviderProxySetContainmentProof(identity, {
+        mutationFence: providerOperationMutationAdmission(db).closeSet(identity),
+        closeAdmission: async () => {},
+      }),
+      db,
+      signal,
+    );
+    try {
+      reaping = true;
+      const result = await world.reapRecordedContainment(identity, proof, signal, () => {});
+      if (result.kind !== 'containment-absent') throw new Error(`Expected absence, got ${result.kind}`);
+      observation = { kind: after };
+      const acceptance = lifecycle.containmentAbsent(identity, result.disappearanceReceipt);
+      if (after === 'missing') {
+        expect(acceptance).toEqual({ kind: 'held' });
+        expect(lifecycle.snapshot().represented).toBe(1);
+      } else {
+        expect(acceptance.kind).toBe('accepted');
+        if (acceptance.kind === 'accepted') await acceptance.initialDisposition;
+      }
+      expect(kill).not.toHaveBeenCalled();
+    } finally {
+      releaseProviderProxySetContainmentProofFence(proof);
+      db.close();
+    }
+  },
+);
 
 describe('createCoordinatorWorld bind host guard', () => {
   it('defaults to loopback without remote opt-in', () => {

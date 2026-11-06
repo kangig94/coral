@@ -22,7 +22,7 @@ import { unreadableProviderOperationSubject } from '../../../recovery/unreadable
 import type { RawCoordinatorJobRecoveryEnvelope } from './coordinator-job-source.js';
 import type { RawUnreadableProviderOperationRecoveryRow } from './unreadable-provider-operation-recovery-source.js';
 import type { RawSettledUnboundStatusRecovery } from './settled-unbound-status-recovery-source.js';
-import { settledUnboundStatusDetail } from './settled-unbound-status.js';
+import { matchingSettledUnboundRecordKeys, settledUnboundStatusDetail } from './settled-unbound-status.js';
 import type { CoordinatorRecoveryItem } from './snapshot.js';
 
 const REPAIRED_PROVIDER_OPERATION_ADOPTION_OBLIGATION = 'repaired-provider-operation-adoption' as RecoveryObligationId;
@@ -157,16 +157,16 @@ export function createUnreadableProviderOperationRetryPolicy(
 }
 
 export function createSettledUnboundStatusRetryPolicy(
-  quarantine: RecoveryQuarantinePort,
+  db: Database,
   releaseAbsent: (absence: SettledUnboundStatusAbsence) => boolean,
 ): RecoveryRetryPolicy<RawSettledUnboundStatusRecovery, RawSettledUnboundStatusRecovery> {
   return {
     processLocalCleanup: {
       kind: 'boundary-required',
-      release: async (item) => {
+      release: (item) => {
         if (item.kind === 'present') return { kind: 'released' };
-        const retained = await quarantine.read(item.subject.boundary, item.subject.key);
-        if (retained !== null || releaseAbsent(item.absence)) return { kind: 'released' };
+        if (matchingSettledUnboundRecordKeys(db, item.absence.identity).length === 0 && releaseAbsent(item.absence))
+          return { kind: 'released' };
         return {
           kind: 'incomplete',
           error: new Error('The rehydrated settled-unbound ownership could not be released.'),

@@ -1,6 +1,7 @@
 import json
 import os
 import signal
+import sys
 
 children = []
 for session in (True, False):
@@ -20,6 +21,9 @@ for session in (True, False):
     assert os.read(reader, 5) == b'ready'
     os.close(reader)
     children.append(pid)
-print(json.dumps({'provider': os.getpid(), 'escaped': children}), flush=True)
+payload = {'provider': os.getpid(), 'escaped': children}
+if '--jsonrpc' in sys.argv:
+    payload = {'jsonrpc': '2.0', 'method': 'test.ready', 'params': payload}
+print(json.dumps(payload), flush=True)
 while True:
     signal.pause()

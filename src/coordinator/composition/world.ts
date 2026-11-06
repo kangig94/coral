@@ -1,3 +1,5 @@
+import type { RecordedProcessIdentity } from '../../infra/process-containment.js';
+import { durableCliFailureDomain } from '../services/durable-cli-failure-domain.js';
 import { providerProxyPlacement } from '../live/provider-hosts/host-root.js';
 declare const __VERSION__: string;
 import { join } from 'node:path';
@@ -623,10 +625,28 @@ export function createCoordinatorWorld(
   const providerProxyClaims = new ProviderProxySetClaimMirror();
   const providerProxyLifecycleRef = new ProviderProxySetLifecycleRef();
   const providerProxySetContainmentProver = createProviderProxySetContainmentProver(runtime);
-  const reapRecordedContainment = createProviderProxySetRecordedContainmentReaper(runtime);
+  const recordedContainmentReaper = createProviderProxySetRecordedContainmentReaper(runtime);
+  const reapRecordedContainment: ProviderProxySetRecordedContainmentReaper = (
+    identity,
+    proof,
+    signal,
+    onSignal,
+    assertSignalAuthorized,
+    absenceObserver,
+  ) =>
+    recordedContainmentReaper(
+      identity,
+      proof,
+      signal,
+      onSignal,
+      assertSignalAuthorized,
+      absenceObserver ?? providerProxyLifecycleRef.get()?.containmentAbsenceObserver(identity),
+    );
   const runningWorkflowJobs = new Set<string>();
   const localCarrierRegistries = {
     getDb: () => storeServicesRef.get().progressStore.getDb(),
+    failureDomainForJob: (jobId: string, identity: RecordedProcessIdentity) =>
+      durableCliFailureDomain(runtime, storeServicesRef.get().progressStore.getDb(), jobId, identity),
     loadJobProjectionDetail: (jobId: string) => storeServicesRef.get().progressStore.loadJobProjectionDetail(jobId),
     platform: runtime.env.platform() as NodeJS.Platform,
     hasStartupRecoveryPassed: () => startupRecoveryBarrier.hasPassed(),

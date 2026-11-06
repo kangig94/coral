@@ -1,8 +1,12 @@
+import type { FailureDomainContainment } from '../infra/failure-domain.js';
 import { providerHostObservationSchema } from '../infra/provider-host-observation.js';
 import { backendLog } from '../infra/backend-log.js';
 import {
   CUSTODY_PROCESS_TICKET_ENV,
   custodyProcessArgument,
+  custodyProcessTicketMatches,
+  observeCustodyProcessTicket,
+  type CustodyProcessTicket,
   parseCustodyProcessTicket,
 } from '../infra/custody-process-ticket.js';
 import { durableWrapperEntrypoint } from '../runtime/wrapper-entrypoint.js';
@@ -15,6 +19,7 @@ import type { Runtime } from '../runtime/ports.js';
 import { AbortError } from '../runtime/abort.js';
 import {
   cleanupSpawnedProcessGroup,
+  liveChildAuthority,
   gracefulKillByPid,
   observeRetainedSpawnedProcessGroup,
   observeUnattributableSpawnedProcessGroup,
@@ -27,6 +32,7 @@ import {
 } from '../infra/process-supervision.js';
 import {
   assertRecordedContainmentIdentity,
+  createFailureDomainContainmentObservation,
   ProcessContainmentError,
   type RecordedContainmentIdentity,
 } from '../infra/process-containment.js';
@@ -211,6 +217,7 @@ type ProviderServerEntry = {
 };
 
 export type SpawnProviderServerOptions = {
+  failureDomainName?: string;
   provider: string;
   command: string;
   args: string[];
@@ -394,6 +401,15 @@ type ProviderProcessSettlement = {
   providerAbsent: boolean;
   providerIdentity: { pid: number; incarnation: ProcessIncarnation | null } | null;
   custodyTermination: Promise<GracefulKillByPidOutcome> | null;
+  failureDomain: FailureDomainContainment | undefined;
+  leafAbsent: ReturnType<typeof createFailureDomainContainmentObservation>['permitsIndependentAbsenceDecision'];
+  leafObserved: boolean;
+  placementAcknowledged: boolean;
+  unboundStartupAbsent(): boolean;
+  ownsFailureDomain(): boolean;
+  legacyGroupAbsent(): boolean;
+  cessationProven: boolean;
+  cleanupAbandoned: boolean;
   wrapperExited: boolean;
   processGroupCleanup: SpawnedProcessGroupCleanup | null;
   acceptFailedSpawnCleanup: ProviderServerFailedSpawnCleanupAcceptor;
@@ -404,7 +420,28 @@ type ProviderProcessSettlement = {
 
 type ProviderProcessSettlementEvidence = ProviderServerFailedSpawnCleanupDisposition;
 
+/** A missing legacy leaf never upgrades process evidence to whole-tree absence. */
+function observeProviderHostLeaf(settlement: ProviderProcessSettlement): boolean {
+  if (settlement.cessationProven) return true;
+  const domain = settlement.failureDomain;
+  if (domain === undefined) return true;
+  const observation = domain.observe();
+  if (observation.kind !== 'missing') settlement.leafObserved = true;
+  if (!settlement.leafAbsent(observation)) return false;
+  if (settlement.unboundStartupAbsent()) return true;
+  return settlement.ownsFailureDomain();
+}
+
+function reclaimProviderHostLeaf(settlement: ProviderProcessSettlement): boolean {
+  if (observeProviderHostLeaf(settlement)) return true;
+  if (settlement.cleanupAbandoned || !settlement.ownsFailureDomain()) return false;
+  const domain = settlement.failureDomain;
+  if (domain?.observe().kind === 'populated') void domain.kill();
+  return observeProviderHostLeaf(settlement);
+}
+
 function acceptProviderServerKill(settlement: ProviderProcessSettlement, runtime: Runtime): void {
+  if (settlement.cleanupAbandoned || settlement.cessationProven) return;
   if (!settlement.wrapperExited) {
     // The wrapper owns actual-child escalation; killing it would sever that obligation.
     try {
@@ -444,16 +481,66 @@ function createProviderProcessSettlement(
   detached: boolean,
   processGroupCleanup: SpawnedProcessGroupCleanup | null,
   acceptFailedSpawnCleanup: ProviderServerFailedSpawnCleanupAcceptor,
-  custodyToken: string,
+  custodyTicket: CustodyProcessTicket,
+  failureDomain: FailureDomainContainment | undefined,
+  runtime: Runtime,
 ): ProviderProcessSettlement {
+  // eslint-disable-next-line prefer-const
+  let settlement!: ProviderProcessSettlement;
+  const leaf = createFailureDomainContainmentObservation(
+    failureDomain === undefined
+      ? undefined
+      : {
+          ...failureDomain,
+          hasEntered: () => settlement?.placementAcknowledged === true && settlement.ownsFailureDomain(),
+        },
+  );
+  let wrapperReportedAbsent = false;
   let resolve!: () => void;
-  const settlement: ProviderProcessSettlement = {
+  let incarnation: ProcessIncarnation | null = null;
+  const authority = liveChildAuthority(child);
+  const observeIncarnation = (): void => {
+    if (incarnation !== null || failureDomain === undefined || authority === undefined || authority.hasExited()) return;
+    try {
+      const observed = runtime.process.readProcessIncarnation(authority.pid, runtime.env.platform() as NodeJS.Platform);
+      if (!authority.hasExited()) incarnation = observed;
+    } catch {
+      /* Unobservable identity cannot authorize the leaf. */
+    }
+  };
+  observeIncarnation();
+  settlement = {
     child,
     pid: child.pid ?? null,
     detached,
     providerAbsent: false,
     providerIdentity: null,
     custodyTermination: null,
+    failureDomain: leaf.failureDomain,
+    leafAbsent: leaf.permitsIndependentAbsenceDecision,
+    leafObserved: false,
+    placementAcknowledged: false,
+    unboundStartupAbsent: () =>
+      settlement.wrapperExited &&
+      wrapperReportedAbsent &&
+      observeCustodyProcessTicket(custodyTicket, (path) => runtime.storage.readFileSync(path, 'utf-8')).kind ===
+        'unbound',
+    ownsFailureDomain: () => {
+      if (!settlement.wrapperExited) observeIncarnation();
+      return (
+        authority !== undefined &&
+        incarnation !== null &&
+        custodyProcessTicketMatches(custodyTicket, { pid: authority.pid, incarnation }, (path) =>
+          runtime.storage.readFileSync(path, 'utf-8'),
+        )
+      );
+    },
+    legacyGroupAbsent: () =>
+      !detached ||
+      (child.pid !== undefined &&
+        observeUnattributableSpawnedProcessGroup(child.pid, runtime).kind === 'observed-absent'),
+    cessationProven: false,
+    cleanupAbandoned: false,
     wrapperExited: false,
     processGroupCleanup,
     acceptFailedSpawnCleanup,
@@ -461,13 +548,38 @@ function createProviderProcessSettlement(
     processClosePromise: new Promise<void>((settle) => {
       resolve = settle;
     }),
-    resolve: () => resolve(),
+    resolve: () => {
+      if (!wrapperClosed || !settlement.providerAbsent || !settlement.closed || !observeProviderHostLeaf(settlement))
+        return;
+      if (settlement.failureDomain?.hasEntered?.() !== true && !settlement.legacyGroupAbsent()) return;
+      if (!observeProviderHostLeaf(settlement)) return;
+      settlement.cessationProven = true;
+      resolve();
+    },
   };
   let wrapperClosed = false;
   const observeCessation = (): void => {
-    if (!wrapperClosed || !settlement.providerAbsent || settlement.closed) return;
+    if (!wrapperClosed) return;
+    if (
+      !settlement.providerAbsent &&
+      settlement.placementAcknowledged &&
+      settlement.ownsFailureDomain() &&
+      observeProviderHostLeaf(settlement) &&
+      settlement.leafObserved
+    )
+      settlement.providerAbsent = true;
+    if (!settlement.providerAbsent) return;
     settlement.closed = true;
     settlement.resolve();
+  };
+  const reclaim = (): void => {
+    if (settlement.cleanupAbandoned) return;
+    if (reclaimProviderHostLeaf(settlement)) {
+      if (!settlement.providerAbsent) acceptProviderServerKill(settlement, runtime);
+      observeCessation();
+      if (settlement.cessationProven) return;
+    }
+    runtime.time.setTimeout(reclaim, 25).unref?.();
   };
   child.on('close', () => {
     wrapperClosed = true;
@@ -475,12 +587,21 @@ function createProviderProcessSettlement(
   });
   child.on('exit', () => {
     settlement.wrapperExited = true;
+    reclaim();
+  });
+  child.on('spawn', () => {
+    if (!settlement.wrapperExited) observeIncarnation();
   });
   child.on('message', (message) => {
+    if (!settlement.wrapperExited) observeIncarnation();
     const parsed = providerHostObservationSchema.safeParse(message);
-    if (!parsed.success || parsed.data.processToken !== custodyToken) return;
+    if (!parsed.success || parsed.data.processToken !== custodyTicket.processToken) return;
     if (parsed.data.kind === 'provider-host-started') settlement.providerIdentity = parsed.data;
-    else {
+    else if (parsed.data.kind === 'provider-host-placed') {
+      settlement.placementAcknowledged = true;
+      observeCessation();
+    } else {
+      wrapperReportedAbsent = true;
       settlement.providerAbsent = true;
       observeCessation();
     }
@@ -493,6 +614,8 @@ function mapDetachedProviderServerCleanup<ProcessGroupId extends number>(
   runtime: Runtime,
   processGroupId: ProcessGroupId | null,
   cleanup: SpawnedProcessGroupCleanupDisposition<ProcessGroupId> | null,
+  confirmAbsence: () => boolean = () => true,
+  onAbandon?: () => void,
 ): ProviderServerFailedSpawnCleanupDisposition<ProcessGroupId> {
   const subject: ProviderServerFailedSpawnSubject<ProcessGroupId> =
     cleanup === null
@@ -501,6 +624,10 @@ function mapDetachedProviderServerCleanup<ProcessGroupId extends number>(
         ? cleanup.evidence.subject
         : cleanup.subject;
   let abandoned = false;
+  let provenAbsence: Extract<
+    ProviderServerFailedSpawnCleanupDisposition<ProcessGroupId>,
+    { kind: 'observed-absent' }
+  > | null = null;
   let resolveSettled!: () => void;
   const settled = new Promise<void>((resolve) => {
     resolveSettled = resolve;
@@ -524,6 +651,7 @@ function mapDetachedProviderServerCleanup<ProcessGroupId extends number>(
     kind: 'abandon-provider-host-acquisition',
     abandon: async () => {
       abandoned = true;
+      onAbandon?.();
       releaseAbandonment();
       const attempt = activeRetry;
       attempt?.abort.abort(new Error('provider_server_spawn_cleanup_abandoned'));
@@ -536,13 +664,15 @@ function mapDetachedProviderServerCleanup<ProcessGroupId extends number>(
   const map = (
     next: SpawnedProcessGroupCleanupDisposition<ProcessGroupId> | null,
   ): ProviderServerFailedSpawnCleanupDisposition<ProcessGroupId> => {
+    if (provenAbsence !== null) return provenAbsence;
     if (abandoned) return abandonment;
-    if (next?.kind === 'observed-absent') {
+    if (next?.kind === 'observed-absent' && confirmAbsence()) {
       resolveSettled();
-      return {
+      provenAbsence = {
         kind: 'observed-absent',
         evidence: { processGroupEvidence: next.evidence },
       };
+      return provenAbsence;
     }
     const retry = async (
       signal?: AbortSignal,
@@ -556,6 +686,7 @@ function mapDetachedProviderServerCleanup<ProcessGroupId extends number>(
         await abandonmentAccepted;
         return abandonment;
       }
+      if (next?.kind === 'observed-absent') return map(next);
       if (next === null) {
         if (processGroupId === null) return map(null);
         const observation = observeUnattributableSpawnedProcessGroup(processGroupId, runtime);
@@ -654,7 +785,11 @@ async function spawnProviderServerProcess(
     params.detached === true,
     processGroupCleanup,
     params.acceptFailedSpawnCleanup,
-    custody.processToken,
+    parseCustodyProcessTicket(custody.ticket),
+    options.failureDomainName === undefined
+      ? undefined
+      : runtime.process.failureDomainContainment(options.failureDomainName),
+    runtime,
   );
   params.observeProcessExit?.(
     new Promise<void>((resolve) => {
@@ -734,16 +869,28 @@ async function terminateProviderServerProcess(
   settlement: ProviderProcessSettlement,
   runtime: Runtime,
 ): Promise<ProviderProcessSettlementEvidence> {
-  if (settlement.detached) {
+  if (
+    !settlement.cleanupAbandoned &&
+    settlement.detached &&
+    settlement.failureDomain?.hasEntered?.() !== true &&
+    observeProviderHostLeaf(settlement)
+  ) {
     const disposition =
       settlement.processGroupCleanup === null
         ? null
         : await cleanupSpawnedProcessGroup(settlement.processGroupCleanup, runtime);
-    return mapDetachedProviderServerCleanup(runtime, settlement.pid, disposition);
+    return mapDetachedProviderServerCleanup(
+      runtime,
+      settlement.pid,
+      disposition,
+      () => observeProviderHostLeaf(settlement),
+      () => {
+        settlement.cleanupAbandoned = true;
+      },
+    );
   }
 
   const subject = { kind: 'process', pid: settlement.pid } as const;
-  let abandoned = false;
   const abandonment: ProviderServerFailedSpawnOperatorAbandonment = {
     kind: 'operator-abandoned',
     subject,
@@ -753,7 +900,7 @@ async function terminateProviderServerProcess(
   const operatorExit: ProviderServerFailedSpawnOperatorExit = {
     kind: 'abandon-provider-host-acquisition',
     abandon: async () => {
-      abandoned = true;
+      settlement.cleanupAbandoned = true;
       return abandonment;
     },
   };
@@ -762,8 +909,8 @@ async function terminateProviderServerProcess(
     evidence: { subject },
   });
   const retry = async (signal?: AbortSignal): Promise<ProviderProcessSettlementEvidence> => {
-    if (settlement.closed) return observedAbsent();
-    if (abandoned) return abandonment;
+    if (settlement.cessationProven) return observedAbsent();
+    if (settlement.cleanupAbandoned) return abandonment;
     if (signal?.aborted) {
       return {
         kind: 'held-unobservable',
@@ -775,12 +922,19 @@ async function terminateProviderServerProcess(
       };
     }
 
+    if (settlement.wrapperExited) reclaimProviderHostLeaf(settlement);
     acceptProviderServerKill(settlement, runtime);
-    if (settlement.closed) return observedAbsent();
+    if (settlement.closed && observeProviderHostLeaf(settlement)) {
+      settlement.resolve();
+      if (settlement.cessationProven) return observedAbsent();
+    }
     if (settlement.pid !== null) {
       try {
         const liveness = runtime.process.observeLiveness(settlement.pid);
-        if (settlement.closed) return observedAbsent();
+        if (settlement.closed && observeProviderHostLeaf(settlement)) {
+          settlement.resolve();
+          if (settlement.cessationProven) return observedAbsent();
+        }
         if (liveness === 'alive') {
           return {
             kind: 'held-alive',
@@ -795,7 +949,10 @@ async function terminateProviderServerProcess(
         // Exact close evidence remains authoritative when direct liveness observation cannot answer.
       }
     }
-    if (settlement.closed) return observedAbsent();
+    if (settlement.closed && observeProviderHostLeaf(settlement)) {
+      settlement.resolve();
+      if (settlement.cessationProven) return observedAbsent();
+    }
     return {
       kind: 'held-unobservable',
       subject,
@@ -989,6 +1146,7 @@ function exposeProviderServerHandle(
           finishCloseAfterReap: async (): Promise<void> => {
             beginProviderServerShutdown(entry, 'closed');
             await entry.closePromise;
+            if (entry.processSettlement.failureDomain !== undefined) await entry.processSettlement.processClosePromise;
           },
         }),
     rpc,

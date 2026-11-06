@@ -103,6 +103,8 @@ export type RetentionSettlement =
   | { readonly kind: 'completed'; readonly outcome: 'discarded' | 'skipped_no_handles' | 'provider_declares_none' }
   | { readonly kind: 'failed'; readonly reason: string };
 
+export type ExecutionQuiescenceProof = Readonly<{ kind: 'quiescence-proof'; confirm: () => boolean }>;
+
 export interface ExecutionFinishingPorts {
   readonly time: Pick<TimePort, 'sleep'>;
   readonly recovery?: {
@@ -113,8 +115,11 @@ export interface ExecutionFinishingPorts {
   readonly log?: (message: string) => void;
   readonly commit: CommitEventsFn;
   readonly read: (address: ExecutionAddress) => ExecutionFinishingState;
-  /** Only authoritative operation, reservation and cleanup release may return true. */
-  readonly quiesce: (address: ExecutionAddress, accepted: JobExecutionOutcomeAcceptedBody) => Promise<boolean>;
+  /** Conditional absence must remain observable until execution ownership is released. */
+  readonly quiesce: (
+    address: ExecutionAddress,
+    accepted: JobExecutionOutcomeAcceptedBody,
+  ) => Promise<boolean | ExecutionQuiescenceProof>;
   readonly retentionAction: (address: ExecutionAddress) => Promise<Omit<JobRetentionDiscardRequestedBody, 'execution'>>;
   /** Reconcile the original ledger action; a retry cannot issue a different action or replay a sealed one. */
   readonly settleRetention: (
@@ -561,13 +566,23 @@ export class ExecutionFinisher {
     await this.#await(this.#ports.time.sleep(EXECUTION_RETRY_MS, { signal: this.signal }));
   }
 
-  async #advanceExecution(address: ExecutionAddress, state: AcceptedExecution): Promise<'released' | 'pending'> {
-    if (!(await this.#await(this.#ports.quiesce(address, state.accepted)))) {
+  async #advanceExecution(
+    address: ExecutionAddress,
+    state: AcceptedExecution,
+    quiescence: { proof: ExecutionQuiescenceProof | undefined },
+  ): Promise<'released' | 'pending'> {
+    const observed = quiescence.proof ?? (await this.#await(this.#ports.quiesce(address, state.accepted)));
+    if (typeof observed !== 'boolean') quiescence.proof = observed;
+    if (observed === false || (typeof observed !== 'boolean' && !observed.confirm())) {
       await this.#hold(address, 'Awaiting authoritative operation release or retention settlement.', 'live-retry');
       return 'pending';
     }
     if (await this.#requestRetention(address, state)) return 'pending';
     const settlement = await this.#settleRetention(address, state);
+    if (quiescence.proof !== undefined && !quiescence.proof.confirm()) {
+      await this.#hold(address, 'Authoritative quiescence changed during retention settlement.', 'live-retry');
+      return 'pending';
+    }
     if (settlement?.kind === 'not-owned') {
       this.#clearStatus(address);
       return 'released';
@@ -590,6 +605,7 @@ export class ExecutionFinisher {
 
   async #finish(address: ExecutionAddress): Promise<void> {
     let attempts = 0;
+    const quiescence: { proof: ExecutionQuiescenceProof | undefined } = { proof: undefined };
     for (;;) {
       this.signal.throwIfAborted();
       let unaccepted = false;
@@ -601,7 +617,7 @@ export class ExecutionFinisher {
           this.#clearStatus(address);
           return;
         }
-        if ((await this.#advanceExecution(address, state)) === 'released') return;
+        if ((await this.#advanceExecution(address, state, quiescence)) === 'released') return;
       } catch (error: unknown) {
         this.signal.throwIfAborted();
         if (error instanceof SuccessionWriterParkedError) {

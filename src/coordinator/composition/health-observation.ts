@@ -1,3 +1,4 @@
+import { durableCliFailureDomain } from '../services/durable-cli-failure-domain.js';
 import { listExecutionRetryStatuses } from '../../jobs/finishing.js';
 import type { RetentionRunStatus } from '../../store/retention-outcome.js';
 import { invocationCoralEnvSnapshot } from '../../infra/env-sanitize.js';
@@ -63,6 +64,7 @@ function readResourceSnapshot(
 function readCarrierHealth(
   world: ReturnType<typeof createCoordinatorWorld>,
   platform: NodeJS.Platform,
+  runtime: Runtime,
   storeServices: ReturnType<ReturnType<typeof createCoordinatorWorld>['storeServicesRef']['tryGet']>,
 ) {
   let activeJobs = 0;
@@ -86,6 +88,8 @@ function readCarrierHealth(
         jobIds,
         {
           getDb: () => progressStore.getDb(),
+          failureDomainForJob: (jobId, identity) =>
+            durableCliFailureDomain(runtime, progressStore.getDb(), jobId, identity),
           loadJobProjectionDetail: (jobId) => progressStore.loadJobProjectionDetail(jobId),
           platform,
           hasStartupRecoveryPassed: () => world.startupRecoveryBarrier.hasPassed(),
@@ -357,7 +361,7 @@ export function createCoordinatorHealthReader({
     const components = runtimeState.components.list().map((entry) => ({ ...entry, id: entry.id as string }));
     const kbDaemon = kbDaemonSupervisor.read();
     const systemProviderScope = world.systemProviderScope;
-    const carrier = readCarrierHealth(world, platform, storeServices);
+    const carrier = readCarrierHealth(world, platform, runtime, storeServices);
     const { activeJobs } = carrier;
 
     const { diagnostics } = readHealthDiagnostics({

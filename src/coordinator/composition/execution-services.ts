@@ -1,3 +1,4 @@
+import { durableCliFailureDomain } from '../services/durable-cli-failure-domain.js';
 import { readExecutionRetryStatus } from '../../jobs/finishing.js';
 import { observeDatabaseReads } from '../../recovery/read-observation.js';
 import { JobAttention } from '../services/job-attention.js';
@@ -188,6 +189,8 @@ function createExecutionServiceRegistry(input: {
       observeCarriers: createObserveCarriers(
         {
           getDb: () => getProgressStore().getDb(),
+          failureDomainForJob: (jobId, identity) =>
+            durableCliFailureDomain(runtime, getProgressStore().getDb(), jobId, identity),
           loadJobProjectionDetail: (jobId) => getProgressStore().loadJobProjectionDetail(jobId),
           platform: runtime.env.platform() as NodeJS.Platform,
           hasStartupRecoveryPassed: () => world.startupRecoveryBarrier.hasPassed(),
@@ -257,11 +260,16 @@ function createExecutionStartupSetRecovery(input: {
     switch (outcome.kind) {
       case 'inherited':
         return { kind: 'authority', authority: outcome.set };
-      case 'containment-disappeared':
-        return {
-          kind: 'absence-accepted',
-          acceptance: acceptContainmentAbsence(work.identity, outcome.disappearanceReceipt),
-        };
+      case 'containment-disappeared': {
+        const acceptance = acceptContainmentAbsence(work.identity, outcome.disappearanceReceipt);
+        return acceptance.kind === 'accepted'
+          ? { kind: 'absence-accepted', acceptance }
+          : {
+              kind: 'retry-scheduled',
+              reason: 'Provider proxy set leaf absence changed before representation release.',
+              nextAttemptAtMs: runtime.time.now() + 25,
+            };
+      }
       case 'recorded-group-unattributable':
         return {
           kind: 'retry-scheduled',
@@ -408,9 +416,18 @@ function createOrdinaryProviderAuthorityAcquirer(input: {
             ? 'Process identity became unobservable after a recorded-containment signal was delivered.'
             : 'Process identity could not be observed before recorded-containment signal authorization.',
         };
-      case 'containment-disappeared':
-        recordContainmentAbsence(providerProxySetIdentityFromRecord(record), outcome.disappearanceReceipt);
-        return null;
+      case 'containment-disappeared': {
+        const acceptance = recordContainmentAbsence(
+          providerProxySetIdentityFromRecord(record),
+          outcome.disappearanceReceipt,
+        );
+        return acceptance.kind === 'accepted'
+          ? null
+          : {
+              kind: 'temporarily-unavailable',
+              reason: 'Provider proxy set leaf absence changed before representation release.',
+            };
+      }
       default:
         return assertNever(outcome);
     }
@@ -534,6 +551,7 @@ function createExecutionProxyLifecycle(input: {
     time: runtime.time,
     recoveryDispatcher: providerProxyRecovery,
     reapRecordedContainment: world.reapRecordedContainment,
+    failureDomainContainment: runtime.process.failureDomainContainment,
     operatorDispositionStore: new ProviderProxySetOperatorDispositionStore(
       runtime.storage,
       runtime.paths.coral.coordinator.runDir,

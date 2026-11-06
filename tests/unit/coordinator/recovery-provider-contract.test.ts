@@ -466,6 +466,7 @@ describe('interrupted recovery settlement ownership', () => {
         abortRegistry,
         launchAdmission: launchCoordinator,
         launchPermit,
+        finalizationFence: { signal: new AbortController().signal, onCommitStart: () => {} },
       },
     };
   }
@@ -597,7 +598,6 @@ describe('provider-operation carrier reap', () => {
       await reapProviderOperationCarrier(providerOperationCarrier, {
         process,
         platform: 'linux',
-        db,
         clock: fakeClock(),
         signal: new AbortController().signal,
         readProcessIncarnation: (pid) => {
@@ -620,7 +620,7 @@ describe('provider-operation carrier reap', () => {
       );
       expect(signalledPids.has(providerOperationCarrier.locator.guardian.pid)).toBe(false);
       expect(signalledPids.has(providerOperationCarrier.locator.reaper.pid)).toBe(false);
-      expect(readProviderOperation(db, providerOperationCarrier.operation)).toBeNull();
+      expect(readProviderOperation(db, providerOperationCarrier.operation)).toEqual(providerOperationCarrier);
     } finally {
       db.close();
     }
@@ -639,7 +639,6 @@ describe('provider-operation carrier reap', () => {
         reapProviderOperationCarrier(providerOperationCarrier, {
           process,
           platform: 'linux',
-          db,
           clock: fakeClock(),
           signal: new AbortController().signal,
           // Alive with no verifiable incarnation is the ambiguous case `reapRecordedContainment` refuses to

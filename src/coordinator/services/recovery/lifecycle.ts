@@ -1,4 +1,12 @@
-import { observeRecordedContainment, type RecordedContainmentObservation } from '../../../infra/process-containment.js';
+import type { FailureDomainContainment } from '../../../infra/failure-domain.js';
+import { durableCliFailureDomain } from '../durable-cli-failure-domain.js';
+import {
+  createFailureDomainContainmentObservation,
+  createFailureDomainAbsenceObserver,
+  observeRecordedContainment,
+  type RecordedContainmentObservation,
+} from '../../../infra/process-containment.js';
+import { readDurableCliExecution } from '../../../jobs/durable-cli-execution.js';
 import type { TimerHandle } from '../../../infra/port-types.js';
 import type { JobEventBus } from '../../../jobs/event-bus.js';
 import type { JobPhase } from '../../../jobs/phase.js';
@@ -80,26 +88,62 @@ export function observeDurableRecoveryContainmentFor(
   runtime: Runtime,
   jobId: string,
   runtimeRecord: Extract<RunningRecoverableJob['runtimeRecord'], { transport: 'durable-cli' }>,
+  containmentObservation?: ReturnType<typeof createFailureDomainContainmentObservation<FailureDomainContainment>>,
 ): Readonly<{
   evidence: DurableCliPreReadyOwnershipEvidence;
   observation: RecordedContainmentObservation;
+  permitsIndependentAbsenceDecision: () => boolean;
+  refresh: () => RecordedContainmentObservation;
 }> {
+  let failureDomain = containmentObservation?.failureDomain;
+  const history =
+    containmentObservation?.permitsIndependentAbsenceDecision ?? createFailureDomainAbsenceObserver(undefined);
+  const observeLeaf = () => failureDomain?.observe() ?? ({ kind: 'missing' } as const);
+  const retainedObservation = createFailureDomainContainmentObservation(
+    { observe: observeLeaf, hasEntered: () => failureDomain?.hasEntered?.() === true },
+    history,
+  );
+  let subject: { pid: number; incarnation: string } | null = null;
+  let execution: number | null = null;
+  const refresh = (): RecordedContainmentObservation => {
+    const current = readDurableCliPreReadyOwnershipEvidence(progressStore.getDb(), jobId, runtimeRecord.pid);
+    if (current.kind !== 'current' && current.kind !== 'provisional')
+      return { kind: 'unobservable', reason: durableOwnershipEvidenceHoldReason(current) };
+    const record = current.record;
+    if (subject !== null && (record.pid !== subject.pid || record.incarnation !== subject.incarnation))
+      return { kind: 'unobservable', reason: 'the recorded process identity changed during containment recovery' };
+    subject = record;
+    if (runtime.process.failureDomainRoot.kind === 'placed') {
+      let currentExecution: number | null;
+      try {
+        currentExecution = readDurableCliExecution(progressStore.getDb(), jobId, record);
+      } catch {
+        return { kind: 'unobservable', reason: 'execution identity unavailable' };
+      }
+      if (execution !== null && currentExecution !== execution)
+        return {
+          kind: 'unobservable',
+          reason: 'the recorded execution association changed during containment recovery',
+        };
+      execution = currentExecution;
+    }
+    failureDomain =
+      containmentObservation?.failureDomain ?? durableCliFailureDomain(runtime, progressStore.getDb(), jobId, record);
+    const observed = observeRecordedContainment(
+      { ...record, childRoot: current.kind === 'current' ? current.record.childRoot : null },
+      {
+        failureDomain: retainedObservation.failureDomain,
+        process: runtime.process,
+        platform: runtime.env.platform() as NodeJS.Platform,
+        readProcessIncarnation: (pid, platform) => runtime.process.readProcessIncarnation(pid, platform),
+      },
+    );
+    return observed.kind === 'absent' && !history(observeLeaf())
+      ? { kind: 'unobservable', reason: 'the observed leaf absence is no longer established' }
+      : observed;
+  };
   const evidence = readDurableCliPreReadyOwnershipEvidence(progressStore.getDb(), jobId, runtimeRecord.pid);
-  const observation =
-    evidence.kind === 'current' || evidence.kind === 'provisional'
-      ? observeRecordedContainment(
-          {
-            ...evidence.record,
-            childRoot: evidence.kind === 'current' ? evidence.record.childRoot : null,
-          },
-          {
-            process: runtime.process,
-            platform: runtime.env.platform() as NodeJS.Platform,
-            readProcessIncarnation: (pid, platform) => runtime.process.readProcessIncarnation(pid, platform),
-          },
-        )
-      : { kind: 'unobservable' as const, reason: durableOwnershipEvidenceHoldReason(evidence) };
-  return { evidence, observation };
+  return { evidence, observation: refresh(), permitsIndependentAbsenceDecision: () => history(observeLeaf()), refresh };
 }
 
 async function runHeldRecoveryReapAttempt(
@@ -109,6 +153,8 @@ async function runHeldRecoveryReapAttempt(
   jobId: string,
   record: Parameters<typeof reapDurableCliProcess>[1],
   parentSignal: AbortSignal,
+  failureDomain?: ReturnType<typeof durableCliFailureDomain>,
+  observation = createFailureDomainContainmentObservation(failureDomain),
 ): Promise<Awaited<ReturnType<typeof reapDurableCliProcess>> | Readonly<{ kind: 'superseded' }>> {
   const priorSettlement = cancelHeldRecoveryReap(jobId);
   if (priorSettlement !== null) await priorSettlement;
@@ -127,10 +173,13 @@ async function runHeldRecoveryReapAttempt(
   };
   state.heldRecoveryReapAttempts.set(jobId, attempt);
   try {
-    const result = await reapDurableCliProcess(runtime, record, controller.signal);
-    return state.heldRecoveryReapGenerations.get(jobId) === generation && !controller.signal.aborted
-      ? result
-      : { kind: 'superseded' };
+    const result = await reapDurableCliProcess(runtime, record, controller.signal, failureDomain, observation);
+    if (state.heldRecoveryReapGenerations.get(jobId) !== generation || controller.signal.aborted) {
+      return { kind: 'superseded' };
+    }
+    return result.kind === 'absence-confirmed' && !observation.permitsIndependentAbsenceDecision()
+      ? { kind: 'held', reason: 'the durable job leaf absence is unobservable' }
+      : result;
   } finally {
     parentSignal.removeEventListener('abort', forwardAbort);
     if (state.heldRecoveryReapAttempts.get(jobId) === attempt) {
@@ -275,7 +324,8 @@ export function createRecoveryLifecycle(
   const observeDurableRecoveryContainment = (
     jobId: string,
     runtimeRecord: Extract<RunningRecoverableJob['runtimeRecord'], { transport: 'durable-cli' }>,
-  ) => observeDurableRecoveryContainmentFor(progressStore, runtime, jobId, runtimeRecord);
+    observation?: ReturnType<typeof createFailureDomainContainmentObservation<FailureDomainContainment>>,
+  ) => observeDurableRecoveryContainmentFor(progressStore, runtime, jobId, runtimeRecord, observation);
 
   const cancelHeldRecoveryReap = (jobId: string): Promise<void> | null => {
     state.heldRecoveryReapGenerations.set(jobId, (state.heldRecoveryReapGenerations.get(jobId) ?? 0) + 1);
@@ -288,7 +338,18 @@ export function createRecoveryLifecycle(
     jobId: string,
     record: Parameters<typeof reapDurableCliProcess>[1],
     parentSignal: AbortSignal,
-  ) => runHeldRecoveryReapAttempt(state, runtime, cancelHeldRecoveryReap, jobId, record, parentSignal);
+    observation?: ReturnType<typeof createFailureDomainContainmentObservation<FailureDomainContainment>>,
+  ) =>
+    runHeldRecoveryReapAttempt(
+      state,
+      runtime,
+      cancelHeldRecoveryReap,
+      jobId,
+      record,
+      parentSignal,
+      observation?.failureDomain ?? durableCliFailureDomain(runtime, progressStore.getDb(), jobId, record),
+      observation,
+    );
 
   const resetRecoveryState = (options: { forceRegistryRelease?: boolean } = {}): void => {
     if (options.forceRegistryRelease) {

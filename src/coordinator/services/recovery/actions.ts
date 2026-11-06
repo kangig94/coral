@@ -1,3 +1,5 @@
+import { durableCliFailureDomain } from '../durable-cli-failure-domain.js';
+import type { FailureDomainContainment } from '../../../infra/failure-domain.js';
 import { errorMessage, formatError } from '../../../infra/error-format.js';
 import { isAppServerRuntime, type JobRuntime } from '../../../jobs/records.js';
 import type { DurableCliRuntimeRecord } from '../../../runtime/durable-runtime.js';
@@ -22,7 +24,11 @@ import type {
 import type { DurableCliPreReadyOwnershipEvidence } from '../../../jobs/runtime-meta-store.js';
 import type { JobLifecycleFault, JobProgressFault } from '../../../jobs/outcome.js';
 import { createMonotonicClock } from '../../../infra/monotonic-clock.js';
-import { reapRecordedContainment } from '../../../infra/process-containment.js';
+import {
+  createFailureDomainContainmentObservation,
+  ProcessContainmentError,
+  reapRecordedContainment,
+} from '../../../infra/process-containment.js';
 import {
   CONTAINMENT_DISAPPEARANCE_CONFIRM_MS,
   CONTAINMENT_PROCESS_CONTROL_CALL_MAX_MS,
@@ -52,12 +58,15 @@ export type RunningRecoverableJob = {
   jobId: string;
   authority: ProviderRecoveryAuthority;
   runtimeRecord: JobRuntime;
+  containmentObservation?: ReturnType<typeof createFailureDomainContainmentObservation<FailureDomainContainment>>;
 };
 
 export async function reapDurableCliProcess(
   runtime: Runtime,
   record: DurableCliProcessRuntimeMeta | DurableCliProvisionalProcessRuntimeMeta,
   signal: AbortSignal,
+  failureDomain?: FailureDomainContainment,
+  observation = createFailureDomainContainmentObservation(failureDomain),
 ): Promise<Readonly<{ kind: 'absence-confirmed' }> | Readonly<{ kind: 'held'; reason: string }>> {
   const clock = createMonotonicClock(durableRecoveryClockScope, {
     readMilliseconds: () => runtime.time.monotonicNow(),
@@ -69,6 +78,7 @@ export async function reapDurableCliProcess(
       'childRoot' in record ? [record.childRoot] : [],
       clock.shiftMilliseconds(clock.now(), DURABLE_RECOVERY_REAP_DEADLINE_MS),
       {
+        failureDomain: observation.failureDomain,
         maxRecordedRoots: 'childRoot' in record ? 1 : 0,
         clock,
         process: runtime.process,
@@ -79,7 +89,9 @@ export async function reapDurableCliProcess(
     );
     switch (outcome.kind) {
       case 'containment-absent':
-        return { kind: 'absence-confirmed' };
+        return observation.permitsIndependentAbsenceDecision()
+          ? { kind: 'absence-confirmed' }
+          : { kind: 'held', reason: 'the durable job leaf is populated or its absence is unobservable' };
       case 'recorded-group-unattributable':
         return { kind: 'held', reason: 'the recorded leader is gone but its process group remains unattributable' };
       case 'signal-authorization-refused':
@@ -106,22 +118,31 @@ function abortDurableCliProcess(
   evidence: DurableCliPreReadyOwnershipEvidence,
   signal: AbortSignal,
   retainHold: (reason: string) => void,
+  failureDomain: FailureDomainContainment | undefined,
+  observation: ReturnType<typeof createFailureDomainContainmentObservation<FailureDomainContainment>>,
 ): RecoveryAbortDisposition {
   if (evidence.kind !== 'current' && evidence.kind !== 'provisional') {
     return { kind: 'refused', reason: durableOwnershipEvidenceHoldReason(evidence) };
   }
   const record = evidence.record;
   const retry =
-    `Run coral-cli jobs detail ${jobId}; if cleanup remains held, run coral-cli jobs abort ${jobId} ` +
+    `Startup recovery retries recorded containment every 500ms after authority capture. Run coral-cli jobs detail ${jobId}; if cleanup remains held, run coral-cli jobs abort ${jobId} ` +
     'again to explicitly abandon ownership.';
   return {
     kind: 'held',
     reason: 'identity-safe SIGTERM/SIGKILL reaping is in progress until recorded containment absence is confirmed',
     nextStep: retry,
-    settlement: reapDurableCliProcess(runtime, record, signal).then((result) => {
-      if (result.kind === 'absence-confirmed') return { kind: 'accepted' as const };
-      retainHold(result.reason);
-      return { kind: 'held' as const, reason: result.reason, nextStep: retry };
+    confirmAcceptance: () => {
+      if (observation.permitsIndependentAbsenceDecision()) return true;
+      retainHold('the durable job leaf absence is unobservable');
+      return false;
+    },
+    settlement: reapDurableCliProcess(runtime, record, signal, failureDomain, observation).then((result) => {
+      if (result.kind === 'absence-confirmed' && observation.permitsIndependentAbsenceDecision())
+        return { kind: 'accepted' as const };
+      const reason = result.kind === 'held' ? result.reason : 'the durable job leaf absence is unobservable';
+      retainHold(reason);
+      return { kind: 'held' as const, reason, nextStep: retry };
     }),
   };
 }
@@ -237,14 +258,21 @@ async function resolvePreReadyLaunch(
   if (persistedStatus.kind === 'corrupt') {
     holdReason = 'the durable containment status is corrupt';
   } else if (evidence.kind === 'current' || evidence.kind === 'provisional') {
-    const cleanup = await reapDurableCliProcess(ctx.runtime, evidence.record, ctx.signal);
-    if (cleanup.kind === 'absence-confirmed') {
+    const failureDomain = durableCliFailureDomain(
+      ctx.runtime,
+      ctx.progressStore.getDb(),
+      action.jobId,
+      evidence.record,
+    );
+    const observation = createFailureDomainContainmentObservation(failureDomain);
+    const cleanup = await reapDurableCliProcess(ctx.runtime, evidence.record, ctx.signal, failureDomain, observation);
+    if (cleanup.kind === 'absence-confirmed' && observation.permitsIndependentAbsenceDecision()) {
       return markRecoveryError(
         { type: 'markError', jobId: action.jobId, fault: { kind: 'ghost_launch' }, status: action.status },
         ctx,
       );
     }
-    holdReason = cleanup.reason;
+    holdReason = cleanup.kind === 'held' ? cleanup.reason : 'the durable job leaf absence is unobservable';
   } else {
     holdReason =
       evidence.kind === 'unavailable' &&
@@ -377,7 +405,6 @@ async function registerRunningRecovery(
     abandonHeldJob = () => ({ kind: 'refused', reason: 'durable containment abandonment is unavailable' }),
   } = ctx;
   const service = getRecoveryService(createInvocationContext(action.launchRecord.projectRoot));
-  const authorityCapture = service.captureProviderRecoveryAuthority(action.launchRecord);
   const appServerRuntimeRecord = isAppServerRuntime(action.runtimeRecord) ? action.runtimeRecord : null;
   const appServerAbortHandler =
     appServerRuntimeRecord !== null
@@ -426,6 +453,14 @@ async function registerRunningRecovery(
   const recordedContainment = isDurableCliRuntime(action.runtimeRecord)
     ? readDurableCliPreReadyOwnershipEvidence(progressStore.getDb(), action.jobId, action.runtimeRecord.pid)
     : null;
+  const failureDomain =
+    recordedContainment?.kind === 'current' || recordedContainment?.kind === 'provisional'
+      ? durableCliFailureDomain(runtime, progressStore.getDb(), action.jobId, recordedContainment.record)
+      : isDurableCliRuntime(action.runtimeRecord)
+        ? durableCliFailureDomain(runtime, progressStore.getDb(), action.jobId, undefined, action.runtimeRecord.pid)
+        : undefined;
+  const containmentObservation = createFailureDomainContainmentObservation(failureDomain);
+  const authorityCapture = service.captureProviderRecoveryAuthority(action.launchRecord);
   const persistedContainment = isDurableCliRuntime(action.runtimeRecord)
     ? readDurableCliContainmentStatus(progressStore.getDb(), action.jobId)
     : null;
@@ -468,11 +503,21 @@ async function registerRunningRecovery(
                       throw new Error('Durable abort hold was not retained by the recovery registry.');
                     }
                   },
+                  failureDomain,
+                  containmentObservation,
                 )
         : appServerAbortHandler,
     );
   }
-  setProcessLocalCleanup(() => recoveryRegistry.remove(action.jobId));
+  setProcessLocalCleanup(() => {
+    if (!resumesOperatorAbandonment && !containmentObservation.permitsIndependentAbsenceDecision()) {
+      throw new ProcessContainmentError(
+        'process_containment_reap_failed',
+        'The durable job leaf absence is unobservable.',
+      );
+    }
+    recoveryRegistry.remove(action.jobId);
+  });
   const captured = await authorityCapture;
   signal.throwIfAborted();
   if (!captured.ok) {
@@ -487,17 +532,21 @@ async function registerRunningRecovery(
       return { kind: 'quarantine', detail };
     }
 
-    const recordedEvidence = readDurableCliPreReadyOwnershipEvidence(
-      progressStore.getDb(),
-      action.jobId,
-      durableRecord.pid,
-    );
+    const recordedEvidence = recordedContainment ?? { kind: 'unavailable' as const, reason: 'missing' as const };
     let cleanupHold: string | null = null;
     if (recordedEvidence.kind !== 'current' && recordedEvidence.kind !== 'provisional') {
       cleanupHold = durableOwnershipEvidenceHoldReason(recordedEvidence);
     } else {
-      const cleanup = await reapDurableCliProcess(runtime, recordedEvidence.record, signal);
+      const cleanup = await reapDurableCliProcess(
+        runtime,
+        recordedEvidence.record,
+        signal,
+        failureDomain,
+        containmentObservation,
+      );
       if (cleanup.kind === 'held') cleanupHold = cleanup.reason;
+      else if (!containmentObservation.permitsIndependentAbsenceDecision())
+        cleanupHold = 'the durable job leaf absence is unobservable';
     }
 
     if (cleanupHold !== null) {
@@ -538,6 +587,7 @@ async function registerRunningRecovery(
     jobId: action.jobId,
     authority,
     runtimeRecord: action.runtimeRecord,
+    containmentObservation,
   });
   clearProcessLocalCleanup();
   return completed(COORDINATOR_NOT_APPLICABLE_FACTS, 'running recovery registered');

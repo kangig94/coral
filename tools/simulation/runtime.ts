@@ -45,6 +45,7 @@ export class SimulationRuntime implements Runtime {
     });
     const simulationProcess = {
       failureDomainRoot: { kind: 'unavailable', reason: 'simulation' },
+      failureDomainContainment: () => undefined,
       readRecentFailureDomainRefusals: () => [],
       createFailureDomain: () => ({ kind: 'refused', errno: 'ENOTSUP' }),
       removeFailureDomain: () => ({ kind: 'refused', errno: 'ENOTSUP' }),

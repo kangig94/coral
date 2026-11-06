@@ -1,7 +1,14 @@
+import { ExecutionAcceptanceRefusedError } from '../../../jobs/finishing.js';
+import type { FailureDomainContainment } from '../../../infra/failure-domain.js';
+import { durableCliFailureDomain } from '../durable-cli-failure-domain.js';
 import { SuccessionWriterParkedError } from '../../../store/db.js';
 import { backendLog } from '../../../infra/backend-log.js';
 import { errorMessage, formatError } from '../../../infra/error-format.js';
-import { ProcessContainmentError, type RecordedContainmentObservation } from '../../../infra/process-containment.js';
+import {
+  createFailureDomainContainmentObservation,
+  ProcessContainmentError,
+  type RecordedContainmentObservation,
+} from '../../../infra/process-containment.js';
 import type { TimerHandle } from '../../../infra/port-types.js';
 import { isAppServerRuntime } from '../../../jobs/records.js';
 import type { JobStore } from '../../../jobs/store.js';
@@ -14,7 +21,11 @@ import type { InvocationContext } from '../../../runtime/invocation-context.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import type { CommitEventsFn } from '../../../store/append.js';
 import type { DurableCliPreReadyOwnershipEvidence } from '../../../jobs/runtime-meta-store.js';
-import { readDurableCliContainmentStatus, writeDurableCliContainmentStatus } from '../../../jobs/runtime-meta-store.js';
+import {
+  readDurableCliContainmentStatus,
+  readDurableCliPreReadyOwnershipEvidence,
+  writeDurableCliContainmentStatus,
+} from '../../../jobs/runtime-meta-store.js';
 import type { RecoveryDisposition, RecoveryQuarantineRemedy } from '../../../recovery/containment.js';
 import {
   COORDINATOR_NOT_APPLICABLE_FACTS,
@@ -64,6 +75,7 @@ type RunningRecoveryAdoptionDependencies = Readonly<{
   observeDurableRecoveryContainment(
     jobId: string,
     runtimeRecord: DurableRunningRuntime,
+    observation?: ReturnType<typeof createFailureDomainContainmentObservation<FailureDomainContainment>>,
   ): Readonly<{
     evidence: DurableCliPreReadyOwnershipEvidence;
     observation: RecordedContainmentObservation;
@@ -72,6 +84,7 @@ type RunningRecoveryAdoptionDependencies = Readonly<{
     jobId: string,
     record: Parameters<typeof reapDurableCliProcess>[1],
     parentSignal: AbortSignal,
+    observation?: ReturnType<typeof createFailureDomainContainmentObservation<FailureDomainContainment>>,
   ): Promise<Awaited<ReturnType<typeof reapDurableCliProcess>> | Readonly<{ kind: 'superseded' }>>;
   deleteCoordinatorRecoveryQuarantine(jobId: string): boolean;
   runCoordinatorWalk(options: CoordinatorWalkOptions): Promise<unknown>;
@@ -86,6 +99,7 @@ type AppServerRunningRuntime = Extract<RunningRecoverableJob['runtimeRecord'], {
 type DurableContainment = ReturnType<RunningRecoveryAdoptionDependencies['observeDurableRecoveryContainment']>;
 
 type RunningRecoverySettlement = Readonly<{
+  leaf: ReturnType<typeof createFailureDomainContainmentObservation<FailureDomainContainment>>;
   deps: RunningRecoveryAdoptionDependencies;
   recovery: RunningRecoverableJob;
   context: RunningRecoveryAdoptionContext;
@@ -113,6 +127,35 @@ function settledRecoveryFacts(jobId: string) {
   return [
     { obligation: COORDINATOR_TERMINAL_OBLIGATION, outcome: 'done' as const, authorityRef: `job:${jobId}:terminal` },
   ];
+}
+
+function holdInterruptedAppServerRecovery(settlement: RunningRecoverySettlement, error: unknown): RecoveryDisposition {
+  const { deps, recovery, controls } = settlement;
+  const { jobId } = recovery;
+  controls.clearProcessLocalCleanup();
+  if (!deps.state.recoveryPollIntervals.has(jobId)) {
+    let inFlight = false;
+    const interval = deps.runtime.time.setInterval(() => {
+      if (inFlight || deps.state.teardownRequested || settlement.context.signal.aborted) return;
+      inFlight = true;
+      void resumeHeldRecoveryFinalization(settlement)
+        .catch((failure: unknown) => {
+          try {
+            deps.log(`Interrupted app-server recovery retry failed for ${jobId}: ${formatError(failure)}\n`);
+          } catch {
+            /* The timer retains ownership if reporting fails. */
+          }
+        })
+        .finally(() => {
+          inFlight = false;
+        });
+    }, RECOVERY_POLL_MS);
+    interval.unref?.();
+    deps.state.recoveryPollIntervals.set(jobId, interval);
+  }
+  const detail = `${errorMessage(error)} Automatic interrupted app-server recovery retries every ${RECOVERY_POLL_MS}ms until carrier absence and finalization are confirmed.`;
+  controls.report(`Held interrupted app-server recovery for ${jobId}: ${detail}\n`);
+  return { kind: 'quarantine', detail };
 }
 
 async function finalizeRecoveredAppServer(
@@ -156,20 +199,14 @@ async function finalizeRecoveredAppServer(
       }),
     );
   } catch (error: unknown) {
-    if (userCancelled) {
-      controls.clearProcessLocalCleanup();
-      const detail = `User-abort terminal finalization failed after provider acknowledgment: ${errorMessage(error)}`;
-      controls.report(`Held acknowledged recovered app-server abort for ${jobId}: ${errorMessage(error)}\n`);
-      return { kind: 'quarantine', detail };
-    }
-    // An unconfirmed detached carrier must remain nonterminal.
-    if (error instanceof ProcessContainmentError) {
-      controls.report(`Carrier reap unconfirmed for interrupted app-server job: ${jobId}: ${errorMessage(error)}\n`);
-      return { kind: 'quarantine', detail: error.message };
-    }
+    const carrierRefusal =
+      error instanceof ProcessContainmentError ||
+      (error instanceof ExecutionAcceptanceRefusedError && error.cause instanceof ProcessContainmentError);
+    if (userCancelled || carrierRefusal) return holdInterruptedAppServerRecovery(settlement, error);
     throw error;
   }
   signal.throwIfAborted();
+  controls.setProcessLocalCleanup(() => releaseRunningRecovery(settlement));
   controls.report(
     userCancelled
       ? `Finalized user-aborted recovered app-server job: ${jobId}\n`
@@ -222,6 +259,36 @@ function createRecoveredProgress(
   };
 }
 
+function requireDurableRecoveryAbsence(settlement: RunningRecoverySettlement): void {
+  if (!settlement.leaf.permitsIndependentAbsenceDecision()) {
+    throw new ProcessContainmentError(
+      'process_containment_reap_failed',
+      'The durable job leaf absence is unobservable.',
+    );
+  }
+}
+
+function releaseRunningRecovery(settlement: RunningRecoverySettlement): void {
+  const { state, clearRecoveryPoller, takeAdoptedJobCleanup, maybeReleaseRecoveryRegistry } = settlement.deps;
+  const { jobId } = settlement.recovery;
+  clearRecoveryPoller(jobId);
+  state.adoptedRunningPids.delete(jobId);
+  state.unansweredAdoptionProbes.delete(jobId);
+  const cleanup = takeAdoptedJobCleanup(jobId);
+  state.recoveryRegistry?.remove(jobId);
+  state.recoveryRegistry?.clearCancelled(jobId);
+  cleanup?.();
+  maybeReleaseRecoveryRegistry();
+}
+
+function wrapperIsAbsent(settlement: RunningRecoverySettlement, containment: DurableContainment): boolean {
+  if (containment.evidence.kind !== 'current' && containment.evidence.kind !== 'provisional') return false;
+  const { runtime } = settlement.deps;
+  const { pid, incarnation } = containment.evidence.record;
+  const observed = runtime.process.readProcessIncarnation(pid, runtime.env.platform() as NodeJS.Platform);
+  return (observed !== null && observed !== incarnation) || runtime.process.observeLiveness(pid) === 'absent';
+}
+
 async function finalizeContainedDurableRecovery(
   settlement: RunningRecoverySettlement,
   progress: RecoveredProgress,
@@ -231,6 +298,7 @@ async function finalizeContainedDurableRecovery(
   const { jobId, authority } = settlement.recovery;
   const { signal } = settlement.context;
   if (operatorAbandoned) state.cancelledRecoveryJobIds.add(jobId);
+  else requireDurableRecoveryAbsence(settlement);
   progress.drain();
   await startTrackedFinalization(jobId, signal, (fence) =>
     finalizeDeadAdoptedJob({
@@ -240,12 +308,19 @@ async function finalizeContainedDurableRecovery(
       authority,
       progressStore,
       cancelledJobIds: state.cancelledRecoveryJobIds,
-      fence,
+      fence: {
+        ...fence,
+        onCommitStart: () => {
+          if (!operatorAbandoned) requireDurableRecoveryAbsence(settlement);
+          fence.onCommitStart();
+        },
+      },
     }),
   );
+  if (!operatorAbandoned) requireDurableRecoveryAbsence(settlement);
   settlement.controls.setProcessLocalCleanup(() => {
-    state.recoveryRegistry?.remove(jobId);
-    state.recoveryRegistry?.clearCancelled(jobId);
+    if (!operatorAbandoned) requireDurableRecoveryAbsence(settlement);
+    releaseRunningRecovery(settlement);
   });
   settlement.controls.report(
     operatorAbandoned
@@ -271,13 +346,13 @@ async function resumeHeldRecoveryFinalization(settlement: RunningRecoverySettlem
     subjectKey: jobId,
     signal,
     coordinatorCommit,
-    summary: `Held durable recovery finalization for ${jobId}`,
+    summary: `Held interrupted recovery finalization for ${jobId}`,
     settle: settlement.settle,
     settleFailure: (item, error, retryControls) =>
       settleUnexpectedRecoveryFailure(
         item,
         jobId,
-        'Held durable recovery finalization failed',
+        'Held interrupted recovery finalization failed',
         error,
         coordinatorCommit,
         retryControls.report,
@@ -301,14 +376,17 @@ async function retryHeldCleanup(
     clearRecoveryPoller(jobId);
     return;
   }
-  const containment = observeDurableRecoveryContainment(jobId, runtimeRecord);
-  const cleanup =
+  const containment = observeDurableRecoveryContainment(jobId, runtimeRecord, settlement.leaf);
+  let cleanup =
     containment.observation.kind === 'absent'
       ? ({ kind: 'absence-confirmed' } as const)
       : containment.evidence.kind === 'current' || containment.evidence.kind === 'provisional'
-        ? await runHeldRecoveryReap(jobId, containment.evidence.record, signal)
+        ? await runHeldRecoveryReap(jobId, containment.evidence.record, signal, settlement.leaf)
         : { kind: 'held' as const, reason: durableOwnershipEvidenceHoldReason(containment.evidence) };
   if (cleanup.kind === 'superseded') return;
+  if (cleanup.kind === 'absence-confirmed' && !settlement.leaf.permitsIndependentAbsenceDecision()) {
+    cleanup = { kind: 'held', reason: 'the durable job leaf absence is unobservable' };
+  }
 
   const statusAfterRetry = readDurableCliContainmentStatus(progressStore.getDb(), jobId);
   if (statusAfterRetry.kind === 'valid' && statusAfterRetry.status.disposition.kind === 'operator-abandoned') {
@@ -316,7 +394,6 @@ async function retryHeldCleanup(
     return;
   }
   if (cleanup.kind === 'absence-confirmed') {
-    clearRecoveryPoller(jobId);
     await resumeHeldRecoveryFinalization(settlement);
     return;
   }
@@ -371,9 +448,9 @@ async function reconcileHeldContainmentStatus(
   const { state, progressStore, runHeldRecoveryReap } = settlement.deps;
   const { jobId } = settlement.recovery;
   const { signal, abandonHeldJob } = settlement.context;
-  const cleanup =
+  let cleanup =
     containment.evidence.kind === 'current' || containment.evidence.kind === 'provisional'
-      ? await runHeldRecoveryReap(jobId, containment.evidence.record, signal)
+      ? await runHeldRecoveryReap(jobId, containment.evidence.record, signal, settlement.leaf)
       : { kind: 'held' as const, reason: durableOwnershipEvidenceHoldReason(containment.evidence) };
   if (cleanup.kind === 'superseded') {
     signal.throwIfAborted();
@@ -382,6 +459,10 @@ async function reconcileHeldContainmentStatus(
       authoritativeSource: { kind: 'unchanged-and-still-enumerable' },
       detail: 'durable containment reap ownership transferred',
     };
+  }
+
+  if (cleanup.kind === 'absence-confirmed' && !settlement.leaf.permitsIndependentAbsenceDecision()) {
+    cleanup = { kind: 'held', reason: 'the durable job leaf absence is unobservable' };
   }
 
   const statusAfterCleanup = readDurableCliContainmentStatus(progressStore.getDb(), jobId);
@@ -444,20 +525,24 @@ async function settleDurableContainment(
     };
   }
 
-  const containment = observeDurableRecoveryContainment(jobId, runtimeRecord);
+  const containment = observeDurableRecoveryContainment(jobId, runtimeRecord, settlement.leaf);
   const operatorAbandoned =
     persistedContainment.kind === 'valid' && persistedContainment.status.disposition.kind === 'operator-abandoned';
-  const absenceConfirmed = containment.observation.kind === 'absent';
+  const absenceConfirmed =
+    containment.observation.kind === 'absent' && settlement.leaf.permitsIndependentAbsenceDecision();
   if (
-    persistedContainment.kind === 'valid' &&
-    persistedContainment.status.disposition.kind === 'held' &&
-    !absenceConfirmed
+    !absenceConfirmed &&
+    !operatorAbandoned &&
+    ((persistedContainment.kind === 'valid' && persistedContainment.status.disposition.kind === 'held') ||
+      wrapperIsAbsent(settlement, containment))
   ) {
     const reconciliation = await reconcileHeldContainmentStatus(
       settlement,
       runtimeRecord,
       containment,
-      persistedContainment.status.disposition.retryIntervalMs,
+      persistedContainment.kind === 'valid' && persistedContainment.status.disposition.kind === 'held'
+        ? persistedContainment.status.disposition.retryIntervalMs
+        : RECOVERY_POLL_MS,
     );
     if (reconciliation.kind !== 'reconciled') return reconciliation;
     if (reconciliation.absenceConfirmed || reconciliation.operatorAbandoned) {
@@ -489,25 +574,30 @@ function holdUnobservableDurableRecovery(
     disposition: { kind: 'held', reason, retryIntervalMs: RECOVERY_POLL_MS, abandonment: 'abort-job' },
   });
   const detail =
-    `${reason}. Repair the recorded containment before retrying this recovery coordinate. ` +
+    `${reason}. Recorded containment is retried automatically every ${RECOVERY_POLL_MS}ms until absence is confirmed. ` +
     'Operator abandonment remains available without proving process absence or sending a signal.';
   appendRecoveryProgress(settlement, `Durable recovery containment pid=${runtimeRecord.pid} is held (${detail})`);
   state.recoveryRegistry?.setAbortHandler(jobId, () => abandonHeldJob(jobId));
+  installHeldCleanupRetryPoller(settlement, runtimeRecord, RECOVERY_POLL_MS);
   settlement.controls.clearProcessLocalCleanup();
   settlement.controls.report(`Held durable recovery job: ${jobId}: ${reason}\n`);
-  return { kind: 'quarantine', detail, remedy: { kind: 'abort-job', jobId } };
+  return {
+    kind: 'deferred',
+    continuation: { kind: 'durable-containment-reap', key: jobId },
+    detail,
+    remedy: { kind: 'abort-job', jobId },
+  };
 }
 
 async function finalizeAdoptedRuntime(
   settlement: RunningRecoverySettlement,
   progress: RecoveredProgress,
-  retainedCleanup: (() => void) | null,
   fence: { signal: AbortSignal; onCommitStart(): void },
 ): Promise<void> {
-  const { state, progressStore, runCoordinatorWalk, settleUnexpectedRecoveryFailure, maybeReleaseRecoveryRegistry } =
-    settlement.deps;
+  const { state, progressStore, runCoordinatorWalk, settleUnexpectedRecoveryFailure } = settlement.deps;
   const { jobId, authority } = settlement.recovery;
   const { signal, coordinatorCommit } = settlement.context;
+  if (!settlement.deps.deleteCoordinatorRecoveryQuarantine(jobId)) return;
   await runCoordinatorWalk({
     subjectKey: jobId,
     signal,
@@ -515,10 +605,8 @@ async function finalizeAdoptedRuntime(
     summary: `Adopted durable recovery finalization for ${jobId}`,
     settle: async (finalItem, finalControls) => {
       finalControls.setProcessLocalCleanup(() => {
-        state.recoveryRegistry?.remove(jobId);
-        state.recoveryRegistry?.clearCancelled(jobId);
-        retainedCleanup?.();
-        maybeReleaseRecoveryRegistry();
+        requireDurableRecoveryAbsence(settlement);
+        releaseRunningRecovery(settlement);
       });
       await finalizeDeadAdoptedJob({
         jobId,
@@ -527,8 +615,15 @@ async function finalizeAdoptedRuntime(
         authority,
         progressStore,
         cancelledJobIds: state.cancelledRecoveryJobIds,
-        fence,
+        fence: {
+          ...fence,
+          onCommitStart: () => {
+            requireDurableRecoveryAbsence(settlement);
+            fence.onCommitStart();
+          },
+        },
       });
+      requireDurableRecoveryAbsence(settlement);
       return {
         kind: 'advanced',
         outcome: 'settled',
@@ -548,23 +643,22 @@ async function finalizeAdoptedRuntime(
   });
 }
 
-function pollAdoptedContainment(
+async function pollAdoptedContainment(
   settlement: RunningRecoverySettlement,
   runtimeRecord: DurableRunningRuntime,
   progress: RecoveredProgress,
-): void {
-  const {
-    state,
-    clearRecoveryPoller,
-    observeDurableRecoveryContainment,
-    takeAdoptedJobCleanup,
-    startTrackedFinalization,
-    log,
-  } = settlement.deps;
+): Promise<void> {
+  const { state, observeDurableRecoveryContainment, startTrackedFinalization } = settlement.deps;
   const { jobId } = settlement.recovery;
   const { signal } = settlement.context;
-  const observation = observeDurableRecoveryContainment(jobId, runtimeRecord).observation;
+  if (state.teardownRequested) return;
+  const containment = observeDurableRecoveryContainment(jobId, runtimeRecord, settlement.leaf);
+  const { observation } = containment;
   progress.drain();
+  if (wrapperIsAbsent(settlement, containment)) {
+    await resumeHeldRecoveryFinalization(settlement);
+    return;
+  }
   if (observation.kind === 'unobservable') {
     const unanswered = (state.unansweredAdoptionProbes.get(jobId) ?? 0) + 1;
     state.unansweredAdoptionProbes.set(jobId, unanswered);
@@ -577,29 +671,12 @@ function pollAdoptedContainment(
     return;
   }
   state.unansweredAdoptionProbes.delete(jobId);
-  if (observation.kind === 'alive') return;
+  if (observation.kind === 'alive' || !settlement.leaf.permitsIndependentAbsenceDecision()) return;
   if (state.recoveryRegistry?.getAbortDisposition(jobId)?.settlement !== undefined) return;
 
-  clearRecoveryPoller(jobId);
-  state.adoptedRunningPids.delete(jobId);
-  state.unansweredAdoptionProbes.delete(jobId);
-  const retainedCleanup = takeAdoptedJobCleanup(jobId);
-  if (state.teardownRequested) {
-    retainedCleanup?.();
-    return;
-  }
-
+  if (state.teardownRequested) return;
   progress.drain();
-  const finalization = startTrackedFinalization(jobId, signal, (fence) =>
-    finalizeAdoptedRuntime(settlement, progress, retainedCleanup, fence),
-  );
-  void finalization.catch((error: unknown) => {
-    try {
-      log(`Durable finalization cleanup failed for ${jobId}: ${formatError(error)}\n`);
-    } catch {
-      // A logging failure must not create another unowned rejection after async cleanup fails.
-    }
-  });
+  await startTrackedFinalization(jobId, signal, (fence) => finalizeAdoptedRuntime(settlement, progress, fence));
 }
 
 async function pollAdoptedRuntime(
@@ -636,13 +713,24 @@ async function pollAdoptedRuntime(
   state.adoptedRunningPids.set(jobId, { pid: runtimeRecord.pid, pool: launchRecord.pool });
   state.adoptedRunningJobCleanups.set(jobId, cleanupOnce);
 
+  let pollInFlight = false;
   const pollInterval = runtime.time.setInterval(() => {
-    try {
-      pollAdoptedContainment(settlement, runtimeRecord, progress);
-    } catch (error: unknown) {
-      if (error instanceof SuccessionWriterParkedError) return;
-      settlement.deps.log(`Adopted durable recovery poll failed for ${jobId}: ${formatError(error)}\n`);
-    }
+    if (pollInFlight) return;
+    pollInFlight = true;
+    void pollAdoptedContainment(settlement, runtimeRecord, progress)
+      .catch((error: unknown) => {
+        if (error instanceof SuccessionWriterParkedError) return;
+        try {
+          settlement.deps.log(
+            `Durable finalization cleanup failed for ${jobId}: ${formatError(error)}; the poller retries every ${RECOVERY_POLL_MS}ms.\n`,
+          );
+        } catch {
+          // A logging failure must not create another unowned rejection after async cleanup fails.
+        }
+      })
+      .finally(() => {
+        pollInFlight = false;
+      });
   }, RECOVERY_POLL_MS);
   pollInterval.unref?.();
   state.recoveryPollIntervals.set(jobId, pollInterval);
@@ -661,6 +749,12 @@ async function settleRunningRecovery(settlement: RunningRecoverySettlement): Pro
   const { recovery, context, item, controls } = settlement;
   const { jobId, runtimeRecord } = recovery;
   controls.setProcessLocalCleanup(() => {
+    if (isDurableCliRuntime(runtimeRecord)) {
+      const status = readDurableCliContainmentStatus(settlement.deps.progressStore.getDb(), jobId);
+      if (status.kind !== 'valid' || status.status.disposition.kind !== 'operator-abandoned') {
+        requireDurableRecoveryAbsence(settlement);
+      }
+    }
     state.recoveryRegistry?.remove(jobId);
     state.recoveryRegistry?.clearCancelled(jobId);
   });
@@ -693,11 +787,27 @@ export function createRunningRecoveryAdoption(deps: RunningRecoveryAdoptionDepen
   ): Promise<RecoveryDisposition | void> {
     const { jobId, authority } = recovery;
     const service = deps.getRecoveryService(deps.createInvocationContext(authority.launchRecord.projectRoot));
+    const evidence = isDurableCliRuntime(recovery.runtimeRecord)
+      ? readDurableCliPreReadyOwnershipEvidence(deps.progressStore.getDb(), jobId, recovery.runtimeRecord.pid)
+      : null;
+    const failureDomain =
+      evidence?.kind === 'current' || evidence?.kind === 'provisional'
+        ? durableCliFailureDomain(deps.runtime, deps.progressStore.getDb(), jobId, evidence.record)
+        : isDurableCliRuntime(recovery.runtimeRecord)
+          ? durableCliFailureDomain(
+              deps.runtime,
+              deps.progressStore.getDb(),
+              jobId,
+              undefined,
+              recovery.runtimeRecord.pid,
+            )
+          : undefined;
+    const leaf = recovery.containmentObservation ?? createFailureDomainContainmentObservation(failureDomain);
     const settle = (
       item: CoordinatorRecoveryItem,
       controls: CoordinatorRecoveryControls,
     ): Promise<RecoveryDisposition> =>
-      settleRunningRecovery({ deps, recovery, context, item, controls, service, settle });
+      settleRunningRecovery({ deps, recovery, context, item, controls, service, settle, leaf });
     if (direct?.item.jobId === jobId) return settle(direct.item, direct.controls);
     await deps.runCoordinatorWalk({
       subjectKey: jobId,

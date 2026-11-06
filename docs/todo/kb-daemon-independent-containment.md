@@ -21,7 +21,8 @@ SIGKILL in the coordinator's event loop, so the escalation disappears if the coo
 Give the KB daemon a containment enforcer that is neither the coordinator nor the daemon. The provider
 guardian/reaper already demonstrate the required semantics in `createArmedEnforcer`
 (`src/provider-proxy/enforcement.ts`): latch before awaited teardown, hold an absolute deadline outside the
-owned process, and confirm containment absence instead of trusting leader exit.
+owned process, and confirm containment absence instead of trusting leader exit. Any shared mechanism must
+preserve the applicable [containment scope and evidence constraints](../architecture.md#containment-evidence-and-reclamation).
 
 The shared concept must have its own lower-level home. Importing
 `src/provider-proxy/orphan-deadline.ts` into KB would make a provider-specific protocol the owner of generic

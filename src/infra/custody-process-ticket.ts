@@ -78,6 +78,15 @@ const bindingSchema = z
   })
   .passthrough();
 
+const payloadEntrySchema = z
+  .object({
+    version: z.literal('v1'),
+    intentId: z.string().uuid(),
+    processToken: z.string().uuid(),
+    process: bindingSchema.shape.process,
+  })
+  .strict();
+
 export type CustodyProcessTicket = z.infer<typeof ticketSchema>;
 
 export function custodyProcessArgument(processToken: string): string {
@@ -239,6 +248,145 @@ export function observeCustodyProcess(
 
 export function parseCustodyProcessTicket(value: string): CustodyProcessTicket {
   return ticketSchema.parse(JSON.parse(value) as unknown);
+}
+
+/** Unbound requires a validated intent and observable absence of every binding. */
+export function observeCustodyProcessTicket(
+  ticket: CustodyProcessTicket,
+  readText: (path: string) => string,
+):
+  | Readonly<{ kind: 'unbound' }>
+  | Readonly<{ kind: 'bound'; process: z.infer<typeof bindingSchema>['process'] }>
+  | Readonly<{ kind: 'unobservable' }> {
+  try {
+    const dir = join(ticket.runDir, 'custody.v1', ticket.intentId);
+    const intent = intentSchema.parse(JSON.parse(readText(join(dir, 'intent.v1.json'))) as unknown);
+    if (
+      intent.id !== ticket.intentId ||
+      intent.processToken !== ticket.processToken ||
+      intent.epoch !== ticket.epoch ||
+      !sameEpoch(intent.epochKey, ticket.epochKey)
+    )
+      return { kind: 'unobservable' };
+    let process: z.infer<typeof bindingSchema>['process'] | null = null;
+    for (const name of ['binding.v1.json', 'binding.recovered.v1.json']) {
+      let text: string;
+      try {
+        text = readText(join(dir, name));
+      } catch (error) {
+        if (error !== null && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') continue;
+        return { kind: 'unobservable' };
+      }
+      const binding = bindingSchema.parse(JSON.parse(text) as unknown);
+      if (
+        binding.intentId !== intent.id ||
+        binding.processToken !== ticket.processToken ||
+        binding.operationId !== intent.operationId ||
+        binding.capsule !== intent.capsule ||
+        (process !== null &&
+          (binding.process.pid !== process.pid ||
+            binding.process.incarnation !== process.incarnation ||
+            binding.process.processGroupId !== process.processGroupId))
+      )
+        return { kind: 'unobservable' };
+      process = binding.process;
+    }
+    return process === null ? { kind: 'unbound' } : { kind: 'bound', process };
+  } catch {
+    return { kind: 'unobservable' };
+  }
+}
+
+/** A token alone cannot authorize control of a leaf already bound to another process. */
+export function custodyProcessTicketMatches(
+  ticket: CustodyProcessTicket,
+  identity: Readonly<{ pid: number; incarnation: string }>,
+  readText: (path: string) => string,
+): boolean {
+  const observation = observeCustodyProcessTicket(ticket, readText);
+  return (
+    observation.kind === 'bound' &&
+    observation.process.pid === identity.pid &&
+    observation.process.incarnation === identity.incarnation &&
+    observation.process.processGroupId === (ticket.processGroupId ?? identity.pid)
+  );
+}
+
+/** Entry evidence alone cannot authorize control without a matching custody binding. */
+export function observeCustodyPayloadEntry(
+  ticket: Pick<CustodyProcessTicket, 'runDir' | 'intentId' | 'processToken'>,
+  readText: (path: string) => string,
+):
+  | Readonly<{ kind: 'entered'; process: z.infer<typeof bindingSchema>['process'] }>
+  | Readonly<{ kind: 'unproven' | 'unobservable' }> {
+  try {
+    const entry = payloadEntrySchema.parse(
+      JSON.parse(readText(join(ticket.runDir, 'custody.v1', ticket.intentId, 'payload-entry.v1.json'))) as unknown,
+    );
+    return entry.intentId === ticket.intentId && entry.processToken === ticket.processToken
+      ? { kind: 'entered', process: entry.process }
+      : { kind: 'unobservable' };
+  } catch (error) {
+    return error !== null && typeof error === 'object' && 'code' in error && error.code === 'ENOENT'
+      ? { kind: 'unproven' }
+      : { kind: 'unobservable' };
+  }
+}
+
+/** Entry evidence is valid only for the exact binding that entered. */
+export function custodyPayloadEntered(
+  ticket: Pick<CustodyProcessTicket, 'runDir' | 'intentId' | 'processToken'>,
+  identity: Readonly<{ pid: number; incarnation: string; processGroupId: number }>,
+  readText: (path: string) => string,
+): boolean {
+  const entry = observeCustodyPayloadEntry(ticket, readText);
+  return (
+    entry.kind === 'entered' &&
+    entry.process.pid === identity.pid &&
+    entry.process.incarnation === identity.incarnation &&
+    entry.process.processGroupId === identity.processGroupId
+  );
+}
+
+/** Entry may be recorded only after successful payload entry and for the exact custody binding. */
+export function recordCustodyPayloadEntry(
+  ticket: CustodyProcessTicket,
+  identity: Readonly<{ pid: number; incarnation: string }>,
+): void {
+  const observed = observeCustodyProcessTicket(ticket, (path) => readFileSync(path, 'utf8'));
+  if (
+    observed.kind !== 'bound' ||
+    observed.process.pid !== identity.pid ||
+    observed.process.incarnation !== identity.incarnation
+  )
+    throw new Error('Custody payload entry has no matching binding.');
+  const entry = payloadEntrySchema.parse({
+    version: 'v1',
+    intentId: ticket.intentId,
+    processToken: ticket.processToken,
+    process: observed.process,
+  });
+  const path = join(ticket.runDir, 'custody.v1', ticket.intentId, 'payload-entry.v1.json');
+  if (custodyPayloadEntered(ticket, observed.process, (name) => readFileSync(name, 'utf8'))) return;
+  const stage = `${path}.stage.${identity.pid}.${randomUUID()}`;
+  let fd: number | null = null;
+  try {
+    fd = openSync(stage, 'wx', 0o600);
+    writeFileSync(fd, `${JSON.stringify(entry)}\n`);
+    fsyncSync(fd);
+    closeSync(fd);
+    fd = null;
+    linkSync(stage, path);
+    const directoryFd = openSync(dirname(path), 'r');
+    try {
+      fsyncSync(directoryFd);
+    } finally {
+      closeSync(directoryFd);
+    }
+  } finally {
+    if (fd !== null) closeSync(fd);
+    rmSync(stage, { force: true });
+  }
 }
 
 /** A child must bind the exact pre-minted token before starting external work. */
