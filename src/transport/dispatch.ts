@@ -1,4 +1,5 @@
-import { jobSendOutcomeSchema } from '../jobs/send.js';
+import { ProjectionConversationMalformedError } from '../jobs/records.js';
+import { jobSendOutcomeSchema, malformedConversationSendRefusal } from '../jobs/send.js';
 import { proxyOperationSendResultSchema } from '../provider-proxy/protocol.js';
 import { WaitSessionError } from '../jobs/wait/session.js';
 import { waitExecutionSelectionsSchema } from '../jobs/wait/execution-selection.js';
@@ -1134,7 +1135,28 @@ async function executeJobsDetailCatalogRequest({
     return unaryHttp(domainResultToHttp(jobScopeMismatchResult(scopeCheck.mismatch)));
   }
 
-  const detail = rpcPorts.jobs.detail(parsed.jobId);
+  let detail;
+  try {
+    detail = rpcPorts.jobs.detail(parsed.jobId);
+  } catch (error) {
+    if (!(error instanceof ProjectionConversationMalformedError)) throw error;
+    const sendRefusal = malformedConversationSendRefusal(parsed.jobId);
+    const ownership =
+      error.owner === null
+        ? 'Ownership could not be established. This failure belongs to the owning operation.'
+        : error.owner.kind === 'provider-session'
+          ? `Execution owner: provider-session ${error.owner.id}.`
+          : `This failure belongs to the owning ${error.owner.kind} operation ${error.owner.id}.`;
+    return unary(
+      {
+        code: sendRefusal.code,
+        message:
+          `Job detail could not be decoded. ${error.message} Recorded work directory: ${error.workDir === null ? 'unknown' : JSON.stringify(error.workDir)}. ${ownership}`.trim(),
+        detail: { sendRefusal, workDir: error.workDir, owner: error.owner },
+      },
+      409,
+    );
+  }
   if (!detail) {
     if (['discovery-unknown', 'discovery-unreadable'].includes(rpcPorts.jobs.unknownJobDisposition()))
       return unknownJobsAnswer(rpcPorts, [parsed.jobId]);

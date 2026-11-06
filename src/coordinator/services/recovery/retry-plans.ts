@@ -257,6 +257,7 @@ export function createCoordinatorJobSettlementRefusalRecorderImplementation(
             stage: 'settle',
             errorMessage: input.failure,
             detail: `Job settlement refused after ${input.cause}.`,
+            ...(input.projectionRejected ? { remedy: { kind: 'external-repair' as const } } : {}),
           });
           if (!recorded) throw new Error('The recovery quarantine write did not persist.');
           return {

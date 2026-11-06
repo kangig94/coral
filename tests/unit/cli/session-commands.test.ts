@@ -1,3 +1,4 @@
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { Command } from 'commander';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -371,16 +372,22 @@ it('preserves detach when executing a refused send retry', async () => {
 it.each(['codex', 'claude'] as const)('preserves detach when executing a fresh %s remedy', async (provider) => {
   const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
   vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
-  client.sendJob.mockResolvedValueOnce({ state: 'refused', code: 'pre_generation_job', reason: 'Historical job.' });
+  const workDir = fixtureCanonicalWorkDir('/recorded child');
+  client.sendJob.mockResolvedValueOnce({
+    state: 'refused',
+    code: 'pre_generation_job',
+    reason: 'Historical job.',
+    workDir,
+  });
   await program().parseAsync(['jobs', 'send', 'job-1', '-d', '-i', 'continue'], { from: 'user' });
   const commands = printedCommands(stderr.mock.calls.map(([text]) => String(text)).join(''));
   const command = commands.find(([name]) => name === provider)!;
-  expect(command).toEqual([provider, '-d', '-i', 'continue']);
+  expect(command).toEqual([provider, '--work-dir', workDir, '-d', '-i', 'continue']);
   const root = program();
   registerProviderCommands(root, createBuiltInProviderRegistry());
   process.exitCode = undefined;
   await root.parseAsync(command, { from: 'user' });
-  expect(client.createSession).toHaveBeenCalledWith(provider, 'continue', expect.any(Object));
+  expect(client.createSession).toHaveBeenCalledWith(provider, 'continue', expect.objectContaining({ workDir }));
   expect(launchAndFollow).not.toHaveBeenCalled();
   expect(process.exitCode).toBeUndefined();
 });

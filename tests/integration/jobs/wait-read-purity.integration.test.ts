@@ -233,6 +233,36 @@ describe('Phase D wait read purity (Revision S3)', () => {
     },
   );
 
+  it.each(['facet', 'diagnostics'] as const)(
+    'settles corrupt active %s evidence without a continuation or retry',
+    async (column) => {
+      const f = fixture();
+      f.db.prepare(`UPDATE projection_jobs SET ${column} = ? WHERE job_id = ?`).run('{', f.jobId);
+      const projection = f.db.prepare('SELECT * FROM projection_jobs WHERE job_id = ?').get(f.jobId);
+      const check = measure(f);
+      expect(f.addressing.admitWait({ jobIds: [f.jobId] })[0]).toMatchObject({ disposition: 'unreadable' });
+      expect(f.addressing.snapshot({ jobIds: [f.jobId] })).toMatchObject({
+        jobs: [{ jobId: f.jobId, disposition: 'unreadable' }],
+        remainingJobIds: [],
+        cursor: null,
+        exitCode: 1,
+      });
+      const sleep = vi.spyOn(f.runtime.time, 'sleep');
+      const events: WaitStreamEvent[] = [];
+      for await (const event of f.addressing.waitStream({ jobIds: [f.jobId] })) events.push(event);
+      expect(events.at(-1)).toMatchObject({
+        type: 'waiting',
+        waitingJobIds: [],
+        cursor: null,
+        exitCode: 1,
+        endedBy: 'settled',
+      });
+      expect(sleep).not.toHaveBeenCalled();
+      check();
+      expect(f.db.prepare('SELECT * FROM projection_jobs WHERE job_id = ?').get(f.jobId)).toEqual(projection);
+    },
+  );
+
   it('observes a missing inside-window active artifact and delivers the outcome with repair paused', async () => {
     const f = fixture();
     f.complete();

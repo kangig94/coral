@@ -59,3 +59,17 @@ export interface ConversationExecutionPort extends ConversationInitialLaunchPort
 export interface ConversationRecoveryPort extends ConversationContinuityPort {
   readById(jobId: string): JobConversation | null;
 }
+
+export type ConversationReadFailure = 'missing' | 'owner_mismatch' | 'provider_mismatch' | 'malformed' | 'unreadable';
+
+export class ConversationReadError extends Error {
+  readonly reason: ConversationReadFailure;
+  readonly jobId: string;
+
+  constructor(reason: ConversationReadFailure, jobId: string, options?: ErrorOptions) {
+    super(`Provider conversation ${jobId}: ${reason}.`, options);
+    this.name = 'ConversationReadError';
+    this.reason = reason;
+    this.jobId = jobId;
+  }
+}

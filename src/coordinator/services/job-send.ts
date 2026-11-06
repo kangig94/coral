@@ -1,3 +1,5 @@
+import { ADMISSION_READ_TIMEOUT_MS, readAdmissionProjection } from '../../jobs/admission-read.js';
+import type { TimePort } from '../../infra/port-types.js';
 import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
 import {
   type CommittedExecutionRequest,
@@ -34,9 +36,13 @@ export interface JobSendRequest {
   readonly input: string;
   readonly clientMessageId: string;
   readonly target: JobSendTarget;
+  readonly conversationReadDeadline?: number;
 }
 
+type AdmissionBoundSendRequest = JobSendRequest & Readonly<{ conversationReadDeadline: number }>;
+
 export interface JobSendServiceDeps {
+  time: Pick<TimePort, 'now' | 'sleep'>;
   attempts: Map<string, Promise<void>>;
   progressStore: Pick<JobProgressStore, 'readStatus' | 'getDb'>;
   jobLocations: Pick<JobLocationView, 'read'>;
@@ -87,15 +93,26 @@ export class JobSendService {
     jobs.set(request.jobId, turn);
     await previous;
     try {
-      return await this.sendBound(request, ctx);
+      return await this.sendBound(
+        {
+          ...request,
+          conversationReadDeadline:
+            request.conversationReadDeadline ?? this.deps.time.now() + ADMISSION_READ_TIMEOUT_MS,
+        },
+        ctx,
+      );
     } finally {
       release();
       if (jobs.get(request.jobId) === turn) jobs.delete(request.jobId);
     }
   }
 
-  private async sendBound(request: JobSendRequest, ctx: InvocationContext): Promise<JobSendResult> {
-    const status = this.deps.progressStore.readStatus(request.jobId);
+  private async sendBound(request: AdmissionBoundSendRequest, ctx: InvocationContext): Promise<JobSendResult> {
+    const status = await readAdmissionProjection(
+      () => this.deps.progressStore.readStatus(request.jobId),
+      this.deps.time,
+      request.conversationReadDeadline,
+    );
     if (status === null) {
       const location = this.deps.jobLocations.read(request.jobId);
       if (
@@ -122,25 +139,31 @@ export class JobSendService {
         reason: 'The job has no provider turn to receive input.',
       };
 
-    const replay = findCommittedExecutionRequest(
-      this.deps.progressStore.getDb(),
-      request.jobId,
-      request.clientMessageId,
+    const replay = await readAdmissionProjection(
+      () => findCommittedExecutionRequest(this.deps.progressStore.getDb(), request.jobId, request.clientMessageId),
+      this.deps.time,
+      request.conversationReadDeadline,
     );
     if (replay !== null) return this.replay(request, replay);
     return request.target.mode === 'continue' ? this.continue(request, status, ctx) : this.steer(request, status);
   }
 
-  private replay(request: JobSendRequest, replay: CommittedExecutionRequest): JobSendResult {
-    const db = this.deps.progressStore.getDb();
-    const epochKey = this.deps.currentJobEpochKey();
-    if (!matchesContinuationEnvelope(db, request, replay, epochKey))
-      return {
-        state: 'refused',
-        code: 'continuation_target_changed',
-        reason: 'This message identity belongs to a different continuation envelope.',
-      };
-    return this.launched(committedProviderLaunchDecision(db, replay, epochKey), replay.request.execution);
+  private async replay(request: AdmissionBoundSendRequest, replay: CommittedExecutionRequest): Promise<JobSendResult> {
+    return readAdmissionProjection(
+      () => {
+        const db = this.deps.progressStore.getDb();
+        const epochKey = this.deps.currentJobEpochKey();
+        if (!matchesContinuationEnvelope(db, request, replay, epochKey))
+          return {
+            state: 'refused',
+            code: 'continuation_target_changed',
+            reason: 'This message identity belongs to a different continuation envelope.',
+          };
+        return this.launched(committedProviderLaunchDecision(db, replay, epochKey), replay.request.execution);
+      },
+      this.deps.time,
+      request.conversationReadDeadline,
+    );
   }
 
   private launched(decision: AcceptedProviderJobLaunchDecision, execution: number): JobSendResult {
@@ -157,8 +180,16 @@ export class JobSendService {
     };
   }
 
-  private async continue(request: JobSendRequest, status: JobStatus, ctx: InvocationContext): Promise<JobSendResult> {
-    const refusal = this.validateContinuationTarget(request, status);
+  private async continue(
+    request: AdmissionBoundSendRequest,
+    status: JobStatus,
+    ctx: InvocationContext,
+  ): Promise<JobSendResult> {
+    const refusal = await readAdmissionProjection(
+      () => this.validateContinuationTarget(request, status),
+      this.deps.time,
+      request.conversationReadDeadline,
+    );
     if (refusal !== null) return refusal;
     const decision = await this.deps.resume(request, ctx);
     return this.continuationResult(decision, request.target.execution + 1);
@@ -201,6 +232,8 @@ export class JobSendService {
         return { state: 'refused', code: continuationRefusalCodes[decision.code], reason: decision.message };
       case 'undetermined':
         switch (decision.code) {
+          case 'conversation_unobservable':
+            return { state: 'refused', code: decision.code, reason: decision.message };
           case 'continuation_commit_uncertain':
             return { state: 'unknown', reason: decision.message };
           case 'work_directory_unobservable':
@@ -214,10 +247,18 @@ export class JobSendService {
     }
   }
 
-  private async steer(request: JobSendRequest, status: JobStatus): Promise<JobSendResult> {
-    const refusal = this.validateSteerTarget(request, status);
+  private async steer(request: AdmissionBoundSendRequest, status: JobStatus): Promise<JobSendResult> {
+    const refusal = await readAdmissionProjection(
+      () => this.validateSteerTarget(request, status),
+      this.deps.time,
+      request.conversationReadDeadline,
+    );
     if (refusal !== null) return refusal;
-    const operation = this.steerableOperation(request.jobId);
+    const operation = await readAdmissionProjection(
+      () => this.steerableOperation(request.jobId),
+      this.deps.time,
+      request.conversationReadDeadline,
+    );
     if (operation.state === 'refused') return operation;
     return this.deliverSteer(request, operation.record);
   }
@@ -286,6 +327,10 @@ export class JobSendService {
 }
 
 const continuationRefusalCodes = {
+  conversation_owner_mismatch: 'conversation_owner_mismatch',
+  conversation_missing: 'conversation_missing',
+  conversation_malformed: 'conversation_malformed',
+  conversation_provider_mismatch: 'conversation_provider_mismatch',
   execution_finishing: 'execution_finishing',
   continuation_target_changed: 'continuation_target_changed',
   archive_missing: 'archive_missing',

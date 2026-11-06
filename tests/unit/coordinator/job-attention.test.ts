@@ -50,6 +50,16 @@ function fixture() {
     services: { jobAttention: attention },
     getProgressStore: () => ({
       readStatus: (jobId: string) => statuses.get(jobId) ?? null,
+      getDb: () => ({
+        prepare: () => ({
+          get: (jobId: string) => {
+            const status = statuses.get(jobId);
+            return status === undefined
+              ? undefined
+              : { project_root: status.projectRoot, work_dir: status.workDir, job_kind: status.jobKind };
+          },
+        }),
+      }),
       listJobProjections: () => [...statuses].map(([jobId, status]) => ({ jobId, status })),
       loadJobProjectionDetail: (jobId: string) => ({
         status: statuses.get(jobId) ?? null,

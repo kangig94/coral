@@ -13,7 +13,11 @@ import { getWaitInvocation } from './wait-invocation.js';
 import { resolvePluginRoot } from './plugin-root.js';
 
 import type { InvocationContext } from '../runtime/invocation-context.js';
-import { canonicalizeWorkDir, type CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
+import {
+  canonicalizeWorkDir,
+  canonicalWorkDirWireSchema,
+  type CanonicalWorkDir,
+} from '../runtime/canonical-work-dir.js';
 import { resolveUserHomeDir } from '../infra/path/index.js';
 import { BackendUnreachableError } from '../infra/http-errors.js';
 import type { DiscussAbortResponse, DiscussStartResponse } from '../discuss/read-contract.js';
@@ -96,6 +100,7 @@ import { CORAL_KB_ENABLE_ENV, KB_DISABLED_REASON, resolveKbEnabled } from '../in
 import { filterForwardableCoralEnv } from '../infra/env-sanitize.js';
 import { collectForwardedNetworkEnv } from '../infra/network-env.js';
 import type { Principal } from '../security/principal.js';
+import { executionOwnerSchema, type ExecutionOwner } from '../runtime/execution-owner.js';
 import { classifyCommand, commandPath, type CommandClass } from './classify.js';
 import { ProviderSelectionError, UsageError } from './errors.js';
 import { parseExpression } from '../workflow/parser.js';
@@ -106,6 +111,8 @@ export type CliJobSendOutcome = JobSendOutcome &
     execution?: number;
     priorDeliveryUncertain?: true;
     targetExecution?: number;
+    workDir?: CanonicalWorkDir | null;
+    owner?: ExecutionOwner | null;
   }>;
 
 const jobSendDetailSchema = z
@@ -117,6 +124,8 @@ const jobSendDetailSchema = z
         execution: z.number().int().positive().safe(),
         phase: jobPhaseSchema,
         provider: z.string().min(1).nullable(),
+        workDir: canonicalWorkDirWireSchema.nullable().optional(),
+        owner: executionOwnerSchema.nullable().optional(),
       })
       .passthrough(),
   })
@@ -145,6 +154,8 @@ function selectJobSendOutcome(binding: BoundJobSendTarget, outcome: CliJobSendOu
   if (outcome.state === 'unknown' || outcome.state === 'refused')
     return {
       ...outcome,
+      workDir: binding.detail.status.workDir ?? null,
+      ...(binding.detail.status.owner === undefined ? {} : { owner: binding.detail.status.owner }),
       targetExecution: binding.target.mode === 'continue' ? binding.target.execution + 1 : binding.target.execution,
     };
   return outcome;
@@ -1018,6 +1029,22 @@ function readJobSendRefusal(value: unknown): Extract<JobSendOutcome, { state: 'r
   return parsed.success && parsed.data.state === 'refused' ? parsed.data : null;
 }
 
+function bindJobSendRefusal(
+  refusal: Extract<JobSendOutcome, { state: 'refused' }>,
+  evidence: Record<string, unknown> | null,
+): JobSendBinding {
+  const workDir = canonicalWorkDirWireSchema.nullable().safeParse(evidence?.workDir);
+  const owner = executionOwnerSchema.nullable().safeParse(evidence?.owner);
+  return {
+    kind: 'refused',
+    outcome: {
+      ...refusal,
+      ...(workDir.success ? { workDir: workDir.data } : {}),
+      ...(owner.success ? { owner: owner.data } : {}),
+    },
+  };
+}
+
 async function bindJobSendTarget(context: JobSendClientContext, jobId: string): Promise<JobSendBinding> {
   const { request, defaultContext } = context;
   let observed: unknown;
@@ -1027,7 +1054,8 @@ async function bindJobSendTarget(context: JobSendClientContext, jobId: string): 
     if (!(error instanceof IpcRpcError)) throw error;
     const detail = isRecord(error.data) && isRecord(error.data.detail) ? error.data.detail : null;
     const refusal = readJobSendRefusal(detail?.sendRefusal);
-    if (refusal !== null) return { kind: 'refused', outcome: refusal };
+    if (refusal !== null) return bindJobSendRefusal(refusal, detail);
+
     switch (error.code) {
       case 'job_not_found':
         return { kind: 'refused', outcome: { state: 'refused', code: 'not_found', reason: error.message } };
@@ -1041,7 +1069,7 @@ async function bindJobSendTarget(context: JobSendClientContext, jobId: string): 
   }
   if (isRecord(observed)) {
     const refusal = readJobSendRefusal(observed.sendRefusal);
-    if (refusal !== null) return { kind: 'refused', outcome: refusal };
+    if (refusal !== null) return bindJobSendRefusal(refusal, observed);
   }
   const parsedDetail = jobSendDetailSchema.safeParse(observed);
   if (!parsedDetail.success) return { kind: 'refused', outcome: unsupportedJobSendBuild() };

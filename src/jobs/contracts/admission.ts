@@ -161,6 +161,7 @@ export interface SettlementRefusalRecorder {
       jobId: string;
       cause: SettlementRefusalCause;
       failure: string;
+      projectionRejected?: true;
     }>,
   ): boolean | Promise<boolean>;
 }

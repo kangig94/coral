@@ -298,6 +298,8 @@ describe('command client routing', () => {
         ? {
             ...result,
             targetExecution: detail.status.execution,
+            workDir: detail.status.workDir,
+            owner: detail.status.owner,
           }
         : result,
     );
@@ -350,6 +352,8 @@ describe('command client routing', () => {
       code: 'unsupported_by_running_build',
       reason: 'The running Coral build predates this jobs send contract.',
       targetExecution: detail.status.execution,
+      workDir: detail.status.workDir,
+      owner: detail.status.owner,
     });
     const output = formatJobSendResult('job-1', outcome);
     expect(output.exitCode).toBe(1);
@@ -764,7 +768,7 @@ describe('jobs send immutable attempt envelope', () => {
         reason: 'The known location is historical.',
       });
       expect(formatJobSendResult('job-1', result, { inputTokens: ['input'] }).text).toContain(
-        'command=coral-cli codex -i input',
+        'The recorded work directory is unavailable',
       );
       expect(mockState.request).not.toHaveBeenCalled();
     },
@@ -932,6 +936,8 @@ describe('jobs send immutable attempt envelope', () => {
         reason: 'Finishing.',
         priorDeliveryUncertain: true,
         targetExecution: target,
+        workDir: detail.status.workDir,
+        owner: detail.status.owner,
       });
       const output = formatJobSendResult('job-1', result);
       expect(output.exitCode).toBe(1);

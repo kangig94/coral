@@ -9,7 +9,7 @@ import { canonicalWorkDirWireSchema } from '../runtime/canonical-work-dir.js';
 import type { Database } from '../store/db.js';
 import { executionOrdinalSchema, jobConversationFacetSchema } from './launch.js';
 import { jobPhaseSchema } from './phase.js';
-import { jobKindSchema } from './records.js';
+import { jobKindSchema, ProjectionConversationMalformedError, ProjectionJobDecodeError } from './records.js';
 import { jobDiagnosticsSchema, jobTerminalSchema } from './terminal/result.js';
 
 export const projectionJobStoredRowSchema = z
@@ -122,22 +122,109 @@ function parseJson(raw: string, column: string, jobId: string): unknown {
   }
 }
 
+function decodeProjectionOwnerEvidence(raw: unknown): ExecutionOwner | null {
+  if (typeof raw !== 'string') return null;
+  try {
+    const parsed = executionOwnerSchema.safeParse(JSON.parse(raw));
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Caller scope must remain decidable when the conversation facet cannot be decoded. */
+export function readProjectionJobAddress(
+  db: Database,
+  jobId: string,
+): {
+  projectRoot: string;
+  workDir: z.infer<typeof canonicalWorkDirWireSchema> | null;
+  jobKind: z.infer<typeof jobKindSchema>;
+  owner: ExecutionOwner | null;
+} | null {
+  const raw = db
+    .prepare('SELECT project_root, work_dir, job_kind, execution_owner FROM projection_jobs WHERE job_id = ?')
+    .get(jobId);
+  if (raw === undefined) return null;
+  const address = z
+    .object({
+      project_root: z.string(),
+      work_dir: canonicalWorkDirWireSchema.nullable(),
+      job_kind: jobKindSchema,
+      execution_owner: z.unknown().optional(),
+    })
+    .strict()
+    .parse(raw);
+  return {
+    projectRoot: address.project_root,
+    workDir: address.work_dir,
+    jobKind: address.job_kind,
+    owner: decodeProjectionOwnerEvidence(address.execution_owner),
+  };
+}
+
 export function decodeProjectionJobStoredRow(raw: unknown): ProjectionJobStoredRow {
-  const row = projectionJobStoredRowSchema.parse(raw);
-  const owner = executionOwnerSchema.parse(parseJson(row.execution_owner, 'execution_owner', row.job_id));
+  try {
+    return decodeProjectionJobAuthority(raw);
+  } catch (cause) {
+    if (cause instanceof ProjectionConversationMalformedError) throw cause;
+    const jobId =
+      raw !== null &&
+      typeof raw === 'object' &&
+      'job_id' in raw &&
+      typeof raw.job_id === 'string' &&
+      raw.job_id.length > 0
+        ? raw.job_id
+        : null;
+    throw new ProjectionJobDecodeError(jobId, cause);
+  }
+}
+
+function decodeProjectionJobAuthority(raw: unknown): ProjectionJobStoredRow {
+  let row: ProjectionJobStoredRow;
+  try {
+    row = projectionJobStoredRowSchema.parse(raw);
+  } catch (cause) {
+    if (cause instanceof z.ZodError && cause.issues.every((issue) => issue.path[0] === 'facet')) {
+      const address = z
+        .object({
+          job_id: z.string(),
+          work_dir: canonicalWorkDirWireSchema.nullable(),
+          execution_owner: z.unknown().optional(),
+        })
+        .passthrough()
+        .parse(raw);
+      throw new ProjectionConversationMalformedError(
+        address.job_id,
+        cause,
+        address.work_dir,
+        decodeProjectionOwnerEvidence(address.execution_owner),
+      );
+    }
+    throw cause;
+  }
   if (row.terminal !== null) jobTerminalSchema.parse(parseJson(row.terminal, 'terminal', row.job_id));
   jobDiagnosticsSchema.parse(parseJson(row.diagnostics, 'diagnostics', row.job_id));
   if (row.facet !== null) {
-    const facet = jobConversationFacetSchema.parse(parseJson(row.facet, 'facet', row.job_id));
-    if (
-      facet.provider !== row.provider ||
-      facet.cwd !== row.work_dir ||
-      conversationControllerFromProfile(facet.controllerProfile) !== row.controller ||
-      hashToken(row.project_root, 12) !== row.scope_key
-    ) {
-      throw new TypeError(`projection_jobs conversation facet for '${row.job_id}' contradicts its columns.`);
+    try {
+      const facet = jobConversationFacetSchema.parse(parseJson(row.facet, 'facet', row.job_id));
+      if (
+        facet.provider !== row.provider ||
+        facet.cwd !== row.work_dir ||
+        conversationControllerFromProfile(facet.controllerProfile) !== row.controller ||
+        hashToken(row.project_root, 12) !== row.scope_key
+      )
+        throw new TypeError(`projection_jobs conversation facet for '${row.job_id}' contradicts its columns.`);
+    } catch (cause) {
+      throw new ProjectionConversationMalformedError(
+        row.job_id,
+        cause,
+        row.work_dir,
+        decodeProjectionOwnerEvidence(row.execution_owner),
+      );
     }
   }
+  const owner = executionOwnerSchema.parse(parseJson(row.execution_owner, 'execution_owner', row.job_id));
   if (row.job_kind === 'workflow' && (owner.kind !== 'workflow' || owner.id !== row.job_id)) {
     throw new TypeError(`projection_jobs execution owner for '${row.job_id}' contradicts its workflow authority.`);
   }
