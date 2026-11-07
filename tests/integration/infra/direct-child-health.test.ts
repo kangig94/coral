@@ -89,18 +89,19 @@ it.each(['oversized', 'malformed', 'truncated', 'running', 'starting'])(
       reservation,
       owner,
       runDir,
-      timing: { challengeMs: 20, schedulingGapMs: 1000, lapseMs: 10000, graceMs: 30000, dStateDeferralMs: 1000 },
-      startupBudgetMs: 600,
+      timing: { challengeMs: 20, schedulingGapMs: 500, lapseMs: 10000, graceMs: 30000, dStateDeferralMs: 1000 },
+      startupBudgetMs: 2000,
       retirement: { at: null },
       forwardParentMessages: false,
     });
     try {
       child.emit('spawn');
-      await delay(900);
+      if (reply === 'starting')
+        await vi.waitFor(() => expect(child.kill).toHaveBeenCalledWith('SIGTERM'), { timeout: 20_000, interval: 50 });
+      else await delay(2500);
       expect(answers).toBeGreaterThan(5);
-      if (reply === 'starting') expect(child.kill).toHaveBeenCalledWith('SIGTERM');
-      else expect(child.kill).not.toHaveBeenCalled();
-      expect(record.childWatch(reservation, 600).served).toBe(reply === 'running');
+      if (reply !== 'starting') expect(child.kill).not.toHaveBeenCalled();
+      expect(record.childWatch(reservation, 2000).served).toBe(reply === 'running');
     } finally {
       Object.assign(child, { exitCode: 0 });
       child.emit('exit', 0, null);

@@ -152,6 +152,7 @@ function install(config) {
     if (!(result.NODE_OPTIONS || '').includes(preload))
       result.NODE_OPTIONS = `${result.NODE_OPTIONS || ''} ${preload}`.trim();
     result.CORAL_TEST_WRITE_GUARD = JSON.stringify({ ...config, testFile });
+    if (process.env.CORAL_TEST_PROCESS_SCOPE) result.CORAL_TEST_PROCESS_SCOPE = process.env.CORAL_TEST_PROCESS_SCOPE;
     return result;
   }
   // Exact provider environments must retain the test preload at the actual spawn boundary.
