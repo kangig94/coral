@@ -1274,6 +1274,27 @@ describe('semantic-operation send admission', () => {
     expect(h.admit()).toMatchObject({ state: 'refused', code: 'turn_ended' });
   });
 
+  it('refuses an admitted send whose write starts after the turn ended', async () => {
+    const h = await fixture();
+    await h.submit();
+    await h.checkpoint();
+    await h.ack();
+    const admission = h.admit();
+    if (admission.state !== 'admitted') throw new Error('Expected send admission');
+    h.executionRuntime.onProviderTurnTerminal({
+      kind: 'provider-turn-terminal',
+      providerTurnId: 'turn-current',
+      status: 'completed',
+    });
+    expect(await admission.write()).toMatchObject({ state: 'refused', code: 'turn_ended' });
+    expect(h.send).not.toHaveBeenCalled();
+    expect(h.steering?.reportOutcome).toHaveBeenCalledWith(
+      input.clientMessageId,
+      expect.objectContaining({ state: 'refused', code: 'turn_ended' }),
+    );
+    await h.close();
+  });
+
   it.each(['delivered', 'refused', 'unknown'] as const)('reports the %s facet outcome to the kernel', async (state) => {
     const outcome: ProviderSendOutcome =
       state === 'refused'

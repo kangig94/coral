@@ -233,6 +233,8 @@ export type ProviderHostTerminalEvictionDisposition = Extract<
 
 /** Provider-facing session. Process ownership and release remain capability-private. */
 export interface AppServerTransport {
+  /** Lease wrappers must preserve the host connection identity. */
+  readonly connectionIdentity?: object;
   rpc<R = unknown>(method: string, params: Record<string, unknown>): Promise<R>;
   subscribe(handler: (msg: { method: string; params?: Record<string, unknown> }) => void): () => void;
   readonly closed: Promise<Error | void>;
@@ -593,6 +595,7 @@ interface ProviderRuntimeCommon<Plan extends ProviderExecutionPlan> {
   ids: Pick<IdPort, 'uuid' | 'sha256'>;
   persistedContinuity?: ProviderContinuityBlob;
   continuityBridge: ProviderContinuityBridge;
+  onProviderDiagnostic?(message: string): void;
   /**
    * Resolved KB markdown root from `runtime.paths.coral.corpus.kbRoot`.
    * Providers use this when rendering inject fragment placeholders without

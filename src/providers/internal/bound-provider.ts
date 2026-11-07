@@ -153,6 +153,7 @@ function providerAppServerSession<Plan extends ProviderExecutionPlan>(
   capability: ProviderAppServerImplementation<Plan>['appServer'],
 ): AppServerSession {
   return Object.freeze<AppServerSession>({
+    connectionIdentity: transport.connectionIdentity ?? transport.closed,
     rpc: transport.rpc.bind(transport),
     subscribe: transport.subscribe.bind(transport),
     closed: transport.closed,

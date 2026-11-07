@@ -1,4 +1,4 @@
-import { raceWithPromise } from '../../infra/promise-signal.js';
+import { observePromise, raceWithPromise, raceWithSignal } from '../../infra/promise-signal.js';
 import { z } from 'zod';
 
 import { errorMessage } from '../../infra/error-format.js';
@@ -20,10 +20,13 @@ import { providerHostUnserviceableTerminalWarning, ProviderHostUnserviceableResp
 import type { AppServerNotificationMessage } from '../protocol.js';
 import { streamProviderEvents } from '../stream.js';
 import { buildJobDiagnostics, buildJobTerminal } from '../terminal.js';
+import { providerRequestFailed } from '../fault.js';
 import { normalizeCodexUsage, type CodexTokenUsage } from './usage.js';
 import {
   buildCodexContinuity,
   isCodexSessionUnavailable,
+  classifyCodexResumeRejection,
+  type CodexTransientResumeRejection,
   mapRecoveryContinuationTurnStartParams,
   mapThreadResumeParams,
   mapThreadStartParams,
@@ -48,6 +51,13 @@ import {
 import type { CodexExecutionPlan } from './execution-plan.js';
 import { readCodexModelCatalog, type CodexModelCatalog } from './model-catalog.js';
 import { observeCodexTurnSettlement } from './turn-settlement.js';
+import {
+  acquireCodexThread,
+  confirmCodexThreadLoaded,
+  handoffFailedCodexResume,
+  releaseCodexThread,
+  type CodexThreadOwnership,
+} from './thread-release.js';
 
 type CodexProviderRuntime = Extract<ProviderRuntime<CodexExecutionPlan>, { appServerSession: unknown }>;
 
@@ -124,6 +134,7 @@ export type CodexTurnState = {
   persistedThreadId: string | null;
   mailboxThreadCandidates: Set<string>;
   threadId: string | null;
+  threadOwnership: CodexThreadOwnership | null;
   threadIds: Set<string>;
   subagentTurnIds: Map<string, string>;
   retiredControllerTurnIds: Set<string>;
@@ -131,6 +142,7 @@ export type CodexTurnState = {
   continuityBridge: CodexProviderRuntime['continuityBridge'];
   onProviderTurnTerminal: (evidence: ProviderTurnTerminalEvidence) => void;
   checkpointBarrier: Promise<void>;
+  steeringSettled: Promise<void>;
   signal: AbortSignal;
   lease: AppServerSession | null;
   artifactHandleEmissionAttempted: boolean;
@@ -203,6 +215,7 @@ function createState(request: ProviderRequest, runtime: CodexProviderRuntime): C
     persistedThreadId,
     mailboxThreadCandidates,
     threadId: null,
+    threadOwnership: null,
     threadIds: new Set(),
     subagentTurnIds: new Map(),
     retiredControllerTurnIds: new Set(),
@@ -210,6 +223,7 @@ function createState(request: ProviderRequest, runtime: CodexProviderRuntime): C
     continuityBridge: runtime.continuityBridge,
     onProviderTurnTerminal: runtime.onProviderTurnTerminal,
     checkpointBarrier: Promise.resolve(),
+    steeringSettled: Promise.resolve(),
     signal: runtime.signal,
     lease: null,
     artifactHandleEmissionAttempted: false,
@@ -520,6 +534,7 @@ function shorten(text: unknown, limit = 72): string {
 }
 
 function createSteeringPort(state: CodexTurnState): ProviderSteeringPort {
+  const pending = new Map<string, () => void>();
   return Object.freeze<ProviderSteeringPort>({
     admit(continuity, clientMessageId) {
       const attempt = state.activeAttempt;
@@ -530,11 +545,17 @@ function createSteeringPort(state: CodexTurnState): ProviderSteeringPort {
       if (attempt.turnId === null || parsed.turnId !== attempt.turnId || parsed.threadId !== state.threadId) {
         return { state: 'refused', code: 'turn_not_started', reason: 'The current Codex turn has not been claimed.' };
       }
+      if (!pending.has(clientMessageId)) {
+        const settled = new Promise<void>((resolve) => pending.set(clientMessageId, resolve));
+        state.steeringSettled = Promise.all([state.steeringSettled, settled]).then(() => {});
+      }
       attempt.unreadSteers.add(clientMessageId);
       clearCompletionTimer(state, attempt);
       return { state: 'admitted' };
     },
     reportOutcome(clientMessageId, outcome) {
+      pending.get(clientMessageId)?.();
+      pending.delete(clientMessageId);
       if (outcome.state !== 'refused') return;
       const attempt = state.activeAttempt;
       if (attempt.unreadSteers.delete(clientMessageId)) scheduleInferredCompletion(state, attempt);
@@ -902,6 +923,60 @@ function emitCatalogNotice(
   emitProgress(emit, `Codex model catalog ${findings.join('; ')}; continuing with ${model}.`);
 }
 
+const CODEX_RESUME_RETRY_DELAYS_MS = [250, 500, 1_000] as const;
+
+class CodexThreadResumeRejectedError extends Error {
+  constructor(threadId: string, reason: CodexTransientResumeRejection, attempts: number) {
+    const observation =
+      reason === 'active-writer' ? `an active writer for thread ${threadId}` : `thread ${threadId} is closing`;
+    super(`Codex reported ${observation} on the final resume attempt (${attempts} attempts); no turn was submitted.`);
+  }
+}
+
+async function resumeThreadWithRetry(
+  lease: AppServerSession,
+  state: CodexTurnState,
+  runtime: CodexProviderRuntime,
+  threadId: string,
+  params: AppServerRequestParams<'thread/resume'>,
+  emit: (event: ProviderEventBody) => void,
+): Promise<AppServerResponse<'thread/resume'>> {
+  for (let attempt = 0; ; attempt += 1) {
+    runtime.signal.throwIfAborted();
+    try {
+      state.threadOwnership = acquireCodexThread(lease, threadId);
+      return await rpc(lease, 'thread/resume', params);
+    } catch (error: unknown) {
+      if (state.threadOwnership !== null) {
+        handoffFailedCodexResume(state.threadOwnership);
+        state.threadOwnership = null;
+      }
+      const reason = classifyCodexResumeRejection(error);
+      if (reason === null) throw error;
+      const delay = CODEX_RESUME_RETRY_DELAYS_MS[attempt];
+      if (delay === undefined) throw new CodexThreadResumeRejectedError(threadId, reason, attempt + 1);
+      emitProgress(
+        emit,
+        `Codex thread ${threadId} resume rejected (${reason}); retrying in ${delay} ms (${attempt + 1}/${CODEX_RESUME_RETRY_DELAYS_MS.length}).`,
+      );
+      let timer: ReturnType<TimePort['setTimeout']> | undefined;
+      try {
+        await raceWithSignal(
+          new Promise<void>((resolve) => {
+            timer = runtime.time.setTimeout(resolve, delay);
+          }),
+          runtime.signal,
+          () => {
+            runtime.signal.throwIfAborted();
+          },
+        );
+      } finally {
+        if (timer !== undefined) runtime.time.clearTimeout(timer);
+      }
+    }
+  }
+}
+
 async function initializeThread(
   request: ProviderRequest,
   runtime: CodexProviderRuntime,
@@ -915,19 +990,20 @@ async function initializeThread(
   if (request.action === 'resume') {
     const conversationRef = requireResumeConversationRef(request);
     try {
-      const response = await rpc(
-        lease,
-        'thread/resume',
-        mapThreadResumeParams(
-          request,
-          selection,
-          conversationRef,
-          runtime.executionPlan.turn.threadConfig,
-          state.serviceTier,
-        ),
+      const params = mapThreadResumeParams(
+        request,
+        selection,
+        conversationRef,
+        runtime.executionPlan.turn.threadConfig,
+        state.serviceTier,
       );
+      const response = await resumeThreadWithRetry(lease, state, runtime, conversationRef, params, emit);
       threadId = requireRpcThreadId(response, 'thread/resume');
+      state.threadId = threadId;
       if (threadId !== conversationRef) {
+        if (state.threadOwnership !== null) handoffFailedCodexResume(state.threadOwnership);
+        state.threadOwnership = acquireCodexThread(lease, threadId);
+        confirmCodexThreadLoaded(state.threadOwnership);
         throw new Error('Codex thread/resume did not return the exact requested thread id.');
       }
     } catch (error) {
@@ -946,8 +1022,10 @@ async function initializeThread(
       mapThreadStartParams(request, selection, runtime.executionPlan.turn.threadConfig, state.serviceTier),
     );
     threadId = requireRpcThreadId(response, 'thread/start');
+    state.threadOwnership = acquireCodexThread(lease, threadId);
   }
 
+  if (state.threadOwnership !== null) confirmCodexThreadLoaded(state.threadOwnership);
   state.threadId = threadId;
   registerMailboxThreadCandidate(state, threadId);
   registerThread(state, threadId);
@@ -963,6 +1041,63 @@ function requireRpcThreadId(response: { thread?: { id?: unknown } }, method: 'th
   return threadId;
 }
 
+function observeTurnCessation(lease: AppServerSession, threadId: string, attempt: TurnAttempt) {
+  const transportClosed = observePromise(lease.closed).signal;
+  let turnId: string | null = null;
+  let finished = false;
+  let resolveCeased!: (ceased: boolean) => void;
+  const ceased = new Promise<boolean>((resolve) => {
+    resolveCeased = resolve;
+  });
+  const terminalIds = new Set<string>();
+  const finish = (confirmed: boolean): void => {
+    if (finished) return;
+    finished = true;
+    unsubscribe();
+    transportClosed.removeEventListener('abort', close);
+    terminalIds.clear();
+    resolveCeased(confirmed);
+  };
+  const unsubscribe = lease.subscribe((message) => {
+    if (message.method !== 'turn/completed' || extractThreadId(message) !== threadId) return;
+    const params = message.params as { turnId?: unknown; turn?: Turn };
+    const completedId = readTurnId(params.turn);
+    if (
+      completedId === null ||
+      (params.turnId !== undefined && params.turnId !== completedId) ||
+      !codexFinalTurnStatusSchema.safeParse(params.turn?.status).success
+    ) {
+      return;
+    }
+    const controllerId = turnId ?? attempt.turnId;
+    if (controllerId !== null) {
+      if (completedId === controllerId) finish(true);
+    } else if (terminalIds.size < PRE_TURN_MAILBOX_CAP) {
+      terminalIds.add(completedId);
+    }
+  });
+  const close = () => finish(false);
+  if (transportClosed.aborted) close();
+  else transportClosed.addEventListener('abort', close, { once: true });
+  return {
+    ceased,
+    recordStartResponse: (turn: Turn | undefined): void => {
+      if (finished) return;
+      const responseId = readTurnId(turn);
+      turnId = attempt.turnId ?? responseId;
+      if (
+        turnId !== null &&
+        (terminalIds.has(turnId) ||
+          (responseId === turnId && codexFinalTurnStatusSchema.safeParse(turn?.status).success))
+      ) {
+        finish(true);
+      }
+    },
+    confirm: () => finish(true),
+    close: () => finish(false),
+  };
+}
+
 async function startTurn(
   runtime: CodexProviderRuntime,
   lease: AppServerSession,
@@ -970,6 +1105,7 @@ async function startTurn(
   attempt: TurnAttempt,
   params: TurnStartParams,
   emit: (event: ProviderEventBody) => void,
+  recordStartResponse: (turn: Turn | undefined) => void,
 ): Promise<CodexKernelResult | null> {
   if (runtime.signal.aborted) {
     return { kind: 'aborted', reason: 'signal_abort', attempt };
@@ -982,7 +1118,10 @@ async function startTurn(
   runtime.onProviderTurnStart?.();
   const aborted = abortResultPromise(lease, runtime, state, attempt);
   const startOutcome = rpc(lease, 'turn/start', params).then(
-    (response) => ({ kind: 'response' as const, response }),
+    (response) => {
+      recordStartResponse(response.turn);
+      return { kind: 'response' as const, response };
+    },
     (error: unknown) => ({ kind: 'rpc_error' as const, error }),
   );
   const attemptOutcome = attempt.completion.then((result) => ({
@@ -1364,9 +1503,25 @@ export const codexTurnKernel: Provider<
   CodexExecutionPlan,
   Extract<ProviderRuntime<CodexExecutionPlan>, { appServerSession: unknown }>
 > = (request, runtime) =>
-  streamProviderEvents<ProviderEventBody>(async (emit) => {
+  streamProviderEvents<ProviderEventBody>(async (emitEvent) => {
     const lease = runtime.appServerSession;
     const state = createState(request, runtime);
+    const emit = (event: ProviderEventBody): void => {
+      if (event.kind === 'terminal' && state.threadId !== null) {
+        emitEvent({
+          ...event,
+          diagnostics: {
+            ...event.diagnostics,
+            warnings: [
+              ...(event.diagnostics.warnings ?? []),
+              `Codex thread ${state.threadId} release is not yet confirmed; unsubscribe follows settlement observer close. The writer lock may remain until its host closes.`,
+            ],
+          },
+        });
+      } else {
+        emitEvent(event);
+      }
+    };
     state.lease = lease;
     runtime.onProviderSteering?.(createSteeringPort(state));
     const clearNotificationBinding = lease.subscribe((message) => {
@@ -1374,6 +1529,20 @@ export const codexTurnKernel: Provider<
     });
     let turnSettlement: ProviderTurnSettlement | null = null;
     let settlementTransferred = false;
+    let cessation: ReturnType<typeof observeTurnCessation> | null = null;
+    let cessationOwnsRelease = false;
+    let releaseRequested = false;
+    const releaseThread = (): void => {
+      if (releaseRequested || state.threadId === null || state.threadOwnership === null) return;
+      releaseRequested = true;
+      void releaseCodexThread(
+        lease,
+        runtime.time,
+        state.threadOwnership,
+        Promise.all([state.steeringSettled, state.activeAttempt.interruptRequest]),
+        runtime.onProviderDiagnostic ?? ((message) => emitProgress(emit, message)),
+      );
+    };
 
     try {
       await verifyCodexEffectiveTransport(lease, request.cwd);
@@ -1399,7 +1568,8 @@ export const codexTurnKernel: Provider<
 
       for (;;) {
         const attempt = state.activeAttempt;
-        const started = await startTurn(runtime, lease, state, attempt, params, emit);
+        cessation = observeTurnCessation(lease, state.threadId, attempt);
+        const started = await startTurn(runtime, lease, state, attempt, params, emit, cessation.recordStartResponse);
         if (runtime.onProviderTurnSettlement !== undefined && attempt.turnId !== null) {
           turnSettlement = observeCodexTurnSettlement(lease, runtime.time, state.threadId, attempt.turnId);
         }
@@ -1415,6 +1585,8 @@ export const codexTurnKernel: Provider<
         ) {
           turnSettlement?.close();
           turnSettlement = null;
+          cessation.close();
+          cessation = null;
           emitUnreadSteers(attempt, emit);
           await retireAttempt(state, attempt);
           emitProgress(
@@ -1442,8 +1614,41 @@ export const codexTurnKernel: Provider<
           turnSettlement !== null &&
           runtime.onProviderTurnSettlement !== undefined
         ) {
-          runtime.onProviderTurnSettlement(turnSettlement);
+          const observer = turnSettlement;
+          runtime.onProviderTurnSettlement({
+            providerTurnId: observer.providerTurnId,
+            settle: () => observer.settle(),
+            close: () => {
+              observer.close();
+              releaseThread();
+            },
+          });
           settlementTransferred = true;
+        }
+        if (result.kind === 'suspended') {
+          cessationOwnsRelease = true;
+          const watch = cessation;
+          const observer = turnSettlement;
+          turnSettlement = null;
+          const message = `Codex thread ${state.threadId} retained: turn cessation unconfirmed; its host or transport closing releases the writer lock.`;
+          emitProgress(emit, message);
+          try {
+            runtime.onProviderDiagnostic?.(message);
+          } catch {
+            // Diagnostic delivery cannot hold execution ownership.
+          }
+          const observation = observer?.settle().then(
+            (evidence) => {
+              if (evidence !== null) watch.confirm();
+              observer.close();
+            },
+            () => observer.close(),
+          );
+          void watch.ceased.then(async (confirmed) => {
+            await observation;
+            observer?.close();
+            if (confirmed) releaseThread();
+          });
         }
         const terminal = await finishInvocation(state, result, emit);
         if (terminal) emit(terminal);
@@ -1464,6 +1669,22 @@ export const codexTurnKernel: Provider<
         return;
       }
 
+      if (error instanceof CodexThreadResumeRejectedError) {
+        state.finalized = true;
+        emit({
+          kind: 'terminal',
+          terminal: buildJobTerminal({
+            content: '',
+            ...terminalModel(state),
+            durationMs: state.time.now() - state.startedAt,
+            outcome: { kind: 'failed' },
+          }),
+          diagnostics: buildJobDiagnostics({}),
+          failureCause: providerRequestFailed({ provider: 'codex', message: error.message }),
+        });
+        return;
+      }
+
       const providerError = error instanceof ProviderHostUnserviceableResponseError ? error.providerCause : error;
       const terminal = await finishInvocation(
         state,
@@ -1479,10 +1700,16 @@ export const codexTurnKernel: Provider<
       );
       if (terminal) emit(terminal);
     } finally {
+      if (state.threadId === null && state.threadOwnership !== null) handoffFailedCodexResume(state.threadOwnership);
       if (state.activeAttempt.sequence === 0 && !state.activeAttempt.turnStartRequested)
         runtime.onProviderTurnNotSubmitted?.();
       clearCompletionTimer(state, state.activeAttempt);
       clearNotificationBinding();
-      if (!settlementTransferred) turnSettlement?.close();
+      state.finalized = true;
+      if (!cessationOwnsRelease) cessation?.close();
+      if (!settlementTransferred && !cessationOwnsRelease) {
+        turnSettlement?.close();
+        releaseThread();
+      }
     }
   });

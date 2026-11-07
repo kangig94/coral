@@ -257,6 +257,16 @@ export function applyCodexTransportClosed(
   return persistedContinuity;
 }
 
+export type CodexTransientResumeRejection = 'active-writer' | 'closing';
+
+export function classifyCodexResumeRejection(error: unknown): CodexTransientResumeRejection | null {
+  const message = errorMessage(error);
+  if (/\bthread \S+ already has an active writer\b/i.test(message)) return 'active-writer';
+  if (/\bthread \S+ is closing; retry (?:thread\/resume )?after the thread is closed\b/i.test(message))
+    return 'closing';
+  return null;
+}
+
 export function isCodexSessionUnavailable(error: unknown): boolean {
   const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
   return (
@@ -451,7 +461,8 @@ export function mapThreadStartParams(
     approvalPolicy: 'never',
     sandbox: resolveCodexSandbox(request.bypassPermissions),
     ephemeral: false,
-    config: threadConfig,
+    // Codex 0.167.0 otherwise retains the writer flock after unsubscribe (scratch probe).
+    config: { ...threadConfig, thread_unload_delay_secs: 0 },
     ...(serviceTier && { serviceTier }),
   };
 }
@@ -472,7 +483,8 @@ export function mapThreadResumeParams(
     // Codex merge_persisted_resume_metadata() does not restore sandbox from stored
     // ThreadMetadata — omitting sandbox causes a downgrade to the config default (read-only).
     sandbox: resolveCodexSandbox(request.bypassPermissions),
-    config: threadConfig,
+    // Codex 0.167.0 otherwise retains the writer flock after unsubscribe (scratch probe).
+    config: { ...threadConfig, thread_unload_delay_secs: 0 },
     ...(serviceTier && { serviceTier }),
   };
 }
