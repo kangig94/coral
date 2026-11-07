@@ -200,13 +200,10 @@ export function createDiscussContextOptions(
       listOwned: (discussionId) =>
         progressStore === undefined
           ? []
-          : progressStore
-              .listJobProjections()
-              .filter(({ status }) => status.owner.kind === 'discussion' && status.owner.id === discussionId)
-              .flatMap(({ jobId, status }) => {
-                const launch = progressStore.loadJobProjectionDetail(jobId).launch;
-                return launch === null ? [] : [{ launch, status }];
-              }),
+          : progressStore.listJobProjections({ all: true, discussionId }).flatMap(({ jobId, status }) => {
+              const launch = progressStore.loadJobProjectionDetail(jobId).launch;
+              return launch === null ? [] : [{ launch, status }];
+            }),
     },
     providerRegistry,
   };

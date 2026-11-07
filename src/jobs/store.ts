@@ -26,6 +26,7 @@ import type { ResolvableCoralEventInput } from '../store/envelope.js';
 import type { EventBodyCodec } from '../store/event-body-codec.js';
 import { composeReducers, type ComposedReducers } from '../store/reducers.js';
 import {
+  type JobsListFilters,
   listJobProjections,
   loadJobProjectionDetail,
   loadJobExecutionDetails,
@@ -466,8 +467,8 @@ export class JobStore implements JobProgressStore {
     return this.getResultExportOwner().ensureResultMarkdownArtifact(jobId, observation, execution);
   }
 
-  listJobProjections() {
-    return listJobProjections(this.db, this).map(({ jobId, status }) => ({
+  listJobProjections(filters?: JobsListFilters) {
+    return listJobProjections(this.db, this, filters).map(({ jobId, status }) => ({
       jobId,
       execution: status.execution,
       resultPath: status.execution === null ? null : this.resultPathFor(jobId, status.execution),

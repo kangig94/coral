@@ -159,15 +159,33 @@ export function readExecutionRetryStatus(db: Database, address: ExecutionAddress
     EXECUTION_FINISHING_BOUNDARY,
     executionAddressKey(address),
   );
-  if (record === null) return null;
+  return record === null ? null : decodeExecutionRetryStatus(record.detail);
+}
+
+function decodeExecutionRetryStatus(detail: string): ExecutionRetryStatus | null {
   let value: unknown;
   try {
-    value = JSON.parse(record.detail);
+    value = JSON.parse(detail);
   } catch {
     return null;
   }
   const parsed = executionRetryStatusSchema.safeParse(value);
   return parsed.success ? parsed.data : null;
+}
+
+export function readExecutionRetryStatuses(
+  db: Database,
+  addresses: ExecutionAddress[],
+): Map<string, ExecutionRetryStatus> {
+  const statuses = new Map<string, ExecutionRetryStatus>();
+  for (const record of RecoveryQuarantineStore.readOnly(db).readEntries(
+    EXECUTION_FINISHING_BOUNDARY,
+    addresses.map(executionAddressKey),
+  )) {
+    const status = decodeExecutionRetryStatus(record.detail);
+    if (status !== null) statuses.set(record.subject.key, status);
+  }
+  return statuses;
 }
 
 export function listExecutionRetryStatuses(db: Database): {

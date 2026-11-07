@@ -11,7 +11,7 @@ import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 
 describe('jobs queries', () => {
-  it('rejects a corrupt projection row outside the requested project and phase', () => {
+  it('validates projection codecs only when the job is selected', () => {
     const db = newRawDatabase(':memory:');
     try {
       applyBundledStoreSchema(db, currentCoralStoreFormat());
@@ -37,7 +37,8 @@ describe('jobs queries', () => {
         '10000000-0000-4000-8000-000000000001',
       );
 
-      expect(() => listJobs(db, filters, readCtx)).toThrow();
+      expect(listJobs(db, filters, readCtx)).toEqual([]);
+      expect(() => listJobs(db, { all: true }, readCtx)).toThrow();
     } finally {
       db.close();
     }

@@ -304,7 +304,7 @@ describe('coordinator startup after host reboot', () => {
         const expired = await readHealth(core);
         expect(expired.health.diagnostics?.providerOperationStartupReconciliation).toMatchObject({
           phase: 'detached',
-          elapsedMs: PROVIDER_OPERATION_STARTUP_BOUND_MS,
+          elapsedMs: time.now() - startedAtMs,
           sets: [
             expect.objectContaining({
               state: 'detached',
@@ -331,7 +331,7 @@ describe('coordinator startup after host reboot', () => {
           expect(core.runtimeState.getLifecycle()).toBe('running');
           expect((await readHealth(core)).health.diagnostics?.providerOperationStartupReconciliation).toMatchObject({
             phase: 'detached',
-            elapsedMs: PROVIDER_OPERATION_STARTUP_BOUND_MS + 25 + 60_000,
+            elapsedMs: time.now() - startedAtMs,
             sets: [
               expect.objectContaining({
                 state: 'detached',

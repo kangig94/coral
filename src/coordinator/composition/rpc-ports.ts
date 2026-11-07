@@ -110,19 +110,10 @@ function createCoordinatorJobLister(
   return (filters) => {
     const progressStore = getProgressStore();
     const jobs: JobsListResponse['jobs'] = [];
-    for (const entry of progressStore.listJobProjections()) {
-      if ((filters.all !== true || filters.owner !== undefined) && !isLivePhase(entry.status.phase)) {
-        continue;
-      }
-      if (filters.projectRoot !== undefined && !jobInCallerScope(entry.status, filters.projectRoot, 'exact')) {
-        continue;
-      }
-      if (filters.phase !== undefined && entry.status.phase !== filters.phase) {
-        continue;
-      }
-      if (filters.provider !== undefined && entry.status.provider !== filters.provider) {
-        continue;
-      }
+    for (const entry of progressStore.listJobProjections({
+      ...filters,
+      all: filters.all === true && filters.owner === undefined,
+    })) {
       if (filters.owner !== undefined) {
         const launch = progressStore.loadJobProjectionDetail(entry.jobId).launch;
         if (
