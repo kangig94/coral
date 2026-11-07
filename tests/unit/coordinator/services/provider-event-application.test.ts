@@ -451,6 +451,34 @@ describe('createProviderEventHandler', () => {
     expect(progressStore.readJobEvents(identity.jobId).filter((event) => event.type === 'terminal')).toHaveLength(1);
   });
 
+  it('refuses a diagnostic progress frame after terminal acceptance without changing its settlement watermark', async () => {
+    const { identity } = seedOperation();
+    const handler = createProviderEventHandler(testDeps());
+    await handler({
+      operation: identity,
+      providerSeq: 1,
+      event: {
+        kind: 'terminal',
+        terminal: { content: 'done', durationMs: 5, outcome: { kind: 'completed' } },
+        diagnostics: {},
+      },
+    });
+    await expect(
+      handler({
+        operation: identity,
+        providerSeq: 2,
+        event: { kind: 'progress', message: 'Codex thread/unsubscribe refused.' },
+      }),
+    ).rejects.toThrow('only retention and ended may follow acceptance');
+    expect(readProviderOperation(progressStore.getDb(), identity)).toMatchObject({
+      phase: 'settlement-pending',
+      committedThroughProviderSeq: 1,
+      terminalProviderSeq: 1,
+    });
+    await settleOperation(identity);
+    expect(progressStore.readJobEvents(identity.jobId).filter((event) => event.type === 'terminal')).toHaveLength(1);
+  });
+
   it('requests replay from the current watermark on a sequence gap, writing nothing', async () => {
     const { identity } = seedOperation();
     const handler = createProviderEventHandler(testDeps());

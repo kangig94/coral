@@ -19,6 +19,7 @@ type CommonRuntimeInput = Pick<
   | 'ids'
   | 'persistedContinuity'
   | 'continuityBridge'
+  | 'onProviderDiagnostic'
   | 'kbRoot'
   | 'coralProjects'
   | 'projectSource'
@@ -36,6 +37,9 @@ function snapshotCommonRuntime(runtime: CommonRuntimeInput) {
   const transportClosed = bridge.transportClosed;
   return Object.freeze({
     signal: receiver.signal,
+    ...(receiver.onProviderDiagnostic === undefined
+      ? {}
+      : { onProviderDiagnostic: (message: string) => receiver.onProviderDiagnostic?.call(runtime, message) }),
     time: receiver.time,
     storage: receiver.storage,
     ...(receiver.env === undefined ? {} : { env: receiver.env }),

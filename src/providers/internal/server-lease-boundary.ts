@@ -26,11 +26,16 @@ export function wrapAppServerTransport(session: AppServerTransport, label: strin
   const rpc = dataMember(session, 'rpc', label);
   const subscribe = dataMember(session, 'subscribe', label);
   const closed = dataMember(session, 'closed', label);
+  const connectionIdentity = dataMember(session, 'connectionIdentity', label);
   if (typeof rpc !== 'function' || typeof subscribe !== 'function') {
     throw new TypeError(`${label} must expose rpc and subscribe data methods.`);
   }
   if (!(closed instanceof Promise)) throw new TypeError(`${label}.closed must be a Promise.`);
+  if (connectionIdentity !== undefined && (connectionIdentity === null || typeof connectionIdentity !== 'object')) {
+    throw new TypeError(`${label}.connectionIdentity must be an object.`);
+  }
   return Object.freeze({
+    connectionIdentity: connectionIdentity ?? closed,
     rpc: async <R = unknown>(method: string, params: Record<string, unknown>): Promise<R> => {
       const result = await rpc.call(session, method, snapshotBoundaryData(params, `${label} RPC parameters`));
       return snapshotProviderResult(result, `${label} RPC result`) as R;

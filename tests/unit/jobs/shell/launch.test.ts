@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { appendProviderTerminalInCommit } from '#src/coordinator/services/terminal-materializer.js';
 import { CliBusyError } from '#src/runtime/cli-busy.js';
+import { backendLog } from '#src/infra/backend-log.js';
 import { AbortError } from '#src/runtime/abort.js';
 import { ProviderHostUnserviceableError } from '#src/providers/host-admission.js';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
@@ -16,7 +17,11 @@ import { readDurableCliContainmentStatus } from '#src/jobs/runtime-meta-store.js
 import { JobStore } from '#src/jobs/store.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { composeReducers } from '#src/store/reducers.js';
-import type { BoundProvider, BoundProviderStandaloneExecutionRuntime } from '#src/providers/bound-provider-contract.js';
+import type {
+  BoundProvider,
+  BoundProviderStandaloneExecutionRuntime,
+  BoundProviderAppServerExecutionRuntime,
+} from '#src/providers/bound-provider-contract.js';
 import type { ProviderEventBody } from '#src/providers/contract.js';
 import type { ProviderDurableSpawner } from '#src/providers/cli-runner.js';
 import { ConversationManager } from '#src/jobs/conversation/shell.js';
@@ -67,7 +72,9 @@ function fixture(options: { route?: AppServerProxyRoute; durableSpawner?: Provid
     completed.resolve();
     return result;
   };
-  const execute = vi.fn(async function* (): AsyncGenerator<ProviderEventBody> {});
+  const execute = vi.fn(async function* (
+    _runtime: BoundProviderAppServerExecutionRuntime,
+  ): AsyncGenerator<ProviderEventBody> {});
   const provider = {
     name: 'codex',
     envelope: TEST_CODEX_BINDING,
@@ -328,6 +335,51 @@ describe('LaunchOrchestrator', () => {
       await f.executionFinisher.dispose();
       f.admission.releaseLaunch(blocker.permit);
     }
+  });
+
+  it('refuses a detached predecessor diagnostic after the successor starts and logs that refusal once', async () => {
+    const f = fixture();
+    const warn = vi.spyOn(backendLog, 'warn').mockImplementation(() => {});
+    let diagnostic: ((message: string) => void) | undefined;
+    f.execute.mockImplementation(async function* (runtime) {
+      diagnostic = runtime.onProviderDiagnostic;
+      yield {
+        kind: 'terminal',
+        terminal: { content: 'done', outcome: { kind: 'completed' }, durationMs: 1 },
+        diagnostics: {},
+      };
+    });
+    await f.launch();
+    await f.completed;
+    await vi.waitFor(() => expect(f.executionFinisher.state({ jobId: JOB_ID, execution: 1 }).kind).toBe('ended'));
+    expect(diagnostic).toBeDefined();
+    f.store.commit(
+      (c) => {
+        c.append({ ...requestedExecution(2), stream: { kind: 'job', id: JOB_ID } });
+        c.append({
+          type: 'job.execution.started',
+          stream: { kind: 'job', id: JOB_ID },
+          body: {
+            execution: 2,
+            transport: 'app-server',
+            startedAt: new Date(f.runtime.time.now()).toISOString(),
+            providerMeta: { provider: 'codex', leaseState: 'waiting' },
+          },
+        });
+        return undefined;
+      },
+      { admittingJobs: [JOB_ID] },
+    );
+    expect(f.store.readStatus(JOB_ID)).toMatchObject({ execution: 2, phase: 'running' });
+    const before = f.db.prepare('SELECT COUNT(*) AS n FROM events').get();
+
+    diagnostic!('Codex release unconfirmed: no reply');
+    diagnostic!('Codex release refused');
+
+    expect(f.db.prepare('SELECT COUNT(*) AS n FROM events').get()).toEqual(before);
+    expect(warn).toHaveBeenCalledOnce();
+    expect(warn).toHaveBeenCalledWith(`Provider diagnostic for ${JOB_ID}#1 was not delivered: current execution is 2.`);
+    await f.executionFinisher.dispose();
   });
 
   it('keeps a late producer on its committed execution while the successor is current', async () => {

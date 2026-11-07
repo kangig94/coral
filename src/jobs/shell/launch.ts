@@ -1528,6 +1528,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
       provider,
       requestWithInject,
       jobId,
+      execution,
       signal,
       persistedContinuity,
       equippedTools,
@@ -1848,10 +1849,12 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
     provider: BoundProvider,
     request: ProviderRequest,
     jobId: string,
+    execution: number,
     signal: AbortSignal,
     persistedContinuity: ProviderContinuityBlob | undefined,
     equippedTools: ReturnType<typeof resolveEquippedTools>,
   ): BoundProviderExecutionRuntimeCommon {
+    let diagnosticDeliveryRefused = false;
     return {
       signal,
       time: this.deps.runtime.time,
@@ -1862,6 +1865,19 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
       persistedContinuity,
       continuityBridge: NOOP_CONTINUITY_BRIDGE,
       onProviderTurnTerminal: () => {},
+      onProviderDiagnostic: (message) => {
+        const currentExecution = this.deps.progressStore.readStatus(jobId)?.execution ?? null;
+        if (currentExecution !== execution) {
+          if (!diagnosticDeliveryRefused) {
+            diagnosticDeliveryRefused = true;
+            backendLog.warn(
+              `Provider diagnostic for ${jobId}#${execution} was not delivered: current execution is ${currentExecution ?? 'none'}.`,
+            );
+          }
+          return;
+        }
+        this.appendProgressEvent(jobId, message);
+      },
       kbRoot: this.deps.runtime.paths.coral.corpus.kbRoot,
       equippedTools,
       // Empty cwd is not a project root: treat it as absent so inject fragment

@@ -1341,6 +1341,19 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
       state: 'admitted',
       refuse: (outcome) => steering.reportOutcome(input.clientMessageId, outcome),
       write: async (): Promise<ProxyOperationSendResult> => {
+        if (
+          state.closing ||
+          entry.closed ||
+          entry.releaseRequested ||
+          entry.pendingStopCause !== null ||
+          entry.abortController.signal.aborted ||
+          entry.completionEmitted ||
+          entry.turnEnded
+        ) {
+          const outcome = { state: 'refused', code: 'turn_ended', reason: 'The current turn has ended.' } as const;
+          steering.reportOutcome(input.clientMessageId, outcome);
+          return outcome;
+        }
         const deadline = new AbortController();
         const timer = runtime.time.setTimeout(() => {
           deadline.abort(new Error('Provider send attempt exceeded its deadline.'));

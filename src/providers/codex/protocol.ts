@@ -143,6 +143,10 @@ interface AppServerMethodMap {
   };
   'thread/start': { params: ThreadStartParams; result: ThreadStartResponse };
   'thread/resume': { params: ThreadResumeParams; result: ThreadResumeResponse };
+  'thread/unsubscribe': {
+    params: { threadId: string };
+    result: { status: 'unsubscribed' | 'notLoaded' | 'notSubscribed' };
+  };
   'turn/start': { params: TurnStartParams; result: TurnStartResponse };
   'turn/steer': { params: TurnSteerParams; result: TurnSteerResponse };
   'turn/interrupt': { params: TurnInterruptParams; result: TurnInterruptResponse };
