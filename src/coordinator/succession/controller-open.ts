@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { z } from 'zod';
 
 import type { StrictBundleManifest } from '../../infra/bundle-manifest.js';
+import { processIncarnationSchema, type ProcessIncarnation } from '../../infra/node-process.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { observeSuccessionServing } from '../../store/succession-writer-generation.js';
 
@@ -25,6 +26,10 @@ const openSchema = z
         durableWrapperBundleHash: z.string(),
       })
       .passthrough(),
+    process: z
+      .object({ pid: z.number().int().positive(), incarnation: processIncarnationSchema.nullable() })
+      .passthrough()
+      .optional(),
     controlGeneration: z.number().int().nonnegative(),
     openedAtMs: z.number().int().nonnegative(),
   })
@@ -145,6 +150,7 @@ export function recordControllerOpen(
   pluginRoot: string,
   build: StrictBundleManifest,
   controlGeneration: number,
+  process?: Readonly<{ pid: number; incarnation: ProcessIncarnation | null }>,
 ): void {
   const directory = epochDirectory(runtime, epochKey);
   const root = controllerRoot(runtime);
@@ -160,6 +166,7 @@ export function recordControllerOpen(
     pluginRoot,
     build,
     controlGeneration,
+    ...(process === undefined ? {} : { process }),
     openedAtMs: runtime.time.now(),
   });
   const path = join(directory, `${record.openedAtMs}-${runtime.ids.uuid()}.json`);

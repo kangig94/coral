@@ -266,6 +266,8 @@ export function createForeignTargetValidator(): ForeignTargetValidator {
 
 export function inspectValidatedHandoffTarget(target: ValidatedHandoffTarget): Readonly<{
   build: Readonly<Pick<StrictBundleManifest, 'version' | 'buildSetId' | 'bundleHash' | 'flavor'>>;
+  bundleDir: string;
+  manifest: StrictBundleManifest;
 }> {
   const state = validatedTargets.get(target);
   if (state === undefined) {
@@ -273,7 +275,11 @@ export function inspectValidatedHandoffTarget(target: ValidatedHandoffTarget): R
   }
 
   const { version, buildSetId, bundleHash, flavor } = state.evidence.expectedManifest;
-  return Object.freeze({ build: Object.freeze({ version, buildSetId, bundleHash, flavor }) });
+  return Object.freeze({
+    build: Object.freeze({ version, buildSetId, bundleHash, flavor }),
+    bundleDir: state.evidence.bundleDir,
+    manifest: state.evidence.expectedManifest,
+  });
 }
 
 export function withValidatedHandoffTarget(target: ValidatedHandoffTarget): ValidatedTargetExecution {

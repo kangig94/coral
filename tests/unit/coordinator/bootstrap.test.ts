@@ -47,6 +47,26 @@ describe('backend bootstrap store handoff', () => {
     );
   });
 
+  it('should preserve confirmed serving when observation bookkeeping fails', async () => {
+    const bookkeepingError = new Error('Upgrade intent CAS was refused');
+    const observe = vi.fn().mockRejectedValue(bookkeepingError);
+    const warn = vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
+    mockState.runHandoff.mockResolvedValue({
+      kind: 'recorded',
+      continuation: {
+        kind: 'delegated-startup',
+        version: '2.0.0',
+        observation: { kind: 'serving' },
+      },
+      publicationIncidents: [],
+    });
+
+    await expect(
+      handoffStartupToSelectedBuild('/plugin/root', new StartupStoreHandoffError(target, observe)),
+    ).resolves.toEqual({ kind: 'started' });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(bookkeepingError.message));
+  });
+
   it.each([
     {
       childEnding: { code: 23, signal: null },
@@ -108,6 +128,27 @@ describe('backend bootstrap store handoff', () => {
       cause: 'health-request-failed',
     });
   });
+
+  it.each(['serving', 'not-serving', 'undetermined'] as const)(
+    'should count only decisive delegated outcomes: %s',
+    async (kind) => {
+      const observe = vi.fn(async () => undefined);
+      const observation =
+        kind === 'not-serving'
+          ? { kind, childEnding: { code: 0, signal: null } }
+          : kind === 'undetermined'
+            ? { kind, cause: 'health-request-failed' }
+            : { kind };
+      mockState.runHandoff.mockResolvedValue({
+        kind: 'recorded',
+        continuation: { kind: 'delegated-startup', version: '0.10.27', observation },
+        publicationIncidents: [],
+      });
+      await handoffStartupToSelectedBuild('/plugin/root', new StartupStoreHandoffError(target, observe));
+      if (kind === 'undetermined') expect(observe).not.toHaveBeenCalled();
+      else expect(observe).toHaveBeenCalledWith(kind);
+    },
+  );
 
   it('should preserve a handoff execution error for bootstrap diagnostics', async () => {
     const handoffError = new Error('spawn rejected');

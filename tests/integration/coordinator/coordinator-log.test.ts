@@ -28,6 +28,11 @@ import { LOG_ROTATE_THRESHOLD_BYTES, withCoordinatorLog } from '#src/infra/coord
 import { parseUpgradeIntentSnapshot } from '#src/infra/upgrade-intent.js';
 import { upgradeIntentPath } from '#src/infra/path/coordinator.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
+import {
+  parseLinuxProcessIncarnation,
+  probeProcessIncarnation,
+  processIncarnationStartOrder,
+} from '#src/infra/node-process.js';
 
 function writeDeadlineIntent(runDir: string, flavor: 'prod' | 'dev'): void {
   const intent = parseUpgradeIntentSnapshot({
@@ -118,7 +123,12 @@ function latestLog(runDir: string): string {
   return readFileSync(latestPath(runDir), 'utf8');
 }
 
-function recordedWriter(runDir: string, role: 'coordinator' | 'supervisor', age: number): string {
+function recordedWriter(
+  runDir: string,
+  role: 'coordinator' | 'supervisor',
+  age: number,
+  incarnation = testIncarnation('stale-writer'),
+): string {
   const directory = join(runDir, 'coordinator-logs', randomUUID());
   mkdirSync(directory, { recursive: true });
   const record = join(directory, 'writer.json');
@@ -128,7 +138,7 @@ function recordedWriter(runDir: string, role: 'coordinator' | 'supervisor', age:
       version: 1,
       role,
       pid: 2147483000,
-      incarnation: testIncarnation('stale-writer'),
+      incarnation,
     }),
   );
   writeFileSync(join(directory, 'current.log'), 'uncertified diagnostics');
@@ -339,6 +349,10 @@ beforeAll(async () => {
           fs.renameSync = rename;
           process.stdout.write(JSON.stringify({path,failed,held}));
           return;
+        }
+        if (process.env.TEST_FAILED_EXIT) {
+          backendLog.raw('failed-writer-diagnostic\\n');
+          process.exit(1);
         }
         if (process.env.TEST_UNCERTIFIED_EXIT) {
           backendLog.raw('uncertified-writer\\n');
@@ -990,9 +1004,10 @@ describe('writer identity retention', () => {
     expect(latestLog(runDir)).toBe('inherited-pipe-diagnostic\n');
   });
 
-  it('retires uncertified writer namespaces after their exact writers exit', () => {
+  it('bounds uncertified writer namespaces while preserving the first failure', () => {
     const runDir = mkdtempSync(join(dir, 'uncertified-writers-'));
-    for (let attempt = 0; attempt < 12; attempt++) {
+    let first: string | undefined;
+    for (let attempt = 0; attempt < 32; attempt++) {
       const result = withCoordinatorLog(runDir, (stderr) =>
         spawnSync(process.execPath, [join(dir, 'stuck.cjs')], {
           env: { ...process.env, TEST_RUN_DIR: runDir, TEST_UNCERTIFIED_EXIT: '1' },
@@ -1002,13 +1017,82 @@ describe('writer identity retention', () => {
         }),
       );
       expect(result.status).toBe(0);
+      if (attempt === 0) first = dirname(latestPath(runDir));
     }
     const logsDir = join(runDir, 'coordinator-logs');
     const namespaces = readdirSync(logsDir).filter((name) => /^[0-9a-f-]{36}$/.test(name));
-    expect(namespaces).toHaveLength(5);
+    expect(namespaces).toHaveLength(11);
+    expect(first).toBeDefined();
+    expect(existsSync(first!)).toBe(true);
     expect(namespaces.every((name) => !existsSync(join(logsDir, name, 'segments-closed')))).toBe(true);
     expect(readdirSync(logsDir).filter((name) => name.endsWith('native-stderr.log'))).toEqual(['native-stderr.log']);
   });
+
+  it.skipIf(process.platform !== 'linux').each(['coordinator', 'supervisor'] as const)(
+    'preserves the first %s failure after a same-boot clock rollback despite older boot mtimes',
+    (role) => {
+      const runDir = mkdtempSync(join(dir, 'rollback-failure-run-'));
+      const ownIncarnation = probeProcessIncarnation(process.pid, 'linux');
+      const ownOrder = ownIncarnation === null ? null : processIncarnationStartOrder(ownIncarnation);
+      if (ownOrder === null) throw new Error('Fixture requires the Linux boot identity');
+      const incarnation = (bootId: string, ticks: number) => {
+        const stat = `2147483000 (node) S ${Array(18).fill('0').join(' ')} ${ticks} 0`;
+        const token = parseLinuxProcessIncarnation(bootId, stat);
+        if (token === null) throw new Error('Fixture process incarnation did not parse');
+        return token;
+      };
+      const olderBootClean = recordedWriter(runDir, role, 2_000, incarnation('older-boot', 1_000_000));
+      writeFileSync(
+        join(olderBootClean, 'segments-closed'),
+        dirname(join(olderBootClean, 'current.log')).split('/').at(-1)!,
+      );
+      const previousFailure = recordedWriter(runDir, role, 999, incarnation(ownOrder.bootId, 99));
+      const clean = recordedWriter(runDir, role, 1_000, incarnation(ownOrder.bootId, 100));
+      writeFileSync(join(clean, 'segments-closed'), dirname(join(clean, 'current.log')).split('/').at(-1)!);
+      const firstFailure = recordedWriter(runDir, role, 100, incarnation(ownOrder.bootId, 101));
+      for (let start = 102; start <= 140; start++)
+        recordedWriter(runDir, role, start, incarnation(ownOrder.bootId, start));
+      const result = spawnSync(process.execPath, [join(dir, 'stuck.cjs')], {
+        env: { ...process.env, TEST_RUN_DIR: runDir, TEST_ROLE: role, TEST_FAILED_EXIT: '1' },
+        stdio: 'ignore',
+        timeout: 10_000,
+        killSignal: 'SIGKILL',
+      });
+      expect(result.status).toBe(1);
+      expect(existsSync(firstFailure)).toBe(true);
+      expect(existsSync(previousFailure)).toBe(false);
+      expect(existsSync(clean)).toBe(true);
+      expect(existsSync(olderBootClean)).toBe(true);
+      const namespaces = readdirSync(join(runDir, 'coordinator-logs')).filter((name) => /^[0-9a-f-]{36}$/.test(name));
+      expect(namespaces).toHaveLength(13);
+    },
+  );
+
+  it.each(['coordinator', 'supervisor'] as const)(
+    'preserves the first failure of the current %s restart loop within separate budgets',
+    (role) => {
+      const runDir = mkdtempSync(join(dir, 'failure-run-'));
+      const previousFailure = recordedWriter(runDir, role, 1);
+      const clean = recordedWriter(runDir, role, 2);
+      writeFileSync(join(clean, 'segments-closed'), dirname(join(clean, 'current.log')).split('/').at(-1)!);
+      const firstFailure = recordedWriter(runDir, role, 3);
+      for (let age = 4; age <= 40; age++) recordedWriter(runDir, role, age);
+      const result = spawnSync(process.execPath, [join(dir, 'stuck.cjs')], {
+        env: { ...process.env, TEST_RUN_DIR: runDir, TEST_ROLE: role, TEST_FAILED_EXIT: '1' },
+        stdio: 'ignore',
+        timeout: 10_000,
+        killSignal: 'SIGKILL',
+      });
+      expect(result.status).toBe(1);
+      expect(existsSync(firstFailure)).toBe(true);
+      expect(existsSync(previousFailure)).toBe(false);
+      expect(existsSync(clean)).toBe(true);
+      const logsDir = join(runDir, 'coordinator-logs');
+      const namespaces = readdirSync(logsDir).filter((name) => /^[0-9a-f-]{36}$/.test(name));
+      expect(namespaces).toHaveLength(12);
+      expect(existsSync(join(dirname(latestPath(runDir, `latest-${role}.json`)), 'segments-closed'))).toBe(false);
+    },
+  );
 
   it.each([
     ['alive', true],
@@ -1016,8 +1100,9 @@ describe('writer identity retention', () => {
     ['reused', false],
   ] as const)('keeps exact identities when observation is %s: %s', async (observation, kept) => {
     const runDir = mkdtempSync(join(dir, 'identity-observation-'));
-    const oldest = recordedWriter(runDir, 'coordinator', 1);
-    for (let age = 2; age <= 7; age++) recordedWriter(runDir, 'coordinator', age);
+    recordedWriter(runDir, 'coordinator', 1);
+    const oldest = recordedWriter(runDir, 'coordinator', 2);
+    for (let age = 3; age <= 13; age++) recordedWriter(runDir, 'coordinator', age);
     const child = spawn(process.execPath, [join(dir, 'stuck.cjs')], {
       env: { ...process.env, TEST_RUN_DIR: runDir, TEST_RETENTION: '1', TEST_OBSERVATION: observation },
       stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
@@ -1033,10 +1118,12 @@ describe('writer identity retention', () => {
 
   it.each(['missing', 'unreadable'] as const)('keeps a namespace with a %s writer record', async (state) => {
     const runDir = mkdtempSync(join(dir, 'unreadable-writer-'));
-    const oldest = recordedWriter(runDir, 'coordinator', 1);
+    recordedWriter(runDir, 'coordinator', 1);
+    const oldest = recordedWriter(runDir, 'coordinator', 2);
+    const removable = recordedWriter(runDir, 'coordinator', 3);
     if (state === 'missing') unlinkSync(join(oldest, 'writer.json'));
     else writeFileSync(join(oldest, 'writer.json'), '{');
-    for (let age = 2; age <= 7; age++) recordedWriter(runDir, 'coordinator', age);
+    for (let age = 4; age <= 15; age++) recordedWriter(runDir, 'coordinator', age);
     const child = spawn(process.execPath, [join(dir, 'stuck.cjs')], {
       env: { ...process.env, TEST_RUN_DIR: runDir, TEST_RETENTION: '1', TEST_OBSERVATION: 'absent' },
       stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
@@ -1047,6 +1134,7 @@ describe('writer identity retention', () => {
       child.send('absent');
       await writerMessage(child);
       expect(readFileSync(join(oldest, 'current.log'), 'utf8')).toBe('uncertified diagnostics');
+      expect(existsSync(removable)).toBe(false);
     } finally {
       await stopFixture(child);
     }
@@ -1054,9 +1142,10 @@ describe('writer identity retention', () => {
 
   it('retries unknown liveness on the next retention pass and keeps the newest families per role', async () => {
     const runDir = mkdtempSync(join(dir, 'retry-identity-'));
-    const oldest = recordedWriter(runDir, 'coordinator', 1);
-    for (let age = 2; age <= 7; age++) recordedWriter(runDir, 'coordinator', age);
-    for (let age = 1; age <= 7; age++) recordedWriter(runDir, 'supervisor', age);
+    recordedWriter(runDir, 'coordinator', 1);
+    const oldest = recordedWriter(runDir, 'coordinator', 2);
+    for (let age = 3; age <= 13; age++) recordedWriter(runDir, 'coordinator', age);
+    for (let age = 1; age <= 13; age++) recordedWriter(runDir, 'supervisor', age);
     const child = spawn(process.execPath, [join(dir, 'stuck.cjs')], {
       env: { ...process.env, TEST_RUN_DIR: runDir, TEST_RETENTION: '1', TEST_OBSERVATION: 'unknown' },
       stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
@@ -1077,7 +1166,7 @@ describe('writer identity retention', () => {
         };
         counts[writer.role]++;
       }
-      expect(counts).toEqual({ coordinator: 5, supervisor: 5 });
+      expect(counts).toEqual({ coordinator: 11, supervisor: 10 });
     } finally {
       await stopFixture(child);
     }
@@ -1283,7 +1372,7 @@ it('preserves a namespace selected during its decisive absence observation', asy
   const runDir = mkdtempSync(join(dir, 'pointer-observation-order-'));
   const selected = recordedWriter(runDir, 'coordinator', 2);
   recordedWriter(runDir, 'coordinator', 1);
-  for (let age = 3; age <= 7; age++) recordedWriter(runDir, 'coordinator', age);
+  for (let age = 3; age <= 13; age++) recordedWriter(runDir, 'coordinator', age);
   const path = join(selected, 'current.log');
   const child = spawn(process.execPath, [join(dir, 'stuck.cjs')], {
     env: {

@@ -63,7 +63,9 @@ import { assertDescriberCoverage } from '../read-model/event-describers.js';
 import { aggregateWorkflowUsage } from '../jobs/workflow-usage.js';
 import { JobStore } from '../jobs/store.js';
 import { JobLocationIndex } from '../jobs/location-index.js';
-import { recoverJobLocations } from '../jobs/location-recovery.js';
+import { createJobLocationRecoveryRetryPlan } from '../jobs/location-recovery.js';
+import { RecoveryContainment } from '../recovery/containment.js';
+import { RecoveryQuarantineStore } from '../recovery/quarantine.js';
 import { deriveLaunchReadiness } from '../jobs/launch-readiness.js';
 import { encodeResolvedStoreEpoch, inspectCurrentStore, type ResolvedStoreEpoch } from '../store/epoch/index.js';
 import { observeSuccessionWriterGeneration } from '../store/succession-writer-generation.js';
@@ -167,7 +169,22 @@ function createCoordinatorStartupRecoveryRunner({
     if (activeEpoch === null) throw new Error('Job recovery requires an active store epoch');
     const locations = startRecoveryPhase(phaseOptions('job-locations'));
     try {
-      recoverJobLocations(jobLocations, encodeResolvedStoreEpoch(runtime, activeEpoch), progressStore, locations);
+      const epochKey = encodeResolvedStoreEpoch(runtime, activeEpoch);
+      const plan = createJobLocationRecoveryRetryPlan(
+        jobLocations,
+        epochKey,
+        progressStore,
+        {
+          key: epochKey,
+          revision: { kind: 'until-cleared' },
+        },
+        locations,
+      );
+      await RecoveryContainment.each(plan.source, {
+        ...plan.policy,
+        signal,
+        quarantine: new RecoveryQuarantineStore(db, runtime.time),
+      });
       locations.finish();
     } catch (error: unknown) {
       locations.finish('failed');

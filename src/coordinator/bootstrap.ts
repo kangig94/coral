@@ -274,6 +274,14 @@ export async function handoffStartupToSelectedBuild(
     const continuation = consumeHandoffRunResult(result, (incidents) =>
       incidents.filter((incident) => incident.phase === 'terminal').forEach(logStartupHandoffPublicationIncident),
     );
+    if (continuation.kind !== 'run-current' && continuation.observation.kind !== 'undetermined') {
+      try {
+        await startupError.observe?.(continuation.observation.kind);
+      } catch (error: unknown) {
+        if (continuation.observation.kind !== 'serving') throw error;
+        backendLog.warn(`Selected backend is serving; startup handoff bookkeeping failed: ${errorMessage(error)}`);
+      }
+    }
     return continuation.kind === 'run-current'
       ? {
           kind: 'failed',
