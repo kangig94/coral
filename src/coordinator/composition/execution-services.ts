@@ -848,6 +848,7 @@ export function createExecutionServices(deps: CreateExecutionServicesDeps): Exec
         getProgressStore().getDb(),
         signal,
       );
+      void providerProxyLifecycle.recordInheritanceObservation(providerProxySetIdentityFromRecord(record), outcome);
       return outcome;
     },
     acceptContainmentAbsence: (identity, receipt) => providerProxyLifecycle.containmentAbsent(identity, receipt),
@@ -874,6 +875,7 @@ export function createExecutionServices(deps: CreateExecutionServicesDeps): Exec
           getProgressStore().getDb(),
           signal,
         );
+        void providerProxyLifecycle.recordInheritanceObservation(providerProxySetIdentityFromRecord(record), outcome);
         return outcome;
       },
       recordContainmentAbsence: (identity, receipt) => providerProxyLifecycle.containmentAbsent(identity, receipt),

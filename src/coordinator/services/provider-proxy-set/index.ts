@@ -1,4 +1,7 @@
-import { createFailureDomainAbsenceObserver } from '../../../infra/process-containment.js';
+import {
+  createFailureDomainAbsenceObserver,
+  ProcessContainmentInvariantError,
+} from '../../../infra/process-containment.js';
 import type { FailureDomainContainment } from '../../../infra/failure-domain.js';
 import { startRecoveryPhase, type RecoveryObservation } from '../../../recovery/phase-observation.js';
 import { encodeProviderProxySetAddress, type ProviderProxySetAddress } from '../../../provider-proxy/set-address.js';
@@ -18,7 +21,10 @@ import {
   type ProviderProxySetEnforcerObservations,
 } from '../../../provider-proxy/containment-proof-contract.js';
 import type { ProviderProxySetLifecycleState } from '../../../provider-proxy/set-lifecycle-state-vocabulary.js';
-import type { ProviderOperationMutationSetFence } from '../../../store/provider-operation-journal.js';
+import {
+  ProviderOperationJournalError,
+  type ProviderOperationMutationSetFence,
+} from '../../../store/provider-operation-journal.js';
 import {
   holdProviderProxyOperationControl,
   type DurableProviderProxyOperationAuthority,
@@ -58,11 +64,15 @@ import type { ProviderProxyRoleControlRemoteError } from '../../live/provider-pr
 import type { ProviderHandoffCapsuleRetirementOutcome } from '../provider-proxy-capsule-discovery.js';
 import {
   classifyProviderProxySetInheritance,
+  providerProxySetAvailabilityReason,
+  type ProviderProxySetAvailabilityIncident,
+  type ProviderProxySetInheritanceOutcome,
   type ControllerTransferAcceptance,
   type ProviderProxySetRedemptionOutcome,
 } from './inheritance.js';
 import {
   authorizeProviderProxySetContainmentProof,
+  ProviderProxySetContainmentProofInvariantError,
   handbackProviderProxySetContainmentProofFence,
   providerProxySetContainmentEvidenceFor,
   releaseProviderProxySetContainmentProofFence,
@@ -133,6 +143,7 @@ import {
   providerProxySetAddress,
   providerProxySetAddressKey,
   providerProxySetCapsuleMatchesIdentity,
+  ProviderProxySetInheritanceCorruptionError,
   providerProxySetIdentitiesEqual,
   providerProxySetIdentityFromCapsule,
   providerProxySetKey,
@@ -163,6 +174,7 @@ import {
   type ProviderProxyAcquisitionAbsenceEvidence,
 } from '../../live/provider-proxy/spawn-undo.js';
 
+const INHERITANCE_OBSERVATION_SUBJECT = 'inheritance-observation';
 const CONTAINMENT_ATTEMPT_MS = 30_000;
 const OPERATOR_EXIT_OBSERVATION_MS = 1_000;
 const ACQUISITION_PUBLICATION_ATTEMPT_LIMIT = 5;
@@ -1185,7 +1197,10 @@ export class ProviderProxySetLifecycle {
 
   #assertDurableOperatorDispositionAuthority(): void {
     if (!this.#durableOperatorDispositionsActivated) {
-      throw new Error('provider_proxy_set_operator_disposition_authority_not_activated');
+      throw new ProviderProxySetInheritanceCorruptionError(
+        'lifecycle_authority_not_activated',
+        'provider_proxy_set_operator_disposition_authority_not_activated',
+      );
     }
   }
 
@@ -2152,6 +2167,55 @@ export class ProviderProxySetLifecycle {
     return { kind: 'accepted', owner: 'provider-proxy-set-lifecycle' };
   }
 
+  #clearInheritanceObservation(identity: ProviderProxySetIdentity): ProviderProxySetOperatorDispositionRecording {
+    const key = providerProxySetKey(identity);
+    const dispositions = new Map(this.#operatorDispositions.get(key) ?? []);
+    const held =
+      dispositions.has(INHERITANCE_OBSERVATION_SUBJECT) ||
+      [...this.#durableOperatorDispositions.values()].some(
+        (record) =>
+          providerProxySetKey(record.setIdentity) === key && record.subjectKey === INHERITANCE_OBSERVATION_SUBJECT,
+      );
+    if (!held) return { kind: 'recorded' };
+    dispositions.delete(INHERITANCE_OBSERVATION_SUBJECT);
+    return this.#setOperatorDispositions(identity, dispositions, undefined, new Set([INHERITANCE_OBSERVATION_SUBJECT]));
+  }
+
+  recordInheritanceObservation(
+    identity: ProviderProxySetIdentity,
+    outcome: ProviderProxySetInheritanceOutcome,
+  ): ProviderProxySetOperatorDispositionRecording {
+    const key = providerProxySetKey(identity);
+    const dispositions = new Map(this.#operatorDispositions.get(key) ?? []);
+    if (outcome.kind === 'inherited') return this.#clearInheritanceObservation(identity);
+    const reason =
+      outcome.kind === 'temporarily-unavailable'
+        ? providerProxySetAvailabilityReason(outcome.incident)
+        : outcome.kind === 'not-bequeathed'
+          ? outcome.reason
+          : outcome.kind === 'containment-disappeared'
+            ? 'containment-absence-unconfirmed'
+            : outcome.kind === 'identity-unobservable'
+              ? `${outcome.kind}:signalDelivered=${outcome.signalDelivered}`
+              : outcome.kind;
+    if (dispositions.get(INHERITANCE_OBSERVATION_SUBJECT)?.incidentReason !== reason) {
+      const diagnostic =
+        outcome.kind === 'temporarily-unavailable' && outcome.incident.kind === 'observation-unknown'
+          ? ` diagnostic=${JSON.stringify(outcome.incident.diagnostic)}`
+          : '';
+      this.#report(
+        'info',
+        `Provider proxy set inheritance observation held set=${providerProxySetReference(identity)} reason=${reason}${diagnostic}; exit=automatic-control-or-containment-reobservation`,
+      );
+    }
+    dispositions.set(INHERITANCE_OBSERVATION_SUBJECT, {
+      disposition: 'held',
+      incidentReason: reason,
+      waitingFor: 'control-reattachment',
+    });
+    return this.#setOperatorDispositions(identity, dispositions);
+  }
+
   acquisitionFor(identity: ProviderProxySetIdentity): ProviderProxySetAcquisitionJudgement {
     const key = providerProxySetKey(identity);
     const authority = this.authorityFor(identity);
@@ -2202,7 +2266,10 @@ export class ProviderProxySetLifecycle {
     admission: ProviderProxySetInheritanceAdmission,
   ): ProviderProxySetInheritanceRegistration {
     if (!providerProxySetIdentitiesEqual(admission.identity, authority.setIdentity)) {
-      throw new Error('provider_proxy_set_inheritance_admission_identity_mismatch');
+      throw new ProviderProxySetInheritanceCorruptionError(
+        'durable_identity_disagreement',
+        'provider_proxy_set_inheritance_admission_identity_mismatch',
+      );
     }
     const key = providerProxySetKey(authority.setIdentity);
     const existing = this.#slots.get(key);
@@ -2751,7 +2818,12 @@ export class ProviderProxySetLifecycle {
             terminalExit: 'representation-released',
           };
     }
-    if (slot.kind === 'reattaching' || slot.kind === 'reattachment-hold') {
+    if (
+      slot.kind === 'reattaching' ||
+      slot.kind === 'reattachment-hold' ||
+      ((slot.kind === 'recovering' || slot.kind === 'capsule-recovering') &&
+        dispositions.has(INHERITANCE_OBSERVATION_SUBJECT))
+    ) {
       return {
         kind: 'control-or-containment',
         ...active,
@@ -3573,6 +3645,7 @@ export class ProviderProxySetLifecycle {
       }
       return commit;
     }
+    void this.#clearInheritanceObservation(identity);
     if (commit.kind === 'unchanged') {
       onReleaseCommitted?.(commit.pending);
       return this.#absenceAcceptance(commit.pending);
@@ -4485,7 +4558,13 @@ export class ProviderProxySetLifecycle {
             }
             this.#slots.delete(slot.key);
             this.#identityIndex.delete(slot.identity);
-            void this.#deleteOperatorDispositions(slot.identity);
+            const retiredSubjects = new Set([
+              INHERITANCE_OBSERVATION_SUBJECT,
+              operatorDispositionSubjectKey('acquisition-publication'),
+            ]);
+            const dispositions = new Map(this.#operatorDispositions.get(slot.key) ?? []);
+            for (const subject of retiredSubjects) dispositions.delete(subject);
+            void this.#setOperatorDispositions(slot.identity, dispositions, undefined, retiredSubjects);
             const capsulePath = outcome.capsulePath ?? slot.capsulePath;
             if (capsulePath !== slot.capsulePath) {
               this.#capsuleAddresses.set(providerProxySetAddressKey(slot.address), capsulePath);
@@ -4523,6 +4602,16 @@ export class ProviderProxySetLifecycle {
                 void this.#containmentAbsent(slot.identity, outcome.disappearanceReceipt, proof);
                 return;
               }
+              const observation: ProviderProxySetInheritanceOutcome =
+                outcome.kind === 'authorization-missing' ||
+                outcome.kind === 'authorization-stale' ||
+                outcome.kind === 'store-unreadable'
+                  ? {
+                      kind: 'temporarily-unavailable',
+                      incident: { kind: 'recorded-containment-unavailable', reason: outcome.kind },
+                    }
+                  : outcome;
+              void this.recordInheritanceObservation(slot.identity, observation);
               slot.completedAttempts += 1;
               const delayMs = retryDelayMs(slot.completedAttempts);
               const requestedWakeMs = this.#deps.time.now() + delayMs;
@@ -4536,6 +4625,24 @@ export class ProviderProxySetLifecycle {
             (error: unknown) => {
               if (this.#slots.get(slot.key) !== slot || slot.attemptToken !== token) return;
               slot.attemptAbort = null;
+              if (
+                error instanceof ProcessContainmentInvariantError ||
+                error instanceof ProviderProxySetContainmentProofInvariantError ||
+                error instanceof ProviderProxySetInheritanceCorruptionError ||
+                error instanceof ProviderOperationJournalError
+              ) {
+                dispatcher.reportInvariant(
+                  'exact-capsule-recovery',
+                  { setIdentity: slot.identity, capsule: slot.capsuleBinding },
+                  'containment-proof',
+                  error,
+                );
+                return;
+              }
+              void this.recordInheritanceObservation(slot.identity, {
+                kind: 'temporarily-unavailable',
+                incident: { kind: 'recorded-containment-unavailable', reason: 'observation-failed' },
+              });
               this.#deps.onError?.(
                 `Provider handoff capsule exact containment reap failed: ${singleLineErrorSummary(error)}`,
               );
@@ -4555,9 +4662,10 @@ export class ProviderProxySetLifecycle {
           if (this.#slots.get(slot.key) !== slot || slot.attemptToken !== token) return;
           abort.abort();
           slot.attemptAbort = null;
-          this.#deps.onError?.(
-            `Provider handoff capsule exact recovery is temporarily unavailable: ${retry.producerId}`,
-          );
+          void this.recordInheritanceObservation(slot.identity, {
+            kind: 'temporarily-unavailable',
+            incident: retry.incident as ProviderProxySetAvailabilityIncident,
+          });
           slot.completedAttempts += 1;
           const delayMs = retryDelayMs(slot.completedAttempts);
           const requestedWakeMs = this.#deps.time.now() + delayMs;
@@ -4612,7 +4720,10 @@ export class ProviderProxySetLifecycle {
       ) {
         return;
       }
-      throw new Error('provider_proxy_set_already_established');
+      throw new ProviderProxySetInheritanceCorruptionError(
+        'durable_identity_disagreement',
+        'provider_proxy_set_already_established',
+      );
     }
     const slot: EstablishedSlot = {
       kind: 'available',

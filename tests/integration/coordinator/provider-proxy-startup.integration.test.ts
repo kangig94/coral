@@ -61,6 +61,28 @@ import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { testConversationFacet } from '#tests/helpers/session.js';
 import { providerProxySetIdentityFromRecord } from '#src/coordinator/services/provider-proxy-set/identity.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
+import type * as MonotonicClockModule from '#src/infra/monotonic-clock.js';
+
+const containmentClock = vi.hoisted(() => ({ milliseconds: null as bigint | null }));
+vi.mock('#src/infra/monotonic-clock.js', async (original) => {
+  const actual = await original<typeof MonotonicClockModule>();
+  return {
+    ...actual,
+    createMonotonicClock: (scope: symbol, dependencies?: Parameters<typeof actual.createMonotonicClock>[1]) =>
+      actual.createMonotonicClock(
+        scope,
+        containmentClock.milliseconds === null
+          ? dependencies
+          : {
+              ...dependencies,
+              readMilliseconds: () => containmentClock.milliseconds ?? 0n,
+              sleep: async (milliseconds: number) => {
+                containmentClock.milliseconds = (containmentClock.milliseconds ?? 0n) + BigInt(milliseconds);
+              },
+            },
+      ),
+  };
+});
 const FIXTURE_BUILD_SET_ID = '00000000-0000-4000-8000-000000000004';
 const FIXTURE_PROCESS_LONG_GONE_INCARNATION = testIncarnation(9_000);
 async function drainMicrotasks(count = 20): Promise<void> {
@@ -404,6 +426,223 @@ describe('orphaned provider operation retries after double startup hydration', (
 });
 
 describe('startup reconciliation deadline succession', () => {
+  it('holds only the set whose containment observation misses its deadline and decides on reobservation', async () => {
+    const record = providerOperationRecord('settlement-pending');
+    const otherInstanceId = randomUUID();
+    const other = providerOperationRecord('settlement-pending', {
+      operation: {
+        ...record.operation,
+        jobId: randomUUID(),
+        operationId: randomUUID(),
+        proxyInstanceId: otherInstanceId,
+      },
+      locator: {
+        ...record.locator,
+        proxy: { ...record.locator.proxy, instanceId: otherInstanceId },
+        hostFingerprint: 'b'.repeat(64),
+      },
+    });
+    const time = new VirtualTime();
+    const base = sandboxedRuntime(time);
+    let overrunPending = true;
+    const observe = vi.fn(async () => {
+      if (overrunPending) {
+        overrunPending = false;
+        containmentClock.milliseconds = 14_001n;
+      }
+      return 'absent' as const;
+    });
+    const kill = vi.fn(() => false);
+    const runtime: Runtime = {
+      ...base,
+      process: { ...base.process, observeRecordedProcessAsync: observe, kill },
+    };
+    const prover = createProviderProxySetContainmentProver(runtime);
+    const reap = vi.fn(createProviderProxySetRecordedContainmentReaper(runtime));
+    let delayedSetAttempts = 0;
+    const inherit = vi.fn(async (locator: ProviderOperationRecord, db: Database, signal: AbortSignal) => {
+      if (locator.operation.proxyInstanceId !== record.operation.proxyInstanceId) {
+        return { kind: 'containment-disappeared' as const, disappearanceReceipt: 'fixture-unrelated-absent' };
+      }
+      delayedSetAttempts += 1;
+      return attemptProviderProxySetInheritance(
+        locator,
+        db,
+        {
+          runtime,
+          coordinatorIdentity: {
+            instanceId: randomUUID(),
+            pid: process.pid,
+            incarnation: testIncarnation(1),
+            generation: 'gen2',
+            flavor: 'prod',
+            buildSetId: FIXTURE_BUILD_SET_ID,
+          },
+          operationRegistry: new LocalOperationRegistry(),
+          collectContainmentProof: prover.collectContainmentProof,
+          reapRecordedContainment: reap,
+        },
+        signal,
+      );
+    });
+    const harness = composeProductionStartup(
+      record,
+      { inheritProviderProxySet: inherit },
+      runtime,
+      (db) =>
+        new JobStore('provider-proxy-startup-integration', runtime, createEventBodyCodec(), {
+          db,
+          providers: permissiveProviderLookupPort,
+        }),
+      [other],
+    );
+    try {
+      containmentClock.milliseconds = 0n;
+      expect(await productionStartupOutcome(harness)).toMatchObject({
+        kind: 'fulfilled',
+        report: { incidents: [expect.objectContaining({ kind: 'set-retry-scheduled' })] },
+      });
+      expect(reap).toHaveBeenCalledOnce();
+      expect(await reap.mock.results[0]?.value).toEqual({ kind: 'identity-unobservable', signalDelivered: false });
+      const held = readProviderOperation(harness.db, record.operation);
+      expect(held).toMatchObject({
+        phase: 'settlement-pending',
+        retryCount: 1,
+        lastError: expect.objectContaining({ code: 'provider_proxy_set_recovery_unavailable' }),
+      });
+      expect(held?.retryNotBeforeMs).toBeGreaterThan(time.now());
+      const heldStatus = harness.lifecycleRef.get()?.snapshot().operatorSets;
+      expect(heldStatus).toEqual([
+        expect.objectContaining({
+          setIdentity: expect.objectContaining({ proxyInstanceId: record.operation.proxyInstanceId }),
+          autonomousDisposition: expect.objectContaining({
+            kind: 'control-or-containment',
+            retryAction: 'recover-control-or-observe-exact-containment',
+          }),
+          holds: [
+            expect.objectContaining({
+              disposition: 'held',
+              incidentReason: 'identity-unobservable:signalDelivered=false',
+            }),
+          ],
+        }),
+      ]);
+      const dispositionStore = new ProviderProxySetOperatorDispositionStore(
+        runtime.storage,
+        runtime.paths.coral.coordinator.runDir,
+      );
+      expect(dispositionStore.read().records).toEqual([
+        expect.objectContaining({
+          subjectKey: 'inheritance-observation',
+          disposition: expect.objectContaining({
+            disposition: 'held',
+            incidentReason: 'identity-unobservable:signalDelivered=false',
+          }),
+        }),
+      ]);
+      expect(readProviderOperation(harness.db, other.operation)).toBeNull();
+      expect(observe).toHaveBeenCalledOnce();
+      expect(kill).not.toHaveBeenCalled();
+      expect(harness.fatals).not.toHaveBeenCalled();
+      expect(harness.lifecycleRef.get()?.beginFreshAcquisition('unrelated-new-launch')).toMatchObject({
+        kind: 'accepted',
+      });
+      harness.services.startProviderOperationReconciler();
+      time.tick(2_025);
+      await drainMicrotasks(200);
+      await vi.waitFor(() => expect(readProviderOperation(harness.db, record.operation)).toBeNull());
+      expect(delayedSetAttempts).toBe(2);
+      expect(await reap.mock.results[1]?.value).toMatchObject({ kind: 'containment-absent' });
+      expect(harness.lifecycleRef.get()?.snapshot().operatorSets).toEqual([]);
+      expect(dispositionStore.read().records).toEqual([]);
+      expect(harness.fatals).not.toHaveBeenCalled();
+    } finally {
+      containmentClock.milliseconds = null;
+      harness.services.stopProviderOperationReconciler();
+      harness.ownershipService.releaseAll();
+      harness.db.close();
+    }
+  });
+
+  it.each(['startup', 'ordinary'] as const)(
+    'retains the %s inheritance hold when the final leaf check refuses absence',
+    async (path) => {
+      const record = providerOperationRecord('settlement-pending');
+      const time = new VirtualTime();
+      const base = sandboxedRuntime(time);
+      let leafAbsent = true;
+      const runtime: Runtime = {
+        ...base,
+        process: {
+          ...base.process,
+          failureDomainContainment: () => ({
+            observe: () => (leafAbsent ? { kind: 'absent' as const } : { kind: 'unknown' as const, reason: 'EIO' }),
+            kill: () => ({ kind: 'refused' as const, errno: 'EPERM' }),
+          }),
+        },
+      };
+      let attempts = 0;
+      let permitAbsence = false;
+      const inherit = vi.fn(async () => {
+        attempts += 1;
+        if (path === 'ordinary' && attempts === 1) throw new Error('initial observation unavailable');
+        leafAbsent = permitAbsence;
+        return { kind: 'containment-disappeared' as const, disappearanceReceipt: 'fixture-final-leaf-absence' };
+      });
+      const harness = composeProductionStartup(
+        record,
+        { inheritProviderProxySet: inherit },
+        runtime,
+        (db) =>
+          new JobStore('provider-proxy-startup-integration', runtime, createEventBodyCodec(), {
+            db,
+            providers: permissiveProviderLookupPort,
+          }),
+      );
+      const dispositions = new ProviderProxySetOperatorDispositionStore(
+        runtime.storage,
+        runtime.paths.coral.coordinator.runDir,
+      );
+      try {
+        expect(await productionStartupOutcome(harness)).toMatchObject({ kind: 'fulfilled' });
+        harness.services.startProviderOperationReconciler();
+        if (path === 'ordinary') {
+          time.tick(2_025);
+          await drainMicrotasks(200);
+          expect(attempts).toBe(2);
+        }
+        expect(readProviderOperation(harness.db, record.operation)).not.toBeNull();
+        expect(harness.lifecycleRef.get()?.snapshot().operatorSets).toEqual([
+          expect.objectContaining({
+            holds: [
+              expect.objectContaining({ disposition: 'held', incidentReason: 'containment-absence-unconfirmed' }),
+            ],
+          }),
+        ]);
+        expect(dispositions.read().records).toEqual([
+          expect.objectContaining({
+            subjectKey: 'inheritance-observation',
+            disposition: expect.objectContaining({
+              disposition: 'held',
+              incidentReason: 'containment-absence-unconfirmed',
+            }),
+          }),
+        ]);
+        permitAbsence = true;
+        time.tick(2_025);
+        await drainMicrotasks(200);
+        await vi.waitFor(() => expect(readProviderOperation(harness.db, record.operation)).toBeNull());
+        expect(harness.lifecycleRef.get()?.snapshot().operatorSets).toEqual([]);
+        expect(dispositions.read().records).toEqual([]);
+        expect(harness.fatals).not.toHaveBeenCalled();
+      } finally {
+        harness.services.stopProviderOperationReconciler();
+        harness.ownershipService.releaseAll();
+        harness.db.close();
+      }
+    },
+  );
+
   it('applies inherited control socket events and transferred fence writes after detachment', async () => {
     const record = providerOperationRecord('settlement-pending');
     const time = new VirtualTime();

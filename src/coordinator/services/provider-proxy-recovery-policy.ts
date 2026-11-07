@@ -1,3 +1,9 @@
+import { z } from 'zod';
+import { ControlClientError } from '../../provider-proxy/control-client.js';
+import { isProviderProxyOperationAuthority } from '../live/provider-proxy/operation-route.js';
+import type { ProviderProxySetAuthority } from '../live/provider-proxy/authority.js';
+import { providerOperationRecordSchema } from '../../store/provider-operation-record.js';
+import { ProcessContainmentInvariantError } from '../../infra/process-containment.js';
 import type { TimePort } from '../../infra/port-types.js';
 import {
   ProviderOperationAtomicTerminalizationError,
@@ -36,6 +42,8 @@ import {
   type ProviderHandoffCapsuleRetirementOutcome,
 } from './provider-proxy-capsule-discovery.js';
 import {
+  ProviderProxySetInheritanceCorruptionError,
+  providerProxySetIdentitySchema,
   providerProxySetCapsuleMatchesIdentity,
   providerProxySetIdentitiesEqual,
   type ProviderProxySetIdentity,
@@ -48,6 +56,7 @@ import type {
 } from './provider-proxy-set/inheritance.js';
 import {
   inspectProviderProxySetContainmentProof,
+  ProviderProxySetContainmentProofInvariantError,
   type ProviderProxySetFencedContainmentProof,
 } from './provider-proxy-set/containment-proof.js';
 
@@ -262,7 +271,19 @@ export interface ProviderProxyRecoveryArbiter {
   cancel(reason: unknown): void;
 }
 
+export type ProviderProxyRecoveryInvariantError =
+  | ProcessContainmentInvariantError
+  | ProviderProxySetContainmentProofInvariantError
+  | ProviderProxySetInheritanceCorruptionError
+  | ProviderOperationJournalError;
+
 export interface ProviderProxyRecoveryDispatcher {
+  reportInvariant(
+    seam: ProviderProxyRecoveryConsumerSeam,
+    context: ProviderProxyRecoveryExactContext,
+    producerId: ProviderProxyRecoveryProducerId,
+    error: ProviderProxyRecoveryInvariantError,
+  ): void;
   begin(
     this: ProviderProxyRecoveryDispatcher,
     seam: ProviderProxyRecoveryConsumerSeam,
@@ -335,52 +356,276 @@ function containmentProofRequiresReap(value: unknown): value is ProviderProxySet
   return proof?.authorization === 'fenced' && proof.evidence.kind === 'reap-required';
 }
 
-function classifyFulfillment(
+const roleSchema = z.enum(['guardian', 'reaper', 'proxy']);
+const heartbeatMethodSchema = z.enum(['guardian.heartbeat.v1', 'reaper.heartbeat.v1', 'control.heartbeat.v1']);
+const openMethodSchema = z.enum([
+  'control.open.v1',
+  'guardian.open.v1',
+  'reaper.open.v1',
+  'guardian.handoff-redeem.v1',
+  'reaper.handoff-rotate.v1',
+  'handoff.redeem.v1',
+]);
+const methodSchema = z.union([openMethodSchema, heartbeatMethodSchema]).nullable();
+const callableSchema = z.custom<(...args: never[]) => unknown>((value) => typeof value === 'function');
+const remoteFailureSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('json-rpc-error'),
+    jsonRpcCode: z.number(),
+    protocolCode: z.string().nullable(),
+    admissionReason: z.enum(['control-active', 'invalid-state', 'teardown-latched']).nullable(),
+    heartbeatRefusal: z
+      .union([
+        z.object({ reason: z.literal('challenge-mismatch'), nextHeartbeatChallenge: z.string() }),
+        z.object({ reason: z.literal('teardown-latched'), nextHeartbeatChallenge: z.null() }),
+      ])
+      .nullable(),
+  }),
+  z.object({ kind: z.literal('invalid-frame') }),
+]);
+const controlExchangeSchema = z.union([
+  z.object({
+    kind: z.literal('response'),
+    response: z.union([
+      z.object({ kind: z.literal('result'), value: z.unknown() }).refine((value) => Object.hasOwn(value, 'value')),
+      z.object({ kind: z.literal('refusal'), failure: remoteFailureSchema, error: z.instanceof(ControlClientError) }),
+    ]),
+  }),
+  z.object({
+    kind: z.literal('no-response'),
+    cause: z.enum(['timeout', 'connection-closed-after-write']),
+    error: z.instanceof(ControlClientError),
+  }),
+  z.object({
+    kind: z.literal('delivery-unconfirmed'),
+    cause: z.literal('socket-error-after-write'),
+    error: z.instanceof(Error),
+  }),
+  z
+    .object({
+      kind: z.literal('not-sent'),
+      cause: z.enum(['connection-already-closed', 'encode-failed', 'write-threw']),
+      error: z.unknown(),
+    })
+    .refine((value) => Object.hasOwn(value, 'error')),
+  z.object({
+    kind: z.literal('channel-fault'),
+    cause: z.literal('invalid-unattributable-frame'),
+    error: z.instanceof(ControlClientError),
+  }),
+]);
+const heartbeatObservationSchema = z.union([
+  z.object({
+    kind: z.literal('reply'),
+    reply: z.union([
+      z.object({ kind: z.literal('accepted'), nextChallenge: z.string() }),
+      z.object({ kind: z.literal('challenge-mismatch'), nextChallenge: z.string() }),
+      z.object({ kind: z.literal('teardown-latched'), error: z.instanceof(ControlClientError) }),
+      z.object({ kind: z.literal('method-not-found'), error: z.instanceof(ControlClientError) }),
+      z
+        .object({ kind: z.literal('unusable'), error: z.unknown(), exchange: controlExchangeSchema.optional() })
+        .refine((value) => Object.hasOwn(value, 'error')),
+    ]),
+  }),
+  z.object({ kind: z.literal('no-response-before-deadline'), error: z.instanceof(ControlClientError) }),
+  z
+    .object({
+      kind: z.literal('locally-unsent'),
+      stage: z.enum(['request-encode', 'write', 'channel-not-open']),
+      error: z.unknown(),
+    })
+    .refine((value) => Object.hasOwn(value, 'error')),
+  z.object({ kind: z.literal('delivery-unconfirmed'), error: z.instanceof(Error) }),
+  z.object({ kind: z.literal('channel-fault'), error: z.instanceof(ControlClientError) }),
+]);
+const roleAvailabilityIncidentSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('role-exchange-unavailable'),
+    role: roleSchema,
+    method: z.string(),
+    exchange: controlExchangeSchema,
+  }),
+  z.object({
+    kind: z.literal('role-result-unusable'),
+    role: roleSchema,
+    method: z.string(),
+    exchange: controlExchangeSchema,
+  }),
+  z.object({
+    kind: z.literal('role-control-channel-fault'),
+    role: roleSchema,
+    stage: z.enum(['connect', 'open', 'heartbeat']),
+    method: methodSchema,
+    fault: z.instanceof(ControlClientError),
+  }),
+  z.object({
+    kind: z.literal('role-open-indeterminate'),
+    role: roleSchema,
+    method: openMethodSchema,
+    exchange: controlExchangeSchema.refine((value) => value.kind !== 'response'),
+  }),
+  z.object({
+    kind: z.literal('paired-reaper-unavailable'),
+    role: z.literal('guardian'),
+    method: z.literal('guardian.handoff-redeem.v1'),
+  }),
+  z.object({
+    kind: z.literal('role-control-teardown-latched'),
+    role: roleSchema,
+    stage: z.enum(['open', 'heartbeat']),
+    method: methodSchema,
+  }),
+  z.object({
+    kind: z.literal('role-control-unavailable'),
+    role: roleSchema,
+    stage: z.enum(['connect', 'open', 'heartbeat']),
+    method: methodSchema,
+    origin: z.enum(['timeout', 'write', 'closed']),
+    controlCode: z.enum(['control_client_connect_failed', 'control_client_closed', 'control_call_failed']),
+  }),
+  z.object({
+    kind: z.literal('role-control-busy'),
+    role: roleSchema,
+    method: z.enum(['guardian.handoff-redeem.v1', 'reaper.handoff-rotate.v1', 'handoff.redeem.v1']),
+    protocolCode: z.literal('invalid_state'),
+    admissionReason: z.literal('control-active'),
+  }),
+  z.object({
+    kind: z.literal('role-heartbeat-indeterminate'),
+    role: roleSchema,
+    method: heartbeatMethodSchema,
+    observation: heartbeatObservationSchema,
+  }),
+]);
+const availabilityIncidentSchema = z.union([
+  roleAvailabilityIncidentSchema,
+  z.discriminatedUnion('kind', [
+    z.object({ kind: z.literal('observation-refused'), producerId: z.enum(['set-inheritance', 'containment-proof']) }),
+    z.object({
+      kind: z.literal('observation-unknown'),
+      producerId: z.enum(['set-inheritance', 'containment-proof', 'capsule-redemption']),
+      diagnostic: z.object({ name: z.string(), code: z.string().nullable(), message: z.string() }),
+    }),
+    z.object({
+      kind: z.literal('lifecycle-owned-pending'),
+      owner: z.literal('provider-proxy-set-lifecycle'),
+      status: z.string(),
+      nextObservation: z.string(),
+    }),
+    z.object({
+      kind: z.literal('inheritance-admission-expired'),
+      retryOwner: z.literal('provider-proxy-set-inheritance'),
+    }),
+    z.object({ kind: z.literal('mutation-set-fenced') }),
+    z.object({ kind: z.literal('transfer-status-unconfirmed') }),
+    z.object({
+      kind: z.literal('publication-unknown'),
+      role: z.enum(['guardian', 'proxy']),
+      reason: z.string(),
+      exchange: controlExchangeSchema.optional(),
+    }),
+    z.object({ kind: z.literal('publication-not-attempted'), role: z.enum(['guardian', 'proxy']), reason: z.string() }),
+    z.object({
+      kind: z.literal('recorded-containment-unavailable'),
+      reason: z.enum([
+        'authorization-missing',
+        'authorization-stale',
+        'store-unreadable',
+        'guardian-containment-unconfirmed',
+        'observation-failed',
+      ]),
+    }),
+    z.object({ kind: z.literal('recovery-deadline'), timeoutMs: z.literal(45_000) }),
+  ]),
+]);
+const containmentAuthoritySchema = z.object({
+  commitContainment: callableSchema,
+  stopHeartbeats: callableSchema,
+  initiateControlClose: callableSchema,
+});
+const recoveryAuthoritySchema = containmentAuthoritySchema
+  .extend({
+    proxyInstanceId: z.string(),
+    setIdentity: providerProxySetIdentitySchema,
+    stopAndReap: callableSchema,
+    installRecoveryCredential: callableSchema,
+    authorizeControllerTransfer: callableSchema,
+    registerSuccessionOperation: callableSchema,
+    providerHosts: z.object({
+      list: callableSchema,
+      inspect: callableSchema,
+      terminalEviction: callableSchema,
+      evict: callableSchema,
+    }),
+  })
+  .passthrough()
+  .refine(
+    (value) =>
+      value.proxyInstanceId === value.setIdentity.proxyInstanceId &&
+      isProviderProxyOperationAuthority(value as unknown as ProviderProxySetAuthority),
+  );
+const guardianAuthoritySchema = containmentAuthoritySchema.extend({
+  faulted: z.instanceof(Promise),
+  onFault: callableSchema,
+  onIncident: callableSchema,
+});
+const recoveredSetFields = {
+  set: recoveryAuthoritySchema,
+  publicationReceipt: z.object({ kind: z.literal('provider-proxy-set-published') }),
+  protection: z.literal('protected'),
+};
+const inheritanceOutcomeSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('inherited'), ...recoveredSetFields }),
+  z.object({ kind: z.literal('containment-disappeared'), disappearanceReceipt: z.string().min(1) }),
+  z.object({ kind: z.literal('recorded-group-unattributable') }),
+  z.object({ kind: z.literal('signal-authorization-refused') }),
+  z.object({ kind: z.literal('identity-unobservable'), signalDelivered: z.boolean() }),
+  z.object({ kind: z.literal('not-bequeathed'), reason: z.string() }),
+  z.object({ kind: z.literal('temporarily-unavailable'), incident: availabilityIncidentSchema }),
+]);
+const redemptionOutcomeSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('redeemed'), ...recoveredSetFields, capsulePath: z.string().min(1).optional() }),
+  z.object({
+    kind: z.literal('proxy-unavailable'),
+    setIdentity: providerProxySetIdentitySchema,
+    guardianAuthority: guardianAuthoritySchema,
+    incident: roleAvailabilityIncidentSchema,
+  }),
+  z.object({ kind: z.literal('protocol-incompatible'), role: roleSchema, method: heartbeatMethodSchema }),
+  z.object({ kind: z.literal('temporarily-unavailable'), incident: availabilityIncidentSchema }),
+]);
+const terminalizationOutcomeSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('terminalized') }),
+  z.object({ kind: z.literal('conflict'), current: providerOperationRecordSchema.nullable() }),
+]);
+
+function classifyFulfillmentUnchecked(
   producerId: ProviderProxyRecoveryProducerId,
   value: unknown,
   context: ProviderProxyRecoveryExactContext,
 ): Observation {
   if (producerId === 'disappearance-terminalization') {
-    if (
-      typeof value !== 'object' ||
-      value === null ||
-      !('kind' in value) ||
-      (value.kind !== 'terminalized' && value.kind !== 'conflict')
-    ) {
-      return unknown(producerId, new Error('provider_proxy_terminalization_contract_violation'));
-    }
-    return evidence(value);
+    return terminalizationOutcomeSchema.safeParse(value).success
+      ? evidence(value)
+      : corrupt(producerId, new Error('provider_proxy_terminalization_contract_violation'));
   }
   if (producerId === 'set-inheritance') {
-    if (
-      typeof value !== 'object' ||
-      value === null ||
-      !('kind' in value) ||
-      ![
-        'inherited',
-        'containment-disappeared',
-        'recorded-group-unattributable',
-        'signal-authorization-refused',
-        'identity-unobservable',
-        'not-bequeathed',
-        'temporarily-unavailable',
-      ].includes(String(value.kind))
-    ) {
-      return unknown(producerId, new Error('provider_proxy_set_inheritance_contract_violation'));
+    if (!inheritanceOutcomeSchema.safeParse(value).success) {
+      return corrupt(producerId, new Error('provider_proxy_set_inheritance_contract_violation'));
     }
     const outcome = value as ProviderProxySetInheritanceOutcome;
+    if (
+      outcome.kind === 'inherited' &&
+      context.setIdentity !== undefined &&
+      !providerProxySetIdentitiesEqual(context.setIdentity, outcome.set.setIdentity)
+    ) {
+      return corrupt(producerId, new Error('provider_proxy_set_inheritance_identity_mismatch'));
+    }
     return outcome.kind === 'temporarily-unavailable' ? unavailable(producerId, outcome.incident) : evidence(outcome);
   }
   if (producerId === 'capsule-redemption') {
-    if (
-      typeof value !== 'object' ||
-      value === null ||
-      !('kind' in value) ||
-      !['redeemed', 'proxy-unavailable', 'protocol-incompatible', 'temporarily-unavailable'].includes(
-        String(value.kind),
-      )
-    ) {
-      return unknown(producerId, new Error('provider_proxy_capsule_redemption_contract_violation'));
+    if (!redemptionOutcomeSchema.safeParse(value).success) {
+      return corrupt(producerId, new Error('provider_proxy_capsule_redemption_contract_violation'));
     }
     const outcome = value as ProviderProxySetRedemptionOutcome;
     if (outcome.kind === 'temporarily-unavailable') return unavailable(producerId, outcome.incident);
@@ -397,10 +642,10 @@ function classifyFulfillment(
   if (producerId === 'containment-proof') {
     const proof = inspectProviderProxySetContainmentProof(value);
     if (proof === null) {
-      return unknown(producerId, new Error('provider_proxy_containment_proof_contract_violation'));
+      return corrupt(producerId, new Error('provider_proxy_containment_proof_contract_violation'));
     }
     if (proof.authorization !== 'fenced') {
-      return unknown(producerId, new Error('provider_proxy_containment_proof_authorization_missing'));
+      return corrupt(producerId, new Error('provider_proxy_containment_proof_authorization_missing'));
     }
     if (context.setIdentity === undefined || !providerProxySetIdentitiesEqual(context.setIdentity, proof.identity)) {
       return corrupt(producerId, new Error('provider_proxy_containment_proof_identity_mismatch'));
@@ -410,7 +655,7 @@ function classifyFulfillment(
   if (producerId === 'capsule-retirement') {
     const parsed = providerHandoffCapsuleRetirementOutcomeSchema.safeParse(value);
     if (!parsed.success) {
-      return unknown(producerId, new Error('provider_proxy_capsule_retirement_contract_violation'));
+      return corrupt(producerId, new Error('provider_proxy_capsule_retirement_contract_violation'));
     }
     return parsed.data.kind === 'temporarily-unavailable'
       ? unavailable(producerId, parsed.data.incident)
@@ -419,7 +664,7 @@ function classifyFulfillment(
   if (producerId === 'disappearance-consumer') {
     const parsed = disappearanceDeliveryAttemptOutcomeSchema.safeParse(value);
     if (!parsed.success) {
-      return unknown(producerId, new Error('provider_proxy_disappearance_consumer_contract_violation'));
+      return corrupt(producerId, new Error('provider_proxy_disappearance_consumer_contract_violation'));
     }
     const outcome = parsed.data;
     if (outcome.kind === 'operational-failure') return unavailable(producerId, outcome);
@@ -431,7 +676,7 @@ function classifyFulfillment(
   if (producerId === 'representation-abandonment-consumer') {
     const parsed = representationAbandonmentDeliveryAttemptOutcomeSchema.safeParse(value);
     if (!parsed.success) {
-      return unknown(producerId, new Error('provider_proxy_representation_abandonment_consumer_contract_violation'));
+      return corrupt(producerId, new Error('provider_proxy_representation_abandonment_consumer_contract_violation'));
     }
     const outcome = parsed.data;
     if (outcome.kind === 'operational-failure') return unavailable(producerId, outcome);
@@ -441,6 +686,18 @@ function classifyFulfillment(
     return evidence(outcome.acceptance);
   }
   return evidence(value);
+}
+
+function classifyFulfillment(
+  producerId: ProviderProxyRecoveryProducerId,
+  value: unknown,
+  context: ProviderProxyRecoveryExactContext,
+): Observation {
+  try {
+    return classifyFulfillmentUnchecked(producerId, value, context);
+  } catch (error: unknown) {
+    return corrupt(producerId, error);
+  }
 }
 
 /**
@@ -455,6 +712,19 @@ function errorCode(error: unknown): string | null {
     return typeof code === 'string' ? code : null;
   } catch {
     return null;
+  }
+}
+
+function observationDiagnostic(error: unknown): Readonly<{ name: string; code: string | null; message: string }> {
+  const code = errorCode(error)?.slice(0, 128) ?? null;
+  try {
+    return {
+      name: (error instanceof Error ? error.name : 'Unknown').slice(0, 128),
+      code,
+      message: (error instanceof Error ? error.message : String(error)).replace(/\s+/gu, ' ').slice(0, 512),
+    };
+  } catch {
+    return { name: 'Unknown', code, message: 'The thrown value could not be inspected.' };
   }
 }
 
@@ -508,13 +778,30 @@ function classifyRejection(
   if (error instanceof ProviderProxyRoleControlUnavailableError) return unavailable(producerId, error.incident);
   if (error instanceof ProviderProxyRoleControlRemoteError) {
     const teardown = providerProxyRoleControlTeardownIncident(error);
-    return teardown === null ? refused(producerId, error) : unavailable(producerId, teardown);
+    if (teardown !== null) return unavailable(producerId, teardown);
+    if (
+      (producerId === 'set-inheritance' || producerId === 'containment-proof') &&
+      error.remoteFailure.kind === 'json-rpc-error' &&
+      (error.remoteFailure.protocolCode === 'grant_replayed' || error.remoteFailure.protocolCode === 'grant_invalid')
+    ) {
+      return unavailable(producerId, { kind: 'observation-refused', producerId });
+    }
+    return refused(producerId, error);
   }
   if (
+    error instanceof ProcessContainmentInvariantError ||
+    error instanceof ProviderProxySetContainmentProofInvariantError ||
     error instanceof ProviderOperationJournalError ||
-    (error instanceof Error && error.name === 'ProviderProxySetInheritanceCorruptionError')
+    error instanceof ProviderProxySetInheritanceCorruptionError
   ) {
     return corrupt(producerId, error);
+  }
+  if (producerId === 'set-inheritance' || producerId === 'containment-proof' || producerId === 'capsule-redemption') {
+    return unavailable(producerId, {
+      kind: 'observation-unknown',
+      producerId,
+      diagnostic: observationDiagnostic(error),
+    });
   }
   return unknown(producerId, error);
 }
@@ -575,18 +862,29 @@ export function createProviderProxyRecoveryDispatcher(
     fatalSink: ProviderProxyRecoveryFatalSink;
   }>,
 ): ProviderProxyRecoveryDispatcher {
+  const publishFatal = (error: ProviderProxySetLifecycleFatalError): void => {
+    try {
+      options.fatalSink.fatal(error);
+    } catch {
+      // A failed terminal sink must not create a secondary unhandled rejection.
+    }
+  };
   const effects: ProviderProxyRecoveryEffects = {
     retry: (sinks, retry) => sinks.retry(retry),
     fatal: (sinks, error) => {
       try {
         sinks.fatal(error);
-      } finally {
-        options.fatalSink.fatal(error);
+      } catch {
+        // The global fatal owner must still receive the incident when a turn sink fails.
       }
+      publishFatal(error);
     },
   };
 
   return {
+    reportInvariant(seam, context, producerId, error) {
+      publishFatal(fatalError(seam, context, { kind: 'corrupt', producerId, error }));
+    },
     begin(seam, context, sinks) {
       let retired = false;
       const aborters = new Map<string, (reason: unknown) => void>();
@@ -826,6 +1124,26 @@ export function createProviderProxyRecoveryDispatcher(
         });
       };
 
+      const settle = (source: ProviderProxyRecoveryAnySource, classify: () => Observation): void => {
+        try {
+          submit(source.sourceId, classify());
+        } catch (error: unknown) {
+          retired = true;
+          const fatal = fatalError(seam, context, { kind: 'corrupt', producerId: source.producerId, error });
+          try {
+            abortAll(fatal);
+          } catch {
+            /* Every cleanup refusal must still reach the fatal owner. */
+          }
+          try {
+            disposeCachedEvidence();
+          } catch {
+            /* Every cleanup refusal must still reach the fatal owner. */
+          }
+          effects.fatal(sinks, fatal);
+        }
+      };
+
       return {
         start(source) {
           if (retired || retiredSources.has(source.sourceId)) return;
@@ -834,13 +1152,12 @@ export function createProviderProxyRecoveryDispatcher(
           try {
             produced = invokeProducer(options.producers, source);
           } catch (error: unknown) {
-            submit(source.sourceId, classifyRejection(source.producerId, source.input, error, seam));
+            settle(source, () => classifyRejection(source.producerId, source.input, error, seam));
             return;
           }
           void Promise.resolve(produced).then(
-            (value) => submit(source.sourceId, classifyFulfillment(source.producerId, value, context)),
-            (error: unknown) =>
-              submit(source.sourceId, classifyRejection(source.producerId, source.input, error, seam)),
+            (value) => settle(source, () => classifyFulfillment(source.producerId, value, context)),
+            (error: unknown) => settle(source, () => classifyRejection(source.producerId, source.input, error, seam)),
           );
         },
         cancel(reason) {

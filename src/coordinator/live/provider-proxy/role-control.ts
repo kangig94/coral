@@ -1,3 +1,4 @@
+import { ProviderProxySetInheritanceCorruptionError } from '../../services/provider-proxy-set/identity.js';
 import type { z } from 'zod';
 
 import { PROXY_CONTROL_RPC_TIMEOUT_MS } from '../../../provider-proxy/protocol.js';
@@ -116,7 +117,10 @@ export function parseProviderProxyRoleResult<T>(
 
 function requireRemoteFailure(error: ControlClientError): ControlClientRemoteFailure {
   if (error.origin !== 'remote-response' || error.remoteFailure === null) {
-    throw new Error('provider_proxy_role_control_remote_error_origin_mismatch');
+    throw new ProviderProxySetInheritanceCorruptionError(
+      'recovery_contract_violation',
+      'provider_proxy_role_control_remote_error_origin_mismatch',
+    );
   }
   return error.remoteFailure;
 }
@@ -262,7 +266,11 @@ async function establishHeartbeat(
   for (;;) {
     const observation = await heartbeatOnce(client, method, controlEpoch, challenge);
     if (observation.kind === 'locally-unsent' && observation.stage === 'request-encode') {
-      throw observation.error;
+      throw new ProviderProxySetInheritanceCorruptionError(
+        'recovery_contract_violation',
+        'Provider proxy heartbeat parameters could not be encoded.',
+        { cause: observation.error },
+      );
     }
     if (
       observation.kind === 'locally-unsent' ||
@@ -317,7 +325,8 @@ function assertIdentityFieldsAgree(
 ): void {
   for (const [key, value] of Object.entries(expected)) {
     if (actual[key] !== value) {
-      throw new Error(
+      throw new ProviderProxySetInheritanceCorruptionError(
+        'role_identity_disagreement',
         `${role} identity disagreement on ${key}: this acquisition issued ${String(value)}, the process reported ${String(actual[key])}.`,
       );
     }
@@ -404,7 +413,15 @@ export async function establishRoleControl<
     signal.throwIfAborted();
   }
   opened.push(client);
-  const params = plan.openParamsSchema.parse(plan.openParams) as z.output<TOpenParams>;
+  const parsedParams = plan.openParamsSchema.safeParse(plan.openParams);
+  if (!parsedParams.success) {
+    throw new ProviderProxySetInheritanceCorruptionError(
+      'recovery_contract_violation',
+      'Provider proxy role open parameters failed internal validation.',
+      { cause: parsedParams.error },
+    );
+  }
+  const params = parsedParams.data as z.output<TOpenParams>;
   signal?.throwIfAborted();
   let response: Extract<ControlExchange, { kind: 'response' }>;
   try {
@@ -413,7 +430,13 @@ export async function establishRoleControl<
       if (exchange.response.kind === 'result') response = exchange;
       else classifyRoleControlFailure(plan.role, 'open', plan.openMethod, exchange.response.error);
     } else {
-      if (exchange.kind === 'not-sent' && exchange.cause === 'encode-failed') throw exchange.error;
+      if (exchange.kind === 'not-sent' && exchange.cause === 'encode-failed') {
+        throw new ProviderProxySetInheritanceCorruptionError(
+          'recovery_contract_violation',
+          'Provider proxy role open parameters could not be encoded.',
+          { cause: exchange.error },
+        );
+      }
       throw new ProviderProxyRoleControlUnavailableError(
         { kind: 'role-open-indeterminate', role: plan.role, method: plan.openMethod, exchange },
         { cause: exchange.error },

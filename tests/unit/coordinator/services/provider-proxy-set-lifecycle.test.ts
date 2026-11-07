@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { TimerHandle } from '#src/infra/port-types.js';
 import { type ProcessIncarnation, type ProcessLiveness } from '#src/infra/node-process.js';
-import { ControlClientError } from '#src/provider-proxy/control-client.js';
+import { ControlClientError, controlExchangeForTest, type ControlClient } from '#src/provider-proxy/control-client.js';
 import {
   createProviderProxyOperationAuthority,
   providerProxyOperationControlIsHeld,
@@ -31,11 +31,16 @@ import {
   type ProviderProxySetOperatorExitCapability,
 } from '#src/coordinator/services/provider-proxy-set/index.js';
 import { ProviderProxySetOperatorDispositionStore } from '#src/coordinator/services/provider-proxy-set/operator-disposition-store.js';
-import { type ProviderProxySetRecordedContainmentReaper } from '#src/coordinator/services/provider-proxy-set/recorded-containment-reaper.js';
+import {
+  createProviderProxySetRecordedContainmentReaper,
+  type ProviderProxySetRecordedContainmentReaper,
+} from '#src/coordinator/services/provider-proxy-set/recorded-containment-reaper.js';
 import type { ProviderContainmentDisappearanceConsumer } from '#src/coordinator/services/provider-containment-disappearance.js';
 import {
   providerProxySetAddress,
   providerProxySetIdentityFromRecord,
+  ProviderProxySetInheritanceCorruptionError,
+  type ProviderProxySetIdentity,
 } from '#src/coordinator/services/provider-proxy-set/identity.js';
 import type { ProviderProxySetContainmentEvidence } from '#src/provider-proxy/containment-proof-contract.js';
 import { createRealRuntime } from '#src/runtime/real.js';
@@ -51,12 +56,47 @@ import { currentCoralStoreFormat } from '#src/store-format.js';
 import { providerOperationRecordSchema } from '#src/store/provider-operation-record.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
-import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
+import {
+  createTestProviderProxyContainmentProofProducer,
+  createTestProviderProxyRecoveryDispatcher,
+} from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
 import { InMemoryStorage } from '#tools/simulation/core/memory-storage.js';
 import {
   unexercisedControllerSuccessionControls,
   unexercisedProviderHostControls,
 } from '#tests/helpers/provider-host-controls.js';
+import { retireProviderHandoffCapsule } from '#src/coordinator/services/provider-proxy-capsule-discovery.js';
+import type * as MonotonicClockModule from '#src/infra/monotonic-clock.js';
+import { PROXY_TEARDOWN_RESERVE_MS } from '#src/provider-proxy/orphan-deadline.js';
+import { ProcessContainmentInvariantError } from '#src/infra/process-containment.js';
+import {
+  createOwnedProviderProxyAcquisitionControlSession,
+  providerProxyControlSessionOwner,
+} from '#src/coordinator/live/provider-proxy/control-session.js';
+import { isProviderProxyRecoveryFatalError } from '#src/coordinator/services/provider-proxy-recovery-policy.js';
+import { handoffCapsuleV3Schema } from '#src/provider-proxy/handoff-capsule.js';
+import { SimulationRuntime } from '#tools/simulation/runtime.js';
+
+const containmentClock = vi.hoisted(() => ({ milliseconds: null as bigint | null }));
+vi.mock('#src/infra/monotonic-clock.js', async (original) => {
+  const actual = await original<typeof MonotonicClockModule>();
+  return {
+    ...actual,
+    createMonotonicClock: (scope: symbol, dependencies?: Parameters<typeof actual.createMonotonicClock>[1]) =>
+      actual.createMonotonicClock(
+        scope,
+        containmentClock.milliseconds === null
+          ? dependencies
+          : {
+              ...dependencies,
+              readMilliseconds: () => containmentClock.milliseconds ?? 0n,
+              sleep: async (milliseconds: number) => {
+                containmentClock.milliseconds = (containmentClock.milliseconds ?? 0n) + BigInt(milliseconds);
+              },
+            },
+      ),
+  };
+});
 
 /** The build this fixture lifecycle belongs to — the same one `providerOperationRecord` stamps on its identities, so a discovered capsule is inheritable rather than foreign. */
 const FIXTURE_BUILD_SET_ID = '00000000-0000-4000-8000-000000000004';
@@ -116,6 +156,7 @@ function lifecycleFor(deps: {
   reportLifecycle?: ProviderProxySetLifecycleDeps['reportLifecycle'];
   capacity?: ProviderProxySetLifecycleDeps['capacity'];
   onSlotReleased?: ProviderProxySetLifecycleDeps['onSlotReleased'];
+  operatorDispositionStore?: ProviderProxySetOperatorDispositionStore;
 }): ProviderProxySetLifecycle {
   const mutationAdmission = new ProviderOperationMutationAdmission();
   const collectProof = async (identity: ReturnType<typeof providerProxySetIdentityFromRecord>, signal: AbortSignal) => {
@@ -156,10 +197,9 @@ function lifecycleFor(deps: {
     reapRecordedContainment: deps.reapRecordedContainment ?? reapContainmentEvidence,
     ...(deps.failureDomainContainment === undefined ? {} : { failureDomainContainment: deps.failureDomainContainment }),
     reportLifecycle: deps.reportLifecycle ?? (() => undefined),
-    operatorDispositionStore: new ProviderProxySetOperatorDispositionStore(
-      new InMemoryStorage(deps.time),
-      DURABLE_DISPOSITION_RUN_DIR,
-    ),
+    operatorDispositionStore:
+      deps.operatorDispositionStore ??
+      new ProviderProxySetOperatorDispositionStore(new InMemoryStorage(deps.time), DURABLE_DISPOSITION_RUN_DIR),
     writerIncarnation: randomUUID(),
     collectOperatorDispositionContainmentProof: collectProof,
     reobserveAcquisitionContainment: async () => ({
@@ -186,8 +226,8 @@ function setReference(identity: ReturnType<typeof providerProxySetIdentityFromRe
   return `proxyInstanceId=${identity.proxyInstanceId},buildSetId=${identity.buildSetId}`;
 }
 
-async function drainMicrotasks(): Promise<void> {
-  for (let index = 0; index < 10; index += 1) await Promise.resolve();
+async function drainMicrotasks(count = 10): Promise<void> {
+  for (let index = 0; index < count; index += 1) await Promise.resolve();
 }
 
 class ManualClock {
@@ -1436,4 +1476,740 @@ it('releases an admission-only identity index entry so corrected identity can us
   const next = corrected.admission.reserve();
   expect(next.kind).toBe('admitted');
   if (next.kind === 'admitted') lifecycle.releaseInheritanceAdmission(next.token);
+});
+
+it('clears a durable inheritance hold after successful inheritance', () => {
+  const record = providerOperationRecord('executing');
+  const authority = fakeAuthority({ record });
+  const claims = new ProviderProxySetClaimMirror();
+  claims.initialize([record]);
+  const time = new ManualClock();
+  const store = new ProviderProxySetOperatorDispositionStore(new InMemoryStorage(time), DURABLE_DISPOSITION_RUN_DIR);
+  const lifecycle = lifecycleFor({
+    claims,
+    time,
+    controlEstablished: ignoreControlEstablished,
+    disappearanceConsumer: { containmentDisappeared: vi.fn() },
+    proveContainmentAbsent: noContainmentProof,
+    operatorDispositionStore: store,
+  });
+  lifecycle.initializeClaimSlots();
+  lifecycle.completeStartupDiscovery();
+  lifecycle.recordInheritanceObservation(authority.setIdentity, {
+    kind: 'temporarily-unavailable',
+    incident: { kind: 'transfer-status-unconfirmed' },
+  });
+  expect(store.read().records).toEqual([
+    expect.objectContaining({
+      subjectKey: 'inheritance-observation',
+      disposition: expect.objectContaining({ disposition: 'held' }),
+    }),
+  ]);
+  expect(lifecycle.snapshot().operatorSets).toHaveLength(1);
+
+  registerProviderProxySetForTest(lifecycle, authority, TEST_PUBLICATION_RECEIPT);
+  lifecycle.recordInheritanceObservation(authority.setIdentity, {
+    kind: 'inherited',
+    set: authority,
+    publicationReceipt: TEST_PUBLICATION_RECEIPT,
+    protection: 'protected',
+  });
+
+  expect(store.read().records).toEqual([]);
+  expect(lifecycle.snapshot().operatorSets).toEqual([]);
+  expect(lifecycle.authorityFor(authority.setIdentity)).toBe(authority);
+});
+
+it('preserves another durable same-set disposition when inheritance clears its subject', () => {
+  const record = providerOperationRecord('executing');
+  const authority = fakeAuthority({ record });
+  const claims = new ProviderProxySetClaimMirror();
+  claims.initialize([record]);
+  const time = new ManualClock();
+  const store = new ProviderProxySetOperatorDispositionStore(new InMemoryStorage(time), DURABLE_DISPOSITION_RUN_DIR);
+  const lifecycle = lifecycleFor({
+    claims,
+    time,
+    controlEstablished: ignoreControlEstablished,
+    disappearanceConsumer: { containmentDisappeared: vi.fn() },
+    proveContainmentAbsent: noContainmentProof,
+    operatorDispositionStore: store,
+  });
+  lifecycle.initializeClaimSlots();
+  lifecycle.completeStartupDiscovery();
+  registerProviderProxySetForTest(lifecycle, authority, TEST_PUBLICATION_RECEIPT);
+  lifecycle.requestOperationContainment(authority.setIdentity, 'provider_operation_retries_exhausted');
+  const sibling = store.read().records.find((held) => held.subjectKey === 'operation-release');
+  expect(sibling).toBeDefined();
+  lifecycle.recordInheritanceObservation(authority.setIdentity, {
+    kind: 'temporarily-unavailable',
+    incident: { kind: 'transfer-status-unconfirmed' },
+  });
+  expect(store.read().records).toHaveLength(2);
+  expect(lifecycle.snapshot().operatorSets[0]?.holds).toHaveLength(2);
+
+  lifecycle.recordInheritanceObservation(authority.setIdentity, {
+    kind: 'inherited',
+    set: authority,
+    publicationReceipt: TEST_PUBLICATION_RECEIPT,
+    protection: 'protected',
+  });
+
+  expect(store.read().records).toEqual([sibling]);
+  expect(lifecycle.snapshot().operatorSets).toEqual([
+    expect.objectContaining({
+      holds: [expect.objectContaining({ disposition: 'held', waitingFor: 'operation-control-outcome-unknown' })],
+    }),
+  ]);
+  expect(lifecycle.authorityFor(authority.setIdentity)).toBe(authority);
+});
+
+describe('exact-capsule recovery', () => {
+  const record = providerOperationRecord('settlement-pending');
+  const identity = providerProxySetIdentityFromRecord(record);
+  const { canonicalEndpoint, ...capsuleIdentity } = identity;
+  const capsule = handoffCapsuleV3Schema.parse({
+    ...capsuleIdentity,
+    version: 3,
+    generation: 'gen2',
+    flavor: 'prod',
+    proxyEndpoint: canonicalEndpoint,
+    grantId: randomUUID(),
+    secret: 'a'.repeat(64),
+    orphanTimeoutMs: 60_000,
+    teardownReserveMs: 14_000,
+  });
+  const receipt = { kind: 'provider-proxy-set-published' } as PublicationReceipt;
+
+  function recoveredAuthority(): DurableProviderProxyOperationAuthority {
+    const faults = createProviderProxyAuthorityFaultLatch();
+    const unused = async (): Promise<never> => {
+      throw new Error('Unexpected recovered operation call');
+    };
+    return {
+      proxyInstanceId: identity.proxyInstanceId,
+      setIdentity: identity,
+      providerHosts: unexercisedProviderHostControls,
+      ...unexercisedControllerSuccessionControls,
+      autonomousDeadline: {
+        orphanTimeoutMs: Number.MAX_SAFE_INTEGER,
+        adoptionWindowMs: Number.MAX_SAFE_INTEGER,
+        heartbeatHoldBound: { spanMs: Number.MAX_SAFE_INTEGER, materialSchedulerLatenessMs: Number.MAX_SAFE_INTEGER },
+      },
+      faulted: faults.faulted,
+      onFault: faults.onFault,
+      onIncident: faults.onIncident,
+      redeemControl: unused,
+      promoteControl: unused,
+      registerSuccessionOperation: async () => ({ kind: 'registered' }),
+      stopAndReap: async () => ({ unconfirmed: 'not observed' }),
+      commitContainment: async () => ({ kind: 'outcome-unknown', error: 'not observed' }),
+      stopHeartbeats: () => undefined,
+      initiateControlClose: async () => undefined,
+      prepareOperation: unused,
+      inspectOperation: unused,
+      authorizeOperation: unused,
+      activatePreparedOperation: unused,
+      attachOperation: unused,
+      cancelOperation: unused,
+      settleOperation: unused,
+      sendOperation: unused,
+      buildOperationControl: () => ({ stop: unused }),
+    };
+  }
+
+  it('keeps repeated unknown exact-capsule redemptions local and clears the durable hold on redemption', async () => {
+    const runtime = new SimulationRuntime();
+    const db = newRawDatabase(':memory:');
+    applyBundledStoreSchema(db, currentCoralStoreFormat());
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([]);
+    const proof = createTestProviderProxyContainmentProofProducer(runtime, db);
+    const fatal = vi.fn();
+    const redeem = vi
+      .fn()
+      .mockRejectedValueOnce(Object.assign(new Error('initial capsule observation failed'), { code: 'EIO' }))
+      .mockRejectedValueOnce(new Error('repeated capsule observation failed'))
+      .mockResolvedValue({
+        kind: 'redeemed',
+        set: recoveredAuthority(),
+        publicationReceipt: receipt,
+        protection: 'protected',
+      });
+    const dispositions = new ProviderProxySetOperatorDispositionStore(runtime.storage, '/coral/run');
+    const lifecycle = new ProviderProxySetLifecycle({
+      buildSetId: identity.buildSetId,
+      claims,
+      capacity: { maxSets: 4, idleRetirement: { kind: 'never' } },
+      time: runtime.time,
+      controlEstablished: vi.fn(),
+      recoveryDispatcher: createTestProviderProxyRecoveryDispatcher(
+        { 'capsule-redemption': redeem, 'containment-proof': proof },
+        fatal,
+      ),
+      reapRecordedContainment: async () => {
+        throw new Error('Unknown capsule observation must not authorize reaping');
+      },
+      operatorDispositionStore: dispositions,
+      writerIncarnation: randomUUID(),
+      collectOperatorDispositionContainmentProof: (identity, signal) => proof({ identity, signal }),
+      reobserveAcquisitionContainment: async () => ({ kind: 'held', observation: 'unknown', reason: 'not observed' }),
+      fenceProviderOperationMutations: (identity) => providerOperationMutationAdmission(db).closeSet(identity),
+      reportLifecycle: vi.fn(),
+    });
+    lifecycle.activateDurableOperatorDispositions();
+    try {
+      lifecycle.installDiscoveredCapsules([{ path: '/coral/capsule.json', capsule }], {
+        observeRecordedProcess: () => 'unknown',
+      });
+      await drainMicrotasks(80);
+      for (const attempt of [1, 2]) {
+        expect(redeem).toHaveBeenCalledTimes(attempt);
+        expect(fatal).not.toHaveBeenCalled();
+        expect(lifecycle.snapshot()).toMatchObject({
+          startupDiscoveryCompleted: true,
+          operatorSets: [
+            expect.objectContaining({
+              autonomousDisposition: expect.objectContaining({ kind: 'control-or-containment' }),
+              holds: [
+                expect.objectContaining({
+                  disposition: 'held',
+                  incidentReason: 'observation-unknown:capsule-redemption',
+                }),
+              ],
+            }),
+          ],
+        });
+        expect(dispositions.read().records).toEqual([
+          expect.objectContaining({
+            subjectKey: 'inheritance-observation',
+            disposition: expect.objectContaining({
+              disposition: 'held',
+              incidentReason: 'observation-unknown:capsule-redemption',
+            }),
+          }),
+        ]);
+        expect(lifecycle.beginFreshAcquisition(`unrelated-launch-${attempt}`).kind).toBe('accepted');
+        runtime.time.tick(attempt * 1000);
+        await drainMicrotasks(80);
+      }
+      expect(redeem).toHaveBeenCalledTimes(3);
+      expect(fatal).not.toHaveBeenCalled();
+      expect(dispositions.read().records.some(({ subjectKey }) => subjectKey === 'inheritance-observation')).toBe(
+        false,
+      );
+      expect(
+        lifecycle
+          .snapshot()
+          .operatorSets.flatMap(({ holds }) => holds)
+          .some(({ incidentReason }) => incidentReason === 'observation-unknown:capsule-redemption'),
+      ).toBe(false);
+    } finally {
+      db.close();
+    }
+  });
+
+  it.each(['typed-invariant', 'malformed-result', 'identity-disagreement'] as const)(
+    'keeps exact-capsule %s fatal',
+    async (violation) => {
+      const fatal = vi.fn();
+      const retry = vi.fn();
+      const typed = new ProviderProxySetInheritanceCorruptionError(
+        'capsule_identity_disagreement',
+        'Invalid capsule identity',
+      );
+      const dispatcher = createTestProviderProxyRecoveryDispatcher(
+        {
+          'capsule-redemption': async () => {
+            if (violation === 'typed-invariant') throw typed;
+            if (violation === 'malformed-result') return { kind: 'invalid' } as never;
+            const otherProxyInstanceId = randomUUID();
+            return {
+              kind: 'redeemed',
+              set: {
+                ...recoveredAuthority(),
+                proxyInstanceId: otherProxyInstanceId,
+                setIdentity: { ...identity, proxyInstanceId: otherProxyInstanceId },
+              },
+              publicationReceipt: receipt,
+              protection: 'protected',
+            };
+          },
+        },
+        fatal,
+      );
+      dispatcher
+        .begin('exact-capsule-recovery', { setIdentity: identity, capsule }, { evidence: vi.fn(), retry, fatal })
+        .start({
+          sourceId: 'redemption',
+          producerId: 'capsule-redemption',
+          input: { capsule, capsulePath: '/coral/capsule.json', signal: new AbortController().signal },
+        });
+      await vi.waitFor(() => expect(fatal).toHaveBeenCalled());
+      expect(isProviderProxyRecoveryFatalError(fatal.mock.calls[0]?.[0])).toBe(true);
+      if (violation === 'typed-invariant') expect(fatal.mock.calls[0]?.[0].cause).toBe(typed);
+      expect(retry).not.toHaveBeenCalled();
+    },
+  );
+
+  it('clears recovered acquisition publication holds without clearing another same-set disposition', async () => {
+    const runtime = new SimulationRuntime();
+    const db = newRawDatabase(':memory:');
+    applyBundledStoreSchema(db, currentCoralStoreFormat());
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([]);
+    const proof = createTestProviderProxyContainmentProofProducer(runtime, db);
+    const fatal = vi.fn();
+    const authority = recoveredAuthority();
+    let finishRedemption!: (outcome: {
+      kind: 'redeemed';
+      set: DurableProviderProxyOperationAuthority;
+      publicationReceipt: PublicationReceipt;
+      protection: 'protected';
+    }) => void;
+    const redemption = new Promise<{
+      kind: 'redeemed';
+      set: DurableProviderProxyOperationAuthority;
+      publicationReceipt: PublicationReceipt;
+      protection: 'protected';
+    }>((resolve) => {
+      finishRedemption = resolve;
+    });
+    const redeem = vi.fn().mockRejectedValueOnce(new Error('reobserve capsule')).mockReturnValue(redemption);
+    const dispositions = new ProviderProxySetOperatorDispositionStore(runtime.storage, '/coral/run');
+    const lifecycle = new ProviderProxySetLifecycle({
+      buildSetId: identity.buildSetId,
+      claims,
+      capacity: { maxSets: 4, idleRetirement: { kind: 'never' } },
+      time: runtime.time,
+      controlEstablished: vi.fn(),
+      recoveryDispatcher: createTestProviderProxyRecoveryDispatcher(
+        { 'capsule-redemption': redeem, 'containment-proof': proof },
+        fatal,
+      ),
+      reapRecordedContainment: async () => {
+        throw new Error('Publication uncertainty cannot authorize reaping');
+      },
+      operatorDispositionStore: dispositions,
+      writerIncarnation: randomUUID(),
+      collectOperatorDispositionContainmentProof: (identity, signal) => proof({ identity, signal }),
+      reobserveAcquisitionContainment: async () => ({ kind: 'held', observation: 'unknown', reason: 'not observed' }),
+      fenceProviderOperationMutations: (identity) => providerOperationMutationAdmission(db).closeSet(identity),
+      reportLifecycle: vi.fn(),
+    });
+    const faults = createProviderProxyAuthorityFaultLatch();
+    const client: ControlClient = {
+      exchange: async () =>
+        controlExchangeForTest({
+          kind: 'not-sent',
+          cause: 'connection-already-closed',
+          error: new Error('publication channel closed'),
+        }),
+      close: vi.fn(),
+      faulted: new Promise(() => {}),
+      onFault: () => () => {},
+    };
+    const base = {
+      ...authority,
+      controlReattachment: {
+        redeem: async (): Promise<never> => {
+          throw new Error('Unexpected session redemption');
+        },
+        promote: async (): Promise<never> => {
+          throw new Error('Unexpected session promotion');
+        },
+      },
+    };
+    const sharedIdentity = {
+      generation: 'gen2' as const,
+      flavor: 'prod' as const,
+      buildSetId: identity.buildSetId,
+      hostFingerprint: identity.hostFingerprint,
+    };
+    const session = createOwnedProviderProxyAcquisitionControlSession(
+      providerProxyControlSessionOwner.providerHostManager,
+      {
+        base,
+        setIdentity: identity,
+        capsulePath: '/coral/capsule.json',
+        capsuleBinding: capsule,
+        mutationRpcTimeoutMs: 1000,
+        clients: { guardian: client, reaper: client, proxy: client },
+        heartbeats: { guardian: { stop: vi.fn() }, reaper: { stop: vi.fn() }, proxy: { stop: vi.fn() } },
+        faults,
+        guardianIdentity: {
+          ...sharedIdentity,
+          guardianInstanceId: identity.guardianInstanceId,
+          pid: identity.guardianPid,
+          incarnation: identity.guardianIncarnation,
+          canonicalControlEndpoint: identity.guardianControlEndpoint,
+        },
+        reaperIdentity: {
+          ...sharedIdentity,
+          guardianInstanceId: identity.guardianInstanceId,
+          reaperInstanceId: identity.reaperInstanceId,
+          pid: identity.reaperPid,
+          incarnation: identity.reaperIncarnation,
+          canonicalControlEndpoint: identity.reaperControlEndpoint,
+          containmentKind: identity.containmentKind,
+        },
+        proxyIdentity: {
+          ...sharedIdentity,
+          guardianInstanceId: identity.guardianInstanceId,
+          reaperInstanceId: identity.reaperInstanceId,
+          proxyInstanceId: identity.proxyInstanceId,
+          pid: identity.proxyPid,
+          incarnation: identity.proxyIncarnation,
+          processGroupId: identity.proxyProcessGroupId,
+          canonicalEndpoint: identity.canonicalEndpoint,
+        },
+      },
+    );
+    lifecycle.activateDurableOperatorDispositions();
+    lifecycle.completeStartupDiscovery();
+    try {
+      const acquisition = lifecycle.beginFreshAcquisition('publication-route');
+      expect(acquisition.kind).toBe('accepted');
+      if (acquisition.kind !== 'accepted') throw new Error('Expected fresh acquisition');
+      lifecycle.acquisitionPublicationUnknown(
+        acquisition.slotId,
+        {
+          kind: 'handed-over',
+          session,
+          incident: { kind: 'publication-unknown', role: 'guardian', reason: 'publication unconfirmed' },
+        },
+        (value) => value,
+      );
+      await drainMicrotasks(80);
+      expect(client.close).toHaveBeenCalledTimes(3);
+      expect(redeem).toHaveBeenCalledTimes(1);
+      expect(lifecycle.authorizeOperatorExit(providerProxySetAddress(identity)).kind).toBe('deadline-pending');
+      const sibling = dispositions
+        .read()
+        .records.find(({ subjectKey }) => subjectKey === JSON.stringify(['operator-exit', null]));
+      expect(sibling).toBeDefined();
+      expect(dispositions.read().records).toHaveLength(3);
+      runtime.time.tick(1000);
+      await drainMicrotasks(80);
+      expect(redeem).toHaveBeenCalledTimes(2);
+      finishRedemption({ kind: 'redeemed', set: authority, publicationReceipt: receipt, protection: 'protected' });
+      await drainMicrotasks(80);
+      expect(lifecycle.authorityFor(identity)).toBe(authority);
+      expect(dispositions.read().records).toEqual([
+        expect.objectContaining({
+          key: sibling?.key,
+          subjectKey: sibling?.subjectKey,
+          disposition: sibling?.disposition,
+        }),
+      ]);
+      expect(lifecycle.snapshot().operatorSets).toEqual([
+        expect.objectContaining({
+          holds: [
+            expect.objectContaining({ disposition: 'operator-exit-refused', waitingFor: 'set-adoption-deadline' }),
+          ],
+        }),
+      ]);
+      expect(fatal).not.toHaveBeenCalled();
+    } finally {
+      db.close();
+    }
+  });
+
+  it.each(['invariant', 'observation'] as const)(
+    'classifies a real exact-capsule reap %s at its recovery owner',
+    async (failure) => {
+      const runtime = new SimulationRuntime();
+      vi.spyOn(runtime.process, 'readProcessIncarnation').mockReturnValue(null);
+      vi.spyOn(runtime.process, 'observeLiveness').mockReturnValue('absent');
+      const kill = vi.spyOn(runtime.process, 'kill');
+      runtime.process.observeRecordedProcessAsync = async () => {
+        throw Object.assign(new Error('Process observation unavailable'), { code: 'EIO' });
+      };
+      const reapIdentity =
+        failure === 'invariant' ? { ...identity, proxyProcessGroupId: identity.proxyPid + 1 } : identity;
+      const reapCapsule = handoffCapsuleV3Schema.parse({
+        ...capsule,
+        proxyProcessGroupId: reapIdentity.proxyProcessGroupId,
+      });
+      const db = newRawDatabase(':memory:');
+      applyBundledStoreSchema(db, currentCoralStoreFormat());
+      const claims = new ProviderProxySetClaimMirror();
+      claims.initialize([]);
+      const prover = createProviderProxySetContainmentProver(runtime);
+      const proof = ({ identity, signal }: { identity: ProviderProxySetIdentity; signal: AbortSignal }) => {
+        const mutationFence = providerOperationMutationAdmission(db).closeSet(identity);
+        return prover.collectContainmentProof(
+          authorizeProviderProxySetContainmentProof(identity, {
+            mutationFence,
+            closeAdmission: async () => {
+              if (mutationFence.kind === 'holding') await mutationFence.retryAfter;
+            },
+          }),
+          db,
+          signal,
+        );
+      };
+      const fatal = vi.fn();
+      const redeem = vi.fn(async () => ({
+        kind: 'temporarily-unavailable' as const,
+        incident: { kind: 'transfer-status-unconfirmed' as const },
+      }));
+      const reap = vi.fn(createProviderProxySetRecordedContainmentReaper(runtime));
+      const dispositions = new ProviderProxySetOperatorDispositionStore(runtime.storage, '/coral/run');
+      const lifecycle = new ProviderProxySetLifecycle({
+        buildSetId: reapIdentity.buildSetId,
+        claims,
+        capacity: { maxSets: 4, idleRetirement: { kind: 'never' } },
+        time: runtime.time,
+        controlEstablished: vi.fn(),
+        recoveryDispatcher: createTestProviderProxyRecoveryDispatcher(
+          { 'capsule-redemption': redeem, 'containment-proof': proof },
+          fatal,
+        ),
+        reapRecordedContainment: reap,
+        operatorDispositionStore: dispositions,
+        writerIncarnation: randomUUID(),
+        collectOperatorDispositionContainmentProof: (identity, signal) => proof({ identity, signal }),
+        reobserveAcquisitionContainment: async () => ({ kind: 'held', observation: 'unknown', reason: 'not observed' }),
+        fenceProviderOperationMutations: (identity) => providerOperationMutationAdmission(db).closeSet(identity),
+        reportLifecycle: vi.fn(),
+      });
+      lifecycle.activateDurableOperatorDispositions();
+      try {
+        lifecycle.installDiscoveredCapsules([{ path: '/coral/reap.handoff.v3.json', capsule: reapCapsule }], {
+          observeRecordedProcess: () => 'unknown',
+        });
+        await drainMicrotasks(80);
+        expect(reap).toHaveBeenCalledOnce();
+        expect(kill).not.toHaveBeenCalled();
+        if (failure === 'invariant') {
+          await vi.waitFor(() => expect(fatal).toHaveBeenCalledOnce());
+          const error = fatal.mock.calls[0]?.[0];
+          expect(isProviderProxyRecoveryFatalError(error)).toBe(true);
+          expect(error.cause).toBeInstanceOf(ProcessContainmentInvariantError);
+          expect(error.cause).toMatchObject({
+            code: 'process_identity_unverified',
+            context: { pid: reapIdentity.proxyPid, processGroupId: reapIdentity.proxyProcessGroupId },
+          });
+          runtime.time.tick(1000);
+          await drainMicrotasks(80);
+          expect(reap).toHaveBeenCalledOnce();
+        } else {
+          expect(fatal).not.toHaveBeenCalled();
+          expect(dispositions.read().records).toEqual([
+            expect.objectContaining({
+              subjectKey: 'inheritance-observation',
+              disposition: expect.objectContaining({
+                disposition: 'held',
+                incidentReason: 'recorded-containment-unavailable:observation-failed',
+              }),
+            }),
+          ]);
+          expect(lifecycle.snapshot().operatorSets).toEqual([
+            expect.objectContaining({
+              holds: [
+                expect.objectContaining({
+                  disposition: 'held',
+                  incidentReason: 'recorded-containment-unavailable:observation-failed',
+                }),
+              ],
+            }),
+          ]);
+          runtime.time.tick(1000);
+          await drainMicrotasks(80);
+          expect(reap).toHaveBeenCalledTimes(2);
+          expect(fatal).not.toHaveBeenCalled();
+        }
+      } finally {
+        db.close();
+      }
+    },
+  );
+
+  it.each([
+    { signalDelivered: false, decision: 'redemption' as const },
+    { signalDelivered: true, decision: 'absence' as const },
+  ])(
+    'retains a real exact-capsule deadline hold until $decision decides (signalDelivered=$signalDelivered)',
+    async ({ signalDelivered, decision }) => {
+      const runtime = new SimulationRuntime();
+      let decided = false;
+      let processesAbsent = !signalDelivered;
+      let overrunPending = !signalDelivered;
+      vi.spyOn(runtime.process, 'readProcessIncarnation').mockImplementation((pid) => {
+        if (decided && decision === 'redemption') {
+          if (pid === identity.guardianPid) return identity.guardianIncarnation;
+          if (pid === identity.reaperPid) return identity.reaperIncarnation;
+        }
+        return !processesAbsent && pid === identity.proxyPid ? identity.proxyIncarnation : null;
+      });
+      vi.spyOn(runtime.process, 'observeLiveness').mockImplementation((pid) => {
+        if (decided && decision === 'redemption') return 'alive';
+        return !processesAbsent && (pid === identity.proxyPid || pid === -identity.proxyProcessGroupId)
+          ? 'alive'
+          : 'absent';
+      });
+      const kill = vi.spyOn(runtime.process, 'kill').mockReturnValue(true);
+      runtime.process.observeRecordedProcessAsync = async () => {
+        if (overrunPending) {
+          overrunPending = false;
+          containmentClock.milliseconds = (containmentClock.milliseconds ?? 0n) + BigInt(PROXY_TEARDOWN_RESERVE_MS + 1);
+        }
+        return processesAbsent ? 'absent' : 'alive';
+      };
+      const db = newRawDatabase(':memory:');
+      applyBundledStoreSchema(db, currentCoralStoreFormat());
+      const claims = new ProviderProxySetClaimMirror();
+      claims.initialize([]);
+      const prover = createProviderProxySetContainmentProver(runtime);
+      const proof = ({
+        identity: observedIdentity,
+        signal,
+      }: {
+        identity: ProviderProxySetIdentity;
+        signal: AbortSignal;
+      }) => {
+        const mutationFence = providerOperationMutationAdmission(db).closeSet(observedIdentity);
+        return prover.collectContainmentProof(
+          authorizeProviderProxySetContainmentProof(observedIdentity, {
+            mutationFence,
+            closeAdmission: async () => {
+              if (mutationFence.kind === 'holding') await mutationFence.retryAfter;
+            },
+          }),
+          db,
+          signal,
+        );
+      };
+      const realReap = createProviderProxySetRecordedContainmentReaper(runtime);
+      const signalObserved = vi.fn();
+      const reap = vi.fn<ProviderProxySetRecordedContainmentReaper>(
+        (observedIdentity, sealed, signal, onSignal, assertSignalAuthorized, absenceObserver) => {
+          overrunPending = !decided && !signalDelivered;
+          return realReap(
+            observedIdentity,
+            sealed,
+            signal,
+            (sent) => {
+              signalObserved(sent);
+              if (!decided) overrunPending = true;
+              onSignal(sent);
+            },
+            assertSignalAuthorized,
+            absenceObserver,
+          );
+        },
+      );
+      const fatal = vi.fn();
+      const authority = recoveredAuthority();
+      const redeem = vi.fn(async () => {
+        if (decided && decision === 'redemption')
+          return {
+            kind: 'redeemed' as const,
+            set: authority,
+            publicationReceipt: receipt,
+            protection: 'protected' as const,
+          };
+        throw new Error('Capsule redemption observation did not decide');
+      });
+      const dispositions = new ProviderProxySetOperatorDispositionStore(runtime.storage, '/coral/run');
+      const lifecycle = new ProviderProxySetLifecycle({
+        buildSetId: identity.buildSetId,
+        claims,
+        capacity: { maxSets: 4, idleRetirement: { kind: 'never' } },
+        time: runtime.time,
+        controlEstablished: vi.fn(),
+        recoveryDispatcher: createTestProviderProxyRecoveryDispatcher(
+          {
+            'capsule-redemption': redeem,
+            'containment-proof': proof,
+            'capsule-retirement': ({ path }) => retireProviderHandoffCapsule(runtime.storage, path),
+          },
+          fatal,
+        ),
+        reapRecordedContainment: reap,
+        operatorDispositionStore: dispositions,
+        writerIncarnation: randomUUID(),
+        collectOperatorDispositionContainmentProof: (observedIdentity, signal) =>
+          proof({ identity: observedIdentity, signal }),
+        reobserveAcquisitionContainment: async () => ({ kind: 'held', observation: 'unknown', reason: 'not observed' }),
+        fenceProviderOperationMutations: (observedIdentity) =>
+          providerOperationMutationAdmission(db).closeSet(observedIdentity),
+        reportLifecycle: vi.fn(),
+      });
+      lifecycle.activateDurableOperatorDispositions();
+      try {
+        containmentClock.milliseconds = 0n;
+        expect(dispositions.read().records).toEqual([]);
+        lifecycle.installDiscoveredCapsules([{ path: '/coral/deadline.handoff.v3.json', capsule }], {
+          observeRecordedProcess: () => 'unknown',
+        });
+        await drainMicrotasks(80);
+        const reason = `identity-unobservable:signalDelivered=${signalDelivered}`;
+        expect(reap).toHaveBeenCalledOnce();
+        expect(await reap.mock.results[0]?.value).toEqual({ kind: 'identity-unobservable', signalDelivered });
+        expect(dispositions.read().records).toEqual([
+          expect.objectContaining({
+            subjectKey: 'inheritance-observation',
+            disposition: expect.objectContaining({ disposition: 'held', incidentReason: reason }),
+          }),
+        ]);
+        expect(lifecycle.snapshot().operatorSets).toEqual([
+          expect.objectContaining({
+            holds: [expect.objectContaining({ disposition: 'held', incidentReason: reason })],
+          }),
+        ]);
+        expect(lifecycle.beginFreshAcquisition('unrelated-deadline-launch').kind).toBe('accepted');
+        expect(lifecycle.authorizeOperatorExit(providerProxySetAddress(identity)).kind).toBe('deadline-pending');
+        const sibling = dispositions
+          .read()
+          .records.find(({ subjectKey }) => subjectKey === JSON.stringify(['operator-exit', null]));
+        expect(sibling).toBeDefined();
+        runtime.time.tick(1000);
+        await drainMicrotasks(80);
+        expect(reap).toHaveBeenCalledTimes(2);
+        expect(await reap.mock.results[1]?.value).toEqual({ kind: 'identity-unobservable', signalDelivered });
+        expect(dispositions.read().records).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ key: sibling?.key, disposition: sibling?.disposition }),
+            expect.objectContaining({
+              subjectKey: 'inheritance-observation',
+              disposition: expect.objectContaining({ incidentReason: reason }),
+            }),
+          ]),
+        );
+        expect(signalObserved).toHaveBeenCalledTimes(signalDelivered ? 2 : 0);
+        expect(kill).toHaveBeenCalledTimes(signalDelivered ? 2 : 0);
+        decided = true;
+        processesAbsent = true;
+        runtime.time.tick(2000);
+        await drainMicrotasks(80);
+        expect(fatal).not.toHaveBeenCalled();
+        await vi.waitFor(() =>
+          expect(dispositions.read().records.some(({ subjectKey }) => subjectKey === 'inheritance-observation')).toBe(
+            false,
+          ),
+        );
+        expect(
+          lifecycle
+            .snapshot()
+            .operatorSets.flatMap(({ holds }) => holds)
+            .some(({ incidentReason }) => incidentReason === reason),
+        ).toBe(false);
+        if (decision === 'redemption') {
+          expect(redeem).toHaveBeenCalledTimes(3);
+          expect(dispositions.read().records).toEqual(
+            expect.arrayContaining([expect.objectContaining({ key: sibling?.key, disposition: sibling?.disposition })]),
+          );
+        } else {
+          expect(await reap.mock.results[2]?.value).toMatchObject({ kind: 'containment-absent' });
+          await vi.waitFor(() => expect(dispositions.read().records).toEqual([]));
+        }
+        expect(fatal).not.toHaveBeenCalled();
+      } finally {
+        containmentClock.milliseconds = null;
+        db.close();
+      }
+    },
+  );
 });

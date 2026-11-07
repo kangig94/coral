@@ -166,6 +166,24 @@ export class ProcessContainmentError extends Error {
   }
 }
 
+export class ProcessContainmentInvariantError extends ProcessContainmentError {
+  constructor(code: ProcessContainmentErrorCode, message: string, context: Readonly<Record<string, unknown>> = {}) {
+    super(code, message, context);
+    Object.setPrototypeOf(this, ProcessContainmentInvariantError.prototype);
+  }
+}
+
+export class ContainmentObservationDeadlineError extends ProcessContainmentError {
+  constructor(deadlineName: string) {
+    super(
+      'process_containment_reap_failed',
+      `Recorded containment observation could not complete before the ${deadlineName}.`,
+    );
+    this.name = 'ContainmentObservationDeadlineError';
+    Object.setPrototypeOf(this, ContainmentObservationDeadlineError.prototype);
+  }
+}
+
 class ContainmentIdentityObservationError extends ProcessContainmentError {
   constructor() {
     super('process_identity_unverified', 'Recorded containment liveness could not be observed.');
@@ -195,7 +213,7 @@ type AsyncRecordedSetAbsenceVerdict = RecordedSetAbsenceVerdict | 'unobservable-
 
 function throwObservationFailure(reason: 'deadline' | 'identity', deadlineName: string): never {
   if (reason === 'deadline') {
-    throw reapFailure(`Recorded containment observation could not complete before the ${deadlineName}.`);
+    throw new ContainmentObservationDeadlineError(deadlineName);
   }
   throw new ContainmentIdentityObservationError();
 }
@@ -235,17 +253,21 @@ function reapFailure(message: string, context: Readonly<Record<string, unknown>>
 
 function assertPositiveSafeInteger(value: number, field: string): void {
   if (!Number.isSafeInteger(value) || value <= 0) {
-    throw new ProcessContainmentError('process_identity_unverified', `${field} must be a positive safe integer.`, {
-      field,
-      value,
-    });
+    throw new ProcessContainmentInvariantError(
+      'process_identity_unverified',
+      `${field} must be a positive safe integer.`,
+      {
+        field,
+        value,
+      },
+    );
   }
 }
 
 function assertProcessIdentity(identity: RecordedProcessIdentity, field: string): void {
   assertPositiveSafeInteger(identity.pid, `${field}.pid`);
   if (!isProcessIncarnation(identity.incarnation)) {
-    throw new ProcessContainmentError(
+    throw new ProcessContainmentInvariantError(
       'process_identity_unverified',
       `${field}.incarnation must be a non-empty incarnation token.`,
       { field: `${field}.incarnation`, value: identity.incarnation },
@@ -258,7 +280,7 @@ export function assertRecordedContainmentIdentity(containment: RecordedContainme
   assertProcessIdentity(containment, 'containment');
   assertPositiveSafeInteger(containment.processGroupId, 'containment.processGroupId');
   if (containment.processGroupId !== containment.pid) {
-    throw new ProcessContainmentError(
+    throw new ProcessContainmentInvariantError(
       'process_identity_unverified',
       'Recorded containment is not a detached process-group leader.',
       { pid: containment.pid, processGroupId: containment.processGroupId },
@@ -272,10 +294,11 @@ function assertRecordedSet(
   maxRecordedRoots: number,
 ): void {
   if (recordedRoots.length > maxRecordedRoots) {
-    throw reapFailure(`Recorded target count exceeds the ${maxRecordedRoots} limit.`, {
-      observed: recordedRoots.length,
-      limit: maxRecordedRoots,
-    });
+    throw new ProcessContainmentInvariantError(
+      'process_containment_reap_failed',
+      `Recorded target count exceeds the ${maxRecordedRoots} limit.`,
+      { observed: recordedRoots.length, limit: maxRecordedRoots },
+    );
   }
 
   assertRecordedContainmentIdentity(containment);

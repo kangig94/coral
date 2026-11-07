@@ -10,6 +10,25 @@ import type { HandoffCapsule, RedeemableHandoffCapsule } from '../../../provider
 import type { ProviderOperationRecord } from '../../../store/provider-operation-record.js';
 import { providerProxySetAddressSchema, type ProviderProxySetAddress } from '../../../provider-proxy/set-address.js';
 
+export class ProviderProxySetInheritanceCorruptionError extends Error {
+  readonly code:
+    | 'role_operation_set_disagreement'
+    | 'role_identity_disagreement'
+    | 'capsule_identity_disagreement'
+    | 'durable_identity_disagreement'
+    | 'recovery_credential_cancellation_without_abort'
+    | 'recovery_credential_identity_disagreement'
+    | 'recovery_contract_violation'
+    | 'lifecycle_authority_not_activated';
+
+  constructor(code: ProviderProxySetInheritanceCorruptionError['code'], message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'ProviderProxySetInheritanceCorruptionError';
+    this.code = code;
+    Object.setPrototypeOf(this, ProviderProxySetInheritanceCorruptionError.prototype);
+  }
+}
+
 const nonNegativeSafeIntegerSchema = z.number().int().nonnegative().safe();
 
 export const providerProxySetIdentitySchema = z
@@ -59,8 +78,20 @@ const IDENTITY_FIELDS = [
   'canonicalEndpoint',
 ] as const satisfies readonly (keyof ProviderProxySetIdentity)[];
 
+function parseProviderProxySetIdentity(input: unknown): ProviderProxySetIdentity {
+  const parsed = providerProxySetIdentitySchema.safeParse(input);
+  if (!parsed.success) {
+    throw new ProviderProxySetInheritanceCorruptionError(
+      'durable_identity_disagreement',
+      'Provider proxy set identity failed internal validation.',
+      { cause: parsed.error },
+    );
+  }
+  return parsed.data;
+}
+
 export function providerProxySetKey(identity: ProviderProxySetIdentity): ProviderProxySetKey {
-  const parsed = providerProxySetIdentitySchema.parse(identity);
+  const parsed = parseProviderProxySetIdentity(identity);
   return JSON.stringify(IDENTITY_FIELDS.map((field) => parsed[field])) as ProviderProxySetKey;
 }
 
@@ -84,7 +115,15 @@ export function providerProxySetAddress(identity: ProviderProxySetIdentity): Pro
 }
 
 export function providerProxySetAddressKey(address: ProviderProxySetAddress): ProviderProxySetAddressKey {
-  const parsed = providerProxySetAddressSchema.parse(address);
+  const result = providerProxySetAddressSchema.safeParse(address);
+  if (!result.success) {
+    throw new ProviderProxySetInheritanceCorruptionError(
+      'durable_identity_disagreement',
+      'Provider proxy set address failed internal validation.',
+      { cause: result.error },
+    );
+  }
+  const parsed = result.data;
   return JSON.stringify([
     parsed.buildSetId,
     parsed.hostFingerprint,
@@ -95,7 +134,7 @@ export function providerProxySetAddressKey(address: ProviderProxySetAddress): Pr
 export function providerProxySetIdentityFromRecord(
   record: Pick<ProviderOperationRecord, 'operation' | 'locator'>,
 ): ProviderProxySetIdentity {
-  return providerProxySetIdentitySchema.parse({
+  return parseProviderProxySetIdentity({
     buildSetId: record.operation.buildSetId,
     hostFingerprint: record.locator.hostFingerprint,
     guardianInstanceId: record.locator.guardian.instanceId,
@@ -116,7 +155,7 @@ export function providerProxySetIdentityFromRecord(
 }
 
 export function providerProxySetIdentityFromCapsule(capsule: RedeemableHandoffCapsule): ProviderProxySetIdentity {
-  return providerProxySetIdentitySchema.parse({
+  return parseProviderProxySetIdentity({
     buildSetId: capsule.buildSetId,
     hostFingerprint: capsule.hostFingerprint,
     guardianInstanceId: capsule.guardianInstanceId,
@@ -160,16 +199,22 @@ export class ProviderProxySetIdentityIndex {
   readonly #addressIndex = new Map<ProviderProxySetAddressKey, ProviderProxySetKey>();
 
   add(identity: ProviderProxySetIdentity): ProviderProxySetKey {
-    const parsed = providerProxySetIdentitySchema.parse(identity);
+    const parsed = parseProviderProxySetIdentity(identity);
     const key = providerProxySetKey(parsed);
     const addressKey = providerProxySetAddressKey(providerProxySetAddress(parsed));
     const indexedKey = this.#addressIndex.get(addressKey);
     if (indexedKey !== undefined && indexedKey !== key) {
-      throw new Error(`provider_proxy_set_identity_alias: address ${addressKey} names two complete identities`);
+      throw new ProviderProxySetInheritanceCorruptionError(
+        'durable_identity_disagreement',
+        `provider_proxy_set_identity_alias: address ${addressKey} names two complete identities`,
+      );
     }
     const existing = this.#identities.get(key);
     if (existing !== undefined && !providerProxySetIdentitiesEqual(existing, parsed)) {
-      throw new Error('provider_proxy_set_key_collision: canonical serialization names two complete identities');
+      throw new ProviderProxySetInheritanceCorruptionError(
+        'durable_identity_disagreement',
+        'provider_proxy_set_key_collision: canonical serialization names two complete identities',
+      );
     }
     this.#identities.set(key, parsed);
     this.#addressIndex.set(addressKey, key);

@@ -66,6 +66,9 @@ terminal-store failures. Launch reservations do not determine workflow liveness.
 
 ## Acquisition and recovery ownership
 
+For unknown observations, durable per-set holds, automatic exits, and invariant failures, see
+[containment evidence and reclamation](./architecture.md#containment-evidence-and-reclamation).
+
 Provider acquisition must distinguish usable authority from retained lifecycle ownership. Ordinary
 reconciliation waits for owned-pending reattachment or containment through its automatic poll; channel
 uncertainty cannot authorize a competing redemption, disappearance, or containment of healthy siblings.
