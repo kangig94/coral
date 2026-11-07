@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import type { TimePort } from '../infra/port-types.js';
-import { prepareCached, type Database } from '../store/db.js';
+import { sqlPlaceholders, prepareCached, type Database } from '../store/db.js';
 import type {
   RecoveryQuarantineDelete,
   RecoveryQuarantinePort,
@@ -358,6 +358,17 @@ export class RecoveryQuarantineStore implements RecoveryQuarantinePort {
       `SELECT ${QUARANTINE_COLUMNS} FROM recovery_quarantine WHERE boundary_id = ? AND subject_key = ?`,
     ).get(boundary, subjectKey);
     return row === undefined ? null : rowToEntry(row);
+  }
+
+  readEntries(boundary: string, subjectKeys: string[]): RecoveryQuarantineEntry[] {
+    if (subjectKeys.length === 0) return [];
+    return prepareCached<unknown[], RecoveryQuarantineRow>(
+      this.db,
+      `SELECT ${QUARANTINE_COLUMNS} FROM recovery_quarantine WHERE boundary_id = ?
+       AND subject_key IN (${sqlPlaceholders(subjectKeys.length)})`,
+    )
+      .all(boundary, ...subjectKeys)
+      .map(rowToEntry);
   }
 
   list(): readonly RecoveryQuarantineEntry[] {

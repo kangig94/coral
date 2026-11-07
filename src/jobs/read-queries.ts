@@ -1,4 +1,5 @@
-import { readExecutionRetryStatus } from './finishing.js';
+import { readExecutionRetryStatus, readExecutionRetryStatuses } from './finishing.js';
+import { executionAddressKey } from './execution-address.js';
 import { JobEvidenceDecodeError } from './source-read.js';
 import type { RecoveryObservation } from '../recovery/phase-observation.js';
 import type { ProgressSource, ProgressVisitResult, WaitProgressRow } from './wait/contract.js';
@@ -19,9 +20,10 @@ import {
 import { retentionFailureWarning, withRetentionFailure } from './projections.js';
 import { progressTimingFromProjection } from './progress-timing.js';
 import { executionOrdinalSchema, jobOpenedBodySchema, jobExecutionRequestedBodySchema } from './launch.js';
-import { isLivePhase, type JobPhase } from './phase.js';
+import { type JobPhase } from './phase.js';
 import {
   emptyJobDiagnostics,
+  ProjectionJobDecodeError,
   isWorkflowJobKind,
   type JobDiagnostics,
   type JobEvent,
@@ -35,7 +37,6 @@ import {
 import { phaseForOutcome } from './outcome.js';
 import { deriveLaunchReadiness } from './launch-readiness.js';
 import type { JobDetailResponse } from './records.js';
-import { jobInCallerScope } from './scope.js';
 import type { CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
 import {
   decodeProjectionJobStoredRow,
@@ -127,6 +128,7 @@ type DecodedTerminalRow = {
 
 export type JobsListFilters = {
   owner?: string;
+  discussionId?: string;
   unwaited?: boolean;
   projectRoot?: CanonicalWorkDir;
   phase?: JobPhase;
@@ -156,7 +158,6 @@ function readProjectionRow(db: Database, jobId: string, observation?: RecoveryOb
        FROM projection_jobs
       WHERE job_id = ?`,
   ).get(jobId);
-
   observation?.record('job-projections', { reads: row === undefined ? 0 : 1 });
   return row === undefined ? null : decodeProjectionJobStoredRow(row);
 }
@@ -182,27 +183,45 @@ function readProjectionRows(db: Database, jobIds: string[]): Map<string, Project
 }
 
 function readOrderedProjectionRows(db: Database, filters?: JobsListFilters): ProjectionRow[] {
-  const rows = prepareCached<[], unknown>(
+  const clauses: string[] = [];
+  const parameters: unknown[] = [];
+  if (filters && filters.all !== true) clauses.push("phase IN ('queued', 'launching', 'running')");
+  if (filters?.phase !== undefined) {
+    clauses.push('phase = ?');
+    parameters.push(filters.phase);
+  }
+  if (filters?.provider !== undefined) {
+    clauses.push('provider = ?');
+    parameters.push(filters.provider);
+  }
+  if (filters?.projectRoot !== undefined) {
+    clauses.push("(job_kind = 'kb' OR work_dir = ?)");
+    parameters.push(filters.projectRoot);
+  }
+  if (filters?.discussionId !== undefined) {
+    clauses.push(
+      `CASE WHEN json_valid(execution_owner) THEN
+        EXISTS (SELECT 1 FROM json_each(execution_owner) WHERE key = 'kind' AND value = 'discussion')
+      END`,
+    );
+  }
+  const rows = prepareCached<unknown[], Pick<ProjectionRow, 'job_id' | 'execution_owner'>>(
     db,
-    `SELECT ${PROJECTION_JOB_COLUMNS}
-       FROM projection_jobs
-      ORDER BY job_id ASC`,
-  )
-    .all()
-    .map(decodeProjectionJobStoredRow);
-
-  return rows.filter((row) => {
-    if (filters && filters.all !== true && !isLivePhase(row.phase)) return false;
-    if (
-      filters?.projectRoot !== undefined &&
-      !jobInCallerScope({ jobKind: row.job_kind, workDir: row.work_dir }, filters.projectRoot, 'exact')
-    ) {
-      return false;
-    }
-    if (filters?.phase !== undefined && row.phase !== filters.phase) return false;
-    if (filters?.provider !== undefined && row.provider !== filters.provider) return false;
-    return true;
-  });
+    `SELECT ${PROJECTION_JOB_COLUMNS} FROM projection_jobs
+     ${clauses.length === 0 ? '' : `WHERE ${clauses.join(' AND ')}`} ORDER BY job_id ASC`,
+  ).all(...parameters);
+  const selected =
+    filters?.discussionId === undefined
+      ? rows
+      : rows.filter((row) => {
+          try {
+            const owner = decodeProjectionJobExecutionOwner(row);
+            return owner.kind === 'discussion' && owner.id === filters.discussionId;
+          } catch (cause) {
+            throw new ProjectionJobDecodeError(row.job_id, cause);
+          }
+        });
+  return selected.map(decodeProjectionJobStoredRow);
 }
 
 const EXECUTION_DETAIL_TYPES = [
@@ -739,17 +758,26 @@ export function listJobProjections(
   `,
   ).all(...jobIds);
   const requestedAt = new Map(requestedTimes.map((row) => [row.stream_id, row.ts]));
-  return projections.map((projection) => ({
-    jobId: projection.job_id,
-    ...withFinishingStatus(db, {
-      status: projectionRowToStatus(
-        projection,
-        executionEvents(projection, rowsByJob.get(projection.job_id) ?? [], ctx),
-        requestedAt.get(projection.job_id) ?? null,
-        ctx,
-      ),
-    }),
-  }));
+  const retryStatuses = readExecutionRetryStatuses(
+    db,
+    projections.flatMap((row) => (row.execution === null ? [] : [{ jobId: row.job_id, execution: row.execution }])),
+  );
+  return projections.map((projection) => {
+    const status = projectionRowToStatus(
+      projection,
+      executionEvents(projection, rowsByJob.get(projection.job_id) ?? [], ctx),
+      requestedAt.get(projection.job_id) ?? null,
+      ctx,
+    );
+    const finishingStatus =
+      status.execution === null
+        ? undefined
+        : retryStatuses.get(executionAddressKey({ jobId: status.jobId, execution: status.execution }));
+    return {
+      jobId: projection.job_id,
+      status: finishingStatus === undefined ? status : { ...status, finishingStatus },
+    };
+  });
 }
 
 export function listJobs(

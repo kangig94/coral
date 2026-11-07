@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { JobsListFilters } from '#src/jobs/read-queries.js';
+import { isLivePhase } from '#src/jobs/phase.js';
+import { jobInCallerScope } from '#src/jobs/scope.js';
 import { JobAttention } from '#src/coordinator/services/job-attention.js';
 import { JobWaitService } from '#src/coordinator/services/job-wait.js';
 import { createCoordinatorRpcPorts } from '#src/coordinator/composition/rpc-ports.js';
@@ -60,7 +63,16 @@ function fixture() {
           },
         }),
       }),
-      listJobProjections: () => [...statuses].map(([jobId, status]) => ({ jobId, status })),
+      listJobProjections: (filters: JobsListFilters) =>
+        [...statuses]
+          .map(([jobId, status]) => ({ jobId, status }))
+          .filter(
+            ({ status }) =>
+              (filters.all === true || isLivePhase(status.phase)) &&
+              (filters.phase === undefined || filters.phase === status.phase) &&
+              (filters.provider === undefined || filters.provider === status.provider) &&
+              (filters.projectRoot === undefined || jobInCallerScope(status, filters.projectRoot, 'exact')),
+          ),
       loadJobProjectionDetail: (jobId: string) => ({
         status: statuses.get(jobId) ?? null,
         launch: { request: { coralEnv: { CORAL_OWNER: jobId === 'other' ? 'other-session' : 'session' } } },

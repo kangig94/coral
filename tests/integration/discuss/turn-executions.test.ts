@@ -1,3 +1,7 @@
+import { decodeProjectionJobExecutionOwner } from '#src/jobs/projection-row.js';
+import { insertTestJobProjection } from '#tests/helpers/job-projection.js';
+import { writeFinishingQuarantine, breakFinishingRetryAuthority } from '#tests/helpers/finishing-quarantine.js';
+import { EXECUTION_NOW } from '#tests/helpers/job-executions.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { runPlainTurn, executeAgentAttempt, recordJobFinished } from '#src/discuss/shell/runtime-build.js';
@@ -321,4 +325,135 @@ describe('discussion turns as job executions', () => {
       expect(f.service.resume).not.toHaveBeenCalled();
     },
   );
+});
+
+it.each([DISCUSSION_ID])('rejects corrupt terminal evidence through discuss listOwned(%s)', (discussionId) => {
+  const f = fixture();
+  const jobId = PARTICIPANT_JOBS.alpha;
+  f.request(jobId, { agent: 'alpha', purpose: 'bid', attempt: 1 });
+  f.complete(jobId, 1);
+  const row = f.journal.db
+    .prepare<
+      [string],
+      { seq: number; body: Uint8Array }
+    >("SELECT seq, body FROM events WHERE stream_id = ? AND type = 'job.execution.ended' ORDER BY seq DESC LIMIT 1")
+    .get(jobId)!;
+  const body = JSON.parse(Buffer.from(row.body).toString());
+  body.causeRef.seq = 1;
+  f.journal.db.prepare('UPDATE events SET body = ? WHERE seq = ?').run(Buffer.from(JSON.stringify(body)), row.seq);
+  expect(() => f.context.jobStatusReader.listOwned(discussionId)).toThrow('does not cite its accepted outcome');
+});
+
+it('preserves discuss ownership output across terminal and live executions', () => {
+  const f = fixture();
+  const bid = { agent: 'alpha', purpose: 'bid', attempt: 1 } as const;
+  const speech = { agent: 'alpha', purpose: 'speech', attempt: 1 } as const;
+  const beta = { agent: 'beta', purpose: 'bid', attempt: 1 } as const;
+  f.request(PARTICIPANT_JOBS.alpha, bid);
+  f.complete(PARTICIPANT_JOBS.alpha, 1);
+  f.append('agent.run.bound', { agent: 'alpha', jobId: PARTICIPANT_JOBS.alpha });
+  f.request(PARTICIPANT_JOBS.alpha, speech);
+  f.complete(PARTICIPANT_JOBS.alpha, 2);
+  f.request(PARTICIPANT_JOBS.beta, beta);
+  expect(f.context.jobStatusReader.listOwned(DISCUSSION_ID)).toEqual([
+    { launch: { jobId: PARTICIPANT_JOBS.alpha, execution: 1, discussionRun: bid, createdAt: EXECUTION_NOW } },
+    { launch: { jobId: PARTICIPANT_JOBS.alpha, execution: 2, discussionRun: speech, createdAt: EXECUTION_NOW } },
+    { launch: { jobId: PARTICIPANT_JOBS.beta, execution: 1, discussionRun: beta, createdAt: EXECUTION_NOW } },
+  ]);
+  expect(f.context.jobStatusReader.listOwned('another-discussion')).toEqual([]);
+});
+
+it.each([false, true])('validates selected quarantine through discuss after a previous list=%s', (previous) => {
+  const f = fixture();
+  const jobId = PARTICIPANT_JOBS.alpha;
+  f.request(jobId, { agent: 'alpha', purpose: 'bid', attempt: 1 });
+  f.complete(jobId, 1);
+  writeFinishingQuarantine(f.journal.db, jobId, 1);
+  if (previous) expect(f.context.jobStatusReader.listOwned(DISCUSSION_ID)).toHaveLength(1);
+  breakFinishingRetryAuthority(f.journal.db, jobId, 1);
+  expect(f.context.jobStatusReader.listOwned('another-discussion')).toEqual([]);
+  expect(() => f.context.jobStatusReader.listOwned(DISCUSSION_ID)).toThrow('Recovery retry authority is incomplete');
+});
+
+it('lists matching discussion jobs alongside an unrelated malformed owner', () => {
+  const f = fixture();
+  f.request(PARTICIPANT_JOBS.alpha, { agent: 'alpha', purpose: 'bid', attempt: 1 });
+  f.complete(PARTICIPANT_JOBS.alpha, 1);
+  f.request(PARTICIPANT_JOBS.beta, { agent: 'beta', purpose: 'bid', attempt: 1 });
+  const expected = f.context.jobStatusReader.listOwned(DISCUSSION_ID);
+  expect(expected).toHaveLength(2);
+  insertTestJobProjection(f.journal.db, {
+    job_id: 'unrelated-history',
+    project_root: '/elsewhere',
+    phase: 'completed',
+  });
+  f.journal.db
+    .prepare('UPDATE projection_jobs SET execution_owner = ? WHERE job_id = ?')
+    .run('{broken', 'unrelated-history');
+  expect(f.context.jobStatusReader.listOwned(DISCUSSION_ID)).toEqual(expected);
+});
+
+it.each([
+  `{"kind":"discussion","id":"another-discussion","id":${JSON.stringify(DISCUSSION_ID)}}`,
+  `{"kind":"discussion","id":${JSON.stringify(DISCUSSION_ID)},"id":"another-discussion"}`,
+  `{"kind":"provider-session","kind":"discussion","id":${JSON.stringify(PARTICIPANT_JOBS.alpha)}}`,
+  `{"kind":"discussion","kind":"provider-session","id":${JSON.stringify(PARTICIPANT_JOBS.alpha)}}`,
+])('matches the owner codec for duplicate keys in %s', (executionOwner) => {
+  const f = fixture();
+  const jobId = PARTICIPANT_JOBS.alpha;
+  f.request(jobId, { agent: 'alpha', purpose: 'bid', attempt: 1 });
+  f.complete(jobId, 1);
+  f.request(PARTICIPANT_JOBS.beta, { agent: 'beta', purpose: 'bid', attempt: 1 });
+  const baseline = f.context.jobStatusReader.listOwned(DISCUSSION_ID);
+  expect(baseline).toHaveLength(2);
+  f.journal.db.prepare('UPDATE projection_jobs SET execution_owner = ? WHERE job_id = ?').run(executionOwner, jobId);
+  const owner = decodeProjectionJobExecutionOwner({ job_id: jobId, execution_owner: executionOwner });
+  for (const discussionId of [DISCUSSION_ID, 'another-discussion', jobId]) {
+    const expected = baseline.filter(({ launch }) =>
+      launch.jobId === jobId
+        ? owner.kind === 'discussion' && owner.id === discussionId
+        : discussionId === DISCUSSION_ID,
+    );
+    expect(f.context.jobStatusReader.listOwned(discussionId)).toEqual(expected);
+  }
+});
+
+it('rejects an undecodable discussion candidate before exact owner selection', () => {
+  const f = fixture();
+  const jobId = PARTICIPANT_JOBS.alpha;
+  f.request(jobId, { agent: 'alpha', purpose: 'bid', attempt: 1 });
+  f.journal.db
+    .prepare('UPDATE projection_jobs SET execution_owner = ? WHERE job_id = ?')
+    .run(`{"kind":"discussion","id":${JSON.stringify(DISCUSSION_ID)},"id":7}`, jobId);
+  expect(() => f.context.jobStatusReader.listOwned(DISCUSSION_ID)).toThrow('could not be decoded');
+});
+
+it('matches the owner codec for a lone-surrogate discussion id', () => {
+  const f = fixture();
+  const jobId = PARTICIPANT_JOBS.alpha;
+  f.request(jobId, { agent: 'alpha', purpose: 'bid', attempt: 1 });
+  f.complete(jobId, 1);
+  const expected = f.context.jobStatusReader.listOwned(DISCUSSION_ID);
+  expect(expected).toHaveLength(1);
+  const discussionId = 'discussion-\ud800';
+  const executionOwner = JSON.stringify({ kind: 'discussion', id: discussionId });
+  f.journal.db.prepare('UPDATE projection_jobs SET execution_owner = ? WHERE job_id = ?').run(executionOwner, jobId);
+  expect(decodeProjectionJobExecutionOwner({ job_id: jobId, execution_owner: executionOwner }).id).toBe(discussionId);
+  expect(f.context.jobStatusReader.listOwned(discussionId)).toEqual(expected);
+});
+
+it('discards a valid non-matching owner before decoding unrelated corrupt fields', () => {
+  const f = fixture();
+  const jobId = PARTICIPANT_JOBS.alpha;
+  f.request(jobId, { agent: 'alpha', purpose: 'bid', attempt: 1 });
+  f.complete(jobId, 1);
+  f.request(PARTICIPANT_JOBS.beta, { agent: 'beta', purpose: 'bid', attempt: 1 });
+  const expected = f.context.jobStatusReader.listOwned(DISCUSSION_ID).filter(({ launch }) => launch.jobId !== jobId);
+  expect(expected).toHaveLength(1);
+  const executionOwner = `{"kind":"discussion","id":${JSON.stringify(DISCUSSION_ID)},"id":"another-discussion"}`;
+  f.journal.db
+    .prepare('UPDATE projection_jobs SET execution_owner = ?, diagnostics = ? WHERE job_id = ?')
+    .run(executionOwner, 'invalid-json', jobId);
+  expect(f.context.jobStatusReader.listOwned(DISCUSSION_ID)).toEqual(expected);
+  expect(() => f.context.jobStatusReader.listOwned('another-discussion')).toThrow('could not be decoded');
 });

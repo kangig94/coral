@@ -23,7 +23,7 @@ import type { StoreReadContext } from '../../store/body-codec.js';
 import { decodeBody } from '../../store/body-codec.js';
 import type { EventsRow } from '../../store/schema.js';
 import { jobsRegistry } from '../../jobs/events.js';
-import { loadJobExecutionDetails } from '../../jobs/read-queries.js';
+import { type JobsListFilters, loadJobExecutionDetails } from '../../jobs/read-queries.js';
 import { createEventBodyCodec } from '../../store/event-body-codec.js';
 import { composeReducers } from '../../store/reducers.js';
 import type { CommitClosureResult, CommitContext } from '../../store/append.js';
@@ -50,7 +50,7 @@ type CreateDiscussRuntimeDeps = {
   getProgressStore: () => {
     readStatus(jobId: string): JobStatus | null;
     loadJobProjectionDetail(jobId: string): { exit: JobExit | null; launch: JobLaunch | null };
-    listJobProjections(): Array<{ jobId: string; status: JobStatus }>;
+    listJobProjections(filters?: JobsListFilters): Array<{ jobId: string; status: JobStatus }>;
     getDb(): Database;
     commit(cb: <Scope>(c: CommitContext<Scope>) => CommitClosureResult): unknown;
   };
@@ -172,8 +172,7 @@ export function createDiscussRuntime({
           : (selectedDetail(jobId, execution)?.exit ?? null),
       listOwned: (discussionId: string) => {
         const owned: ReturnType<DiscussJobStatusReader['listOwned']> = [];
-        for (const { jobId, status } of getProgressStore().listJobProjections()) {
-          if (status.owner.kind !== 'discussion' || status.owner.id !== discussionId) continue;
+        for (const { jobId } of getProgressStore().listJobProjections({ all: true, discussionId })) {
           const requests = getProgressStore()
             .getDb()
             .prepare<
