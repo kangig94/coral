@@ -1,7 +1,9 @@
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 
-import { beforeEach, expect } from 'vitest';
+import { afterAll, beforeEach, expect } from 'vitest';
+
+import { enterFixtureProcessScope, reapFixtureProcesses } from './fixture-process-reaper.js';
 
 const guardConfig = process.env.CORAL_TEST_WRITE_GUARD;
 if (!guardConfig) throw new Error('Test write guard requires global setup.');
@@ -32,6 +34,23 @@ beforeEach((ctx) => {
   ctx.task.meta.timeout = ctx.task.timeout;
 });
 
+{
+  const scope = enterFixtureProcessScope();
+  const boundary = {
+    tempRoot: process.env.TMPDIR,
+    sharedHomes: new Set([process.env.HOME, process.env.CORAL_TEST_HOME].filter((home) => home !== undefined)),
+  };
+  const file = expect.getState().testPath;
+  afterAll(async () => {
+    const reaped = await reapFixtureProcesses(scope, boundary);
+    if (reaped.length > 0) {
+      process.stderr.write(
+        `Reaped ${reaped.length} fixture process(es) left by ${file}: ${reaped.map(({ pid, command }) => `${pid} ${command}`).join('; ')}\n`,
+      );
+    }
+  });
+}
+
 // Shared workers must raise the listener ceiling for Vitest's per-file signal handlers.
 process.setMaxListeners(100);
 
@@ -58,6 +77,12 @@ for (const key of [
   'CORAL_SESSION_ID',
 ]) {
   delete process.env[key];
+}
+
+// The runner may itself be a Claude Code or Codex session; a fixture must never discover its installed builds.
+for (const key of Object.keys(process.env)) {
+  if (['CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'CLAUDE_PLUGIN_ROOT'].includes(key) || key.startsWith('CLAUDE_CODE_'))
+    delete process.env[key];
 }
 
 // `__PLUGIN_ROOT__` is an esbuild-injected build-time constant in production
