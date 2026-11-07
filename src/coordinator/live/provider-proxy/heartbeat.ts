@@ -1,3 +1,4 @@
+import { ProviderProxySetInheritanceCorruptionError } from '../../services/provider-proxy-set/identity.js';
 import { backendLog } from '../../../infra/backend-log.js';
 import { errorMessage } from '../../../infra/error-format.js';
 import { PROXY_CONTROL_HEARTBEAT_MS } from '../../../provider-proxy/orphan-deadline.js';
@@ -24,7 +25,15 @@ export async function heartbeatOnce(
   controlEpoch: number,
   heartbeatChallenge: string,
 ): Promise<HeartbeatObservation> {
-  const params = controlHeartbeatParamsSchema.parse({ controlEpoch, heartbeatChallenge });
+  const parsedParams = controlHeartbeatParamsSchema.safeParse({ controlEpoch, heartbeatChallenge });
+  if (!parsedParams.success) {
+    throw new ProviderProxySetInheritanceCorruptionError(
+      'recovery_contract_violation',
+      'Provider proxy heartbeat parameters failed internal validation.',
+      { cause: parsedParams.error },
+    );
+  }
+  const params = parsedParams.data;
   const exchange = await client.exchange(method, params, PROXY_CONTROL_RPC_TIMEOUT_MS);
   return heartbeatObservationFromExchange(exchange);
 }
@@ -162,7 +171,11 @@ export function createProviderProxyAuthorityHeartbeatAssembly(
   const loops = new Map<ProviderProxyRole, HeartbeatLoop>();
 
   const startRole = (role: ProviderProxyRole, session: ProviderProxyHeartbeatSession): void => {
-    if (loops.has(role)) throw new Error(`provider_proxy_heartbeat_role_already_started:${role}`);
+    if (loops.has(role))
+      throw new ProviderProxySetInheritanceCorruptionError(
+        'recovery_contract_violation',
+        `provider_proxy_heartbeat_role_already_started:${role}`,
+      );
     faults.observeControlClient(role, session.client);
     const method = HEARTBEAT_METHOD_BY_ROLE[role];
     loops.set(
@@ -200,7 +213,10 @@ export function createProviderProxyAuthorityHeartbeatAssembly(
       const guardian = loops.get('guardian');
       const reaper = loops.get('reaper');
       if (proxy === undefined || guardian === undefined || reaper === undefined) {
-        throw new Error('provider_proxy_heartbeat_roles_incomplete');
+        throw new ProviderProxySetInheritanceCorruptionError(
+          'recovery_contract_violation',
+          'provider_proxy_heartbeat_roles_incomplete',
+        );
       }
       return { proxy, guardian, reaper };
     },

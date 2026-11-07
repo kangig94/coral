@@ -1,3 +1,4 @@
+import { ProviderProxySetInheritanceCorruptionError } from '../../services/provider-proxy-set/identity.js';
 import { type z } from 'zod';
 
 import { errorMessage } from '../../../infra/error-format.js';
@@ -59,6 +60,13 @@ export async function exchangeAcquisitionStage<T>(
   } catch (error: unknown) {
     return { kind: 'unknown', reason: errorMessage(error) };
   }
+  if (exchange.kind === 'not-sent' && exchange.cause === 'encode-failed') {
+    throw new ProviderProxySetInheritanceCorruptionError(
+      'recovery_contract_violation',
+      'Provider proxy publication parameters could not be encoded.',
+      { cause: exchange.error },
+    );
+  }
   if (exchange.kind === 'not-sent') {
     return { kind: 'not-attempted', reason: errorMessage(exchange.error) };
   }
@@ -113,6 +121,18 @@ async function attemptAcquisitionStageWithRetry<T>(
   };
 }
 
+function publicationParams<T>(schema: z.ZodType<T, z.ZodTypeDef, unknown>, input: unknown): T {
+  const parsed = schema.safeParse(input);
+  if (!parsed.success) {
+    throw new ProviderProxySetInheritanceCorruptionError(
+      'recovery_contract_violation',
+      'Provider proxy publication parameters failed internal validation.',
+      { cause: parsed.error },
+    );
+  }
+  return parsed.data;
+}
+
 /** The receipt is minted only after guardian/reaper and proxy publication both return confirmed success. */
 export async function runProviderProxySetPublicationTransaction(
   guardianClient: ControlClient,
@@ -124,7 +144,7 @@ export async function runProviderProxySetPublicationTransaction(
   const guardianOutcome = await attemptAcquisitionStageWithRetry(
     guardianClient,
     'guardian.acquisition-publish.v1',
-    guardianAcquisitionPublishParamsSchema.parse({ guardian, reaper, proxy }),
+    publicationParams(guardianAcquisitionPublishParamsSchema, { guardian, reaper, proxy }),
     guardianAcquisitionPublishResultSchema,
   );
   if (guardianOutcome.kind !== 'ok') {
@@ -136,7 +156,7 @@ export async function runProviderProxySetPublicationTransaction(
   const proxyOutcome = await attemptAcquisitionStageWithRetry(
     proxyClient,
     'proxy.acquisition-publish.v1',
-    proxyAcquisitionPublishParamsSchema.parse({
+    publicationParams(proxyAcquisitionPublishParamsSchema, {
       certificate: guardianOutcome.value.certificate,
       guardian: guardianOutcome.value.guardian,
       reaper: guardianOutcome.value.reaper,

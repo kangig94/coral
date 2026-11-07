@@ -2,6 +2,9 @@ import type { FailureDomainContainment } from '../../../infra/failure-domain.js'
 import { errorMessage } from '../../../infra/error-format.js';
 import { createMonotonicClock } from '../../../infra/monotonic-clock.js';
 import {
+  ContainmentObservationDeadlineError,
+  ProcessContainmentInvariantError,
+  type RecordedContainmentReapResult,
   reapRecordedContainment,
   type createFailureDomainAbsenceObserver,
   createFailureDomainContainmentObservation,
@@ -111,31 +114,42 @@ export function createProviderProxySetRecordedContainmentReaper(
   return async (identity, proof, signal, onSignal, assertSignalAuthorized, absenceObserver) => {
     const evidence = providerProxySetContainmentEvidenceFor(proof, identity);
     if (evidence.kind !== 'reap-required') {
-      throw new Error('provider_proxy_set_containment_reap_proof_not_reap_required');
+      throw new ProcessContainmentInvariantError(
+        'process_identity_unverified',
+        'provider_proxy_set_containment_reap_proof_not_reap_required',
+      );
     }
     const clock = createMonotonicClock(providerSetDisappearanceClockScope);
     let signalDelivered = false;
     const failureDomain = runtime.process.failureDomainContainment(`set-${identity.proxyInstanceId}/containment`);
     const observation = createFailureDomainContainmentObservation(failureDomain, absenceObserver);
-    const outcome = await reapRecordedContainment(
-      evidence.containment,
-      evidence.recordedRoots,
-      clock.shiftMilliseconds(clock.now(), PROXY_TEARDOWN_RESERVE_MS),
-      {
-        failureDomain: observation.failureDomain,
-        maxRecordedRoots: MAX_PROXY_RECORDED_PROVIDER_ROOTS,
-        clock,
-        process: runtime.process,
-        platform: runtime.env.platform() as NodeJS.Platform,
-        readProcessIncarnation: (pid, platform) => runtime.process.readProcessIncarnation(pid, platform),
-        signal,
-        assertSignalAuthorized,
-        onSignal: ({ signal: delivered }) => {
-          signalDelivered = true;
-          if (delivered === 'SIGTERM' || delivered === 'SIGKILL') onSignal(delivered);
+    let outcome: RecordedContainmentReapResult;
+    try {
+      outcome = await reapRecordedContainment(
+        evidence.containment,
+        evidence.recordedRoots,
+        clock.shiftMilliseconds(clock.now(), PROXY_TEARDOWN_RESERVE_MS),
+        {
+          failureDomain: observation.failureDomain,
+          maxRecordedRoots: MAX_PROXY_RECORDED_PROVIDER_ROOTS,
+          clock,
+          process: runtime.process,
+          platform: runtime.env.platform() as NodeJS.Platform,
+          readProcessIncarnation: (pid, platform) => runtime.process.readProcessIncarnation(pid, platform),
+          signal,
+          assertSignalAuthorized,
+          onSignal: ({ signal: delivered }) => {
+            signalDelivered = true;
+            if (delivered === 'SIGTERM' || delivered === 'SIGKILL') onSignal(delivered);
+          },
         },
-      },
-    );
+      );
+    } catch (error: unknown) {
+      signal.throwIfAborted();
+      if (error instanceof ContainmentObservationDeadlineError)
+        return { kind: 'identity-unobservable', signalDelivered };
+      throw error;
+    }
     signal.throwIfAborted();
     if (outcome.kind !== 'containment-absent') return outcome;
     const currentness = verifyProviderProxySetContainmentProofCurrent(proof, identity);

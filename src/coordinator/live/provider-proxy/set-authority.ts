@@ -3,6 +3,7 @@ import type { ProviderProxyRole } from '../../services/provider-proxy-authority-
 import { z } from 'zod';
 
 import {
+  handoffCapsuleV4Schema,
   guardianReaperHandoffInstallParamsSchema,
   handoffSecretDigest,
   successionOperationRegisterParamsSchema,
@@ -50,7 +51,10 @@ import {
 } from '../../../provider-proxy/protocol.js';
 import type { ControlClient, ControlExchange, ProviderEventHandler } from '../../../provider-proxy/control-client.js';
 import type { Runtime } from '../../../runtime/ports.js';
-import type { ProviderProxySetIdentity } from '../../services/provider-proxy-set/identity.js';
+import {
+  ProviderProxySetInheritanceCorruptionError,
+  type ProviderProxySetIdentity,
+} from '../../services/provider-proxy-set/identity.js';
 import { retireProviderHandoffCapsule } from '../../services/provider-proxy-capsule-discovery.js';
 import {
   closeRedeemedProviderProxyControl,
@@ -147,6 +151,13 @@ function installExchangeOutcome(
   exchange: ControlExchange,
   expectedGrantId: string,
 ): Exclude<RecoveryCredentialInstallOutcome, { kind: 'installed' | 'cancelled' }> | null {
+  if (exchange.kind === 'not-sent' && exchange.cause === 'encode-failed') {
+    throw new ProviderProxySetInheritanceCorruptionError(
+      'recovery_contract_violation',
+      'Recovery credential install parameters could not be encoded.',
+      { cause: exchange.error },
+    );
+  }
   if (exchange.kind !== 'response') {
     return { kind: 'retryable', incident: { role, method, exchange } };
   }
@@ -159,7 +170,10 @@ function installExchangeOutcome(
   const acknowledgement = handoffInstallAckSchema.safeParse(exchange.response.value);
   if (!acknowledgement.success) return { kind: 'retryable', incident: { role, method, exchange } };
   if (acknowledgement.data.grantId !== expectedGrantId) {
-    throw new Error('provider_proxy_handoff_install_ack_grant_mismatch');
+    throw new ProviderProxySetInheritanceCorruptionError(
+      'recovery_credential_identity_disagreement',
+      'provider_proxy_handoff_install_ack_grant_mismatch',
+    );
   }
   return null;
 }
@@ -483,6 +497,30 @@ function createProviderProxySuccessionMethods(
   return { authorizeControllerTransfer, registerSuccessionOperation };
 }
 
+function recoveryInstallParams<T>(schema: z.ZodType<T, z.ZodTypeDef, unknown>, input: unknown): T {
+  const parsed = schema.safeParse(input);
+  if (!parsed.success) {
+    throw new ProviderProxySetInheritanceCorruptionError(
+      'recovery_contract_violation',
+      'Recovery credential install parameters failed internal validation.',
+      { cause: parsed.error },
+    );
+  }
+  return parsed.data;
+}
+
+function writeRecoveryCapsule(path: string, capsule: HandoffCapsuleV4, runtime: Pick<Runtime, 'storage'>): void {
+  const parsed = handoffCapsuleV4Schema.safeParse(capsule);
+  if (!parsed.success) {
+    throw new ProviderProxySetInheritanceCorruptionError(
+      'recovery_contract_violation',
+      'Recovery credential capsule failed internal validation.',
+      { cause: parsed.error },
+    );
+  }
+  writeHandoffCapsuleFile(path, parsed.data, { storage: runtime.storage, uid: process.getuid?.() ?? 0 });
+}
+
 async function performRecoveryCredentialInstall(
   deps: ProviderProxySetAuthorityDependencies,
   mintRecoveryCapsule: () => HandoffCapsuleV4,
@@ -492,7 +530,7 @@ async function performRecoveryCredentialInstall(
   const capsule = inherited ?? mintRecoveryCapsule();
   const operations = inherited === undefined ? [] : canonicalHandoffOperationSet(deps.recoveryOperations);
   const secretSha256 = handoffSecretDigest(capsule.secret);
-  const guardianReaperInstallPayload = guardianReaperHandoffInstallParamsSchema.parse({
+  const guardianReaperInstallPayload = recoveryInstallParams(guardianReaperHandoffInstallParamsSchema, {
     grantId: capsule.grantId,
     secretSha256,
     successor: coordinatorIdentity,
@@ -503,7 +541,7 @@ async function performRecoveryCredentialInstall(
   const proxyInstall = () =>
     proxyClient.exchange(
       'handoff.install.v1',
-      proxyHandoffInstallParamsSchema.parse({
+      recoveryInstallParams(proxyHandoffInstallParamsSchema, {
         grantId: capsule.grantId,
         secretSha256,
         generation: capsule.generation,
@@ -565,10 +603,7 @@ async function performRecoveryCredentialInstall(
   const retryable = outcomes.find((outcome) => outcome?.kind === 'retryable');
   if (retryable !== undefined && retryable !== null) return retryable;
   if (inherited === undefined) {
-    writeHandoffCapsuleFile(handoffCapsulePath, mintRecoveryCapsule(), {
-      storage: runtime.storage,
-      uid: process.getuid?.() ?? 0,
-    });
+    writeRecoveryCapsule(handoffCapsulePath, mintRecoveryCapsule(), runtime);
     deps.registerAcquisitionUndo?.({
       kind: 'recovery-capability',
       label: 'handoff capsule',
@@ -577,14 +612,14 @@ async function performRecoveryCredentialInstall(
   }
   if (inherited !== undefined && handoffCapsuleControllerBuildSetId(inherited) !== coordinatorIdentity.buildSetId) {
     const currentCapsulePath = currentHandoffCapsulePathBeside(handoffCapsulePath, inherited.version);
-    writeHandoffCapsuleFile(
+    writeRecoveryCapsule(
       currentCapsulePath,
       {
         ...inherited,
         version: CURRENT_HANDOFF_CAPSULE_VERSION,
         controllerBuildSetId: coordinatorIdentity.buildSetId,
       },
-      { storage: runtime.storage, uid: process.getuid?.() ?? 0 },
+      runtime,
     );
     if (currentCapsulePath !== handoffCapsulePath) {
       const retirement = retireProviderHandoffCapsule(runtime.storage, handoffCapsulePath);

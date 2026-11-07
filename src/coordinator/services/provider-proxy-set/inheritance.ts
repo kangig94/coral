@@ -14,11 +14,13 @@ import { PROXY_CONTROL_RPC_TIMEOUT_MS, type CoordinatorIdentity } from '../../..
 import type { ProviderEventHandler } from '../../../provider-proxy/control-client.js';
 import type { HeartbeatObservation } from '../../../provider-proxy/heartbeat-observation.js';
 import type { Runtime } from '../../../runtime/ports.js';
+import { ProcessContainmentInvariantError } from '../../../infra/process-containment.js';
 import { backendLog } from '../../../infra/backend-log.js';
 import type { Database } from '../../../store/db.js';
 import {
   providerOperationMutationAdmission,
   ProviderOperationMutationSetClosedError,
+  ProviderOperationJournalError,
 } from '../../../store/provider-operation-journal.js';
 import type { ProviderOperationIdentity, ProviderOperationRecord } from '../../../store/provider-operation-record.js';
 import {
@@ -49,6 +51,7 @@ import type {
   PublicationReceipt,
 } from '../../live/provider-proxy/set-publication.js';
 import {
+  ProviderProxySetInheritanceCorruptionError,
   providerProxySetIdentitiesEqual,
   providerProxySetIdentityFromCapsule,
   providerProxySetIdentityFromRecord,
@@ -65,6 +68,7 @@ import {
 } from '../provider-proxy-recovery-policy.js';
 import {
   authorizeProviderProxySetContainmentProof,
+  ProviderProxySetContainmentProofInvariantError,
   providerProxySetContainmentEvidenceFor,
   releaseProviderProxySetContainmentProofFence,
   verifyProviderProxySetContainmentProofCurrent,
@@ -179,6 +183,12 @@ async function collectFencedContainmentProof(
 type ProviderProxySetRedemptionAttempt = Exclude<ProviderProxySetRedemptionOutcome, { kind: 'protocol-incompatible' }>;
 
 export type ProviderProxySetAvailabilityIncident =
+  | Readonly<{ kind: 'observation-refused'; producerId: 'set-inheritance' | 'containment-proof' }>
+  | Readonly<{
+      kind: 'observation-unknown';
+      diagnostic: Readonly<{ name: string; code: string | null; message: string }>;
+      producerId: 'set-inheritance' | 'containment-proof' | 'capsule-redemption';
+    }>
   | Readonly<{
       kind: 'lifecycle-owned-pending';
       owner: 'provider-proxy-set-lifecycle';
@@ -193,7 +203,12 @@ export type ProviderProxySetAvailabilityIncident =
   | Readonly<{ kind: 'publication-not-attempted'; role: 'guardian' | 'proxy'; reason: string }>
   | Readonly<{
       kind: 'recorded-containment-unavailable';
-      reason: 'authorization-missing' | 'authorization-stale' | 'store-unreadable' | 'guardian-containment-unconfirmed';
+      reason:
+        | 'authorization-missing'
+        | 'authorization-stale'
+        | 'store-unreadable'
+        | 'guardian-containment-unconfirmed'
+        | 'observation-failed';
     }>
   | Readonly<{ kind: 'recovery-deadline'; timeoutMs: 45_000 }>;
 
@@ -255,21 +270,6 @@ export function recoverProviderProxySetOrdinarily(
   );
 }
 
-export class ProviderProxySetInheritanceCorruptionError extends Error {
-  readonly code:
-    | 'role_operation_set_disagreement'
-    | 'role_identity_disagreement'
-    | 'capsule_identity_disagreement'
-    | 'durable_identity_disagreement';
-
-  constructor(code: ProviderProxySetInheritanceCorruptionError['code'], message: string, options?: ErrorOptions) {
-    super(message, options);
-    this.name = 'ProviderProxySetInheritanceCorruptionError';
-    this.code = code;
-    Object.setPrototypeOf(this, ProviderProxySetInheritanceCorruptionError.prototype);
-  }
-}
-
 function heartbeatObservationAvailabilityReason(observation: HeartbeatObservation): string {
   switch (observation.kind) {
     case 'reply':
@@ -285,6 +285,9 @@ function heartbeatObservationAvailabilityReason(observation: HeartbeatObservatio
 
 export function providerProxySetAvailabilityReason(incident: ProviderProxySetAvailabilityIncident): string {
   switch (incident.kind) {
+    case 'observation-unknown':
+    case 'observation-refused':
+      return `${incident.kind}:${incident.producerId}`;
     case 'inheritance-admission-expired':
       return `${incident.kind}:${incident.retryOwner}`;
     case 'role-exchange-unavailable':
@@ -525,7 +528,10 @@ async function buildInheritedAuthority(
           break;
         case 'cancelled':
           signal.throwIfAborted();
-          throw new Error('provider_proxy_recovery_credential_install_cancelled');
+          throw new ProviderProxySetInheritanceCorruptionError(
+            'recovery_credential_cancellation_without_abort',
+            'Provider proxy recovery credential installation returned cancellation without an aborted signal.',
+          );
       }
     }
     const set = createProviderProxyOperationAuthority({
@@ -757,7 +763,14 @@ export async function attemptProviderProxySetInheritance(
       releaseProviderProxySetContainmentProofFence(proof);
     } catch (proofError: unknown) {
       if (signal.aborted && proofError === signal.reason) throw proofError;
-      if (proofError instanceof ProviderOperationMutationSetClosedError) throw proofError;
+      if (
+        proofError instanceof ProviderOperationMutationSetClosedError ||
+        proofError instanceof ProcessContainmentInvariantError ||
+        proofError instanceof ProviderProxySetContainmentProofInvariantError ||
+        proofError instanceof ProviderOperationJournalError ||
+        proofError instanceof ProviderProxySetInheritanceCorruptionError
+      )
+        throw proofError;
       throw new AggregateError(
         [error, proofError],
         'Provider proxy role control was unavailable and containment proof failed.',
@@ -805,7 +818,11 @@ function discoveredCapsuleRoute(
     deps.acceptsControllerTransfer,
   );
   if (verdict.kind === 'held') return 'unconfirmed';
-  if (verdict.kind === 'refused') throw new Error('provider_proxy_discovered_capsule_no_longer_inheritable');
+  if (verdict.kind === 'refused')
+    throw new ProviderProxySetInheritanceCorruptionError(
+      'capsule_identity_disagreement',
+      'Provider proxy discovered capsule no longer names an inheritable controller identity.',
+    );
   return verdict.via;
 }
 

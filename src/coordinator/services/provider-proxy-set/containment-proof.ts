@@ -18,6 +18,14 @@ import {
   type ProviderProxySetIdentity,
 } from './identity.js';
 
+export class ProviderProxySetContainmentProofInvariantError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ProviderProxySetContainmentProofInvariantError';
+    Object.setPrototypeOf(this, ProviderProxySetContainmentProofInvariantError.prototype);
+  }
+}
+
 /**
  * Observes the dual recorded enforcers and gathers the exact recorded targets without signalling any process.
  */
@@ -129,9 +137,13 @@ export function authorizeProviderProxySetContainmentProof(
   identity: ProviderProxySetIdentity,
   fence?: ProviderProxySetContainmentProofFence,
 ): ProviderProxySetContainmentProofAuthorization {
+  const parsedIdentity = providerProxySetIdentitySchema.safeParse(identity);
+  if (!parsedIdentity.success) {
+    throw new ProviderProxySetContainmentProofInvariantError('provider_proxy_set_containment_proof_identity_invalid');
+  }
   const authorization = Object.freeze({}) as ProviderProxySetContainmentProofAuthorization;
   authorizationRecords.set(authorization, {
-    identity: Object.freeze(providerProxySetIdentitySchema.parse(identity)),
+    identity: Object.freeze(parsedIdentity.data),
     fence: fence?.mutationFence ?? null,
     closeAdmission: fence?.closeAdmission ?? null,
   });
@@ -216,14 +228,25 @@ export function providerProxySetContainmentEvidenceFor(
   expectedAuthorization?: ProviderProxySetContainmentProofAuthorization,
 ): ProviderProxySetContainmentEvidence {
   const record = containmentProofRecords.get(proof);
-  if (record === undefined) throw new Error('provider_proxy_set_containment_proof_invalid');
+  if (record === undefined)
+    throw new ProviderProxySetContainmentProofInvariantError('provider_proxy_set_containment_proof_invalid');
   if (!providerProxySetIdentitiesEqual(record.identity, expectedIdentity)) {
-    throw new Error('provider_proxy_set_containment_proof_identity_mismatch');
+    throw new ProviderProxySetContainmentProofInvariantError('provider_proxy_set_containment_proof_identity_mismatch');
   }
   if (expectedAuthorization !== undefined && record.authorization !== expectedAuthorization) {
-    throw new Error('provider_proxy_set_containment_proof_authorization_mismatch');
+    throw new ProviderProxySetContainmentProofInvariantError(
+      'provider_proxy_set_containment_proof_authorization_mismatch',
+    );
   }
   return record.evidence;
+}
+
+function containmentEvidence(input: unknown): ProviderProxySetContainmentEvidence {
+  const parsed = providerProxySetContainmentEvidenceSchema.safeParse(input);
+  if (!parsed.success) {
+    throw new ProviderProxySetContainmentProofInvariantError('provider_proxy_set_containment_evidence_invalid');
+  }
+  return parsed.data;
 }
 
 async function collectProviderProxySetContainmentEvidence(
@@ -273,20 +296,20 @@ async function collectProviderProxySetContainmentEvidence(
   if (observations.some(({ observation }) => observation !== 'absent')) {
     if (proxyObservation === 'absent') {
       signal.throwIfAborted();
-      return providerProxySetContainmentEvidenceSchema.parse({
+      return containmentEvidence({
         kind: 'proxy-absent',
         observations,
         containment,
         recordedRoots: recordedRootsFromScan(identity, operationScan),
       });
     }
-    return providerProxySetContainmentEvidenceSchema.parse({ kind: 'enforcers-observed', observations });
+    return containmentEvidence({ kind: 'enforcers-observed', observations });
   }
   signal.throwIfAborted();
 
   const recordedRoots = recordedRootsFromScan(identity, operationScan);
   signal.throwIfAborted();
-  return providerProxySetContainmentEvidenceSchema.parse({ kind: 'reap-required', containment, recordedRoots });
+  return containmentEvidence({ kind: 'reap-required', containment, recordedRoots });
 }
 
 function recordedRootsFromScan(
@@ -322,9 +345,10 @@ export function verifyProviderProxySetContainmentProofCurrent(
   expectedIdentity: ProviderProxySetIdentity,
 ): ProviderProxySetContainmentProofCurrentness {
   const record = containmentProofRecords.get(proof);
-  if (record === undefined) throw new Error('provider_proxy_set_containment_proof_invalid');
+  if (record === undefined)
+    throw new ProviderProxySetContainmentProofInvariantError('provider_proxy_set_containment_proof_invalid');
   if (!providerProxySetIdentitiesEqual(record.identity, expectedIdentity)) {
-    throw new Error('provider_proxy_set_containment_proof_identity_mismatch');
+    throw new ProviderProxySetContainmentProofInvariantError('provider_proxy_set_containment_proof_identity_mismatch');
   }
   if (record.currentness === null) return { kind: 'authorization-missing' };
   if (!record.currentness.fence.isHeld()) return { kind: 'authorization-stale' };
@@ -365,7 +389,9 @@ export function createProviderProxySetContainmentProver(runtime: Runtime): Provi
     ): Promise<ProviderProxySetContainmentProofForAuthorization<Authorization>> {
       const authorizationRecord = authorizationRecords.get(authorization);
       if (authorizationRecord === undefined) {
-        throw new Error('provider_proxy_set_containment_proof_authorization_invalid');
+        throw new ProviderProxySetContainmentProofInvariantError(
+          'provider_proxy_set_containment_proof_authorization_invalid',
+        );
       }
       try {
         await authorizationRecord.closeAdmission?.();

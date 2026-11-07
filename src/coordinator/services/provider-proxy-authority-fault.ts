@@ -1,3 +1,4 @@
+import { ProviderProxySetInheritanceCorruptionError } from './provider-proxy-set/identity.js';
 import type { ControlClient, ControlClientError } from '../../provider-proxy/control-client.js';
 import type { HeartbeatObservation } from '../../provider-proxy/heartbeat-observation.js';
 import type { ProviderProxySetOperatorDispositionCause } from '../../provider-proxy/operator-disposition-vocabulary.js';
@@ -134,7 +135,10 @@ export function providerProxyControlChannelIncident(
   if (error.origin === 'remote-response' && error.remoteFailure?.kind === 'invalid-frame') {
     return { kind: 'control-channel-fault', role, cause: 'invalid-unattributable-frame', error };
   }
-  throw new Error('provider_proxy_control_channel_incident_cause_missing');
+  throw new ProviderProxySetInheritanceCorruptionError(
+    'recovery_contract_violation',
+    'provider_proxy_control_channel_incident_cause_missing',
+  );
 }
 
 function isAcceptedHeartbeat(

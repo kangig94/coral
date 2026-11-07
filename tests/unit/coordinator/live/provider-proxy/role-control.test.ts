@@ -1,3 +1,4 @@
+import { ProviderProxySetInheritanceCorruptionError } from '#src/coordinator/services/provider-proxy-set/identity.js';
 import { beforeEach, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import {
@@ -104,11 +105,11 @@ it.each(['open', 'first-heartbeat'] as const)(
   },
 );
 
-it('preserves encoding errors as errors', async () => {
+it('preserves encoding failures as typed invariants with their cause', async () => {
   const error = new TypeError('cannot encode request');
-  await expect(establish([controlExchangeForTest({ kind: 'not-sent', cause: 'encode-failed', error })])).rejects.toBe(
-    error,
-  );
+  const attempted = establish([controlExchangeForTest({ kind: 'not-sent', cause: 'encode-failed', error })]);
+  await expect(attempted).rejects.toBeInstanceOf(ProviderProxySetInheritanceCorruptionError);
+  await expect(attempted).rejects.toMatchObject({ code: 'recovery_contract_violation', cause: error });
 });
 
 it.each(['open', 'first-heartbeat', 'fault-race'] as const)(

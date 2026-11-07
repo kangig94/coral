@@ -7,13 +7,24 @@ there.
 ## The loop
 
 A successor coordinator discovers the previous coordinator's handoff capsule and redeems the set through
-`#recoverExactCapsule` (`src/coordinator/services/provider-proxy-set/index.ts`). If the guardian answers out
-of contract — the same corrupt, refused, or unknown evidence that made the previous coordinator declare its
+`#recoverExactCapsule` (`src/coordinator/services/provider-proxy-set/index.ts`). If redemption reproduces a
+fatal identity or authorization invariant violation, a definitive non-availability remote refusal, or a malformed result that breaks
+its contract — the same violation that made the previous coordinator declare its
 judgement void — `retireFatal` (`src/coordinator/services/provider-proxy-recovery-policy.ts`) reaches
 `onProviderProxyLifecycleFatal` (`src/coordinator/composition/execution-assembly.ts`), which starts a
 `provider-proxy-lifecycle-fatal` shutdown. That shutdown is handoff: it leaves the capsule where the next
 coordinator will find it. The next CLI command spawns a successor, which reads the same capsule, asks the same
-guardian, and gets the same answer.
+guardian, and gets the same fatal violation.
+
+This capsule loop remains open for typed identity/authorization invariants, definitive non-availability remote
+refusals, and malformed producer results. Unknown `capsule-redemption`, `set-inheritance`, and
+`containment-proof` rejections follow the durable exact-subject
+[hold contract](../architecture.md#containment-evidence-and-reclamation), rather than this shutdown loop.
+The other producers whose unclassified rejections remain fatal are `disappearance-terminalization`,
+`role-control`, `capsule-retirement` outside the foreign-capsule seam, `disappearance-consumer`, and
+`representation-abandonment-consumer`; their typed retry exceptions and the full fatal inventory are in the
+[fatal-mode rationale](../design-rationale.md#121-why-a-provider-proxy-lifecycle-fatal-takes-handoff).
+Those other paths do not establish an unknown-redemption capsule loop.
 
 Each iteration costs one CLI invocation an exit-`75` refusal and a fresh coordinator spawn. The originating
 fatal is itself a terminal shutdown incident, independent of cleanup losses, so even a completely clean drain
@@ -26,8 +37,8 @@ an unrelated cleanup failure.
 The enforcers. `consumeHolderObservation` in `createArmedEnforcer` (`src/provider-proxy/enforcement.ts`)
 observes the control holder at anchor + `orphanTimeoutMs − teardownReserveMs`; each coordinator in the loop
 dies before renewing, the holder is observed absent, and the guardian and reaper tear the set down through
-`reapRecordedContainment` within one adoption window. Capsule retirement still requires decisive absence
-under the applicable [containment evidence contract](../architecture.md#containment-evidence-and-reclamation);
+`reapRecordedContainment` when their own authority and process observations permit it. Capsule retirement
+still requires decisive absence under the applicable [containment evidence contract](../architecture.md#containment-evidence-and-reclamation);
 a teardown attempt or deadline alone cannot supply it. Under hard mode every iteration also reaped every
 healthy set on the way down; under handoff it costs the bad set and nothing else.
 
@@ -41,12 +52,11 @@ Buying the iterations back would require a coordinator to hold a judgement the f
 
 ## What closing it requires
 
-Either a per-capsule durable observation — "instance X met a fatal redeeming this capsule at T", written by
+A per-capsule durable observation — "instance X met a fatal redeeming this capsule at T", written by
 the failing coordinator beside its remainder record — that a successor reads to defer redemption of that one
-capsule while the enforcers run, keeping every other set redeemable; or a ruling that N recorded fatals for
-one capsule inside one adoption window is decisive evidence for retirement, with N and the window argued
-rather than picked. The first keeps §11 intact and costs a new durable shape at a new address; the second is
-a decision about what may end a hold when the only evidence is repetition.
+capsule while the enforcers run, keeping every other set redeemable. This keeps §11 intact and costs a new
+durable shape at a new address. Repeated fatal invariant or malformed-result failures alone cannot prove
+process absence or authorize capsule retirement.
 
 **Interaction.** Adjacent to [`legacy-v1-capsule-retirement`](./legacy-v1-capsule-retirement.md), whose
 question is the same one from the other side — what may retire a capsule when no observation decides — and
