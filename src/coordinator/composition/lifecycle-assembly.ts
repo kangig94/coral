@@ -115,6 +115,7 @@ function createCoordinatorLifecycleDeps(
       readSuccessionJobs,
       world,
       onOpenedStore: (openStore) => recordRecoveredStoreEpoch(core, openStore),
+      controllerProcess: () => ({ pid: world.backendPid, incarnation: readSelfIncarnation() }),
     }),
     streamResponses,
     discussStores: discuss.discussStores,

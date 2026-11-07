@@ -1,3 +1,7 @@
+import type { BoundCoordinator } from '../handoff.js';
+import { readDiscoveryRecordDisposition } from '../../infra/backend-discovery.js';
+import { attemptExclusiveFileLockSync } from '../../infra/fs-lock.js';
+import { observeStoreEpochHolders } from '../../store/epoch/holder.js';
 import { sameEpoch } from '../../store/epoch/identity.js';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
@@ -35,6 +39,7 @@ import {
   mintRetiredStoreEpoch,
   observeResolvedStoreEpoch,
   observeResolvedStoreEpochKey,
+  storeEpochLockPath,
   type ResolvedStoreEpoch,
   type UnservedMintDiscard,
 } from '../../store/epoch/index.js';
@@ -58,6 +63,7 @@ import {
 import { decodeDurableCliTransfer, verifyDurableCliRecoveryGrant } from '../services/durable-cli-transfer.js';
 import type { IpcListener } from '../../transport/ipc/server.js';
 import type { SuccessionAttemptChild } from './attempt-child.js';
+import { latestControllerOpen } from './controller-open.js';
 import { failedAttemptRetry, recoveryRetryOf, TRANSIENT_RETRY_BASE_MS } from './attempt-retry.js';
 import type { SuccessionInterposition } from './interposition.js';
 import {
@@ -96,6 +102,7 @@ export class SuccessionAttemptStartupHoldError extends Error {
  * only by exiting.
  */
 export type SuccessionStartupHold =
+  | Readonly<{ kind: 'handoff-target-did-not-serve'; attemptId: null; subject: string }>
   | Readonly<{ kind: 'unsupported-intent'; attemptId: null; reason: string; fingerprint: string }>
   | Readonly<{ kind: 'unreadable-intent'; attemptId: null; source: 'corrupt' | 'unreadable'; fingerprint: string }>
   | Readonly<{ kind: 'attempt-record-unreadable'; attemptId: string }>
@@ -118,6 +125,8 @@ export function startupHoldError(hold: SuccessionStartupHold): SuccessionAttempt
 
 function describeStartupHold(hold: SuccessionStartupHold): string {
   switch (hold.kind) {
+    case 'handoff-target-did-not-serve':
+      return `handoff target did not serve (${hold.subject})`;
     case 'unsupported-intent':
       return hold.reason;
     case 'unreadable-intent':
@@ -151,6 +160,7 @@ function describeStartupHold(hold: SuccessionStartupHold): string {
 }
 
 function patienceSubject(hold: SuccessionStartupHold): string {
+  if (hold.kind === 'handoff-target-did-not-serve') return hold.subject;
   if (hold.kind === 'unsupported-intent' || hold.kind === 'unreadable-intent')
     return `${hold.kind}:${hold.fingerprint}`;
   if (hold.kind === 'preferred-epoch-unopenable') return hold.attemptId ?? `preferred-epoch:${hold.epochKey}`;
@@ -251,7 +261,7 @@ async function exhaustStartupPatience(
   startupId: string,
   hold: SuccessionStartupHold,
 ): Promise<boolean> {
-  if (hold.kind === 'deaths-unproven' && hold.alive) return false;
+  if (hold.kind === 'deaths-unproven') return false;
   const subject = patienceSubject(hold);
   const path = startupPatiencePath(runtime, subject);
   const read = readStartupPatience(runtime, subject);
@@ -282,7 +292,20 @@ async function exhaustStartupPatience(
   const startups = repeated?.startups ?? (previous?.startups ?? 0) + 1;
   const countedAt = repeated === null ? now : (repeated.countedAt ?? now);
   runtime.storage.mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const record = { ...previous, version: 'v1', attemptId: subject, startupId, startups, countedAt };
+  const record = {
+    ...previous,
+    version: 'v1',
+    attemptId: subject,
+    startupId,
+    startups,
+    countedAt,
+    ...(hold.kind === 'handoff-target-did-not-serve'
+      ? {
+          observation: hold.kind,
+          disposition: startups >= SUCCESSION_STARTUP_PATIENCE ? 'abandoned' : 'retrying',
+        }
+      : {}),
+  };
   if (!runtime.storage.writeAtomicDurableSync(path, `${JSON.stringify(record)}\n`, { encoding: 'utf8', mode: 0o600 })) {
     throw new SuccessionAttemptStartupHoldError(`${describeStartupHold(hold)}; patience could not be recorded`, hold);
   }
@@ -291,6 +314,253 @@ async function exhaustStartupPatience(
     hold.attemptId === null ? 'released' : await recordStartupHold(runtime, hold.attemptId, hold, startups, exhausted);
   if (exhausted && recorded === 'released' && hold.attemptId !== null) clearStartupPatience(runtime, subject);
   return exhausted;
+}
+
+export type StartupHandoffSubject = Readonly<{ purpose: string; identity: string }>;
+
+function handoffPatienceSubject(target: ValidatedHandoffTarget, subject: StartupHandoffSubject): string {
+  const execution = inspectValidatedHandoffTarget(target);
+  return `handoff:${JSON.stringify([subject.purpose, subject.identity, execution.bundleDir, execution.manifest])}`;
+}
+
+export function startupHandoffAbandoned(
+  runtime: Runtime,
+  target: ValidatedHandoffTarget,
+  subject: StartupHandoffSubject,
+): boolean {
+  return startupPatienceExhausted(runtime, handoffPatienceSubject(target, subject));
+}
+
+const legacyControllerAbsenceBrand: unique symbol = Symbol('legacy controller writer absence');
+
+type LegacyControllerAbsence = Readonly<{
+  [legacyControllerAbsenceBrand]: true;
+  epochKey: string;
+  instanceId: string;
+  controlGeneration: number;
+}>;
+
+/** The caller must own the singleton IPC namespace through this proof and the exact store open. */
+export function proveLegacyControllerAbsence(
+  runtime: Runtime,
+  epochKey: string,
+  bound: BoundCoordinator | null,
+): LegacyControllerAbsence | null {
+  if (bound === null) return null;
+  const controller = latestControllerOpen(runtime, epochKey);
+  if (controller.unreadable.length > 0 || controller.latest === null || controller.latest.process !== undefined)
+    return null;
+  const discovery = readDiscoveryRecordDisposition(runtime);
+  if (discovery.kind === 'undecodable') return null;
+  if (
+    discovery.kind === 'record' &&
+    observeRecordedDeath({
+      pid: discovery.record.pid,
+      incarnation: discovery.record.incarnation ?? null,
+    }) !== 'absent'
+  )
+    return null;
+  const epoch = observeResolvedStoreEpoch(runtime, epochKey);
+  if (epoch === undefined) return null;
+  const holdersAbsent = (): boolean => {
+    const observed = observeStoreEpochHolders(runtime, epoch.storeRoot);
+    return (
+      observed.kind === 'observed' &&
+      observed.holders.every(
+        (holder) =>
+          holder.epoch !== null &&
+          holder.pid !== null &&
+          (holder.epoch !== epoch.epoch || runtime.process.observeLiveness(holder.pid) === 'absent'),
+      )
+    );
+  };
+  if (!holdersAbsent()) return null;
+  const path = storeEpochLockPath(epoch.storeRoot, epoch.epoch);
+  try {
+    const before = runtime.storage.lstatSync(path, { bigint: true });
+    const attempt = attemptExclusiveFileLockSync(path);
+    if (attempt.kind !== 'acquired') return null;
+    try {
+      const after = runtime.storage.lstatSync(path, { bigint: true });
+      if (before.dev !== after.dev || before.ino !== after.ino || !holdersAbsent()) return null;
+      return {
+        [legacyControllerAbsenceBrand]: true,
+        epochKey,
+        instanceId: controller.latest.instanceId,
+        controlGeneration: controller.latest.controlGeneration,
+      };
+    } finally {
+      attempt.lease();
+    }
+  } catch {
+    return null;
+  }
+}
+
+export function abandonedStartupHandoffRecoveryHold(
+  runtime: Runtime,
+  epochKey: string,
+  storeFormat: StoreFormatDescription | undefined,
+  currentBuild: StrictBundleManifest,
+  recordedIntent?: UpgradeIntent,
+  legacyAbsence?: LegacyControllerAbsence,
+): SuccessionStartupHold | null {
+  const read = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
+  const intent = recordedIntent ?? (read.kind === 'readable' ? read.intent : null);
+  const waiting = (reason: string): SuccessionStartupHold => ({
+    kind: 'preferred-epoch-unopenable',
+    attemptId: intent?.attemptId ?? null,
+    epochKey,
+    reason,
+  });
+  const controller = latestControllerOpen(runtime, epochKey);
+  const legacyAbsent =
+    legacyAbsence !== undefined &&
+    sameEpoch(legacyAbsence.epochKey, epochKey) &&
+    legacyAbsence.instanceId === controller.latest?.instanceId &&
+    legacyAbsence.controlGeneration === controller.latest?.controlGeneration;
+  if (intent === null && (read.kind !== 'absent' || (controller.latest?.process === undefined && !legacyAbsent)))
+    return waiting(
+      'awaiting singleton namespace ownership, release of the exact epoch lock and proven holder absence; startup retries before opening the store',
+    );
+  if (controller.unreadable.length > 0)
+    return waiting('awaiting readable controller-open evidence; startup re-observes it');
+  const current =
+    read.kind === 'readable' && intent !== null && read.intent.attemptId !== intent.attemptId ? read.intent : null;
+  const processes = [
+    ...(intent === null ? [] : [intent.incumbent]),
+    ...(current === null
+      ? []
+      : [
+          current.incumbent,
+          ...(current.attemptOwner?.kind === 'incumbent' ? [current.attemptOwner] : []),
+          ...(current.attemptChild === null || current.attemptChild === undefined ? [] : [current.attemptChild]),
+          ...(current.completionReceipt === null ? [] : [current.completionReceipt.successor]),
+        ]),
+    ...(controller.latest?.process === undefined ? [] : [controller.latest.process]),
+    ...(intent?.attemptOwner?.kind === 'incumbent' ? [intent.attemptOwner] : []),
+    ...(intent?.attemptChild === null || intent?.attemptChild === undefined ? [] : [intent.attemptChild]),
+    ...(intent?.completionReceipt === null || intent?.completionReceipt === undefined
+      ? []
+      : [intent.completionReceipt.successor]),
+  ];
+  const deaths = observeRecordedDeaths(processes);
+  if (deaths !== 'absent')
+    return {
+      kind: 'deaths-unproven',
+      attemptId: intent?.attemptId ?? epochKey,
+      alive: deaths === 'alive',
+    };
+  const epoch = decodeResolvedStoreEpoch(runtime, epochKey);
+  const writer = readSuccessionWriterGeneration(runtime);
+  const owners = [
+    ...(legacyAbsent && controller.latest !== null ? [controller.latest.instanceId] : []),
+    ...(intent === null ? [] : [intent.incumbent.instanceId]),
+    ...(controller.latest?.process === undefined ? [] : [controller.latest.instanceId]),
+    ...(intent?.attemptOwner?.kind === 'incumbent' ? [intent.attemptOwner.instanceId] : []),
+    ...(intent?.completionReceipt === null || intent?.completionReceipt === undefined
+      ? []
+      : [intent.completionReceipt.successor.instanceId]),
+  ];
+  const retirement =
+    intent?.attemptId === null || intent?.attemptId === undefined
+      ? null
+      : observeRetirementDisposition(runtime, intent.attemptId);
+  const unservedRetirement =
+    epoch !== undefined &&
+    writer.kind === 'recorded' &&
+    writer.record.serving === undefined &&
+    retirement?.kind === 'recorded' &&
+    sameEpoch(retirement.disposition.incumbentEpochKey, epochKey) &&
+    BigInt(writer.record.epoch) === BigInt(epoch.epoch) + 1n;
+  if (
+    epoch === undefined ||
+    writer.kind !== 'recorded' ||
+    writer.record.storeRoot !== (epoch.canonicalStoreRoot ?? epoch.storeRoot) ||
+    (writer.record.epoch !== epoch.epoch && !unservedRetirement)
+  )
+    return waiting('awaiting attributable writer epoch evidence; startup re-observes the writer record');
+  const serving = writer.record.serving;
+  const prior = writer.record.priorServings?.at(-1);
+  const currentController = controller.latest;
+  const attributed =
+    (currentController?.process !== undefined &&
+      currentController.controlGeneration === writer.record.generation &&
+      owners.includes(currentController.instanceId)) ||
+    (serving !== undefined
+      ? sameEpoch(serving.epochKey, epochKey) && owners.includes(serving.successorInstanceId)
+      : prior !== undefined &&
+        sameEpoch(prior.epochKey, epochKey) &&
+        owners.includes(prior.successorInstanceId) &&
+        writer.record.generation === prior.controlGeneration + 1);
+  if (!attributed) return waiting('awaiting attributable writer owner evidence; startup re-observes the writer record');
+  if (controller.latest !== null && !owners.includes(controller.latest.instanceId))
+    return waiting('awaiting process identity for the latest controller-open; startup re-observes its recorded death');
+  if (
+    recordedIntent === undefined &&
+    (controller.latest === null ||
+      controller.latest.controlGeneration !== writer.record.generation ||
+      (controller.latest.instanceId !== serving?.successorInstanceId &&
+        controller.latest.process === undefined &&
+        !legacyAbsent))
+  )
+    return waiting('awaiting controller-open evidence matching the proven-dead writer; startup re-observes it');
+  if (storeFormat === undefined) return waiting('awaiting current-build store format evidence');
+  const prepared = prepareCommittedBackendStoreAtStartup(runtime, { storeFormat, build: currentBuild }, epochKey);
+  return prepared.kind === 'prepared'
+    ? null
+    : waiting(`awaiting this build to read the exact epoch (${prepared.reason}); startup rechecks epoch compatibility`);
+}
+
+export function createStartupHandoffObserver(
+  runtime: Runtime,
+  startupId: string,
+  target: ValidatedHandoffTarget,
+  subject: StartupHandoffSubject,
+): (outcome: 'serving' | 'not-serving') => Promise<void> {
+  const key = handoffPatienceSubject(target, subject);
+  return (outcome) => recordStartupHandoffObservation(runtime, startupId, key, outcome);
+}
+
+async function recordStartupHandoffObservation(
+  runtime: Runtime,
+  startupId: string,
+  key: string,
+  outcome: 'serving' | 'not-serving',
+): Promise<void> {
+  if (outcome === 'serving') {
+    clearStartupPatience(runtime, key);
+  }
+  const exhausted =
+    outcome === 'not-serving' &&
+    (await exhaustStartupPatience(runtime, startupId, {
+      kind: 'handoff-target-did-not-serve',
+      attemptId: null,
+      subject: key,
+    }));
+  const blocker = {
+    owner: 'succession-startup',
+    reason: `${exhausted ? 'abandoned: ' : ''}handoff target did not serve (${key})`,
+  };
+  const result = await retryUpgradeIntentCas(runtime.paths.coral.coordinator.runDir, (observed) =>
+    observed.kind !== 'readable'
+      ? { kind: 'settle', value: undefined }
+      : {
+          kind: 'write',
+          expectedRevision: observed.intent.revision,
+          change: {
+            ...observed.intent,
+            blockers: [
+              ...observed.intent.blockers.filter(
+                (entry) => entry.owner !== blocker.owner || !entry.reason.endsWith(`(${key})`),
+              ),
+              ...(outcome === 'not-serving' ? [blocker] : []),
+            ],
+          },
+          settle: () => undefined,
+        },
+  );
+  if (result.kind !== 'settled') throw new Error('Startup handoff observation could not be recorded.');
 }
 
 async function recordStartupHold(
@@ -399,16 +669,18 @@ export type DeadAttemptRecovery = Readonly<{
 }>;
 
 export type IncompleteSuccessionResolution =
+  | Readonly<{ kind: 'ordinary'; epochKey?: string }>
   | Readonly<{ kind: 'none' }>
   | Readonly<{ kind: 'recover'; attempt: DeadAttemptRecovery; preferredEpochKey: string | null }>
   | Readonly<{ kind: 'retire'; attemptId: string }>
-  | Readonly<{ kind: 'handoff'; target: ValidatedHandoffTarget }>
+  | Readonly<{ kind: 'handoff'; target: ValidatedHandoffTarget; subject: StartupHandoffSubject }>
   | Readonly<{ kind: 'hold'; hold: SuccessionStartupHold }>;
 
 type IncompleteSuccessionOptions = Readonly<{
   runtime: Runtime;
   currentBuild: StrictBundleManifest;
   startupId: string;
+  storeFormat?: StoreFormatDescription;
   prepareRecoveryGrantHandoff?: (epochKey: string, incumbentInstanceId: string) => ValidatedHandoffTarget | null;
 }>;
 
@@ -514,7 +786,12 @@ async function resolveUnservedSuccessionAttempt(
     if (recoveryTarget === undefined || recoveryTarget === null) {
       return holdOrAbandon({ kind: 'grant-controller-unavailable', attemptId });
     }
-    if (!runsCurrentBuild(recoveryTarget, options.currentBuild)) return { kind: 'handoff', target: recoveryTarget };
+    if (!runsCurrentBuild(recoveryTarget, options.currentBuild)) {
+      const subject = { purpose: 'unserved-attempt', identity: attemptId };
+      if (!startupHandoffAbandoned(runtime, recoveryTarget, subject))
+        return { kind: 'handoff', target: recoveryTarget, subject };
+      return recoverDeadHandoffAttempt(options, intent, attemptId, preparation.data.epochKey);
+    }
     recovery = { attemptId, epochKey: preparation.data.epochKey, force: true };
     preferredEpochKey = preparation.data.epochKey;
   }
@@ -525,7 +802,12 @@ async function resolveUnservedSuccessionAttempt(
       preparation.data.incumbentInstanceId,
     );
     if (recoveryTarget !== undefined && recoveryTarget !== null) {
-      if (!runsCurrentBuild(recoveryTarget, options.currentBuild)) return { kind: 'handoff', target: recoveryTarget };
+      if (!runsCurrentBuild(recoveryTarget, options.currentBuild)) {
+        const subject = { purpose: 'unserved-attempt', identity: attemptId };
+        if (!startupHandoffAbandoned(runtime, recoveryTarget, subject))
+          return { kind: 'handoff', target: recoveryTarget, subject };
+        return recoverDeadHandoffAttempt(options, intent, attemptId, preparation.data.epochKey);
+      }
       preferredEpochKey = preparation.data.epochKey;
     }
     recovery = {
@@ -595,6 +877,59 @@ async function retireArchivedStartupAttempt(
   return resolveIncompleteSuccessionAtStartup(options);
 }
 
+async function recoverDeadHandoffAttempt(
+  options: IncompleteSuccessionOptions,
+  intent: UpgradeIntent,
+  attemptId: string,
+  epochKey: string,
+): Promise<IncompleteSuccessionResolution> {
+  const { runtime } = options;
+  const hold = abandonedStartupHandoffRecoveryHold(
+    runtime,
+    epochKey,
+    options.storeFormat,
+    options.currentBuild,
+    intent,
+  );
+  if (hold !== null) return { kind: 'hold', hold };
+  const epoch = decodeResolvedStoreEpoch(runtime, epochKey);
+  const writer = observeSuccessionWriterGeneration(runtime);
+  if (
+    epoch !== undefined &&
+    writer !== null &&
+    (epoch.epoch !== writer.epoch || observeRetirementDisposition(runtime, attemptId).kind !== 'absent')
+  )
+    return {
+      kind: 'recover',
+      preferredEpochKey: epochKey,
+      attempt: {
+        attemptId,
+        epochKey,
+        force: epoch.epoch !== writer.epoch || observeCurrentSuccessionServing(runtime) === null,
+        discardAttemptId: attemptId,
+      },
+    };
+  const discharged = await dischargeRecoveryStartupAttempt(runtime, intent, attemptId);
+  return discharged.kind === 'ordinary' ? { ...discharged, epochKey } : discharged;
+}
+
+async function dischargeRecoveryStartupAttempt(
+  runtime: Runtime,
+  intent: UpgradeIntent,
+  attemptId: string,
+): Promise<IncompleteSuccessionResolution> {
+  await dischargeDeadSuccessionAttempt(runtime, attemptId, intent.incumbent);
+  const remaining = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
+  const archived = remaining.kind === 'readable' ? remaining.intent.supersededAttempts : null;
+  if (
+    remaining.kind !== 'readable' ||
+    remaining.intent.attemptId === attemptId ||
+    (Array.isArray(archived) && parseUpgradeIntentSnapshot(archived[0])?.attemptId === attemptId)
+  )
+    return { kind: 'hold', hold: { kind: 'archive-retirement-unconfirmed', attemptId } };
+  return { kind: 'ordinary' };
+}
+
 async function resolveRecoveryStartupAttempt(
   options: IncompleteSuccessionOptions,
   intent: UpgradeIntent,
@@ -624,6 +959,18 @@ async function resolveRecoveryStartupAttempt(
       child === undefined || child === null ? [owner] : [owner, child],
     );
     if (unproven !== null) return holdOrAbandon(unproven);
+    const subject = { purpose: 'recovery-grant', identity: recoveryAttemptId };
+    const serving = observeCurrentSuccessionServing(runtime);
+    const generation = observeSuccessionWriterGeneration(runtime);
+    const incumbentStillOwnsGeneration =
+      serving !== null &&
+      generation !== null &&
+      serving.successorInstanceId === owner.instanceId &&
+      sameEpoch(serving.epochKey, preparation.data.epochKey) &&
+      serving.controlGeneration === generation.generation;
+    if (incumbentStillOwnsGeneration) {
+      return recoverDeadHandoffAttempt(options, intent, recoveryAttemptId, preparation.data.epochKey);
+    }
     const recoveryTarget = options.prepareRecoveryGrantHandoff?.(
       preparation.data.epochKey,
       preparation.data.incumbentInstanceId,
@@ -631,7 +978,11 @@ async function resolveRecoveryStartupAttempt(
     if (recoveryTarget === undefined || recoveryTarget === null) {
       return holdOrAbandon({ kind: 'grant-controller-unavailable', attemptId: recoveryAttemptId });
     }
-    if (!runsCurrentBuild(recoveryTarget, options.currentBuild)) return { kind: 'handoff', target: recoveryTarget };
+    if (startupHandoffAbandoned(runtime, recoveryTarget, subject)) {
+      return recoverDeadHandoffAttempt(options, intent, recoveryAttemptId, preparation.data.epochKey);
+    }
+    if (!runsCurrentBuild(recoveryTarget, options.currentBuild))
+      return { kind: 'handoff', target: recoveryTarget, subject };
     return {
       kind: 'recover',
       attempt: {
@@ -674,8 +1025,10 @@ export async function resolveIncompleteSuccessionAtStartup(
     return retireArchived(prior.attemptId);
   }
   const recovery = await resolveRecoveryStartupAttempt(options, intent, holdOrAbandon);
-  if (recovery !== null) return recovery;
-  return resolveUnservedSuccessionAttempt(options, intent, prior, holdOrAbandon, retireArchived);
+  if (recovery !== null)
+    return recovery.kind === 'ordinary' && prior !== null ? resolveIncompleteSuccessionAtStartup(options) : recovery;
+  const unserved = await resolveUnservedSuccessionAttempt(options, intent, prior, holdOrAbandon, retireArchived);
+  return unserved.kind === 'ordinary' && prior !== null ? resolveIncompleteSuccessionAtStartup(options) : unserved;
 }
 
 export async function handBackDeadAttemptGeneration(
@@ -778,6 +1131,10 @@ export async function dischargeDeadSuccessionAttempt(
         successionPreparation: null,
         disposition: 'deferred',
         blockers: [
+          ...intent.blockers.filter(
+            (blocker) =>
+              blocker.owner === 'succession-startup' && blocker.reason.includes('handoff target did not serve'),
+          ),
           {
             owner: 'succession-commit',
             reason: restart
@@ -977,9 +1334,10 @@ function committedSuccessorMayControlWork(
 }
 
 export type CommittedSuccessorRecovery =
+  | Readonly<{ kind: 'ordinary'; epochKey: string }>
   | Readonly<{ kind: 'none' }>
   | Readonly<{ kind: 'recover'; store: ResolvedStoreEpoch; intent: UpgradeIntent }>
-  | Readonly<{ kind: 'handoff'; target: ValidatedHandoffTarget }>
+  | Readonly<{ kind: 'handoff'; target: ValidatedHandoffTarget; subject: StartupHandoffSubject }>
   | Readonly<{ kind: 'hold'; hold: SuccessionStartupHold }>;
 
 async function reconcileServedAttempt(
@@ -1083,17 +1441,19 @@ export async function prepareCommittedSuccessorRecovery(
       attemptId: served.attemptId,
       reason: 'served attempt has no attributable receipt',
     } as const;
-    return (await exhaustStartupPatience(runtime, identity.instanceId, hold))
-      ? { kind: 'none' }
-      : { kind: 'hold', hold };
+    return { kind: 'hold', hold };
   }
   if (observed.kind !== 'readable' || observed.intent.disposition !== 'completed') return { kind: 'none' };
   const intent = observed.intent;
   const receipt = intent.completionReceipt;
-  if (receipt === null || startupPatienceExhausted(runtime, receipt.attemptId)) return { kind: 'none' };
+  if (receipt === null) return { kind: 'none' };
 
   const holdOrAbandon = async (hold: SuccessionStartupHold): Promise<CommittedSuccessorRecovery> =>
-    (await exhaustStartupPatience(runtime, identity.instanceId, hold)) ? { kind: 'none' } : { kind: 'hold', hold };
+    hold.kind === 'committed-successor-unattributable'
+      ? { kind: 'hold', hold }
+      : (await exhaustStartupPatience(runtime, identity.instanceId, hold))
+        ? { kind: 'none' }
+        : { kind: 'hold', hold };
   const current = inspectCurrentStore(runtime);
   if (current.kind !== 'current') return { kind: 'none' };
   const currentKey = observeResolvedStoreEpochKey(runtime, current.epoch);
@@ -1101,8 +1461,7 @@ export async function prepareCommittedSuccessorRecovery(
     return holdOrAbandon({
       kind: 'committed-successor-unattributable',
       attemptId: receipt.attemptId,
-      reason:
-        'current epoch identity is temporarily unreadable; startup recovery re-observes it within its bounded patience window',
+      reason: 'awaiting readable current epoch identity; startup re-observes it',
     });
   if (!sameEpoch(currentKey, receipt.epochKey)) return { kind: 'none' };
   const serving = observeSuccessionServing(runtime, receipt.attemptId);
@@ -1114,11 +1473,14 @@ export async function prepareCommittedSuccessorRecovery(
     (serving !== null &&
       (!sameEpoch(serving.epochKey, receipt.epochKey) || serving.controlGeneration < receipt.controlGeneration))
   ) {
-    return holdOrAbandon({
-      kind: 'committed-successor-unattributable',
-      attemptId: receipt.attemptId,
-      reason: 'committed successor generation cannot be attributed',
-    });
+    return {
+      kind: 'hold',
+      hold: {
+        kind: 'committed-successor-unattributable',
+        attemptId: receipt.attemptId,
+        reason: 'awaiting attributable committed successor generation; startup re-observes the writer record',
+      },
+    };
   }
   const child = intent.attemptChild;
   const deaths = observeRecordedDeaths(
@@ -1142,6 +1504,10 @@ export async function prepareCommittedSuccessorRecovery(
       reason: 'committed successor identity does not match its writer',
     });
   }
+  if (startupPatienceExhausted(runtime, receipt.attemptId)) {
+    const hold = abandonedStartupHandoffRecoveryHold(runtime, receipt.epochKey, storeFormat, currentBuild, intent);
+    return hold === null ? { kind: 'ordinary', epochKey: receipt.epochKey } : { kind: 'hold', hold };
+  }
   const runsTargetBuild =
     intent.target.build.buildSetId === currentBuild.buildSetId &&
     intent.target.build.bundleHash === currentBuild.bundleHash;
@@ -1164,7 +1530,11 @@ export async function prepareCommittedSuccessorRecovery(
     intent.target.build.claudeAppserverBundleHash !== currentBuild.claudeAppserverBundleHash ||
     intent.target.build.durableWrapperBundleHash !== currentBuild.durableWrapperBundleHash
   ) {
-    return { kind: 'handoff', target: target.target };
+    const subject = { purpose: 'committed-recovery', identity: receipt.attemptId };
+    if (!startupHandoffAbandoned(runtime, target.target, subject))
+      return { kind: 'handoff', target: target.target, subject };
+    const hold = abandonedStartupHandoffRecoveryHold(runtime, receipt.epochKey, storeFormat, currentBuild, intent);
+    return hold === null ? { kind: 'ordinary', epochKey: receipt.epochKey } : { kind: 'hold', hold };
   }
   const prepared = prepareCommittedBackendStoreAtStartup(
     runtime,

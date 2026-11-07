@@ -1,6 +1,7 @@
 import { resolveStrictBundleIdentity } from '../../infra/bundle-manifest.js';
 import { writeAuditEvent } from '../../infra/audit-log.js';
 import { formatError } from '../../infra/error-format.js';
+import type { ProcessIncarnation } from '../../infra/node-process.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { registerPresentHistoricalEpochs, seedHistoricalEpoch } from '../../jobs/historical-reader.js';
 import type { JobLocationIndex } from '../../jobs/location-index.js';
@@ -42,6 +43,7 @@ type LifecycleRecoveryInput = {
   readSuccessionJobs: () => readonly string[];
   world: Pick<CoordinatorWorld, 'launchCoordinator' | 'childPrincipalRegistry'>;
   onOpenedStore: (openStore: ResolvedStoreEpoch) => void;
+  controllerProcess?: () => Readonly<{ pid: number; incarnation: ProcessIncarnation | null }>;
 };
 
 function createStoreOpenedObserver(input: LifecycleRecoveryInput): NonNullable<LifecycleDeps['onStoreOpened']> {
@@ -65,6 +67,7 @@ function createStoreOpenedObserver(input: LifecycleRecoveryInput): NonNullable<L
           identity.pluginRoot,
           runningBuild.manifest,
           generation,
+          input.controllerProcess?.(),
         );
       }
     }

@@ -246,6 +246,7 @@ export function createJobLocationRecoveryRetryPlan(
   epochKey: string,
   store: JobProgressStore,
   subject: RecoverySubject,
+  observation?: RecoveryObservation,
 ): RecoverySourceFactoryPlan<{ epochKey: string }, { epochKey: string }> {
   return {
     source: jobLocationRecoverySource(epochKey, subject),
@@ -254,7 +255,7 @@ export function createJobLocationRecoveryRetryPlan(
       hydrate: (raw) => raw,
       requiredObligations: () => [],
       settle: () => {
-        recoverJobLocations(index, epochKey, store);
+        recoverJobLocations(index, epochKey, store, observation);
         return { kind: 'advanced', outcome: 'settled', facts: [], detail: 'Job location inventory recovered.' };
       },
       onFault: (fault) => {

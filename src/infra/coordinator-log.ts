@@ -8,6 +8,7 @@ import {
   observeProcessLiveness,
   probeProcessIncarnation,
   processIncarnationSchema,
+  processIncarnationStartOrder,
   type ProcessIncarnation,
   type ProcessLiveness,
 } from './node-process.js';
@@ -16,6 +17,7 @@ import type { EnvPort, StoragePort, TimePort, TimerHandle } from './port-types.j
 export const LOG_ROTATE_THRESHOLD_BYTES = 2 * 1024 * 1024;
 export const COORDINATOR_NATIVE_STDERR_PATH = 'coordinator-logs/native-stderr.log';
 const LOG_WRITERS_KEPT = 5;
+const LOG_FAILED_WRITERS_KEPT = 10;
 const LOG_RETENTION_INTERVAL_MS = 60_000;
 const segmentFiles = ['current.log', 'current.log.1', 'segments-closed', 'writer.json', 'pointer.tmp'];
 const roles = ['coordinator', 'supervisor'] as const;
@@ -173,10 +175,49 @@ function readRolePointerSelection(
   }
 }
 
-function pruneLogs(ports: CoordinatorLogPorts, logsDir: string): void {
+type WriterNamespace = {
+  id: string;
+  writer: Writer;
+  at: number;
+  order: ReturnType<typeof processIncarnationStartOrder>;
+};
+
+function orderWriterNamespaces(
+  entries: readonly WriterNamespace[],
+  currentBoot: string | undefined,
+): WriterNamespace[] {
+  const groups = new Map<string, { key: string; at: number; entries: WriterNamespace[] }>();
+  for (const entry of entries) {
+    const key = entry.order === null ? `namespace:${entry.id}` : `boot:${entry.order.bootId}`;
+    const group = groups.get(key);
+    if (group === undefined) groups.set(key, { key, at: entry.at, entries: [entry] });
+    else {
+      group.at = Math.max(group.at, entry.at);
+      group.entries.push(entry);
+    }
+  }
+  return [...groups.values()]
+    .sort((a, b) => {
+      if (a.key === b.key) return 0;
+      if (a.key === currentBoot) return -1;
+      if (b.key === currentBoot) return 1;
+      return b.at - a.at || a.key.localeCompare(b.key);
+    })
+    .flatMap((group) =>
+      group.entries.sort((a, b) => {
+        if (a.order !== null && b.order !== null && a.order.startTicks !== b.order.startTicks)
+          return a.order.startTicks > b.order.startTicks ? -1 : 1;
+        return b.at - a.at || a.id.localeCompare(b.id);
+      }),
+    );
+}
+
+function pruneLogs(ports: CoordinatorLogPorts, logsDir: string, incarnation: ProcessIncarnation): void {
   const { storage } = ports;
+  const bootId = processIncarnationStartOrder(incarnation)?.bootId;
+  const currentBoot = bootId === undefined ? undefined : `boot:${bootId}`;
   try {
-    const candidates: Array<{ id: string; writer: Writer; at: number }> = [];
+    const candidates: WriterNamespace[] = [];
     for (const name of storage.readdirSync(logsDir)) {
       try {
         if (name.startsWith('.')) {
@@ -188,16 +229,38 @@ function pruneLogs(ports: CoordinatorLogPorts, logsDir: string): void {
         if (!storage.lstatSync(directory).isDirectory()) continue;
         const writer = readWriter(storage, directory);
         if (writer !== undefined)
-          candidates.push({ id: name, writer, at: storage.statSync(join(directory, 'writer.json')).mtimeMs });
+          candidates.push({
+            id: name,
+            writer,
+            at: storage.statSync(join(directory, 'writer.json')).mtimeMs,
+            order: processIncarnationStartOrder(writer.incarnation),
+          });
       } catch {
         continue;
       }
     }
     for (const role of roles) {
-      const writers = candidates.filter((entry) => entry.writer.role === role).sort((a, b) => b.at - a.at);
-      for (const entry of writers.slice(LOG_WRITERS_KEPT)) {
+      const writers = orderWriterNamespaces(
+        candidates.filter((entry) => entry.writer.role === role),
+        currentBoot,
+      );
+      const clean = writers.filter((entry) => certifiedClosed(storage, join(logsDir, entry.id)));
+      const failed = writers.filter(
+        (entry) => !clean.includes(entry) && observeWriter(ports, entry.writer) === 'absent',
+      );
+      const cleanBoundary = writers.findIndex((entry) => clean.includes(entry));
+      const currentRun = writers
+        .slice(0, cleanBoundary === -1 ? writers.length : cleanBoundary)
+        .filter((entry) => failed.includes(entry));
+      const firstFailure = currentRun.at(-1) ?? failed[0];
+      const kept = new Set([
+        ...clean.slice(0, LOG_WRITERS_KEPT),
+        ...failed.filter((entry) => entry !== firstFailure).slice(0, LOG_FAILED_WRITERS_KEPT - 1),
+        ...(firstFailure === undefined ? [] : [firstFailure]),
+      ]);
+      for (const entry of writers) {
+        if (kept.has(entry) || (!clean.includes(entry) && !failed.includes(entry))) continue;
         const directory = join(logsDir, entry.id);
-        if (!certifiedClosed(storage, directory) && observeWriter(ports, entry.writer) !== 'absent') continue;
         // Only this writer can publish its namespace, and closure or absence ends that publication authority.
         if (readRolePointerSelection(storage, logsDir, role, join(directory, 'current.log')) !== 'not-selected')
           continue;
@@ -220,10 +283,10 @@ function pruneLogs(ports: CoordinatorLogPorts, logsDir: string): void {
   }
 }
 
-type LogWriter = { write(message: string): void; close(): void };
+type LogWriter = { write(message: string): void; close(clean: boolean): void };
 
 /** Node opens these private descriptors with O_CLOEXEC; they must never be passed in child stdio. */
-function createLogWriter(storage: CoordinatorLogStorage, path: string, closed: () => void): LogWriter {
+function createLogWriter(storage: CoordinatorLogStorage, path: string, closed: (clean: boolean) => void): LogWriter {
   let fd: number | null = storage.openSync(path, 'wx', 0o600);
   let size = 0;
   let ended = false;
@@ -259,12 +322,12 @@ function createLogWriter(storage: CoordinatorLogStorage, path: string, closed: (
         // Diagnostic failures must not select a startup or recovery disposition.
       }
     },
-    close(): void {
+    close(clean): void {
       if (ended) return;
       ended = true;
       try {
         closeDescriptor();
-        closed();
+        closed(clean);
       } catch {
         // A failed closure certificate cannot authorize retention or change process exit.
       }
@@ -370,31 +433,32 @@ export function installCoordinatorLog(
     if (incarnation === null) return;
     const record: Writer = { version: 1, role, pid, incarnation };
     const logsDir = ensureLogsDirectory(runDir, storage);
-    pruneLogs(ports, logsDir);
+    pruneLogs(ports, logsDir, incarnation);
     const directory = publishWriter(ports, logsDir, record);
     const path = join(directory, 'current.log');
-    const writer = createLogWriter(storage, path, () => {
-      storage.writeFileSync(join(directory, 'segments-closed'), basename(directory), { flag: 'wx', mode: 0o600 });
-      pruneLogs(ports, logsDir);
+    const writer = createLogWriter(storage, path, (clean) => {
+      if (clean)
+        storage.writeFileSync(join(directory, 'segments-closed'), basename(directory), { flag: 'wx', mode: 0o600 });
+      pruneLogs(ports, logsDir, incarnation);
     });
     currentLog = { role, path };
     setBackendLogSink((message) => writer.write(message));
     let maintenance: TimerHandle | null = null;
-    process.once('exit', () => {
+    process.once('exit', (code) => {
       try {
         ports.time.clearInterval(maintenance);
       } catch {
         // Timer cleanup cannot change the process disposition.
       }
-      writer.close();
+      writer.close(code === 0);
     });
     try {
       publishLogPointer(storage, path, record);
     } catch {
       // Discovery failure cannot disable private diagnostics or retention.
     }
-    pruneLogs(ports, logsDir);
-    maintenance = ports.time.setInterval(() => pruneLogs(ports, logsDir), LOG_RETENTION_INTERVAL_MS);
+    pruneLogs(ports, logsDir, incarnation);
+    maintenance = ports.time.setInterval(() => pruneLogs(ports, logsDir, incarnation), LOG_RETENTION_INTERVAL_MS);
     maintenance.unref?.();
   } catch {
     // Diagnostic failures must not select a startup or recovery disposition.

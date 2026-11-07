@@ -1,3 +1,4 @@
+import { latestControllerOpen } from './succession/controller-open.js';
 import { observeDurableRecoveryContainmentFor } from './services/recovery/lifecycle.js';
 import type { ExecutionFinisher } from '../jobs/finishing.js';
 import { readProviderOperationForJob } from '../store/provider-operation-journal.js';
@@ -191,6 +192,11 @@ import {
   publishAttemptServing,
   publishCommittedRecoveryServing,
   resolveIncompleteSuccessionAtStartup,
+  startupHandoffAbandoned,
+  abandonedStartupHandoffRecoveryHold,
+  proveLegacyControllerAbsence,
+  createStartupHandoffObserver,
+  type StartupHandoffSubject,
   retryRecordedMintDiscard,
   heldUnservedMint,
   startupHoldError,
@@ -222,11 +228,13 @@ const SUCCESSION_RESTART_EXIT_CODE = 75;
 
 export class StartupStoreHandoffError extends Error {
   readonly target: ValidatedHandoffTarget;
+  readonly observe: ((outcome: 'serving' | 'not-serving') => Promise<void>) | undefined;
 
-  constructor(target: ValidatedHandoffTarget) {
+  constructor(target: ValidatedHandoffTarget, observe?: (outcome: 'serving' | 'not-serving') => Promise<void>) {
     super('Coordinator startup is continuing in the selected active-store build.');
     this.name = 'StartupStoreHandoffError';
     this.target = target;
+    this.observe = observe;
   }
 }
 
@@ -1292,6 +1300,7 @@ type UnservedSuccession = Readonly<{
   pendingDeadAttempt: DeadAttemptRecovery | null;
   preferredStoreEpochKey: string | null;
   retiredDeadAttemptId: string | null;
+  controllerRecoveryEpochKey: string | null;
 }>;
 
 const ABANDONED_COMMITTED_RECOVERY = Symbol('abandoned committed recovery');
@@ -1302,6 +1311,7 @@ const NO_UNSERVED_SUCCESSION: UnservedSuccession = {
   pendingDeadAttempt: null,
   preferredStoreEpochKey: null,
   retiredDeadAttemptId: null,
+  controllerRecoveryEpochKey: null,
 };
 
 /**
@@ -1321,6 +1331,17 @@ function selectedNewerBuild(runtime: Runtime, currentSelection: ActiveStoreSelec
   }
   const validation = validateForeignHandoffTarget(read.selection.bundleDir, read.selection.manifest);
   return validation.kind === 'validated' ? validation.target : null;
+}
+
+function startupHandoffError(
+  deps: Pick<LifecycleDeps, 'runtime' | 'identity'>,
+  target: ValidatedHandoffTarget,
+  subject: StartupHandoffSubject,
+): StartupStoreHandoffError {
+  return new StartupStoreHandoffError(
+    target,
+    createStartupHandoffObserver(deps.runtime, deps.identity.instanceId, target, subject),
+  );
 }
 
 /** Only a startup that goes on to bind may act on a hold. */
@@ -1345,18 +1366,22 @@ async function resolveUnservedSuccession(
         .locationsFor(epochKey)
         .some((location) => location.disposition !== 'terminal'),
   );
-  if (committed.kind === 'handoff') throw new StartupStoreHandoffError(committed.target);
+  if (committed.kind === 'handoff') throw startupHandoffError(deps, committed.target, committed.subject);
+  if (committed.kind === 'ordinary') return { ...NO_UNSERVED_SUCCESSION, preferredStoreEpochKey: committed.epochKey };
   if (committed.kind === 'hold') return { ...NO_UNSERVED_SUCCESSION, hold: committed.hold };
   if (committed.kind === 'recover') return { ...NO_UNSERVED_SUCCESSION, committedRecovery: committed };
   const incomplete = await resolveIncompleteSuccessionAtStartup({
     runtime,
     currentBuild,
     startupId: identity.instanceId,
+    storeFormat: deps.storeFormat,
     ...(deps.prepareRecoveryGrantHandoff === undefined
       ? {}
       : { prepareRecoveryGrantHandoff: deps.prepareRecoveryGrantHandoff }),
   });
-  if (incomplete.kind === 'handoff') throw new StartupStoreHandoffError(incomplete.target);
+  if (incomplete.kind === 'handoff') throw startupHandoffError(deps, incomplete.target, incomplete.subject);
+  if (incomplete.kind === 'ordinary')
+    return { ...NO_UNSERVED_SUCCESSION, preferredStoreEpochKey: incomplete.epochKey ?? null };
   if (incomplete.kind === 'hold') return { ...NO_UNSERVED_SUCCESSION, hold: incomplete.hold };
   if (incomplete.kind === 'recover') {
     return {
@@ -1372,12 +1397,32 @@ async function resolveUnservedSuccession(
     const targetBuild = inspectValidatedHandoffTarget(target.target).build;
     const sameBuild =
       targetBuild.buildSetId === currentBuild.buildSetId && targetBuild.bundleHash === currentBuild.bundleHash;
-    if (!sameBuild) throw new StartupStoreHandoffError(target.target);
+    if (!sameBuild) {
+      const subject = { purpose: 'no-incumbent', identity: target.epochKey };
+      const controller = latestControllerOpen(runtime, target.epochKey).latest;
+      const currentBuildAlreadyOpened =
+        controller !== null &&
+        controller.build.buildSetId === currentBuild.buildSetId &&
+        controller.build.bundleHash === currentBuild.bundleHash;
+      if (!currentBuildAlreadyOpened && !startupHandoffAbandoned(runtime, target.target, subject))
+        throw startupHandoffError(deps, target.target, subject);
+      return { ...NO_UNSERVED_SUCCESSION, controllerRecoveryEpochKey: target.epochKey };
+    }
     preferredStoreEpochKey = target.epochKey;
   }
   if (preferredStoreEpochKey === null && currentSelection !== null) {
     const selected = selectedNewerBuild(runtime, currentSelection);
-    if (selected !== null) throw new StartupStoreHandoffError(selected);
+    if (
+      selected !== null &&
+      !startupHandoffAbandoned(runtime, selected, {
+        purpose: 'selected-store',
+        identity: runtime.paths.coral.store.dbDir,
+      })
+    )
+      throw startupHandoffError(deps, selected, {
+        purpose: 'selected-store',
+        identity: runtime.paths.coral.store.dbDir,
+      });
   }
   return { ...NO_UNSERVED_SUCCESSION, preferredStoreEpochKey, retiredDeadAttemptId };
 }
@@ -1387,6 +1432,7 @@ async function openOrdinaryStore(
   currentSelection: ActiveStoreSelection | null,
   signal: AbortSignal,
   startupPhases: StartupPhaseObserver,
+  bound: BoundCoordinator | null,
 ): Promise<Readonly<{ db: Database; store: ResolvedStoreEpoch }>> {
   const { runtime, identity } = deps;
   if (currentSelection === null) {
@@ -1443,7 +1489,46 @@ async function openOrdinaryStore(
       });
     }
   }
-  if (routing.kind === 'handoff') throw new StartupStoreHandoffError(routing.target);
+  if (routing.kind === 'handoff') {
+    const subject = { purpose: 'selected-store', identity: runtime.paths.coral.store.dbDir };
+    if (!startupHandoffAbandoned(runtime, routing.target, subject))
+      throw startupHandoffError(deps, routing.target, subject);
+    const current = inspectCurrentStore(runtime);
+    if (current.kind !== 'current')
+      throw startupHoldError({
+        kind: 'preferred-epoch-unopenable',
+        attemptId: null,
+        epochKey: runtime.paths.coral.store.dbDir,
+        reason: 'awaiting attributable current epoch evidence; startup re-observes the current pointer',
+      });
+    const epochKey = encodeResolvedStoreEpoch(runtime, current.epoch);
+    const hold = abandonedStartupHandoffRecoveryHold(
+      runtime,
+      epochKey,
+      deps.storeFormat,
+      currentSelection.manifest,
+      undefined,
+      proveLegacyControllerAbsence(runtime, epochKey, bound) ?? undefined,
+    );
+    if (hold !== null) throw startupHoldError(hold);
+    const opened = openCommittedBackendStoreAtStartup(
+      runtime,
+      {
+        storeFormat: deps.storeFormat,
+        build: currentSelection.manifest,
+        startupBusyTimeoutMs: STARTUP_STORE_BUSY_TIMEOUT_MS,
+      },
+      current.epoch,
+    );
+    if (opened.kind === 'holding')
+      throw startupHoldError({
+        kind: 'preferred-epoch-unopenable',
+        attemptId: null,
+        epochKey,
+        reason: `awaiting readable current epoch (${opened.reason}); startup retries the exact open`,
+      });
+    return { db: opened.db, store: opened.store };
+  }
   if (routing.kind === 'reset-newer-invalid') {
     backendLog.warn(
       `Recovered the newer-incompatible active store after selected bundle ${routing.evidence.bundleDir} failed validation (${routing.evidence.failure}).`,
@@ -1754,6 +1839,7 @@ async function selectStartupStore(
 
 async function openSelectedStartupStore({
   startupPhases,
+  bound,
   deps,
   prepared,
   selected,
@@ -1763,6 +1849,7 @@ async function openSelectedStartupStore({
   committedRecovery,
 }: Readonly<{
   startupPhases: StartupPhaseObserver;
+  bound: BoundCoordinator | null;
   deps: LifecycleDeps;
   prepared: Awaited<ReturnType<typeof prepareStartupBuild>>;
   selected: Awaited<ReturnType<typeof selectStartupStore>>;
@@ -1806,7 +1893,7 @@ async function openSelectedStartupStore({
       );
       if (opened === ABANDONED_COMMITTED_RECOVERY) {
         committedRecovery = null;
-        const ordinary = await openOrdinaryStore(deps, currentSelection, signal, startupPhases);
+        const ordinary = await openOrdinaryStore(deps, currentSelection, signal, startupPhases, bound);
         storeDb = ordinary.db;
         openedStore = ordinary.store;
       } else {
@@ -1844,7 +1931,7 @@ async function openSelectedStartupStore({
       storeDb = preferredStore.db;
       openedStore = preferredStore.store;
     } else {
-      const ordinary = await openOrdinaryStore(deps, currentSelection, signal, startupPhases);
+      const ordinary = await openOrdinaryStore(deps, currentSelection, signal, startupPhases, bound);
       storeDb = ordinary.db;
       openedStore = ordinary.store;
     }
@@ -2293,6 +2380,7 @@ async function publishStartupServing({
 
 async function registerStartupStoreServices({
   startupPhases,
+  bound,
   deps,
   state,
   opened,
@@ -2302,6 +2390,7 @@ async function registerStartupStoreServices({
   replaceStoreServices,
 }: Readonly<{
   startupPhases: StartupPhaseObserver;
+  bound: BoundCoordinator | null;
   deps: LifecycleDeps;
   state: LifecycleControlState;
   opened: Awaited<ReturnType<typeof openSelectedStartupStore>>;
@@ -2350,7 +2439,7 @@ async function registerStartupStoreServices({
       recoveryIncarnation = null;
       if (state.rebindableStoreDb === null) throw new Error('Committed recovery store has no rebindable database.');
       state.rebindableStoreDb.closeCurrent();
-      const ordinary = await openOrdinaryStore(deps, currentSelection, signal, startupPhases);
+      const ordinary = await openOrdinaryStore(deps, currentSelection, signal, startupPhases, bound);
       state.rebindableStoreDb.replace(ordinary.db);
       openedStore = ordinary.store;
       deps.onStoreOpened?.(ordinary.store);
@@ -2452,9 +2541,22 @@ async function prepareStartupAuthority(
   // A pid probe cannot prove no coordinator answers; only a startup that binds may act on that decision.
   const boundUnanswered =
     !noCoordinatorServes && coordinatorAtStartup !== null && bound !== null && !bound.acquiredViaHandoff;
-  const unserved = boundUnanswered
+  let unserved = boundUnanswered
     ? await resolveUnservedSuccession(deps, currentBuild, currentSelection)
     : unservedBeforeBind;
+  if (unserved.controllerRecoveryEpochKey !== null) {
+    const epochKey = unserved.controllerRecoveryEpochKey;
+    const legacyAbsence = bound === null ? null : proveLegacyControllerAbsence(runtime, epochKey, bound);
+    const hold = abandonedStartupHandoffRecoveryHold(
+      runtime,
+      epochKey,
+      deps.storeFormat,
+      currentBuild,
+      undefined,
+      legacyAbsence ?? undefined,
+    );
+    unserved = { ...unserved, hold, preferredStoreEpochKey: hold === null ? epochKey : null };
+  }
   if (unserved.hold !== null) throw startupHoldError(unserved.hold);
   const noCoordinatorAnswers = noCoordinatorServes || boundUnanswered;
   const selected = await selectStartupStore(
@@ -2505,6 +2607,7 @@ async function runStartupKernel(
   };
   const opened = await openSelectedStartupStore({
     startupPhases,
+    bound,
     deps,
     prepared,
     selected,
@@ -2515,6 +2618,7 @@ async function runStartupKernel(
   });
   const registered = await registerStartupStoreServices({
     startupPhases,
+    bound,
     deps,
     state,
     opened,

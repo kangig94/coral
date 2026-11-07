@@ -74,6 +74,14 @@ export const processIncarnationSchema = z.string().min(1).max(MAX_PROCESS_INCARN
   ProcessIncarnation
 >;
 
+/** Diagnostic ordering cannot authorize process identity or containment decisions. */
+export function processIncarnationStartOrder(
+  incarnation: ProcessIncarnation,
+): Readonly<{ bootId: string; startTicks: bigint }> | null {
+  const match = /^linux:([^:]+):(\d+)$/u.exec(incarnation);
+  return match === null ? null : { bootId: match[1], startTicks: BigInt(match[2]) };
+}
+
 function readLinuxBootId(): string | null {
   try {
     const raw = readFileSync('/proc/sys/kernel/random/boot_id', 'utf-8').trim();

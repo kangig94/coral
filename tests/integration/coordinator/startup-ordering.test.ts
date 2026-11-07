@@ -1,6 +1,10 @@
 import { requestedExecution } from '#tests/helpers/job-executions.js';
 import { testConversationFacet } from '#tests/helpers/session.js';
 import { createServer } from 'node:http';
+import { DatabaseSync } from 'node:sqlite';
+import { JobLocationIndex } from '#src/jobs/location-index.js';
+import type { Database } from '#src/store/db.js';
+import { createIpcClient } from '#src/transport/ipc/client.js';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -64,6 +68,79 @@ afterEach(async () => {
 });
 
 describe('coordinator pending workflow execution recovery', () => {
+  it('quarantines a failed location recovery durably and retries it after startup serves', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'coral-startup-location-fault-home-'));
+    const pluginRoot = mkdtempSync(join(tmpdir(), 'coral-startup-location-fault-plugin-'));
+    tempRoots.push(home, pluginRoot);
+    mkdirSync(join(pluginRoot, 'bridge'), { recursive: true });
+    writeFileSync(
+      join(pluginRoot, 'bridge', 'manifest.json'),
+      JSON.stringify({ bundleHash: '0123456789abcdef', flavor: 'prod' }) + '\n',
+      'utf-8',
+    );
+    vi.stubEnv('HOME', home);
+    const runtime = createRealRuntime('prod', { baseDir: home });
+    let recovery: { epochKey: string; db: Database } | undefined;
+    const createPlan = locationRecovery.createJobLocationRecoveryRetryPlan;
+    vi.spyOn(locationRecovery, 'createJobLocationRecoveryRetryPlan').mockImplementation(
+      (index, epochKey, store, subject, observation) => {
+        recovery = { epochKey, db: store.getDb() };
+        return createPlan(index, epochKey, store, subject, observation);
+      },
+    );
+    const fault = vi.spyOn(JobLocationIndex.prototype, 'recoveryEvidence').mockImplementation(() => {
+      throw new Error('location evidence unavailable');
+    });
+    const coordinator = createCoordinatorServer({
+      onFatalShutdownError: vi.fn(),
+      runtime,
+      pluginRoot,
+      kbDaemonSupervisor: createMockKbDaemonSupervisor(),
+      recoverPersistedDiscussFn: async () => {},
+      writeBackendInfoFn: () => true,
+      removeBackendInfoIfOwnerFn: () => {},
+      createServerFn: (handler) => createServer(handler),
+      listenFn: async () => ({ port: 0, host: '127.0.0.1' }),
+      closeServerFn: async () => {},
+    });
+    try {
+      const info = await coordinator.start();
+      if (recovery === undefined) throw new Error('Expected startup location recovery.');
+      const { epochKey, db } = recovery;
+      const files = db.prepare<[], { name: string; file: string }>('PRAGMA database_list').all();
+      const path = files.find((file) => file.name === 'main')?.file;
+      if (path === undefined) throw new Error('Expected persistent recovery database.');
+      const persisted = new DatabaseSync(path, { readOnly: true });
+      try {
+        expect(
+          persisted.prepare('SELECT boundary_id, subject_key, state, error_message FROM recovery_quarantine').all(),
+        ).toEqual([
+          expect.objectContaining({
+            boundary_id: 'job-location-write-through',
+            subject_key: epochKey,
+            state: 'active',
+            error_message: expect.stringContaining('location evidence unavailable'),
+          }),
+        ]);
+        fault.mockRestore();
+        const client = createIpcClient(info.socketPath, runtime.time, { kind: 'boot', token: info.bootToken });
+        await expect(
+          client.request('coordinator.recovery_quarantine.clear', {
+            boundary: 'job-location-write-through',
+            key: epochKey,
+            revision: null,
+          }),
+        ).resolves.toMatchObject({ disposition: 'advanced' });
+        expect(persisted.prepare('SELECT subject_key FROM recovery_quarantine').all()).toEqual([]);
+      } finally {
+        persisted.close();
+      }
+    } finally {
+      await coordinator.shutdown('test-teardown');
+      await coordinator.waitForShutdown();
+    }
+  });
+
   it.each([false, true])('recovers a queued workflow child with transferred=%s', async (transferred) => {
     const home = mkdtempSync(join(tmpdir(), 'coral-startup-queued-workflow-home-'));
     const pluginRoot = mkdtempSync(join(tmpdir(), 'coral-startup-queued-workflow-plugin-'));
@@ -307,22 +384,24 @@ describe('coordinator pending workflow execution recovery', () => {
     let startupOptions: JobsStartupContext | undefined;
     const order: string[] = [];
     const phaseLines: string[] = [];
-    const recoverLocations = locationRecovery.recoverJobLocations;
-    vi.spyOn(locationRecovery, 'recoverJobLocations').mockImplementation((index, epoch, store, observation) => {
-      const progressStore = store as JobsStartupContext['progressStore'];
-      initTestJob(progressStore, {
-        jobId: '10000000-0000-4000-8000-000000000007',
-        projectRoot,
-        backendNamespace: 'startup-ordering',
-        conversation: testConversationFacet('codex', projectRoot),
-      });
-      commitJobTerminal(progressStore, '10000000-0000-4000-8000-000000000007', 1, {
-        content: 'done',
-        outcome: { kind: 'completed' },
-        durationMs: 1,
-      });
-      recoverLocations(index, epoch, progressStore, observation);
-    });
+    const createLocationPlan = locationRecovery.createJobLocationRecoveryRetryPlan;
+    vi.spyOn(locationRecovery, 'createJobLocationRecoveryRetryPlan').mockImplementation(
+      (index, epoch, store, subject, observation) => {
+        const progressStore = store as JobsStartupContext['progressStore'];
+        initTestJob(progressStore, {
+          jobId: '10000000-0000-4000-8000-000000000007',
+          projectRoot,
+          backendNamespace: 'startup-ordering',
+          conversation: testConversationFacet('codex', projectRoot),
+        });
+        commitJobTerminal(progressStore, '10000000-0000-4000-8000-000000000007', 1, {
+          content: 'done',
+          outcome: { kind: 'completed' },
+          durationMs: 1,
+        });
+        return createLocationPlan(index, epoch, progressStore, subject, observation);
+      },
+    );
     const createJobsStartupRunner = jobsStartup.createJobsStartupRunner;
     vi.spyOn(jobsStartup, 'createJobsStartupRunner').mockImplementation((runRecovery) => {
       const runStartup = createJobsStartupRunner(runRecovery);
