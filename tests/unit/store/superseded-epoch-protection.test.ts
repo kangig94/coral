@@ -508,6 +508,7 @@ it('observes a protected lineage after bounded contention and refuses an undecid
   const path = join(epochProtection.protectedStoreEpochRoot(storeRoot), lineage, 'epoch-1');
   mkdirSync(path, { recursive: true });
   writeFileSync(join(path, '.coral-lineage.v1.json'), JSON.stringify({ version: 'v1', lineageId: lineage }));
+  writeFileSync(join(path, '.lock'), '');
   const locks = await import('#src/infra/fs-lock.js');
   const lock = vi.spyOn(locks, 'acquireSharedFileLockNoRepairSync').mockImplementation((_path, busyTimeoutMs) => {
     if ((busyTimeoutMs ?? 0) < 5000) throw new Error('SQLITE_BUSY');
