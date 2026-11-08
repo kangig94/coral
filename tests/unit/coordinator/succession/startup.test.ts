@@ -926,7 +926,8 @@ describe('incomplete succession at startup', () => {
         },
       });
       if (written.kind !== 'written') throw new Error(`intent seed was ${written.kind}`);
-      if (unreadableIdentity) vi.spyOn(epochObservation, 'observeResolvedStoreEpochKey').mockReturnValue(null);
+      if (unreadableIdentity)
+        vi.spyOn(epochObservation, 'observeResolvedStoreEpochKey').mockReturnValue({ kind: 'unreadable' });
       const recoverAt = (instanceId: string) => {
         atStartup(runtime, instanceId);
         return prepareCommittedSuccessorRecovery(
@@ -960,9 +961,13 @@ describe('incomplete succession at startup', () => {
     },
   );
 
-  it.each([true, false])(
-    'should not hold a committed successor whose epoch an operator discard superseded, receipt lineage=%s',
-    async (withLineage) => {
+  it.each([
+    ['an operator discard', true],
+    ['an operator discard', false],
+    ['a store wipe that restarts numbering', true],
+  ] as const)(
+    'should not hold a committed successor whose epoch %s superseded before the new epoch served, receipt lineage=%s',
+    async (supersession, withLineage) => {
       const runtime = runtimeFixture();
       const format = currentCoralStoreFormat();
       const current = { ...build, version: format.productVersion, storeFormatFingerprint: format.fingerprint };
@@ -996,7 +1001,16 @@ describe('incomplete succession at startup', () => {
         },
       });
       if (written.kind !== 'written') throw new Error(`intent seed was ${written.kind}`);
-      discardCurrentStoreEpoch(runtime, { storeFormat: format, build: current }).db.close();
+      if (supersession === 'an operator discard') {
+        discardCurrentStoreEpoch(runtime, { storeFormat: format, build: current }).db.close();
+      } else {
+        rmSync(runtime.paths.coral.store.dbDir, { recursive: true, force: true });
+        settleStoreEpoch(runtime, {
+          storeFormat: format,
+          build: current,
+          authorizeMint: authorizeFixtureStoreMint,
+        }).db.close();
+      }
 
       atStartup(runtime, 'startup-1');
       await expect(

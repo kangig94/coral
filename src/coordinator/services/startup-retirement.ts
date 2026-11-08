@@ -198,9 +198,10 @@ function prepareRetainedControllerHandoffForLineage(
     return null;
   }
   if (epoch === null) return null;
-  const epochKey = observeResolvedStoreEpochKey(runtime, epoch);
-  if (epochKey === null || !sameEpoch(observeResolvedStoreEpoch(runtime, epochKey)?.lineageKey, lineageKey))
-    return null;
+  const observed = observeResolvedStoreEpochKey(runtime, epoch);
+  if (observed.kind !== 'present') return null;
+  const epochKey = observed.key;
+  if (!sameEpoch(observeResolvedStoreEpoch(runtime, epochKey)?.lineageKey, lineageKey)) return null;
   const unresolved = index.locationsFor(epochKey).filter((location) => location.disposition !== 'terminal');
   if (
     unresolved.length === 0 ||

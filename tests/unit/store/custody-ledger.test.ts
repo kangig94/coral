@@ -576,6 +576,7 @@ it('gives a custody write a bounded lock wait without repairing the guard', () =
     JSON.stringify({ version: 'v1', lineageId: '00000000-0000-4000-8000-000000000001' }),
   );
   writeFileSync(join(epoch, '.coral-custody-coverage.v1.json'), '{}');
+  writeFileSync(join(epoch, '.lock'), '');
   const lock = vi.spyOn(locks, 'acquireSharedFileLockNoRepairSync').mockImplementation((_path, budget = 0) => {
     if (!budget) throw Object.assign(new Error('database is locked'), { code: 'SQLITE_BUSY' });
     return () => {};

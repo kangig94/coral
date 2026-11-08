@@ -2,7 +2,7 @@ import { join, resolve, dirname, basename } from 'node:path';
 import { type Runtime } from '../../runtime/ports.js';
 import { type StoragePort } from '../../infra/port-types.js';
 import { observeStorePath } from '../path-observation.js';
-import { readOrCreateEpochKey, inspectEpochKey, readEpochKey } from './key.js';
+import { readOrCreateEpochKey, inspectEpochKey, observeEpochKey, type EpochKeyObservation } from './key.js';
 import { resolveProtectedEpoch, observeProtectedEpoch } from './protection.js';
 import {
   type StoreEpoch,
@@ -276,10 +276,10 @@ export function inspectResolvedStoreEpochKey(
 export function observeResolvedStoreEpochKey(
   runtime: Pick<Runtime, 'storage'>,
   resolved: ResolvedStoreEpoch,
-): string | null {
-  if (resolved.path === ':memory:') return JSON.stringify(resolved);
-  const lineageKey = readEpochKey(runtime, resolved);
-  return lineageKey === null ? null : fullEpochKey(resolved, lineageKey);
+): EpochKeyObservation {
+  if (resolved.path === ':memory:') return { kind: 'present', key: JSON.stringify(resolved) };
+  const observed = observeEpochKey(runtime, resolved);
+  return observed.kind === 'present' ? { kind: 'present', key: fullEpochKey(resolved, observed.key) } : observed;
 }
 
 export function decodeResolvedStoreEpoch(

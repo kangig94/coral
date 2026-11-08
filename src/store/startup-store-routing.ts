@@ -55,15 +55,14 @@ export function prepareCommittedBackendStoreAtStartup(
       return { kind: 'holding', reason: 'epoch-unproven' };
     }
     const proven = resolveProvenStoreEpochAtPath(runtime.storage, expected.storeRoot, expected.path);
-    const addressed =
-      proven === null
-        ? null
-        : {
-            ...proven,
-            ...(expected.lineageKey === undefined ? {} : { lineageKey: expected.lineageKey }),
-            ...(expected.canonicalStoreRoot === undefined ? {} : { canonicalStoreRoot: expected.canonicalStoreRoot }),
-          };
-    if (addressed === null || !sameEpoch(observeResolvedStoreEpochKey(runtime, addressed), epochKey)) {
+    if (proven === null) return { kind: 'holding', reason: 'epoch-unproven' };
+    const addressed = {
+      ...proven,
+      ...(expected.lineageKey === undefined ? {} : { lineageKey: expected.lineageKey }),
+      ...(expected.canonicalStoreRoot === undefined ? {} : { canonicalStoreRoot: expected.canonicalStoreRoot }),
+    };
+    const addressedKey = observeResolvedStoreEpochKey(runtime, addressed);
+    if (addressedKey.kind !== 'present' || !sameEpoch(addressedKey.key, epochKey)) {
       return { kind: 'holding', reason: 'epoch-unproven' };
     }
     const classification = classifyStoreFile(addressed.path, runtime.storage, options.storeFormat);

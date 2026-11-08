@@ -1458,14 +1458,16 @@ export async function prepareCommittedSuccessorRecovery(
   if (current.kind !== 'current') return { kind: 'none' };
   // A receipt that cannot name the current epoch may not hold startup on that epoch's lineage marker.
   if (provablyOtherEpoch(receipt.epochKey, current.epoch.epoch)) return { kind: 'none' };
-  const currentKey = observeResolvedStoreEpochKey(runtime, current.epoch);
-  if (currentKey === null)
+  const observedKey = observeResolvedStoreEpochKey(runtime, current.epoch);
+  // A marker missing under the epoch lock can never later carry the receipt's lineage: a new marker mints a new one.
+  if (observedKey.kind === 'absent') return { kind: 'none' };
+  if (observedKey.kind === 'unreadable')
     return holdOrAbandon({
       kind: 'committed-successor-unattributable',
       attemptId: receipt.attemptId,
       reason: 'awaiting readable current epoch identity; startup re-observes it',
     });
-  if (!sameEpoch(currentKey, receipt.epochKey)) return { kind: 'none' };
+  if (!sameEpoch(observedKey.key, receipt.epochKey)) return { kind: 'none' };
   const serving = observeSuccessionServing(runtime, receipt.attemptId);
   const writer = observeSuccessionWriterGeneration(runtime);
   if (
