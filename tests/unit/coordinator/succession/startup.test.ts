@@ -55,6 +55,7 @@ import { launchAdmissionPath } from '#src/infra/launch-admission-record.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import {
+  discardCurrentStoreEpoch,
   encodeResolvedStoreEpoch,
   epochDirectory,
   resolvedStoreEpoch,
@@ -956,6 +957,57 @@ describe('incomplete succession at startup', () => {
       expect(readUpgradeIntent(runtime.paths.coral.coordinator.runDir)).toMatchObject({
         intent: { disposition: 'completed', completionReceipt: { attemptId: 'attempt-1' } },
       });
+    },
+  );
+
+  it.each([true, false])(
+    'should not hold a committed successor whose epoch an operator discard superseded, receipt lineage=%s',
+    async (withLineage) => {
+      const runtime = runtimeFixture();
+      const format = currentCoralStoreFormat();
+      const current = { ...build, version: format.productVersion, storeFormatFingerprint: format.fingerprint };
+      const settled = settleStoreEpoch(runtime, {
+        storeFormat: format,
+        build: current,
+        authorizeMint: authorizeFixtureStoreMint,
+      });
+      settled.db.close();
+      const dead = await exitedPid();
+      const owner = { kind: 'incumbent' as const, instanceId: 'incumbent', pid: dead, incarnation: null };
+      const written = await compareAndSwapUpgradeIntent(runtime.paths.coral.coordinator.runDir, null, {
+        requestId: 'request-1',
+        incumbent: { ...owner, version: '0.10.13', bundleHash: 'fedcba9876543210', flavor: 'prod' },
+        target: { build: current, pluginRootLabel: '/installed/coral/0.11.0' },
+        attemptId: 'attempt-1',
+        attemptOwner: owner,
+        attemptChild: null,
+        disposition: 'completed',
+        blockers: [],
+        retryCondition: null,
+        attemptDeadline: null,
+        completionReceipt: {
+          kind: 'serving',
+          attemptId: 'attempt-1',
+          successor: { instanceId: 'successor', pid: dead, incarnation: null, build: current },
+          epochKey: withLineage ? encodeResolvedStoreEpoch(runtime, settled.store) : JSON.stringify(settled.store),
+          controlGeneration: 1,
+          acceptedObligations: [],
+          recordedAt: new Date().toISOString(),
+        },
+      });
+      if (written.kind !== 'written') throw new Error(`intent seed was ${written.kind}`);
+      discardCurrentStoreEpoch(runtime, { storeFormat: format, build: current }).db.close();
+
+      atStartup(runtime, 'startup-1');
+      await expect(
+        prepareCommittedSuccessorRecovery(
+          runtime,
+          { pluginRoot: '/plugin', instanceId: 'startup-1' },
+          format,
+          current,
+          () => false,
+        ),
+      ).resolves.toEqual({ kind: 'none' });
     },
   );
 

@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
 
+import type { StoreEpoch } from './types.js';
+
 export function epochIdentity(key: string): string {
   if (!key.startsWith('{')) return key;
   try {
@@ -42,6 +44,11 @@ function addressFields(key: string | undefined): { storeRoot?: unknown; epoch?: 
   } catch {
     return null;
   }
+}
+
+/** A key true here can never be `sameEpoch` with any key of `epoch`, whatever that epoch's lineage turns out to be. */
+export function provablyOtherEpoch(epochKey: string, epoch: StoreEpoch): boolean {
+  return !epochIdentity(epochKey).endsWith(`:${epoch}`);
 }
 
 /** A hold recorded before an address's lineage was readable names the epoch at that store root and number. */
