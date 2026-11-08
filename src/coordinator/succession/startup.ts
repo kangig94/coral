@@ -2,7 +2,7 @@ import type { BoundCoordinator } from '../handoff.js';
 import { readDiscoveryRecordDisposition } from '../../infra/backend-discovery.js';
 import { attemptExclusiveFileLockSync } from '../../infra/fs-lock.js';
 import { observeStoreEpochHolders } from '../../store/epoch/holder.js';
-import { sameEpoch } from '../../store/epoch/identity.js';
+import { provablyOtherEpoch, sameEpoch } from '../../store/epoch/identity.js';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
 
@@ -1456,6 +1456,8 @@ export async function prepareCommittedSuccessorRecovery(
         : { kind: 'hold', hold };
   const current = inspectCurrentStore(runtime);
   if (current.kind !== 'current') return { kind: 'none' };
+  // A receipt that cannot name the current epoch may not hold startup on that epoch's lineage marker.
+  if (provablyOtherEpoch(receipt.epochKey, current.epoch.epoch)) return { kind: 'none' };
   const currentKey = observeResolvedStoreEpochKey(runtime, current.epoch);
   if (currentKey === null)
     return holdOrAbandon({
