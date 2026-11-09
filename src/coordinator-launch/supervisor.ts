@@ -17,7 +17,7 @@ import { type Candidate, type UnidentifiedBinder, selectNextCandidate } from './
 import { spawnAdmittedChild } from './child-process.js';
 import { superviseActiveChild, superviseAdoptedChild } from './active-child.js';
 import { controllerBuild } from './controller-build.js';
-import { validatedExecutable } from './executable.js';
+import { admitSupervisorExecutable, type ExecutableRefusal } from './executable.js';
 import { incumbentLiveness, observedLaunchIncumbent, publishedNativeSupervision } from './incumbent.js';
 import { type ReconcileInheritedInput, reconcileInheritedChildren } from './inherited-children.js';
 import { type OwnerHandle, acquireLaunchOwnership } from './ownership.js';
@@ -329,8 +329,23 @@ async function superviseNamespace(session: NamespaceSupervision): Promise<number
   }
 }
 
+async function refuseExecutable(runDir: string, refusal: ExecutableRefusal): Promise<number> {
+  backendLog.raw(`Namespace supervisor refused its executable ${refusal.executable}: ${refusal.reason}\n`);
+  await publishTerminalLaunchStatus(runDir, {
+    launchRefusal: {
+      kind: 'executable-refused',
+      supervisorPid: process.pid,
+      executable: refusal.executable,
+      reason: refusal.reason,
+      observedAt: new Date().toISOString(),
+      retry: 'next-ensure',
+    },
+  });
+  return 1;
+}
+
 export async function runNamespaceSupervisor(
-  executable: string,
+  requestedExecutable: string,
   args: readonly string[],
   runDir: string,
   options: Readonly<{
@@ -356,8 +371,9 @@ export async function runNamespaceSupervisor(
   const timing = options.timing ?? SENTINEL_TIMING;
   if (!validSentinelTiming(timing)) throw new Error('Invalid coordinator supervisor timing');
   const startupBudgetMs = options.startupBudgetMs ?? STARTUP_BUDGET_MS;
-  const originalManifest = validatedExecutable(executable);
-  if (originalManifest === null) return 1;
+  const admission = admitSupervisorExecutable(requestedExecutable);
+  if (admission.kind === 'refused') return refuseExecutable(runDir, admission);
+  const { executable, manifest: originalManifest } = admission;
   const acquisition = await acquireLaunchOwnership(runDir, executable, originalManifest);
   if (acquisition.kind === 'finished') return acquisition.exitCode;
   const session: NamespaceSupervision = {

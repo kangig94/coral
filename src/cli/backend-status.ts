@@ -462,6 +462,7 @@ export type BackendStatusFull = BackendStatusFullBase & {
   controllerEvidenceRefusals?: LaunchStatus['controllerEvidenceRefusals'];
   relaunchOutcome?: LaunchStatus['relaunchOutcome'];
   ownershipWaitOutcome?: LaunchStatus['ownershipWaitOutcome'];
+  launchRefusal?: LaunchStatus['launchRefusal'];
   launchStatusProblem?: 'unreadable' | 'previous-status-unavailable' | 'publication-unavailable';
   launchStatusPublicationFailure?: LaunchStatus['publicationFailure'];
   launchAdmissionHolds?: LaunchStatus['admissionHolds'];
@@ -1202,6 +1203,7 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
     controllerEvidenceRefusals: state?.controllerEvidenceRefusals,
     relaunchOutcome: persisted?.relaunchOutcome ?? current?.relaunchOutcome,
     ownershipWaitOutcome: persisted?.ownershipWaitOutcome ?? current?.ownershipWaitOutcome,
+    launchRefusal: persisted?.launchRefusal ?? current?.launchRefusal,
     ...(state?.hold !== undefined
       ? { launchHold: state.hold }
       : unreadableAdmission?.kind === 'unreadable'

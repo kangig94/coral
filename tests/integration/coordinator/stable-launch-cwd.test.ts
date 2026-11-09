@@ -101,21 +101,18 @@ it('pins the supervisor startup cwd after its invoking directory is deleted', as
     const invokingDir = join(root, 'worktree');
     const runDir = join(root, 'run');
     mkdirSync(invokingDir);
-    const result = await promisify(execFile)(
-      process.execPath,
-      [harness, join(root, 'missing-backend.cjs'), runDir, invokingDir],
-      {
-        cwd: invokingDir,
-        timeout: 15_000,
-        env: {
-          ...process.env,
-          DBUS_SESSION_BUS_ADDRESS: `unix:path=${join(root, 'missing-bus')}`,
-          XDG_RUNTIME_DIR: root,
-        },
+    const missing = join(root, 'missing-backend.cjs');
+    const result = await promisify(execFile)(process.execPath, [harness, missing, runDir, invokingDir], {
+      cwd: invokingDir,
+      timeout: 15_000,
+      env: {
+        ...process.env,
+        DBUS_SESSION_BUS_ADDRESS: `unix:path=${join(root, 'missing-bus')}`,
+        XDG_RUNTIME_DIR: root,
       },
-    );
+    });
     expect(result.stdout).toBe(runDir);
-    expect(result.stderr).toBe('');
+    expect(result.stderr).toBe(`Namespace supervisor refused its executable ${missing}: bundle manifest unavailable\n`);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

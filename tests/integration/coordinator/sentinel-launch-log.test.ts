@@ -250,6 +250,8 @@ it.each(['supervisor', 'legacy'] as const)(
     const pointer = JSON.parse(readFileSync(join(runDir, 'coordinator-logs/latest-supervisor.json'), 'utf8')) as {
       path: string;
     };
-    expect(readFileSync(pointer.path, 'utf8')).toBe(`Error: handled-${mode}-failure\n`);
+    expect(readFileSync(pointer.path, 'utf8')).toMatch(
+      new RegExp(`^Error: handled-${mode}-failure\\nsupervisor \\d+ exited with code 1\\n$`, 'u'),
+    );
   },
 );

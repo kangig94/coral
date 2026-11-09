@@ -771,6 +771,12 @@ export function formatBackendStatus(
       `Supervisor ${outcome.supervisorPid} recorded ${outcome.kind} after ${outcome.failedLaunches} unsuccessful launches at ${outcome.observedAt}. Namespace ownership was released; a subsequent command can start a fresh supervisor. This is historical evidence, not current service state.`,
     );
   }
+  if (daemonStatus.launchRefusal !== undefined) {
+    const refusal = daemonStatus.launchRefusal;
+    sections.push(
+      `Supervisor ${refusal.supervisorPid} refused its executable ${refusal.executable} at ${refusal.observedAt}: ${refusal.reason}. It exited without starting a coordinator; a subsequent command starts a fresh supervisor, which refuses the same way until that executable and its bundle manifest validate. This is historical evidence, not current service state.`,
+    );
+  }
   if (daemonStatus.ownershipWaitOutcome !== undefined) {
     const outcome = daemonStatus.ownershipWaitOutcome;
     sections.push(
