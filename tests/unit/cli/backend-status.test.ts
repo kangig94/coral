@@ -56,6 +56,18 @@ it.each([
     },
     text: 'supervisor-lock-wait-expired',
   },
+  {
+    field: 'launchRefusal',
+    outcome: {
+      kind: 'executable-refused',
+      supervisorPid: 789,
+      executable: '/plugin/bridge/coral-backend.cjs',
+      reason: 'bundle target bundle-dir-not-canonical',
+      observedAt: '2026-11-05',
+      retry: 'next-ensure',
+    },
+    text: 'refused its executable /plugin/bridge/coral-backend.cjs at 2026-11-05: bundle target bundle-dir-not-canonical',
+  },
 ] as const)('reads persisted $field independently of authenticated current holds', async ({ field, outcome, text }) => {
   const root = mkdtempSync(join(tmpdir(), 'coral-historical-status-'));
   statusRoots.push(root);

@@ -29,6 +29,17 @@ const statusSchema = z
       })
       .passthrough()
       .optional(),
+    launchRefusal: z
+      .object({
+        kind: z.literal('executable-refused'),
+        supervisorPid: z.number().int().positive(),
+        executable: z.string(),
+        reason: z.string(),
+        observedAt: z.string(),
+        retry: z.literal('next-ensure'),
+      })
+      .passthrough()
+      .optional(),
     publicationFailure: z.object({ code: z.literal('status-publication-unavailable'), detail: z.string() }).optional(),
     admissionHolds: z
       .array(z.object({ path: z.string(), disposition: z.enum(['unknown', 'acquisition-window', 'cleanup-pending']) }))
@@ -220,7 +231,7 @@ export function updateLaunchStatus(runDir: string, change: (current: LaunchStatu
 /** Terminal callers must await publication before process.exit; background retries alone cannot survive it. */
 export async function publishTerminalLaunchStatus(
   runDir: string,
-  outcome: Pick<LaunchStatus, 'relaunchOutcome' | 'ownershipWaitOutcome'>,
+  outcome: Pick<LaunchStatus, 'relaunchOutcome' | 'ownershipWaitOutcome' | 'launchRefusal'>,
 ): Promise<void> {
   const deadline = performance.now() + 2_000;
   const previous = pendingStatuses.get(runDir);
@@ -228,6 +239,7 @@ export async function publishTerminalLaunchStatus(
   const fields = {
     ...(outcome.relaunchOutcome === undefined ? {} : { relaunchOutcome: outcome.relaunchOutcome }),
     ...(outcome.ownershipWaitOutcome === undefined ? {} : { ownershipWaitOutcome: outcome.ownershipWaitOutcome }),
+    ...(outcome.launchRefusal === undefined ? {} : { launchRefusal: outcome.launchRefusal }),
   };
   const pending: PendingStatus = {
     status: statusSchema.parse({ version: 1, ...fields }),

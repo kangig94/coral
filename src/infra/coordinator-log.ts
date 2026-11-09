@@ -450,6 +450,7 @@ export function installCoordinatorLog(
       } catch {
         // Timer cleanup cannot change the process disposition.
       }
+      if (code !== 0) writer.write(`${role} ${pid} exited with code ${code}\n`);
       writer.close(code === 0);
     });
     try {

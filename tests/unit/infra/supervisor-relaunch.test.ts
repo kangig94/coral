@@ -27,7 +27,10 @@ vi.mock('#src/infra/failure-domain.js', () => ({
 }));
 vi.mock('#src/coordinator-launch/ownership.js', () => ({ acquireLaunchOwnership: mocks.acquire }));
 vi.mock('#src/coordinator-launch/candidate-selection.js', () => ({ selectNextCandidate: mocks.select }));
-vi.mock('#src/coordinator-launch/executable.js', () => ({ validatedExecutable: () => manifest }));
+vi.mock('#src/coordinator-launch/executable.js', () => ({
+  validatedExecutable: () => manifest,
+  admitSupervisorExecutable: (executable: string) => ({ kind: 'admitted', executable, manifest }),
+}));
 vi.mock('#src/coordinator-launch/inherited-children.js', () => ({
   reconcileInheritedChildren: async () => ({ inherited: [], repairBridge: null }),
 }));
