@@ -299,6 +299,21 @@ export type ProviderTurnSettlement = Readonly<{
   close(): void;
 }>;
 
+export type ProviderTurnContainment = Readonly<{
+  settlement: ProviderTurnSettlement;
+  lease: Readonly<{
+    session: AppServerTransport;
+    hostRef: HostRef;
+    close(): void;
+    markTurnSettlementOwned?(providerTurnId: string): void;
+  }>;
+}>;
+
+export type ProviderTurnContainmentAcceptance = Readonly<{
+  kind: 'accepted';
+  owner: 'provider-host-manager';
+}>;
+
 export interface AppServerSession extends AppServerTransport {
   interrupt(continuity: ProviderContinuityBlob): Promise<ProviderInterruptRequestOutcome>;
   send?(continuity: ProviderContinuityBlob, input: ProviderSendInput): Promise<ProviderSendOutcome>;

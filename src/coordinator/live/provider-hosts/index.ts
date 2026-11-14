@@ -6,6 +6,8 @@ import { providerProxyPlacement, type ProviderProxyPlacement } from './host-root
 import { raceObserved } from '../../../infra/promise-signal.js';
 import type {
   AppServerTransport,
+  ProviderTurnContainment,
+  ProviderTurnContainmentAcceptance,
   HostRef,
   ProviderHostEvictionDisposition,
   ProviderHostTerminalEvictionDisposition,
@@ -64,6 +66,7 @@ import {
 import {
   hostRefFromEntry,
   type ProviderHostEntry,
+  type ProviderHostPin,
   type ProviderHostShutdownDisposition,
   type ProviderHostShutdownHold,
 } from './state.js';
@@ -91,6 +94,7 @@ import type { PublicationReceipt } from '../provider-proxy/set-publication.js';
 export type { ProviderHostEntry } from './state.js';
 
 export interface ProviderHostManager {
+  acceptTurnContainment(obligation: ProviderTurnContainment): ProviderTurnContainmentAcceptance;
   proxyHostRoot(): string;
   openSession(
     spec: ProviderServerSpec,
@@ -212,6 +216,7 @@ export type ManagedAppServerSession = Readonly<{
   session: AppServerTransport;
   hostRef: HostRef;
   close(): void;
+  markTurnSettlementOwned?(providerTurnId: string): void;
 }>;
 
 function foldedKey(key: string, platform: string): string {
@@ -399,6 +404,8 @@ export class DefaultProviderHostManager
   private readonly pendingCloses = new Set<Promise<ProviderHostShutdownDisposition>>();
   private readonly pendingProxySetAcquisitions = new Set<PendingProviderProxySetAcquisition>();
   private readonly closingEntries = new Map<ProviderHostEntry, ProviderHostClosingRecord>();
+  private readonly sessionEntries = new WeakMap<ManagedAppServerSession, ProviderHostEntry>();
+  private readonly turnContainments = new Map<ProviderHostEntry, Set<ProviderTurnContainment>>();
   private readonly spawnCleanupHolds = new Set<ProviderHostSpawnCleanupObligation>();
   private readonly spawnCleanupRetryRequests = new Map<ProviderHostEntry, () => void>();
   /** Terminal eviction outcomes must remain replayable for the owning process's lifetime; earlier removal
@@ -868,7 +875,7 @@ export class DefaultProviderHostManager
     spec: ProviderServerSpec,
     options?: { jobId?: string; signal?: AbortSignal },
     admission?: Readonly<{ slot: AdmissionSlotKey; reservation: HostAdmissionReservation }>,
-  ): Promise<Readonly<{ lease: ProviderServerLease; entry: ProviderHostEntry }>> {
+  ): Promise<Readonly<{ lease: ProviderServerLease; entry: ProviderHostEntry; pin: ProviderHostPin }>> {
     if (!this.acceptingAcquisitions) {
       throw new Error('provider_host_draining: provider host manager no longer accepts acquisitions');
     }
@@ -882,14 +889,11 @@ export class DefaultProviderHostManager
     const exactEnv = compileLaunchEnvironment(spec, this.runtime.env.platform());
     const entry = this.getOrCreateProviderServerEntry(spec, exactEnv, options?.jobId);
     this.clearIdleTimer(entry);
-    const releasePin = acquireProviderHostPin(
-      entry,
-      {
-        kind: 'acquisition',
-        ...(options?.jobId === undefined ? {} : { jobId: options.jobId }),
-      },
-      () => this.onLastRelease(entry),
-    );
+    const pin: ProviderHostPin = {
+      kind: 'acquisition',
+      ...(options?.jobId === undefined ? {} : { jobId: options.jobId }),
+    };
+    const releasePin = acquireProviderHostPin(entry, pin, () => this.onLastRelease(entry));
     this.maybeArmIdleTimer(entry);
 
     try {
@@ -977,11 +981,30 @@ export class DefaultProviderHostManager
       return Object.freeze({
         lease: createProviderServerLease(handle, releasePin),
         entry,
+        pin,
       });
     } catch (error) {
       releasePin();
       throw error;
     }
+  }
+
+  acceptTurnContainment(obligation: ProviderTurnContainment): ProviderTurnContainmentAcceptance {
+    const entry = this.sessionEntries.get(obligation.lease);
+    if (entry === undefined) throw new Error('Local turn containment requires its exact retained host.');
+    let obligations = this.turnContainments.get(entry);
+    if (obligations === undefined) {
+      obligations = new Set();
+      this.turnContainments.set(entry, obligations);
+    }
+    obligations.add(obligation);
+    void this.closeProviderServerEntry(entry, `turn ${obligation.settlement.providerTurnId} settlement exhausted`).then(
+      (disposition) => {
+        if (disposition.kind === 'observed-absent') this.closeContainedTurnSettlements(entry);
+      },
+      () => {},
+    );
+    return { kind: 'accepted', owner: 'provider-host-manager' };
   }
 
   async openSession(
@@ -997,12 +1020,10 @@ export class DefaultProviderHostManager
       return await this.admission.withFreshPlacement(slot, async (reservation) => {
         await this.waitForIdleClose(slot, options?.signal);
         this.assertAdmissionSlotNotClosing(slot);
-        const { lease, entry } = await this.acquireHostLease(spec, options, { slot, reservation });
-        return this.managedSession(lease, hostRefFromEntry(entry));
+        const { lease, entry, pin } = await this.acquireHostLease(spec, options, { slot, reservation });
+        return this.managedSession(lease, entry, pin);
       });
     } catch (error: unknown) {
-      // Admission refuses blocked candidates before invoking the placement delegate. Rechecking the retained
-      // close record translates that ordering into the lifecycle identity callers need during reclamation.
       this.assertAdmissionSlotNotClosing(slot);
       throw error;
     }
@@ -1038,15 +1059,22 @@ export class DefaultProviderHostManager
     this.clearIdleTimer(entry);
     const releasePin = acquireProviderHostPin(entry, { kind: 'attached-session' }, () => this.onLastRelease(entry));
     this.maybeArmIdleTimer(entry);
-    return Object.freeze({
+    const managed = Object.freeze({
       session: createProviderServerAttachment(handle),
       hostRef,
       close: releasePin,
     });
+    this.sessionEntries.set(managed, entry);
+    return managed;
   }
 
-  private managedSession(lease: ProviderServerLease, hostRef: HostRef): ManagedAppServerSession {
-    return Object.freeze({
+  private managedSession(
+    lease: ProviderServerLease,
+    entry: ProviderHostEntry,
+    pin: ProviderHostPin,
+  ): ManagedAppServerSession {
+    const hostRef = hostRefFromEntry(entry);
+    const managed = Object.freeze({
       session: Object.freeze({
         rpc: <Result = unknown>(method: string, params: Record<string, unknown>) =>
           this.admission.correlateTerminalFailure(hostRef, () => lease.rpc<Result>(method, params)),
@@ -1055,7 +1083,12 @@ export class DefaultProviderHostManager
       }),
       hostRef,
       close: () => lease.release(),
+      markTurnSettlementOwned: (providerTurnId: string) => {
+        pin.settlementTurnId = providerTurnId;
+      },
     });
+    this.sessionEntries.set(managed, entry);
+    return managed;
   }
 
   admissionSnapshot(): HostAdmissionSnapshot {
@@ -1181,7 +1214,12 @@ export class DefaultProviderHostManager
             ownerJobId: entry.jobId ?? null,
             ...(containment === null ? {} : { pid: containment.pid, processGroupId: containment.processGroupId }),
             reclamationAttempts: closing.attempt,
-            reclamationFailure: closing.failure.message,
+            reclamationFailure: [
+              closing.failure.message,
+              ...[...(this.turnContainments.get(entry) ?? [])].map(
+                ({ settlement }) => `retained turn ${settlement.providerTurnId}`,
+              ),
+            ].join('; '),
             reclamationRetryable: isRetryableReclamationFailure(closing.failure),
           }),
           diagnostics: closing.diagnostics,
@@ -1463,6 +1501,12 @@ export class DefaultProviderHostManager
     }
   }
 
+  private closeContainedTurnSettlements(entry: ProviderHostEntry): void {
+    const turns = this.turnContainments.get(entry);
+    this.turnContainments.delete(entry);
+    for (const obligation of turns ?? []) obligation.settlement.close();
+  }
+
   private async closeProviderServerEntry(
     entry: ProviderHostEntry,
     detail: string,
@@ -1521,6 +1565,7 @@ export class DefaultProviderHostManager
             return;
           }
           closing.resolveHoldSettlement?.();
+          this.closeContainedTurnSettlements(entry);
           this.closingEntries.delete(entry);
         },
         (error: unknown) => {

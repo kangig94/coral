@@ -27,6 +27,7 @@ import type {
   ProviderRuntime,
   ProviderEventBody,
   ProviderServerSpec,
+  ProviderTurnSettlement,
 } from '../contract.js';
 import type { ProviderCliRequest } from '../protocol.js';
 import type { ProviderValueParseResult } from '../binding-parser-contract.js';
@@ -260,6 +261,23 @@ function closeManagedHostSession(managed: ManagedHostSession, unsubscribe: () =>
   }
 }
 
+function ownLocalTurnSettlement(
+  settlement: ProviderTurnSettlement,
+  managed: ManagedHostSession,
+  accept: NonNullable<AppServerHostAuthority['acceptTurnContainment']>,
+): void {
+  const contain = (): void => {
+    const acceptance = accept({ settlement, lease: managed });
+    if (acceptance.kind !== 'accepted' || acceptance.owner !== 'provider-host-manager') {
+      throw new Error('Local turn containment owner did not accept the obligation.');
+    }
+  };
+  void settlement.settle().then((evidence) => {
+    if (evidence !== null && evidence.providerTurnId === settlement.providerTurnId) settlement.close();
+    else contain();
+  }, contain);
+}
+
 function executeBoundAppServer<Plan extends ProviderExecutionPlan>(
   tools: BoundAppServerTools<Plan>,
   hostPlan: Plan['host'],
@@ -272,11 +290,24 @@ function executeBoundAppServer<Plan extends ProviderExecutionPlan>(
   return (async function* () {
     runtime.signal.throwIfAborted();
     const spec = tools.compileHost(hostPlan);
+    const host = tools.host();
+    const acceptTurnContainment = host.acceptTurnContainment?.bind(host);
+    if (
+      spec.provider === 'codex' &&
+      runtime.onProviderTurnSettlement === undefined &&
+      acceptTurnContainment === undefined
+    ) {
+      throw new Error('Local Codex execution requires a turn containment owner.');
+    }
     runtime.onAppServerWaiting({ provider: spec.provider });
-    const managed = await tools.host().openSession(spec, { jobId: runtime.jobId, signal: runtime.signal });
+    const managed = await host.openSession(spec, { jobId: runtime.jobId, signal: runtime.signal });
     let unsubscribe = () => {};
     let settlementOwnsSession = false;
-    const onProviderTurnSettlement = runtime.onProviderTurnSettlement;
+    const onProviderTurnSettlement =
+      runtime.onProviderTurnSettlement ??
+      (acceptTurnContainment === undefined
+        ? undefined
+        : (settlement: ProviderTurnSettlement) => ownLocalTurnSettlement(settlement, managed, acceptTurnContainment));
     const executionRuntime: BoundProviderAppServerExecutionRuntime = {
       ...runtime,
       ...(onProviderTurnSettlement === undefined
@@ -294,6 +325,7 @@ function executeBoundAppServer<Plan extends ProviderExecutionPlan>(
                   }
                 },
               });
+              managed.markTurnSettlementOwned?.(settlement.providerTurnId);
               settlementOwnsSession = true;
             },
           }),

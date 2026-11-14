@@ -104,6 +104,7 @@ function logOutstandingPinsWithoutLiveCodexJob(
   }
 
   for (const pin of entry.pins.values()) {
+    if (pin.settlementTurnId !== undefined) continue;
     backendLog.warn(
       `Provider host ${hostRef.provider} ${hostRef.instanceId} (${entry.spec.cwd}) has an outstanding pin while no live Codex job owns it: ${describePinOrigin(pin)}`,
     );
