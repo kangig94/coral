@@ -381,7 +381,8 @@ export class OperationSupervisor {
           });
         } catch (error: unknown) {
           this.#beginRelease(record, { kind: 'never-started' });
-          await this.#driveRelease(record, false);
+          const refusal = await this.#releaseFailedPreparation(record, error);
+          if (refusal !== null) return refusal;
           throw error;
         }
       }
@@ -417,10 +418,31 @@ export class OperationSupervisor {
         if (record.releaseReceipt === null && this.#ledger.get(record.key)?.state !== 'releasing') {
           this.#beginRelease(record, { kind: 'never-started' });
         }
-        await this.#driveRelease(record, false);
+        const refusal = await this.#releaseFailedPreparation(record, error);
+        if (refusal !== null) return refusal;
         throw error;
       }
     });
+  }
+
+  async #releaseFailedPreparation(
+    record: SupervisedOperation,
+    error: unknown,
+  ): Promise<ProviderOperationPreparePermanentRefusal | null> {
+    const admissionClosed =
+      error instanceof ProxyControlProtocolError && error.code === 'semantic_operation_admission_closed';
+    const released = await this.#driveRelease(record, admissionClosed);
+    if (admissionClosed && released?.state !== 'released-never-started') {
+      throw new ProxyControlProtocolError('invalid_state', 'Admission refusal did not release its preparation.');
+    }
+    if (!admissionClosed) return null;
+    record.prepareRefusal = {
+      state: 'permanent-refusal',
+      code: 'proxy_prepare_refused',
+      disposition: 'local-fallback',
+      reason: 'Provider proxy admission is closed; this attempt was released without starting.',
+    };
+    return record.prepareRefusal;
   }
 
   renew(key: ProviderOperationKey, reservation: Reservation): Promise<unknown> {

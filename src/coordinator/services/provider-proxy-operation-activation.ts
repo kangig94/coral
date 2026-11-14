@@ -226,7 +226,12 @@ export async function prepareProviderOperation(
     request,
     deps.mutationRpcTimeoutMs,
     proxyOperationPrepareResultSchema,
-    deps.faultAuthority,
+    (fault) =>
+      deps.faultAuthority(
+        fault.kind === 'operation-control-failed'
+          ? { ...fault, inspection: { operation: request.operation, prepareAttemptKey: attempt.prepareAttemptKey } }
+          : fault,
+      ),
     deps.reportIncident,
   );
 }
@@ -320,7 +325,12 @@ export async function authorizeProviderOperation(
     params,
     deps.mutationRpcTimeoutMs,
     guardianOperationActivateResultSchema,
-    deps.faultAuthority,
+    (fault) =>
+      deps.faultAuthority(
+        fault.kind === 'operation-control-failed'
+          ? { ...fault, mutation: { operation, reservation: evidence.reservation } }
+          : fault,
+      ),
     deps.reportIncident,
   );
 }
@@ -348,7 +358,12 @@ export async function activateProviderOperation(
     params,
     deps.mutationRpcTimeoutMs,
     proxyOperationActivationOutcomeSchema,
-    deps.faultAuthority,
+    (fault) =>
+      deps.faultAuthority(
+        fault.kind === 'operation-control-failed'
+          ? { ...fault, mutation: { operation, reservation: evidence.reservation } }
+          : fault,
+      ),
     deps.reportIncident,
   );
 }
@@ -397,7 +412,10 @@ export async function cancelProviderOperation(
     params,
     deps.mutationRpcTimeoutMs,
     proxyOperationCancelResultSchema,
-    deps.faultAuthority,
+    (fault) =>
+      deps.faultAuthority(
+        fault.kind === 'operation-control-failed' ? { ...fault, inspection: { operation, prepareAttemptKey } } : fault,
+      ),
     deps.reportIncident,
   );
 }

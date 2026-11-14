@@ -1,3 +1,5 @@
+import { proxyOperationInspectResultSchema } from '#src/provider-proxy/protocol.js';
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { createProviderProxySetInheritance } from '#src/coordinator/services/provider-proxy-set/inheritance.js';
 import { registerProviderProxySetForTest } from '#tests/helpers/provider-proxy-registration.js';
 import { randomUUID } from 'node:crypto';
@@ -76,6 +78,7 @@ import {
 import { isProviderProxyRecoveryFatalError } from '#src/coordinator/services/provider-proxy-recovery-policy.js';
 import { handoffCapsuleV3Schema } from '#src/provider-proxy/handoff-capsule.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
+import { heartbeatObservationFromExchange } from '#src/provider-proxy/heartbeat-observation.js';
 
 const containmentClock = vi.hoisted(() => ({ milliseconds: null as bigint | null }));
 vi.mock('#src/infra/monotonic-clock.js', async (original) => {
@@ -131,7 +134,7 @@ const containmentOperationPolicy: ContainmentRequiredControlCallPolicy = {
   preEffectProtocolCodes: new Set(),
 };
 
-function terminalAuthorityFault(): ProviderProxyAuthorityFault {
+function terminalAuthorityFault(): Extract<ProviderProxyAuthorityFault, { kind: 'heartbeat-failed' }> {
   return {
     kind: 'heartbeat-failed',
     role: 'proxy',
@@ -434,6 +437,97 @@ async function authorizedOperatorExitForProof(
   return { capability: authorization.capability, lifecycle, mutationAdmission, mutationFence, stopAndReap, clock };
 }
 
+function operationRecoveryFixture(
+  inspectOperation: DurableProviderProxyOperationAuthority['inspectOperation'],
+  adoptionWindowMs?: number,
+) {
+  const record = providerOperationRecord('executing');
+  const claims = new ProviderProxySetClaimMirror();
+  claims.initialize([record]);
+  const faults = createProviderProxyAuthorityFaultLatch();
+  const stopAndReap = vi.fn<DurableProviderProxyOperationAuthority['stopAndReap']>(async () => ({
+    unconfirmed: 'not absent',
+  }));
+  const base = fakeAuthority({ record, faults, stopAndReap, adoptionWindowMs });
+  const authority = {
+    ...createProviderProxyOperationAuthority({
+      base: base as never,
+      setIdentity: base.setIdentity,
+      clients: {} as never,
+      faults,
+      mutationRpcTimeoutMs: 1_000,
+    }),
+    inspectOperation,
+  };
+  const time = new ManualClock();
+  const dispositionStore = new ProviderProxySetOperatorDispositionStore(
+    new InMemoryStorage(time),
+    DURABLE_DISPOSITION_RUN_DIR,
+  );
+  const lifecycle = lifecycleFor({
+    claims,
+    time,
+    controlEstablished: ignoreControlEstablished,
+    disappearanceConsumer: { containmentDisappeared: vi.fn() },
+    proveContainmentAbsent: noContainmentProof,
+    operatorDispositionStore: dispositionStore,
+  });
+  lifecycle.initializeClaimSlots();
+  lifecycle.completeStartupDiscovery();
+  registerProviderProxySetForTest(lifecycle, authority, TEST_PUBLICATION_RECEIPT);
+  return { record, claims, faults, authority, time, lifecycle, stopAndReap, dispositionStore };
+}
+
+function operationCancellationFault(operation: ReturnType<typeof providerOperationRecord>['operation']) {
+  return {
+    kind: 'operation-control-failed' as const,
+    policy: containmentOperationPolicy,
+    error: 'unknown cancellation',
+    inspection: { operation, prepareAttemptKey: 'b'.repeat(64) },
+  };
+}
+
+function releasedAttempt(fault: ReturnType<typeof operationCancellationFault>) {
+  return {
+    state: 'released-never-started' as const,
+    operation: fault.inspection.operation,
+    prepareAttemptNumber: 1,
+    prepareAttemptKey: fault.inspection.prepareAttemptKey,
+  };
+}
+
+function recordIncompatibleHeartbeat(fixture: ReturnType<typeof operationRecoveryFixture>): void {
+  const error = new ControlClientError('control_call_failed', 'unsupported heartbeat', 'remote-response', {
+    kind: 'json-rpc-error',
+    jsonRpcCode: -32601,
+    protocolCode: 'method_not_found',
+    admissionReason: null,
+    heartbeatRefusal: null,
+  });
+  fixture.lifecycle.recordAuthorityIncident(fixture.authority.setIdentity, {
+    kind: 'heartbeat-observation',
+    role: 'proxy',
+    method: 'control.heartbeat.v1',
+    schedulerLatenessMs: 0,
+    observation: heartbeatObservationFromExchange(
+      controlExchangeForTest({
+        kind: 'response',
+        response: {
+          kind: 'refusal',
+          error,
+          failure: {
+            kind: 'json-rpc-error',
+            jsonRpcCode: -32601,
+            protocolCode: 'method_not_found',
+            admissionReason: null,
+            heartbeatRefusal: null,
+          },
+        },
+      }),
+    ),
+  });
+}
+
 describe('ProviderProxySetLifecycle', () => {
   it('holds a claim-bearing indeterminate operation-control fault and fences retained mutation authority', async () => {
     const record = providerOperationRecord('executing');
@@ -504,6 +598,518 @@ describe('ProviderProxySetLifecycle', () => {
         waitingFor: 'operation-control-outcome-unknown',
       }),
     ]);
+  });
+
+  it('should restore dispatch after exact cancellation release evidence and rearm subsequent faults', async () => {
+    const record = providerOperationRecord('executing');
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([record]);
+    const faults = createProviderProxyAuthorityFaultLatch();
+    const base = fakeAuthority({ record });
+    const proxy = {
+      exchange: vi.fn(async () =>
+        controlExchangeForTest({
+          kind: 'response',
+          response: {
+            kind: 'result',
+            value: {
+              state: 'released-never-started',
+              operation: record.operation,
+              prepareAttemptNumber: 1,
+              prepareAttemptKey: 'b'.repeat(64),
+            },
+          },
+        }),
+      ),
+    };
+    const underlying = createProviderProxyOperationAuthority({
+      base: base as never,
+      setIdentity: base.setIdentity,
+      clients: { proxy } as never,
+      faults,
+      mutationRpcTimeoutMs: 1_000,
+    });
+    const authority = { ...underlying };
+    const lifecycle = lifecycleFor({
+      claims,
+      time: new ManualClock(),
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: vi.fn() },
+      proveContainmentAbsent: noContainmentProof,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    registerProviderProxySetForTest(lifecycle, authority, TEST_PUBLICATION_RECEIPT);
+    faults.latch({
+      kind: 'operation-control-failed',
+      policy: containmentOperationPolicy,
+      error: 'unknown cancellation',
+      inspection: { operation: record.operation, prepareAttemptKey: 'b'.repeat(64) },
+    });
+    await drainMicrotasks();
+    expect(lifecycle.authorityFor(authority.setIdentity)).toBe(authority);
+    expect(providerProxyOperationControlIsHeld(underlying)).toBe(false);
+    expect(lifecycle.snapshot().operatorDispositions).toEqual([]);
+    expect(claims.operationsFor(authority.setIdentity)).toEqual([record.operation]);
+    faults.latch({ kind: 'operation-control-failed', policy: containmentOperationPolicy, error: 'next unknown' });
+    expect(lifecycle.authorityFor(authority.setIdentity)).toBeNull();
+    expect(providerProxyOperationControlIsHeld(underlying)).toBe(true);
+  });
+
+  it.each(['absent', 'late-release'] as const)(
+    'should automatically contain a %s observation despite live claims and healthy control',
+    async (observation) => {
+      const record = providerOperationRecord('executing');
+      const claims = new ProviderProxySetClaimMirror();
+      claims.initialize([record]);
+      const faults = createProviderProxyAuthorityFaultLatch();
+      const stopAndReap = vi.fn(async () => ({ unconfirmed: 'not absent' }) as const);
+      const inspected = deferred<Awaited<ReturnType<DurableProviderProxyOperationAuthority['inspectOperation']>>>();
+      if (observation === 'absent') inspected.resolve({ state: 'absent' });
+      const inspectOperation = vi.fn(() => inspected.promise);
+      const authority = { ...fakeAuthority({ record, faults, stopAndReap }), inspectOperation };
+      const time = new ManualClock();
+      const lifecycle = lifecycleFor({
+        claims,
+        time,
+        controlEstablished: ignoreControlEstablished,
+        disappearanceConsumer: { containmentDisappeared: vi.fn() },
+        proveContainmentAbsent: noContainmentProof,
+      });
+      lifecycle.initializeClaimSlots();
+      lifecycle.completeStartupDiscovery();
+      registerProviderProxySetForTest(lifecycle, authority, TEST_PUBLICATION_RECEIPT);
+      faults.latch({
+        kind: 'operation-control-failed',
+        policy: containmentOperationPolicy,
+        error: 'unknown cancellation',
+        inspection: { operation: record.operation, prepareAttemptKey: 'b'.repeat(64) },
+      });
+      await drainMicrotasks();
+      expect(lifecycle.snapshot().operatorDispositions).toEqual([
+        expect.objectContaining({ waitingFor: 'operation-control-outcome-unknown', boundMs: 30_000 }),
+      ]);
+      expect(stopAndReap).not.toHaveBeenCalled();
+      for (let second = 0; second < 29; second += 1) {
+        time.elapse(1_000);
+        time.runDue();
+        await drainMicrotasks();
+      }
+      time.elapse(999);
+      time.runDue();
+      await drainMicrotasks();
+      expect(stopAndReap).not.toHaveBeenCalled();
+      time.elapse(1);
+      time.runDue();
+      await drainMicrotasks();
+      inspected.resolve({
+        state: 'released-never-started',
+        operation: record.operation,
+        prepareAttemptNumber: 1,
+        prepareAttemptKey: 'b'.repeat(64),
+      });
+      await drainMicrotasks();
+      expect(inspectOperation).toHaveBeenCalledWith(record.operation, 'b'.repeat(64));
+      expect(stopAndReap).toHaveBeenCalledOnce();
+      expect(lifecycle.snapshot().states).toEqual(['containing']);
+      expect(claims.operationsFor(authority.setIdentity)).toEqual([record.operation]);
+      expect(lifecycle.authorityFor(authority.setIdentity)).toBeNull();
+      expect(providerProxyOperationControlIsHeld(authority)).toBe(true);
+      expect(lifecycle.snapshot().operatorDispositions).toEqual([
+        expect.objectContaining({
+          disposition: 'awaiting-containment-absence',
+          waitingFor: 'containment-outcome-unknown',
+        }),
+      ]);
+    },
+  );
+
+  it.each(['same-attempt', 'different-attempt', 'different-operation'] as const)(
+    'should retain every overlapping %s mutation until all observations decide',
+    async (overlap) => {
+      const first = deferred<Awaited<ReturnType<DurableProviderProxyOperationAuthority['inspectOperation']>>>();
+      const second = deferred<Awaited<ReturnType<DurableProviderProxyOperationAuthority['inspectOperation']>>>();
+      const fixture = operationRecoveryFixture(
+        vi.fn().mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise),
+      );
+      const a = operationCancellationFault(fixture.record.operation);
+      const b = operationCancellationFault({
+        ...fixture.record.operation,
+        operationId: overlap === 'different-operation' ? randomUUID() : fixture.record.operation.operationId,
+      });
+      if (overlap === 'different-attempt') b.inspection.prepareAttemptKey = 'c'.repeat(64);
+      fixture.faults.latch(a);
+      fixture.faults.latch(b);
+      fixture.time.elapse(1_000);
+      fixture.time.runDue();
+      first.resolve(releasedAttempt(a));
+      await drainMicrotasks();
+      expect(fixture.lifecycle.authorityFor(fixture.authority.setIdentity)).toBeNull();
+      expect(providerProxyOperationControlIsHeld(fixture.authority)).toBe(true);
+      expect(fixture.lifecycle.snapshot().operatorDispositions).toEqual([
+        expect.objectContaining({ waitingFor: 'operation-control-outcome-unknown' }),
+      ]);
+      if (overlap === 'different-operation') {
+        for (let second = 1; second < 30; second += 1) {
+          fixture.time.elapse(1_000);
+          fixture.time.runDue();
+          await drainMicrotasks();
+        }
+        expect(fixture.stopAndReap).toHaveBeenCalledOnce();
+        expect(providerProxyOperationControlIsHeld(fixture.authority)).toBe(true);
+        return;
+      }
+      second.resolve(releasedAttempt(b));
+      await drainMicrotasks();
+      expect(fixture.lifecycle.authorityFor(fixture.authority.setIdentity)).toBe(fixture.authority);
+      expect(providerProxyOperationControlIsHeld(fixture.authority)).toBe(false);
+    },
+  );
+
+  it.each(['teardown-latched', 'local-failure'] as const)(
+    'should process a concurrent terminal heartbeat %s before inspection decides',
+    async (terminalReason) => {
+      const inspected = deferred<Awaited<ReturnType<DurableProviderProxyOperationAuthority['inspectOperation']>>>();
+      const fixture = operationRecoveryFixture(vi.fn(() => inspected.promise));
+      const fault = operationCancellationFault(fixture.record.operation);
+      fixture.faults.latch(fault);
+      fixture.faults.latch({ ...terminalAuthorityFault(), terminalReason });
+      inspected.resolve(releasedAttempt(fault));
+      await drainMicrotasks();
+      expect(fixture.lifecycle.authorityFor(fixture.authority.setIdentity)).toBeNull();
+      expect(providerProxyOperationControlIsHeld(fixture.authority)).toBe(true);
+      expect(fixture.lifecycle.snapshot().states).toEqual([
+        terminalReason === 'teardown-latched' ? 'containing' : 'reattachment-hold',
+      ]);
+    },
+  );
+
+  it('should give a new operation hold its full bound after an older heartbeat gate expires', async () => {
+    const fixture = operationRecoveryFixture(vi.fn(async () => ({ state: 'absent' }) as const));
+    recordIncompatibleHeartbeat(fixture);
+    elapseOperatorExitObservations(fixture.time, fixture.lifecycle, 30_000);
+    fixture.faults.latch(operationCancellationFault(fixture.record.operation));
+    await drainMicrotasks();
+    expect(fixture.stopAndReap).not.toHaveBeenCalled();
+    for (let second = 0; second < 29; second += 1) {
+      fixture.time.elapse(1_000);
+      fixture.time.runDue();
+      await drainMicrotasks();
+    }
+    fixture.time.elapse(999);
+    fixture.time.runDue();
+    await drainMicrotasks();
+    expect(fixture.stopAndReap).not.toHaveBeenCalled();
+    fixture.time.elapse(1);
+    fixture.time.runDue();
+    await drainMicrotasks();
+    expect(fixture.stopAndReap).toHaveBeenCalledOnce();
+  });
+
+  it('should preserve a coexisting heartbeat operator gate after operation recovery', async () => {
+    const inspected = deferred<Awaited<ReturnType<DurableProviderProxyOperationAuthority['inspectOperation']>>>();
+    const fixture = operationRecoveryFixture(vi.fn(() => inspected.promise));
+    recordIncompatibleHeartbeat(fixture);
+    elapseOperatorExitObservations(fixture.time, fixture.lifecycle, 10_000);
+    const address = providerProxySetAddress(fixture.authority.setIdentity);
+    const before = fixture.lifecycle.authorizeOperatorExit(address);
+    const dispositionsBefore = fixture.lifecycle.snapshot().operatorDispositions;
+    const fault = operationCancellationFault(fixture.record.operation);
+    fixture.faults.latch(fault);
+    inspected.resolve(releasedAttempt(fault));
+    await drainMicrotasks();
+    expect(fixture.lifecycle.authorityFor(fixture.authority.setIdentity)).toBe(fixture.authority);
+    expect(fixture.lifecycle.authorizeOperatorExit(address)).toEqual(before);
+    expect(fixture.lifecycle.snapshot().operatorDispositions).toEqual(dispositionsBefore);
+  });
+
+  it('should cancel its own timer when claims retire without disturbing the containment deadline', async () => {
+    const inspected = deferred<Awaited<ReturnType<DurableProviderProxyOperationAuthority['inspectOperation']>>>();
+    const fixture = operationRecoveryFixture(vi.fn(() => inspected.promise));
+    const fault = operationCancellationFault(fixture.record.operation);
+    fixture.faults.latch(fault);
+    const staleTimer = fixture.time.timers.find((timer) => timer.active && timer.at === 1_000)!;
+    fixture.claims.applyMutation({ kind: 'deleted', record: fixture.record });
+    fixture.lifecycle.claimsChanged(fixture.authority.setIdentity);
+    await drainMicrotasks();
+    expect(staleTimer.active).toBe(false);
+    const deadlines = fixture.time.timers.filter((timer) => timer.active);
+    const containmentDeadline = deadlines.find((timer) => timer.at === fixture.time.nowMs + 30_000);
+    expect(containmentDeadline).toBeDefined();
+    staleTimer.callback();
+    inspected.resolve(releasedAttempt(fault));
+    await drainMicrotasks();
+    expect(fixture.time.timers.filter((timer) => timer.active)).toEqual(deadlines);
+    expect(fixture.lifecycle.snapshot().states).toEqual(['containing']);
+    expect(providerProxyOperationControlIsHeld(fixture.authority)).toBe(true);
+    const release = fixture.lifecycle.containmentAbsent(fixture.authority.setIdentity, 'verified-containment-absence');
+    expect(release.kind).not.toBe('held');
+    await drainMicrotasks();
+    expect(containmentDeadline!.active).toBe(false);
+  });
+
+  it.each(['prepared', 'permanent-refusal'] as const)(
+    'should decide an exact prepare from retained %s evidence',
+    async (state) => {
+      const result =
+        state === 'prepared'
+          ? {
+              state,
+              reservation: randomUUID(),
+              leaseExpiresInMs: 1000,
+              providerRoot: { pid: 701, incarnation: testIncarnation(701) },
+              jointContainmentReceipt: 'contained',
+            }
+          : { state, code: 'proxy_prepare_refused', disposition: 'local-fallback', reason: 'released' };
+      const fixture = operationRecoveryFixture(vi.fn(async () => proxyOperationInspectResultSchema.parse(result)));
+      const fault = operationCancellationFault(fixture.record.operation);
+      fixture.faults.latch({ ...fault, policy: { ...fault.policy, method: 'operation.prepare.v1' } });
+      await drainMicrotasks();
+      expect(fixture.lifecycle.authorityFor(fixture.authority.setIdentity)).toBe(fixture.authority);
+      expect(fixture.stopAndReap).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['operation', 'attempt'] as const)(
+    'should retain cancellation uncertainty when inspection names the wrong %s',
+    async (mismatch) => {
+      const record = providerOperationRecord('executing');
+      const fault = operationCancellationFault(record.operation);
+      const result = releasedAttempt(fault);
+      if (mismatch === 'operation') result.operation = { ...record.operation, operationId: randomUUID() };
+      else result.prepareAttemptKey = 'c'.repeat(64);
+      const fixture = operationRecoveryFixture(vi.fn(async () => result));
+      fixture.faults.latch(fault);
+      await drainMicrotasks();
+      expect(fixture.lifecycle.authorityFor(fixture.authority.setIdentity)).toBeNull();
+      for (let second = 0; second < 30; second += 1) {
+        fixture.time.elapse(1000);
+        fixture.time.runDue();
+        await drainMicrotasks();
+      }
+      expect(fixture.stopAndReap).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each(['channel', 'failed-transfer'] as const)(
+    'should carry unresolved operations and their deadline through %s recovery',
+    async (transition) => {
+      const oldInspection = deferred<Awaited<ReturnType<DurableProviderProxyOperationAuthority['inspectOperation']>>>();
+      const newInspection = deferred<Awaited<ReturnType<DurableProviderProxyOperationAuthority['inspectOperation']>>>();
+      const fixture = operationRecoveryFixture(vi.fn(() => oldInspection.promise));
+      const promoted = {
+        ...fakeAuthority({ record: fixture.record }),
+        inspectOperation: vi.fn(() => newInspection.promise),
+      };
+      fixture.authority.redeemControl = async () => ({ kind: 'redeemed' }) as never;
+      fixture.authority.promoteControl = async () => promoted;
+      const fault = operationCancellationFault(fixture.record.operation);
+      fixture.faults.latch(fault);
+      for (let second = 0; second < 5; second += 1) {
+        fixture.time.elapse(1000);
+        fixture.time.runDue();
+        await drainMicrotasks();
+      }
+      if (transition === 'failed-transfer') {
+        fixture.authority.initiateControlClose = vi
+          .fn()
+          .mockRejectedValueOnce(new Error('transfer failed'))
+          .mockResolvedValue(undefined);
+        await expect(fixture.lifecycle.releaseControlForTransfer('transfer')).rejects.toThrow('transfer failed');
+        fixture.lifecycle.reclaimTransferredControl();
+      } else {
+        fixture.faults.reportIncident({
+          kind: 'control-channel-fault',
+          role: 'proxy',
+          cause: 'closed',
+          error: new ControlClientError('control_client_closed', 'closed', 'closed'),
+        });
+      }
+      await drainMicrotasks();
+      expect(promoted.inspectOperation).toHaveBeenCalledWith(
+        fault.inspection.operation,
+        fault.inspection.prepareAttemptKey,
+      );
+      expect(fixture.lifecycle.authorityFor(promoted.setIdentity)).toBeNull();
+      expect(providerProxyOperationControlIsHeld(promoted)).toBe(true);
+      oldInspection.resolve(releasedAttempt(fault));
+      await drainMicrotasks();
+      expect(fixture.lifecycle.authorityFor(promoted.setIdentity)).toBeNull();
+      expect(fixture.lifecycle.snapshot().operatorDispositions).toEqual([
+        expect.objectContaining({ waitingFor: 'operation-control-outcome-unknown', elapsedMs: 5000, attempts: 2 }),
+      ]);
+      for (let second = 0; second < 24; second += 1) {
+        fixture.time.elapse(1000);
+        fixture.time.runDue();
+        await drainMicrotasks();
+      }
+      expect(fixture.stopAndReap).not.toHaveBeenCalled();
+      fixture.time.elapse(1000);
+      fixture.time.runDue();
+      await drainMicrotasks();
+      expect(fixture.lifecycle.snapshot().states).toEqual(['containing']);
+      newInspection.resolve(releasedAttempt(fault));
+      await drainMicrotasks();
+      expect(fixture.lifecycle.authorityFor(promoted.setIdentity)).toBeNull();
+    },
+  );
+
+  it('should reobserve through promoted control before restoring dispatch and accept late old mutation faults', async () => {
+    const oldInspection = deferred<Awaited<ReturnType<DurableProviderProxyOperationAuthority['inspectOperation']>>>();
+    const newInspection = deferred<Awaited<ReturnType<DurableProviderProxyOperationAuthority['inspectOperation']>>>();
+    const fixture = operationRecoveryFixture(vi.fn(() => oldInspection.promise));
+    const promoted = {
+      ...fakeAuthority({ record: fixture.record }),
+      inspectOperation: vi.fn(() => newInspection.promise),
+    };
+    fixture.authority.redeemControl = async () => ({ kind: 'redeemed' }) as never;
+    fixture.authority.promoteControl = async () => promoted;
+    const fault = operationCancellationFault(fixture.record.operation);
+    fixture.faults.latch(fault);
+    fixture.faults.reportIncident({
+      kind: 'control-channel-fault',
+      role: 'proxy',
+      cause: 'closed',
+      error: new ControlClientError('control_client_closed', 'closed', 'closed'),
+    });
+    await drainMicrotasks();
+    newInspection.resolve(releasedAttempt(fault));
+    await drainMicrotasks();
+    expect(fixture.lifecycle.authorityFor(promoted.setIdentity)).toBe(promoted);
+    const late = operationCancellationFault({ ...fault.inspection.operation, operationId: randomUUID() });
+    fixture.faults.latch(late);
+    await drainMicrotasks();
+    expect(fixture.lifecycle.authorityFor(promoted.setIdentity)).toBeNull();
+    expect(promoted.inspectOperation).toHaveBeenCalledWith(
+      late.inspection.operation,
+      late.inspection.prepareAttemptKey,
+    );
+    expect(fixture.stopAndReap).not.toHaveBeenCalled();
+  });
+
+  it('should preserve a draining recovery and count started inspections cumulatively by method', async () => {
+    const first = deferred<Awaited<ReturnType<DurableProviderProxyOperationAuthority['inspectOperation']>>>();
+    const second = deferred<Awaited<ReturnType<DurableProviderProxyOperationAuthority['inspectOperation']>>>();
+    const fixture = operationRecoveryFixture(
+      vi.fn().mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise),
+    );
+    const a = operationCancellationFault(fixture.record.operation);
+    const b = operationCancellationFault({ ...fixture.record.operation, operationId: randomUUID() });
+    fixture.faults.latch(a);
+    expect(fixture.lifecycle.snapshot().operatorDispositions).toEqual([
+      expect.objectContaining({ method: 'operation.cancel.v1', attempts: 1 }),
+    ]);
+    fixture.faults.latch(b);
+    expect(fixture.lifecycle.snapshot().operatorDispositions).toEqual([
+      expect.objectContaining({ method: 'operation.cancel.v1', attempts: 1 }),
+    ]);
+    fixture.time.elapse(1000);
+    fixture.time.runDue();
+    await drainMicrotasks();
+    expect(fixture.lifecycle.snapshot().operatorDispositions).toEqual([
+      expect.objectContaining({ method: 'operation.cancel.v1', attempts: 2 }),
+    ]);
+    const persistedRecovery = () => fixture.dispositionStore.read().records.map(({ disposition }) => disposition);
+    expect(persistedRecovery()).toEqual([
+      expect.objectContaining({
+        waitingFor: 'operation-control-outcome-unknown',
+        attempts: 2,
+        elapsedMs: 1000,
+        boundMs: 30000,
+      }),
+    ]);
+    fixture.lifecycle.beginGracefulDrain(fixture.authority.setIdentity);
+    expect(fixture.lifecycle.snapshot().states).toEqual(['draining']);
+    expect(fixture.lifecycle.snapshot().operatorDispositions).toEqual([
+      expect.objectContaining({ waitingFor: 'operation-control-outcome-unknown', attempts: 2, boundMs: 30000 }),
+    ]);
+    expect(persistedRecovery()).toEqual([
+      expect.objectContaining({
+        waitingFor: 'operation-control-outcome-unknown',
+        attempts: 2,
+        elapsedMs: 1000,
+        boundMs: 30000,
+      }),
+    ]);
+    first.resolve(releasedAttempt(a));
+    await drainMicrotasks();
+    expect(fixture.lifecycle.snapshot().operatorDispositions).toEqual([
+      expect.objectContaining({ waitingFor: 'operation-control-outcome-unknown', attempts: 2 }),
+    ]);
+    expect(fixture.lifecycle.authorityFor(fixture.authority.setIdentity)).toBeNull();
+    second.resolve(releasedAttempt(b));
+    await drainMicrotasks();
+    expect(fixture.lifecycle.authorityFor(fixture.authority.setIdentity)).toBe(fixture.authority);
+    expect(fixture.stopAndReap).not.toHaveBeenCalled();
+  });
+
+  it('should retire reattachment before a late unclaimed mutation starts containment', async () => {
+    const contained = deferred<{ unconfirmed: string }>();
+    const fixture = operationRecoveryFixture(
+      vi.fn(async () => ({ state: 'absent' }) as const),
+      2000,
+    );
+    fixture.stopAndReap.mockImplementation(() => contained.promise);
+    fixture.authority.redeemControl = () => new Promise(() => {});
+    fixture.faults.reportIncident({
+      kind: 'control-channel-fault',
+      role: 'proxy',
+      cause: 'closed',
+      error: new ControlClientError('control_client_closed', 'closed', 'closed'),
+    });
+    await drainMicrotasks();
+    expect(fixture.lifecycle.snapshot().states).toEqual(['reattaching']);
+    fixture.claims.applyMutation({ kind: 'deleted', record: fixture.record });
+    fixture.lifecycle.claimsChanged(fixture.authority.setIdentity);
+    fixture.faults.latch(operationCancellationFault(fixture.record.operation));
+    await drainMicrotasks();
+    expect(fixture.stopAndReap).toHaveBeenCalledOnce();
+    const containmentDeadline = fixture.time.timers.find((timer) => timer.active && timer.at === 30000);
+    expect(containmentDeadline).toBeDefined();
+    for (let second = 0; second < 2; second += 1) {
+      fixture.time.elapse(1000);
+      fixture.time.runDue();
+      await drainMicrotasks();
+    }
+    contained.resolve({ unconfirmed: 'containment remains observable' });
+    await drainMicrotasks();
+    expect(fixture.lifecycle.snapshot().operatorDispositions).toEqual(
+      expect.arrayContaining([expect.objectContaining({ waitingFor: 'containment-outcome-unknown' })]),
+    );
+    expect(containmentDeadline?.active).toBe(true);
+    fixture.time.elapse(28000);
+    fixture.time.runDue();
+    await drainMicrotasks();
+    fixture.time.elapse(2000);
+    fixture.time.runDue();
+    await drainMicrotasks();
+    expect(fixture.stopAndReap).toHaveBeenCalledTimes(2);
+  });
+
+  it('should keep the containment bound while channel reattachment has no answer', async () => {
+    const inspected = deferred<Awaited<ReturnType<DurableProviderProxyOperationAuthority['inspectOperation']>>>();
+    const fixture = operationRecoveryFixture(vi.fn(() => inspected.promise));
+    fixture.authority.redeemControl = () => new Promise(() => {});
+    const fault = operationCancellationFault(fixture.record.operation);
+    fixture.faults.latch(fault);
+    fixture.faults.reportIncident({
+      kind: 'control-channel-fault',
+      role: 'proxy',
+      cause: 'closed',
+      error: new ControlClientError('control_client_closed', 'closed', 'closed'),
+    });
+    await drainMicrotasks();
+    expect(fixture.lifecycle.snapshot().states).toEqual(['reattaching']);
+    for (let second = 0; second < 30; second += 1) {
+      fixture.time.elapse(1000);
+      fixture.time.runDue();
+      await drainMicrotasks();
+    }
+    expect(fixture.lifecycle.snapshot().states).toEqual(['containing']);
+    expect(fixture.stopAndReap).toHaveBeenCalledOnce();
+    inspected.resolve(releasedAttempt(fault));
+    await drainMicrotasks();
+    expect(fixture.lifecycle.authorityFor(fixture.authority.setIdentity)).toBeNull();
   });
 
   it('fences the exact route and waits for an admitted prepare journal publication before proof collection', async () => {

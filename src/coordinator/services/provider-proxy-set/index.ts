@@ -10,6 +10,7 @@ import type { ProcessIncarnation, RecordedProcessObserver } from '../../../infra
 import { assertNever, errorMessage } from '../../../infra/error-format.js';
 import { ControlClientError } from '../../../provider-proxy/control-client.js';
 import type { OperationIdentity } from '../../../provider-proxy/protocol.js';
+import type { InspectProviderOperationResult } from '../provider-proxy-operation-activation.js';
 import {
   applyAnswer,
   applyNoResponse,
@@ -27,6 +28,8 @@ import {
 } from '../../../store/provider-operation-journal.js';
 import {
   holdProviderProxyOperationControl,
+  acknowledgeProviderProxyOperationControlFault,
+  recoverProviderProxyOperationControl,
   type DurableProviderProxyOperationAuthority,
 } from '../../live/provider-proxy/operation-route.js';
 import type { PublicationReceipt } from '../../live/provider-proxy/set-publication.js';
@@ -272,6 +275,17 @@ type OperatorExitObservedGate = {
   boundMs: number;
   observedElapsedMs: number;
   lastObservedAtMonotonicMs: bigint;
+};
+
+type OperationControlFault = Extract<ProviderProxyAuthorityFault, { kind: 'operation-control-failed' }>;
+type OperationControlObservation = { sourceAuthority: DurableProviderProxyOperationAuthority; inFlight: boolean };
+type OperationControlRecovery = {
+  faults: Map<OperationControlFault, OperationControlObservation>;
+  generation: number;
+  attempts: Map<string, number>;
+  observedElapsedMs: number;
+  lastObservedAtMonotonicMs: bigint;
+  timer: TimerHandle | null;
 };
 
 type EstablishedSlot = {
@@ -1050,6 +1064,23 @@ export type ProviderProxySetInheritanceRegistration =
   | Readonly<{ kind: 'admission-expired'; retryOwner: 'provider-proxy-set-inheritance' }>
   | Readonly<{ kind: 'superseded'; owner: 'provider-proxy-set-lifecycle'; identity: ProviderProxySetIdentity }>;
 
+// Absence may precede a delayed mutation; only retained exact-attempt evidence can restore dispatch.
+function operationControlObservationDecidesMutation(
+  fault: OperationControlFault,
+  result: InspectProviderOperationResult,
+): boolean {
+  const expected = fault.inspection;
+  if (expected === undefined) return false;
+  if ('operation' in result && operationKey(result.operation) !== operationKey(expected.operation)) return false;
+  if ('prepareAttemptKey' in result && result.prepareAttemptKey !== expected.prepareAttemptKey) return false;
+  const released = result.state === 'released-never-started' || result.state === 'released-after-terminal';
+  return (
+    (fault.policy.method === 'operation.prepare.v1' &&
+      (result.state === 'prepared' || result.state === 'permanent-refusal' || released)) ||
+    (fault.policy.method === 'operation.cancel.v1' && (released || result.state === 'permanent-refusal'))
+  );
+}
+
 export class ProviderProxySetLifecycle {
   readonly #deps: ProviderProxySetLifecycleDeps;
   readonly #identityIndex = new ProviderProxySetIdentityIndex();
@@ -1058,6 +1089,8 @@ export class ProviderProxySetLifecycle {
     { token: ProviderProxySetInheritanceAdmission; slot: ProviderProxySetSlot | undefined }
   >();
   readonly #slots = new Map<string, ProviderProxySetSlot>();
+  readonly #operationControlRecoveries = new Map<EstablishedSlot, OperationControlRecovery>();
+  readonly #operationAuthoritySlots = new WeakMap<DurableProviderProxyOperationAuthority, EstablishedSlot>();
   readonly #destructiveAttemptSettlements = new WeakMap<object, Set<Promise<void>>>();
   readonly #containmentAbsenceObservers = new Map<
     ProviderProxySetKey,
@@ -2491,6 +2524,7 @@ export class ProviderProxySetLifecycle {
     const released: EstablishedSlot[] = [];
     for (const slot of this.#slots.values()) {
       if ((slot.kind !== 'available' && slot.kind !== 'draining') || slot.controllerTransfer !== null) continue;
+      this.#invalidateOperationControlObservations(slot);
       slot.controllerTransfer = { attemptId };
       slot.attemptToken += 1;
       this.#clearIdleRetirement(slot);
@@ -2530,7 +2564,6 @@ export class ProviderProxySetLifecycle {
     if (slot.kind === 'reattachment-hold') {
       const window = slot.controlReattachmentWindow;
       if (window === null || this.#deps.claims.claimsFor(slot.identity).length !== 0) return;
-      this.#clearControlReattachment(slot, window);
       this.#clearLocalOperatorDispositions(slot.identity);
       this.#beginRetirementContainment(slot, this.#retirementStopDecision(slot, 'graceful_idle', 0));
       return;
@@ -2621,18 +2654,18 @@ export class ProviderProxySetLifecycle {
       slot.kind === 'recovering' ||
       slot.kind === 'absence-delivery-pending' ||
       slot.kind === 'abandonment-delivery-pending' ||
-      slot.authority !== authority ||
-      slot.attemptToken !== token ||
-      slot.operationControlState === 'outcome-unknown'
+      ((slot.authority !== authority || slot.attemptToken !== token) &&
+        !(fault.kind === 'operation-control-failed' && this.#operationAuthoritySlots.get(authority) === slot))
     ) {
       return;
     }
-    if (
-      slot.kind === 'reattaching' ||
-      slot.kind === 'reattachment-hold' ||
-      slot.kind === 'containing' ||
-      slot.kind === 'containment-wait'
-    ) {
+    if (slot.kind === 'containing' || slot.kind === 'containment-wait') return;
+    if (fault.kind === 'operation-control-failed') {
+      if (this.#deps.claims.claimsFor(slot.identity).length === 0) {
+        this.#beginFaultContainment(slot, this.#authorityFaultDecision(slot, fault));
+        return;
+      }
+      this.#holdOperationControlIndeterminate(slot, fault, authority);
       return;
     }
     const liveClaims = this.#deps.claims.claimsFor(slot.identity).length;
@@ -2644,7 +2677,6 @@ export class ProviderProxySetLifecycle {
       this.#beginHeartbeatLocalFailureHold(slot, fault);
       return;
     }
-    this.#holdOperationControlIndeterminate(slot, fault);
   }
 
   #hasLiveClaimsHold(slot: EstablishedSlot): boolean {
@@ -2850,6 +2882,15 @@ export class ProviderProxySetLifecycle {
         terminalExit: 'publication-confirmed-or-control-released',
       };
     }
+    if ('operationControlState' in slot && slot.operationControlState === 'outcome-unknown') {
+      return {
+        kind: 'control-or-containment',
+        ...active,
+        boundMs: CONTAINMENT_ATTEMPT_MS,
+        retryAction: 'recover-control-or-observe-exact-containment',
+        terminalExit: 'control-reattached-or-containment-absent',
+      };
+    }
     return { kind: 'inactive' };
   }
 
@@ -2918,6 +2959,7 @@ export class ProviderProxySetLifecycle {
       ) {
         this.#clearRepresentationReleaseTimers(authorizedSlot);
       } else {
+        this.#retireOperationControlRecovery(authorizedSlot);
         this.#removeRoute(authorizedSlot);
         authorizedSlot.containmentAttemptAbort?.abort(new Error('provider_proxy_operator_exit_authorized'));
         authorizedSlot.containmentAttemptAbort = null;
@@ -3319,12 +3361,6 @@ export class ProviderProxySetLifecycle {
           this.#reportDecision(decision);
         } else {
           void this.#recordDecision(slot, decision);
-          if (
-            (slot.kind === 'reattaching' || slot.kind === 'reattachment-hold') &&
-            slot.controlReattachmentWindow !== null
-          ) {
-            this.#clearControlReattachment(slot, slot.controlReattachmentWindow);
-          }
           this.#commitHeldSlotToContainment(slot);
         }
         const releaseObservation: {
@@ -4808,6 +4844,7 @@ export class ProviderProxySetLifecycle {
   }
 
   #subscribeAuthority(slot: EstablishedSlot, authority: DurableProviderProxyOperationAuthority, token: number): void {
+    this.#operationAuthoritySlots.set(authority, slot);
     authority.onFault((fault) => this.#faultAuthority(slot.identity, authority, token, fault));
     authority.onIncident((incident) => this.#recordAuthorityIncident(slot.identity, authority, token, incident));
   }
@@ -4856,13 +4893,22 @@ export class ProviderProxySetLifecycle {
 
   /** Disappearance evidence cannot release a routable slot until containment owns it. */
   #commitHeldSlotToContainment(slot: EstablishedSlot): void {
-    if (slot.kind !== 'available' && slot.kind !== 'draining') return;
+    if (
+      slot.kind !== 'available' &&
+      slot.kind !== 'draining' &&
+      slot.kind !== 'reattaching' &&
+      slot.kind !== 'reattachment-hold'
+    )
+      return;
+    if (slot.controlReattachmentWindow !== null) this.#clearControlReattachment(slot, slot.controlReattachmentWindow);
+    this.#retireOperationControlRecovery(slot);
     this.#removeRoute(slot);
     slot.kind = 'containing';
   }
 
   #beginControlReattachment(slot: EstablishedSlot, incident: ProviderProxyControlChannelIncident): void {
     if (this.#slots.get(slot.key) !== slot || (slot.kind !== 'available' && slot.kind !== 'draining')) return;
+    this.#invalidateOperationControlObservations(slot);
     const returnKind = slot.kind;
     const observedAtMonotonicMs = this.#deps.time.monotonicNow();
     slot.attemptToken += 1;
@@ -4956,7 +5002,7 @@ export class ProviderProxySetLifecycle {
           }
           if (sourceId === 'absence') {
             const proof = value as ProviderProxySetFencedContainmentProof;
-            if (this.#beginProxyLossContainment(slot, window, proof)) return;
+            if (this.#beginProxyLossContainment(slot, proof)) return;
             const reapAbort = new AbortController();
             window.attemptAbort = reapAbort;
             void this.#trackDestructiveAttempt(
@@ -4998,7 +5044,7 @@ export class ProviderProxySetLifecycle {
             }
             const decisive = decisiveTeardownLatchedRefusal(outcome.refusal);
             if (decisive !== null) {
-              this.#commitReattachmentTeardownLatched(slot, window, decisive);
+              this.#commitReattachmentTeardownLatched(slot, decisive);
               return;
             }
             window.cancelAttempt = null;
@@ -5112,11 +5158,9 @@ export class ProviderProxySetLifecycle {
     slot.attemptToken += 1;
     const promotedToken = slot.attemptToken;
     slot.authority = promoted;
-    slot.operationControlState = 'operational';
-    this.#subscribeAuthority(slot, promoted, promotedToken);
-    void oldAuthority.initiateControlClose().catch((error: unknown) => {
-      this.#deps.onError?.(`Displaced provider proxy control close failed: ${singleLineErrorSummary(error)}`);
-    });
+    const recovery = this.#operationControlRecoveries.get(slot);
+    slot.operationControlState = recovery === undefined ? 'operational' : 'outcome-unknown';
+    if (recovery !== undefined) holdProviderProxyOperationControl(promoted);
     this.#clearControlReattachment(slot, window);
     slot.kind = window.returnKind;
     slot.heartbeatEvidenceWindows.clear();
@@ -5126,6 +5170,19 @@ export class ProviderProxySetLifecycle {
     slot.operatorExitNotBeforeMonotonicMs = null;
     this.#flushPreserveReports(slot);
     void this.#deleteOperatorDispositions(slot.identity);
+    this.#subscribeAuthority(slot, promoted, promotedToken);
+    void oldAuthority.initiateControlClose().catch((error: unknown) => {
+      this.#deps.onError?.(`Displaced provider proxy control close failed: ${singleLineErrorSummary(error)}`);
+    });
+    if (slot.kind !== 'available' && slot.kind !== 'draining') return;
+    if (recovery !== undefined) {
+      this.#invalidateOperationControlObservations(slot);
+      if (recovery.timer !== null) this.#deps.time.clearTimeout(recovery.timer);
+      recovery.timer = null;
+      this.#reobserveOperationControl(slot, recovery);
+      return;
+    }
+    if (slot.operationControlState !== 'operational') return;
     if (slot.kind === 'available' && slot.routeKey !== null) this.#routeIndex.set(slot.routeKey, slot.key);
     this.#deps.controlEstablished(promoted);
     if (slot.kind === 'draining') this.claimsChanged(slot.identity);
@@ -5181,7 +5238,7 @@ export class ProviderProxySetLifecycle {
             return;
           }
           window.attemptAbort = null;
-          if (this.#beginProxyLossContainment(slot, window, proof, refusal.guardianAuthority)) return;
+          if (this.#beginProxyLossContainment(slot, proof, refusal.guardianAuthority)) return;
           releaseProviderProxySetContainmentProofFence(proof);
           this.#releasePartialRedemption(refusal);
           this.#awaitControlReattachmentAbsence(slot, window, reason);
@@ -5198,7 +5255,7 @@ export class ProviderProxySetLifecycle {
     }
     const decisive = refusal === undefined ? null : decisiveTeardownLatchedRefusal(refusal);
     if (decisive !== null) {
-      this.#commitReattachmentTeardownLatched(slot, window, decisive);
+      this.#commitReattachmentTeardownLatched(slot, decisive);
       return;
     }
     const error = singleLineErrorSummary(refusal ?? new Error('provider_proxy_control_reattachment_bound_expired'));
@@ -5218,7 +5275,6 @@ export class ProviderProxySetLifecycle {
     }
     slot.attemptToken += 1;
     const reattachmentBoundObserved = window.observedElapsedMs >= window.boundMs;
-    this.#clearControlReattachment(slot, window);
     if (!reattachmentBoundObserved) slot.operatorExitNotBeforeMonotonicMs = null;
     this.#clearLocalOperatorDispositions(slot.identity);
     this.#beginContainment(slot, {
@@ -5238,7 +5294,6 @@ export class ProviderProxySetLifecycle {
 
   #beginProxyLossContainment(
     slot: EstablishedSlot,
-    window: ControlReattachmentWindow,
     proof: ProviderProxySetFencedContainmentProof,
     authority?: ProviderProxyContainmentAuthority,
   ): boolean {
@@ -5250,7 +5305,6 @@ export class ProviderProxySetLifecycle {
       return false;
     releaseProviderProxySetContainmentProofFence(proof);
     slot.attemptToken += 1;
-    this.#clearControlReattachment(slot, window);
     slot.operatorExitNotBeforeMonotonicMs = null;
     this.#clearLocalOperatorDispositions(slot.identity);
     if (authority !== undefined) slot.containmentAuthority = authority;
@@ -5269,7 +5323,6 @@ export class ProviderProxySetLifecycle {
   /** Only a decisive teardown latch may begin fault containment. */
   #commitReattachmentTeardownLatched(
     slot: EstablishedSlot,
-    window: ControlReattachmentWindow,
     decisive: Readonly<{
       role: ProviderProxyRole;
       stage: 'open' | 'heartbeat';
@@ -5279,7 +5332,6 @@ export class ProviderProxySetLifecycle {
     }>,
   ): void {
     slot.attemptToken += 1;
-    this.#clearControlReattachment(slot, window);
     slot.operatorExitNotBeforeMonotonicMs = null;
     this.#clearLocalOperatorDispositions(slot.identity);
     slot.containmentAuthority = decisive.authority;
@@ -5355,7 +5407,7 @@ export class ProviderProxySetLifecycle {
           }
           if (sourceId === 'absence') {
             const proof = value as ProviderProxySetFencedContainmentProof;
-            if (this.#beginProxyLossContainment(slot, window, proof)) return;
+            if (this.#beginProxyLossContainment(slot, proof)) return;
             const reapAbort = new AbortController();
             window.attemptAbort = reapAbort;
             void this.#trackDestructiveAttempt(
@@ -5397,7 +5449,7 @@ export class ProviderProxySetLifecycle {
             }
             const decisive = decisiveTeardownLatchedRefusal(outcome.refusal);
             if (decisive !== null) {
-              this.#commitReattachmentTeardownLatched(slot, window, decisive);
+              this.#commitReattachmentTeardownLatched(slot, decisive);
               return;
             }
             window.cancelAttempt = null;
@@ -5503,8 +5555,7 @@ export class ProviderProxySetLifecycle {
     void this.#recordDecision(slot, decision);
     this.#armObservedOperatorExitGate(slot);
     slot.retirementDecision = null;
-    this.#removeRoute(slot);
-    slot.kind = 'containing';
+    this.#commitHeldSlotToContainment(slot);
     if (decision.action === 'await-containment-absence') {
       // Without containment authority, this hold may end only through confirmed absence, accepted succession,
       // or operator override.
@@ -5576,7 +5627,17 @@ export class ProviderProxySetLifecycle {
     }
     const setKey = providerProxySetKey(decision.setIdentity);
     if (decision.action === 'drain') {
-      return this.#deleteOperatorDispositions(decision.setIdentity);
+      const recoveryDispositions = new Map(
+        [...(this.#operatorDispositions.get(setKey) ?? [])].filter(
+          ([, disposition]) => disposition.waitingFor === 'operation-control-outcome-unknown',
+        ),
+      );
+      const retired = new Set(
+        [...(this.#operatorDispositions.get(setKey)?.keys() ?? [])].filter(
+          (subject) => !recoveryDispositions.has(subject),
+        ),
+      );
+      return this.#setOperatorDispositions(decision.setIdentity, recoveryDispositions, undefined, retired);
     }
     if (decision.reason === 'containment_refused_live_claims') {
       return this.#recordNonAuthorizingDisposition(decision);
@@ -6082,6 +6143,7 @@ export class ProviderProxySetLifecycle {
     fault: Extract<ProviderProxyAuthorityFault, { kind: 'heartbeat-failed' }>,
   ): void {
     if (this.#slots.get(slot.key) !== slot || (slot.kind !== 'available' && slot.kind !== 'draining')) return;
+    this.#invalidateOperationControlObservations(slot);
     const returnKind = slot.kind;
     const observedAtMonotonicMs = this.#deps.time.monotonicNow();
     slot.attemptToken += 1;
@@ -6119,12 +6181,27 @@ export class ProviderProxySetLifecycle {
   /** Unknown mutation outcomes must fence both future lookup and every retained reference to this authority. */
   #holdOperationControlIndeterminate(
     slot: EstablishedSlot,
-    fault: Extract<ProviderProxyAuthorityFault, { kind: 'operation-control-failed' }>,
+    fault: OperationControlFault,
+    sourceAuthority: DurableProviderProxyOperationAuthority,
   ): void {
-    slot.operationControlState = 'outcome-unknown';
-    holdProviderProxyOperationControl(slot.authority);
-    this.#removeRoute(slot);
-    this.#armObservedOperatorExitGate(slot);
+    let recovery = this.#operationControlRecoveries.get(slot);
+    if (recovery === undefined) {
+      slot.operationControlState = 'outcome-unknown';
+      holdProviderProxyOperationControl(slot.authority);
+      this.#removeRoute(slot);
+      recovery = {
+        faults: new Map(),
+        generation: 0,
+        attempts: new Map(),
+        observedElapsedMs: 0,
+        lastObservedAtMonotonicMs: this.#deps.time.monotonicNow(),
+        timer: null,
+      };
+      this.#operationControlRecoveries.set(slot, recovery);
+    }
+    if (!recovery.faults.has(fault)) {
+      recovery.faults.set(fault, { sourceAuthority, inFlight: false });
+    }
     const decision: ProviderProxySetContainmentRefusedDecision = {
       action: 'preserve',
       reason: 'containment_refused_live_claims',
@@ -6138,6 +6215,151 @@ export class ProviderProxySetLifecycle {
       },
     };
     void this.#recordDecision(slot, decision);
+    if (recovery.timer === null) this.#reobserveOperationControl(slot, recovery);
+    else this.#recordOperationControlWait(slot, recovery);
+  }
+
+  #operationControlRecoveryIsCurrent(slot: EstablishedSlot, recovery: OperationControlRecovery): boolean {
+    return (
+      this.#slots.get(slot.key) === slot &&
+      this.#operationControlRecoveries.get(slot) === recovery &&
+      slot.operationControlState === 'outcome-unknown' &&
+      (slot.kind === 'available' ||
+        slot.kind === 'draining' ||
+        slot.kind === 'reattaching' ||
+        slot.kind === 'reattachment-hold')
+    );
+  }
+
+  #reobserveOperationControl(slot: EstablishedSlot, recovery: OperationControlRecovery): void {
+    if (!this.#operationControlRecoveryIsCurrent(slot, recovery)) {
+      this.#retireOperationControlRecovery(slot);
+      return;
+    }
+    const now = this.#deps.time.monotonicNow();
+    const elapsed = Math.max(0, Number(now - recovery.lastObservedAtMonotonicMs));
+    recovery.lastObservedAtMonotonicMs = now;
+    recovery.observedElapsedMs = Math.min(
+      CONTAINMENT_ATTEMPT_MS,
+      recovery.observedElapsedMs + Math.min(elapsed, OPERATOR_EXIT_OBSERVATION_MS),
+    );
+    const fault = recovery.faults.keys().next().value;
+    if (fault === undefined) return;
+    if (recovery.observedElapsedMs >= CONTAINMENT_ATTEMPT_MS && slot.controllerTransfer === null) {
+      this.#beginFaultContainment(slot, this.#authorityFaultDecision(slot, fault));
+      return;
+    }
+    const timer = this.#deps.time.setTimeout(
+      () => {
+        if (recovery.timer !== timer || this.#operationControlRecoveries.get(slot) !== recovery) return;
+        recovery.timer = null;
+        this.#reobserveOperationControl(slot, recovery);
+      },
+      recovery.observedElapsedMs >= CONTAINMENT_ATTEMPT_MS
+        ? OPERATOR_EXIT_OBSERVATION_MS
+        : Math.min(OPERATOR_EXIT_OBSERVATION_MS, CONTAINMENT_ATTEMPT_MS - recovery.observedElapsedMs),
+    );
+    recovery.timer = timer;
+    timer.unref?.();
+    if (slot.controllerTransfer !== null || slot.kind === 'reattaching' || slot.kind === 'reattachment-hold') {
+      this.#recordOperationControlWait(slot, recovery);
+      return;
+    }
+    for (const [pending, observation] of recovery.faults) {
+      this.#inspectOperationControlFault(slot, recovery, pending, observation);
+    }
+    this.#recordOperationControlWait(slot, recovery);
+  }
+
+  #inspectOperationControlFault(
+    slot: EstablishedSlot,
+    recovery: OperationControlRecovery,
+    pending: OperationControlFault,
+    observation: OperationControlObservation,
+  ): void {
+    if (observation.inFlight || pending.inspection === undefined) return;
+    observation.inFlight = true;
+    const generation = recovery.generation;
+    recovery.attempts.set(pending.policy.method, (recovery.attempts.get(pending.policy.method) ?? 0) + 1);
+    void slot.authority
+      .inspectOperation(pending.inspection.operation, pending.inspection.prepareAttemptKey)
+      .then((result) => {
+        if (!this.#operationControlRecoveryIsCurrent(slot, recovery) || recovery.generation !== generation) return;
+        if (!operationControlObservationDecidesMutation(pending, result)) return;
+        recovery.faults.delete(pending);
+        acknowledgeProviderProxyOperationControlFault(observation.sourceAuthority, pending);
+        if (recovery.faults.size === 0) this.#recoverOperationControl(slot);
+        else this.#recordOperationControlWait(slot, recovery);
+      })
+      .catch((error: unknown) => {
+        this.#deps.onError?.(`Provider operation re-observation failed: ${singleLineErrorSummary(error)}`);
+      })
+      .finally(() => {
+        if (recovery.generation === generation) observation.inFlight = false;
+      });
+  }
+
+  #invalidateOperationControlObservations(slot: EstablishedSlot): void {
+    const recovery = this.#operationControlRecoveries.get(slot);
+    if (recovery === undefined) return;
+    recovery.generation += 1;
+    for (const observation of recovery.faults.values()) observation.inFlight = false;
+  }
+
+  #recordOperationControlWait(slot: EstablishedSlot, recovery: OperationControlRecovery): void {
+    const dispositions = new Map(this.#operatorDispositions.get(slot.key) ?? []);
+    const methods = new Set([...recovery.faults.keys()].map((fault) => fault.policy.method));
+    const retired = new Set<string>();
+    for (const [subject, disposition] of dispositions) {
+      if (
+        disposition.waitingFor === 'operation-control-outcome-unknown' &&
+        disposition.method !== undefined &&
+        !methods.has(disposition.method)
+      ) {
+        dispositions.delete(subject);
+        retired.add(subject);
+      }
+    }
+    for (const method of methods) {
+      const subject = operatorDispositionSubjectKey(undefined, method);
+      dispositions.set(subject, {
+        method,
+        disposition: 'held',
+        incidentReason: 'operation_control_indeterminate',
+        waitingFor: 'operation-control-outcome-unknown',
+        attempts: recovery.attempts.get(method) ?? 0,
+        elapsedMs: recovery.observedElapsedMs,
+        boundMs: CONTAINMENT_ATTEMPT_MS,
+      });
+    }
+    void this.#setOperatorDispositions(slot.identity, dispositions, undefined, retired);
+  }
+
+  #retireOperationControlRecovery(slot: EstablishedSlot): void {
+    const recovery = this.#operationControlRecoveries.get(slot);
+    if (recovery === undefined) return;
+    if (recovery.timer !== null) this.#deps.time.clearTimeout(recovery.timer);
+    recovery.timer = null;
+    this.#operationControlRecoveries.delete(slot);
+    if (this.#slots.get(slot.key) !== slot) return;
+    const dispositions = new Map(this.#operatorDispositions.get(slot.key) ?? []);
+    const retired = new Set<string>();
+    for (const [subject, disposition] of dispositions) {
+      if (disposition.waitingFor !== 'operation-control-outcome-unknown') continue;
+      dispositions.delete(subject);
+      retired.add(subject);
+    }
+    void this.#setOperatorDispositions(slot.identity, dispositions, undefined, retired);
+  }
+
+  #recoverOperationControl(slot: EstablishedSlot): void {
+    if (!recoverProviderProxyOperationControl(slot.authority)) return;
+    this.#retireOperationControlRecovery(slot);
+    slot.operationControlState = 'operational';
+    if (slot.kind === 'available' && slot.routeKey !== null) this.#routeIndex.set(slot.routeKey, slot.key);
+    this.#deps.controlEstablished(slot.authority);
+    if (slot.kind === 'draining') this.claimsChanged(slot.identity);
+    else this.#reconsiderIdleRetirement(slot);
   }
 
   #drainDecision(

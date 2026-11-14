@@ -2,6 +2,7 @@ import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { randomUUID } from 'node:crypto';
 
 import { describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 
 import type { HostRef } from '#src/providers/contract.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
@@ -22,6 +23,9 @@ import {
 } from '#src/provider-proxy/operation-supervisor.js';
 import {
   PROXY_EVENT_COMMIT_TIMEOUT_MS,
+  ProxyControlProtocolError,
+  decodeProxyControlFrame,
+  encodeProxyControlFrame,
   providerEventRequestSchema,
   type OperationIdentity,
   type ProxyOperationSendResult,
@@ -204,6 +208,7 @@ function preExecutionReleaseFixture(abortAndRelease: OperationStageHandle['abort
   prepareAttemptKey: string;
   staging: ReturnType<typeof deferred<OperationStageResult>>;
   stageAbort: ReturnType<typeof vi.fn<OperationStageHandle['abortAndRelease']>>;
+  stageProviderRoot: ReturnType<typeof vi.fn<() => OperationStageHandle>>;
   clock: ReturnType<typeof controlledTimer>;
 }> {
   const operation: OperationIdentity = {
@@ -220,6 +225,7 @@ function preExecutionReleaseFixture(abortAndRelease: OperationStageHandle['abort
     confirmActivation: async () => {},
     abortAndRelease: stageAbort,
   };
+  const stageProviderRoot = vi.fn(() => stage);
   const host: SemanticOperationHost = {
     start: () => {
       throw new Error('pre-execution fixture must not start the host');
@@ -235,7 +241,7 @@ function preExecutionReleaseFixture(abortAndRelease: OperationStageHandle['abort
     proxyInstanceId: operation.proxyInstanceId,
     buildSetId: operation.buildSetId,
     hostSetFingerprint: 'a'.repeat(64),
-    stageProviderRoot: () => stage,
+    stageProviderRoot,
     pushProviderEvent: () => ({
       controlEpoch: 1,
       response: Promise.resolve({ kind: 'ack', committedThroughProviderSeq: 0 }),
@@ -248,7 +254,7 @@ function preExecutionReleaseFixture(abortAndRelease: OperationStageHandle['abort
     prepareAttemptNumber: 1,
     prepared: PREPARED,
   });
-  return { supervisor, operation, prepareAttemptKey, staging, stageAbort, clock };
+  return { supervisor, operation, prepareAttemptKey, staging, stageAbort, stageProviderRoot, clock };
 }
 
 async function beginBlockedPreparation(
@@ -272,6 +278,104 @@ function completeStaging(fixture: ReturnType<typeof preExecutionReleaseFixture>)
 }
 
 describe('operation supervisor release progress', () => {
+  it('should release the reservation before returning a synchronous admission-closed refusal', async () => {
+    const fixture = preExecutionReleaseFixture(async () => {});
+    const refusal = new ProxyControlProtocolError('semantic_operation_admission_closed', 'Admission closed');
+    fixture.stageProviderRoot.mockImplementationOnce(() => {
+      throw refusal;
+    });
+
+    const attempt = {
+      prepareAttemptNumber: 1,
+      prepareAttemptKey: fixture.prepareAttemptKey,
+      prepared: PREPARED,
+    };
+    const result = await fixture.supervisor.prepare(fixture.operation, attempt);
+    const response = decodeProxyControlFrame(encodeProxyControlFrame({ jsonrpc: '2.0', id: 1, result }));
+    // New proxy refusals must remain readable by v0.10.32's strict prepare-result branch.
+    const shippedRefusal = z
+      .object({
+        state: z.literal('permanent-refusal'),
+        code: z.enum([
+          'authorization_expired',
+          'prepare_materialization_refused',
+          'provider_reconstruction_refused',
+          'provider_creation_refused',
+          'proxy_prepare_refused',
+        ]),
+        disposition: z.enum(['terminal-failure', 'local-fallback']),
+        reason: z.string().min(1).max(4096),
+      })
+      .strict();
+    expect(shippedRefusal.parse('result' in response ? response.result : undefined)).toEqual(result);
+    expect(result).toMatchObject({
+      state: 'permanent-refusal',
+      code: 'proxy_prepare_refused',
+      disposition: 'local-fallback',
+    });
+    await expect(fixture.supervisor.prepare(fixture.operation, attempt)).resolves.toEqual(result);
+    await expect(fixture.supervisor.inspect(fixture.operation, fixture.prepareAttemptKey)).resolves.toEqual(result);
+    await expect(fixture.supervisor.cancel(fixture.operation, 1, fixture.prepareAttemptKey)).resolves.toMatchObject({
+      state: 'released-never-started',
+    });
+    expect(fixture.supervisor.ledger().get(fixture.operation)).toBeNull();
+    expect(fixture.stageAbort).not.toHaveBeenCalled();
+    expect(fixture.clock.pendingCount()).toBe(0);
+  });
+
+  it('should surface cleanup failure instead of an admission-closed refusal while effects remain', async () => {
+    const cleanupFailure = new Error('Stage cleanup did not complete');
+    const fixture = preExecutionReleaseFixture(
+      vi.fn<OperationStageHandle['abortAndRelease']>().mockRejectedValueOnce(cleanupFailure).mockResolvedValue(),
+    );
+    const { preparing } = await beginBlockedPreparation(fixture);
+    const result = expect(preparing).rejects.toBe(cleanupFailure);
+    fixture.staging.reject(new ProxyControlProtocolError('semantic_operation_admission_closed', 'Admission closed'));
+
+    await result;
+    expect(fixture.supervisor.ledger().get(fixture.operation)?.state).toBe('releasing');
+    fixture.clock.advance(OPERATION_RELEASE_RETRY_MS);
+    await vi.waitFor(async () => {
+      await expect(fixture.supervisor.inspect(fixture.operation, fixture.prepareAttemptKey)).resolves.toMatchObject({
+        state: 'released-never-started',
+      });
+    });
+    expect(fixture.clock.pendingCount()).toBe(0);
+  });
+
+  it('should release every staged effect before returning an admission-closed refusal', async () => {
+    const released = deferred<void>();
+    const fixture = preExecutionReleaseFixture(() => released.promise);
+    const { preparing } = await beginBlockedPreparation(fixture);
+    const refusal = new ProxyControlProtocolError('semantic_operation_admission_closed', 'Admission closed');
+    const settled = vi.fn();
+    const result = preparing.then(
+      (value) => {
+        settled();
+        return value;
+      },
+      (error: unknown) => {
+        settled();
+        return error;
+      },
+    );
+    fixture.staging.reject(refusal);
+    await vi.waitFor(() => expect(fixture.stageAbort).toHaveBeenCalledOnce());
+    expect(settled).not.toHaveBeenCalled();
+    expect(fixture.supervisor.ledger().get(fixture.operation)?.state).toBe('releasing');
+
+    released.resolve();
+    await expect(result).resolves.toMatchObject({
+      state: 'permanent-refusal',
+      code: 'proxy_prepare_refused',
+      disposition: 'local-fallback',
+    });
+    await expect(fixture.supervisor.inspect(fixture.operation, fixture.prepareAttemptKey)).resolves.toMatchObject({
+      state: 'permanent-refusal',
+    });
+    expect(fixture.clock.pendingCount()).toBe(0);
+  });
+
   it('drives pre-execution release before a blocked operation tail can resume', async () => {
     const ownedAbort = deferred<void>();
     const fixture = preExecutionReleaseFixture(() => ownedAbort.promise);

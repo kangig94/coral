@@ -2,7 +2,7 @@ import { ProviderProxySetInheritanceCorruptionError } from './provider-proxy-set
 import type { ControlClient, ControlClientError } from '../../provider-proxy/control-client.js';
 import type { HeartbeatObservation } from '../../provider-proxy/heartbeat-observation.js';
 import type { ProviderProxySetOperatorDispositionCause } from '../../provider-proxy/operator-disposition-vocabulary.js';
-import type { ProxyControlProtocolErrorCode } from '../../provider-proxy/protocol.js';
+import type { OperationIdentity, ProxyControlProtocolErrorCode } from '../../provider-proxy/protocol.js';
 
 export type ProviderOperationSagaPhase =
   | 'prepare-pending'
@@ -66,6 +66,8 @@ export type ProviderProxyAuthorityFault =
   | Readonly<{
       kind: 'operation-control-failed';
       policy: ContainmentRequiredControlCallPolicy;
+      inspection?: Readonly<{ operation: OperationIdentity; prepareAttemptKey: string }>;
+      mutation?: Readonly<{ operation: OperationIdentity; reservation: string }>;
       error: unknown;
     }>
   | Readonly<{
@@ -106,6 +108,10 @@ export interface ProviderProxyAuthorityFaultLatch {
   readonly faulted: Promise<ProviderProxyAuthorityFault>;
   observeControlClient(role: ProviderProxyRole, client: Pick<ControlClient, 'onFault'>): void;
   latch(fault: ProviderProxyAuthorityFault): void;
+  acknowledgeOperationControlFault(
+    fault: Extract<ProviderProxyAuthorityFault, { kind: 'operation-control-failed' }>,
+  ): void;
+  hasOutstandingFaults(): boolean;
   onFault(listener: (fault: ProviderProxyAuthorityFault) => void): () => void;
   reportIncident(observation: ProviderProxyAuthorityObservation): void;
   onIncident(listener: (observation: ProviderProxyAuthorityObservation) => void): () => void;
@@ -153,7 +159,7 @@ function isAcceptedHeartbeat(
 
 export function createProviderProxyAuthorityFaultLatch(): ProviderProxyAuthorityFaultLatch {
   let resolveFault!: (fault: ProviderProxyAuthorityFault) => void;
-  let latchedFault: ProviderProxyAuthorityFault | null = null;
+  const latchedFaults = new Set<ProviderProxyAuthorityFault>();
   const listeners = new Set<(fault: ProviderProxyAuthorityFault) => void>();
   const incidentListeners = new Set<(observation: ProviderProxyAuthorityObservation) => void>();
   // The key vocabulary is build-owned, so overwriting the pending observation cannot grow this map from
@@ -163,8 +169,8 @@ export function createProviderProxyAuthorityFaultLatch(): ProviderProxyAuthority
     resolveFault = resolve;
   });
   const latch = (fault: ProviderProxyAuthorityFault): void => {
-    if (latchedFault !== null) return;
-    latchedFault = fault;
+    if (latchedFaults.has(fault)) return;
+    latchedFaults.add(fault);
     resolveFault(fault);
     for (const listener of listeners) listener(fault);
   };
@@ -190,12 +196,13 @@ export function createProviderProxyAuthorityFaultLatch(): ProviderProxyAuthority
       client.onFault((error) => reportIncident(providerProxyControlChannelIncident(role, error)));
     },
     latch,
+    acknowledgeOperationControlFault(fault) {
+      latchedFaults.delete(fault);
+    },
+    hasOutstandingFaults: () => latchedFaults.size > 0,
     onFault(listener) {
-      if (latchedFault !== null) {
-        listener(latchedFault);
-        return () => undefined;
-      }
       listeners.add(listener);
+      for (const fault of latchedFaults) listener(fault);
       return () => listeners.delete(listener);
     },
     reportIncident,
