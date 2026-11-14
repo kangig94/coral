@@ -97,7 +97,11 @@ const operationControlHolds = new WeakMap<
   ProviderProxyOperationControlHoldReason
 >();
 const operationControlStateKey: unique symbol = Symbol('provider-proxy-operation-control-state');
-type ProviderProxyOperationControlState = { holdReason: ProviderProxyOperationControlHoldReason | null };
+type ProviderProxyOperationControlState = {
+  holdReason: ProviderProxyOperationControlHoldReason | null;
+  acknowledgeFault(fault: Extract<ProviderProxyAuthorityFault, { kind: 'operation-control-failed' }>): void;
+  hasOutstandingFaults(): boolean;
+};
 type FencedProviderProxyOperationAuthority = DurableProviderProxyOperationAuthority & {
   [operationControlStateKey]: ProviderProxyOperationControlState;
 };
@@ -134,9 +138,28 @@ export function holdProviderProxyOperationControl(
   authority: DurableProviderProxyOperationAuthority,
   reason: ProviderProxyOperationControlHoldReason = 'operation-control-outcome-unknown',
 ): void {
-  operationControlHolds.set(authority, reason);
   const state = operationControlState(authority);
-  if (state !== null) state.holdReason = reason;
+  if (state === null) operationControlHolds.set(authority, reason);
+  else state.holdReason = reason;
+}
+
+/** Deciding one mutation must not release any other outstanding fault. */
+export function acknowledgeProviderProxyOperationControlFault(
+  authority: DurableProviderProxyOperationAuthority,
+  fault: Extract<ProviderProxyAuthorityFault, { kind: 'operation-control-failed' }>,
+): void {
+  operationControlState(authority)?.acknowledgeFault(fault);
+}
+
+/** Re-observation restores dispatch only; operation settlement still requires its own receipt. */
+export function recoverProviderProxyOperationControl(authority: DurableProviderProxyOperationAuthority): boolean {
+  const state = operationControlState(authority);
+  if (state !== null) {
+    if (state.hasOutstandingFaults()) return false;
+    state.holdReason = null;
+  }
+  operationControlHolds.delete(authority);
+  return true;
 }
 
 export function providerProxyOperationControlIsHeld(authority: DurableProviderProxyOperationAuthority): boolean {
@@ -201,7 +224,11 @@ export function createProviderProxyOperationAuthority(deps: {
   faults: ProviderProxyAuthorityFaultLatch;
   mutationRpcTimeoutMs: number;
 }): DurableProviderProxyOperationAuthority {
-  const controlState: ProviderProxyOperationControlState = { holdReason: null };
+  const controlState: ProviderProxyOperationControlState = {
+    holdReason: null,
+    acknowledgeFault: deps.faults.acknowledgeOperationControlFault,
+    hasOutstandingFaults: deps.faults.hasOutstandingFaults,
+  };
   const activationDeps: ProviderProxyOperationActivationDeps = {
     proxyClient: deps.clients.proxy,
     guardianClient: deps.clients.guardian,

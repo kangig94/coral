@@ -2,11 +2,13 @@ import { registerProviderProxySetForTest } from '#tests/helpers/provider-proxy-r
 import { providerOperationRecordSchema } from '#src/store/provider-operation-record.js';
 import {
   compareAndSwapProviderOperation,
+  hasProviderOperationForJob,
   ProviderOperationMutationSetClosedError,
   providerOperationMutationAdmission,
 } from '#src/store/provider-operation-journal.js';
 import { ProviderOperationAtomicTerminalizationError } from '#src/jobs/provider-operation-terminalization.js';
-import { ControlClientError } from '#src/provider-proxy/control-client.js';
+import { prepareProviderOperation } from '#src/coordinator/services/provider-proxy-operation-activation.js';
+import { ControlClientError, controlExchangeForTest } from '#src/provider-proxy/control-client.js';
 import { afterAll, describe, expect, it, vi } from 'vitest';
 import { type DurableProviderProxyOperationAuthority } from '#src/coordinator/live/provider-proxy/operation-route.js';
 import type { PublicationReceipt } from '#src/coordinator/live/provider-proxy/set-publication.js';
@@ -52,6 +54,61 @@ it('rejects the publication when its reconciliation is refused', async () => {
   vi.spyOn(harness.reconciler, 'reconcile').mockRejectedValueOnce(refusal);
   try {
     await expect(harness.begin()).rejects.toBe(refusal);
+  } finally {
+    harness.reconciler.stop();
+    harness.db.close();
+  }
+});
+
+it('should clean the new saga after admission-closed prepare without fencing operation control', async () => {
+  let fenced = false;
+  const faultAuthority = vi.fn(() => {
+    fenced = true;
+  });
+  const cancel = vi.fn(async (operation, prepareAttemptNumber, prepareAttemptKey) => ({
+    state: 'released-never-started' as const,
+    operation,
+    prepareAttemptNumber,
+    prepareAttemptKey,
+  }));
+  const client = {
+    exchange: async () =>
+      controlExchangeForTest({
+        kind: 'response',
+        response: {
+          kind: 'result',
+          value: {
+            state: 'permanent-refusal',
+            code: 'proxy_prepare_refused',
+            disposition: 'local-fallback',
+            reason: 'Admission closed after confirmed release',
+          },
+        },
+      }),
+  };
+  const harness = createHarness({
+    authorityFor: () => (fenced ? null : harness.authority),
+    cancelOperation: cancel,
+    prepareOperation: (attempt) =>
+      prepareProviderOperation(
+        {
+          proxyClient: client,
+          guardianClient: client,
+          setIdentity: harness.authority.setIdentity,
+          mutationRpcTimeoutMs: 1_000,
+          faultAuthority,
+          reportIncident: () => undefined,
+        },
+        attempt,
+      ),
+  });
+  try {
+    await expect(harness.begin()).resolves.toMatchObject({ kind: 'local-authorized' });
+    expect(faultAuthority).not.toHaveBeenCalled();
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(cancel).toHaveBeenCalledWith(harness.record.operation, 1, expect.any(String));
+    expect(hasProviderOperationForJob(harness.db, harness.record.operation.jobId)).toBe(false);
+    expect(harness.fatalErrors).toEqual([]);
   } finally {
     harness.reconciler.stop();
     harness.db.close();

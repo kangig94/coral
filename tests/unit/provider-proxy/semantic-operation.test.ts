@@ -54,11 +54,21 @@ import { ReplayAdmissionError } from '#src/provider-proxy/replay-budget.js';
 import type { ControlEndpointTimer } from '#src/provider-proxy/control-endpoint.js';
 import {
   decodeProxyControlFrame,
+  encodeProxyControlFrame,
   providerEventRequestSchema,
+  proxyOperationPrepareParamsSchema,
   proxyOperationPreparePendingResultSchema,
+  proxyOperationSettleParamsSchema,
   type OperationIdentity,
   type ProxyPreparedAppServerOperation,
 } from '#src/provider-proxy/protocol.js';
+import { controlExchangeForTest } from '#src/provider-proxy/control-client.js';
+import {
+  prepareProviderOperation,
+  providerOperationPrepareAttempt,
+  settleProviderOperation,
+  type ProviderProxyOperationActivationDeps,
+} from '#src/coordinator/services/provider-proxy-operation-activation.js';
 import { OperationSupervisor } from '#src/provider-proxy/operation-supervisor.js';
 import { type ProxyAppServerHostAuthority } from '#src/provider-proxy/provider-root-authority.js';
 import {
@@ -749,6 +759,143 @@ it.each(['submitted', 'unknown'] as const)('requires cessation evidence for a %s
   await start.result;
   await vi.waitFor(() => expect(emittedEvents.some(({ event }) => event.kind === 'terminal')).toBe(true));
   await expect(start.abortAndRelease()).rejects.toMatchObject({ code: 'semantic_operation_cancellation_unconfirmed' });
+  expect(relinquish).toHaveBeenCalledOnce();
+});
+
+it('returns a released refusal across control framing and settles siblings before relinquishing', async () => {
+  const proxy = {} as Proxy;
+  const operation = supervisedOperation(1);
+  const siblingOperation = supervisedOperation(2);
+  providerRegistryDouble.rehydrateBinding
+    .mockReturnValueOnce({
+      ok: true,
+      value: fakeBoundProvider({
+        supportsInterrupt: true,
+        execute: async function* (executionRuntime) {
+          executionRuntime.onProviderTurnStart?.();
+          yield terminalCompleted;
+        },
+      }),
+    })
+    .mockReturnValue({
+      ok: true,
+      value: fakeBoundProvider({
+        execute: async function* () {
+          yield terminalCompleted;
+        },
+      }),
+    });
+  const relinquish = vi.fn();
+  const semantic = createSemanticOperationRuntime({
+    hostRoot: '/test/plugin',
+    hostFingerprint: proxySetFingerprintFromSpec(fakeHostSpec()),
+    runtime,
+    hostAuthority: fakeHostAuthority(),
+    getProxy: () => proxy,
+    onRelinquish: relinquish,
+  });
+  const prepared = preparedFixture();
+  const supervisor = new OperationSupervisor({
+    host: semantic.host,
+    timer: supervisorTimer,
+    mintReservation: () => asReservation('40000000-0000-4000-8000-000000000001'),
+    wallClockNow: () => 0,
+    nowMs: () => 0,
+    proxyInstanceId: operation.proxyInstanceId,
+    buildSetId: operation.buildSetId,
+    hostSetFingerprint: 'a'.repeat(64),
+    stageProviderRoot: (key, reserved) => {
+      const stage = semantic.stage(key, reserved.prepared);
+      return {
+        result: stage.result.then((staged) =>
+          staged.state !== 'staged' ? staged : { ...staged, receipt: asJointContainmentReceipt('contained') },
+        ),
+        confirmActivation: async () => {},
+        abortAndRelease: () => stage.abortAndRelease(),
+      };
+    },
+    pushProviderEvent: () => {
+      throw new ControlEndpointError('control_endpoint_push_no_tenancy', 'offline test transport');
+    },
+    faultProviderEventControl: () => {},
+  });
+  Object.assign(proxy, {
+    ledger: () => supervisor.ledger(),
+    emitProviderEvent: (key: ProviderOperationKey, event: ProviderEventBody) =>
+      supervisor.emitProviderEvent(key, event),
+  });
+  for (const current of [operation, siblingOperation]) {
+    const attempt = providerOperationPrepareAttempt(
+      { setIdentity: { hostFingerprint: 'a'.repeat(64) } } as never,
+      current,
+      prepared,
+    );
+    const pending = proxyOperationPreparePendingResultSchema.parse(
+      await supervisor.prepare(current, {
+        prepareAttemptNumber: 1,
+        prepareAttemptKey: attempt.prepareAttemptKey,
+        prepared,
+      }),
+    );
+    await supervisor.activate(current, {
+      reservation: pending.reservation,
+      jointContainmentReceipt: pending.jointContainmentReceipt,
+      jointActivationReceipt: asJointActivationReceipt('activated'),
+      activationFingerprint: attempt.prepareAttemptKey,
+    });
+    await supervisor.attach(current, 0);
+  }
+  await vi.waitFor(() => {
+    expect(supervisor.ledger().get(operation)?.state).toBe('terminal-awaiting-settlement');
+    expect(supervisor.ledger().get(siblingOperation)?.state).toBe('terminal-awaiting-settlement');
+  });
+  await expect(supervisor.settle(operation, 1)).rejects.toMatchObject({
+    code: 'semantic_operation_cancellation_unconfirmed',
+  });
+  expect(relinquish).not.toHaveBeenCalled();
+  const exchange = async (method: string, params: unknown) => {
+    const request = decodeProxyControlFrame(encodeProxyControlFrame({ jsonrpc: '2.0', id: 1, method, params }));
+    if (!('method' in request)) throw new Error('Expected a control request');
+    let result: unknown;
+    if (request.method === 'operation.prepare.v1') {
+      const parsed = proxyOperationPrepareParamsSchema.parse(request.params);
+      result = await supervisor.prepare(parsed.operation, {
+        ...parsed,
+        prepareAttemptKey: operationPrepareAttemptKey(parsed),
+      });
+    } else {
+      const parsed = proxyOperationSettleParamsSchema.parse(request.params);
+      result = await supervisor.settle(parsed.operation, parsed.finalProviderSeq);
+    }
+    const response = decodeProxyControlFrame(encodeProxyControlFrame({ jsonrpc: '2.0', id: 1, result }));
+    if (!('result' in response)) throw new Error('Expected a control result');
+    return controlExchangeForTest({ kind: 'response', response: { kind: 'result', value: response.result } });
+  };
+  const faultAuthority = vi.fn();
+  const activationDeps: ProviderProxyOperationActivationDeps = {
+    proxyClient: { exchange },
+    guardianClient: { exchange },
+    setIdentity: { hostFingerprint: 'a'.repeat(64) } as ProviderProxyOperationActivationDeps['setIdentity'],
+    mutationRpcTimeoutMs: 1_000,
+    faultAuthority,
+    reportIncident: () => {},
+  };
+  await expect(
+    prepareProviderOperation(
+      activationDeps,
+      providerOperationPrepareAttempt(activationDeps, supervisedOperation(3), prepared),
+    ),
+  ).resolves.toMatchObject({
+    state: 'permanent-refusal',
+    code: 'proxy_prepare_refused',
+    disposition: 'local-fallback',
+  });
+  expect(faultAuthority).not.toHaveBeenCalled();
+  expect(relinquish).not.toHaveBeenCalled();
+  await expect(settleProviderOperation(activationDeps, siblingOperation, 1)).resolves.toEqual({
+    state: 'released-after-terminal',
+    settledThroughProviderSeq: 1,
+  });
   expect(relinquish).toHaveBeenCalledOnce();
 });
 

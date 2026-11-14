@@ -96,6 +96,72 @@ function deps(proxy: OperationControlClient, guardian: OperationControlClient): 
 }
 
 describe('provider proxy operation mutations', () => {
+  it.each([
+    { response: 'released-result', expectedFaults: 0 },
+    { response: 'legacy-refusal', expectedFaults: 1 },
+  ])(
+    'should fault authority only for admission refusals without cleanup proof: $response',
+    async ({ response, expectedFaults }) => {
+      const failure: ControlClientRemoteFailure = {
+        kind: 'json-rpc-error',
+        jsonRpcCode: -32603,
+        protocolCode: 'semantic_operation_admission_closed',
+        admissionReason: null,
+        heartbeatRefusal: null,
+      };
+      const error = new ControlClientError('control_call_failed', 'Admission closed', 'remote-response', failure);
+      const released = {
+        state: 'permanent-refusal',
+        code: 'proxy_prepare_refused',
+        disposition: 'local-fallback',
+        reason: 'Admission closed after confirmed release',
+      };
+      const client: OperationControlClient = {
+        exchange: async (method) =>
+          controlExchangeForTest({
+            kind: 'response',
+            response:
+              method === 'operation.prepare.v1'
+                ? response === 'released-result'
+                  ? { kind: 'result', value: released }
+                  : { kind: 'refusal', failure, error }
+                : { kind: 'result', value: { state: 'released-after-terminal', settledThroughProviderSeq: 1 } },
+          }),
+      };
+      const faultAuthority = vi.fn();
+      const activationDeps = { ...deps(client, client), faultAuthority };
+      const attempt = providerOperationPrepareAttempt(activationDeps, OPERATION, {
+        version: 1,
+        provider: 'codex',
+        binding: { provider: 'codex', kind: 'account', binding: {} },
+        request: {
+          action: 'exec',
+          jobId: 'session-1',
+          prompt: 'hello',
+          cwd: fixtureCanonicalWorkDir('/tmp'),
+          bypassPermissions: false,
+          coralEnv: {},
+        },
+        persistedContinuity: null,
+        baseEnv: {},
+        protectedEnv: {},
+        platform: 'linux',
+      });
+
+      if (response === 'released-result') {
+        await expect(prepareProviderOperation(activationDeps, attempt)).resolves.toEqual(released);
+      } else {
+        await expect(prepareProviderOperation(activationDeps, attempt)).rejects.toBe(error);
+      }
+      expect(faultAuthority).toHaveBeenCalledTimes(expectedFaults);
+      if (expectedFaults > 0) return;
+      await expect(
+        settleProviderOperation(activationDeps, { ...OPERATION, operationId: randomUUID() }, 1),
+      ).resolves.toEqual({ state: 'released-after-terminal', settledThroughProviderSeq: 1 });
+      expect(faultAuthority).not.toHaveBeenCalled();
+    },
+  );
+
   it('keeps guardian authorization and semantic activation as separate replayable mutations', async () => {
     const reservation = randomUUID();
     const proxy = scriptedClient({
@@ -287,18 +353,20 @@ it('keeps the exhaustive operation policy dispositions separate from send uncert
     protectedEnv: {},
     platform: 'linux',
   });
+  const guardianReservation = randomUUID();
+  const proxyReservation = randomUUID();
   const calls = [
     () => prepareProviderOperation(activationDeps, attempt),
     () => inspectProviderOperation(activationDeps, OPERATION, attempt.prepareAttemptKey),
     () =>
       authorizeProviderOperation(activationDeps, OPERATION, {
-        reservation: randomUUID(),
+        reservation: guardianReservation,
         providerRoot: { pid: 701, incarnation: testIncarnation(800) },
         jointContainmentReceipt: 'joint-1',
       }),
     () =>
       activateProviderOperation(activationDeps, OPERATION, {
-        reservation: randomUUID(),
+        reservation: proxyReservation,
         jointContainmentReceipt: 'joint-1',
         jointActivationReceipt: 'activation-1',
       }),
@@ -313,6 +381,12 @@ it('keeps the exhaustive operation policy dispositions separate from send uncert
     ['guardian.operation-activate.v1', 'requires-containment'],
     ['operation.activate.v1', 'requires-containment'],
     ['operation.cancel.v1', 'requires-containment'],
+  ]);
+  expect(faultAuthority.mock.calls.map(([fault]) => fault.inspection ?? fault.mutation)).toEqual([
+    { operation: OPERATION, prepareAttemptKey: attempt.prepareAttemptKey },
+    { operation: OPERATION, reservation: guardianReservation },
+    { operation: OPERATION, reservation: proxyReservation },
+    { operation: OPERATION, prepareAttemptKey: attempt.prepareAttemptKey },
   ]);
   expect(
     reportIncident.mock.calls.map(([incident]) => [incident.policy.method, incident.policy.indeterminate]),

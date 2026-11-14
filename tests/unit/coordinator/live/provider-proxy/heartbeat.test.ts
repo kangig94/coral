@@ -118,6 +118,8 @@ function recordingFaultLatch(): {
       faulted: new Promise<never>(() => undefined),
       observeControlClient: () => undefined,
       latch: (fault) => faults.push(fault),
+      acknowledgeOperationControlFault: () => undefined,
+      hasOutstandingFaults: () => false,
       onFault: () => () => undefined,
       reportIncident: (observation) => {
         if (observation.kind !== 'heartbeat-observation') return;
