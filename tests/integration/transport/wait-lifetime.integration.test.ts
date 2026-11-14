@@ -9,6 +9,7 @@ const root = resolve('.');
 const directory = mkdtempSync(join(tmpdir(), 'coral-wait-lifetime-'));
 const probes = [
   'observed-race',
+  'codex-thread-read-retention',
   'ipc-reachable',
   'http-reachable',
   'dispatch-retention',

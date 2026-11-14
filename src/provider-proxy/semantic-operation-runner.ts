@@ -88,7 +88,6 @@ function isSameHostRef(left: HostRef, right: HostRef): boolean {
 
 export const SEMANTIC_OPERATION_CANCELLATION_TIMEOUT_MS = SIGTERM_GRACE_MS + SIGKILL_GRACE_MS;
 export const SEMANTIC_OPERATION_SEND_TIMEOUT_MS = 10_000;
-const TURN_SETTLEMENT_OBSERVATION_ATTEMPTS = 3;
 
 export class SemanticOperationCancellationTimeoutError extends Error {
   readonly code = 'semantic_operation_cancellation_timeout';
@@ -338,7 +337,6 @@ type StagedOperation = {
   cancellationExpired: Promise<SemanticOperationCancellationTimeoutError>;
   resolveCancellationExpired(error: SemanticOperationCancellationTimeoutError): void;
   turnSettlement: ProviderTurnSettlement | null;
-  settlementRefusals: number;
   completionEmitted: boolean;
   staged: Readonly<{ hostRef: HostRef; close(): void }> | null;
   root: Readonly<{ pid: number; incarnation: ProcessIncarnation }> | null;
@@ -727,12 +725,7 @@ function createSemanticOperationCancellation(
         if (terminal !== null && terminal.providerTurnId === entry.turnSettlement.providerTurnId)
           entry.cancellationEvidence = { kind: 'provider-turn-terminal', terminal };
         else {
-          entry.settlementRefusals += 1;
-          const reason = 'the inferred turn has no authoritative cessation evidence';
-
-          if (entry.settlementRefusals >= TURN_SETTLEMENT_OBSERVATION_ATTEMPTS)
-            throw requireSetRelinquishment(entry, reason);
-          throw new SemanticOperationCancellationUnconfirmedError(entry.key, reason);
+          throw requireSetRelinquishment(entry, 'the inferred turn has no authoritative cessation evidence');
         }
       }
       const evidence = entry.cancellationEvidence;
@@ -767,12 +760,7 @@ function createSemanticOperationCancellation(
     reason: Readonly<{ kind: 'release'; cause: Error }> | Readonly<{ kind: 'stop'; cause: ProviderStopCause }>,
   ): Promise<void> => {
     if (entry.cancellationPromise !== null) return entry.cancellationPromise;
-    entry.cancellationPromise = driveCancellation(entry, reason).catch((error: unknown) => {
-      if (entry.turnSettlement !== null && entry.settlementRefusals < TURN_SETTLEMENT_OBSERVATION_ATTEMPTS) {
-        entry.cancellationPromise = null;
-      }
-      throw error;
-    });
+    entry.cancellationPromise = driveCancellation(entry, reason);
     return entry.cancellationPromise;
   };
 
@@ -855,14 +843,12 @@ function createSemanticOperationHost(
               if (entry.cancellationDeadlineController.signal.aborted) return;
               entry.turnSettlement = settlement;
               if (currentTurnTerminalEvidence(entry) === null) entry.cancellationEvidence = null;
-              entry.settlementRefusals = 0;
             },
             onProviderTurnStart: () => {
               entry.turnEnded = false;
               entry.providerTurnSubmission = 'submitted';
               if (entry.cancellationDeadlineController.signal.aborted) return;
               entry.cancellationEvidence = null;
-              entry.settlementRefusals = 0;
             },
             onProviderTurnNotSubmitted: () => {
               if (entry.providerTurnSubmission === 'unknown') entry.providerTurnSubmission = 'not-submitted';
@@ -935,7 +921,6 @@ function createStagedOperationEntry(
     cancellationExpired,
     resolveCancellationExpired,
     turnSettlement: null,
-    settlementRefusals: 0,
     completionEmitted: false,
     staged: null,
     root: null,

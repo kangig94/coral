@@ -17,6 +17,7 @@ import { snapshotAppServerExecutionRuntime } from '#src/providers/internal/runti
 import { wrapAppServerSession } from '#src/providers/internal/server-lease-boundary.js';
 import { codexTurnKernel } from '#src/providers/codex/thread-kernel.js';
 import { codexThreadProvider } from '#src/providers/codex/thread-provider.js';
+import * as threadReads from '#src/providers/codex/thread-read.js';
 import { TEST_CODEX_PLAN } from '#tests/helpers/provider-credentials.js';
 
 type CodexRuntime = ProviderAppServerRuntime<CodexExecutionPlan>;
@@ -36,7 +37,11 @@ function harness(
     catalogError?: Error;
     deferredStart?: boolean;
     turnStatus?: 'completed' | 'inProgress';
-    readTurnStatus?: 'completed' | 'inProgress';
+    readTurnStatus?: 'completed' | 'inProgress' | 'unknown' | 'hung';
+    readTurnStatuses?: Array<'inProgress' | 'completed'>;
+    readTurnId?: string;
+    readThreadId?: string;
+    otherReadTurn?: boolean;
     turnStartFailure?: boolean;
     resumeErrors?: readonly Error[];
     resumedIds?: string[];
@@ -50,6 +55,7 @@ function harness(
     observeSettlement?: boolean;
   } = {},
 ) {
+  const readTurnStatuses = [...(options.readTurnStatuses ?? [])];
   const time = new VirtualTime();
   const timers = vi.spyOn(time, 'setTimeout');
   const listeners = new Set<(message: AppServerNotificationMessage) => void>();
@@ -122,11 +128,19 @@ function harness(
       return { turn: { id: turnId, status: options.turnStatus ?? 'inProgress' } };
     }
     if (method === 'thread/read') {
+      if (options.readTurnStatus === 'unknown') return {};
+      if (options.readTurnStatus === 'hung') return new Promise(() => {});
       const invocation = [...invocations].reverse().find((candidate) => candidate.threadId === params.threadId);
       return {
         thread: {
-          id: params.threadId,
-          turns: [{ id: invocation?.turnId, status: options.readTurnStatus ?? 'completed' }],
+          id: options.readThreadId ?? params.threadId,
+          turns: [
+            ...(options.otherReadTurn ? [{ id: 'other-turn', status: 'inProgress' }] : []),
+            {
+              id: options.readTurnId ?? invocation?.turnId,
+              status: readTurnStatuses.shift() ?? options.readTurnStatus ?? 'completed',
+            },
+          ],
         },
       };
     }
@@ -192,6 +206,7 @@ function harness(
     let port: ProviderSteeringPort | undefined;
     let settlement: ProviderTurnSettlement | undefined;
     let settled = false;
+    const terminalEvidence = vi.fn();
     const runtime: CodexRuntime = {
       transport: 'app-server',
       appServerSession: lease,
@@ -206,7 +221,7 @@ function harness(
       } as unknown as CodexRuntime['storage'],
       persistedContinuity: { cwd: '/workspace', threadId: request.conversationRef ?? 'thread-1' },
       continuityBridge: { checkpoint: () => {}, transportClosed: () => {} },
-      onProviderTurnTerminal: () => {},
+      onProviderTurnTerminal: terminalEvidence,
       onProviderTurnStart: () => started.resolve(),
       onProviderTurnNotSubmitted: notSubmitted,
       onProviderDiagnostic: diagnostics,
@@ -262,6 +277,7 @@ function harness(
       methods,
       interrupt,
       diagnostics,
+      terminalEvidence,
       notSubmitted,
       events,
       done,
@@ -617,6 +633,280 @@ describe('codexTurnKernel steering', () => {
     });
     expect(h.messages()).toContain(`Sent message ${firstId} was not read before the turn ended`);
   });
+
+  it.each(['commandExecution', 'futureItem'])(
+    'holds inferred completion while a %s item remains open',
+    async (type) => {
+      const h = harness({ deferredStart: true, readTurnStatus: 'inProgress' }).run();
+      await h.started;
+      await flushMicrotasks(20);
+      await h.claim();
+      h.emit('item/started', { id: 'open-item', type });
+      h.finalAnswer();
+      h.time.tick(1000);
+      await flushMicrotasks(20);
+      expect(h.settled()).toBe(false);
+      h.emit('item/completed', { id: 'other-item', type });
+      h.time.tick(1000);
+      await flushMicrotasks(20);
+      expect(h.settled()).toBe(false);
+      h.emit('item/completed', { id: 'open-item', type });
+      h.time.tick(250);
+      await h.done;
+      expect(h.events.filter((event) => event.kind === 'terminal')).toHaveLength(1);
+    },
+  );
+
+  it('cancels pending inference when another item starts after the final answer', async () => {
+    const h = harness({ deferredStart: true, readTurnStatus: 'inProgress' }).run();
+    await h.started;
+    await flushMicrotasks(20);
+    await h.claim();
+    h.finalAnswer();
+    h.time.tick(200);
+    h.emit('item/started', { id: 'command', type: 'commandExecution' });
+    h.time.tick(1000);
+    await flushMicrotasks(20);
+    expect(h.settled()).toBe(false);
+    h.emit('item/completed', { id: 'command', type: 'commandExecution' });
+    h.time.tick(249);
+    await flushMicrotasks(20);
+    expect(h.settled()).toBe(false);
+    h.time.tick(1);
+    await h.done;
+  });
+
+  it('waits for every open item before inferring completion', async () => {
+    const h = harness({ readTurnStatus: 'inProgress' }).run();
+    await h.started;
+    await flushMicrotasks(20);
+    h.emit('item/started', { id: 'A', type: 'commandExecution' });
+    h.emit('item/started', { id: 'B', type: 'commandExecution' });
+    h.finalAnswer();
+    h.emit('item/completed', { id: 'B', type: 'commandExecution' });
+    h.time.tick(1000);
+    await flushMicrotasks(20);
+    expect(h.settled()).toBe(false);
+    h.emit('item/completed', { id: 'A', type: 'commandExecution' });
+    h.time.tick(250);
+    await h.done;
+  });
+
+  it('accepts authoritative completion while a command item remains open', async () => {
+    const h = harness().run();
+    await h.started;
+    await flushMicrotasks(20);
+    h.emit('item/started', { id: 'A', type: 'commandExecution' });
+    h.finalAnswer();
+    h.finish();
+    await h.done;
+    expect(h.terminalEvidence).toHaveBeenCalledWith({
+      kind: 'provider-turn-terminal',
+      providerTurnId: 'turn-1',
+      status: 'completed',
+    });
+  });
+
+  it('reconciles lost item and turn completion notifications through exact turn status', async () => {
+    const h = harness({ otherReadTurn: true }).run();
+    await h.started;
+    await flushMicrotasks(20);
+    h.emit('item/started', { id: 'A', type: 'commandExecution' });
+    h.finalAnswer();
+    h.time.tick(250);
+    await flushMicrotasks(50);
+    expect(h.settled()).toBe(true);
+    await h.done;
+    expect(h.rpc).toHaveBeenCalledWith('thread/read', { threadId: 'thread-1', includeTurns: true });
+    expect(h.terminalEvidence).toHaveBeenCalledWith({
+      kind: 'provider-turn-terminal',
+      providerTurnId: 'turn-1',
+      status: 'completed',
+    });
+  });
+
+  it.each(['inProgress', 'unknown', 'hung', 'wrong-turn', 'wrong-thread'] as const)(
+    'hands an open-item reconciliation with %s reads to provider settlement within a finite bound',
+    async (status) => {
+      const h = harness({
+        observeSettlement: true,
+        readTurnStatus: status === 'wrong-turn' || status === 'wrong-thread' ? 'completed' : status,
+        ...(status === 'wrong-thread' ? { readThreadId: 'other-thread' } : {}),
+        ...(status === 'wrong-turn' ? { readTurnId: 'other-turn' } : {}),
+      }).run();
+      await h.started;
+      await flushMicrotasks(20);
+      h.emit('item/started', { id: 'A', type: 'commandExecution' });
+      h.finalAnswer();
+      h.time.tick(250);
+      await flushMicrotasks(20);
+      expect(h.settled()).toBe(false);
+      h.time.tick(30_000);
+      await flushMicrotasks(50);
+      expect(h.settled()).toBe(true);
+      await h.done;
+      expect(h.terminalEvidence).not.toHaveBeenCalled();
+      expect(h.settlement()).toMatchObject({ providerTurnId: 'turn-1' });
+      expect(h.interrupt).not.toHaveBeenCalled();
+      expect(h.events.find((event) => event.kind === 'terminal')).toMatchObject({
+        terminal: { outcome: { kind: 'provider_exit' } },
+      });
+      if (status === 'hung') {
+        expect(h.rpc.mock.calls.filter(([method]) => method === 'thread/read')).toHaveLength(1);
+      }
+      h.settlement()!.close();
+    },
+  );
+
+  it.each(['notification', 'item-close', 'settlement-expired'] as const)(
+    'detaches stopped readers across successive turns ending through %s and their settlement',
+    async (exit) => {
+      const h = harness({ observeSettlement: true, readTurnStatus: 'hung' });
+      const attached = new Set<symbol>();
+      const subscribe = threadReads.observeCodexThreadRead;
+      const observation = vi
+        .spyOn(threadReads, 'observeCodexThreadRead')
+        .mockImplementation((lease, threadId, notify) => {
+          const reader = Symbol();
+          attached.add(reader);
+          const stop = subscribe(lease, threadId, (response) => {
+            attached.delete(reader);
+            notify(response);
+          });
+          return () => {
+            attached.delete(reader);
+            stop();
+          };
+        });
+      try {
+        for (let index = 0; index < 3; index++) {
+          const turn = h.run();
+          await turn.started;
+          await flushMicrotasks(20);
+          turn.emit('item/started', { id: 'A', type: 'commandExecution' });
+          turn.finalAnswer();
+          await flushMicrotasks(20);
+          expect(h.count('thread/read')).toBe(1);
+          expect(attached.size).toBe(1);
+          if (exit === 'notification') turn.finish();
+          else {
+            turn.emit('item/completed', { id: 'A', type: 'commandExecution' });
+            await h.tick(250);
+          }
+          await turn.done;
+          expect(attached.size).toBe(0);
+          if (exit !== 'notification') {
+            const settlement = turn.settlement()!;
+            const pending = settlement.settle();
+            await h.tick(250);
+            expect(h.count('thread/read')).toBe(1);
+            expect(attached.size).toBe(1);
+            if (exit === 'item-close') {
+              turn.finish();
+              await expect(pending).resolves.toMatchObject({ kind: 'provider-turn-terminal' });
+            } else {
+              await h.tick(32_000);
+              await expect(pending).resolves.toBeNull();
+            }
+            expect(attached.size).toBe(0);
+            settlement.close();
+            await flushMicrotasks(20);
+          }
+        }
+        expect(h.count('thread/read')).toBe(1);
+      } finally {
+        observation.mockRestore();
+        h.close();
+      }
+    },
+  );
+
+  it('polls an active exact turn until a later read confirms completion without notifications', async () => {
+    const h = harness({ observeSettlement: true, readTurnStatuses: ['inProgress', 'completed'] }).run();
+    await h.started;
+    await flushMicrotasks(20);
+    h.emit('item/started', { id: 'A', type: 'commandExecution' });
+    h.finalAnswer();
+    await flushMicrotasks(20);
+    expect(h.settled()).toBe(false);
+    expect(h.rpc.mock.calls.filter(([method]) => method === 'thread/read')).toHaveLength(1);
+    h.time.tick(250);
+    await flushMicrotasks(50);
+    expect(h.settled()).toBe(true);
+    await h.done;
+    expect(h.terminalEvidence).toHaveBeenCalledWith({
+      kind: 'provider-turn-terminal',
+      providerTurnId: 'turn-1',
+      status: 'completed',
+    });
+  });
+
+  it.each(['closes', 'expires'] as const)(
+    'infers and releases a local turn without an owner when its open item %s',
+    async (exit) => {
+      const h = harness({ readTurnStatus: 'hung' }).run();
+      await h.started;
+      await flushMicrotasks(20);
+      h.emit('item/started', { id: 'A', type: 'commandExecution' });
+      h.finalAnswer();
+      h.time.tick(250);
+      await flushMicrotasks(20);
+      expect(h.settled()).toBe(false);
+      if (exit === 'closes') {
+        h.emit('item/completed', { id: 'A', type: 'commandExecution' });
+        h.time.tick(250);
+      } else {
+        h.time.tick(29_750);
+      }
+      await flushMicrotasks(50);
+      expect(h.settled()).toBe(true);
+      await h.done;
+      expect(h.settlement()).toBeUndefined();
+      expect(h.terminalEvidence).not.toHaveBeenCalled();
+      expect(h.interrupt).not.toHaveBeenCalled();
+      expect(h.rpc.mock.calls.filter(([method]) => method === 'thread/read')).toHaveLength(1);
+      expect(h.rpc.mock.calls.filter(([method]) => method === 'thread/unsubscribe')).toHaveLength(1);
+      expect(h.events.find((event) => event.kind === 'terminal')).toMatchObject({
+        terminal: { outcome: { kind: 'completed' } },
+      });
+    },
+  );
+
+  it.each(['error', 'unread-steer'] as const)(
+    'preserves the local %s inference veto after open-item expiry',
+    async (veto) => {
+      const h = harness({ readTurnStatus: 'hung' }).run();
+      await h.started;
+      await flushMicrotasks(20);
+      h.emit('item/started', { id: 'A', type: 'commandExecution' });
+      if (veto === 'unread-steer') expect(h.port.admit(continuity, firstId)).toEqual({ state: 'admitted' });
+      h.finalAnswer();
+      if (veto === 'error') {
+        for (const listener of h.listeners)
+          listener({
+            method: 'error',
+            params: {
+              threadId: 'thread-1',
+              turnId: 'turn-1',
+              willRetry: false,
+              error: { message: 'Failed', codexErrorInfo: 'other' },
+            },
+          });
+      }
+      h.time.tick(30_000);
+      await flushMicrotasks(50);
+      expect(h.settled()).toBe(false);
+      if (veto === 'unread-steer') {
+        h.port.reportOutcome(firstId, { state: 'refused', code: 'provider_rejected', reason: 'rejected' });
+        h.time.tick(250);
+        await flushMicrotasks(50);
+        expect(h.settled()).toBe(true);
+      } else {
+        h.finish('failed');
+      }
+      await h.done;
+    },
+  );
 
   it('preserves inferred completion for a turn with no sends', async () => {
     const h = harness({ deferredStart: true }).run();

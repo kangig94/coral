@@ -1,3 +1,4 @@
+import { observeCodexTurnSettlement } from '#src/providers/codex/turn-settlement.js';
 import { hostFingerprintFromSpec, proxySetFingerprintFromSpec } from '#src/providers/host-identity.js';
 import { codexThreadProvider } from '#src/providers/codex/thread-provider.js';
 import { commitContinuityEvent } from '#src/providers/internal/continuity-commit.js';
@@ -1504,3 +1505,120 @@ describe('semantic-operation send admission', () => {
     await h.close();
   });
 });
+
+it.each(['notification', 'read', 'exhausted', 'unknown-notification', 'late-read', 'late-read-exhausted'] as const)(
+  'settles an inferred Codex turn under the interrupt budget: %s',
+  async (confirmation) => {
+    vi.useFakeTimers();
+    const { proxy, emittedEvents } = createTestProxy();
+    proxy.emitProviderEvent = (key, event) => {
+      emittedEvents.push({ key, event });
+      return { kind: 'recorded', providerSeq: emittedEvents.length };
+    };
+    let listener: (message: unknown) => void = () => {};
+    let status = 'inProgress';
+    const interrupt = vi.fn(async () => {
+      if (confirmation !== 'exhausted' && confirmation !== 'late-read-exhausted') {
+        runtime.time.setTimeout(() => {
+          if (confirmation === 'read') status = 'interrupted';
+          if (confirmation === 'notification' || confirmation === 'late-read')
+            listener({
+              method: 'turn/completed',
+              params: { threadId: 'thread-1', turn: { id: 'turn-1', status: 'interrupted' } },
+            });
+        }, 14_000);
+      }
+      return { kind: 'accepted' as const };
+    });
+    const settlement = observeCodexTurnSettlement(
+      {
+        closed: new Promise(() => {}),
+        subscribe: (callback: typeof listener) => {
+          listener = callback;
+          return () => {};
+        },
+        rpc: async () => {
+          if (confirmation === 'late-read' || confirmation === 'late-read-exhausted') {
+            return new Promise((resolve) => {
+              runtime.time.setTimeout(
+                () => resolve({ thread: { id: 'thread-1', turns: [{ id: 'turn-1', status }] } }),
+                25_000,
+              );
+            });
+          }
+          return confirmation === 'unknown-notification'
+            ? {}
+            : { thread: { id: 'thread-1', turns: [{ id: 'turn-1', status }] } };
+        },
+        interrupt,
+      } as never,
+      runtime.time,
+      'thread-1',
+      'turn-1',
+    );
+    if (confirmation === 'unknown-notification') {
+      runtime.time.setTimeout(
+        () =>
+          listener({
+            method: 'turn/completed',
+            params: { threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed' } },
+          }),
+        5_000,
+      );
+    }
+    const settle = vi.spyOn(settlement, 'settle');
+    providerRegistryDouble.rehydrateBinding.mockReturnValue({
+      ok: true,
+      value: fakeBoundProvider({
+        name: 'codex',
+        supportsInterrupt: true,
+        execute: async function* (executionRuntime) {
+          executionRuntime.onProviderTurnStart?.();
+          executionRuntime.onProviderTurnSettlement?.(settlement);
+          yield terminalCompleted;
+        },
+      }),
+    });
+    const relinquish = vi.fn();
+    const semantic = createSemanticOperationRuntime({
+      hostRoot: '/test/plugin',
+      hostFingerprint: proxySetFingerprintFromSpec(fakeHostSpec()),
+      runtime,
+      hostAuthority: fakeHostAuthority(),
+      getProxy: () => proxy,
+      onRelinquish: relinquish,
+    });
+    const key = testKey();
+    const prepared = preparedFixture({ provider: 'codex' });
+    await semantic.ensureProviderRoot(key, prepared);
+    const start = semantic.host.start({ key, prepared });
+    await start.result;
+    await vi.advanceTimersByTimeAsync(0);
+    const release = start.abortAndRelease().then(
+      () => 'released',
+      () => 'refused',
+    );
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(relinquish).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(18_000);
+    if (confirmation === 'late-read' || confirmation === 'late-read-exhausted') {
+      expect(relinquish).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(30_000);
+    }
+    if (confirmation === 'exhausted' || confirmation === 'late-read-exhausted') {
+      expect(await release).toBe('refused');
+      expect(relinquish).toHaveBeenCalledOnce();
+      expect(await settle.mock.results[0].value).toBeNull();
+    } else {
+      expect(await release).toBe('released');
+      expect(relinquish).not.toHaveBeenCalled();
+      expect(await settle.mock.results[0].value).toEqual({
+        kind: 'provider-turn-terminal',
+        providerTurnId: 'turn-1',
+        status: confirmation === 'unknown-notification' ? 'completed' : 'interrupted',
+      });
+    }
+    if (confirmation === 'unknown-notification') expect(interrupt).not.toHaveBeenCalled();
+    else expect(interrupt).toHaveBeenCalledExactlyOnceWith({ threadId: 'thread-1', turnId: 'turn-1' });
+  },
+);
