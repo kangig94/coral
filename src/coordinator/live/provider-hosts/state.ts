@@ -37,9 +37,10 @@ export type ProviderHostShutdownDisposition = ProviderHostShutdownObservedAbsent
 export type PinToken = symbol;
 
 /** Ownership metadata retained while a provider-host pin is live. */
-export type ProviderHostPin =
+export type ProviderHostPin = (
   | Readonly<{ kind: 'acquisition'; jobId?: string }>
-  | Readonly<{ kind: 'attached-session' }>;
+  | Readonly<{ kind: 'attached-session' }>
+) & { settlementTurnId?: string };
 
 export type ProviderHostEntry = {
   /** Concrete pool-entry key; unique for every job-exclusive process. */

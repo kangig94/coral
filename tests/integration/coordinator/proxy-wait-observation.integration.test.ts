@@ -96,6 +96,9 @@ it('observes a progressing local app-server placement through production assembl
   if (definition === undefined) throw new Error('expected a fixture provider');
   providerRegistry.register(definition);
   providerRegistry.connectAppServerHost({
+    acceptTurnContainment: () => {
+      throw new Error('fixture emits authoritative terminals only');
+    },
     openSession: async () => ({
       session: {
         rpc: async <R>() => ({}) as R,

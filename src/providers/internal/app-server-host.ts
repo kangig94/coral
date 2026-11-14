@@ -1,10 +1,11 @@
-import type { AppServerTransport, HostRef, ProviderServerSpec } from '../contract.js';
+import type {
+  HostRef,
+  ProviderServerSpec,
+  ProviderTurnContainment,
+  ProviderTurnContainmentAcceptance,
+} from '../contract.js';
 
-export type ManagedHostSession = Readonly<{
-  session: AppServerTransport;
-  hostRef: HostRef;
-  close(): void;
-}>;
+export type ManagedHostSession = ProviderTurnContainment['lease'];
 
 export type AppServerHostExpectation = Readonly<{
   spec: ProviderServerSpec;
@@ -12,6 +13,7 @@ export type AppServerHostExpectation = Readonly<{
 }>;
 
 export interface AppServerHostAuthority {
+  acceptTurnContainment?(obligation: ProviderTurnContainment): ProviderTurnContainmentAcceptance;
   openSession(
     spec: ProviderServerSpec,
     options?: { jobId?: string; signal?: AbortSignal },
