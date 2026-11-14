@@ -51,6 +51,7 @@ import {
 import type { CodexExecutionPlan } from './execution-plan.js';
 import { readCodexModelCatalog, type CodexModelCatalog } from './model-catalog.js';
 import { observeCodexTurnSettlement } from './turn-settlement.js';
+import { observeCodexThreadRead } from './thread-read.js';
 import {
   acquireCodexThread,
   confirmCodexThreadLoaded,
@@ -62,6 +63,7 @@ import {
 type CodexProviderRuntime = Extract<ProviderRuntime<CodexExecutionPlan>, { appServerSession: unknown }>;
 
 const INFERRED_COMPLETION_DELAY_MS = 250;
+const OPEN_ITEM_RECONCILIATION_MS = 30_000;
 // An unread steer suspends inference; explicit turn completion must remain an exit.
 export const PRE_TURN_MAILBOX_CAP = 64;
 
@@ -86,7 +88,7 @@ type CodexKernelResult =
   | {
       kind: 'completed';
       turn: Turn;
-      source: 'notification' | 'start_response' | 'inferred';
+      source: 'notification' | 'start_response' | 'thread_read' | 'inferred';
       attempt: TurnAttempt;
     }
   | {
@@ -96,6 +98,7 @@ type CodexKernelResult =
       preserveRecoverySnapshot?: boolean;
       attempt?: TurnAttempt;
     }
+  | { kind: 'reconciliation-exhausted'; attempt: TurnAttempt }
   | { kind: 'suspended'; reason: 'interrupt_unconfirmed'; attempt: TurnAttempt }
   | { kind: 'aborted'; reason: 'signal_abort'; preserveRecoverySnapshot?: boolean; attempt?: TurnAttempt };
 
@@ -120,6 +123,8 @@ export type TurnAttempt = {
   finalAnswerSeen: boolean;
   unreadSteers: Set<string>;
   pendingCollaborations: Set<string>;
+  openItems: Set<string>;
+  openItemHoldExpired: boolean;
   activeSubagentTurns: Set<string>;
   completionTimer: ReturnType<TimePort['setTimeout']> | null;
   awaitingExplicitCompletion: boolean;
@@ -188,6 +193,8 @@ function createAttempt(sequence: number): TurnAttempt {
     finalAnswerSeen: false,
     unreadSteers: new Set(),
     pendingCollaborations: new Set(),
+    openItems: new Set(),
+    openItemHoldExpired: false,
     activeSubagentTurns: new Set(),
     completionTimer: null,
     awaitingExplicitCompletion: false,
@@ -411,7 +418,7 @@ function completeTurn(
   state: CodexTurnState,
   attempt: TurnAttempt,
   turn: Turn | null = null,
-  source: 'notification' | 'start_response' | 'inferred' = turn === null ? 'inferred' : 'notification',
+  source: 'notification' | 'start_response' | 'thread_read' | 'inferred' = turn === null ? 'inferred' : 'notification',
 ): void {
   if (state.finalized || state.activeAttempt !== attempt || attempt.completed) {
     return;
@@ -445,42 +452,27 @@ function completeTurn(
   });
 }
 
-function scheduleInferredCompletion(state: CodexTurnState, attempt = state.activeAttempt): void {
-  if (
-    state.activeAttempt !== attempt ||
-    state.finalized ||
-    attempt.completed ||
-    attempt.finalTurn ||
-    !attempt.finalAnswerSeen ||
-    attempt.awaitingExplicitCompletion
-  ) {
-    return;
-  }
-  if (attempt.pendingCollaborations.size > 0 || attempt.activeSubagentTurns.size > 0 || attempt.unreadSteers.size > 0) {
-    return;
-  }
+function canInferCompletion(state: CodexTurnState, attempt: TurnAttempt): boolean {
+  return (
+    state.activeAttempt === attempt &&
+    !state.finalized &&
+    !attempt.completed &&
+    attempt.finalTurn === null &&
+    attempt.finalAnswerSeen &&
+    !attempt.awaitingExplicitCompletion &&
+    (attempt.openItems.size === 0 || attempt.openItemHoldExpired) &&
+    attempt.pendingCollaborations.size === 0 &&
+    attempt.activeSubagentTurns.size === 0 &&
+    attempt.unreadSteers.size === 0
+  );
+}
 
+function scheduleInferredCompletion(state: CodexTurnState, attempt = state.activeAttempt): void {
+  if (!canInferCompletion(state, attempt)) return;
   clearCompletionTimer(state, attempt);
   attempt.completionTimer = state.time.setTimeout(() => {
     attempt.completionTimer = null;
-    if (
-      state.activeAttempt !== attempt ||
-      state.finalized ||
-      attempt.completed ||
-      attempt.finalTurn ||
-      !attempt.finalAnswerSeen ||
-      attempt.awaitingExplicitCompletion
-    ) {
-      return;
-    }
-    if (
-      attempt.pendingCollaborations.size > 0 ||
-      attempt.activeSubagentTurns.size > 0 ||
-      attempt.unreadSteers.size > 0
-    ) {
-      return;
-    }
-    completeTurn(state, attempt);
+    if (canInferCompletion(state, attempt)) completeTurn(state, attempt);
   }, INFERRED_COMPLETION_DELAY_MS);
   attempt.completionTimer.unref?.();
 }
@@ -612,6 +604,17 @@ function recordItem(
   lifecycle: 'started' | 'completed',
   threadId: string | null,
 ): void {
+  const itemId = readString(item.id);
+  if (threadId === state.threadId && itemId !== undefined) {
+    if (lifecycle === 'started') {
+      attempt.openItems.add(itemId);
+      if (!attempt.openItemHoldExpired) clearCompletionTimer(state, attempt);
+    } else {
+      attempt.openItems.delete(itemId);
+      scheduleInferredCompletion(state, attempt);
+    }
+  }
+
   if (item.type === 'collabAgentToolCall') {
     const itemId = typeof item.id === 'string' ? item.id : null;
     if (threadId === state.threadId && itemId) {
@@ -1333,6 +1336,76 @@ async function finishAbortedStart(
   }
 }
 
+function reconcileOpenItems(
+  lease: AppServerSession,
+  state: CodexTurnState,
+  attempt: TurnAttempt,
+  hasSettlementOwner: boolean,
+): () => void {
+  const responseSchema = z.object({
+    thread: z.object({
+      id: z.string(),
+      turns: z.array(z.object({ id: z.string(), status: z.string() }).passthrough()),
+    }),
+  });
+  let stopped = false;
+  let stopRead: (() => void) | null = null;
+  let expired = false;
+  let deadline: ReturnType<TimePort['setTimeout']> | undefined;
+  let poll: ReturnType<TimePort['setTimeout']> | undefined;
+  const check = (): void => {
+    const threadId = state.threadId;
+    if (threadId === null || stopped || attempt.completed || !attempt.finalAnswerSeen || attempt.openItems.size === 0)
+      return;
+    if (poll !== undefined) {
+      state.time.clearTimeout(poll);
+      poll = undefined;
+    }
+    if (expired) {
+      if (hasSettlementOwner) settleAttempt(state, attempt, { kind: 'reconciliation-exhausted', attempt });
+      else {
+        attempt.openItemHoldExpired = true;
+        if (canInferCompletion(state, attempt)) completeTurn(state, attempt);
+      }
+      return;
+    }
+    deadline ??= state.time.setTimeout(() => {
+      expired = true;
+      check();
+    }, OPEN_ITEM_RECONCILIATION_MS);
+    if (stopRead !== null) return;
+    stopRead = observeCodexThreadRead(lease, threadId, (response) => {
+      stopRead = null;
+      if (stopped) return;
+      const parsed = responseSchema.safeParse(response);
+      if (parsed.success && parsed.data.thread.id === threadId) {
+        const turn = parsed.data.thread.turns.find((candidate) => candidate.id === attempt.turnId);
+        if (turn !== undefined && codexFinalTurnStatusSchema.safeParse(turn.status).success) {
+          completeTurn(state, attempt, turn, 'thread_read');
+        }
+      }
+      if (!attempt.completed) {
+        poll = state.time.setTimeout(() => {
+          poll = undefined;
+          check();
+        }, INFERRED_COMPLETION_DELAY_MS);
+      }
+    });
+  };
+  const unsubscribe = lease.subscribe(() => {
+    if (poll === undefined) check();
+  });
+  check();
+  return () => {
+    stopped = true;
+    unsubscribe();
+    stopRead?.();
+    stopRead = null;
+    if (deadline !== undefined) state.time.clearTimeout(deadline);
+    if (poll !== undefined) state.time.clearTimeout(poll);
+  };
+}
+
 async function waitForTurnResult(
   lease: AppServerSession,
   runtime: CodexProviderRuntime,
@@ -1340,11 +1413,13 @@ async function waitForTurnResult(
 ): Promise<CodexKernelResult> {
   const attempt = state.activeAttempt;
   const aborted = abortResultPromise(lease, runtime, state, attempt);
+  const stopReconciliation = reconcileOpenItems(lease, state, attempt, runtime.onProviderTurnSettlement !== undefined);
   try {
     return await raceWithPromise(Promise.race([attempt.completion, aborted.promise]), lease.closed, (closed) =>
       transportClosedResult(runtime, attempt, closed),
     );
   } finally {
+    stopReconciliation();
     aborted.cleanup();
   }
 }
@@ -1451,7 +1526,7 @@ async function finishInvocation(
 
   if (result.kind === 'completed') {
     state.finalErrorMessage = turnFailureMessage(result.turn, result.attempt.terminalErrors);
-    if (result.source === 'notification') {
+    if (result.source === 'notification' || result.source === 'thread_read') {
       emitCodexRolloutArtifactHandleOnce(state, emit);
     }
     if (state.threadId !== null) {
@@ -1462,6 +1537,10 @@ async function finishInvocation(
 
   if (result.kind === 'suspended') {
     return { kind: 'suspended', reason: result.reason };
+  }
+
+  if (result.kind === 'reconciliation-exhausted') {
+    return buildFailedTerminal(state, 'Open-item reconciliation exhausted; provider turn settlement owns cessation.');
   }
 
   if (result.kind === 'aborted') {
@@ -1609,8 +1688,8 @@ export const codexTurnKernel: Provider<
 
         emitFinalTurnProgress(result, emit);
         if (
-          result.kind === 'completed' &&
-          result.source === 'inferred' &&
+          ((result.kind === 'completed' && result.source === 'inferred') ||
+            result.kind === 'reconciliation-exhausted') &&
           turnSettlement !== null &&
           runtime.onProviderTurnSettlement !== undefined
         ) {
