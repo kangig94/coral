@@ -33,6 +33,8 @@ npm install -g @openai/codex
 copilot plugin update coral
 ```
 
+Codex에서 `/hooks`로 Coral 훅을 검토하고 신뢰하세요. 세션이 시작되면 `coral:pioneer` 같은 번들 에이전트를 `$CODEX_HOME/agents/`(기본값 `~/.codex/agents/`)에 동기화합니다. 첫 동기화 후 새 스레드를 열면 에이전트를 사용할 수 있습니다. 플러그인 업데이트 후 Codex가 훅 재승인을 요청할 수 있습니다.
+
 ## 바로 사용해보기
 
 기존 프로젝트에서 바로 실행:

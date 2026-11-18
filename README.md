@@ -35,6 +35,8 @@ npm install -g @openai/codex
 copilot plugin update coral
 ```
 
+On Codex, review and trust the Coral hooks in `/hooks`. At session start, Coral syncs its bundled agents, such as `coral:pioneer`, to `$CODEX_HOME/agents/` (defaults to `~/.codex/agents/`). Open a new thread after the first sync to use them. Codex may ask you to review the hooks again after a plugin update.
+
 ## Try It Now
 
 Run this on any existing project:

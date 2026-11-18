@@ -19,7 +19,7 @@ export interface ResolveInjectBundleOptions {
 
 // A provider child is told nothing about the Coral CLI or the KB: it has no hook to resolve
 // `coral-cli`, and CLI or KB work belongs to the top-level session.
-const PROVIDER_INJECT_FRAGMENTS = ['core.md', 'tools.md'] as const;
+const PROVIDER_INJECT_FRAGMENTS = ['core.md', 'tools.md', 'provider-agent.md'] as const;
 
 const injectFragmentCache = new Map<string, string>();
 

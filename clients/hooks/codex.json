@@ -17,6 +17,16 @@
         ]
       },
       {
+        "matcher": "^(startup|resume|clear|fork)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -d \"${PLUGIN_ROOT}\" || exit 0; node \"${PLUGIN_ROOT}/hooks/sync-codex-agents.mjs\"",
+            "timeout": 5
+          }
+        ]
+      },
+      {
         "matcher": "compact",
         "hooks": [
           {
