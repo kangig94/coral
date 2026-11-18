@@ -1,12 +1,18 @@
+import { readFileSync } from 'node:fs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
 let mockCoreFragment = '';
+const providerAgentFragment = readFileSync(
+  new URL('../../../clients/inject/provider-agent.md', import.meta.url),
+  'utf8',
+).trimEnd();
 
 const mockStorage = {
   readFileSync: vi.fn((path: string, _encoding: 'utf-8') => {
     if (path.endsWith('/inject/core.md')) return mockCoreFragment;
     if (path.endsWith('/inject/tools.md')) return '';
+    if (path.endsWith('/inject/provider-agent.md')) return providerAgentFragment;
     throw new Error(`unexpected read: ${path}`);
   }),
 };
@@ -38,10 +44,10 @@ describe('applyInjectBundle', () => {
     return { storage: mockStorage, ...overrides };
   }
 
-  it('prepends inject and preserves caller systemPrompt (append-merge, never overwrite)', async () => {
+  it('prepends provider guidance and preserves the caller system prompt', async () => {
     mockCoreFragment = 'guidelines';
     const applyInjectBundle = await loadApply();
     const result = applyInjectBundle({ ...baseRequest, systemPrompt: 'caller system' }, runtime());
-    expect(result.systemPrompt).toBe('guidelines\n\ncaller system');
+    expect(result.systemPrompt).toBe(`guidelines\n\n${providerAgentFragment}\n\ncaller system`);
   });
 });
