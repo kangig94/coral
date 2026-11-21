@@ -42,7 +42,6 @@ Options:
   -m, --model <model>            Model override
   -o, --owner <id>               Owner ID for memo isolation
   -b, --bypass-permissions       Bypass permission checks
-  -d, --detach                   Return launch decision without waiting
   -h, --help                     display help for command
 "
 `;
@@ -167,7 +166,6 @@ Options:
   -p, --provider <name>                 Provider name (registered provider)
   -w, --work-dir <path>                 Working directory
   -o, --owner <id>                      Session owner ID for memo isolation
-  -d, --detach                          Return launch decision without waiting
   -h, --help                            display help for command
 "
 `;

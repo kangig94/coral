@@ -119,8 +119,8 @@ carries `## Pioneer Ledger` after the items, pointing at the sealed Pioneer Repo
     Every decision made on a partial draft is made without the alternatives Step 2 was supposed to
     supply. If it happens anyway: withdraw the request, wait for pioneer, re-present once.
 
-    Run pioneer as a single **foreground blocking call** — never background it, never continue other
-    work while it runs. Let `<other-host>` = the delegation target for the current host (Claude → Codex, Codex → Claude, Copilot → Codex).
+    Await pioneer's result before continuing. For a long delegated wait, use the harness's background
+    execution and wait for its completion before doing other work. Let `<other-host>` = the delegation target for the current host (Claude → Codex, Codex → Claude, Copilot → Codex).
 
     `<pioneer prompt>` = the draft file content followed by this return contract, verbatim:
 
@@ -137,26 +137,30 @@ carries `## Pioneer Ledger` after the items, pointing at the sealed Pioneer Repo
     // --deep (without --delegate): self-execute, blocking
     output = Agent({ subagent_type: "coral:pioneer", prompt: <pioneer prompt> })
 
-    // --delegate: dispatch to the other host, then monitor for one bounded wait
+    // --delegate: dispatch to the other host, then wait for the result
     // the heredoc closes on a line holding only `CORAL_INPUT`, unindented
-    launch = Bash(`coral-cli <other-host> pioneer --work-dir "<work_dir>" -d -i - <<'CORAL_INPUT'
+    launch = Bash(`coral-cli <other-host> pioneer --work-dir "<work_dir>" -i - <<'CORAL_INPUT'
     <pioneer prompt>
     CORAL_INPUT`)
     job = parse `Provider job <jobId> execution #<n> <launchState>` from launch
-    terminal = Bash(`cd "<work_dir>" && coral-cli jobs wait ${job} --embed`)   // foreground; returns at terminal or the bound
+    terminal = Bash(`cd "<work_dir>" && coral-cli jobs wait ${job} --embed`)
     while true:
-      if terminal begins `Still waiting` with `(cursor: <cursor>)`:
+      if terminal contains the job's terminal result header:
+        if terminal prints an available Result path:
+          resultPath = the printed Result path
+          output = Read(resultPath)
+          break
+        if terminal has no usable wait continuation for the job:
+          report the terminal outcome and unavailable artifact; take the pioneer-failed path below
+      if terminal prints a usable wait continuation for the job:
         terminal = Bash(the printed continuation command exactly as printed, from the same cwd)
         continue
       if terminal prints `remediation:` containing a `coral-cli jobs wait` command:
-        terminal = Bash(run that command, preserving all arguments and the same cwd; accept either backticked or plain-text commands, exclude surrounding prose, and use a background shell when instructed)
+        terminal = Bash(run that command, preserving all arguments and the same cwd; accept either backticked or plain-text commands, and exclude surrounding prose)
         continue
-      if terminal contains `Result path: <path>`:
-        output = Read(<path>)
-        break
       stop with the rendered error; `wait_build_mismatch` requires restarting the session
     ```
-    Classify the rendered output before reading an artifact; do not classify exit code `75` alone. `Result path: <path>` marks a terminal result even when a terminal `provider_exit` propagated code `75`. A non-zero `provider_exit` code is terminal and is passed through unchanged (0–255).
+    Classify the rendered output before reading an artifact; do not classify exit code `75` alone. The terminal header marks the result even when `provider_exit` propagated code `75`. A non-zero `provider_exit` code is terminal and is passed through unchanged (0–255).
 
     **Usage-limit fallback** (`--deep`): pioneer runs on `fable`. If the call returns a usage-limit
     or rate-limit warning instead of a report, retry once on `opus` with the same prompt —
@@ -173,7 +177,7 @@ carries `## Pioneer Ledger` after the items, pointing at the sealed Pioneer Repo
 
     ```
     // --delegate: copy the artifact itself, never a re-typed copy
-    Bash(`cp "<Result path>" "<report>"`)
+    Bash(`cp "<resultPath>" "<report>"`)
     // --deep: one Write of `output`, unchanged
     Write(<report>, output)
 

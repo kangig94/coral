@@ -63,7 +63,7 @@ describe('post-compact.mjs', () => {
     const output = JSON.parse(result.stdout) as HookOutput;
     expect(output.hookSpecificOutput.hookEventName).toBe('SessionStart');
     const lines = output.hookSpecificOutput.additionalContext.split('\n');
-    expect(lines).toContain('Run: coral-cli jobs wait job-live job-queued');
+    expect(lines).toContain('Run: coral-cli jobs wait job-live job-queued --all');
     expect(lines).toContain(`- job-done: ${join(resultDir, 'result.md')}`);
     expect(lines).toContain('- coral-cli jobs wait <job-id> --embed');
   });

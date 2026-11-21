@@ -7,7 +7,7 @@ import {
 export const CLI_HANDOFF_GUARD_ENV = 'CORAL_CLI_HANDOFF_DELEGATED';
 export const WAIT_INVOCATION_CONTEXT_ENV = 'CORAL_WAIT_INVOCATION_CONTEXT';
 export const WAIT_INVOCATION_CONTRACT_ARGUMENT = '--print-wait-invocation-contract';
-export const WAIT_INVOCATION_CONTRACT = { version: 1, monitorOnly: true } as const;
+export const WAIT_INVOCATION_CONTRACT = { version: 2, monitorOnly: true } as const;
 
 export class WaitInvocationReadinessError extends Error {
   readonly code = 'transient';
@@ -16,7 +16,7 @@ export class WaitInvocationReadinessError extends Error {
 
   constructor(originalCommand: string) {
     super(
-      'The selected CLI wait contract could not be observed within the invocation budget. Wait admission did not complete.',
+      'The selected CLI wait contract could not be observed before the readiness deadline. Wait admission did not complete.',
     );
     this.remediation = `Run ${originalCommand}`;
   }
@@ -34,14 +34,14 @@ export class WaitBuildMismatchError extends Error {
   }
 }
 
-export type WaitInvocationMode = 'bounded' | 'snapshot';
+export type WaitInvocationMode = 'stream' | 'snapshot';
 
 export interface WaitInvocationHandoff {
   readonly mode: WaitInvocationMode;
   readonly signal: AbortSignal;
   readonly originalCommand: string;
   monitorEnding?: Promise<unknown>;
-  remainingMs(): number;
+  remainingMs(): number | undefined;
   cleanupRemainingMs(): number;
   saveContinuation(text: string, complete?: boolean, delivered?: boolean, exitCode?: number): void;
 }

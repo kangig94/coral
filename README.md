@@ -45,6 +45,10 @@ Run this on any existing project:
 /coral:analyze what does this codebase do?
 ```
 
+When using the CLI directly, `coral-cli codex`, `coral-cli claude`, and `coral-cli workflow` return after the launch decision. `coral-cli jobs send <id> -i <input>` steers a running turn or starts the next execution of an ended provider job. For an accepted launch or continuation, follow the printed command `coral-cli jobs wait <id>` to collect the result.
+
+`coral-cli jobs wait <id...>` streams until the first terminal result by default. Add `--all` to collect every listed job or use `--snapshot` for an immediate read. For interim progress, install GNU coreutils and run `timeout --preserve-status 100 coral-cli jobs wait <id>`. On macOS, install it with `brew install coreutils` and use `gtimeout` in the same command. Run the printed continuation exactly as shown. It includes a cursor when one is available.
+
 ## Structure a Project
 
 https://github.com/user-attachments/assets/881f1a14-9f4f-4d3d-8023-59610eb13ac4

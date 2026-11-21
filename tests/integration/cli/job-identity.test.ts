@@ -31,7 +31,7 @@ describe('CLI provider conversation identity', () => {
     registerProviderCommands(program, f.providers);
 
     try {
-      await f.drive(program.parseAsync([provider, '-i', 'first input', '-d'], { from: 'user' }));
+      await f.drive(program.parseAsync([provider, '-i', 'first input'], { from: 'user' }));
       expect(decisions).toHaveLength(1);
       const first = decisions[0];
       await f.drive(f.service.waitForJobTerminal(first.jobId, 10_000));

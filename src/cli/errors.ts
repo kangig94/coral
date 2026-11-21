@@ -1,3 +1,4 @@
+import type { WaitAllOutcome } from './wait-all-outcome.js';
 import {
   WaitBuildMismatchError,
   WaitInvocationReadinessError,
@@ -17,7 +18,7 @@ import {
 } from '../runtime/errors.js';
 import { ChildPrincipalBindingError } from '../transport/ipc/child-principal-auth.js';
 import { IpcDrainRequestUnanswered, IpcLifecycleRefusal, IpcRpcError } from '../transport/ipc/client.js';
-import { waitContinuationCommand, waitContinuationShell, type WaitContinuationMode } from './format/wait.js';
+import { waitContinuationCommand, type WaitContinuationMode } from './format/wait.js';
 
 const commanderRemediations = new WeakMap<CommanderError, string>();
 
@@ -150,10 +151,11 @@ export class WaitResumeError extends Error {
     jobIds: readonly string[],
     serializedCursor: string | undefined,
     continuationMode: WaitContinuationMode,
+    allOutcome?: WaitAllOutcome,
   ) {
     super(message);
     this.name = 'WaitResumeError';
-    this.remediation = `Rerun \`${waitContinuationCommand(jobIds, serializedCursor ?? null, continuationMode)}\`${waitContinuationShell(continuationMode)} to continue waiting.`;
+    this.remediation = `Rerun \`${waitContinuationCommand(jobIds, serializedCursor ?? null, continuationMode, allOutcome)}\` to continue waiting.`;
   }
 }
 

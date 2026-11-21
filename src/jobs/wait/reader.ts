@@ -37,7 +37,7 @@ type DeliveryState = {
 
 type FinalPayload =
   | Omit<Extract<WaitStreamEvent, { type: 'terminal' }>, 'cursor' | 'exitCode'>
-  | { type: 'waiting'; waitingJobIds: string[]; carrierUnknownJobIds?: string[]; endedBy: WaitEndedBy };
+  | Omit<Extract<WaitStreamEvent, { type: 'waiting' }>, 'cursor' | 'exitCode'>;
 
 function finalWaitEvent(session: WaitSession, payload: FinalPayload): WaitStreamEvent {
   return {
@@ -50,10 +50,16 @@ function finalWaitEvent(session: WaitSession, payload: FinalPayload): WaitStream
 
 function waitingEvent(session: WaitSession, endedBy: WaitEndedBy): WaitStreamEvent {
   const unknown = session.unknownCarriers();
+  const coverage = session.carrierCoverage();
   return finalWaitEvent(session, {
     type: 'waiting',
     waitingJobIds: session.remaining(),
     ...(unknown.length ? { carrierUnknownJobIds: unknown } : {}),
+    carrierAbsentJobIds: session.admissions
+      .filter(
+        (job) => job.disposition === 'admitted' && !job.detail?.exit && coverage.get(job.jobId)?.kind === 'absent',
+      )
+      .map((job) => job.jobId),
     endedBy,
   });
 }

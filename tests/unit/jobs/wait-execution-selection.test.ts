@@ -192,7 +192,7 @@ describe('execution-addressed waits', () => {
       }),
     );
     expect(rpc.executionSelections).toEqual(input);
-    expect(waitContinuationCommand(['a', 'b'], cut.cursor, 'bounded')).toBe(
+    expect(waitContinuationCommand(['a', 'b'], cut.cursor, 'stream')).toBe(
       `coral-cli jobs wait a b --cursor ${cut.cursor}`,
     );
     const events = await collect(

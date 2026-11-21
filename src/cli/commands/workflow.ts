@@ -2,7 +2,7 @@ import { Option, type Command } from 'commander';
 
 import { normalizeUsageError, UsageError } from '../errors.js';
 import { makeClient, type WorkflowOptions } from '../dispatch.js';
-import { emitError, handleLaunchResult } from '../emit.js';
+import { emitError, emitLaunchResult } from '../emit.js';
 import { resolveInput } from '../flags.js';
 
 export function registerWorkflowCommands(program: Command): void {
@@ -21,10 +21,9 @@ export function registerWorkflowCommands(program: Command): void {
     .option('-p, --provider <name>', 'Provider name (registered provider)')
     .option('-w, --work-dir <path>', 'Working directory')
     .addOption(new Option('-o, --owner <id>').hideHelp())
-    .option('-d, --detach', 'Return launch decision without waiting')
     .addHelpText(
       'after',
-      '\nWhile following a launch, Ctrl+C stops following with exit 75 and a continuation; it never aborts the job.\n' +
+      '\nReturns after the launch decision and prints a wait command for an accepted job.\n' +
         'To abort the job, run coral-cli jobs abort <id>.\n',
     )
     .action(async (opts: WorkflowOptions) => {
@@ -48,7 +47,7 @@ export function registerWorkflowCommands(program: Command): void {
 
         const client = makeClient(process.cwd(), workflowCommand);
         const result = await client.workflow(expression, payload);
-        await handleLaunchResult(result, opts.detach);
+        emitLaunchResult(result);
       } catch (error) {
         emitError(normalizeUsageError(error));
       }

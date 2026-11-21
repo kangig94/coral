@@ -331,6 +331,7 @@ it.each([
         valid: [],
         missing: [],
         mismatch: [initial.jobId],
+        mismatchWorkDirs: [{ jobId: initial.jobId, workDir: cwd }],
       });
       expect(services.size).toBe(0);
       expect(f.events(initial.jobId)).toEqual(before);

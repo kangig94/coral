@@ -1,10 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
-  formatDetachedLaunchStatus,
   formatJobDetail,
   formatJobsList,
   formatLaunch,
-  formatLaunchWaitHint,
   formatWorkflowSlot,
   formatAbortResult,
   renderJobsList,
@@ -101,11 +99,14 @@ describe('jobs list and detail formatting', () => {
   it('should give queued detail and launch the same plain wait command', () => {
     const f = fixture('queued');
     const detail = f.store.loadJobDetailResponse(f.jobId)!;
-    const hint = formatLaunchWaitHint({ jobId: f.jobId });
-    const command = hint.split('\n')[1];
+    const launch = formatLaunch(
+      { kind: 'provider-session', jobId: f.jobId, launchState: 'queued', requestedSeq: 2, epochKey: ':memory:' },
+      2,
+    );
+    const command = launch.split('\n').at(-1);
     expect(command).toBe(`command=coral-cli jobs wait ${f.jobId}`);
     const output = formatJobDetail(detail).split('Execution #2')[1];
-    expect(output).toContain(command);
+    expect(output).toContain(command!);
     expect(output).not.toContain('Result path:');
   });
 
@@ -137,66 +138,32 @@ describe('jobs list and detail formatting', () => {
     expect(output.match(/coral-cli jobs wait/g)).toHaveLength(1);
   });
 
-  it.each(['running', 'queued'] as const)(
-    'omits an unknown execution in a %s foreground provider launch',
-    (launchState) => {
-      const jobId = '10000000-0000-4000-8000-000000000001';
-      const response = { kind: 'provider-session', jobId, launchState, requestedSeq: 2, epochKey: ':memory:' } as const;
-      expect(formatLaunch(response)).toBe(
-        `Provider job ${jobId} ${launchState === 'running' ? 'launch accepted' : 'queued'}`,
-      );
-      expect(formatDetachedLaunchStatus(response)).toBe(`Provider job ${jobId} execution #1 ${launchState}`);
-    },
-  );
-
-  it.each(['running', 'queued'] as const)(
-    'identifies the response execution for a %s provider launch',
-    (launchState) => {
-      const response = {
-        kind: 'provider-session',
-        jobId: 'job-1',
-        execution: 2,
-        launchState,
-        requestedSeq: 10,
-        epochKey: 'epoch',
-      } as const;
-      expect(formatLaunch(response)).toBe(
-        `Provider job job-1 execution #2 ${launchState === 'running' ? 'launch accepted' : 'queued'}`,
-      );
-      expect(formatDetachedLaunchStatus(response)).toBe(`Provider job job-1 execution #2 ${launchState}`);
-    },
-  );
-
-  it('identifies the execution in a detached workflow launch', () => {
-    expect(
-      formatDetachedLaunchStatus({
-        kind: 'workflow',
-        workflowId: 'workflow-1',
-        jobId: 'job-1',
-        execution: 1,
-        launchState: 'queued',
-        requestedSeq: 10,
-        epochKey: 'epoch',
-      }),
-    ).toBe('Workflow workflow-1 queued (job job-1 execution #1)');
+  it.each(['running', 'queued'] as const)('identifies the execution in a %s provider launch', (launchState) => {
+    const response = {
+      kind: 'provider-session',
+      jobId: 'job-1',
+      launchState,
+      requestedSeq: 10,
+      epochKey: 'epoch',
+    } as const;
+    expect(formatLaunch(response, 2).split('\n')[0]).toBe(`Provider job job-1 execution #2 ${launchState}`);
   });
 
-  it.each(['running', 'queued'] as const)(
-    'identifies only known executions in a %s foreground workflow launch',
-    (launchState) => {
-      const response = {
-        kind: 'workflow',
-        workflowId: 'workflow-1',
-        jobId: 'job-1',
-        launchState,
-        requestedSeq: 10,
-        epochKey: 'epoch',
-      } as const;
-      const state = launchState === 'running' ? 'launch accepted' : 'queued';
-      expect(formatLaunch({ ...response, execution: 2 })).toBe(`Workflow workflow-1 ${state} (job job-1 execution #2)`);
-      expect(formatLaunch(response)).toBe(`Workflow workflow-1 ${state} (job job-1)`);
-    },
-  );
+  it.each(['running', 'queued'] as const)('identifies the execution in a %s workflow launch', (launchState) => {
+    const response = {
+      kind: 'workflow',
+      workflowId: 'workflow-1',
+      jobId: 'job-1',
+      launchState,
+      requestedSeq: 10,
+      epochKey: 'epoch',
+    } as const;
+    expect(formatLaunch(response, 1).split('\n')).toEqual([
+      `Workflow workflow-1 ${launchState} (job job-1 execution #1)`,
+      'Wait for completion with the command below.',
+      'command=coral-cli jobs wait job-1',
+    ]);
+  });
 });
 
 it.each(['live-retry', 'recovery-quarantine'] as const)(

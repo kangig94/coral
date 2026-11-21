@@ -153,7 +153,7 @@ it.each([
     const program = new Command().name('coral-cli');
     registerSessionCommands(program, f.providers);
     const input = 'second input with spaces';
-    await f.drive(program.parseAsync(['jobs', 'send', initial.jobId, '-d', '-i', input], { from: 'user' }));
+    await f.drive(program.parseAsync(['jobs', 'send', initial.jobId, '-i', input], { from: 'user' }));
     reader.mockRestore();
     expect(attempts[0]).toMatchObject({ input, projectRoot: directory });
     const out = stdout.mock.calls.map(([chunk]) => String(chunk)).join('');

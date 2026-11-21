@@ -12,6 +12,8 @@ import { requestedExecution, executionInput } from '#tests/helpers/job-execution
 import * as executionJournal from '#src/jobs/execution-journal.js';
 import { conversationArchiveDirectory } from '#src/jobs/conversation/provider-artifact-archive.js';
 import { followJobs } from '#src/cli/follow.js';
+import { JobAddressing } from '#src/jobs/addressing.js';
+import { JobLocationIndex } from '#src/jobs/location-index.js';
 import type { AcceptedProviderJobLaunchDecision } from '#src/jobs/launch.js';
 import type { JobSendResult } from '#src/jobs/send.js';
 import { conversationIdentityFixture } from '#tests/integration/jobs/conversation-identity-fixture.js';
@@ -437,11 +439,8 @@ describe('jobs send continuation through the execution owner', () => {
     }
   });
 
-  it('returns #2 after #3 is latest before the first subscription, through handover and reconnect', async () => {
-    const f = conversationIdentityFixture({
-      managedArtifacts: true,
-      failOnResume: (request) => request.prompt === 'second result',
-    });
+  it('selects the latest execution on a fresh wait and keeps it across handover', async () => {
+    const f = conversationIdentityFixture({ managedArtifacts: true });
     const output = vi.spyOn(process.stdout, 'write').mockImplementation(((_chunk: unknown, cb?: () => void) => {
       cb?.();
       return true;
@@ -452,62 +451,151 @@ describe('jobs send continuation through the execution owner', () => {
       await f.drive(f.service.waitForJobTerminal(initial.jobId, 10_000));
       const third = launched(await f.drive(f.service.send(attempt(f, second, 2, 'third result'), f.ctx)));
       await f.drive(f.service.waitForJobTerminal(initial.jobId, 10_000));
-      expect(third.requestedSeq).toBeGreaterThan(second.requestedSeq);
-      expect(f.store.readTerminalProjection(initial.jobId)?.outcome).toEqual({ kind: 'completed' });
       const restarted = f.restartCoordinator();
       const requests: Array<{ executionSelections?: unknown }> = [];
       const emitError = vi.fn();
       const code = await f.drive(
         followJobs({
-          start: { kind: 'launch', launchResult: second },
+          jobIds: [initial.jobId],
           projectRoot: f.ctx.projectRoot,
-          reconnectPolicy: 'until-terminal',
           emitError,
           render: { isTTY: false, columns: 80, embed: true, verbose: false },
           connect: async (request) => {
             requests.push(request);
-            if (requests.length === 1)
-              return {
-                kind: 'subscription',
-                subscription: {
-                  close: async () => {},
-                  async *[Symbol.asyncIterator]() {
-                    yield { type: 'handover' };
-                  },
-                },
-              };
+            const firstRead = requests.length === 1;
             const stream = restarted.waitStream({ ...request, jobIds: [...request.jobIds], timeoutSeconds: 1 });
             return {
-              kind: 'subscription',
-              subscription: {
-                close: async () => {
-                  await stream.return(undefined);
-                },
-                [Symbol.asyncIterator]: () => stream,
+              close: async () => {
+                await stream.return(undefined);
+              },
+              async *[Symbol.asyncIterator]() {
+                for await (const event of stream) {
+                  yield event;
+                  if (firstRead && event.type === 'admission') {
+                    yield { type: 'handover' };
+                    return;
+                  }
+                }
               },
             };
           },
         }),
       );
-      expect(code).toBe(7);
+      expect(code).toBe(0);
       expect(emitError).not.toHaveBeenCalled();
       expect(requests).toHaveLength(2);
-      for (const request of requests)
-        expect(request.executionSelections).toEqual([
-          {
-            jobId: second.jobId,
-            requestedSeq: second.requestedSeq,
-            epochKey: second.epochKey,
-            awaitingArtifact: false,
-          },
-        ]);
+      expect(requests[0].executionSelections).toEqual([]);
+      expect(requests[1].executionSelections).toEqual([
+        {
+          jobId: third.jobId,
+          requestedSeq: third.requestedSeq,
+          epochKey: third.epochKey,
+          awaitingArtifact: false,
+        },
+      ]);
       const text = output.mock.calls.map(([chunk]) => String(chunk)).join('');
-      expect(text).toContain(`Job ${second.jobId} execution #2 provider exited 7`);
-      expect(text).not.toContain('execution #3');
-      expect(text).toContain('second result');
-      expect(text).toContain(`/executions/2/result.md`);
-      expect(text).not.toContain(`/executions/3/result.md`);
-      expect(text).not.toContain('third result');
+      expect(text).toContain(`Job ${third.jobId} execution #3 completed`);
+      expect(text).toContain('third result');
+      expect(text).toContain('/executions/3/result.md');
+      expect(text).not.toContain('/executions/2/result.md');
+    } finally {
+      await f.dispose();
+    }
+  });
+
+  it('drains the selected execution before a later continuation can replace it in a batch wait', async () => {
+    const f = conversationIdentityFixture({ stall: true, failOnResume: (request) => request.prompt === 'failed turn' });
+    let output = '';
+    vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: string, cb?: () => void) => {
+      output += chunk;
+      cb?.();
+      return true;
+    }) as typeof process.stdout.write);
+    try {
+      async function start(prompt: string) {
+        const launch = await f.drive(f.service.start('codex', { prompt }, f.ctx));
+        if (launch.status !== 'running' && launch.status !== 'queued') throw new Error(launch.message);
+        return launch;
+      }
+      async function finish(jobId: string) {
+        f.finish(jobId);
+        await f.drive(f.service.waitForJobTerminal(jobId, 10_000));
+      }
+      const initial = await start('initial turn');
+      await finish(initial.jobId);
+      const selected = launched(await f.drive(f.service.send(attempt(f, initial, 1, 'failed turn'), f.ctx)));
+      for (let batch = 0; batch < 6; batch++)
+        f.store.appendProgress(
+          selected.jobId,
+          Array.from({ length: 100 }, (_, line) => `selected progress ${100 * batch + line}`).join('\n'),
+        );
+      await finish(selected.jobId);
+      const sibling = await start('sibling');
+      await finish(sibling.jobId);
+      const locations = new JobLocationIndex(f.runtime, f.runtime.paths.coral.generation.dataRoot);
+      for (const job of [selected, sibling])
+        locations.register(job.jobId, job.epochKey, {
+          projectRoot: f.ctx.projectRoot,
+          workDir: f.ctx.projectRoot,
+          jobKind: 'provider',
+        });
+      const addressing = new JobAddressing(
+        locations,
+        {
+          epochKey: () => selected.epochKey,
+          detail: (id) => f.store.loadJobDetailResponse(id),
+          visitProgress: f.service.visitProgress,
+          readWaitAdmissions: f.service.readWaitAdmissions.bind(f.service),
+          readWaitAdmission: f.service.readWaitAdmission.bind(f.service),
+          abort: () => {
+            throw new Error('Unexpected abort');
+          },
+        },
+        () => false,
+        () => 'decided',
+        undefined,
+        () => ({ kind: 'available', resultPath: '/result.md' }),
+      );
+
+      let replacementStarted = false;
+      const emitError = vi.fn();
+      const code = await f.drive(
+        followJobs({
+          jobIds: [selected.jobId, sibling.jobId],
+          serializedCursor: '0',
+          waitForAll: true,
+          projectRoot: f.ctx.projectRoot,
+          emitError,
+          render: { isTTY: false, columns: 80, embed: false, verbose: false },
+          connect: async (request) => {
+            const stream = addressing.waitStream({ ...request, jobIds: [...request.jobIds], timeoutSeconds: 1 });
+            return {
+              close: async () => {
+                await stream.return(undefined);
+              },
+              async *[Symbol.asyncIterator]() {
+                for await (const event of stream) {
+                  if (event.type === 'terminal' && event.jobId === selected.jobId && !replacementStarted) {
+                    replacementStarted = true;
+                    f.finish(selected.jobId);
+                    launched(await f.service.send(attempt(f, selected, 2, 'replacement turn'), f.ctx));
+                    await f.service.waitForJobTerminal(selected.jobId, 10_000);
+                  }
+                  yield event;
+                }
+              },
+            };
+          },
+        }),
+      );
+      expect(replacementStarted).toBe(true);
+      expect(emitError).not.toHaveBeenCalled();
+      expect(output.match(/selected progress \d+/g)).toHaveLength(600);
+      expect(output.indexOf('selected progress 599')).toBeLessThan(
+        output.indexOf(`Job ${selected.jobId} execution #2 provider exited 7`),
+      );
+      expect(output).not.toContain(`Job ${selected.jobId} execution #3`);
+      expect(code).toBe(7);
     } finally {
       await f.dispose();
     }

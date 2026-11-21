@@ -4,10 +4,17 @@ import type { JobKind } from './records.js';
 // Explicitly naming a job id permits containment; ambient selection requires equality.
 export type JobScopeRelation = 'contains' | 'exact';
 
+export type JobCallerScope = Readonly<{ root: CanonicalWorkDir; relation: JobScopeRelation }>;
+
+declare const operatorJobReadScopeExemptionBrand: unique symbol;
+
+export type OperatorJobReadScopeExemption = symbol & { readonly [operatorJobReadScopeExemptionBrand]: true };
+
 export type ScopeCheckResult = {
   valid: string[];
   missing: string[];
   mismatch: string[];
+  mismatchWorkDirs?: { jobId: string; workDir: string }[];
 };
 
 /** The two coordinates scope is judged on. `workDir` is null for exactly the KB jobs. */

@@ -59,10 +59,10 @@ plugin files from project files. Two read patterns and one spawn pattern exist â
 
 ```
 Caller invokes Coral CLI:
-  -> coral-cli codex <agent> --work-dir "<path>" -d -i - <<'CORAL_INPUT'   (prompt on stdin, left literal)
+  -> coral-cli codex <agent> --work-dir "<path>" -i - <<'CORAL_INPUT'   (prompt on stdin, left literal)
   -> CLI validates args and dispatches the provider launch
   -> backend resolves clients/agents/<agent>.md
-  -> detached launch prints `Job <job> <launchState> (session <session>)`
+  -> launch returns with `Provider job <job> execution #<n> <launchState>` and `command=coral-cli jobs wait <job>`
   -> cd "<path>" && coral-cli jobs wait "<job>" --embed
   -> read the printed `Result path: <path>` for the full artifact
 ```

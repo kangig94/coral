@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { JobAddressing } from '#src/jobs/addressing.js';
 import { JobLocationIndex } from '#src/jobs/location-index.js';
+import { MAX_WAIT_JOB_IDS } from '#src/jobs/wait/stream-event.js';
 import { TEST_EPOCH } from '#tests/helpers/wait-session.js';
 import { progressVisitFromDetails } from '#tests/helpers/wait-progress.js';
 import { JobAttention } from '#src/coordinator/services/job-attention.js';
@@ -172,7 +173,7 @@ describe('session job guard', () => {
       vi.stubEnv('COPILOT_PLUGIN_ROOT', host === 'copilot' ? root : '');
       expect(await stop()).toEqual({
         decision: 'block',
-        reason: `2 Coral job(s) launched in this session are still running with no wait attached. Run ${plainWait('job-1', 'job-2')} to wait for them.`,
+        reason: `2 Coral job(s) launched in this session are still running with no wait attached. Run ${plainWait('job-1', 'job-2')} --all to wait for them.`,
       });
       expect(state.exec).toHaveBeenCalledWith(
         expect.stringMatching(/clients\/bridge\/coral-cli$/),
@@ -185,20 +186,7 @@ describe('session job guard', () => {
     },
   );
 
-  it('session job guard: groups other directories and safely quotes them', async () => {
-    state.exec.mockReturnValue(
-      JSON.stringify([
-        job('job-1', 1, "/other's project"),
-        job('job-2', 1, '/third-project'),
-        job('job-3', 1, "/other's project"),
-      ]),
-    );
-    expect((await stop())?.reason).toBe(
-      `3 Coral job(s) launched in this session are still running with no wait attached. Run each command below separately to wait for them:\ncd '/other'\\''s project' && ${plainWait('job-1', 'job-3')}\ncd '/third-project' && ${plainWait('job-2')}`,
-    );
-  });
-
-  it('session job guard: lists the plain command first for mixed scopes, including descendants and KB jobs', async () => {
+  it('session job guard: batches jobs across work directories including KB jobs', async () => {
     vi.stubEnv('CLAUDE_PROJECT_DIR', join(root, 'scratch'));
     state.exec.mockReturnValue(
       JSON.stringify([
@@ -209,15 +197,17 @@ describe('session job guard', () => {
       ]),
     );
     expect((await stop())?.reason).toBe(
-      `4 Coral job(s) launched in this session are still running with no wait attached. Run each command below separately to wait for them:\n${plainWait('job-here', 'job-child', 'job-kb')}\ncd '/other-project' && ${plainWait('job-other')}`,
+      `4 Coral job(s) launched in this session are still running with no wait attached. Run ${plainWait('job-other', 'job-here', 'job-child', 'job-kb')} --all to wait for them.`,
     );
   });
 
-  it('session job guard: does not treat a directory with the same prefix as in scope', async () => {
-    state.exec.mockReturnValue(JSON.stringify([job('job-other', 1, `${root}-other`)]));
-    expect((await stop())?.reason).toBe(
-      `1 Coral job(s) launched in this session are still running with no wait attached. Run cd '${root}-other' && ${plainWait('job-other')} to wait for them.`,
-    );
+  it('session job guard: caps each wait command at the CLI batch limit', async () => {
+    const ids = Array.from({ length: MAX_WAIT_JOB_IDS + 1 }, (_, index) => `job-${index}`);
+    state.exec.mockReturnValue(JSON.stringify(ids.map((id) => job(id))));
+    expect((await stop())?.reason.split('\n').slice(1)).toEqual([
+      `${plainWait(...ids.slice(0, MAX_WAIT_JOB_IDS))} --all`,
+      plainWait(`job-${MAX_WAIT_JOB_IDS}`),
+    ]);
   });
 
   it('session job guard: allows empty results, failures, timeout and missing session', async () => {
@@ -236,7 +226,10 @@ describe('session job guard', () => {
 
   it('session job guard: allows repeated stops for subsets of the blocked set until a wait runs', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(100);
-    expect((await stop())?.decision).toBe('block');
+    expect(await stop()).toMatchObject({
+      decision: 'block',
+      reason: expect.stringContaining('coral-cli jobs wait job-1 job-2 --all'),
+    });
     expect(await stop()).toBeNull();
     state.exec.mockReturnValue(JSON.stringify([job('job-2'), job('job-1')]));
     expect(await stop()).toBeNull();
@@ -251,7 +244,7 @@ describe('session job guard', () => {
       tool_name: 'Bash',
       session_id: 'session-1',
       cwd: root,
-      tool_input: { command: 'coral-cli jobs wait job-1 job-2' },
+      tool_input: { command: 'coral-cli jobs wait job-1 job-2 --all' },
     };
     // @ts-expect-error — hooks are self-contained ESM without declarations.
     await import('../../../clients/hooks/bash-rewrite.mjs');

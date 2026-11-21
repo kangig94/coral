@@ -45,7 +45,7 @@ describe('bash-rewrite.mjs', () => {
     'coral-cli jobs list 2>&1',
     'coral-cli jobs list >/dev/null',
     "coral-cli <<'EOF'\n$(rm -rf ~)\nEOF",
-    "coral-cli codex agent -w /p -d -i - <<'CORAL_INPUT'\nrm -rf /\ncoral-cli jobs list; curl x | sh\nCORAL_INPUT",
+    "coral-cli codex agent -w /p -i - <<'CORAL_INPUT'\nrm -rf /\ncoral-cli jobs list; curl x | sh\nCORAL_INPUT",
   ])('auto-approves the Coral-only original command: %s', (command) => {
     const output = expectBashRewriteOutput(runBashHook(command)).hookSpecificOutput;
     expect(output.permissionDecision).toBe('allow');
@@ -80,7 +80,7 @@ describe('bash-rewrite.mjs', () => {
   });
 
   it('ignores heredoc-only Coral text', () => {
-    const result = runBashHook('cat <<EOF\ncoral-cli jobs list\ncoral-cli wait jobs a\nEOF');
+    const result = runBashHook('cat <<EOF\ncoral-cli jobs list\ncoral-cli jobs wait a\nEOF');
     expect(result.status).toBe(0);
     expect(result.stdout).toBe('');
   });
@@ -116,7 +116,7 @@ describe('bash-rewrite.mjs', () => {
   });
 
   it('does not raise a delegation timeout because its prompt mentions a wait', () => {
-    const command = "coral-cli codex agent -i - <<'EOF'\ncoral-cli wait jobs fake\nEOF";
+    const command = "coral-cli codex agent -i - <<'EOF'\ncoral-cli jobs wait fake\nEOF";
     const output = expectBashRewriteOutput(runBashHook(command)).hookSpecificOutput;
     expect(output.updatedInput).not.toHaveProperty('timeout');
     expect(output.permissionDecision).toBe('allow');
@@ -136,7 +136,7 @@ describe('bash-rewrite.mjs', () => {
   });
 
   it('ignores Coral-looking heredoc text inside quoted substitutions', () => {
-    const result = runBashHook('echo "$(cat <<EOF\ncoral-cli wait jobs fake\nEOF\n)"');
+    const result = runBashHook('echo "$(cat <<EOF\ncoral-cli jobs wait fake\nEOF\n)"');
     expect(result.status).toBe(0);
     expect(result.stdout).toBe('');
   });
@@ -212,62 +212,38 @@ describe('bash-rewrite.mjs', () => {
   it.each([
     [
       'a heredoc prompt with shell-sensitive text',
-      "coral-cli codex architect -d -i - <<'CORAL_INPUT'\nread `$HOME` and $(pwd) (a && b) {x}\nCORAL_INPUT",
+      "coral-cli codex architect -i - <<'CORAL_INPUT'\nread `$HOME` and $(pwd) (a && b) {x}\nCORAL_INPUT",
     ],
   ])('passes %s through byte-identical after the prefix', (_label, command) => {
     expect(splitPrefix(rewrittenCommand(command)).rest).toBe(command);
   });
 
-  it.each(['jobs wait', 'wait jobs'])(
-    'gives a chained, redirected %s the whole Bash timeout without forcing foreground',
-    (grammar) => {
-      const result = runBashHook(`cd "/tmp/x" && coral-cli ${grammar} jb-1 --embed > /tmp/out.txt 2>&1`);
+  it('rewrites a chained, redirected wait without overriding the harness timeout', () => {
+    const result = runBashHook(`cd "/tmp/x" && coral-cli jobs wait jb-1 --embed > /tmp/out.txt 2>&1`);
 
-      const updatedInput = expectBashRewriteOutput(result).hookSpecificOutput.updatedInput as Record<string, unknown>;
-      expect(updatedInput.timeout).toBe(600_000);
-      expect(updatedInput.run_in_background).toBeUndefined();
-    },
-  );
-
-  it('does not give jobs list the wait timeout', () => {
-    const updatedInput = expectBashRewriteOutput(runBashHook('coral-cli jobs list --all')).hookSpecificOutput
-      .updatedInput as Record<string, unknown>;
+    const updatedInput = expectBashRewriteOutput(result).hookSpecificOutput.updatedInput as Record<string, unknown>;
     expect(updatedInput.timeout).toBeUndefined();
+    expect(updatedInput.run_in_background).toBeUndefined();
   });
 
-  it.each(['coral-cli jobs wait-typo', 'coral-cli wait-not-jobs'])(
-    'does not give a hyphenated verb the wait timeout: %s',
-    (command) => {
-      const updatedInput = expectBashRewriteOutput(runBashHook(command)).hookSpecificOutput.updatedInput as Record<
-        string,
-        unknown
-      >;
-      expect(updatedInput.timeout).toBeUndefined();
-    },
-  );
-
-  it.each([
-    'coral-cli jobs wait x',
-    'coral-cli wait jobs x',
-    'coral-cli jobs wait',
-    'coral-cli jobs wait; echo done',
-    'coral-cli jobs wait&& echo done',
-    '(coral-cli jobs wait)',
-  ])('gives an exact wait verb the wait timeout: %s', (command) => {
-    const updatedInput = expectBashRewriteOutput(runBashHook(command)).hookSpecificOutput.updatedInput as Record<
-      string,
-      unknown
-    >;
-    expect(updatedInput.timeout).toBe(600_000);
-  });
-
-  it('keeps the wait timeout when a mixed command needs normal permission evaluation', () => {
-    const command = 'sleep 5 && coral-cli wait jobs a';
+  it('keeps the wait command when a mixed command needs normal permission evaluation', () => {
+    const command = 'sleep 5 && coral-cli jobs wait a';
     const output = expectBashRewriteOutput(runBashHook(command)).hookSpecificOutput;
     expect(output).not.toHaveProperty('permissionDecision');
-    expect(output.updatedInput).toHaveProperty('timeout', 600_000);
+    expect(output.updatedInput).not.toHaveProperty('timeout');
     expect(splitPrefix(output.updatedInput.command).rest).toBe(command);
   });
+
+  it.each(['timeout', 'gtimeout'])(
+    'rewrites a literal %s around a wait without forcing a harness timeout',
+    (wrapper) => {
+      const command = `${wrapper} --preserve-status 100 coral-cli jobs wait a --all`;
+      const output = expectBashRewriteOutput(runBashHook(command)).hookSpecificOutput;
+      expect(output.permissionDecision).toBe('allow');
+      expect(output.updatedInput).not.toHaveProperty('timeout');
+      expect(splitPrefix(output.updatedInput.command).rest).toBe(command);
+    },
+  );
 
   it('leaves the timeout of a non-wait coral-cli command alone', () => {
     const updatedInput = expectBashRewriteOutput(runBashHook('coral-cli codex architect -i "wait for it"'))
@@ -331,9 +307,9 @@ describe('bash-rewrite.mjs: background-task wrapping', () => {
     expect(output.updatedInput).toHaveProperty('run_in_background', true);
   });
 
-  it('keeps the caller timeout of a background unbounded wait', () => {
+  it('keeps the caller timeout of a background wait', () => {
     const fixture = createFixture();
-    const command = 'coral-cli jobs wait a --unbounded';
+    const command = 'coral-cli jobs wait a';
     const output = expectBashRewriteOutput(
       runBg(fixture, { command, run_in_background: true, timeout: 7_200_000 }, 'claude'),
     ).hookSpecificOutput;
@@ -344,7 +320,7 @@ describe('bash-rewrite.mjs: background-task wrapping', () => {
     'prefixes the bridge for a background Coral invocation after %s',
     (redirect) => {
       const fixture = createFixture();
-      const command = `${redirect} coral-cli wait jobs a${redirect.startsWith('<<') ? '\nprompt\nEOF' : ''}`;
+      const command = `${redirect} coral-cli jobs wait a${redirect.startsWith('<<') ? '\nprompt\nEOF' : ''}`;
       const output = expectBashRewriteOutput(
         runBg(fixture, { command, run_in_background: true }, 'claude'),
       ).hookSpecificOutput;

@@ -13,13 +13,14 @@ import { missingJobSendRefusal } from './send.js';
 import { type HistoricalSourceRead, type HistoricalSourceReader } from './historical-reader.js';
 import {
   LocationObservationDeferred,
+  locationInCallerScope,
   type JobLocationView,
   type JobLocation,
   type JobExecutionLocation,
   type UnknownLocationHold,
 } from './location-index.js';
 import { hasReadableTerminalDetail } from './terminal/identity.js';
-import { jobInCallerScope, type JobScopeRelation, type ScopeCheckResult } from './scope.js';
+import { type JobCallerScope, type JobScopeRelation, type JobScopeSubject, type ScopeCheckResult } from './scope.js';
 import type { JobDetailResponse, JobExecutionDetail } from './records.js';
 import { type ResultAvailability } from './terminal/export.js';
 import {
@@ -32,6 +33,7 @@ import {
 export interface ActiveJobAccess {
   epochKey(): string | null;
   detail(jobId: string): JobDetailResponse | null;
+  address?(jobId: string): (JobScopeSubject & { projectRoot: string }) | null;
   visitProgress?: ProgressVisit;
   readWaitAdmissions?(jobIds: readonly string[], epochKey: string, session?: object): WaitAdmission[];
   observeWaitCarriers?(jobIds: readonly string[], signal: AbortSignal): Promise<WaitCarrierCoverage>;
@@ -78,18 +80,13 @@ type RetainedExecutionRead = Readonly<{
 const PRE_EPOCH_HISTORY_MESSAGE =
   'A job that ran before store epochs has no details this build can read; another id may never have been a job';
 
-function locationInCallerScope(location: JobLocation, projectRoot: string | undefined): boolean {
-  return (
-    projectRoot === undefined ||
-    jobInCallerScope(
-      {
-        jobKind: location.subject.jobKind,
-        workDir: location.subject.workDir === null ? null : canonicalWorkDirWireSchema.parse(location.subject.workDir),
-      },
-      canonicalWorkDirWireSchema.parse(projectRoot),
-      'contains',
-    )
-  );
+function scopeMismatch(jobId: string): WaitAdmission {
+  return {
+    jobId,
+    disposition: 'scope-mismatch',
+    message:
+      'Change cwd to the job work directory or an ancestor within your project binding, if one applies. coral-cli jobs list --all includes authorized terminal jobs.',
+  };
 }
 
 function epochHoldReason(reason: string, retryScheduled: boolean): string {
@@ -156,8 +153,8 @@ export class JobAddressing {
     active: ActiveJobAccess,
     preEpochHistoryExists: PreEpochHistoryProbe,
     historicalClosure: HistoricalClosureProbe,
-    readHistorical: HistoricalSourceReader = (epochKey, jobIds, session, fullHistory) =>
-      locations.readHistorical?.(epochKey, jobIds, session, fullHistory) ?? {
+    readHistorical: HistoricalSourceReader = (epochKey, jobIds, session, fullHistory, callerScope) =>
+      locations.readHistorical?.(epochKey, jobIds, session, fullHistory, callerScope) ?? {
         kind: 'unreadable',
         disposition: 'transient-unknown',
         reason: 'Source observation is unavailable; retry when its owner becomes reachable',
@@ -208,24 +205,39 @@ export class JobAddressing {
    * A wait poll resolves unknown IDs through its own session-cached hold reads, so it skips the uncached hold scan. A
    * location record that cannot be read is no evidence against the active journal, which still answers for its jobs.
    */
-  private location(jobId: string, activeEpochKey?: string, scanHolds = true): JobLocation | null {
+  private location(
+    jobId: string,
+    activeEpochKey?: string,
+    scanHolds = true,
+    callerScope?: JobCallerScope,
+  ): JobLocation | null {
     let existing: JobLocation | null = null;
     let unreadable: { error: unknown } | undefined;
     try {
-      existing = this.locations.read(jobId);
+      existing = this.locations.read(jobId, undefined, callerScope);
     } catch (error) {
       if (isCodeDefect(error)) throw error;
       unreadable = { error };
     }
     if (existing !== null) return existing;
-    const detail = this.active.detail(jobId);
+    const address = this.active.address?.(jobId);
+    if (address)
+      return {
+        version: 'v1',
+        jobId,
+        epochKey: activeEpochKey ?? this.active.epochKey() ?? ':memory:',
+        subject: address,
+        disposition: 'active-owner',
+        detail: { kind: 'absent' },
+      };
+    const detail = this.active.address === undefined ? this.active.detail(jobId) : null;
     const epochKey = activeEpochKey ?? this.active.epochKey() ?? ':memory:';
     if (detail === null) {
       if (unreadable) throw unreadable.error;
       if (!scanHolds) return null;
       for (const hold of this.locations.unknownLocationHolds()) {
         if (!hold.epochKey || sameEpoch(hold.epochKey, epochKey)) continue;
-        const read = this.readHistorical(hold.epochKey, [jobId]);
+        const read = this.readHistorical(hold.epochKey, [jobId], undefined, false, callerScope);
         const found = read.kind === 'read' ? read.locations.get(jobId) : null;
         if (found) return found;
       }
@@ -247,25 +259,18 @@ export class JobAddressing {
 
   scopeCheck(jobIds: string[], callerRoot: CanonicalWorkDir, relation: JobScopeRelation): ScopeCheckResult {
     const result: ScopeCheckResult = { valid: [], missing: [], mismatch: [] };
+    const callerScope = { root: callerRoot, relation };
     for (const jobId of jobIds) {
-      const location = this.location(jobId);
+      const location = this.location(jobId, undefined, true, callerScope);
       if (location === null) {
         result.valid.push(jobId);
         result.missing.push(jobId);
-      } else if (
-        jobInCallerScope(
-          {
-            jobKind: location.subject.jobKind,
-            workDir:
-              location.subject.workDir === null ? null : canonicalWorkDirWireSchema.parse(location.subject.workDir),
-          },
-          callerRoot,
-          relation,
-        )
-      ) {
+      } else if (locationInCallerScope(location, callerScope)) {
         result.valid.push(jobId);
       } else {
         result.mismatch.push(jobId);
+        if (location.subject.workDir !== null)
+          (result.mismatchWorkDirs ??= []).push({ jobId, workDir: location.subject.workDir });
       }
     }
     return result;
@@ -286,11 +291,7 @@ export class JobAddressing {
     const historical = !sameEpoch(location.epochKey, this.active.epochKey() ?? ':memory:');
     if (!historical) {
       const active = this.active.detail(jobId);
-      if (active !== null)
-        return this.withResultAvailability({
-          ...active,
-          epochKey: location.epochKey,
-        });
+      if (active !== null) return this.withResultAvailability({ ...active, epochKey: location.epochKey });
     }
     const observed = historical
       ? this.historicalLocation(location, true)
@@ -488,7 +489,23 @@ export class JobAddressing {
 
   private readAdmissions(request: WaitStreamRequest, budgeted: boolean): WaitAdmission[] {
     const activeEpochKey = this.waitEpoch(request);
-    const { members, locations, failures } = this.collectAdmissionLocations(request, budgeted, activeEpochKey);
+    const callerScope: JobCallerScope | undefined =
+      request.projectRoot === undefined || typeof request.outsideCwdJobRead === 'symbol'
+        ? undefined
+        : { root: canonicalWorkDirWireSchema.parse(request.projectRoot), relation: 'contains' };
+    const { members, locations, failures } = this.collectAdmissionLocations(
+      request,
+      budgeted,
+      activeEpochKey,
+      callerScope,
+    );
+    const classifyLocation = (jobId: string, location: JobLocation): boolean => {
+      if (locationInCallerScope(location, callerScope)) return true;
+      failures.set(jobId, scopeMismatch(jobId));
+      return false;
+    };
+    for (const [jobId, location] of locations)
+      if (location && !classifyLocation(jobId, location)) locations.delete(jobId);
     const unknownIds = [...locations].filter(([id, location]) => !location && !failures.has(id)).map(([id]) => id);
     const holds = unknownIds.length ? this.locations.unknownLocationHolds() : [];
     const epochMembers = this.collectAdmissionEpochs(locations, unknownIds, holds, activeEpochKey);
@@ -499,14 +516,14 @@ export class JobAddressing {
     const historical = new Map(
       historicalEpochs.map(({ epochKey, jobIds }) => [
         epochIdentity(epochKey),
-        this.readHistorical(epochKey, jobIds, request, true),
+        this.readHistorical(epochKey, jobIds, request, true, callerScope),
       ]),
     );
     for (const jobId of unknownIds) {
       for (const source of historical.values()) {
         const found = source.kind === 'read' ? source.locations.get(jobId) : null;
         if (found) {
-          locations.set(jobId, found);
+          if (classifyLocation(jobId, found)) locations.set(jobId, found);
           break;
         }
       }
@@ -529,7 +546,12 @@ export class JobAddressing {
     });
   }
 
-  private collectAdmissionLocations(request: WaitStreamRequest, budgeted: boolean, activeEpochKey: string) {
+  private collectAdmissionLocations(
+    request: WaitStreamRequest,
+    budgeted: boolean,
+    activeEpochKey: string,
+    callerScope: JobCallerScope | undefined,
+  ) {
     const failures = new Map<string, WaitAdmission>();
     const offset = budgeted ? (this.readOffsets.get(request) ?? 0) : 0;
     if (budgeted) this.readOffsets.set(request, (offset + 32) % Math.max(1, request.jobIds.length));
@@ -538,7 +560,7 @@ export class JobAddressing {
     const locations = new Map(
       ordered.map((jobId) => {
         try {
-          return [jobId, this.location(jobId, activeEpochKey, false)] as const;
+          return [jobId, this.location(jobId, activeEpochKey, false, callerScope)] as const;
         } catch (error) {
           if (isCodeDefect(error)) throw error;
           const sourceRead = sourceReadFailureDisposition(error);
@@ -614,12 +636,6 @@ export class JobAddressing {
 
   private locatedAdmission(jobId: string, location: JobLocation, context: AdmissionReadContext): WaitAdmission {
     const { request, activeEpochKey, activeAdmissions } = context;
-    if (!locationInCallerScope(location, request.projectRoot))
-      return {
-        jobId,
-        disposition: 'scope-mismatch',
-        message: 'Change cwd to the job work directory; coral-cli jobs list --all includes terminal jobs.',
-      };
     const selected =
       this.selectedAdmissions.get(request)?.get(jobId) ??
       request.executionSelections?.find((selection) => selection.jobId === jobId);
@@ -630,14 +646,12 @@ export class JobAddressing {
         epochKey: selected.epochKey,
         message: 'The selected epoch is unavailable; no other execution was selected.',
       };
-    if (sameEpoch(location.epochKey, activeEpochKey)) {
-      try {
-        return this.activeAdmission(jobId, location.epochKey, activeAdmissions.get(jobId), request);
-      } catch (error) {
-        return activeJournalReadFailure(jobId, location.epochKey, error);
-      }
+    if (!sameEpoch(location.epochKey, activeEpochKey)) return this.readHistoricalAdmission(jobId, location, context);
+    try {
+      return this.activeAdmission(jobId, location.epochKey, activeAdmissions.get(jobId), request);
+    } catch (error) {
+      return activeJournalReadFailure(jobId, location.epochKey, error);
     }
-    return this.readHistoricalAdmission(jobId, location, context);
   }
 
   private readHistoricalAdmission(jobId: string, location: JobLocation, context: AdmissionReadContext): WaitAdmission {
@@ -767,7 +781,11 @@ export class JobAddressing {
       disposition: 'admitted',
       epochKey,
       ...(detail === null || detail === undefined ? {} : { detail: waitDetail(detail) }),
-      ...(detail?.exit ? { availability: admission?.availability ?? this.availability(jobId) } : {}),
+      ...(detail?.exit
+        ? {
+            availability: admission?.availability ?? this.availability(jobId),
+          }
+        : {}),
     };
   }
 

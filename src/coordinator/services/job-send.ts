@@ -9,7 +9,12 @@ import {
 } from '../../jobs/execution-journal.js';
 import { isTerminalPhase } from '../../jobs/phase.js';
 import { jobInCallerScope } from '../../jobs/scope.js';
-import { jobSendAttemptSchema, missingJobSendRefusal, type JobSendResult } from '../../jobs/send.js';
+import {
+  jobSendAttemptSchema,
+  jobSendScopeMismatch,
+  missingJobSendRefusal,
+  type JobSendResult,
+} from '../../jobs/send.js';
 import { matchesContinuationEnvelope, matchesContinuationTarget, type JobSendTarget } from '../../jobs/send-target.js';
 import type { JobLocationView } from '../../jobs/location-index.js';
 import type {
@@ -127,11 +132,10 @@ export class JobSendService {
           'contains',
         )
       )
-        return { state: 'refused', code: 'scope_mismatch', reason: 'The job belongs to another project.' };
+        return jobSendScopeMismatch(location.subject.workDir);
       return missingJobSendRefusal(location);
     }
-    if (!jobInCallerScope(status, request.projectRoot, 'contains'))
-      return { state: 'refused', code: 'scope_mismatch', reason: 'The job belongs to another project.' };
+    if (!jobInCallerScope(status, request.projectRoot, 'contains')) return jobSendScopeMismatch(status.workDir);
     if (status.jobKind !== 'provider')
       return {
         state: 'refused',

@@ -178,6 +178,7 @@ export class WaitSession {
         this.members.set(job.jobId, member);
       }
       if (job.disposition !== 'admitted' || job.observationDeferred) {
+        if (job.disposition === 'scope-mismatch') this.selections.delete(job.jobId);
         member.progress = job.disposition === 'unknown' || job.observationDeferred ? 'unknown' : 'refused';
         continue;
       }

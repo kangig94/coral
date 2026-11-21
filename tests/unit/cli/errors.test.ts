@@ -18,9 +18,9 @@ import { ChildPrincipalBindingError } from '#src/transport/ipc/child-principal-a
 import { IpcDrainRequestUnanswered, IpcLifecycleRefusal, IpcRpcError } from '#src/transport/ipc/client.js';
 
 describe('cli errors', () => {
-  it('sends a --unbounded resume to a background shell, where a foreground timeout cannot kill it silently', () => {
-    expect(new WaitResumeError('stream interrupted', ['a'], '7', 'unbounded').remediation).toBe(
-      'Rerun `coral-cli jobs wait a --unbounded --cursor 7` in a background shell to continue waiting.',
+  it('preserves --all in wait remediation', () => {
+    expect(new WaitResumeError('stream interrupted', ['a'], '7', 'all').remediation).toBe(
+      'Rerun `coral-cli jobs wait a --all --cursor 7` to continue waiting.',
     );
   });
 

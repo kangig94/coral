@@ -101,7 +101,7 @@ await failOpen(async () => {
   if (liveJobs.length > 0) {
     const jobIds = liveJobs.map((job) => job.jobId).join(' ');
     lines.push('Jobs were still active before compaction.');
-    lines.push(`Run: ${bridge} jobs wait ${jobIds}`);
+    lines.push(`Run: ${bridge} jobs wait ${jobIds}${liveJobs.length > 1 ? ' --all' : ''}`);
     lines.push('');
   }
 

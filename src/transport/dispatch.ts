@@ -2,6 +2,7 @@ import { ProjectionConversationMalformedError } from '../jobs/records.js';
 import { jobSendOutcomeSchema, malformedConversationSendRefusal } from '../jobs/send.js';
 import { proxyOperationSendResultSchema } from '../provider-proxy/protocol.js';
 import { WaitSessionError } from '../jobs/wait/session.js';
+import type { OperatorJobReadScopeExemption, ScopeCheckResult } from '../jobs/scope.js';
 import { waitExecutionSelectionsSchema } from '../jobs/wait/execution-selection.js';
 import type { WaitCursor, WaitSnapshotRequest, CanonicalWaitStreamRequest } from '../jobs/wait/contract.js';
 import { raceWithSignal } from '../infra/promise-signal.js';
@@ -63,6 +64,8 @@ import type { z } from 'zod';
 
 type RetentionPolicy = NonNullable<JobLaunchRequest['retention']>;
 
+const operatorJobReadScopeExemption = Symbol() as OperatorJobReadScopeExemption;
+
 function decodePathSegment(segment: string): string | null {
   try {
     return decodeURIComponent(segment);
@@ -83,16 +86,20 @@ function invalidRequestResult(message = 'invalid request', detail?: unknown): To
   return domainError('invalid_request', message, detail);
 }
 
-// The refused job's own work directory is deliberately not disclosed: the caller is outside the
-// scope that would authorize reading it.
-function jobScopeMismatchResult(jobs: readonly string[]): ToolDomainResult {
+function jobScopeMismatchResult(
+  scope: ScopeCheckResult,
+  operator: OperatorJobReadScopeExemption | undefined = undefined,
+): ToolDomainResult {
+  const workDirs = operator === undefined ? undefined : scope.mismatchWorkDirs;
   return {
     ok: false,
     code: 'scope_mismatch',
     message: "Jobs are outside the caller's work directory scope",
     remediation:
-      "Change cwd to the job's work directory, or a directory that contains it, then rerun. Use `coral-cli jobs list --all` to find its work directory, including terminal jobs.",
-    detail: { jobs: [...jobs] },
+      workDirs === undefined
+        ? "Change cwd to the job's work directory or an ancestor within your project binding, if one applies. Use `coral-cli jobs list --all` to find authorized jobs and their work directories, including terminal jobs."
+        : `Change cwd to a directory that contains the targeted jobs. Work directories: ${workDirs.map(({ jobId, workDir }) => `${JSON.stringify(jobId)} at ${JSON.stringify(workDir)}`).join(', ')}.`,
+    detail: { jobs: scope.mismatch, ...(workDirs === undefined ? {} : { workDirs }) },
   };
 }
 
@@ -681,6 +688,10 @@ export async function executeCatalogRequest(
   }
   request = canonicalRequest.request;
   const requestedBinding = requestedBindingFor(spec, canonicalRequest.authorizationRoot);
+  const outsideCwdJobRead =
+    principal.subject === 'operator' && principal.binding.kind === 'unbound'
+      ? operatorJobReadScopeExemption
+      : undefined;
   principal = narrowUnboundPrincipal(principal, requestedBinding);
   const authz = authorizeCatalogResourceBinding(spec, principal, requires, requestedBinding);
   writeAuthorizationDecisionAudit(principal, spec.name, authz, requestedBinding);
@@ -688,7 +699,15 @@ export async function executeCatalogRequest(
     return authorizationFailure(authz, principal);
   }
 
-  return dispatchCatalogRequest({ spec, request, canonicalRequest, rpcPorts, principal, abortSignal });
+  return dispatchCatalogRequest({
+    spec,
+    request,
+    canonicalRequest,
+    rpcPorts,
+    principal,
+    abortSignal,
+    outsideCwdJobRead,
+  });
 }
 
 type AuthorizedCatalogRequest = Readonly<{
@@ -698,6 +717,7 @@ type AuthorizedCatalogRequest = Readonly<{
   rpcPorts: HttpHandlerPorts;
   principal: Principal;
   abortSignal: AbortSignal | undefined;
+  outsideCwdJobRead: OperatorJobReadScopeExemption | undefined;
 }>;
 
 function dispatchCatalogRequest(context: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
@@ -1055,6 +1075,7 @@ async function executeJobsSendCatalogRequest({
   canonicalRequest,
   rpcPorts,
   principal,
+  outsideCwdJobRead,
 }: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
   const parsed = request as z.infer<typeof jobSendSchema>;
   const callerRoot = canonicalRequest.projectRoot;
@@ -1066,6 +1087,12 @@ async function executeJobsSendCatalogRequest({
     if (raw.state === 'delivered') {
       proxyOperationSendResultSchema.parse(raw);
       return unary({ state: 'delivered' });
+    }
+    if (raw.state === 'refused') {
+      const { scopeMismatchWorkDir, ...refusal } = raw;
+      if (outsideCwdJobRead !== undefined && refusal.code === 'scope_mismatch' && scopeMismatchWorkDir !== undefined)
+        refusal.reason += ` Rerun the send from ${JSON.stringify(scopeMismatchWorkDir)} or an ancestor directory.`;
+      return unary(jobSendOutcomeSchema.parse(refusal));
     }
     const result = jobSendOutcomeSchema.parse(raw);
     return unary(result);
@@ -1080,13 +1107,14 @@ async function executeJobsAbortCatalogRequest({
   request,
   canonicalRequest,
   rpcPorts,
+  outsideCwdJobRead,
 }: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
   const parsed = request as { jobs: string[]; projectRoot: string };
   const callerRoot = canonicalRequest.projectRoot;
   if (callerRoot === undefined) return unaryHttp(domainResultToHttp(invalidRequestResult()));
   const scopeCheck = rpcPorts.jobs.scopeCheck(parsed.jobs, callerRoot, 'contains');
   if (scopeCheck.mismatch.length > 0) {
-    return unaryHttp(domainResultToHttp(jobScopeMismatchResult(scopeCheck.mismatch)));
+    return unaryHttp(domainResultToHttp(jobScopeMismatchResult(scopeCheck, outsideCwdJobRead)));
   }
   if (scopeCheck.missing.length === parsed.jobs.length) {
     return unknownJobsAnswer(rpcPorts, scopeCheck.missing);
@@ -1126,13 +1154,15 @@ async function executeJobsDetailCatalogRequest({
   request,
   canonicalRequest,
   rpcPorts,
+  outsideCwdJobRead,
 }: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
-  const parsed = request as { jobId: string; projectRoot: string };
+  const parsed = request as { jobId: string; projectRoot: string; forSend?: true };
   const callerRoot = canonicalRequest.projectRoot;
   if (callerRoot === undefined) return unaryHttp(domainResultToHttp(invalidRequestResult()));
-  const scopeCheck = rpcPorts.jobs.scopeCheck([parsed.jobId], callerRoot, 'contains');
-  if (scopeCheck.mismatch.length > 0) {
-    return unaryHttp(domainResultToHttp(jobScopeMismatchResult(scopeCheck.mismatch)));
+  if (parsed.forSend === true || outsideCwdJobRead === undefined) {
+    const scopeCheck = rpcPorts.jobs.scopeCheck([parsed.jobId], callerRoot, 'contains');
+    if (scopeCheck.mismatch.length > 0)
+      return unaryHttp(domainResultToHttp(jobScopeMismatchResult(scopeCheck, outsideCwdJobRead)));
   }
 
   let detail;
@@ -1212,16 +1242,23 @@ async function executeJobsDetailCatalogRequest({
       409,
     );
   }
-  if ('executionAddressing' in detail && detail.executionAddressing === 'lifetime')
+  const response =
+    parsed.forSend !== true && 'status' in detail && detail.status.jobKind === 'workflow'
+      ? {
+          ...detail,
+          workflowChildren: rpcPorts.jobs.list({ parentWorkflowJobId: detail.status.jobId, all: true }),
+        }
+      : detail;
+  if ('executionAddressing' in response && response.executionAddressing === 'lifetime')
     return unary({
-      ...detail,
+      ...response,
       sendRefusal: {
         state: 'refused',
         code: 'pre_generation_job',
         reason: 'The job predates the current store format generation and cannot be continued.',
       },
     });
-  return unary(detail);
+  return unary(response);
 }
 
 async function executeJobsWaitCatalogRequest({
@@ -1229,6 +1266,7 @@ async function executeJobsWaitCatalogRequest({
   canonicalRequest,
   rpcPorts,
   abortSignal,
+  outsideCwdJobRead,
 }: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
   const parsed = request as Record<string, unknown> & {
     jobIds: string[];
@@ -1252,6 +1290,7 @@ async function executeJobsWaitCatalogRequest({
   const waitRequest: CanonicalWaitStreamRequest = {
     jobIds: parsed.jobIds,
     projectRoot: parsed.projectRoot,
+    outsideCwdJobRead,
     ...(parsed.timeoutSeconds === undefined ? {} : { timeoutSeconds: parsed.timeoutSeconds }),
     ...(decoded === undefined ? {} : { cursor: parsed.cursor as WaitCursor }),
     drainProgress: parsed.drainProgress === true,
@@ -1285,7 +1324,7 @@ function snapshotRequest(
   | WaitSnapshotRequest
   | WaitCursorRejection
   | { code: string; message: string; remedy: { kind: 'fresh-wait'; jobIds: string[] } } {
-  const parsed = request as WaitSnapshotRequest & { cursor?: unknown };
+  const { waitRpcVersion: _version, ...parsed } = request as WaitSnapshotRequest & { waitRpcVersion?: number };
   const selections = waitExecutionSelectionsSchema.optional().safeParse(parsed.executionSelections);
   if (!selections.success)
     return {
@@ -1307,7 +1346,7 @@ async function executeJobsCatalogRequest(context: AuthorizedCatalogRequest): Pro
       if (callerRoot === undefined) return unaryHttp(domainResultToHttp(invalidRequestResult()));
       const scopeCheck = rpcPorts.jobs.scopeCheck(parsed.jobs, callerRoot, 'contains');
       if (scopeCheck.mismatch.length > 0) {
-        return unaryHttp(domainResultToHttp(jobScopeMismatchResult(scopeCheck.mismatch)));
+        return unaryHttp(domainResultToHttp(jobScopeMismatchResult(scopeCheck, context.outsideCwdJobRead)));
       }
       return unary(rpcPorts.jobs.release(parsed.jobs));
     }
@@ -1323,7 +1362,11 @@ async function executeJobsCatalogRequest(context: AuthorizedCatalogRequest): Pro
       const snapshot = snapshotRequest(context.request);
       if ('code' in snapshot) return Promise.resolve(unary(snapshot, 400));
       try {
-        return Promise.resolve(unary(context.rpcPorts.jobs.snapshot(withAbortSignal(snapshot, context.abortSignal))));
+        return unary(
+          context.rpcPorts.jobs.snapshot(
+            withAbortSignal({ ...snapshot, outsideCwdJobRead: context.outsideCwdJobRead }, context.abortSignal),
+          ),
+        );
       } catch (error) {
         if (!(error instanceof WaitSessionError)) throw error;
         return unary(

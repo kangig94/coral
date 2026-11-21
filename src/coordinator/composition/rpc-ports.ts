@@ -8,7 +8,7 @@ import type { Database } from '../../store/db.js';
 import type { JobSendRequest } from '../services/job-send.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import { readProjectionJobAddress, readProjectionJobRow } from '../../jobs/projection-row.js';
-import { malformedConversationSendRefusal, type JobSendResult } from '../../jobs/send.js';
+import { jobSendScopeMismatch, malformedConversationSendRefusal, type JobSendResult } from '../../jobs/send.js';
 import { findCommittedExecutionRequest } from '../../jobs/execution-journal.js';
 import { ZodError } from 'zod';
 
@@ -17,7 +17,7 @@ import { assertNever } from '../../infra/error-format.js';
 import { isWorkflowInputFailure, workflowCompiler } from '../../workflow/compile.js';
 import { workflowCommands } from '../../workflow/dispatch.js';
 import { isLivePhase } from '../../jobs/phase.js';
-import { jobInCallerScope } from '../../jobs/scope.js';
+import { jobInCallerScope, type ScopeCheckResult } from '../../jobs/scope.js';
 import { type JobAddressing } from '../../jobs/addressing.js';
 import type { JobAttention } from '../services/job-attention.js';
 import {
@@ -214,7 +214,7 @@ async function readSendPrerequisites(
   try {
     address = await readAdmissionProjection(() => readProjectionJobAddress(db, request.jobId), time, deadline);
     if (address !== null && !jobInCallerScope(address, request.projectRoot, 'contains'))
-      return { outcome: { state: 'refused', code: 'scope_mismatch', reason: 'The job belongs to another project.' } };
+      return { outcome: jobSendScopeMismatch(address.workDir) };
     await readAdmissionProjection(() => readProjectionJobRow(db, request.jobId), time, deadline);
     return { address, deadline };
   } catch (error) {
@@ -269,7 +269,7 @@ export function createCoordinatorRpcPorts({
       admitWait: (request) => jobAddressing.admitWait(request),
       snapshot: (request) => jobAddressing.snapshot(request),
       scopeCheck: (jobIds, callerRoot, relation) => {
-        const result = { valid: [] as string[], missing: [] as string[], mismatch: [] as string[] };
+        const result: ScopeCheckResult = { valid: [], missing: [], mismatch: [] };
         for (const jobId of jobIds) {
           const address = readProjectionJobAddress(getProgressStore().getDb(), jobId);
           if (address === null) {
@@ -277,8 +277,13 @@ export function createCoordinatorRpcPorts({
             result.valid.push(...historical.valid);
             result.missing.push(...historical.missing);
             result.mismatch.push(...historical.mismatch);
+            if (historical.mismatchWorkDirs !== undefined)
+              (result.mismatchWorkDirs ??= []).push(...historical.mismatchWorkDirs);
           } else if (jobInCallerScope(address, callerRoot, relation)) result.valid.push(jobId);
-          else result.mismatch.push(jobId);
+          else {
+            result.mismatch.push(jobId);
+            if (address.workDir !== null) (result.mismatchWorkDirs ??= []).push({ jobId, workDir: address.workDir });
+          }
         }
         return result;
       },

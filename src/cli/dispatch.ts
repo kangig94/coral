@@ -94,7 +94,7 @@ import { readDiscoveryRecordDisposition } from '../infra/backend-discovery.js';
 import { createIpcClient, IpcLifecycleRefusal, IpcRequestTimeout, IpcRpcError } from '../transport/ipc/client.js';
 import { createRealRuntime } from '../runtime/real.js';
 import { readBuildFlavor } from '../infra/bundle-manifest.js';
-import { jobSendSchema, jobsWaitRequest, type JobsWaitFields } from '../transport/rpc/jobs.js';
+import { jobSendSchema, jobsWaitRequest, WAIT_RPC_VERSION, type JobsWaitFields } from '../transport/rpc/jobs.js';
 import { childPrincipalAuthFromEnv, childPrincipalAuthOptions } from '../transport/ipc/child-principal-auth.js';
 import { CORAL_KB_ENABLE_ENV, KB_DISABLED_REASON, resolveKbEnabled } from '../infra/kb-toggle.js';
 import { filterForwardableCoralEnv } from '../infra/env-sanitize.js';
@@ -353,7 +353,6 @@ export type ProviderRunOptions = {
   model?: string;
   owner?: string;
   bypassPermissions?: boolean;
-  detach?: boolean;
 };
 
 export type WorkflowOptions = {
@@ -362,7 +361,6 @@ export type WorkflowOptions = {
   context?: string[];
   provider?: string;
   workDir?: string;
-  detach?: boolean;
   owner?: string;
 };
 
@@ -1049,10 +1047,16 @@ async function bindJobSendTarget(context: JobSendClientContext, jobId: string): 
   const { request, defaultContext } = context;
   let observed: unknown;
   try {
-    observed = await request<unknown>('jobs.detail', buildProjectScopedQuery({ jobId }, defaultContext));
+    observed = await request<unknown>('jobs.detail', buildProjectScopedQuery({ jobId, forSend: true }, defaultContext));
   } catch (error: unknown) {
     if (!(error instanceof IpcRpcError)) throw error;
-    const detail = isRecord(error.data) && isRecord(error.data.detail) ? error.data.detail : null;
+    if (isUnrecognizedKeysRejection(error)) return { kind: 'refused', outcome: unsupportedJobSendBuild() };
+    const data = isRecord(error.data) ? error.data : null;
+    if (error.code === 'scope_mismatch') {
+      const reason = typeof data?.remediation === 'string' ? `${error.message}. ${data.remediation}` : error.message;
+      return { kind: 'refused', outcome: { state: 'refused', code: 'scope_mismatch', reason } };
+    }
+    const detail = isRecord(data?.detail) ? data.detail : null;
     const refusal = readJobSendRefusal(detail?.sendRefusal);
     if (refusal !== null) return bindJobSendRefusal(refusal, detail);
 
@@ -1061,8 +1065,6 @@ async function bindJobSendTarget(context: JobSendClientContext, jobId: string): 
         return { kind: 'refused', outcome: { state: 'refused', code: 'not_found', reason: error.message } };
       case 'job_pre_epoch_history':
         return { kind: 'refused', outcome: { state: 'refused', code: 'pre_generation_job', reason: error.message } };
-      case 'scope_mismatch':
-        return { kind: 'refused', outcome: { state: 'refused', code: 'scope_mismatch', reason: error.message } };
       default:
         throw error;
     }
@@ -1243,10 +1245,6 @@ function createCoordinatorSubscriber(context: CliTransportContext) {
           ? {}
           : {
               signal: options?.signal ? AbortSignal.any([options.signal, invocation.signal]) : invocation.signal,
-              timeoutMs: Math.min(
-                options?.timeoutMs ?? HEALTH_TIMEOUT_MS,
-                Math.max(1, Math.ceil(invocation.remainingMs())),
-              ),
             }),
       }),
     );
@@ -1266,6 +1264,7 @@ function createJobsWaitClient(
       await run(context.reconcileKbBoot);
       const coordinator = await run(() => ensure('jobs.wait.snapshot', resolvePluginRoot()));
       const request = {
+        waitRpcVersion: WAIT_RPC_VERSION,
         jobIds: fields.jobIds,
         projectRoot: context.projectRoot,
         ...(fields.cursor === undefined ? {} : { cursor: fields.cursor }),

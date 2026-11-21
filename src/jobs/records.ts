@@ -282,6 +282,7 @@ export type JobsListResponse = {
 };
 
 export type JobDetailResponse = {
+  workflowChildren?: JobsListResponse['jobs'];
   executionAddressing?: 'lifetime';
   availability?: ResultAvailability;
   epochKey?: string;

@@ -1,4 +1,5 @@
-import { waitContinuationCommand, waitContinuationShell, type WaitContinuationMode } from './format/wait.js';
+import type { WaitAllOutcome } from './wait-all-outcome.js';
+import { waitContinuationCommand, type WaitContinuationMode } from './format/wait.js';
 import { ZodError } from 'zod';
 import { BackendToolHttpError } from '../transport/http/errors.js';
 import { TransientHttpError } from '../infra/http-errors.js';
@@ -44,9 +45,13 @@ function waitSubscriptionStatusCode(body: Record<string, unknown>): number {
  * A same-build coordinator accepts every wait request this CLI forms and emits only events it reads, so a rejected
  * request shape or an unreadable event means the coordinator is another build; retrying cannot change that.
  */
-export function mapWaitSubscriptionError(error: unknown, mode: WaitContinuationMode = 'bounded'): unknown {
+export function mapWaitSubscriptionError(
+  error: unknown,
+  mode: WaitContinuationMode = 'stream',
+  allOutcome?: WaitAllOutcome,
+): unknown {
   if (error instanceof BackendToolHttpError && isRecord(error.body)) {
-    const body = withAdmissionRemedy(error.body, mode);
+    const body = withAdmissionRemedy(error.body, mode, allOutcome);
     if (body !== error.body && typeof body.remediation === 'string')
       return new BackendToolHttpError(`${error.message} ${body.remediation}`, error.statusCode, body);
   }
@@ -65,7 +70,7 @@ export function mapWaitSubscriptionError(error: unknown, mode: WaitContinuationM
     return new TransientHttpError(503, error.cause.message);
   }
 
-  const body = withAdmissionRemedy(error.cause, mode);
+  const body = withAdmissionRemedy(error.cause, mode, allOutcome);
   return new BackendToolHttpError(
     typeof body.remediation === 'string' ? `${error.cause.message} ${body.remediation}` : error.cause.message,
     waitSubscriptionStatusCode(body),
@@ -73,7 +78,11 @@ export function mapWaitSubscriptionError(error: unknown, mode: WaitContinuationM
   );
 }
 
-function withAdmissionRemedy(body: Record<string, unknown>, mode: WaitContinuationMode): Record<string, unknown> {
+function withAdmissionRemedy(
+  body: Record<string, unknown>,
+  mode: WaitContinuationMode,
+  allOutcome: WaitAllOutcome | undefined,
+): Record<string, unknown> {
   const remedy = body.remedy;
   if (
     !isRecord(remedy) ||
@@ -84,6 +93,6 @@ function withAdmissionRemedy(body: Record<string, unknown>, mode: WaitContinuati
     return body;
   return {
     ...body,
-    remediation: `Run ${waitContinuationCommand(remedy.jobIds, null, mode)}${waitContinuationShell(mode)} to admit a fresh wait. Already-delivered results may print again.`,
+    remediation: `Run ${waitContinuationCommand(remedy.jobIds, null, mode, allOutcome)} to admit a fresh wait. Already-delivered results may print again.`,
   };
 }

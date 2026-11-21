@@ -345,9 +345,9 @@ export class WaitCoordinator {
     if (session) this.metadataAdmissions.set(session, cache);
     const saved = cache.get(jobId);
     const cached = saved && sameEpoch(saved.epochKey, epochKey) ? saved : undefined;
+    const request = session as WaitStreamRequest | undefined;
     const refreshed = cached === undefined ? undefined : this.refreshCachedAdmission(jobId, cached);
     if (refreshed !== undefined) return refreshed;
-    const request = session as WaitStreamRequest | undefined;
     const supplied = request?.executionSelections?.find((selection) => selection.jobId === jobId);
     const admission = this.readSelectedAdmission({
       jobId,

@@ -40,7 +40,7 @@ it('preserves a failed snapshot exit when the watchdog fires during the final wr
 });
 
 it('prints its own continuation once the parent it was delegated by disconnects', () => {
-  vi.stubEnv(WAIT_INVOCATION_CONTEXT_ENV, JSON.stringify({ mode: 'bounded', remainingMs: 60_000, cleanupMs: 1_000 }));
+  vi.stubEnv(WAIT_INVOCATION_CONTEXT_ENV, JSON.stringify({ mode: 'stream' }));
   vi.stubEnv(CLI_HANDOFF_GUARD_ENV, '1');
   const send = process.send;
   process.send = vi.fn() as typeof process.send;
@@ -50,7 +50,7 @@ it('prints its own continuation once the parent it was delegated by disconnects'
     callback?.();
     return true;
   }) as typeof process.stdout.write);
-  const invocation = new WaitInvocation('bounded', ['node', 'coral-cli', 'jobs', 'wait', 'a']);
+  const invocation = new WaitInvocation('stream', ['node', 'coral-cli', 'jobs', 'wait', 'a']);
   const continuation = 'Still waiting on 1 job. Run coral-cli jobs wait a to continue waiting.\n';
   try {
     invocation.saveContinuation(continuation);
@@ -73,20 +73,28 @@ const waitProgram = () => {
 };
 const waitArgv = (...flags: string[]) => ['node', 'coral-cli', 'jobs', 'wait', 'a', ...flags];
 
-it.each([
-  ['jobs', 'wait'],
-  ['wait', 'jobs'],
-])('detects every wait mode for %s %s', (group, verb) => {
-  const argv = ['node', 'coral-cli', group, verb, 'a'];
-  expect(waitInvocationMode(waitProgram(), argv)).toBe('bounded');
+it('detects wait modes for jobs wait', () => {
+  const argv = waitArgv();
+  expect(waitInvocationMode(waitProgram(), ['node', 'coral-cli', 'wait', 'jobs', 'a'])).toBeUndefined();
+  expect(waitInvocationMode(waitProgram(), argv)).toBe('stream');
   expect(waitInvocationMode(waitProgram(), [...argv, '--snapshot'])).toBe('snapshot');
   expect(waitInvocationMode(waitProgram(), [...argv, '--unbounded'])).toBeUndefined();
-  expect(() => waitInvocationMode(waitProgram(), [...argv, '--snapshot', '--unbounded'])).toThrow(
-    '--snapshot cannot be used with --unbounded',
+  expect(waitInvocationMode(waitProgram(), [...argv, '--all'])).toBe('stream');
+  expect(() => waitInvocationMode(waitProgram(), [...argv, '--snapshot', '--all'])).toThrow(
+    '--snapshot cannot be used with --all',
   );
 });
 
-it('gives a --unbounded wait no invocation budget', () => {
-  expect(waitInvocationMode(waitProgram(), waitArgv())).toBe('bounded');
-  expect(waitInvocationMode(waitProgram(), waitArgv('--unbounded', '--cursor', '7'))).toBeUndefined();
+it('keeps a streaming invocation open without an invocation deadline', async () => {
+  vi.useFakeTimers();
+  const invocation = new WaitInvocation('stream', waitArgv('--cursor', '7'), { now: () => Date.now() });
+  try {
+    await vi.advanceTimersByTimeAsync(3_600_000);
+    expect(invocation.remainingMs()).toBeUndefined();
+    expect(invocation.signal.aborted).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+  } finally {
+    invocation.dispose(true);
+    vi.useRealTimers();
+  }
 });

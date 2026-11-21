@@ -4,7 +4,6 @@ const COMMAND_POSITION = String.raw`(?:^|[\n;&|(\x60])\s*${COMMAND_LEAD}coral-cl
 
 const INVOCATION_RE = new RegExp(`${COMMAND_POSITION}(?=\\s|$|[;&|)\\x60])`);
 const WAIT_INVOCATION_RE = new RegExp(`${COMMAND_POSITION}\\s+jobs\\s+wait(?=\\s|$|[;&|)\\x60])`);
-const LEGACY_WAIT_INVOCATION_RE = new RegExp(`${COMMAND_POSITION}\\s+wait(?=\\s|$|[;&|)\\x60])`);
 
 export function textInvokesCoralCli(text) {
   const { commandText, tokens } = scanCommand(text);
@@ -13,11 +12,7 @@ export function textInvokesCoralCli(text) {
 
 export function textInvokesCoralWait(text) {
   const { commandText, tokens } = scanCommand(text);
-  return (
-    WAIT_INVOCATION_RE.test(commandText) ||
-    LEGACY_WAIT_INVOCATION_RE.test(commandText) ||
-    tokensInvokeCoral(tokens, true)
-  );
+  return WAIT_INVOCATION_RE.test(commandText) || tokensInvokeCoral(tokens, true);
 }
 
 function tokensInvokeCoral(tokens, wait = false) {
@@ -37,7 +32,21 @@ function tokensInvokeCoral(tokens, wait = false) {
 }
 
 function isCoralCommandWord(tokens, index, wait) {
-  return tokens[index].raw === 'coral-cli' && (!wait || tokens[index + 1]?.raw === 'wait');
+  if (tokens[index].raw === 'timeout' || tokens[index].raw === 'gtimeout') return isTimedCoralWait(tokens, index + 1);
+  return tokens[index].raw === 'coral-cli' && (!wait || isWaitCommand(tokens, index));
+}
+
+function isWaitCommand(tokens, index) {
+  return tokens[index + 1]?.raw === 'jobs' && tokens[index + 2]?.raw === 'wait';
+}
+
+function isTimedCoralWait(tokens, index) {
+  const duration = tokens[index]?.raw === '--preserve-status' ? index + 1 : index;
+  return (
+    /^\d+(?:\.\d+)?[smhd]?$/.test(tokens[duration]?.raw ?? '') &&
+    tokens[duration + 1]?.raw === 'coral-cli' &&
+    isWaitCommand(tokens, duration + 1)
+  );
 }
 
 export function isCoralOnlyCommand(text) {
@@ -72,6 +81,7 @@ function isCoralSegment(tokens) {
   const { words, redirected } = segment;
   while (words[0]?.raw.startsWith('CORAL_OWNER=')) words.shift();
   if (words[0]?.raw === 'coral-cli') return true;
+  if (words[0]?.raw === 'timeout' || words[0]?.raw === 'gtimeout') return isTimedCoralWait(words, 1);
   return !redirected && words[0]?.raw === 'cd' && words.length === 2;
 }
 

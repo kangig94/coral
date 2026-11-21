@@ -15,12 +15,15 @@ const providerNameSchema = z
   .string()
   .regex(providerIdentPattern, 'Provider name must be lowercase letters, digits, or hyphens');
 
+export const WAIT_RPC_VERSION = 2;
+
 const jobWaitFieldsSchema = z.object({
   jobIds: z
     .array(z.string().min(1))
     .min(1, 'At least one job required')
     .max(MAX_WAIT_JOB_IDS, `At most ${MAX_WAIT_JOB_IDS} jobs may be waited on at once`),
   projectRoot: projectRootSchema,
+  waitRpcVersion: z.literal(WAIT_RPC_VERSION).optional(),
   timeoutSeconds: z.number().int().min(1).max(1200).optional(),
   // Decoded by the wait owner, so an undecodable cursor is a soft typed refusal rather than invalid params.
   cursor: z.unknown(),
@@ -53,6 +56,7 @@ export const jobWaitSnapshotSchema = jobWaitFieldsSchema
 const WAIT_REQUEST_FIELDS = new Set([
   'jobIds',
   'projectRoot',
+  'waitRpcVersion',
   'timeoutSeconds',
   'cursor',
   'drainProgress',
@@ -68,13 +72,9 @@ export const WAIT_BUILD_MISMATCH = {
   message: `${WAIT_BUILD_MISMATCH_REASON} ${WAIT_BUILD_MISMATCH_REMEDY}`,
 } as const;
 
-/**
- * A current CLI always states its frontier, as a cursor string or null for a fresh collection, and sends no other
- * field. A request without a frontier, with a frontier of another type, or with a field this build does not define
- * was formed by another build.
- */
 export function waitRequestFromAnotherBuild(request: Readonly<Record<string, unknown>>): boolean {
   return (
+    (request.waitRpcVersion !== undefined && request.waitRpcVersion !== WAIT_RPC_VERSION) ||
     Object.keys(request).some((key) => !WAIT_REQUEST_FIELDS.has(key)) ||
     (request.cursor !== null && typeof request.cursor !== 'string')
   );
@@ -91,6 +91,7 @@ export type JobsWaitFields = Readonly<{
 
 export function jobsWaitRequest(fields: JobsWaitFields): Record<string, unknown> {
   return {
+    waitRpcVersion: WAIT_RPC_VERSION,
     jobIds: [...fields.jobIds],
     projectRoot: fields.projectRoot,
     ...(fields.timeoutSeconds === undefined ? {} : { timeoutSeconds: fields.timeoutSeconds }),
@@ -132,5 +133,6 @@ export const jobDetailRequestSchema = z
   .object({
     jobId: jobIdSchema,
     projectRoot: projectRootSchema,
+    forSend: z.literal(true).optional(),
   })
   .strict();

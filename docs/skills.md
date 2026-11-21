@@ -42,10 +42,10 @@ Use `/coral:equip --update codebase-memory` to refresh the standard copy through
 
 ## Common CLI Launch Pattern
 
-Many skills follow the same detached-launch pattern:
+Many skills launch a job and wait for it in a separate command.
 
 ```bash
-coral-cli codex --work-dir "<path>" -d -i - <<'CORAL_INPUT'
+coral-cli codex --work-dir "<path>" -i - <<'CORAL_INPUT'
 <prompt>
 CORAL_INPUT
 cd "<path>" && coral-cli jobs wait <jobId> --embed
@@ -53,11 +53,11 @@ cd "<path>" && coral-cli jobs wait <jobId> --embed
 
 Rules:
 
-1. Use detached launches when a skill needs a durable provider job and provider conversation.
-2. Capture `jobId` from the launch line: `Provider job <jobId> execution #<n> <launchState>`. That id names the provider conversation; later turns use execution ordinals on the same job.
-3. Monitor with `coral-cli jobs wait`; admission pins the execution being collected, and terminal lines include usage diagnostics when available. Use the exact printed continuation, preserving `--cursor`, when collection is interrupted.
-4. For `--embed`, use inline preview text when it helps, but read the printed `Result path: <path>` for the full artifact at `executions/<n>/result.md`. `jobs detail` lists results for all executions.
-5. Interpret `jobs wait` exit codes together with its rendered output: a non-zero mapped terminal code returns as-is, whether or not siblings remain (`1` for a failed, aborted, or faulted job; the normalized child code for `provider_exit`). A zero mapped code returns `0` when no requested siblings remain and `75` when they do. Exit `75` alone does not classify the outcome. Branch on the rendered output: `Result path` marks a terminal result, a terminal continuation names outstanding sibling IDs, `Still waiting` carries a cursor, and `remediation:` supplies recovery instructions. Follow a remediation only if it contains a `coral-cli jobs wait` command; otherwise stop and surface the rendered error. `wait_build_mismatch` requires restarting the session. A terminal block with remaining siblings prints the command for waiting on them. A nonterminal `interrupted` line may also appear mid-stream, reporting a job's carrier observed absent while the job is still nonterminal; it leaves the subscription open and the exit code pending, so it is informational only and not one of the outcomes above. Only durable-CLI jobs produce it today — the one carrier class whose absence local evidence can establish.
+1. Launch a provider job when a skill needs a durable provider conversation. The launch returns after the decision.
+2. Capture `jobId` from the line `Provider job <jobId> execution #<n> <launchState>`. An accepted launch also prints `command=coral-cli jobs wait <jobId>`. That id names the provider conversation; later turns use execution ordinals on the same job.
+3. Monitor with `coral-cli jobs wait`. Unbound operators can monitor from any working directory. Bound sessions use a directory that contains the job’s work directory within their project binding. Use `--all` for a batch and the harness background execution for long waits. Admission pins the execution being collected, and terminal lines include usage diagnostics when available. Use the exact printed continuation, preserving every argument, when collection is interrupted.
+4. With `--embed`, the inline text is a preview. Read the full artifact at the printed `Result path: <path>` when available. Otherwise use `coral-cli jobs detail <id> --full` for retained results across executions.
+5. Interpret `jobs wait` exit codes together with its rendered output: the first failed outcome in request order determines the exit among printed results (all collected results with `--all`) (`1` for a failed, aborted, or faulted job; the normalized child code for `provider_exit`). A zero mapped code returns `0` when no requested siblings remain and `75` when they do. Exit `75` alone does not classify the outcome. Branch on the rendered output: the terminal header marks a terminal result, a terminal continuation names outstanding sibling IDs, `Still waiting` prints a continuation, and `remediation:` supplies recovery instructions. Run the printed continuation exactly. It includes `--cursor` when a cursor is available. Follow a remediation only if it contains a `coral-cli jobs wait` command; otherwise stop and surface the rendered error. `wait_build_mismatch` requires restarting the session. A terminal block with remaining siblings prints the command for waiting on them. A nonterminal `interrupted` line may also appear mid-stream, reporting a job's carrier observed absent while the job is still nonterminal; it leaves the subscription open and the exit code pending, so it is informational only and not one of the outcomes above. Only durable-CLI jobs produce it today — the one carrier class whose absence local evidence can establish.
 
 See [`jobs send` outcomes](./cli-errors.md#jobs-send-outcomes) for the command contract and refusal remedies.
 

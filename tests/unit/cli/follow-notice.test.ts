@@ -44,7 +44,7 @@ async function firstPollEvents(): Promise<WaitStreamEvent[]> {
   return events.filter((e) => e.type !== 'waiting');
 }
 
-it('SIGINT after a delivered informational notice still ends the bounded wait', async () => {
+it('SIGINT after a delivered informational notice still ends the wait', async () => {
   const events = await firstPollEvents();
   const frame = events.find((e) => e.type === 'cursor')!;
   const notice = events.find((e) => e.type === 'notice')!;
@@ -52,28 +52,24 @@ it('SIGINT after a delivered informational notice still ends the bounded wait', 
 
   vi.useFakeTimers();
   const stdout = capture();
-  const budget = new WaitInvocation('bounded', ['node', 'coral-cli', 'jobs', 'wait', 'a']);
+  const budget = new WaitInvocation('stream', ['node', 'coral-cli', 'jobs', 'wait', 'a']);
   invocations.push(budget);
   let release!: () => void;
   const result = followJobs({
-    start: { kind: 'jobs', jobIds: ['a'] },
-    reconnectPolicy: 'bounded',
+    jobIds: ['a'],
     invocation: budget,
     projectRoot: '/project',
     render: { isTTY: false, columns: 80, embed: false, verbose: false },
     emitError: () => {},
     connect: async () => ({
-      kind: 'subscription',
-      subscription: {
-        close: async () => {},
-        async *[Symbol.asyncIterator]() {
-          yield frame;
-          yield notice;
-          yield progress;
-          await new Promise<void>((r) => {
-            release = r;
-          }); // coordinator goes silent
-        },
+      close: async () => {},
+      async *[Symbol.asyncIterator]() {
+        yield frame;
+        yield notice;
+        yield progress;
+        await new Promise<void>((r) => {
+          release = r;
+        }); // coordinator goes silent
       },
     }),
   });

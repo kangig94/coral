@@ -38,6 +38,7 @@ import {
   type JobLocation,
 } from './location-index.js';
 import { ensureSentence } from '../infra/text.js';
+import { jobInCallerScope, type JobCallerScope } from './scope.js';
 import { phaseForOutcome } from './outcome.js';
 import { type UsageSummary } from '../providers/contract.js';
 import { writeResultArtifact, type DecodedResultArtifact } from './terminal/artifact.js';
@@ -496,12 +497,10 @@ function historicalProgressFaults(row: Projection, events: readonly z.infer<type
   return retained;
 }
 
-function historicalDetail(
-  db: HistoricalDatabase,
-  row: Projection,
-  events: readonly z.infer<typeof eventSchema>[],
-): JobDetailResponse {
-  const launch = events.find((event) => event.type === 'job.launch.requested');
+function historicalJobSubject(
+  row: Pick<Projection, 'job_kind' | 'work_dir' | 'project_root'>,
+  launch: Pick<z.infer<typeof eventSchema>, 'body'> | undefined,
+) {
   const launchBody =
     launch === undefined
       ? null
@@ -517,6 +516,18 @@ function historicalDetail(
           row.work_dir ?? (launchBody?.success ? launchBody.data.request.cwd : row.project_root),
         );
 
+  return { projectRoot: row.project_root, jobKind, workDir };
+}
+
+function historicalDetail(
+  db: HistoricalDatabase,
+  row: Projection,
+  events: readonly z.infer<typeof eventSchema>[],
+): JobDetailResponse {
+  const { jobKind, workDir } = historicalJobSubject(
+    row,
+    events.find((event) => event.type === 'job.launch.requested'),
+  );
   const terminalEvent = [...events].reverse().find((event) => event.type === 'job.terminal.recorded');
   const terminalBody = terminalEvent === undefined ? null : terminalBodySchema.parse(parseBody(terminalEvent.body));
   const phase =
@@ -1364,6 +1375,7 @@ export type HistoricalSourceReader = (
   jobIds: readonly string[],
   session?: object,
   fullHistory?: boolean,
+  callerScope?: JobCallerScope,
 ) => HistoricalSourceRead;
 
 /** Source observation cannot hydrate locations, publish artifacts, or repair the guard. */
@@ -1373,6 +1385,7 @@ export function readHistoricalSource(
   jobIds: readonly string[],
   session?: object,
   fullHistory = false,
+  callerScope?: JobCallerScope,
 ): HistoricalSourceRead {
   const source = historicalSources.get(view)?.get(epochIdentity(epochKey));
   if (source === undefined) {
@@ -1391,7 +1404,7 @@ export function readHistoricalSource(
       reason:
         'This build cannot read the retained source format; epoch maintenance re-reads it at the next coordinator start',
     };
-  const cached = readVouchedHistoricalCache(source, jobIds, session, fullHistory);
+  const cached = callerScope === undefined ? readVouchedHistoricalCache(source, jobIds, session, fullHistory) : null;
   if (cached !== null) return cached;
   let release: (() => void) | null = null;
   let db: SqliteDatabasePort | null = null;
@@ -1410,8 +1423,11 @@ export function readHistoricalSource(
       jobs: new Map<string, HistoricalReadFrontier>(),
     };
     if (session && source.readCache) source.readCache.set(session, readCache);
-    const result = readHistoricalLocations({ view, source, db, epochKey, frontier, readCache, fullHistory }, jobIds);
-    if (session && !fullHistory)
+    const result = readHistoricalLocations(
+      { view, source, db, epochKey, frontier, readCache, fullHistory, callerScope },
+      jobIds,
+    );
+    if (session && !fullHistory && callerScope === undefined)
       readCache.observed = stamp === null ? undefined : { path: epoch.path, stamp, frontier };
     return result;
   } catch (error) {
@@ -1451,8 +1467,8 @@ function cachedHistoricalRead(cache: HistoricalReadCache, jobIds: readonly strin
 }
 
 export function historicalSourceReader(index: JobLocationIndex): HistoricalSourceReader {
-  return (epochKey, jobIds, session, fullHistory) =>
-    readHistoricalSource(index, epochKey, jobIds, session, fullHistory);
+  return (epochKey, jobIds, session, fullHistory, callerScope) =>
+    readHistoricalSource(index, epochKey, jobIds, session, fullHistory, callerScope);
 }
 
 /** Hydration belongs to lifecycle owners before source retirement. */
@@ -1877,6 +1893,7 @@ interface HistoricalLocationReadContext {
   frontier: number;
   readCache: HistoricalReadCache;
   fullHistory: boolean;
+  callerScope?: JobCallerScope;
 }
 
 function readHistoricalLocations(
@@ -1918,7 +1935,7 @@ function readHistoricalLocation(
   if (source.seed?.members && source.seed.frontier === frontier && !source.seed.members.has(jobId)) {
     return { location: null, absent: true };
   }
-  const cached = fullHistory ? undefined : readCache.jobs.get(jobId);
+  const cached = fullHistory || context.callerScope !== undefined ? undefined : readCache.jobs.get(jobId);
   if (
     cached?.frontier === frontier ||
     (requireRetainedSourceReader(view, source.fingerprint).terminalIsImmutable &&
@@ -1935,6 +1952,44 @@ function readProjectedHistoricalLocation(
   cached: HistoricalReadFrontier | undefined,
 ): { location: JobLocation | null; absent?: boolean } {
   const { view, source, db, epochKey, frontier, readCache, fullHistory } = context;
+  if (context.callerScope !== undefined) {
+    const modern = source.fingerprint === view.currentFingerprint;
+    const coordinates =
+      modern || source.fingerprint === FINGERPRINT_0110
+        ? db.prepare('SELECT project_root, work_dir, job_kind FROM projection_jobs WHERE job_id = ?').get(jobId)
+        : db.prepare('SELECT project_root, job_kind FROM projection_jobs WHERE job_id = ?').get(jobId);
+    if (coordinates !== undefined) {
+      const row = z
+        .object({
+          project_root: z.string(),
+          work_dir: z.string().nullable().optional(),
+          job_kind: historicalJobKindSchema,
+        })
+        .parse(coordinates);
+      const launch =
+        modern || row.job_kind === 'kb' || typeof row.work_dir === 'string'
+          ? undefined
+          : db
+              .prepare(
+                "SELECT body FROM events WHERE stream_kind = 'job' AND stream_id = ? AND type = 'job.launch.requested' ORDER BY seq LIMIT 1",
+              )
+              .get(jobId);
+      const subject = modern
+        ? {
+            projectRoot: row.project_root,
+            jobKind: row.job_kind,
+            workDir: historicalWorkDirSchema.nullish().parse(row.work_dir) ?? null,
+          }
+        : historicalJobSubject(
+            row,
+            launch === undefined ? undefined : z.object({ body: z.instanceof(Uint8Array) }).parse(launch),
+          );
+      if (!jobInCallerScope(subject, context.callerScope.root, context.callerScope.relation))
+        return {
+          location: { version: 'v1', jobId, epochKey, subject, disposition: 'unresolved', detail: { kind: 'absent' } },
+        };
+    }
+  }
   const raw = db.prepare('SELECT * FROM projection_jobs WHERE job_id = ?').get(jobId);
   const jobSeq = typeof raw === 'object' && raw !== null && 'last_seq' in raw ? raw.last_seq : undefined;
   if (cached?.jobSeq !== undefined && cached.jobSeq === jobSeq) {
@@ -1949,7 +2004,7 @@ function readProjectedHistoricalLocation(
     raw,
     fullHistory,
   );
-  if (!fullHistory) readCache.jobs.set(jobId, { frontier, ...result });
+  if (!fullHistory && context.callerScope === undefined) readCache.jobs.set(jobId, { frontier, ...result });
   return result;
 }
 

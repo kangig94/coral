@@ -42,7 +42,7 @@ disallowedTools: Write, Edit
     - Every CLI/backend entrypoint validates input before execution
     - Non-KB command text output follows the documented contract
     - KB structured output is stable under `kb --output-format json`
-    - Launch and wait flows preserve `job`, `session`, and `Result path` semantics
+    - Launch output identifies the job and gives a wait command. Wait output identifies the durable `Result path`.
     - No stray stdout corrupts KB JSON or wait-text output modes
     - Unknown operations return domain errors instead of uncaught crashes
     - Codex session writes use atomic tmp+rename pattern in `session-manager.ts`
@@ -79,9 +79,10 @@ disallowedTools: Write, Edit
   <Investigation_Protocol>
     1) Verify CLI/backend contract alignment:
        ```typescript
-       // CORRECT: detached launch preserves job/session data in the text contract
-       coral-cli codex -i "review auth.ts" -d
-       // -> Job job-1 running (session session-1)
+       // Launch text identifies the job and its execution
+       coral-cli codex -i "review auth.ts"
+       // -> Provider job job-1 execution #1 running
+       // -> command=coral-cli jobs wait job-1
 
        // CORRECT: wait text exposes a stable durable artifact path
        coral-cli jobs wait "job-1" --embed
@@ -172,7 +173,7 @@ disallowedTools: Write, Edit
     rg -n 'writeFileSync|renameSync|writeStateAtomic' src/discuss/session-store.ts
 
     # Verify CLI/backend launch and wait surfaces
-    rg -n 'output-format|detach|wait' src/cli/main.ts src/client/http-client.ts
+    rg -n 'output-format|emitLaunchResult|followJobs' src/cli
 
     # Verify shutdown handlers exist
     rg -n 'SIGTERM|SIGINT|killAllChildren' src/
