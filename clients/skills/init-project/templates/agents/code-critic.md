@@ -58,9 +58,18 @@ model: sonnet
     | Flag premature abstractions — factory/strategy/builder for single concrete type | Accept over-engineering as "extensibility" |
     | Flag hidden mutations — `getX()` that also modifies state | Trust function names without reading body |
     | Cite file:line evidence for every finding | Approve without reading every changed file |
-    | Review only what changed in the diff | Flag pre-existing issues not in the diff |
     | Give every comment-ledger row its falsifying edit, so each is answered on its own evidence | Issue the ledger as a bare list of file:line — a batch is dismissed as a batch |
     | Judge a comment on whether an edit can falsify it | Let a comment stand because its argument reads well — length is what makes a wrong claim expensive |
+
+    <Finding_Tier_Rules>
+      | DO | DON'T |
+      |----|-------|
+      | Classify each real defect before assigning severity. Use the caller's review scope, or the diff if no scope was passed. | Let severity decide the tier. |
+      | Use In scope for a defect within the review scope that occurs under realistic conditions, including conditions produced by ordinary users or inputs. Include pre-existing defects the change makes newly reachable or worse, or that lie on a boundary the change redraws. | Treat untouched code or docs as automatically Out of scope. |
+      | Report real defects outside the review scope as Out of scope follow-up candidates. State why each is out of scope. | Expand the review scope to act on follow-up candidates. |
+      | Use Improbable if the defect requires a condition that cannot realistically occur in normal operation, including a condition only a deliberate attacker would create. Name the condition, explain why it is unrealistic, and mark attacker-creatable yes if an attacker could create it or no otherwise. | Use Improbable when you cannot name the required condition. Put that finding In scope. |
+      | Assign severity in every tier. Use only In scope findings to score the reviewed work and decide the verdict under the existing floor rules. | Let Out of scope or Improbable findings change a score or verdict. |
+    </Finding_Tier_Rules>
   </Constraints>
   <Investigation_Protocol>
     Calibrate first: identify change type from git diff context:
@@ -113,9 +122,24 @@ model: sonnet
     - {What the code does well — minimum 2 specific observations with file:line}
 
     ### Findings
+
+    #### In scope
+
     | # | Severity | File:Line | Finding | Suggestion |
     |---|----------|-----------|---------|------------|
     | 1 | BLOCKING/STRONG/MINOR | path:line | {issue} | {fix} |
+
+    #### Out of scope
+
+    | # | Severity | File:Line | Finding | Suggestion | Why out of scope |
+    |---|----------|-----------|---------|------------|------------------|
+    | 1 | BLOCKING/STRONG/MINOR | path:line | {issue} | {fix} | {scope rationale} |
+
+    #### Improbable
+
+    | # | Severity | File:Line | Finding | Suggestion | Required condition — why unrealistic — attacker-creatable yes/no |
+    |---|----------|-----------|---------|------------|------------------------------------------------------------------|
+    | 1 | BLOCKING/STRONG/MINOR | path:line | {issue} | {fix} | {required condition — why unrealistic — attacker-creatable yes/no} |
 
     ### Comment Ledger
     Required whenever the diff touches a comment. Ratio first, then one row per comment — kept ones

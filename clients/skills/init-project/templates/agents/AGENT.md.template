@@ -50,6 +50,32 @@ model: <opus|sonnet>
 | `Constraints` | GUARD — iron law + DO/DON'T table. Compress failure modes here as one-liners. Read-only/review agents MUST include a DON'T forbidding state-changing git (`checkout`/`switch`/`stash`/`reset`/`restore`/`clean`) and staging/committing — parallel reviewers share one worktree, so any such command reverts every sibling's work. |
 | `Output_Format` | FORMAT — structured output template with tables |
 
+### Findings format for review agents
+
+Review agents must use all three findings sections in their `Output_Format`. Use the reviewer's existing severity labels and verdict rules. Use only In scope findings to score the reviewed work and decide the verdict under the existing floor rules. Copy the `Finding_Tier_Rules` block from `code-critic.md` into `Constraints`.
+
+```markdown
+### Findings
+
+#### In scope
+
+| # | Severity | Location | Finding | Suggestion |
+|---|----------|----------|---------|------------|
+| 1 | {severity} | {location} | {issue} | {fix} |
+
+#### Out of scope
+
+| # | Severity | Location | Finding | Suggestion | Why out of scope |
+|---|----------|----------|---------|------------|------------------|
+| 1 | {severity} | {location} | {issue} | {fix} | {scope rationale} |
+
+#### Improbable
+
+| # | Severity | Location | Finding | Suggestion | Required condition — why unrealistic — attacker-creatable yes/no |
+|---|----------|----------|---------|------------|------------------------------------------------------------------|
+| 1 | {severity} | {location} | {issue} | {fix} | {required condition — why unrealistic — attacker-creatable yes/no} |
+```
+
 ### Optional Sections
 
 | Section | When to Include |

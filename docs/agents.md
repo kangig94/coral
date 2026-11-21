@@ -93,6 +93,18 @@ See [Discuss](./discuss.md) for the runtime model.
 
 Coral's internal governance agents live under `.claude/agents/`. The contract-focused reviewer is `integration-guardian`, which validates CLI/backend contracts, schema changes, and structured output behavior.
 
+## Review Findings
+
+The repository reviewers, the `init-project` reviewer templates, and the bundled `critic` classify defects before assigning severity. They use the caller's review scope and fall back to the diff when the caller supplies none.
+
+| Section | What belongs there | Required columns |
+| ------- | ------------------ | ---------------- |
+| In scope | Defects that occur under realistic conditions within the review scope, including conditions produced by ordinary users or inputs. Include pre-existing defects that the change makes newly reachable or worse, or that lie on a boundary the change redraws. Only these findings affect the verdict. | Severity |
+| Out of scope | Real defects outside the review scope that the caller can consider for follow-up. | Severity, Why out of scope |
+| Improbable | Defects that require a condition that cannot realistically occur in normal operation, including a condition only a deliberate attacker would create. Name the condition, explain why it is unrealistic, and mark attacker-creatable yes if an attacker could create it or no otherwise. If you cannot name the required condition, use In scope. | Severity, Required condition — why unrealistic — attacker-creatable yes/no |
+
+Each reviewer uses its own severity labels. An Improbable defect alone cannot justify a `MISSING` necessity decision from `test-critic`. Only In scope `REJECT` decisions require remediation and trigger the `NEEDS WORK` floor.
+
 ## Adding New Agents
 
 ### Claude-native agent
