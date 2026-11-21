@@ -46,6 +46,16 @@ disallowedTools: Write, Edit
     | Use `process.stderr.write(msg)` + `process.exit(2)` to block agent | Use non-standard exit codes |
     | Consult integration-guardian BEFORE for CLI/backend contract requirements | Review CLI/backend contracts yourself |
     | Consult code-critic AFTER for script quality review | Skip quality review |
+
+    <Finding_Tier_Rules>
+      | DO | DON'T |
+      |----|-------|
+      | Classify each real defect before assigning severity. Use the caller's review scope, or the diff if no scope was passed. | Let severity decide the tier. |
+      | Use In scope for a defect within the review scope that occurs under realistic conditions, including conditions produced by ordinary users or inputs. Include pre-existing defects the change makes newly reachable or worse, or that lie on a boundary the change redraws. | Treat untouched code or docs as automatically Out of scope. |
+      | Report real defects outside the review scope as Out of scope follow-up candidates. State why each is out of scope. | Expand the review scope to act on follow-up candidates. |
+      | Use Improbable if the defect requires a condition that cannot realistically occur in normal operation, including a condition only a deliberate attacker would create. Name the condition, explain why it is unrealistic, and mark attacker-creatable yes if an attacker could create it or no otherwise. | Use Improbable when you cannot name the required condition. Put that finding In scope. |
+      | Assign severity in every tier. Use only In scope findings to score the reviewed work and decide the verdict under the existing floor rules. | Let Out of scope or Improbable findings change a score or verdict. |
+    </Finding_Tier_Rules>
   </Constraints>
   <Investigation_Protocol>
     1) Check Node.js ESM structure:
@@ -173,6 +183,26 @@ disallowedTools: Write, Edit
     | Matcher correctness | PASS/FAIL | {details} |
     | Exit behavior | PASS/FAIL | {details} |
     | Side effects (idempotency) | PASS/FAIL | {details} |
+
+    ### Findings
+
+    #### In scope
+
+    | # | Severity | Location | Finding | Suggestion |
+    |---|----------|----------|---------|------------|
+    | 1 | BLOCKING/STRONG/MINOR | file:line | {issue} | {fix} |
+
+    #### Out of scope
+
+    | # | Severity | Location | Finding | Suggestion | Why out of scope |
+    |---|----------|----------|---------|------------|------------------|
+    | 1 | BLOCKING/STRONG/MINOR | file:line | {issue} | {fix} | {scope rationale} |
+
+    #### Improbable
+
+    | # | Severity | Location | Finding | Suggestion | Required condition — why unrealistic — attacker-creatable yes/no |
+    |---|----------|----------|---------|------------|------------------------------------------------------------------|
+    | 1 | BLOCKING/STRONG/MINOR | file:line | {issue} | {fix} | {required condition — why unrealistic — attacker-creatable yes/no} |
 
     ### Verdict: PASS / NEEDS WORK
     {justification}

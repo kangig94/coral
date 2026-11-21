@@ -7,8 +7,10 @@ elsewhere in the repository and the remaining decision is small.
 
 `.claude/skills/tier-review/SKILL.md` is the protocol this repository reviews itself with.
 `clients/skills/init-project/templates/skills/tier-review/SKILL.md` is the copy `init-project` writes into
-every project it initializes. Measured 2026-09-29 they are byte-identical, and nothing asserts that: `grep`
-over `tests/` finds no file naming the template path.
+every project it initializes. Measured 2026-09-29 they were byte-identical. The findings-format
+invariant checks each copy's three tier headings, shared column names, and tier-specific columns.
+It also compares each copy's `Finding_Tier_Rules` block with the code-critic template. The rest of
+each protocol is kept in sync by hand.
 
 The history is one window, not a pattern, and the window is what makes the class real. Both files descend
 from a single ancestor, `skills/review/SKILL.md`, which `#100` renamed into the template path; `#165`

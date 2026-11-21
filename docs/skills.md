@@ -102,3 +102,11 @@ The first comma determines whether the input is parsed as a bid (`score, thought
 4. Report the generated artifacts.
 
 The full protocol lives in `clients/skills/init-project/SKILL.md`.
+
+## `tier-review`
+
+Coral's repository and projects scaffolded by `init-project` use `tier-review` to consolidate reviewer reports into **In scope**, **Out of scope**, and **Improbable**. When multiple reviewers report the same defect, the skill keeps the stricter finding tier (In scope > Out of scope > Improbable) before resolving severity disagreements. The verdict uses only In scope findings. An agent verdict can floor an unlabeled In scope finding and the reported severity takes precedence when a label is present.
+
+Every reviewer and the consolidator use the caller-supplied scope. If the caller supplies none, they use the staged and unstaged diff.
+
+With `--gated`, a BLOCKING In scope finding from the first wave stops the review. Otherwise, the code review waves finish and In scope code findings are addressed before documentation review begins. See the [review finding format](./agents.md#review-findings).
