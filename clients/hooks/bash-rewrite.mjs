@@ -11,13 +11,6 @@ exitIfWrongFlavor();
 const PLUGIN_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const BRIDGE_DIR = join(PLUGIN_ROOT, 'bridge');
 
-// Bash rejects timeouts above 600_000 ms, so this is the ceiling, not a choice. A bounded wait derives its
-// own deadline from this value minus a flush margin (see FOLLOW_TIMEOUT_SECONDS in src/cli/follow.ts) so it
-// finishes first: it exits 75 with a printed resume command when work is still running. The command has a
-// cursor after observed progress, but can be cursor-free when initial backend recovery/shutdown retries
-// exhaust; the command and exit code would both be lost if Bash killed the process mid-write.
-const WAIT_BASH_TIMEOUT_MS = 600_000;
-
 function singleQuoted(value) {
   return `'${value.replaceAll("'", `'\\''`)}'`;
 }
@@ -48,10 +41,7 @@ try {
   let nextCommand = invokesCoralCli ? `${PATH_PREFIX}${ownerPrefix}\n${command}` : command;
   let changed = invokesCoralCli;
 
-  // A foreground wait blocks until just under the ceiling, so it gets the whole ceiling. A background timeout
-  // is the harness's background run limit, so it must not be lowered for a wait.
   if (textInvokesCoralWait(command)) {
-    if (updatedInput.run_in_background !== true) updatedInput.timeout = WAIT_BASH_TIMEOUT_MS;
     try {
       recordCoralWait(projectDirFromInput(input), input.session_id);
     } catch {}

@@ -11,10 +11,8 @@ import {
   type WaitInvocationMode,
 } from '../coordinator/handoff-routing/wait-invocation.js';
 
-const WAIT_BUDGET_MS = 590_000;
-const WAIT_CLEANUP_MS = 10_000;
 const SNAPSHOT_BUDGET_MS = 30_000;
-const SNAPSHOT_CLEANUP_MS = 1_000;
+const WAIT_CLEANUP_MS = 1_000;
 
 let currentInvocation: WaitInvocation | undefined;
 
@@ -53,7 +51,7 @@ export function waitInvocationMode(program: Command, argv: readonly string[]): W
     verbParser.action(() => {
       const opts = verbParser.opts();
       validateWaitJobsOptions(opts);
-      if (opts.unbounded !== true) mode = opts.snapshot === true ? 'snapshot' : 'bounded';
+      mode = opts.snapshot === true ? 'snapshot' : 'stream';
     });
   }
   try {
@@ -72,10 +70,11 @@ export class WaitInvocation implements WaitInvocationHandoff {
   readonly originalCommand: string;
   monitorEnding?: Promise<unknown>;
   private readonly controller = new AbortController();
-  private readonly deadline: number;
-  private readonly hardDeadline: number;
-  private readonly watchdog: NodeJS.Timeout;
-  private readonly backstop: NodeJS.Timeout;
+  private readonly deadline?: number;
+  private readonly cleanupMs: number;
+  private cleanupDeadline?: number;
+  private readonly watchdog?: NodeJS.Timeout;
+  private backstop?: NodeJS.Timeout;
   completedExitCode: number | undefined;
   private continuation: string | undefined;
   private continuationFlushed = false;
@@ -84,13 +83,11 @@ export class WaitInvocation implements WaitInvocationHandoff {
   private monitorFlushPending = false;
   /** A parent that disconnects can no longer print for this child, so the child prints its own continuation. */
   private delegated: boolean;
-  private readonly onSigint = () => {
-    if (!this.continuationFlushed && !this.signal.aborted) this.stop();
-    else if (this.signal.aborted) {
-      if (this.monitorEnding) return this.flushContinuation();
-      this.flushContinuation(true);
-      process.exit(this.completedExitCode ?? 75);
-    }
+  private readonly onStopSignal = () => {
+    if (!this.signal.aborted) return this.stop();
+    if (this.monitorEnding) return this.flushContinuation();
+    this.flushContinuation(true);
+    process.exit(this.completedExitCode ?? 75);
   };
   private readonly onMessage = (message: unknown) => {
     if (isRecord(message) && message.type === 'wait-cancel') this.stop();
@@ -108,53 +105,64 @@ export class WaitInvocation implements WaitInvocationHandoff {
     delete process.env[WAIT_INVOCATION_CONTEXT_ENV];
     this.delegated =
       inherited !== undefined && process.env[CLI_HANDOFF_GUARD_ENV] === '1' && process.send !== undefined;
-    let budget = mode === 'snapshot' ? SNAPSHOT_BUDGET_MS : WAIT_BUDGET_MS;
-    let cleanup = mode === 'snapshot' ? SNAPSHOT_CLEANUP_MS : WAIT_CLEANUP_MS;
-    if (process.env[CLI_HANDOFF_GUARD_ENV] === '1' && !this.delegated) budget -= 100;
+    let budget = SNAPSHOT_BUDGET_MS;
+    let cleanup = WAIT_CLEANUP_MS;
     if (this.delegated) {
-      try {
-        const context: unknown = JSON.parse(inherited ?? '');
-        if (
-          !isRecord(context) ||
-          context.mode !== mode ||
-          typeof context.remainingMs !== 'number' ||
-          !Number.isFinite(context.remainingMs) ||
-          context.remainingMs < 0 ||
-          typeof context.cleanupMs !== 'number' ||
-          !Number.isFinite(context.cleanupMs) ||
-          context.cleanupMs < 0
-        )
-          throw new Error('Invalid delegated wait budget');
-        budget = Math.min(budget, context.remainingMs);
-        cleanup = Math.min(cleanup, context.cleanupMs);
-      } catch {
-        budget -= 100;
+      if (mode === 'snapshot') {
+        try {
+          const context: unknown = JSON.parse(inherited ?? '');
+          if (
+            !isRecord(context) ||
+            context.mode !== mode ||
+            typeof context.remainingMs !== 'number' ||
+            !Number.isFinite(context.remainingMs) ||
+            context.remainingMs < 0 ||
+            typeof context.cleanupMs !== 'number' ||
+            !Number.isFinite(context.cleanupMs) ||
+            context.cleanupMs < 0
+          )
+            throw new Error('Invalid delegated snapshot budget');
+          budget = Math.min(budget, context.remainingMs);
+          cleanup = Math.min(cleanup, context.cleanupMs);
+        } catch {
+          budget -= 100;
+        }
       }
       process.on('message', this.onMessage);
       process.once('disconnect', this.onDisconnect);
+    } else if (process.env[CLI_HANDOFF_GUARD_ENV] === '1') {
+      budget -= 100;
     }
-    const start = this.clock.now();
-    this.deadline = start + budget;
-    this.hardDeadline = this.deadline + cleanup;
-    this.watchdog = setTimeout(() => this.stop(), budget);
-    this.watchdog.unref();
-    this.backstop = setTimeout(() => {
-      this.stop();
-      this.flushContinuation(true);
-      process.exit(this.completedExitCode ?? 75);
-    }, budget + cleanup);
-    this.backstop.unref();
-    process.on('SIGINT', this.onSigint);
+    this.cleanupMs = cleanup;
+    if (mode === 'snapshot') {
+      this.deadline = this.clock.now() + budget;
+      this.watchdog = setTimeout(() => this.stop(), budget);
+      this.watchdog.unref();
+    }
+    process.on('SIGINT', this.onStopSignal);
+    process.on('SIGTERM', this.onStopSignal);
   }
 
-  remainingMs(): number {
-    return Math.max(0, this.deadline - this.clock.now());
+  remainingMs(): number | undefined {
+    return this.deadline === undefined ? undefined : Math.max(0, this.deadline - this.clock.now());
   }
+
   cleanupRemainingMs(): number {
-    return Math.max(0, this.hardDeadline - this.clock.now());
+    return this.cleanupDeadline === undefined
+      ? (this.remainingMs() ?? 0) + this.cleanupMs
+      : Math.max(0, this.cleanupDeadline - this.clock.now());
   }
+
   stop(): void {
-    if (!this.signal.aborted) this.controller.abort();
+    if (this.signal.aborted) return;
+    const deadline = this.deadline === undefined ? this.clock.now() : Math.min(this.deadline, this.clock.now());
+    this.cleanupDeadline = deadline + this.cleanupMs;
+    this.backstop = setTimeout(() => {
+      this.flushContinuation(true);
+      process.exit(this.completedExitCode ?? 75);
+    }, this.cleanupRemainingMs());
+    this.backstop.unref();
+    this.controller.abort();
   }
 
   saveContinuation(text: string, complete = false, delivered = false, exitCode?: number): void {
@@ -164,7 +172,7 @@ export class WaitInvocation implements WaitInvocationHandoff {
     this.continuationFlushed ||= complete;
     if (complete && exitCode !== undefined) {
       this.completedExitCode = exitCode;
-      // A final event whose write lands after the budget or Ctrl+C already ended the invocation still decides its exit.
+      // A committed terminal write must still decide the exit when it races with cancellation.
       process.exitCode = exitCode;
       if (this.mode === 'snapshot') {
         clearTimeout(this.watchdog);
@@ -284,7 +292,8 @@ export class WaitInvocation implements WaitInvocationHandoff {
     process.off('message', this.onMessage);
     process.off('disconnect', this.onDisconnect);
     if (this.signal.aborted && !force) return;
-    process.off('SIGINT', this.onSigint);
+    process.off('SIGINT', this.onStopSignal);
+    process.off('SIGTERM', this.onStopSignal);
     clearTimeout(this.backstop);
   }
 }
@@ -299,7 +308,8 @@ export function installWaitInvocation(invocation: WaitInvocation | undefined): v
 
 export function validateWaitJobsOptions(opts: {
   snapshot?: boolean;
-  unbounded?: boolean;
+  all?: boolean;
+  allOutcome?: string;
   lines?: string;
   cursor?: string;
   embed?: boolean;
@@ -309,9 +319,11 @@ export function validateWaitJobsOptions(opts: {
     throw new UsageError(
       `--snapshot cannot be used with --embed or --verbose. Remove ${[opts.embed ? '--embed' : '', opts.verbose ? '--verbose' : ''].filter(Boolean).join(' and ')} for an immediate snapshot, or remove --snapshot for a streaming wait. Use coral-cli jobs detail <jobId> --full for full content.`,
     );
-  if (opts.snapshot && opts.unbounded)
+  if (opts.allOutcome !== undefined && opts.all !== true)
+    throw new UsageError('--all-outcome requires --all. Use the printed continuation.');
+  if (opts.snapshot && opts.all)
     throw new UsageError(
-      '--snapshot cannot be used with --unbounded. Remove --unbounded for an immediate snapshot, or remove --snapshot to monitor until the first terminal with no ~590 s bound, from a background shell.',
+      '--snapshot cannot be used with --all. Remove --all for an immediate snapshot, or remove --snapshot to wait for every job.',
     );
   if (opts.lines !== undefined && opts.cursor !== undefined)
     throw new UsageError(

@@ -43,6 +43,10 @@ Codex에서 `/hooks`로 Coral 훅을 검토하고 신뢰하세요. 세션이 시
 /coral:analyze what does this codebase do?
 ```
 
+CLI에서 `coral-cli codex`, `coral-cli claude`, `coral-cli workflow`를 직접 실행하면 작업을 시작할 수 있는지 결정한 뒤 바로 반환합니다. `coral-cli jobs send <id> -i <input>`는 실행 중인 턴에 입력을 보내거나, 이미 끝난 제공자 작업의 다음 실행을 시작합니다. 작업을 시작하거나 이어서 실행하면 출력되는 `coral-cli jobs wait <id>` 명령으로 결과를 확인할 수 있습니다.
+
+`coral-cli jobs wait <id...>`는 기본적으로 첫 작업이 끝날 때까지 진행 상황을 보여 줍니다. 지정한 작업이 모두 끝날 때까지 기다리려면 `--all`을, 현재 상태를 바로 확인하려면 `--snapshot`을 사용하세요. 중간 진행 상황을 확인하려면 GNU coreutils를 설치한 뒤 `timeout --preserve-status 100 coral-cli jobs wait <id>`를 실행하세요. macOS에서는 `brew install coreutils`로 설치하고 같은 명령에서 `timeout` 대신 `gtimeout`을 쓰세요. 출력된 커서로 작업을 다시 기다릴 수 있습니다.
+
 ## 프로젝트 구조화
 
 https://github.com/user-attachments/assets/881f1a14-9f4f-4d3d-8023-59610eb13ac4

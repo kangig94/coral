@@ -3,15 +3,13 @@ import type { Command } from 'commander';
 
 import { HandoffRunError } from '../coordinator/handoff-routing/runner.js';
 import { BackendToolHttpError } from '../transport/http/errors.js';
-import { acceptedLaunchResponseSchema, type AcceptedLaunchResponse } from '../jobs/launch.js';
+import { acceptedLaunchResponseSchema } from '../jobs/launch.js';
 import { getWaitInvocation } from './wait-invocation.js';
 import { WaitResumeError, buildErrorEnvelope } from './errors.js';
 import { formatErrorEnvelope } from './format/error.js';
-import { formatDetachedLaunchStatus, formatLaunchWaitHint, formatUnknownLaunchOutcome } from './format/jobs.js';
-import { launchAndFollow } from './follow.js';
+import { formatLaunch, formatUnknownLaunchOutcome } from './format/jobs.js';
 import { renderHandoffPublicationIncidents } from './handoff-notice.js';
 import { clearPendingReadStoreNote, flushPendingReadStoreNote } from './read-store.js';
-import { getPluginRoot } from './dispatch.js';
 
 type CliOutputFormat = 'text' | 'json';
 
@@ -59,14 +57,6 @@ export function emitError(error: unknown): void {
   process.exitCode = exitCode;
 }
 
-export function isAcceptedLaunchResponse(value: unknown): value is AcceptedLaunchResponse {
-  return acceptedLaunchResponseSchema.safeParse(value).success;
-}
-
-function emitAcceptedLaunchResponse(decision: AcceptedLaunchResponse): void {
-  process.stdout.write(`${formatDetachedLaunchStatus(decision)}\n${formatLaunchWaitHint(decision)}\n`);
-}
-
 export function getTerminalContext(): { isTTY: boolean; columns: number } {
   return {
     isTTY: process.stdout.isTTY === true,
@@ -74,23 +64,13 @@ export function getTerminalContext(): { isTTY: boolean; columns: number } {
   };
 }
 
-export async function handleLaunchResult(result: unknown, detach: boolean | undefined): Promise<void> {
-  if (!isAcceptedLaunchResponse(result)) {
-    process.stderr.write(formatUnknownLaunchOutcome({ kind: 'launch-outcome-unknown' }) + '\n');
+export function emitLaunchResult(result: unknown): void {
+  const launch = acceptedLaunchResponseSchema.safeParse(result);
+  if (!launch.success) {
+    process.stderr.write(formatUnknownLaunchOutcome() + '\n');
     process.exitCode = 75;
     return;
   }
 
-  if (detach) {
-    emitAcceptedLaunchResponse(result);
-    return;
-  }
-
-  process.exitCode = await launchAndFollow({
-    launchResult: result,
-    pluginRoot: getPluginRoot(),
-    projectRoot: process.cwd(),
-    emitError,
-    ...getTerminalContext(),
-  });
+  process.stdout.write(formatLaunch(launch.data, launch.data.execution ?? 1) + '\n');
 }

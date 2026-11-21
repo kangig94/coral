@@ -31,6 +31,7 @@ import { SimulationRuntime } from '#tools/simulation/runtime.js';
 export function conversationIdentityFixture(
   options: {
     stall?: boolean;
+    hintResultRepair?: (jobId: string, execution?: number) => void;
     managedArtifacts?: boolean;
     failOnResume?: boolean | ((request: ProviderRequest) => boolean);
   } = {},
@@ -200,6 +201,7 @@ export function conversationIdentityFixture(
   const createService = (context: InvocationContext = ctx) =>
     new ExecutionService(context, {
       ...journalDeps,
+      hintResultRepair: options.hintResultRepair,
       runtime,
       progressStore: store,
       executionFinisher: finisher,

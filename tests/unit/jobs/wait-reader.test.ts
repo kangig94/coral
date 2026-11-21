@@ -70,6 +70,38 @@ it('keeps completed live coverage when a later refresh outlives the deadline', a
   await stream.return(undefined);
 });
 
+it.each([true, false])(
+  'reports only carriers still absent at the subscription deadline (still absent: %s)',
+  async (absent) => {
+    const time = new VirtualTime();
+    let observations = 0;
+    const result = collect(
+      readWaitSession({
+        request: { jobIds: ['a'], timeoutSeconds: 0.5 },
+        time,
+        read: observeWaitRead(() => [admitted('a', [], false)]),
+        visit: testProgressVisit,
+        observe: (session) => {
+          session.observeCoverage(['a'], [], 3);
+          if (++observations === 1 || absent) session.observeAbsent('a', 3);
+        },
+      }),
+    );
+    await flushMicrotasks(20);
+    for (let i = 0; i < 2; i++) {
+      time.tick(250);
+      await flushMicrotasks(20);
+    }
+    const events = await result;
+    expect(events).toContainEqual(expect.objectContaining({ type: 'interrupted', jobId: 'a' }));
+    expect(events.at(-1)).toMatchObject({
+      type: 'waiting',
+      endedBy: 'deadline',
+      carrierAbsentJobIds: absent ? ['a'] : [],
+    });
+  },
+);
+
 it('names a progress-budget cut and an unanswered read apart from a deadline', async () => {
   const backlog = Array.from({ length: 800 }, (_, i): [number, string] => [i + 1, `a${i + 1}`]);
   const budget = await collect(

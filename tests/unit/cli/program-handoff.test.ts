@@ -283,6 +283,7 @@ it('two SIGINTs during preflight preserve pre-admission argv and skip command di
   const stdout: string[] = [];
   const exit = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
   const handlers = process.listeners('SIGINT');
+  const termHandlers = process.listeners('SIGTERM');
   vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: string | Uint8Array) => {
     stdout.push(chunk.toString());
     return true;
@@ -312,12 +313,14 @@ it('two SIGINTs during preflight preserve pre-admission argv and skip command di
     expect(mockState.runHandoff.mock.calls[0][1].signal.aborted).toBe(true);
   } finally {
     for (const handler of process.listeners('SIGINT')) if (!handlers.includes(handler)) process.off('SIGINT', handler);
+    for (const handler of process.listeners('SIGTERM'))
+      if (!termHandlers.includes(handler)) process.off('SIGTERM', handler);
     vi.clearAllTimers();
     vi.useRealTimers();
   }
 });
 
-it('prints the relayed continuation when a delegated bounded monitor exits 75', async () => {
+it('prints the relayed continuation when a delegated monitor exits 75', async () => {
   let output = '';
   vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: string, callback?: (error?: Error) => void) => {
     output += chunk;
@@ -357,7 +360,7 @@ it('does not append a parent remediation after the delegated child error', async
   expect(output).toBe('Child readiness error. Run the child command.\n');
 });
 
-it('injected clock bounds a stalled preflight without a process spawn', async () => {
+it('SIGTERM stops a stalled streaming preflight that has no deadline', async () => {
   const { buildProgram, parseProgramWithHandoff } = await loadProgramFresh();
   vi.useFakeTimers();
   let output = '';
@@ -367,14 +370,24 @@ it('injected clock bounds a stalled preflight without a process spawn', async ()
     return true;
   }) as never);
   mockState.runHandoff.mockImplementation(() => new Promise(() => {}));
+  const handlers = process.listeners('SIGTERM');
+  const intHandlers = process.listeners('SIGINT');
   const result = parseProgramWithHandoff(buildProgram(), ['node', 'coral-cli', 'jobs', 'wait', 'a'], {
     now: () => Date.now(),
   });
   try {
-    await vi.advanceTimersByTimeAsync(590_000);
+    await vi.advanceTimersByTimeAsync(3_600_000);
+    expect(mockState.runHandoff.mock.calls[0][1].signal.aborted).toBe(false);
+    expect(output).toBe('');
+    process.emit('SIGTERM');
     expect(await result).toMatchObject({ kind: 'handoff-exit', exitCode: 75 });
     expect(output.match(/Run coral-cli jobs wait/g)).toHaveLength(1);
   } finally {
+    for (const handler of process.listeners('SIGTERM'))
+      if (!handlers.includes(handler)) process.off('SIGTERM', handler);
+    for (const handler of process.listeners('SIGINT'))
+      if (!intHandlers.includes(handler)) process.off('SIGINT', handler);
+    vi.clearAllTimers();
     vi.useRealTimers();
   }
 });

@@ -4,7 +4,7 @@ import type { ProviderRegistry } from '../../providers/registry.js';
 import { markProviderCommand } from '../classify.js';
 import { normalizeUsageError, UsageError } from '../errors.js';
 import { getProviderNames, makeClient, type ProviderRunOptions } from '../dispatch.js';
-import { emitError, handleLaunchResult } from '../emit.js';
+import { emitError, emitLaunchResult } from '../emit.js';
 import { resolveInput } from '../flags.js';
 
 export function registerProviderCommands(program: Command, providerRegistry: ProviderRegistry): void {
@@ -25,10 +25,9 @@ export function registerProviderCommands(program: Command, providerRegistry: Pro
       .option('-m, --model <model>', 'Model override')
       .addOption(new Option('-o, --owner <id>').hideHelp())
       .option('-b, --bypass-permissions', 'Bypass permission checks')
-      .option('-d, --detach', 'Return launch decision without waiting')
       .addHelpText(
         'after',
-        '\nWhile following a launch, Ctrl+C stops following with exit 75 and a continuation; it never aborts the job.\n' +
+        '\nReturns after the launch decision and prints a wait command for an accepted job.\n' +
           'To abort the job, run coral-cli jobs abort <id>.\n',
       )
       .action(async (agent: string | undefined, opts: ProviderRunOptions) => {
@@ -50,7 +49,7 @@ export function registerProviderCommands(program: Command, providerRegistry: Pro
             ...(agent !== undefined ? { agent } : {}),
             ...requestOptions,
           });
-          await handleLaunchResult(result, opts.detach);
+          emitLaunchResult(result);
         } catch (error) {
           emitError(normalizeUsageError(error));
         }

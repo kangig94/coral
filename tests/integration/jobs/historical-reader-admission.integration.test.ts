@@ -5,6 +5,7 @@ import { createTerminalExportFixture } from '#tests/helpers/terminal-export.js';
 import { registerPresentHistoricalEpochs, readHistoricalSource } from '#src/jobs/historical-reader.js';
 import { JobAddressing } from '#src/jobs/addressing.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
 it('admits an unindexed historical job read-only before maintenance hydration', () => {
   const f = createTerminalExportFixture('provider', true);
@@ -37,6 +38,12 @@ it('admits an unindexed historical job read-only before maintenance hydration', 
     const admitted = addressing.admitWait({ jobIds: [f.jobId] } as never);
 
     expect(admitted[0].disposition).toBe('admitted');
+    const projectRoot = fixtureCanonicalWorkDir('/unrelated');
+    const scoped = readHistoricalSource(f.index, f.epochKey, [f.jobId], undefined, true, projectRoot);
+    expect(scoped.kind === 'read' && scoped.locations.get(f.jobId)?.detail).toEqual({ kind: 'absent' });
+    expect(addressing.snapshot({ jobIds: [f.jobId], projectRoot })).toMatchObject({
+      jobs: [{ jobId: f.jobId, disposition: 'scope-mismatch' }],
+    });
     expect(f.index.read(f.jobId)).toBeNull();
   } finally {
     f.close();

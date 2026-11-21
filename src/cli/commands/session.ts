@@ -1,3 +1,4 @@
+import { parseWaitAllOutcome } from '../wait-all-outcome.js';
 import { decodeWaitCursor, WAIT_CURSOR_REPLAY_NOTICE } from '../../jobs/wait/cursor.js';
 import type { WaitCursor } from '../../jobs/wait/contract.js';
 import { parseWaitSnapshot } from '../../jobs/wait/snapshot.js';
@@ -16,7 +17,7 @@ import { waitCommandPaths } from '../../coordinator/handoff-routing/wait-command
 import type { AbortResult } from '../../jobs/contracts/abort-registry.js';
 import type { ProviderRegistry } from '../../providers/registry.js';
 import { getProviderNames, makeClient } from '../dispatch.js';
-import { emitError, getTerminalContext, handleLaunchResult } from '../emit.js';
+import { emitError, getTerminalContext } from '../emit.js';
 import { parseJobIds, resolveInput } from '../flags.js';
 import { flushPendingReadStoreNote } from '../read-store.js';
 import { UsageError, WaitOutputError, WaitSnapshotResponseError, normalizeUsageError } from '../errors.js';
@@ -57,7 +58,8 @@ type AbortOptions = {
 
 type WaitJobsOptions = {
   snapshot?: boolean;
-  unbounded?: boolean;
+  all?: boolean;
+  allOutcome?: string;
   lines?: string;
   cursor?: string;
   embed?: boolean;
@@ -277,25 +279,20 @@ function registerJobsSendCommand(jobsCommand: Command): void {
   const inputUsage = 'Input is required. Use -i <text>, -i <file>, or -i - (stdin).';
   sendCommand
     .description(
-      "Steer a running provider turn, or continue an ended job's conversation (follows to completion; -d returns after launch, ignored for a steer)",
+      "Steer a running provider turn, or continue an ended job's conversation and return after the launch decision",
     )
     .argument('<jobId>', 'Canonical job UUID (required)')
     .option(
       '-i, --input <text-or-file...>',
       'Message input (required; tokens are joined with single spaces; the whole input is read if it names an existing regular file, or stdin if exactly -; otherwise literal text)',
     )
-    .option('-d, --detach', 'Return immediately after launching a continuation')
-    .action(async (jobId: string, opts: { input?: string[]; detach?: boolean }) => {
+    .action(async (jobId: string, opts: { input?: string[] }) => {
       try {
         if (opts.input === undefined) throw new UsageError(inputUsage);
         const input = resolveInput(opts.input);
         if (input.trim().length === 0) throw new UsageError(inputUsage);
         const result = await makeClient(process.cwd(), sendCommand).sendJob(jobId, input);
-        if (result.state === 'launched' && opts.detach !== true) {
-          await handleLaunchResult(result.launch, false);
-          return;
-        }
-        const output = formatJobSendResult(jobId, result, { inputTokens: opts.input, detach: opts.detach === true });
+        const output = formatJobSendResult(jobId, result, { inputTokens: opts.input });
         (output.exitCode === 0 ? process.stdout : process.stderr).write(output.text + '\n');
         process.exitCode = output.exitCode;
       } catch (error) {
@@ -375,7 +372,7 @@ function registerJobsReleaseCommand(jobsCommand: Command): void {
 function configureWaitJobsCommand(command: Command): Command {
   return command
     .description(
-      'Monitor jobs until the first terminal or ~590 s, then return a continuation; --snapshot returns immediately; --unbounded drops the ~590 s bound',
+      'Monitor jobs until the first terminal by default. Use --all to wait for every job, or --snapshot for an immediate read',
     )
     .argument('<jobIds...>', 'Job IDs')
     .option('--cursor <cursor>', 'Progress seq cursor (from previous wait output)')
@@ -384,10 +381,8 @@ function configureWaitJobsCommand(command: Command): Command {
       'Read an immediate snapshot; continuations keep --snapshot; drop it explicitly to switch to a blocking wait',
     )
     .option('--lines <N>', 'Most recent progress lines per job with --snapshot (1..500, default 20; no cursor)')
-    .option(
-      '--unbounded',
-      'Run only in a background shell: monitor until the first terminal with no ~590 s bound, which a foreground shell kills at its own timeout without a continuation. Continuations keep --unbounded (cannot use with --snapshot)',
-    )
+    .option('--all', 'Wait for all listed jobs to finish (cannot use with --snapshot)')
+    .option('--all-outcome <outcome>', 'Preserve an earlier outcome from a printed --all continuation')
     .option(
       '--embed',
       'Embed terminal result content when size permits; artifact availability is reported separately (cannot use with --snapshot)',
@@ -397,7 +392,7 @@ function configureWaitJobsCommand(command: Command): Command {
       'after',
       '\nThe first failed terminal in request order keeps its mapped exit code, even with pending siblings.\n' +
         'Otherwise permanent refusals exit 1; remaining collection work exits 75; exhausted successful sets exit 0.\n' +
-        'Ctrl+C stops monitoring with exit 75 and a continuation; it never aborts jobs.\n' +
+        'SIGINT (Ctrl+C) and SIGTERM stop monitoring with exit 75 and a continuation. Jobs keep running.\n' +
         'Run the continuation or remediation command printed in the output.\n',
     );
 }
@@ -486,13 +481,14 @@ async function runStreamingWaitJobs(
   projectRoot: string,
   opts: WaitJobsOptions,
 ): Promise<void> {
+  const priorOutcome = opts.allOutcome === undefined ? undefined : parseWaitAllOutcome(opts.allOutcome, jobIds.length);
+  if (opts.allOutcome !== undefined && priorOutcome === undefined)
+    throw new UsageError('Invalid --all-outcome. Use the value from the printed continuation.');
   process.exitCode = await followJobs({
-    start: {
-      kind: 'jobs',
-      jobIds,
-      ...(opts.cursor === undefined ? {} : { serializedCursor: opts.cursor }),
-    },
-    reconnectPolicy: opts.unbounded === true ? 'unbounded' : 'bounded',
+    jobIds,
+    priorOutcome,
+    ...(opts.cursor === undefined ? {} : { serializedCursor: opts.cursor }),
+    waitForAll: opts.all === true,
     invocation: getWaitInvocation(),
     projectRoot,
     emitError,
@@ -501,12 +497,10 @@ async function runStreamingWaitJobs(
       embed: opts.embed === true,
       verbose: opts.verbose === true,
     },
-    connect: async ({ jobIds: activeJobIds, cursor, executionSelections, timeoutSeconds, signal, drainProgress }) => ({
-      kind: 'subscription',
-      subscription: await client.subscribeJobsWait(
+    connect: ({ jobIds: activeJobIds, cursor, drainProgress, executionSelections, signal }) =>
+      client.subscribeJobsWait(
         {
           jobIds: activeJobIds,
-          timeoutSeconds,
           projectRoot,
           drainProgress,
           executionSelections,
@@ -514,6 +508,5 @@ async function runStreamingWaitJobs(
         },
         { signal },
       ),
-    }),
   });
 }

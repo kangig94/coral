@@ -17,7 +17,7 @@ function jobInWaitScope(job, scopeRoot) {
 }
 
 function waitCommand(jobs) {
-  return `coral-cli jobs wait ${jobs.map((job) => job.jobId).join(' ')}`;
+  return `coral-cli jobs wait ${jobs.map((job) => job.jobId).join(' ')}${jobs.length > 1 ? ' --all' : ''}`;
 }
 
 try {

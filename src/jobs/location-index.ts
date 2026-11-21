@@ -1,3 +1,4 @@
+import type { CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
 import { currentResultArtifacts } from './retained-current.js';
 import { executionRetryStatusSchema } from './records.js';
 import type { RecoveryObservation } from '../recovery/phase-observation.js';
@@ -585,8 +586,9 @@ export class JobLocationIndex {
     jobIds: readonly string[],
     session?: object,
     fullHistory = false,
+    callerRoot?: CanonicalWorkDir,
   ): HistoricalSourceRead {
-    return readHistoricalSource(this, epochKey, jobIds, session, fullHistory);
+    return readHistoricalSource(this, epochKey, jobIds, session, fullHistory, callerRoot);
   }
 
   readOnlyView(): JobLocationView {
@@ -597,8 +599,8 @@ export class JobLocationIndex {
       observePoll: (read, liveJobIds) => this.observePoll(read, liveJobIds),
       resultPathFor: (jobId, execution) => this.resultPathFor(jobId, execution),
       unknownLocationHolds: () => this.unknownLocationHolds(),
-      readHistorical: (epochKey, jobIds, session, fullHistory) =>
-        this.readHistorical(epochKey, jobIds, session, fullHistory),
+      readHistorical: (epochKey, jobIds, session, fullHistory, callerRoot) =>
+        this.readHistorical(epochKey, jobIds, session, fullHistory, callerRoot),
       historicalSourceState: (epochKey) => this.historicalSourceState(epochKey),
     };
   }

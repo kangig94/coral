@@ -13,8 +13,8 @@ it.each([undefined, savedCursor(42)])(
     const emitError = vi.fn();
     const connect = vi.fn().mockRejectedValue(new IpcRequestTimeout('acknowledgement deadline exceeded'));
     const code = await followJobs({
-      start: { kind: 'jobs', jobIds: ['remaining-job'], serializedCursor: cursor },
-      reconnectPolicy: 'bounded',
+      jobIds: ['remaining-job'],
+      serializedCursor: cursor,
       projectRoot: '/project',
       render: { isTTY: false, columns: 80, embed: false, verbose: false },
       connect,
@@ -34,8 +34,7 @@ it('keeps authentication refusal distinct from timeout exhaustion', async () => 
   const emitError = vi.fn();
   const connect = vi.fn().mockRejectedValue(new Error('refused', { cause: { code: 'unauthorized' } }));
   await followJobs({
-    start: { kind: 'jobs', jobIds: ['remaining-job'] },
-    reconnectPolicy: 'bounded',
+    jobIds: ['remaining-job'],
     projectRoot: '/project',
     render: { isTTY: false, columns: 80, embed: false, verbose: false },
     connect,

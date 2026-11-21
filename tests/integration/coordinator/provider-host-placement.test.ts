@@ -208,7 +208,7 @@ async function launchHeldJob(
   const output = await runCli(
     world,
     workDir,
-    ['codex', '-i', join(workDir, 'prompt.txt'), '--detach'],
+    ['codex', '-i', join(workDir, 'prompt.txt')],
     codexAccount(world, account),
   );
   const jobId = output.match(/command=coral-cli jobs wait ([0-9a-f-]{36})\b/u)?.[1];

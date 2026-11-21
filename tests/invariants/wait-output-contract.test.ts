@@ -144,7 +144,7 @@ it('M2 help and exit documentation preserve failure precedence even with sibling
     expect(text).toContain('permanent refusals exit 1');
     expect(text).toContain('remaining collection work exits 75');
     expect(text).toContain('exhausted successful sets exit 0');
-    expect(text).toContain('never aborts jobs');
+    expect(text).toContain('SIGTERM');
   }
   const failed = admitted('a', [], true, 'epoch-E', true);
   const pending = admitted('b', [], false);
@@ -157,8 +157,8 @@ it('M2 help and exit documentation preserve failure precedence even with sibling
   expect(output).toContain('--snapshot');
   expect(output.replace(/\s+/g, ' ')).toContain('continuations keep --snapshot');
   expect(output.replace(/\s+/g, ' ')).toContain('drop it explicitly to switch to a blocking wait');
-  expect(output.replace(/\s+/g, ' ')).toContain('first terminal or ~590 s');
-  expect(output.replace(/\s+/g, ' ')).toContain('--snapshot returns immediately');
+  expect(output.replace(/\s+/g, ' ')).toContain('first terminal by default');
+  expect(output.replace(/\s+/g, ' ')).toContain('--all to wait for every job');
   expect(output.replace(/\s+/g, ' ')).toContain('artifact availability is reported separately');
 });
 

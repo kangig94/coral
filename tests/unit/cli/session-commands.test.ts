@@ -8,7 +8,6 @@ import type * as NodeFs from 'node:fs';
 import { afterEach, expect, it, vi } from 'vitest';
 import type * as DispatchMod from '#src/cli/dispatch.js';
 import type * as ReadStoreMod from '#src/cli/read-store.js';
-import type * as FollowMod from '#src/cli/follow.js';
 import { registerSessionCommands } from '#src/cli/commands/session.js';
 import { assertCommandClassCoverage, classifyCommand } from '#src/cli/classify.js';
 import { createBuiltInProviderRegistry } from '#src/providers/bootstrap.js';
@@ -18,13 +17,15 @@ import { admitted, testSession } from '#tests/helpers/wait-session.js';
 import type { JobSendOutcome } from '#src/jobs/send.js';
 import type { CliJobSendOutcome } from '#src/cli/dispatch.js';
 import { registerProviderCommands } from '#src/cli/commands/provider.js';
+import { registerWorkflowCommands } from '#src/cli/commands/workflow.js';
 import { formatJobSendResult } from '#src/cli/format/jobs.js';
-import { followJobs, launchAndFollow } from '#src/cli/follow.js';
+import { followJobs } from '#src/cli/follow.js';
 
 const client = vi.hoisted(() => ({
   listJobs: vi.fn<() => Promise<JobsListResponse>>(async () => ({ jobs: [] })),
   abortJobs: vi.fn(async () => ({ aborted: ['a'], notFound: [] })),
   snapshotJobsWait: vi.fn(),
+  subscribeJobsWait: vi.fn(),
   sendJob: vi.fn<() => Promise<CliJobSendOutcome>>(async () => ({ state: 'delivered' })),
   createSession: vi.fn(async () => ({
     kind: 'provider-session',
@@ -32,6 +33,14 @@ const client = vi.hoisted(() => ({
     requestedSeq: 1,
     epochKey: 'epoch',
     launchState: 'running',
+  })),
+  workflow: vi.fn(async () => ({
+    kind: 'workflow',
+    workflowId: 'workflow-1',
+    jobId: 'workflow-job',
+    requestedSeq: 1,
+    epochKey: 'epoch',
+    launchState: 'queued',
   })),
 }));
 const stdin = vi.hoisted(() => ({ text: '' }));
@@ -61,11 +70,7 @@ vi.mock('#src/cli/dispatch.js', async (importOriginal) => ({
   ...(await importOriginal<typeof DispatchMod>()),
   makeClient: () => client,
 }));
-vi.mock('#src/cli/follow.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof FollowMod>()),
-  followJobs: vi.fn(async () => 0),
-  launchAndFollow: vi.fn(async () => 7),
-}));
+vi.mock('#src/cli/follow.js', () => ({ followJobs: vi.fn(async () => 0) }));
 
 afterEach(() => {
   vi.clearAllMocks();
@@ -81,6 +86,49 @@ function program(): Command {
   registerSessionCommands(root, createBuiltInProviderRegistry());
   return root;
 }
+
+it.each([
+  [['codex', '-i', 'hello'], 'p', 'Provider job p execution #1 running'],
+  [['claude', 'architect', '-i', 'hello'], 'p', 'Provider job p execution #1 running'],
+  [
+    ['workflow', '-e', 'architect', '-s', 'hello'],
+    'workflow-job',
+    'Workflow workflow-1 queued (job workflow-job execution #1)',
+  ],
+])('returns the launch decision and wait command for %j', async (argv, jobId, status) => {
+  const stdout = vi.spyOn(process.stdout, 'write').mockReturnValue(true);
+  const root = program();
+  registerProviderCommands(root, createBuiltInProviderRegistry());
+  registerWorkflowCommands(root);
+  await root.parseAsync(argv, { from: 'user' });
+  const output = stdout.mock.calls.map(([chunk]) => String(chunk)).join('');
+  expect(output).toContain(status);
+  expect(output.split('\n')).toContain(`command=coral-cli jobs wait ${jobId}`);
+  expect(followJobs).not.toHaveBeenCalled();
+  expect(client.subscribeJobsWait).not.toHaveBeenCalled();
+  expect(client.snapshotJobsWait).not.toHaveBeenCalled();
+});
+
+it.each(
+  [
+    ['codex', '-i', 'hello'],
+    ['claude', 'architect', '-i', 'hello'],
+    ['workflow', '-e', 'architect', '-s', 'hello'],
+    ['jobs', 'send', 'job-1', '-i', 'continue'],
+  ].flatMap((argv) => ['-d', '--detach'].map((option) => ({ argv, option }))),
+)('rejects $option for $argv before dispatch', async ({ argv, option }) => {
+  const root = program();
+  registerProviderCommands(root, createBuiltInProviderRegistry());
+  registerWorkflowCommands(root);
+  await expect(root.parseAsync([...argv, option], { from: 'user' })).rejects.toMatchObject({
+    code: 'commander.unknownOption',
+    exitCode: 1,
+    message: expect.stringContaining(`unknown option '${option}'`),
+  });
+  expect(client.createSession).not.toHaveBeenCalled();
+  expect(client.workflow).not.toHaveBeenCalled();
+  expect(client.sendJob).not.toHaveBeenCalled();
+});
 
 it('prints jobs help without querying or mutating jobs', async () => {
   const root = program();
@@ -122,8 +170,8 @@ it('explains required send input resolution and ended-turn behavior in help', ()
   expect(help).toContain('the whole input is read if it names an existing regular file');
   expect(help).toContain('stdin if exactly -');
   expect(help).toContain("continue an ended job's conversation");
-  expect(help).toContain('ignored for a steer');
-  expect(help).toContain('--detach');
+  expect(help).toContain('return after the launch decision');
+  expect(help).not.toContain('--detach');
 });
 
 it.each([
@@ -208,7 +256,7 @@ it('resolves text tokens and existing files identically for send and provider la
     ] as const) {
       const root = program();
       registerProviderCommands(root, createBuiltInProviderRegistry());
-      await root.parseAsync(['codex', '-d', '-i', ...tokens], { from: 'user' });
+      await root.parseAsync(['codex', '-i', ...tokens], { from: 'user' });
       expect(client.createSession).toHaveBeenLastCalledWith('codex', expected, expect.any(Object));
       await root.parseAsync(['jobs', 'send', 'job-1', '-i', ...tokens], { from: 'user' });
       expect(client.sendJob).toHaveBeenLastCalledWith('job-1', expected);
@@ -258,7 +306,7 @@ it.each(['send', 'provider'])('resolves literal stdin for %s through the shared 
   } else {
     const { registerProviderCommands: register } = await import('#src/cli/commands/provider.js');
     register(root, registry);
-    await root.parseAsync(['codex', '-d', '-i', '-'], { from: 'user' });
+    await root.parseAsync(['codex', '-i', '-'], { from: 'user' });
     expect(client.createSession).toHaveBeenCalledExactlyOnceWith('codex', stdin.text, expect.any(Object));
   }
 });
@@ -347,7 +395,7 @@ it.each(['turn_not_started', 'control_unavailable'] as const)(
   },
 );
 
-it('preserves detach when executing a refused send retry', async () => {
+it('returns the continuation decision when executing a refused send retry', async () => {
   const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
   vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
   const launch = {
@@ -359,38 +407,41 @@ it('preserves detach when executing a refused send retry', async () => {
     launchState: 'queued' as const,
   };
   client.sendJob.mockResolvedValueOnce({ state: 'refused', code: 'busy', reason: 'Admission busy.' });
-  await program().parseAsync(['jobs', 'send', 'job-1', '-d', '-i', 'continue'], { from: 'user' });
+  await program().parseAsync(['jobs', 'send', 'job-1', '-i', 'continue'], { from: 'user' });
   const commands = printedCommands(stderr.mock.calls.map(([text]) => String(text)).join(''));
-  expect(commands).toEqual([['jobs', 'send', 'job-1', '-d', '-i', 'continue']]);
+  expect(commands).toEqual([['jobs', 'send', 'job-1', '-i', 'continue']]);
   client.sendJob.mockResolvedValueOnce({ state: 'launched', launch });
   await program().parseAsync(commands[0], { from: 'user' });
   expect(client.sendJob).toHaveBeenLastCalledWith('job-1', 'continue');
-  expect(launchAndFollow).not.toHaveBeenCalled();
+  expect(followJobs).not.toHaveBeenCalled();
   expect(process.exitCode).toBe(0);
 });
 
-it.each(['codex', 'claude'] as const)('preserves detach when executing a fresh %s remedy', async (provider) => {
-  const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-  vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
-  const workDir = fixtureCanonicalWorkDir('/recorded child');
-  client.sendJob.mockResolvedValueOnce({
-    state: 'refused',
-    code: 'pre_generation_job',
-    reason: 'Historical job.',
-    workDir,
-  });
-  await program().parseAsync(['jobs', 'send', 'job-1', '-d', '-i', 'continue'], { from: 'user' });
-  const commands = printedCommands(stderr.mock.calls.map(([text]) => String(text)).join(''));
-  const command = commands.find(([name]) => name === provider)!;
-  expect(command).toEqual([provider, '--work-dir', workDir, '-d', '-i', 'continue']);
-  const root = program();
-  registerProviderCommands(root, createBuiltInProviderRegistry());
-  process.exitCode = undefined;
-  await root.parseAsync(command, { from: 'user' });
-  expect(client.createSession).toHaveBeenCalledWith(provider, 'continue', expect.objectContaining({ workDir }));
-  expect(launchAndFollow).not.toHaveBeenCalled();
-  expect(process.exitCode).toBeUndefined();
-});
+it.each(['codex', 'claude'] as const)(
+  'returns the launch decision when executing a fresh %s remedy',
+  async (provider) => {
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const workDir = fixtureCanonicalWorkDir('/recorded child');
+    client.sendJob.mockResolvedValueOnce({
+      state: 'refused',
+      code: 'pre_generation_job',
+      reason: 'Historical job.',
+      workDir,
+    });
+    await program().parseAsync(['jobs', 'send', 'job-1', '-i', 'continue'], { from: 'user' });
+    const commands = printedCommands(stderr.mock.calls.map(([text]) => String(text)).join(''));
+    const command = commands.find(([name]) => name === provider)!;
+    expect(command).toEqual([provider, '--work-dir', workDir, '-i', 'continue']);
+    const root = program();
+    registerProviderCommands(root, createBuiltInProviderRegistry());
+    process.exitCode = undefined;
+    await root.parseAsync(command, { from: 'user' });
+    expect(client.createSession).toHaveBeenCalledWith(provider, 'continue', expect.objectContaining({ workDir }));
+    expect(followJobs).not.toHaveBeenCalled();
+    expect(process.exitCode).toBeUndefined();
+  },
+);
 
 it('executes an ended-turn result remedy and sends the original input unchanged on a new attempt', async () => {
   const output = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
@@ -414,58 +465,64 @@ it('executes an ended-turn result remedy and sends the original input unchanged 
   await root.parseAsync(commands[0], { from: 'user' });
   expect(followJobs).toHaveBeenCalledExactlyOnceWith(
     expect.objectContaining({
-      start: { kind: 'jobs', jobIds: ['job-1'] },
+      jobIds: ['job-1'],
       projectRoot: process.cwd(),
     }),
   );
   expect(process.exitCode).toBe(0);
 });
-it.each([false, true])('follows a launched continuation by default and detaches=%s', async (detach) => {
-  const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
-  vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-  const launch = {
-    kind: 'provider-session' as const,
-    jobId: 'job-1',
-    execution: 2,
-    requestedSeq: 100,
-    epochKey: 'epoch',
-    launchState: 'queued' as const,
-  };
-  client.sendJob.mockResolvedValueOnce({ state: 'launched', launch });
-  await program().parseAsync(['jobs', 'send', 'job-1', ...(detach ? ['-d'] : []), '-i', 'continue'], { from: 'user' });
-  if (detach) {
-    expect(launchAndFollow).not.toHaveBeenCalled();
-    const text = stdout.mock.calls.map(([chunk]) => String(chunk)).join('');
-    expect(text).toContain('Provider job job-1 execution #2 queued');
-    expect(text).toContain('command=coral-cli jobs wait job-1');
-    expect(text).not.toContain('--execution-selection');
-  } else {
-    expect(launchAndFollow).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ launchResult: launch }));
-    expect(process.exitCode).toBe(7);
-  }
+it.each(['running', 'queued'] as const)('returns a %s continuation without opening a wait', async (launchState) => {
+  const stdout = vi.spyOn(process.stdout, 'write').mockReturnValue(true);
+  client.sendJob.mockResolvedValueOnce({
+    state: 'launched',
+    launch: {
+      kind: 'provider-session',
+      jobId: 'job-1',
+      execution: 2,
+      requestedSeq: 100,
+      epochKey: 'epoch',
+      launchState,
+    },
+  });
+  await program().parseAsync(['jobs', 'send', 'job-1', '-i', 'continue'], { from: 'user' });
+  const lines = stdout.mock.calls
+    .map(([chunk]) => String(chunk))
+    .join('')
+    .split('\n');
+  expect(lines[0]).toBe(`Provider job job-1 execution #2 ${launchState}`);
+  expect(lines).toContain('command=coral-cli jobs wait job-1');
+  expect(followJobs).not.toHaveBeenCalled();
+  expect(client.subscribeJobsWait).not.toHaveBeenCalled();
+  expect(client.snapshotJobsWait).not.toHaveBeenCalled();
+  expect(process.exitCode).toBe(0);
 });
 
-it('detaches a continuation using the ordinal derived by target binding when the launch omits it', async () => {
+it('reports a continuation using the ordinal derived by target binding when the launch omits it', async () => {
   const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
   client.sendJob.mockResolvedValueOnce({
     state: 'launched',
     execution: 2,
     launch: { kind: 'provider-session', jobId: 'job-1', requestedSeq: 100, epochKey: 'epoch', launchState: 'queued' },
   });
-  await program().parseAsync(['jobs', 'send', 'job-1', '-d', '-i', 'continue'], { from: 'user' });
+  await program().parseAsync(['jobs', 'send', 'job-1', '-i', 'continue'], { from: 'user' });
   const text = stdout.mock.calls.map(([chunk]) => String(chunk)).join('');
   expect(text).toContain('Provider job job-1 execution #2 queued');
   expect(text).toContain('command=coral-cli jobs wait job-1');
   expect(text).not.toContain('--execution-selection');
-  expect(launchAndFollow).not.toHaveBeenCalled();
+  expect(followJobs).not.toHaveBeenCalled();
   expect(process.exitCode).toBe(0);
 });
 
-it.each([false, true])('returns a steer immediately with detach=%s', async (detach) => {
-  vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
-  await program().parseAsync(['jobs', 'send', 'job-1', ...(detach ? ['-d'] : []), '-i', 'steer'], { from: 'user' });
-  expect(launchAndFollow).not.toHaveBeenCalled();
+it('returns a steer immediately with the delivery acknowledgement', async () => {
+  const stdout = vi.spyOn(process.stdout, 'write').mockReturnValue(true);
+  await program().parseAsync(['jobs', 'send', 'job-1', '-i', 'steer'], { from: 'user' });
+  expect(client.sendJob).toHaveBeenCalledExactlyOnceWith('job-1', 'steer');
+  expect(stdout).toHaveBeenCalledExactlyOnceWith(expect.stringContaining('Message delivered to the provider input.'));
+  expect(printedCommands(stdout.mock.calls.map(([chunk]) => String(chunk)).join(''))).toEqual([]);
   expect(followJobs).not.toHaveBeenCalled();
+  expect(client.subscribeJobsWait).not.toHaveBeenCalled();
+  expect(client.snapshotJobsWait).not.toHaveBeenCalled();
+  expect(process.exitCode).toBe(0);
 });
 
 it('keeps option-looking input tokens as message text in the runnable retry command', async () => {
@@ -610,7 +667,20 @@ it.each(
   expect(client.abortJobs).not.toHaveBeenCalled();
 });
 
-it.each([[], ['--snapshot'], ['--unbounded']].map((args) => [args]))(
+it('rejects --unbounded as an unknown wait option', async () => {
+  await expect(program().parseAsync(['jobs', 'wait', 'a', '--unbounded'], { from: 'user' })).rejects.toMatchObject({
+    code: 'commander.unknownOption',
+  });
+  expect(followJobs).not.toHaveBeenCalled();
+});
+
+it('passes --all through to the streaming wait', async () => {
+  await program().parseAsync(['jobs', 'wait', 'a', 'b', '--all'], { from: 'user' });
+  expect(followJobs).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ jobIds: ['a', 'b'], waitForAll: true }));
+  expect(client.snapshotJobsWait).not.toHaveBeenCalled();
+});
+
+it.each([[], ['--snapshot'], ['--all']].map((args) => [args]))(
   'should refuse --execution-selection as an unknown option %j',
   async (mode) => {
     vi.spyOn(process.stderr, 'write').mockImplementation(() => true);

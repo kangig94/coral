@@ -90,6 +90,7 @@ export const resultAvailabilitySchema = z.discriminatedUnion('kind', [
 
 const waitTerminalBlockSchema = z.object({
   type: z.literal('terminal'),
+  outsideCwdWorkDir: z.string().min(1).optional(),
   execution: executionOrdinalSchema.optional(),
   executionSelections: waitExecutionSelectionsSchema.optional(),
   jobId: z.string(),
@@ -128,6 +129,7 @@ const waitWaitingEventSchema = z
     waitingJobIds: z.array(z.string().min(1)).max(MAX_WAIT_JOB_IDS),
     // Empty unknown coverage must omit the wire field.
     carrierUnknownJobIds: z.array(z.string().min(1)).max(MAX_WAIT_JOB_IDS).nonempty().optional(),
+    carrierAbsentJobIds: z.array(z.string().min(1)).max(MAX_WAIT_JOB_IDS).optional(),
     // A value this build does not know reads as absent, so it can only stop a resume, never refuse the event.
     endedBy: z.enum(['settled', 'deadline', 'progress-budget', 'unanswered']).optional().catch(undefined),
     ...finalFields,

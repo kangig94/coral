@@ -44,14 +44,11 @@ type WorkflowChildJob = JobsListResponse['jobs'][number];
 const MAX_INLINE = 10_000;
 
 /** Remediation must preserve the caller's input tokens rather than substitute resolved file or stdin content. */
-export type JobSendOutputContext = Readonly<{
+type JobSendOutputContext = Readonly<{
   inputTokens: readonly string[];
-  detach?: boolean;
 }>;
 
-export type UnknownLaunchOutcome = Readonly<{ kind: 'launch-outcome-unknown' }>;
-
-export function formatUnknownLaunchOutcome(_outcome: UnknownLaunchOutcome): string {
+export function formatUnknownLaunchOutcome(): string {
   return [
     'Launch outcome unknown — the job may already be running. Check the job list before taking another action.',
     formatJobsOperatorCommand({ kind: 'jobs-list' }),
@@ -66,7 +63,7 @@ export function formatJobSendResult(
   switch (result.state) {
     case 'launched':
       return {
-        text: `${formatLaunchStatus(result.launch, result.launch.execution ?? result.execution)}\n${formatLaunchWaitHint(result.launch)}`,
+        text: formatLaunch(result.launch, result.launch.execution ?? result.execution),
         exitCode: 0,
       };
     case 'delivered':
@@ -461,29 +458,14 @@ function describeJobsMatch(filters: JobsListDisplayFilters): string {
   return parts.join(', ');
 }
 
-export function formatLaunch(result: AcceptedLaunchResponse): string {
-  const launchState = result.launchState === 'running' ? 'launch accepted' : result.launchState;
-  const ordinal = result.execution === undefined ? '' : ` execution #${result.execution}`;
-  return result.kind === 'provider-session'
-    ? `Provider job ${result.jobId}${ordinal} ${launchState}`
-    : `Workflow ${result.workflowId} ${launchState} (job ${result.jobId}${ordinal})`;
-}
-
-export function formatDetachedLaunchStatus(result: AcceptedLaunchResponse): string {
-  return formatLaunchStatus(result, result.execution ?? 1);
-}
-
-function formatLaunchStatus(result: AcceptedLaunchResponse, execution: number | undefined): string {
+export function formatLaunch(result: AcceptedLaunchResponse, execution: number | undefined): string {
   const ordinal = execution === undefined ? '' : ` execution #${execution}`;
-  return result.kind === 'provider-session'
-    ? `Provider job ${result.jobId}${ordinal} ${result.launchState}`
-    : `Workflow ${result.workflowId} ${result.launchState} (job ${result.jobId}${ordinal})`;
-}
-
-export function formatLaunchWaitHint(result: Pick<AcceptedLaunchResponse, 'jobId'>): string {
   return [
+    result.kind === 'provider-session'
+      ? `Provider job ${result.jobId}${ordinal} ${result.launchState}`
+      : `Workflow ${result.workflowId} ${result.launchState} (job ${result.jobId}${ordinal})`,
     'Wait for completion with the command below.',
-    formatJobsOperatorCommand({ jobId: result.jobId, kind: 'wait-job' }),
+    formatJobsOperatorCommand({ jobId: result.jobId, kind: 'wait-job', grammar: 'current' }),
   ].join('\n');
 }
 
@@ -742,7 +724,7 @@ export function renderJobsOperatorCommand(command: JobsOperatorCommand): string 
     case 'backend-status':
       return 'coral-cli backend status';
     case 'fresh-provider':
-      return `coral-cli ${command.provider} --work-dir ${quoteCommandArgument(command.workDir)}${command.detach === true ? ' -d' : ''} ${renderCommandInputTokens(command.inputTokens)}`;
+      return `coral-cli ${command.provider} --work-dir ${quoteCommandArgument(command.workDir)} ${renderCommandInputTokens(command.inputTokens)}`;
     case 'abort-job':
       return `coral-cli jobs abort ${command.jobId}`;
     case 'jobs-detail-full':
@@ -752,7 +734,7 @@ export function renderJobsOperatorCommand(command: JobsOperatorCommand): string 
     case 'wait-job':
       return `${command.grammar === 'current' ? 'coral-cli jobs wait' : waitCommandPrefix()} ${quoteCommandArgument(command.jobId)}`;
     case 'send-job':
-      return `coral-cli jobs send ${quoteCommandArgument(command.jobId)}${command.detach === true ? ' -d' : ''} ${renderCommandInputTokens(command.inputTokens)}`;
+      return `coral-cli jobs send ${quoteCommandArgument(command.jobId)} ${renderCommandInputTokens(command.inputTokens)}`;
     case 'jobs-list':
       return `coral-cli jobs list${command.all === true ? ' --all' : ''}`;
   }

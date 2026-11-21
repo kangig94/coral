@@ -2,6 +2,7 @@ import { ProjectionConversationMalformedError } from '../jobs/records.js';
 import { jobSendOutcomeSchema, malformedConversationSendRefusal } from '../jobs/send.js';
 import { proxyOperationSendResultSchema } from '../provider-proxy/protocol.js';
 import { WaitSessionError } from '../jobs/wait/session.js';
+import type { OperatorJobReadScopeExemption } from '../jobs/scope.js';
 import { waitExecutionSelectionsSchema } from '../jobs/wait/execution-selection.js';
 import type { WaitCursor, WaitSnapshotRequest, CanonicalWaitStreamRequest } from '../jobs/wait/contract.js';
 import { raceWithSignal } from '../infra/promise-signal.js';
@@ -63,6 +64,8 @@ import type { z } from 'zod';
 
 type RetentionPolicy = NonNullable<JobLaunchRequest['retention']>;
 
+const operatorJobReadScopeExemption = Symbol() as OperatorJobReadScopeExemption;
+
 function decodePathSegment(segment: string): string | null {
   try {
     return decodeURIComponent(segment);
@@ -91,7 +94,7 @@ function jobScopeMismatchResult(jobs: readonly string[]): ToolDomainResult {
     code: 'scope_mismatch',
     message: "Jobs are outside the caller's work directory scope",
     remediation:
-      "Change cwd to the job's work directory, or a directory that contains it, then rerun. Use `coral-cli jobs list --all` to find its work directory, including terminal jobs.",
+      "Change cwd to the job's work directory or an ancestor within your project binding, if one applies. Use `coral-cli jobs list --all` to find authorized jobs and their work directories, including terminal jobs.",
     detail: { jobs: [...jobs] },
   };
 }
@@ -681,6 +684,10 @@ export async function executeCatalogRequest(
   }
   request = canonicalRequest.request;
   const requestedBinding = requestedBindingFor(spec, canonicalRequest.authorizationRoot);
+  const outsideCwdJobRead =
+    principal.subject === 'operator' && principal.binding.kind === 'unbound'
+      ? operatorJobReadScopeExemption
+      : undefined;
   principal = narrowUnboundPrincipal(principal, requestedBinding);
   const authz = authorizeCatalogResourceBinding(spec, principal, requires, requestedBinding);
   writeAuthorizationDecisionAudit(principal, spec.name, authz, requestedBinding);
@@ -688,7 +695,15 @@ export async function executeCatalogRequest(
     return authorizationFailure(authz, principal);
   }
 
-  return dispatchCatalogRequest({ spec, request, canonicalRequest, rpcPorts, principal, abortSignal });
+  return dispatchCatalogRequest({
+    spec,
+    request,
+    canonicalRequest,
+    rpcPorts,
+    principal,
+    abortSignal,
+    outsideCwdJobRead,
+  });
 }
 
 type AuthorizedCatalogRequest = Readonly<{
@@ -698,6 +713,7 @@ type AuthorizedCatalogRequest = Readonly<{
   rpcPorts: HttpHandlerPorts;
   principal: Principal;
   abortSignal: AbortSignal | undefined;
+  outsideCwdJobRead: OperatorJobReadScopeExemption | undefined;
 }>;
 
 function dispatchCatalogRequest(context: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
@@ -1126,18 +1142,20 @@ async function executeJobsDetailCatalogRequest({
   request,
   canonicalRequest,
   rpcPorts,
+  outsideCwdJobRead,
 }: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
   const parsed = request as { jobId: string; projectRoot: string };
   const callerRoot = canonicalRequest.projectRoot;
   if (callerRoot === undefined) return unaryHttp(domainResultToHttp(invalidRequestResult()));
-  const scopeCheck = rpcPorts.jobs.scopeCheck([parsed.jobId], callerRoot, 'contains');
-  if (scopeCheck.mismatch.length > 0) {
-    return unaryHttp(domainResultToHttp(jobScopeMismatchResult(scopeCheck.mismatch)));
+  if (outsideCwdJobRead === undefined) {
+    const scopeCheck = rpcPorts.jobs.scopeCheck([parsed.jobId], callerRoot, 'contains');
+    if (scopeCheck.mismatch.length > 0)
+      return unaryHttp(domainResultToHttp(jobScopeMismatchResult(scopeCheck.mismatch)));
   }
 
   let detail;
   try {
-    detail = rpcPorts.jobs.detail(parsed.jobId);
+    detail = rpcPorts.jobs.detail(parsed.jobId, callerRoot);
   } catch (error) {
     if (!(error instanceof ProjectionConversationMalformedError)) throw error;
     const sendRefusal = malformedConversationSendRefusal(parsed.jobId);
@@ -1229,6 +1247,7 @@ async function executeJobsWaitCatalogRequest({
   canonicalRequest,
   rpcPorts,
   abortSignal,
+  outsideCwdJobRead,
 }: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
   const parsed = request as Record<string, unknown> & {
     jobIds: string[];
@@ -1252,6 +1271,7 @@ async function executeJobsWaitCatalogRequest({
   const waitRequest: CanonicalWaitStreamRequest = {
     jobIds: parsed.jobIds,
     projectRoot: parsed.projectRoot,
+    outsideCwdJobRead,
     ...(parsed.timeoutSeconds === undefined ? {} : { timeoutSeconds: parsed.timeoutSeconds }),
     ...(decoded === undefined ? {} : { cursor: parsed.cursor as WaitCursor }),
     drainProgress: parsed.drainProgress === true,
@@ -1285,7 +1305,7 @@ function snapshotRequest(
   | WaitSnapshotRequest
   | WaitCursorRejection
   | { code: string; message: string; remedy: { kind: 'fresh-wait'; jobIds: string[] } } {
-  const parsed = request as WaitSnapshotRequest & { cursor?: unknown };
+  const { waitRpcVersion: _version, ...parsed } = request as WaitSnapshotRequest & { waitRpcVersion?: number };
   const selections = waitExecutionSelectionsSchema.optional().safeParse(parsed.executionSelections);
   if (!selections.success)
     return {
@@ -1323,7 +1343,14 @@ async function executeJobsCatalogRequest(context: AuthorizedCatalogRequest): Pro
       const snapshot = snapshotRequest(context.request);
       if ('code' in snapshot) return Promise.resolve(unary(snapshot, 400));
       try {
-        return Promise.resolve(unary(context.rpcPorts.jobs.snapshot(withAbortSignal(snapshot, context.abortSignal))));
+        return unary(
+          context.rpcPorts.jobs.snapshot(
+            withAbortSignal(
+              { ...snapshot, outsideCwdJobRead: context.outsideCwdJobRead, observeOnlyJobIds: undefined },
+              context.abortSignal,
+            ),
+          ),
+        );
       } catch (error) {
         if (!(error instanceof WaitSessionError)) throw error;
         return unary(

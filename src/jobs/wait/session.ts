@@ -23,6 +23,8 @@ export type WaitDisposition = 'admitted' | 'missing' | 'scope-mismatch' | 'unkno
 
 export type WaitAdmission = {
   jobId: string;
+  outsideCwdWorkDir?: string;
+  observeOnly?: true;
   selection?: WaitExecutionSelection;
   disposition: WaitDisposition;
   message?: string;
@@ -83,6 +85,7 @@ export type WaitTerminalSummary = {
 };
 export type WaitSnapshotJob = {
   jobId: string;
+  outsideCwdWorkDir?: string;
   execution?: number;
   disposition: WaitDisposition;
   message?: string;
@@ -178,6 +181,7 @@ export class WaitSession {
         this.members.set(job.jobId, member);
       }
       if (job.disposition !== 'admitted' || job.observationDeferred) {
+        if (job.disposition === 'scope-mismatch') this.selections.delete(job.jobId);
         member.progress = job.disposition === 'unknown' || job.observationDeferred ? 'unknown' : 'refused';
         continue;
       }

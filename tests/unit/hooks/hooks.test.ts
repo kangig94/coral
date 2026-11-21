@@ -64,6 +64,23 @@ describe('session-start.mjs', () => {
     expect(output.hookSpecificOutput.additionalContext).toContain(coreFragment);
   });
 
+  it('injects the launch, wait, and send guidance at session start', () => {
+    const fixture = createFixture();
+    writeInjectBundle(fixture.pluginRoot, {
+      cli: readFileSync(new URL('../../../clients/inject/cli.md', import.meta.url), 'utf8'),
+      orchestrator: readFileSync(new URL('../../../clients/inject/orchestrator.md', import.meta.url), 'utf8'),
+    });
+
+    const result = runHook(SESSION_START_HOOK, { session_id: 'sess-123' }, { CLAUDE_PLUGIN_ROOT: fixture.pluginRoot });
+
+    expect(result.status).toBe(0);
+    const { additionalContext } = expectHookOutput(result).hookSpecificOutput;
+    expect(additionalContext).toContain('coral-cli codex <agent> --work-dir "<path>" -i -');
+    expect(additionalContext).toContain('command=coral-cli jobs wait <job-id>');
+    expect(additionalContext).toContain('timeout --preserve-status 100 coral-cli jobs wait <job-id>');
+    expect(additionalContext).toContain('A continuation starts the next execution in the same conversation');
+  });
+
   it('emits a flat, unwrapped payload and "Current host: copilot" under Copilot CLI', () => {
     const fixture = createFixture();
     writeInjectBundle(fixture.pluginRoot, 'Project instructions');

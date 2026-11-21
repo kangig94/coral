@@ -1170,16 +1170,16 @@ describe('execution backend server', () => {
     });
   });
 
-  it('denies job detail when the job belongs to another project', async () => {
+  it('returns another project’s job detail to an unbound backend-token operator', async () => {
     const progressStore = createProgressStore();
     const backend = await startBackendServer();
 
     createdJobIds.add('93000000-0000-4000-8006-000000000001');
     initTestJob(progressStore, {
       jobId: '93000000-0000-4000-8006-000000000001',
-      projectRoot: '/tmp/other-project',
+      projectRoot: ALTERNATE_PROJECT_ROOT,
       backendNamespace: testBackendNamespace,
-      conversation: testConversationFacet('codex', '/tmp/other-project'),
+      conversation: testConversationFacet('codex', ALTERNATE_PROJECT_ROOT),
     });
 
     const response = await fetch(
@@ -1189,25 +1189,21 @@ describe('execution backend server', () => {
       },
     );
 
-    expect(response.status).toBe(403);
-    expect(await response.json()).toEqual({
-      code: 'scope_mismatch',
-      message: "Jobs are outside the caller's work directory scope",
-      remediation:
-        "Change cwd to the job's work directory, or a directory that contains it, then rerun. Use `coral-cli jobs list --all` to find its work directory, including terminal jobs.",
-      detail: { jobs: ['93000000-0000-4000-8006-000000000001'] },
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      status: { jobId: '93000000-0000-4000-8006-000000000001', workDir: ALTERNATE_PROJECT_ROOT },
     });
   });
 
-  it('answers a cross-project /jobs/wait member with a scope-mismatch disposition and exit 1', async () => {
+  it('streams another project’s job and its work directory to an unbound backend-token operator', async () => {
     const fakeService = createFakeExecutionService();
     const progressStore = createProgressStore();
     createdJobIds.add('93000000-0000-4000-8006-000000000002');
     initTestJob(progressStore, {
       jobId: '93000000-0000-4000-8006-000000000002',
-      projectRoot: '/tmp/other-project',
+      projectRoot: ALTERNATE_PROJECT_ROOT,
       backendNamespace: testBackendNamespace,
-      conversation: testConversationFacet('codex', '/tmp/other-project'),
+      conversation: testConversationFacet('codex', ALTERNATE_PROJECT_ROOT),
     });
 
     const backend = await startBackendServer({
@@ -1229,10 +1225,14 @@ describe('execution backend server', () => {
 
     expect(response.status).toBe(200);
     const body = await response.text();
-    expect(body).toContain('event: disposition');
-    expect(body).toContain('"disposition":"scope-mismatch"');
-    expect(body).toMatch(/event: waiting\n(?:id: .*\n)?data: .*"exitCode":1/);
-    expect(fakeService.waitStream).not.toHaveBeenCalled();
+    const terminal = /event: terminal\n(?:id: .*\n)?data: (.*)/.exec(body)?.[1];
+    expect(terminal).toBeDefined();
+    expect(JSON.parse(terminal!)).toMatchObject({
+      type: 'terminal',
+      jobId: '93000000-0000-4000-8006-000000000002',
+      outsideCwdWorkDir: ALTERNATE_PROJECT_ROOT,
+      exitCode: 1,
+    });
   });
 
   it('rejects /admin/shutdown when only the general backend token is provided', async () => {

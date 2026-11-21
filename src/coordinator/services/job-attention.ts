@@ -38,6 +38,10 @@ export class JobAttention {
     const previousOnAdmission = request.onAdmission;
     const onAdmission = (admission: WaitAdmission): void => {
       if (admission.disposition !== 'admitted' || admission.observationDeferred) return;
+      if (admission.observeOnly) {
+        previousOnAdmission?.(admission);
+        return;
+      }
       const execution = admission.detail?.status.execution;
       if (execution === null || execution === undefined) return;
       const key = this.key(admission.jobId, execution);

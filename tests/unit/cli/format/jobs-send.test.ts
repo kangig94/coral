@@ -127,14 +127,14 @@ it.each([
   'continuation_target_changed',
   'execution_superseded',
   'invalid_request',
-] as const)('preserves detach in the replacement send for %s', (code) => {
+] as const)('preserves stdin in the replacement send for %s', (code) => {
   const output = formatJobSendResult(
     'job-1',
     { state: 'refused', code, reason: 'Not delivered.' },
-    { inputTokens: ['-'], detach: true },
+    { inputTokens: ['-'] },
   );
   expect(output.text.split('\n').filter((line) => line.startsWith('command=coral-cli jobs send'))).toEqual([
-    'command=coral-cli jobs send job-1 -d -i -',
+    'command=coral-cli jobs send job-1 -i -',
   ]);
   expect(output.text).toContain('Pipe the same original input into the command you run.');
 });
@@ -145,15 +145,15 @@ it.each([
   'archive_invalid',
   'profile_mismatch',
   'pre_generation_job',
-] as const)('preserves detach in both fresh-provider commands for %s', (code) => {
+] as const)('preserves input in both fresh-provider commands for %s', (code) => {
   const output = formatJobSendResult(
     'job-1',
     { state: 'refused', code, reason: 'Cannot continue.', workDir },
-    { inputTokens: ['message with spaces'], detach: true },
+    { inputTokens: ['message with spaces'] },
   );
   expect(output.text.split('\n').filter((line) => /^command=coral-cli (codex|claude) /u.test(line))).toEqual([
-    "command=coral-cli codex --work-dir /recorded/workspace -d -i 'message with spaces'",
-    "command=coral-cli claude --work-dir /recorded/workspace -d -i 'message with spaces'",
+    "command=coral-cli codex --work-dir /recorded/workspace -i 'message with spaces'",
+    "command=coral-cli claude --work-dir /recorded/workspace -i 'message with spaces'",
   ]);
 });
 
@@ -345,7 +345,7 @@ it.each(['session_busy', 'execution_finishing'] as const)(
   },
 );
 
-it.each(['running', 'queued'] as const)('identifies execution #2 in a %s detached continuation', (launchState) => {
+it.each(['running', 'queued'] as const)('identifies execution #2 in a %s continuation', (launchState) => {
   const output = formatJobSendResult('job-1', {
     state: 'launched',
     launch: {
@@ -520,7 +520,7 @@ it.each([undefined, null])('reports the unavailable work directory when it is %s
       reason: 'Missing conversation evidence.',
       workDir: recordedWorkDir,
     },
-    { inputTokens: ['../original prompt.txt'], detach: true },
+    { inputTokens: ['../original prompt.txt'] },
   );
   expect(output.exitCode).toBe(1);
   expect(output.text).toContain('recorded work directory is unavailable');
@@ -537,7 +537,6 @@ it('quotes the recorded provider work directory without changing how caller-rela
     provider: 'codex',
     workDir: recordedWorkDir,
     inputTokens,
-    detach: true,
   });
   const values = execFileSync('bash', ['-c', `function coral-cli() { printf '%s\\0' "$PWD" "$@"; }\n${command}`])
     .toString()
@@ -548,7 +547,6 @@ it('quotes the recorded provider work directory without changing how caller-rela
     'codex',
     '--work-dir',
     recordedWorkDir,
-    '-d',
     '--input=../original prompt.txt',
     '--input=--model=literal',
     '--input=$caller-file',

@@ -1,3 +1,4 @@
+import { readProjectionJobAddress } from '../../jobs/projection-row.js';
 import { hintHistoricalHydration } from '../../jobs/historical-reader.js';
 import { join } from 'node:path';
 import { JobAddressing } from '../../jobs/addressing.js';
@@ -47,6 +48,7 @@ export function createCoordinatorRequestPorts(input: {
     {
       epochKey: currentJobEpochKey,
       detail: activeJobDetail,
+      address: (jobId) => readProjectionJobAddress(getProgressStore().getDb(), jobId),
       visitProgress: (_epoch, read) => getProgressStore().visitProgress(read),
       readWaitAdmissions: (jobIds, epochKey, session) =>
         services.getExecutionService(readOnlyInvocationContext).readWaitAdmissions?.(jobIds, epochKey, session) ?? [],

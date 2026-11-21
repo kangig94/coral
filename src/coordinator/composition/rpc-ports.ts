@@ -321,7 +321,7 @@ export function createCoordinatorRpcPorts({
       list: createCoordinatorJobLister(getProgressStore, services.jobAttention, (request) =>
         jobAddressing.admitWait(request),
       ),
-      detail: (jobId) => jobAddressing.detail(jobId),
+      detail: (jobId, callerRoot) => jobAddressing.detail(jobId, callerRoot),
       unknownJobDisposition: () => jobAddressing.unknownJobDisposition(),
       unknownJobCaveat: () => jobAddressing.unknownJobCaveat(),
     },

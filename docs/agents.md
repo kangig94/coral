@@ -54,13 +54,13 @@ These are protocols, not standalone agent files.
 Codex-backed agent launches use the provider route, not a protocol-specific transport:
 
 ```bash
-coral-cli codex architect --work-dir "<path>" -d -i - <<'CORAL_INPUT'
+coral-cli codex architect --work-dir "<path>" -i - <<'CORAL_INPUT'
 <prompt>
 CORAL_INPUT
-coral-cli codex critic --work-dir "<path>" -d -i - <<'CORAL_INPUT'
+coral-cli codex critic --work-dir "<path>" -i - <<'CORAL_INPUT'
 <prompt>
 CORAL_INPUT
-cd "<path>" && coral-cli jobs wait <job-id...> --embed
+cd "<path>" && coral-cli jobs wait <job-id...> --all --embed
 ```
 
 Behavior:
@@ -70,7 +70,7 @@ Behavior:
 3. The provider adapter consumes `instruction` + `systemPrompt` + `prompt`:
    - Claude: system append channel + user prompt
    - Codex: single turn text ordered `systemPrompt` → `instruction` → `prompt` (order is presentation only)
-4. Detached provider launches print `Provider job <jobId> execution #<n> <launchState>`. Detached workflows identify both `workflowId` and `jobId`. `jobs wait --embed` prints the terminal line, any available usage diagnostics, and `Result path: <path>` for that execution's durable `executions/<n>/result.md`. Interrupted waits print a continuation carrying the cursor; preserve it exactly.
+4. Provider launches print `Provider job <jobId> execution #<n> <launchState>`. Workflow launches identify both `workflowId` and `jobId`. Both return after the launch decision and print `command=coral-cli jobs wait <jobId>`. `jobs wait --embed` prints the terminal line, any available usage diagnostics, and `Result path: <path>` for that execution's durable `executions/<n>/result.md`. Interrupted waits print a continuation carrying the cursor; preserve it exactly.
 5. One provider conversation is one job. Workflow stale replacement, later discussion turns, and `jobs send` continuations are sequential executions of that same job; `jobs detail` lists each execution. Workflow atoms and discuss workers use the same job shell and finishing/restore path.
 
 Continued agent executions inherit the stored agent instruction; see [`jobs send` outcomes](./cli-errors.md#jobs-send-outcomes) for the command contract and refusal remedies.
@@ -116,7 +116,7 @@ Create `clients/agents/<name>.md` and route to it through Claude Code's normal a
 Create `clients/agents/<name>.md` and invoke it through the Codex provider surface:
 
 ```bash
-coral-cli codex <name> --work-dir "<path>" -d -i - <<'CORAL_INPUT'
+coral-cli codex <name> --work-dir "<path>" -i - <<'CORAL_INPUT'
 <prompt>
 CORAL_INPUT
 cd "<path>" && coral-cli jobs wait <job> --embed

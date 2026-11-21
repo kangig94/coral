@@ -1,40 +1,25 @@
+import { encodeWaitAllOutcome, type WaitAllOutcome } from './wait-all-outcome.js';
 import { formatRecoveryQuarantineCommand } from './format/backend.js';
 import type { WaitExecutionSelection } from '../jobs/wait/execution-selection.js';
 import { waitCommandPaths } from '../coordinator/handoff-routing/wait-command.js';
-import { performance } from 'node:perf_hooks';
 import { WaitInvocation, WaitInvocationEnded } from './wait-invocation.js';
 import { decodeWaitCursor, WAIT_CURSOR_REPLAY_NOTICE } from '../jobs/wait/cursor.js';
 import { setTimeout as delay } from 'node:timers/promises';
-import type { ChildProcess } from 'node:child_process';
 
 import { BackendToolHttpError } from '../transport/http/errors.js';
-import type { AcceptedLaunchResponse } from '../jobs/launch.js';
 import type { CauseRef } from '../causality/cause-ref.js';
 import type { TerminalOutcome } from '../jobs/outcome.js';
-import type { JobStatus, JobTerminal } from '../jobs/records.js';
+import type { JobStatus } from '../jobs/records.js';
 import { isFinalWaitEvent, type WaitCursor, type WaitStreamEvent } from '../jobs/wait/contract.js';
+import { waitTerminalExitCode } from '../jobs/wait/session.js';
 import { advanceWaitRenderCursor, isWaitHandoverNotice, parseWaitStreamEventValue } from '../jobs/wait/stream-event.js';
-import { HEALTH_TIMEOUT_MS } from '../transport/health.js';
-import { jobsWaitRequest } from '../transport/rpc/jobs.js';
 import { BackendUnreachableError, isTransientStreamError, TransientHttpError } from '../infra/http-errors.js';
-import { assertNever } from '../infra/error-format.js';
-import { raceWithSignal } from '../infra/promise-signal.js';
 import { isRecord } from '../infra/json.js';
 import { IpcRequestTimeout } from '../transport/ipc/client.js';
-import { ensure } from '../transport/ipc/ensure.js';
-import { childPrincipalAuthFromEnv, childPrincipalAuthOptions } from '../transport/ipc/child-principal-auth.js';
-import {
-  HandoffRunError,
-  consumeHandoffRunResult,
-  runHandoff,
-  type HandoffOutcome,
-  type HandoffOperation,
-} from '../coordinator/handoff-routing/runner.js';
-import { formatLaunch, formatWorkflowSlot } from './format/jobs.js';
+import { formatWorkflowSlot } from './format/jobs.js';
 import { openCliCauseRefRenderer } from './cause-renderer.js';
 import { openReadCoralStore, type ReadCoralStoreHandle } from './read-store.js';
 import { errorCodeToExit, WaitResumeError, WaitOutputError } from './errors.js';
-import { renderHandoffNotice, renderHandoffPublicationIncidents } from './handoff-notice.js';
 import { mapWaitSubscriptionError, SOFT_CURSOR_REFUSALS } from './wait-stream-error.js';
 import {
   formatWaitProgress,
@@ -44,35 +29,14 @@ import {
   formatWaitWaiting,
   renderWaitLine,
   waitContinuationCommand,
-  waitContinuationShell,
   type WaitContinuationMode,
   type WaitRenderContext,
 } from './format/wait.js';
 
-/**
- * A bounded wait has to finish inside the Bash tool's hard ceiling, which `clients/hooks/bash-rewrite.mjs`
- * pins at 600_000 ms — otherwise the process is killed at exactly the moment it is writing the final
- * `waiting` line and its resume cursor, and the caller loses both that cursor and the exit code. So the
- * ceiling is the input and the deadline is derived from it, rather than the two happening to differ by ten
- * seconds. The hook cannot import this (hooks stay self-contained), so the ceiling is restated there.
- */
-const BASH_TOOL_TIMEOUT_CEILING_SECONDS = 600;
-const WAIT_FLUSH_MARGIN_SECONDS = 10;
-const FOLLOW_TIMEOUT_SECONDS = BASH_TOOL_TIMEOUT_CEILING_SECONDS - WAIT_FLUSH_MARGIN_SECONDS;
 const TRANSIENT_RETRY_LIMIT = 2;
 const TRANSIENT_RETRY_DELAY_MS = 1_000;
 
 type BackoffScheduler = (delayMs: number) => Promise<void>;
-type ReconnectPolicy = 'bounded' | 'unbounded' | 'until-terminal';
-
-type FollowStart =
-  | Readonly<{ kind: 'launch'; launchResult: AcceptedLaunchResponse }>
-  | Readonly<{
-      kind: 'jobs';
-      jobIds: readonly string[];
-      serializedCursor?: string;
-      executionSelections?: WaitExecutionSelection[];
-    }>;
 
 // `unknown`, not `WaitStreamEvent`: the wire carries whatever the coordinator's build emits, which can be
 // a type this build predates. `followJobs` validates each item through `parseWaitStreamEventValue` before
@@ -81,26 +45,20 @@ type WaitSubscription = AsyncIterable<unknown> & {
   close(): Promise<void>;
 };
 
-type FollowConnection =
-  | Readonly<{ kind: 'subscription'; subscription: WaitSubscription }>
-  | Readonly<{ kind: 'delegated'; outcome: HandoffOutcome }>
-  | Readonly<{ kind: 'fatal-error'; error: unknown }>;
-
 type FollowConnectionRequest = Readonly<{
   jobIds: readonly string[];
   cursor?: WaitCursor;
+  drainProgress?: true;
   executionSelections: WaitExecutionSelection[];
-  timeoutSeconds: number;
-  drainProgress: boolean;
   signal: AbortSignal;
-  /** A delegated child writes its own output, so an interrupt is forwarded to it rather than answered here. */
-  onDelegatedChild: (child: ChildProcess) => void;
 }>;
 
 type FollowJobsOptions = {
-  start: FollowStart;
-  reconnectPolicy: ReconnectPolicy;
-  connect: (request: FollowConnectionRequest) => Promise<FollowConnection>;
+  jobIds: readonly string[];
+  serializedCursor?: string;
+  waitForAll?: boolean;
+  priorOutcome?: WaitAllOutcome;
+  connect: (request: FollowConnectionRequest) => Promise<WaitSubscription>;
   invocation?: WaitInvocation;
   projectRoot: string;
   emitError: (error: unknown) => void;
@@ -111,41 +69,13 @@ type FollowJobsOptions = {
   backoffScheduler?: BackoffScheduler;
 };
 
-type FollowRender = FollowJobsOptions['render'] & { continuationMode: WaitContinuationMode };
-
-type FollowOptions = {
-  launchResult: AcceptedLaunchResponse;
-  pluginRoot: string;
-  projectRoot: string;
-  emitError: (error: unknown) => void;
-  isTTY: boolean;
-  columns: number;
-  backoffScheduler?: BackoffScheduler;
+type FollowRender = FollowJobsOptions['render'] & {
+  continuationMode: WaitContinuationMode;
+  allOutcome?: WaitAllOutcome;
 };
 
 function writeStdout(text: string): void {
   process.stdout.write(text);
-}
-
-function jobIdsFromStart(start: FollowStart): readonly string[] {
-  return start.kind === 'launch' ? [start.launchResult.jobId] : start.jobIds;
-}
-
-function initialExecutionSelections(start: FollowStart): WaitExecutionSelection[] {
-  return start.kind === 'jobs'
-    ? (start.executionSelections ?? [])
-    : [
-        {
-          jobId: start.launchResult.jobId,
-          epochKey: start.launchResult.epochKey,
-          requestedSeq: start.launchResult.requestedSeq,
-          awaitingArtifact: false,
-        },
-      ];
-}
-
-function initialSerializedCursor(start: FollowStart): string | undefined {
-  return start.kind === 'jobs' ? start.serializedCursor : undefined;
 }
 
 /** A wait must not hold the epoch lock that a succession needs. */
@@ -234,6 +164,7 @@ function formatFollowWaitEvent(
         verbose: renderOptions.verbose,
         label: jobLabels?.get(event.jobId)?.terminal,
         continuationMode: renderOptions.continuationMode,
+        allOutcome: renderOptions.allOutcome,
       });
       break;
     case 'interrupted':
@@ -243,7 +174,7 @@ function formatFollowWaitEvent(
       });
       break;
     case 'waiting':
-      line = formatWaitWaiting(event, cursor, resumeJobIds, renderOptions.continuationMode);
+      line = formatWaitWaiting(event, cursor, resumeJobIds, renderOptions.continuationMode, renderOptions.allOutcome);
       break;
   }
 
@@ -274,41 +205,6 @@ function emitWaitEvent(
   });
 }
 
-function toExitCode(result: JobTerminal): number {
-  switch (result.outcome.kind) {
-    case 'aborted':
-    case 'failed':
-    case 'job_fault':
-      return 1;
-    case 'provider_exit':
-      return normalizeExitCode(result.outcome.code);
-    case 'completed':
-      return 0;
-    default:
-      return assertNever(result.outcome);
-  }
-}
-
-function normalizeExitCode(exitCode: number | null | undefined): number {
-  if (exitCode === undefined) {
-    return 0;
-  }
-
-  if (exitCode === null) {
-    return 1;
-  }
-
-  if (!Number.isInteger(exitCode)) {
-    return 1;
-  }
-
-  if (exitCode < 0 || exitCode > 255) {
-    return 1;
-  }
-
-  return exitCode;
-}
-
 async function waitForRetry(signal: AbortSignal, backoffScheduler?: BackoffScheduler): Promise<boolean> {
   try {
     if (backoffScheduler) {
@@ -327,11 +223,6 @@ function fallbackExitCode(): number {
   return typeof process.exitCode === 'number' ? process.exitCode : 1;
 }
 
-function boundedTimeoutSeconds(deadlineMs: number): number {
-  const remaining = Math.max(0, deadlineMs - performance.now());
-  return Math.max(1, Math.floor(remaining / 1000) - 1);
-}
-
 function withWaitRecovery(error: unknown, state: FollowSessionState): unknown {
   const body = error instanceof BackendToolHttpError && isRecord(error.body) ? error.body : null;
   if (!(error instanceof BackendUnreachableError) && body?.code !== 'backend_unreachable') {
@@ -341,75 +232,44 @@ function withWaitRecovery(error: unknown, state: FollowSessionState): unknown {
   const message = body !== null && typeof body.message === 'string' ? body.message : (error as Error).message;
   return new BackendUnreachableError(
     `${message} Run \`coral-cli backend status\` and follow its recovery guidance, then rerun ` +
-      `\`${waitContinuationCommand(state.remainingJobIds, state.currentCursor ?? null, state.continuationMode)}\`` +
-      `${waitContinuationShell(state.continuationMode)} to continue waiting.`,
+      `\`${waitContinuationCommand(state.remainingJobIds, state.currentCursor ?? null, state.continuationMode, continuationOutcome(state))}\`` +
+      ` to continue waiting.`,
   );
 }
 
 type FollowSessionState = {
   readonly continuationMode: WaitContinuationMode;
-  readonly carrierAbsentJobIds: Set<string>;
+  readonly requestJobIds: readonly string[];
+  readonly absentCarriers: Set<string>;
+  allOutcome?: WaitAllOutcome;
   executionSelections: WaitExecutionSelection[];
   currentCursor?: WaitCursor;
   openedCursor?: WaitCursor;
-  lastExitCode?: number;
   remainingJobIds: string[];
   sendCursor: boolean;
   retriesLeft: number;
   hasOpenedSubscription: boolean;
-  interrupted: boolean;
-  continuationPrinted: boolean;
-  delegatedChild?: ChildProcess;
   carrierUnknownJobIds: string[];
 };
 
 type FollowStep = { kind: 'retry' } | { kind: 'exit'; code: number };
 
 async function connectFollowStream(
-  options: FollowJobsOptions,
+  options: FollowContext['options'],
   state: FollowSessionState,
-  controller: AbortController,
-  deadlineMs: number,
-): Promise<FollowStep | { kind: 'connected'; connection: FollowConnection }> {
+): Promise<FollowStep | { kind: 'connected'; subscription: WaitSubscription }> {
   try {
-    return await openFollowConnection(options, state, controller, deadlineMs);
+    return await openFollowConnection(options, state);
   } catch (error) {
-    return recoverFollowConnection(options, state, controller, error);
+    return recoverFollowConnection(options, state, error);
   }
-}
-
-function finishDelegatedFollow(
-  outcome: HandoffOutcome,
-  options: FollowJobsOptions,
-  state: FollowSessionState,
-): FollowStep {
-  if (outcome.kind === 'handoff-success') {
-    renderHandoffNotice(outcome);
-    return { kind: 'exit', code: 0 };
-  }
-  // A delegated wait already ran to its own end; its 75 may be a provider terminal's code, so it is never retried.
-  if (outcome.kind === 'handoff-exit') return { kind: 'exit', code: normalizeExitCode(outcome.exitCode) };
-  if (outcome.signal === 'SIGINT') return { kind: 'exit', code: finishInterruptedFollow(state) };
-  options.emitError(
-    new WaitResumeError(
-      `Delegated wait command ended from signal ${outcome.signal}; the jobs may still be running.`,
-      state.remainingJobIds,
-      state.currentCursor,
-      state.continuationMode,
-    ),
-  );
-  return { kind: 'exit', code: errorCodeToExit('transient') };
 }
 
 type FollowContext = {
-  options: FollowJobsOptions;
+  options: FollowJobsOptions & { invocation: WaitInvocation };
   state: FollowSessionState;
-  controller: AbortController;
   jobLabels: ReturnType<typeof jobLabelsFor>;
   causeRenderer: ReturnType<typeof openCliCauseRefRenderer>;
-  deadlineMs: number;
-  pendingOutput: Set<Promise<void>>;
-  outputFailure: AbortController;
 };
 
 function eventRemainingJobs(event: WaitStreamEvent, current: readonly string[]): string[] {
@@ -420,37 +280,11 @@ function eventRemainingJobs(event: WaitStreamEvent, current: readonly string[]):
   return [...current];
 }
 
-function followOriginalCommand(options: FollowJobsOptions): string {
-  if (options.invocation) return options.invocation.originalCommand;
-  const cursor = initialSerializedCursor(options.start);
-  return `${waitContinuationCommand(jobIdsFromStart(options.start), cursor ?? null, continuationModeFor(options.reconnectPolicy))}${options.render.embed ? ' --embed' : ''}${options.render.verbose ? ' --verbose' : ''}`;
-}
-
-function deliveredFollowExitCode(event: WaitStreamEvent, context: FollowContext): number | undefined {
-  const { options } = context;
-  if (!isFinalWaitEvent(event)) return undefined;
-  // Following a launch ends at its terminal with the outcome's code; a pending artifact is reported, not awaited.
-  if (event.type === 'terminal')
-    return options.reconnectPolicy === 'until-terminal' ? toExitCode(event.result) : event.exitCode;
-  // An empty set is final under either policy, and a refused member makes it a failure that must not read as success.
-  if (options.reconnectPolicy === 'bounded' || event.waitingJobIds.length === 0) return event.exitCode;
-  // A reconnect requests only the waiting jobs and forgets what the cut decided or reported, so an unbounded wait
-  // resumes only past a cut that decided nothing and left nothing unanswered; any other ends it as a bounded wait ends.
-  if (options.reconnectPolicy !== 'unbounded') return undefined;
-  const carrierAbsent = event.waitingJobIds.some((jobId) => context.state.carrierAbsentJobIds.has(jobId));
-  // A null cursor resumes as a fresh read that prints the recent lines again, and a budget cut that left the cursor
-  // where this connection opened serves the same page again with no delay between them.
-  const resumable =
-    event.exitCode === 75 &&
-    !carrierAbsent &&
-    event.cursor !== null &&
-    ((event.endedBy === 'progress-budget' && event.cursor !== context.state.openedCursor) ||
-      (event.endedBy === 'deadline' && (event.carrierUnknownJobIds ?? []).length === 0));
-  return resumable ? undefined : event.exitCode;
-}
-
-function continuationModeFor(policy: ReconnectPolicy): WaitContinuationMode {
-  return policy === 'unbounded' ? 'unbounded' : 'bounded';
+function continuationOutcome(state: FollowSessionState): WaitAllOutcome | undefined {
+  const outcome = state.allOutcome;
+  if (outcome?.kind !== 'terminal') return outcome;
+  const idsBeforeFailure = state.requestJobIds.slice(0, outcome.precedingJobs);
+  return { ...outcome, precedingJobs: state.remainingJobIds.filter((id) => idsBeforeFailure.includes(id)).length };
 }
 
 function foldedContinuation(state: FollowSessionState): string {
@@ -462,105 +296,107 @@ function foldedContinuation(state: FollowSessionState): string {
         type: 'waiting',
         waitingJobIds: remaining,
         ...(unknown.length === 0 ? {} : { carrierUnknownJobIds: unknown }),
+        carrierAbsentJobIds: remaining.filter((id) => state.absentCarriers.has(id)),
       },
       state.currentCursor ?? null,
       remaining,
       state.continuationMode,
+      continuationOutcome(state),
     ) + '\n'
   );
 }
 
-/** Ctrl+C must never abort a job: jobs belong to the backend and outlive this follow, so the cut stays resumable. */
-function finishInterruptedFollow(state: FollowSessionState): number {
-  if (!state.continuationPrinted) writeStdout(foldedContinuation(state));
-  state.continuationPrinted = true;
-  return 75;
-}
-
-async function deliverFollowEvent(event: WaitStreamEvent, context: FollowContext): Promise<void> {
-  const { options, state, jobLabels, causeRenderer } = context;
-  const cursor = state.currentCursor ?? null;
-  state.remainingJobIds = eventRemainingJobs(event, state.remainingJobIds);
-  const remaining = state.remainingJobIds;
-  const savedContinuation = foldedContinuation(state);
-  const renderedEvent =
-    event.type === 'waiting' || event.type === 'terminal'
-      ? { ...event, executionSelections: state.executionSelections }
-      : event;
-  const delivery = emitWaitEvent(
-    renderedEvent,
-    cursor,
-    jobLabels,
-    renderedEvent.type === 'terminal' ? renderedEvent.remainingJobIds : remaining,
-    { ...options.render, continuationMode: state.continuationMode },
-    causeRenderer.render,
-    () => {
-      options.invocation?.saveContinuation(
-        savedContinuation,
-        isFinalWaitEvent(event),
-        true,
-        deliveredFollowExitCode(event, context),
-      );
-    },
-  ).catch((error: unknown) => {
-    throw new WaitOutputError(error, followOriginalCommand(options));
-  });
-  if (options.reconnectPolicy === 'bounded') {
-    await delivery;
-    return;
-  }
-  const pending = delivery
-    .catch((error: unknown) => {
-      context.outputFailure.abort(error);
-      context.controller.abort();
-    })
-    .finally(() => context.pendingOutput.delete(pending));
-  context.pendingOutput.add(pending);
-}
-
 function followEventDecision(event: WaitStreamEvent, context: FollowContext): FollowStep | { kind: 'continue' } {
-  const { state } = context;
+  const { options, state } = context;
+  if (options.waitForAll) {
+    if (event.type === 'terminal') {
+      const code = waitTerminalExitCode(event.result);
+      const precedingJobs = state.requestJobIds.indexOf(event.jobId);
+      if (
+        code !== 0 &&
+        precedingJobs !== -1 &&
+        (state.allOutcome?.kind !== 'terminal' || precedingJobs < state.allOutcome.precedingJobs)
+      )
+        state.allOutcome = { kind: 'terminal', code, precedingJobs };
+    }
+    if (event.type === 'disposition' && event.disposition !== 'unknown') state.allOutcome ??= { kind: 'refused' };
+  }
   if (!isFinalWaitEvent(event)) return { kind: 'continue' };
-  if (event.type === 'terminal') {
-    const exitCode = deliveredFollowExitCode(event, context) ?? 75;
-    if (exitCode !== 0) return { kind: 'exit', code: exitCode };
-    state.remainingJobIds = [...event.remainingJobIds];
-    return { kind: 'exit', code: exitCode };
+  if (state.remainingJobIds.length > 0) {
+    if (event.type === 'terminal' && options.waitForAll) return { kind: 'retry' };
+    if (
+      event.type === 'waiting' &&
+      (event.exitCode === 75 || options.waitForAll) &&
+      ((event.endedBy === 'deadline' &&
+        state.remainingJobIds.every(
+          (id) => !state.absentCarriers.has(id) && !event.carrierUnknownJobIds?.includes(id),
+        )) ||
+        (event.endedBy === 'progress-budget' && event.cursor !== null && event.cursor !== state.openedCursor))
+    )
+      return { kind: 'retry' };
   }
-  if (event.type === 'waiting') {
-    state.remainingJobIds = [...event.waitingJobIds];
-    const code = deliveredFollowExitCode(event, context);
-    return code === undefined ? { kind: 'retry' } : { kind: 'exit', code };
-  }
-  return { kind: 'continue' };
+  const outcome = state.allOutcome;
+  if (outcome?.kind === 'terminal') return { kind: 'exit', code: outcome.code };
+  if (outcome?.kind === 'refused') return { kind: 'exit', code: 1 };
+  return { kind: 'exit', code: event.exitCode };
 }
 
 async function applyFollowStreamEvent(
   event: WaitStreamEvent,
   context: FollowContext,
 ): Promise<FollowStep | { kind: 'continue' }> {
-  const { options, state } = context;
-  options.invocation?.check();
+  const { options, state, jobLabels, causeRenderer } = context;
+  options.invocation.check();
+  state.remainingJobIds = eventRemainingJobs(event, state.remainingJobIds);
   if (event.type === 'interrupted') {
     state.carrierUnknownJobIds = state.carrierUnknownJobIds.filter((id) => id !== event.jobId);
-    state.carrierAbsentJobIds.add(event.jobId);
-  } else if (event.type === 'waiting') state.carrierUnknownJobIds = [...(event.carrierUnknownJobIds ?? [])];
+    state.absentCarriers.add(event.jobId);
+  } else if (event.type === 'terminal') state.absentCarriers.delete(event.jobId);
+  else if (event.type === 'waiting') {
+    state.carrierUnknownJobIds = [...(event.carrierUnknownJobIds ?? [])];
+    if (event.carrierAbsentJobIds !== undefined) {
+      state.absentCarriers.clear();
+      for (const id of event.carrierAbsentJobIds) state.absentCarriers.add(id);
+    }
+  }
   if ('executionSelections' in event && event.executionSelections !== undefined)
     state.executionSelections = event.executionSelections;
-  if ('exitCode' in event && event.exitCode !== undefined) state.lastExitCode = event.exitCode;
-  const decision = advanceWaitRenderCursor(state.currentCursor, event);
-  state.currentCursor = decision.cursor;
+  const { cursor, shouldRender } = advanceWaitRenderCursor(state.currentCursor, event);
+  state.currentCursor = cursor;
   const step = followEventDecision(event, context);
-  if (options.reconnectPolicy === 'unbounded' && step.kind === 'retry') {
-    // A cut this follow resumes past prints nothing, since its continuation would name a wait still open, and it
-    // proves the stream healthy: transient retries bound consecutive failures, not the whole unbounded wait.
+  const continuation = foldedContinuation(state);
+  if (step.kind === 'retry') {
     state.retriesLeft = TRANSIENT_RETRY_LIMIT;
-    return step;
+    if (event.type === 'waiting') {
+      options.invocation.saveContinuation(continuation);
+      return step;
+    }
   }
-  if (decision.shouldRender) await deliverFollowEvent(event, context);
-  // A frame renders nothing, so no delivery saves it, yet a cut before the next rendered event must print it; it is
-  // never saved ahead of a rendered event that is still being written.
-  else if (context.pendingOutput.size === 0) options.invocation?.saveContinuation(foldedContinuation(state));
+  if (shouldRender) {
+    const renderedEvent =
+      step.kind === 'retry' && event.type === 'terminal' ? { ...event, exitCode: undefined } : event;
+    await emitWaitEvent(
+      renderedEvent.type === 'waiting'
+        ? { ...renderedEvent, carrierAbsentJobIds: [...state.absentCarriers] }
+        : renderedEvent,
+      cursor ?? null,
+      jobLabels,
+      state.remainingJobIds,
+      { ...options.render, continuationMode: state.continuationMode, allOutcome: continuationOutcome(state) },
+      causeRenderer.render,
+      () =>
+        options.invocation.saveContinuation(
+          continuation,
+          step.kind === 'exit',
+          true,
+          step.kind === 'exit' ? step.code : undefined,
+        ),
+    ).catch((error: unknown) => {
+      throw new WaitOutputError(error, options.invocation.originalCommand);
+    });
+  } else {
+    options.invocation.saveContinuation(continuation);
+  }
   return step;
 }
 
@@ -568,11 +404,9 @@ async function readFollowSubscription(
   subscription: WaitSubscription,
   context: FollowContext,
 ): Promise<FollowStep | undefined> {
-  const { options, state } = context;
   for await (const raw of subscription) {
-    if (state.interrupted) return { kind: 'exit', code: finishInterruptedFollow(state) };
+    context.options.invocation.check();
     if (isWaitHandoverNotice(raw)) return { kind: 'retry' };
-    options.invocation?.check();
     const event = parseWaitStreamEventValue(raw);
     if (event === null) continue;
     const decision = await applyFollowStreamEvent(event, context);
@@ -582,11 +416,10 @@ async function readFollowSubscription(
 }
 
 async function followReadFailure(error: unknown, context: FollowContext): Promise<FollowStep> {
-  const { options, state, controller } = context;
-  options.invocation?.check();
-  if (state.interrupted) return { kind: 'exit', code: finishInterruptedFollow(state) };
+  const { options, state } = context;
+  options.invocation.check();
   if (error instanceof WaitOutputError) throw error;
-  const handledError = mapWaitSubscriptionError(error, state.continuationMode);
+  const handledError = mapWaitSubscriptionError(error, state.continuationMode, continuationOutcome(state));
   if (
     handledError instanceof BackendToolHttpError &&
     isRecord(handledError.body) &&
@@ -605,327 +438,143 @@ async function followReadFailure(error: unknown, context: FollowContext): Promis
   }
   if (state.retriesLeft === 0) {
     options.emitError(
-      new WaitResumeError(handledError.message, state.remainingJobIds, state.currentCursor, state.continuationMode),
+      new WaitResumeError(
+        handledError.message,
+        state.remainingJobIds,
+        state.currentCursor,
+        state.continuationMode,
+        continuationOutcome(state),
+      ),
     );
     return { kind: 'exit', code: errorCodeToExit('transient') };
   }
   state.retriesLeft -= 1;
-  const shouldRetry = await waitForRetry(controller.signal, options.backoffScheduler);
-  if (state.interrupted) return { kind: 'exit', code: finishInterruptedFollow(state) };
+  const shouldRetry = await waitForRetry(options.invocation.signal, options.backoffScheduler);
   return shouldRetry ? { kind: 'retry' } : { kind: 'exit', code: 1 };
 }
 
-async function closeFollowSubscription(subscription: WaitSubscription, options: FollowJobsOptions): Promise<void> {
-  if (options.invocation?.signal.aborted) void subscription.close().catch(() => undefined);
-  else if (options.invocation) await options.invocation.run(() => subscription.close());
-  else await subscription.close();
-}
-
-async function consumeFollowSubscription(
-  connection: Extract<FollowConnection, { kind: 'subscription' }>,
-  context: FollowContext,
-): Promise<FollowStep> {
+async function consumeFollowSubscription(subscription: WaitSubscription, context: FollowContext): Promise<FollowStep> {
   const { options, state } = context;
   state.hasOpenedSubscription = true;
   try {
-    const decision = await readFollowSubscription(connection.subscription, context);
+    const decision = await readFollowSubscription(subscription, context);
     if (decision) return decision;
   } catch (error) {
     return await followReadFailure(error, context);
   } finally {
-    await closeFollowSubscription(connection.subscription, options);
+    if (options.invocation.signal.aborted) void subscription.close().catch(() => undefined);
+    else await options.invocation.run(() => subscription.close());
   }
-  if (state.interrupted) return { kind: 'exit', code: finishInterruptedFollow(state) };
+  options.invocation.check();
   options.emitError(
     new WaitResumeError(
       'The wait stream ended before a terminal event; the jobs may still be running.',
       state.remainingJobIds,
       state.currentCursor,
       state.continuationMode,
+      continuationOutcome(state),
     ),
   );
   return { kind: 'exit', code: errorCodeToExit('transient') };
 }
 
-function prepareFollowOptions(options: FollowJobsOptions) {
-  const allJobIds = [...jobIdsFromStart(options.start)];
-  const rawCursor = initialSerializedCursor(options.start);
-  const localInvocation = options.reconnectPolicy === 'bounded' && options.invocation === undefined;
-  const invocation =
-    options.invocation ??
-    (localInvocation
-      ? new WaitInvocation('bounded', [
-          'node',
-          'coral-cli',
-          ...waitCommandPaths.current.split(' '),
-          ...allJobIds,
-          ...(rawCursor === undefined ? [] : ['--cursor', rawCursor]),
-          ...(options.render.embed ? ['--embed'] : []),
-          ...(options.render.verbose ? ['--verbose'] : []),
-        ])
-      : undefined);
-  const decoded = rawCursor === undefined ? undefined : decodeWaitCursor(rawCursor);
-  const parsedCursor = decoded?.kind === 'decoded' ? rawCursor : undefined;
-  if (decoded?.kind === 'rejected') writeStdout(`${WAIT_CURSOR_REPLAY_NOTICE}\n`);
-  return { options: { ...options, invocation }, localInvocation, allJobIds, parsedCursor };
-}
-
-function installFollowSignals(context: FollowContext): () => void {
-  const { options, state, controller } = context;
-  const onInvocationEnd = () => controller.abort();
-  const onSigint = () => {
-    if (state.remainingJobIds.length === 0) return;
-    // A delegated child prints its own continuation, and its end is this follow's end, so it is never orphaned.
-    if (state.delegatedChild) state.delegatedChild.kill('SIGINT');
-    // A stop that hangs must still be leavable.
-    else if (state.interrupted) {
-      finishInterruptedFollow(state);
-      process.exit(75);
-    }
-    state.interrupted = true;
-    controller.abort();
-  };
-  // A bounded follow's interrupt belongs to its invocation.
-  const ownsSigint = options.reconnectPolicy !== 'bounded';
-  options.invocation?.signal.addEventListener('abort', onInvocationEnd, { once: true });
-  if (ownsSigint) process.on('SIGINT', onSigint);
-  return () => {
-    options.invocation?.signal.removeEventListener('abort', onInvocationEnd);
-    if (ownsSigint) process.off('SIGINT', onSigint);
-  };
-}
-
-function createFollowContext(prepared: ReturnType<typeof prepareFollowOptions>): FollowContext {
-  const { options, allJobIds, parsedCursor } = prepared;
-  return {
-    options,
-    controller: new AbortController(),
-    jobLabels: null,
-    deadlineMs: performance.now() + (options.invocation?.remainingMs() ?? FOLLOW_TIMEOUT_SECONDS * 1000),
-    causeRenderer: openCliCauseRefRenderer(options.projectRoot),
-    pendingOutput: new Set(),
-    outputFailure: new AbortController(),
-    state: {
-      continuationMode: continuationModeFor(options.reconnectPolicy),
-      carrierAbsentJobIds: new Set(),
-      currentCursor: parsedCursor,
-      executionSelections: initialExecutionSelections(options.start),
-      remainingJobIds: allJobIds,
-      sendCursor: parsedCursor !== undefined,
-      retriesLeft: TRANSIENT_RETRY_LIMIT,
-      hasOpenedSubscription: false,
-      interrupted: false,
-      continuationPrinted: false,
-      carrierUnknownJobIds: [...allJobIds],
-    },
-  };
-}
-
 async function monitorFollowJobs(context: FollowContext): Promise<number> {
-  const { options, state, controller, deadlineMs } = context;
-  options.invocation?.check();
-  context.jobLabels = jobLabelsFor(options.projectRoot, jobIdsFromStart(options.start));
-  options.invocation?.check();
-  while (true) {
-    if (state.interrupted) return finishInterruptedFollow(state);
-    if (state.remainingJobIds.length === 0) return state.lastExitCode ?? 75;
-    options.invocation?.check();
-    const connected = await connectFollowStream(options, state, controller, deadlineMs);
+  const { options, state } = context;
+  options.invocation.check();
+  context.jobLabels = jobLabelsFor(options.projectRoot, options.jobIds);
+  while (state.remainingJobIds.length > 0) {
+    options.invocation.check();
+    const connected = await connectFollowStream(options, state);
     if (connected.kind === 'retry') continue;
     if (connected.kind === 'exit') return connected.code;
-    const { connection } = connected;
-    // A delegated child answers the interrupt with its own continuation, and a second one must not follow it.
-    if (state.interrupted && connection.kind !== 'delegated') return finishInterruptedFollow(state);
-    if (connection.kind === 'subscription' && options.reconnectPolicy === 'bounded') {
-      options.invocation?.saveContinuation(
-        formatWaitWaiting(
-          {
-            type: 'waiting',
-            waitingJobIds: state.remainingJobIds,
-            carrierUnknownJobIds: state.carrierUnknownJobIds,
-          },
-          state.currentCursor ?? null,
-        ) + '\n',
-      );
-    }
-    if (connection.kind === 'fatal-error') {
-      options.emitError(withWaitRecovery(connection.error, state));
-      return fallbackExitCode();
-    }
-    const decision =
-      connection.kind === 'delegated'
-        ? finishDelegatedFollow(connection.outcome, options, state)
-        : await consumeFollowSubscription(connection, context);
-    if (decision.kind === 'retry') continue;
-    return decision.code;
+    options.invocation.saveContinuation(foldedContinuation(state));
+    const decision = await consumeFollowSubscription(connected.subscription, context);
+    if (decision.kind === 'exit') return decision.code;
   }
+  return 75;
 }
 
 export async function followJobs(options: FollowJobsOptions): Promise<number> {
-  const prepared = prepareFollowOptions(options);
-  const context = createFollowContext(prepared);
-  const invocation = context.options.invocation;
-  const removeSignals = installFollowSignals(context);
-  if (options.start.kind === 'launch') writeStdout(formatLaunch(options.start.launchResult) + '\n');
+  const mode = options.waitForAll ? 'all' : 'stream';
+  const rawCursor = options.serializedCursor;
+  const invocation =
+    options.invocation ??
+    new WaitInvocation('stream', [
+      'node',
+      'coral-cli',
+      ...waitCommandPaths.current.split(' '),
+      ...options.jobIds,
+      ...(options.waitForAll ? ['--all'] : []),
+      ...(options.priorOutcome === undefined ? [] : ['--all-outcome', encodeWaitAllOutcome(options.priorOutcome)]),
+      ...(rawCursor === undefined ? [] : ['--cursor', rawCursor]),
+      ...(options.render.embed ? ['--embed'] : []),
+      ...(options.render.verbose ? ['--verbose'] : []),
+    ]);
+  const decoded = rawCursor === undefined ? undefined : decodeWaitCursor(rawCursor);
+  const parsedCursor = decoded?.kind === 'decoded' ? rawCursor : undefined;
+  if (decoded?.kind === 'rejected') writeStdout(`${WAIT_CURSOR_REPLAY_NOTICE}\n`);
+  const context: FollowContext = {
+    options: { ...options, invocation },
+    jobLabels: null,
+    causeRenderer: openCliCauseRefRenderer(options.projectRoot),
+    state: {
+      continuationMode: mode,
+      requestJobIds: options.jobIds,
+      absentCarriers: new Set(),
+      allOutcome: options.priorOutcome,
+      currentCursor: parsedCursor,
+      executionSelections: [],
+      remainingJobIds: [...options.jobIds],
+      sendCursor: parsedCursor !== undefined,
+      retriesLeft: TRANSIENT_RETRY_LIMIT,
+      hasOpenedSubscription: false,
+      carrierUnknownJobIds: [...options.jobIds],
+    },
+  };
   try {
-    const monitorAndFlush = async () => {
-      const code = await monitorFollowJobs(context);
-      await Promise.all(context.pendingOutput);
-      await invocation?.flushOutput();
-      return code;
-    };
-    const run = () =>
-      raceWithSignal(monitorAndFlush(), context.outputFailure.signal, () => {
-        throw context.outputFailure.signal.reason;
-      });
-    return invocation ? await invocation.run(run) : await run();
+    return await invocation.run(() => monitorFollowJobs(context));
   } catch (error: unknown) {
     if (error instanceof WaitOutputError) {
       options.emitError(error);
       return 75;
     }
-    if (!(error instanceof WaitInvocationEnded) || !invocation) throw error;
+    if (!(error instanceof WaitInvocationEnded)) throw error;
     invocation.flushContinuation();
     return invocation.completedExitCode ?? 75;
   } finally {
     context.causeRenderer.close();
-    removeSignals();
-    if (prepared.localInvocation) invocation?.dispose();
+    if (options.invocation === undefined) invocation.dispose();
   }
-}
-
-export async function launchAndFollow(options: FollowOptions): Promise<number> {
-  return followJobs({
-    start: { kind: 'launch', launchResult: options.launchResult },
-    reconnectPolicy: 'until-terminal',
-    projectRoot: options.projectRoot,
-    emitError: options.emitError,
-    render: {
-      isTTY: options.isTTY,
-      columns: options.columns,
-      embed: false,
-      verbose: false,
-    },
-    connect: createLaunchFollowConnection(options),
-    ...(options.backoffScheduler ? { backoffScheduler: options.backoffScheduler } : {}),
-  });
-}
-
-function launchFollowHandoffOperation(
-  jobId: string,
-  request: FollowConnectionRequest,
-): Extract<HandoffOperation, { kind: 'wait-jobs' }> {
-  const { cursor } = request;
-  return {
-    kind: 'wait-jobs',
-    jobId,
-    ...(cursor === undefined ? {} : { serializedCursor: cursor }),
-  };
-}
-
-function followSubscriptionRequest(
-  projectRoot: string,
-  request: FollowConnectionRequest,
-): ReturnType<typeof jobsWaitRequest> {
-  const { jobIds, executionSelections, timeoutSeconds, drainProgress, cursor } = request;
-  return jobsWaitRequest({
-    jobIds,
-    executionSelections,
-    timeoutSeconds,
-    drainProgress,
-    projectRoot,
-    ...(cursor ? { cursor } : {}),
-  });
-}
-
-function createLaunchFollowConnection(options: FollowOptions): FollowJobsOptions['connect'] {
-  const ipcAuthOptions = childPrincipalAuthOptions(childPrincipalAuthFromEnv());
-  return async (request) => {
-    const { signal, timeoutSeconds, onDelegatedChild } = request;
-    const probeStarted = performance.now();
-    let backend;
-    try {
-      backend = await raceWithSignal(ensure('jobs.wait', options.pluginRoot), signal, () => {
-        throw signal.reason;
-      });
-      const result = await runHandoff(launchFollowHandoffOperation(options.launchResult.jobId, request), {
-        pluginRoot: options.pluginRoot,
-        signal,
-        onDelegatedChild,
-        waitProbeRemainingMs: () => Math.max(0, timeoutSeconds * 1000 - (performance.now() - probeStarted)),
-        onSelectionPublicationIncident: (incident) => renderHandoffPublicationIncidents([incident]),
-      });
-      const continuation = consumeHandoffRunResult(result, (incidents) =>
-        renderHandoffPublicationIncidents(incidents.filter((incident) => incident.phase === 'terminal')),
-      );
-      if (continuation.kind === 'delegated') return continuation;
-    } catch (error) {
-      if (error instanceof HandoffRunError) {
-        renderHandoffPublicationIncidents(error.incidents.filter((incident) => incident.phase === 'terminal'));
-        return { kind: 'fatal-error', error: error.originalError };
-      }
-      return { kind: 'fatal-error', error };
-    }
-    return {
-      kind: 'subscription',
-      subscription: await backend.subscribe<unknown>(
-        'jobs.wait',
-        followSubscriptionRequest(options.projectRoot, request),
-        {
-          timeoutMs: HEALTH_TIMEOUT_MS,
-          signal,
-          ...ipcAuthOptions,
-        },
-      ),
-    };
-  };
 }
 
 async function openFollowConnection(
-  options: FollowJobsOptions,
+  options: FollowContext['options'],
   state: FollowSessionState,
-  controller: AbortController,
-  deadlineMs: number,
-): Promise<{ kind: 'connected'; connection: FollowConnection }> {
-  if (options.reconnectPolicy === 'bounded' && deadlineMs - performance.now() <= 1000) {
-    options.invocation?.stop();
-    throw new WaitInvocationEnded();
-  }
+): Promise<{ kind: 'connected'; subscription: WaitSubscription }> {
   const cursor = state.currentCursor;
   state.openedCursor = cursor;
   state.sendCursor = cursor !== undefined;
-  const connection = await options
-    .connect({
-      drainProgress: options.reconnectPolicy === 'until-terminal',
-      jobIds: state.remainingJobIds,
-      executionSelections: state.executionSelections,
-      ...(cursor === undefined ? {} : { cursor }),
-      timeoutSeconds:
-        options.reconnectPolicy === 'bounded' ? boundedTimeoutSeconds(deadlineMs) : FOLLOW_TIMEOUT_SECONDS,
-      signal: controller.signal,
-      onDelegatedChild: (child) => {
-        state.delegatedChild = child;
-        if (state.interrupted) child.kill('SIGINT');
-      },
-    })
-    .finally(() => {
-      state.delegatedChild = undefined;
-    });
-  options.invocation?.check();
-  return { kind: 'connected', connection };
+  const subscription = await options.connect({
+    jobIds: state.remainingJobIds,
+    executionSelections: state.executionSelections,
+    ...(options.waitForAll ? { drainProgress: true } : {}),
+    ...(cursor === undefined ? {} : { cursor }),
+    signal: options.invocation.signal,
+  });
+  if (options.invocation.signal.aborted) {
+    void subscription.close().catch(() => undefined);
+    options.invocation.check();
+  }
+  return { kind: 'connected', subscription };
 }
 
 async function recoverFollowConnection(
-  options: FollowJobsOptions,
+  options: FollowContext['options'],
   state: FollowSessionState,
-  controller: AbortController,
   error: unknown,
 ): Promise<FollowStep> {
-  options.invocation?.check();
-  if (state.interrupted) {
-    return { kind: 'exit', code: finishInterruptedFollow(state) };
-  }
-  const handledError = mapWaitSubscriptionError(error, state.continuationMode);
+  options.invocation.check();
+  const handledError = mapWaitSubscriptionError(error, state.continuationMode, continuationOutcome(state));
   const cursorRecovery = recoverFollowCursor(handledError, options, state);
   if (cursorRecovery !== null) return cursorRecovery;
   if (!(handledError instanceof Error) || !isTransientStreamError(handledError)) {
@@ -934,10 +583,7 @@ async function recoverFollowConnection(
   }
   if (state.retriesLeft === 0) return exhaustedFollowConnection(handledError, options, state);
   state.retriesLeft -= 1;
-  const shouldRetry = await waitForRetry(controller.signal, options.backoffScheduler);
-  if (state.interrupted) {
-    return { kind: 'exit', code: finishInterruptedFollow(state) };
-  }
+  const shouldRetry = await waitForRetry(options.invocation.signal, options.backoffScheduler);
   return shouldRetry ? { kind: 'retry' } : { kind: 'exit', code: 1 };
 }
 
@@ -961,7 +607,13 @@ function recoverFollowCursor(error: unknown, options: FollowJobsOptions, state: 
 function exhaustedFollowConnection(error: Error, options: FollowJobsOptions, state: FollowSessionState): FollowStep {
   if (state.hasOpenedSubscription || error instanceof TransientHttpError || error instanceof IpcRequestTimeout) {
     options.emitError(
-      new WaitResumeError(error.message, state.remainingJobIds, state.currentCursor, state.continuationMode),
+      new WaitResumeError(
+        error.message,
+        state.remainingJobIds,
+        state.currentCursor,
+        state.continuationMode,
+        continuationOutcome(state),
+      ),
     );
     return { kind: 'exit', code: errorCodeToExit('transient') };
   }

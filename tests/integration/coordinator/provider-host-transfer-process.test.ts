@@ -220,7 +220,7 @@ async function startProxiedJob(world: TransferWorld): Promise<
   });
   coordinators.push(old);
   const incumbent = await waitForDiscoveryRecord(world.home, 'prod', 15_000);
-  const jobId = launchedJobId(await runCli(oldFixture, world, ['codex', '-i', world.prompt, '--detach']));
+  const jobId = launchedJobId(await runCli(oldFixture, world, ['codex', '-i', world.prompt]));
   await waitForCondition(() => existsSync(join(world.state, 'job-running')), 60_000);
   let found: ReturnType<typeof readOnlyCapsule> = null;
   await waitForCondition(() => (found = readOnlyCapsule(world.home)) !== null, 30_000);

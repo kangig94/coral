@@ -185,7 +185,7 @@ describe('command client routing', () => {
     ['jobs', 'wait'],
     ['wait', 'jobs'],
   ])('attaches the invocation to the %s %s subscription', async (group, verb) => {
-    const invocation = new WaitInvocation('bounded', ['node', 'coral-cli', group, verb, 'a'], { now: () => 0 });
+    const invocation = new WaitInvocation('stream', ['node', 'coral-cli', group, verb, 'a'], { now: () => 0 });
     installWaitInvocation(invocation);
     const subscription = { events: [], close: vi.fn() };
     mockState.subscribe.mockResolvedValue(subscription);

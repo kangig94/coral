@@ -5,6 +5,7 @@ import type { ContinuitySnapshot } from '../conversation/continuity.js';
 import type { JobProgressTiming } from '../event-bodies.js';
 import type { JobPhase } from '../phase.js';
 import type { ResultAvailability } from '../terminal/export.js';
+import type { OperatorJobReadScopeExemption } from '../scope.js';
 import type { WaitAdmission } from './session.js';
 import type { UsageSummary } from '../../providers/contract.js';
 
@@ -29,6 +30,8 @@ export interface WaitStreamRequest extends WaitRequest {
   executionSelections?: WaitExecutionSelection[];
   abortSignal?: AbortSignal;
   drainProgress?: boolean;
+  outsideCwdJobRead?: OperatorJobReadScopeExemption;
+  observeOnlyJobIds?: ReadonlySet<string>;
   admissions?: WaitAdmission[];
   onAdmission?: (admission: WaitAdmission) => void;
 }
@@ -70,6 +73,7 @@ type TerminalWaitEvent = {
   result: JobTerminal;
   continuity?: ContinuitySnapshot | null;
   usage?: UsageSummary;
+  outsideCwdWorkDir?: string;
 };
 /** A null cursor resumes as a fresh collection. */
 type Final = { cursor: WaitCursor | null; exitCode: number; executionSelections?: WaitExecutionSelection[] };
@@ -104,7 +108,13 @@ export type WaitStreamEvent =
   | (TerminalBlock & Final)
   | TerminalBlock
   | CarrierInterruptedWaitEvent
-  | (Final & { type: 'waiting'; waitingJobIds: string[]; carrierUnknownJobIds?: string[]; endedBy?: WaitEndedBy });
+  | (Final & {
+      type: 'waiting';
+      waitingJobIds: string[];
+      carrierUnknownJobIds?: string[];
+      carrierAbsentJobIds?: string[];
+      endedBy?: WaitEndedBy;
+    });
 
 export function isFinalWaitEvent(event: WaitStreamEvent): event is Extract<WaitStreamEvent, Final> {
   return 'exitCode' in event && event.exitCode !== undefined;

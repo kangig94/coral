@@ -172,7 +172,7 @@ describe('session job guard', () => {
       vi.stubEnv('COPILOT_PLUGIN_ROOT', host === 'copilot' ? root : '');
       expect(await stop()).toEqual({
         decision: 'block',
-        reason: `2 Coral job(s) launched in this session are still running with no wait attached. Run ${plainWait('job-1', 'job-2')} to wait for them.`,
+        reason: `2 Coral job(s) launched in this session are still running with no wait attached. Run ${plainWait('job-1', 'job-2')} --all to wait for them.`,
       });
       expect(state.exec).toHaveBeenCalledWith(
         expect.stringMatching(/clients\/bridge\/coral-cli$/),
@@ -194,7 +194,7 @@ describe('session job guard', () => {
       ]),
     );
     expect((await stop())?.reason).toBe(
-      `3 Coral job(s) launched in this session are still running with no wait attached. Run each command below separately to wait for them:\ncd '/other'\\''s project' && ${plainWait('job-1', 'job-3')}\ncd '/third-project' && ${plainWait('job-2')}`,
+      `3 Coral job(s) launched in this session are still running with no wait attached. Run each command below separately to wait for them:\ncd '/other'\\''s project' && ${plainWait('job-1', 'job-3')} --all\ncd '/third-project' && ${plainWait('job-2')}`,
     );
   });
 
@@ -209,7 +209,7 @@ describe('session job guard', () => {
       ]),
     );
     expect((await stop())?.reason).toBe(
-      `4 Coral job(s) launched in this session are still running with no wait attached. Run each command below separately to wait for them:\n${plainWait('job-here', 'job-child', 'job-kb')}\ncd '/other-project' && ${plainWait('job-other')}`,
+      `4 Coral job(s) launched in this session are still running with no wait attached. Run each command below separately to wait for them:\n${plainWait('job-here', 'job-child', 'job-kb')} --all\ncd '/other-project' && ${plainWait('job-other')}`,
     );
   });
 
@@ -236,7 +236,10 @@ describe('session job guard', () => {
 
   it('session job guard: allows repeated stops for subsets of the blocked set until a wait runs', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(100);
-    expect((await stop())?.decision).toBe('block');
+    expect(await stop()).toMatchObject({
+      decision: 'block',
+      reason: expect.stringContaining('coral-cli jobs wait job-1 job-2 --all'),
+    });
     expect(await stop()).toBeNull();
     state.exec.mockReturnValue(JSON.stringify([job('job-2'), job('job-1')]));
     expect(await stop()).toBeNull();
@@ -251,7 +254,7 @@ describe('session job guard', () => {
       tool_name: 'Bash',
       session_id: 'session-1',
       cwd: root,
-      tool_input: { command: 'coral-cli jobs wait job-1 job-2' },
+      tool_input: { command: 'coral-cli jobs wait job-1 job-2 --all' },
     };
     // @ts-expect-error — hooks are self-contained ESM without declarations.
     await import('../../../clients/hooks/bash-rewrite.mjs');

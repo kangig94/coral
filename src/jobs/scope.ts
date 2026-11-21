@@ -4,6 +4,10 @@ import type { JobKind } from './records.js';
 // Explicitly naming a job id permits containment; ambient selection requires equality.
 export type JobScopeRelation = 'contains' | 'exact';
 
+declare const operatorJobReadScopeExemptionBrand: unique symbol;
+
+export type OperatorJobReadScopeExemption = symbol & { readonly [operatorJobReadScopeExemptionBrand]: true };
+
 export type ScopeCheckResult = {
   valid: string[];
   missing: string[];

@@ -37,7 +37,24 @@ function tokensInvokeCoral(tokens, wait = false) {
 }
 
 function isCoralCommandWord(tokens, index, wait) {
-  return tokens[index].raw === 'coral-cli' && (!wait || tokens[index + 1]?.raw === 'wait');
+  if (tokens[index].raw === 'timeout' || tokens[index].raw === 'gtimeout') return isTimedCoralWait(tokens, index + 1);
+  return tokens[index].raw === 'coral-cli' && (!wait || isWaitCommand(tokens, index));
+}
+
+function isWaitCommand(tokens, index) {
+  return (
+    (tokens[index + 1]?.raw === 'jobs' && tokens[index + 2]?.raw === 'wait') ||
+    (tokens[index + 1]?.raw === 'wait' && tokens[index + 2]?.raw === 'jobs')
+  );
+}
+
+function isTimedCoralWait(tokens, index) {
+  const duration = tokens[index]?.raw === '--preserve-status' ? index + 1 : index;
+  return (
+    /^\d+(?:\.\d+)?[smhd]?$/.test(tokens[duration]?.raw ?? '') &&
+    tokens[duration + 1]?.raw === 'coral-cli' &&
+    isWaitCommand(tokens, duration + 1)
+  );
 }
 
 export function isCoralOnlyCommand(text) {
@@ -72,6 +89,7 @@ function isCoralSegment(tokens) {
   const { words, redirected } = segment;
   while (words[0]?.raw.startsWith('CORAL_OWNER=')) words.shift();
   if (words[0]?.raw === 'coral-cli') return true;
+  if (words[0]?.raw === 'timeout' || words[0]?.raw === 'gtimeout') return isTimedCoralWait(words, 1);
   return !redirected && words[0]?.raw === 'cd' && words.length === 2;
 }
 

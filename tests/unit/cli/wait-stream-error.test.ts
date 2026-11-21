@@ -106,7 +106,7 @@ it('renders a typed fresh-wait remedy through the final CLI error envelope', asy
   });
 });
 
-it.each(['snapshot', 'unbounded'] as const)(
+it.each(['snapshot', 'all'] as const)(
   'keeps %s in fresh-wait remedies for HTTP and subscription refusals',
   async (mode) => {
     const { buildErrorEnvelope } = await import('#src/cli/errors.js');
@@ -119,7 +119,7 @@ it.each(['snapshot', 'unbounded'] as const)(
       const { envelope } = buildErrorEnvelope(mapWaitSubscriptionError(raw, mode));
       expect(envelope.message).toBe(body.message);
       expect(envelope.remediation).toBe(
-        `Run coral-cli jobs wait a --${mode}${mode === 'unbounded' ? ' in a background shell' : ''} to admit a fresh wait. Already-delivered results may print again.`,
+        `Run coral-cli jobs wait a --${mode} to admit a fresh wait. Already-delivered results may print again.`,
       );
     }
   },

@@ -11,8 +11,8 @@ it.each([undefined, '', '0', 'true', '1'])(
     vi.stubEnv(CLI_HANDOFF_GUARD_ENV, guard);
     const prefix = guard === '1' ? 'coral-cli wait jobs' : 'coral-cli jobs wait';
     expect(waitContinuationCommand(['a', 'b'], '7', 'snapshot')).toBe(`${prefix} a b --snapshot --cursor 7`);
-    expect(waitContinuationCommand(['a'], null, 'bounded')).toBe(`${prefix} a`);
-    expect(waitContinuationCommand(['a'], '8', 'unbounded')).toBe(`${prefix} a --unbounded --cursor 8`);
+    expect(waitContinuationCommand(['a'], null, 'stream')).toBe(`${prefix} a`);
+    expect(waitContinuationCommand(['a'], '8', 'all')).toBe(`${prefix} a --all --cursor 8`);
     expect(renderJobsOperatorCommand({ kind: 'wait-job', jobId: 'a' })).toBe(`${prefix} a`);
   },
 );

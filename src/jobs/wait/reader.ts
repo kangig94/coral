@@ -37,7 +37,7 @@ type DeliveryState = {
 
 type FinalPayload =
   | Omit<Extract<WaitStreamEvent, { type: 'terminal' }>, 'cursor' | 'exitCode'>
-  | { type: 'waiting'; waitingJobIds: string[]; carrierUnknownJobIds?: string[]; endedBy: WaitEndedBy };
+  | Omit<Extract<WaitStreamEvent, { type: 'waiting' }>, 'cursor' | 'exitCode'>;
 
 function finalWaitEvent(session: WaitSession, payload: FinalPayload): WaitStreamEvent {
   return {
@@ -50,10 +50,16 @@ function finalWaitEvent(session: WaitSession, payload: FinalPayload): WaitStream
 
 function waitingEvent(session: WaitSession, endedBy: WaitEndedBy): WaitStreamEvent {
   const unknown = session.unknownCarriers();
+  const coverage = session.carrierCoverage();
   return finalWaitEvent(session, {
     type: 'waiting',
     waitingJobIds: session.remaining(),
     ...(unknown.length ? { carrierUnknownJobIds: unknown } : {}),
+    carrierAbsentJobIds: session.admissions
+      .filter(
+        (job) => job.disposition === 'admitted' && !job.detail?.exit && coverage.get(job.jobId)?.kind === 'absent',
+      )
+      .map((job) => job.jobId),
     endedBy,
   });
 }
@@ -278,6 +284,13 @@ function* admissionEvents(session: WaitSession, state: DeliveryState): Generator
     yield { type: 'disposition', jobId: job.jobId, disposition: job.disposition, message: job.message };
   }
   for (const job of session.admissions) {
+    if (job.outsideCwdWorkDir === undefined || job.detail?.exit) continue;
+    const message = `Job ${job.jobId} · Work dir: ${JSON.stringify(job.outsideCwdWorkDir)}`;
+    if (state.notices.has(message)) continue;
+    state.notices.add(message);
+    yield { type: 'notice', message };
+  }
+  for (const job of session.admissions) {
     const status = job.detail?.status.finishingStatus;
     if (status === undefined) continue;
     const message = `Execution ${job.jobId}#${job.detail?.status.execution} is finishing: ${status.kind}; ${status.reason}; successor=${status.successor}.`;
@@ -325,6 +338,7 @@ function terminalEvent(
     type: 'terminal' as const,
     cursor: session.cursor(),
     jobId: job.jobId,
+    ...(job.outsideCwdWorkDir === undefined ? {} : { outsideCwdWorkDir: job.outsideCwdWorkDir }),
     ...(typeof job.detail?.status.execution === 'number' ? { execution: job.detail.status.execution } : {}),
     seq: job.detail?.terminalSeq ?? job.detail?.status.lastSeq ?? 0,
     result: { content, outcome, durationMs },

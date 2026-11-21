@@ -379,7 +379,7 @@ describe('handoff-routing/runner', () => {
         const result = runHandoff(cliOperation('jobs', 'wait', 'a'), {
           pluginRoot: '/plugin/root',
           waitInvocation: {
-            mode: 'bounded',
+            mode: 'stream',
             signal: controller.signal,
             originalCommand: 'coral-cli jobs wait a',
             remainingMs: () => 10000,
@@ -399,7 +399,7 @@ describe('handoff-routing/runner', () => {
         expect(vi.mocked(child.kill).mock.calls.map(([signal]) => signal)).toEqual(
           liveness === 'alive' ? ['SIGTERM', 'SIGKILL'] : ['SIGTERM'],
         );
-        await expect(result).rejects.toThrow('could not be observed within the invocation budget');
+        await expect(result).rejects.toThrow('could not be observed before the readiness deadline');
         expect(mockState.spawn).not.toHaveBeenCalled();
         observe.mockRestore();
         vi.useRealTimers();
@@ -605,6 +605,27 @@ describe('handoff-routing/runner', () => {
   });
 });
 
+it('refuses to delegate a streaming wait to a v1 monitor', async () => {
+  mockState.execFile.mockImplementation((_file, _args, _options, callback) => {
+    queueMicrotask(() => callback(null, JSON.stringify({ version: 1, monitorOnly: true })));
+    return childThatExits(0, null);
+  });
+  await expect(
+    runHandoffResult(cliOperation('jobs', 'wait', 'a'), {
+      pluginRoot: '/plugin/root',
+      waitInvocation: {
+        mode: 'stream',
+        signal: new AbortController().signal,
+        originalCommand: 'coral-cli jobs wait a',
+        remainingMs: () => undefined,
+        cleanupRemainingMs: () => 1000,
+        saveContinuation: vi.fn(),
+      },
+    }),
+  ).rejects.toBeInstanceOf(WaitBuildMismatchError);
+  expect(mockState.spawn).not.toHaveBeenCalled();
+});
+
 it('refuses a wait whose newer target fails the wait contract probe, writing no shared routing record', async () => {
   mockState.execFile.mockImplementation((_file, _args, _options, callback) => {
     queueMicrotask(() => callback(Object.assign(new Error('unsupported contract'), { code: 2 }), ''));
@@ -613,7 +634,7 @@ it('refuses a wait whose newer target fails the wait contract probe, writing no 
   const result = runHandoffResult(cliOperation('jobs', 'wait', 'a'), {
     pluginRoot: '/plugin/root',
     waitInvocation: {
-      mode: 'bounded',
+      mode: 'stream',
       signal: new AbortController().signal,
       originalCommand: 'coral-cli jobs wait a',
       remainingMs: () => 10000,
@@ -631,7 +652,10 @@ it('refuses a wait whose newer target fails the wait contract probe, writing no 
   expect(mockState.publishGenerationCoordinatedHandoffRoutingTransitions).not.toHaveBeenCalled();
 });
 
-it.each([1, 2])('accepts contract version %s and keeps the monitor IPC listener through close', async (version) => {
+it.each([
+  ['snapshot', 1],
+  ['stream', 2],
+] as const)('delegates a %s monitor with contract v%s and listens through close', async (mode, version) => {
   const save = vi.fn();
   mockState.execFile.mockImplementation((_file, _args, _options, callback) => {
     queueMicrotask(() => callback(null, JSON.stringify({ version, monitorOnly: true })));
@@ -659,14 +683,17 @@ it.each([1, 2])('accepts contract version %s and keeps the monitor IPC listener 
   await runHandoff(cliOperation('jobs', 'wait', 'a'), {
     pluginRoot: '/plugin/root',
     waitInvocation: {
-      mode: 'bounded',
+      mode,
       signal: new AbortController().signal,
       originalCommand: 'coral-cli jobs wait a',
-      remainingMs: () => 5000,
+      remainingMs: () => (mode === 'snapshot' ? 5000 : undefined),
       cleanupRemainingMs: () => 5000,
       saveContinuation: save,
     },
   });
+  expect(JSON.parse(mockState.spawn.mock.calls[0][2].env.CORAL_WAIT_INVOCATION_CONTEXT)).toEqual(
+    mode === 'snapshot' ? { mode, remainingMs: 5000, cleanupMs: 0 } : { mode },
+  );
   expect(save).toHaveBeenCalledExactlyOnceWith('exact continuation', true, true, 42);
 });
 
@@ -679,7 +706,7 @@ it('refuses a wait routed to a released CLI without the contract flag before any
   const result = runHandoff(cliOperation('jobs', 'wait', 'a'), {
     pluginRoot: '/plugin/root',
     waitInvocation: {
-      mode: 'bounded',
+      mode: 'stream',
       signal: new AbortController().signal,
       originalCommand: 'coral-cli jobs wait a',
       remainingMs: () => 5000,
@@ -701,58 +728,4 @@ it('refuses a wait routed to a released CLI without the contract flag before any
   });
   expect(mockState.execFile).not.toHaveBeenCalled();
   expect(mockState.spawn).toHaveBeenCalledOnce();
-});
-
-it('uses the remaining launch-follow invocation budget for its contract probe', async () => {
-  vi.useFakeTimers();
-  const probeChild = childThatStaysAlive();
-  probeChild.kill = vi.fn(() => true);
-  const started = deferred();
-  mockState.execFile.mockImplementation((_file, _args, _options, callback) => {
-    setTimeout(() => callback(null, JSON.stringify({ version: 1, monitorOnly: true })), 1500);
-    started.resolve();
-    return probeChild;
-  });
-  mockState.spawn.mockImplementation(() => childThatExits(0, null));
-  const result = runHandoff(
-    { kind: 'wait-jobs', jobId: 'a', serializedCursor: 'AA' },
-    {
-      pluginRoot: '/plugin/root',
-      waitProbeRemainingMs: () => 4200,
-    },
-  );
-  void result.catch(() => undefined);
-  await started.promise;
-  (runtime.time as VirtualTime).tick(1500);
-  await vi.advanceTimersByTimeAsync(1500);
-  expect(probeChild.kill).not.toHaveBeenCalled();
-  await expect(result).resolves.toMatchObject({ kind: 'delegated', outcome: { kind: 'handoff-success' } });
-});
-
-it('delegates a launch follow as a jobs wait invocation carrying its cursor, and hands the caller its child', async () => {
-  mockState.execFile.mockImplementation((_file, _args, _options, callback) => {
-    queueMicrotask(() => callback(null, JSON.stringify({ version: 1, monitorOnly: true })));
-    return childThatExits(0, null);
-  });
-  const children: unknown[] = [];
-  mockState.spawn.mockImplementation(() => {
-    const child = childThatExits(75, null);
-    children.push(child);
-    return child;
-  });
-  const onDelegatedChild = vi.fn();
-  const result = runHandoff(
-    { kind: 'wait-jobs', jobId: 'a', serializedCursor: 'saved-cursor' },
-    { pluginRoot: '/plugin/root', waitProbeRemainingMs: () => 10_000, onDelegatedChild },
-  );
-  await expect(result).resolves.toMatchObject({ kind: 'delegated', outcome: { kind: 'handoff-exit', exitCode: 75 } });
-  expect(mockState.spawn).toHaveBeenCalledOnce();
-  expect(mockState.spawn.mock.calls[0][1].slice(1)).toEqual(['jobs', 'wait', 'a', '--cursor', 'saved-cursor']);
-  expect(mockState.spawn.mock.calls[0][2].stdio).toBe('inherit');
-  expect(onDelegatedChild).toHaveBeenCalledExactlyOnceWith(children[0]);
-  await runHandoff(
-    { kind: 'wait-jobs', jobId: 'a' },
-    { pluginRoot: '/plugin/root', waitProbeRemainingMs: () => 10_000 },
-  );
-  expect(mockState.spawn.mock.calls[1][1].slice(1)).toEqual(['jobs', 'wait', 'a']);
 });

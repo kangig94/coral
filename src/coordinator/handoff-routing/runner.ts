@@ -1,10 +1,10 @@
 import { withCoordinatorLog } from '../../infra/coordinator-log.js';
-import { waitCommandPaths, waitCommandPrefix } from './wait-command.js';
 import {
   WaitBuildMismatchError,
   WaitInvocationReadinessError,
   WAIT_INVOCATION_CONTEXT_ENV,
   WAIT_INVOCATION_CONTRACT_ARGUMENT,
+  WAIT_INVOCATION_CONTRACT,
   type WaitInvocationHandoff,
 } from './wait-invocation.js';
 import { isRecord } from '../../infra/json.js';
@@ -75,6 +75,7 @@ import { CLI_HANDOFF_GUARD_ENV } from './wait-invocation.js';
 // is not a wire timeout and must not be retuned to track one — and could not be shared with one in any case,
 // since this module may reach the transport layer only at its IPC seam.
 const INCUMBENT_HEALTH_PROBE_TIMEOUT_MS = 3_000;
+const WAIT_CONTRACT_PROBE_TIMEOUT_MS = 30_000;
 const STDOUT_HANDOFF_DRAIN_TIMEOUT_MS = 3_000;
 const BACKEND_STARTUP_LIVENESS_CONFIRMATION_MS = 100;
 
@@ -87,15 +88,6 @@ const handoffOperationSchema = z.discriminatedUnion('kind', [
     .object({
       kind: z.literal('cli-invocation'),
       argv: z.array(z.string()).min(2),
-    })
-    .strict(),
-  z
-    .object({
-      kind: z.literal('wait-jobs'),
-      jobId: z.string().min(1),
-      // Opaque here on purpose: the caller already holds the serialized cursor, and decoding it would make
-      // this coordinator module depend on the jobs domain's wait vocabulary just to re-encode the same string.
-      serializedCursor: z.string().min(1).optional(),
     })
     .strict(),
   z.object({ kind: z.literal('backend-startup') }).strict(),
@@ -146,7 +138,6 @@ type LiveIncumbentReading =
 
 export type HandoffOperation =
   | Readonly<{ kind: 'cli-invocation'; argv: readonly string[] }>
-  | Readonly<{ kind: 'wait-jobs'; jobId: string; serializedCursor?: string }>
   | Readonly<{ kind: 'backend-startup' }>;
 
 export type HandoffSuccess = Readonly<{
@@ -337,11 +328,8 @@ export type RunHandoffOptions = Readonly<{
   time?: TimePort;
   signal?: AbortSignal;
   waitInvocation?: WaitInvocationHandoff;
-  waitProbeRemainingMs?: () => number;
   activeSelectionTarget?: ValidatedHandoffTarget;
   onSelectionPublicationIncident?: (incident: HandoffPublicationIncident) => void;
-  /** Hands the caller a delegated CLI child it must interrupt itself, since its stdio is the caller's own. */
-  onDelegatedChild?: (child: ChildProcess) => void;
 }>;
 
 export type ChildEnding = Readonly<{
@@ -848,12 +836,6 @@ function delegatedArguments(operation: HandoffOperation): readonly string[] {
   switch (operation.kind) {
     case 'cli-invocation':
       return operation.argv.slice(2);
-    case 'wait-jobs':
-      return [
-        ...waitCommandPaths.current.split(' '),
-        operation.jobId,
-        ...(operation.serializedCursor === undefined ? [] : ['--cursor', operation.serializedCursor]),
-      ];
     case 'backend-startup':
       return [];
   }
@@ -1222,7 +1204,7 @@ async function recordTerminal(
 
 function supportsWaitInvocation(
   target: string,
-  invocation: Pick<WaitInvocationHandoff, 'signal' | 'remainingMs' | 'cleanupRemainingMs'>,
+  invocation: WaitInvocationHandoff,
   runtime: Runtime,
 ): Promise<boolean | null> {
   try {
@@ -1251,7 +1233,7 @@ function supportsWaitInvocation(
             isRecord(contract) &&
               typeof contract.version === 'number' &&
               Number.isInteger(contract.version) &&
-              contract.version >= 1 &&
+              contract.version >= (invocation.mode === 'stream' ? WAIT_INVOCATION_CONTRACT.version : 1) &&
               contract.monitorOnly === true,
           );
         } catch {
@@ -1280,7 +1262,10 @@ function supportsWaitInvocation(
       if ('settlement' in termination) void termination.settlement.then(() => finish(null));
       else finish(null);
     };
-    const timeout = runtime.time.setTimeout(cancel, Math.max(1, Math.ceil(invocation.remainingMs())));
+    const timeout = runtime.time.setTimeout(
+      cancel,
+      Math.max(1, Math.ceil(invocation.remainingMs() ?? WAIT_CONTRACT_PROBE_TIMEOUT_MS)),
+    );
     invocation.signal.addEventListener('abort', cancel, { once: true });
     if (invocation.signal.aborted) cancel();
   });
@@ -1357,7 +1342,6 @@ async function executeResolvedHandoff(
   signal: AbortSignal | undefined,
   executionPhase: { current: ExecutionThrowPhase },
   waitInvocation?: WaitInvocationHandoff,
-  onDelegatedChild?: (child: ChildProcess) => void,
 ): Promise<HandoffContinuationResult> {
   switch (routing.kind) {
     case 'continue-current':
@@ -1418,7 +1402,14 @@ async function executeResolvedHandoff(
                 [WAIT_INVOCATION_CONTEXT_ENV]: JSON.stringify({
                   mode: waitInvocation.mode,
                   remainingMs: waitInvocation.remainingMs(),
-                  cleanupMs: Math.max(0, waitInvocation.cleanupRemainingMs() - waitInvocation.remainingMs()),
+                  ...(waitInvocation.mode === 'snapshot'
+                    ? {
+                        cleanupMs: Math.max(
+                          0,
+                          waitInvocation.cleanupRemainingMs() - (waitInvocation.remainingMs() ?? 0),
+                        ),
+                      }
+                    : {}),
                 }),
               }),
           ...(startup === undefined ? {} : { CORAL_STARTUP_ATTEMPT_ID: startup.expectedAttemptId }),
@@ -1448,7 +1439,6 @@ async function executeResolvedHandoff(
           : spawn(process.execPath, childArguments, spawnOptions);
       const childObservation = observeChild(child);
       if (waitInvocation !== undefined) bindMonitorChild(child, childObservation, waitInvocation, runtime);
-      else if (startup === undefined) onDelegatedChild?.(child);
       await childObservation.spawned;
       executionPhase.current = 'child-outcome-wait';
       if (startup !== undefined) {
@@ -1512,24 +1502,12 @@ export async function runHandoff(
   }
 
   const { routing, runtime, time } = await resolveHandoffRoutingForOperation(operation, options);
-  if (
-    routing.kind === 'handoff' &&
-    (options.waitInvocation !== undefined || options.waitProbeRemainingMs !== undefined)
-  ) {
+  if (routing.kind === 'handoff' && options.waitInvocation !== undefined) {
     const execution = withValidatedHandoffTarget(routing.target);
     execution.assertExecutable();
     const target = join(execution.bundleDir, CLI_BUNDLE_FILE);
-    const probe = options.waitInvocation ?? {
-      signal: options.signal ?? new AbortController().signal,
-      remainingMs: options.waitProbeRemainingMs ?? (() => 0),
-      cleanupRemainingMs: () => 100,
-    };
-    const supported = await supportsWaitInvocation(target, probe, runtime);
-    if (supported === null)
-      throw new WaitInvocationReadinessError(
-        options.waitInvocation?.originalCommand ??
-          `${waitCommandPrefix()} ${operation.kind === 'wait-jobs' ? operation.jobId : ''}`,
-      );
+    const supported = await supportsWaitInvocation(target, options.waitInvocation, runtime);
+    if (supported === null) throw new WaitInvocationReadinessError(options.waitInvocation.originalCommand);
     // A wait never runs on a build other than the coordinator's, so a target without the contract is refused here.
     if (!supported) throw new WaitBuildMismatchError();
   }
@@ -1548,7 +1526,6 @@ export async function runHandoff(
         options.signal,
         executionPhase,
         options.waitInvocation,
-        options.onDelegatedChild,
       ),
     };
   }
@@ -1572,7 +1549,6 @@ export async function runHandoff(
       options.signal,
       executionPhase,
       options.waitInvocation,
-      options.onDelegatedChild,
     );
     const recording = terminalRecordingFor(continuation);
     if (recording.kind === 'withhold') {
