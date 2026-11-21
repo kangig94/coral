@@ -9,7 +9,7 @@ import { hostKind } from './hook-utils.mjs';
 
 export const ALL_CORAL_SKILLS = [
   'plan', 'preplan', 'analyze', 'ralph', 'bid', 'discuss',
-  'init-project', 'bugfix', 'code-simplify',
+  'init-project', 'bugfix', 'code-simplify', 'loop-review',
 ];
 
 // Every skill directory shipped under clients/skills/, kept in lockstep with
@@ -22,7 +22,7 @@ export const ALL_CORAL_SKILLS = [
 // also widen user-message matching.
 export const ALL_SHIPPED_SKILLS = [
   'analyze', 'bid', 'bugfix', 'code-simplify', 'discuss', 'equip',
-  'init-project', 'pathfind', 'plan', 'preplan', 'ralph', 'statusline',
+  'init-project', 'loop-review', 'pathfind', 'plan', 'preplan', 'ralph', 'statusline',
 ];
 
 // coral-skill-vars: matches any coral skill in a user message.
