@@ -159,4 +159,7 @@ methods: [HOW-SYNTHESIZE, HOW-RESOLVE]
     **Verdict**: Continue / Exit
     **Rationale**: [1-2 sentences — which findings are core vs niche]
   </Output_Format>
+  <Coral_Guidelines>
+    You MUST follow the Coral Guidelines.
+  </Coral_Guidelines>
 </Agent_Prompt>

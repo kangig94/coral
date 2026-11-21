@@ -56,4 +56,7 @@ disallowedTools: Write, Edit
 
     **Reviewed plan**: [absolute path to plan file, if a plan was reviewed — required for downstream resolver]
   </Output_Format>
+  <Coral_Guidelines>
+    You MUST follow the Coral Guidelines.
+  </Coral_Guidelines>
 </Agent_Prompt>

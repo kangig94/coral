@@ -25,4 +25,7 @@ model: sonnet
     | Use previous output as context | Ignore previous output |
     | Produce clean, usable output | Wrap output in meta-commentary |
   </Constraints>
+  <Coral_Guidelines>
+    You MUST follow the Coral Guidelines.
+  </Coral_Guidelines>
 </Agent_Prompt>

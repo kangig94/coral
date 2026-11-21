@@ -67,4 +67,7 @@ tools: Read, Write, Edit, Bash, Grep, Glob
     - **Still uncovered**: [gaps not addressed, with reason]
 
   </Output_Format>
+  <Coral_Guidelines>
+    You MUST follow the Coral Guidelines.
+  </Coral_Guidelines>
 </Agent_Prompt>

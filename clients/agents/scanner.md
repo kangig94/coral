@@ -141,4 +141,7 @@ disallowedTools: Write, Edit
     #### Recommendations
     1. [Prioritized process/system fix suggestions]
   </Output_Format>
+  <Coral_Guidelines>
+    You MUST follow the Coral Guidelines.
+  </Coral_Guidelines>
 </Agent_Prompt>

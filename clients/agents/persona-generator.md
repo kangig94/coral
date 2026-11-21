@@ -102,4 +102,7 @@ model: sonnet
     - `tone` determines Communication Style register, not just word choice
     - Output must be raw markdown — NO XML tags in the generated persona output
   </Output_Format>
+  <Coral_Guidelines>
+    You MUST follow the Coral Guidelines.
+  </Coral_Guidelines>
 </Agent_Prompt>

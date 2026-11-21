@@ -63,4 +63,7 @@ disallowedTools: Write, Edit
     - **Done criteria**: [concrete pass/fail condition]
     - **Regression risk**: [what could break]
   </Output_Format>
+  <Coral_Guidelines>
+    You MUST follow the Coral Guidelines.
+  </Coral_Guidelines>
 </Agent_Prompt>
