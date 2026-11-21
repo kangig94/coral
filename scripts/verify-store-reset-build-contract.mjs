@@ -134,9 +134,16 @@ if (!packageManifest.files?.includes(`clients/bridge/${SUCCESSION_CAPABILITIES_F
 if (!packageManifest.files?.includes('clients/bridge/manifest.v*.json')) {
   throw new Error('Package manifest does not include versioned strict bundle manifests.');
 }
+// dist/ imports these hook modules by relative path, so they must ship beside it.
+const sharedHookAllowlist = new Set(packageManifest.files.filter((file) => file.startsWith('clients/hooks/lib/')));
 for (const entry of packagedFiles) {
   const path = typeof entry?.path === 'string' ? entry.path.replaceAll('\\', '/') : '';
-  if (!rootAllowlist.has(path) && !path.startsWith('dist/') && !bridgeAllowlist.has(path)) {
+  if (
+    !rootAllowlist.has(path) &&
+    !path.startsWith('dist/') &&
+    !bridgeAllowlist.has(path) &&
+    !sharedHookAllowlist.has(path)
+  ) {
     throw new Error(`Unexpected packaged file: ${path || '<invalid>'}`);
   }
   if (path.startsWith('clients/build/')) {
