@@ -46,14 +46,6 @@ function coralProjectDir(homeDir: string, source: string): string {
   return join(homeDir, '.coral', 'projects', source.replace(/\//g, '-'));
 }
 
-function seedCodebaseMemoryBinary(homeDir: string): void {
-  for (const dataDir of ['data', 'data-dev']) {
-    const dir = join(homeDir, '.coral', 'gen2', dataDir, 'engines', 'codebase-memory');
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, 'codebase-memory-mcp'), 'binary');
-  }
-}
-
 describe('session-start.mjs', () => {
   it('outputs the inject bundle with session_id when both are provided', () => {
     const fixture = createFixture();
@@ -335,17 +327,23 @@ describe('subagent-start.mjs', () => {
     expect(output.hookSpecificOutput.additionalContext).toContain('Guidelines for subagent');
   });
 
-  it('renders equipped tools when the engine binary is installed', () => {
+  it.each([SESSION_START_HOOK, SUBAGENT_START_HOOK])('renders tools in the standard location in %s', (hook) => {
     const fixture = createFixture();
-    seedCodebaseMemoryBinary(fixture.root);
+    const binDir = join(fixture.root, 'bin');
+    const standardDir = join(fixture.root, '.local', 'bin');
+    mkdirSync(binDir);
+    symlinkSync(process.execPath, join(binDir, 'node'));
+    mkdirSync(standardDir, { recursive: true });
+    writeFileSync(join(standardDir, 'codebase-memory-mcp'), 'binary', { mode: 0o755 });
     writeInjectBundle(fixture.pluginRoot, { tools: 'Tools\n\n{{EQUIPPED_TOOLS}}\n\nDone' });
 
     const result = runHook(
-      SUBAGENT_START_HOOK,
+      hook,
       { session_id: 'sess-parent' },
       {
         CLAUDE_PLUGIN_ROOT: fixture.pluginRoot,
         HOME: fixture.root,
+        PATH: binDir,
       },
     );
 

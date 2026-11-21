@@ -105,7 +105,9 @@ Orchestrator content is limited to the top-level host session. A provider child 
 
 ### Equipped tools
 
-The `tools.md` fragment's `{{EQUIPPED_TOOLS}}` placeholder lists agent-facing tools Coral ships `/equip` support for and that are currently installed. `clients/hooks/lib/equip-tools.mjs` holds the catalog; `resolveEquippedTools()` does a **live** filesystem probe under the engine data tree. Session-start and subagent-start both pass the live list; provider jobs pass the same list through `ProviderRuntime.equippedTools`. When the list is empty, the placeholder is stripped.
+The `tools.md` fragment's `{{EQUIPPED_TOOLS}}` placeholder lists available agent-facing tools supported by `/equip`. Session-start, subagent-start, and provider jobs share the in-process lookup in `clients/hooks/lib/equip-tools.mjs`. Provider jobs supply the results through `ProviderRuntime.equippedTools`.
+
+On Linux, the lookup reads `/proc/self/mountinfo` once per scan and uses the longest matching mount point. It checks local PATH candidates in order, skipping network and unknown filesystems and stopping at any symlink along a candidate's path. When no eligible PATH executable is found, it checks the standard installation directly regardless of the mount classification. For Codebase Memory this is `~/.local/bin/codebase-memory-mcp`, which is the only candidate on hosts without mount information, including macOS. When the list is empty, the placeholder is stripped.
 
 ### Skill path vars
 

@@ -1,3 +1,11 @@
+import { basename, dirname, join, relative, resolve } from 'node:path';
+
+import {
+  findEquippedTool,
+  isExecutableFile,
+  standardToolPath,
+  type EquippedAgentTool,
+} from '../../clients/hooks/lib/equip-tools.mjs';
 import { isDirectoryLockTimeoutError } from '../infra/fs-lock.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
 import type { CoralSetupErrorContext } from '../runtime/errors.js';
@@ -9,29 +17,6 @@ import { acquirePackageOperationLock } from './package-lock.js';
 import { PACKAGE_OPERATION_LOCK_TIMEOUT_MS } from '../infra/package-operation-lock.js';
 
 const INSTALL_TIMEOUT_MS = 300_000;
-
-/**
- * Declarative spec for an install-only package whose installation is a single
- * shell pipeline (e.g. `curl … | bash`). The binary lands under the package's
- * engine data directory so `unequip` can remove it by deleting that tree.
- */
-export interface ShellInstallerSpec {
-  readonly packageId: string;
-  readonly buildInstallCommand: (binDir: string) => string;
-  /** Absolute path to the binary that must exist after a successful install. */
-  readonly binaryPath: (binDir: string) => string;
-  /**
-   * Update the already-installed binary in place (e.g. its own `update`
-   * subcommand). When provided, `update` runs this instead of reinstalling.
-   */
-  readonly buildUpdateCommand?: (binary: string) => string;
-  /**
-   * Tear down side effects the binary registered outside its own directory
-   * (e.g. agent configs / MCP registration) via its own `uninstall`
-   * subcommand. Run best-effort before the binary directory is removed.
-   */
-  readonly buildUninstallCommand?: (binary: string) => string;
-}
 
 function toInstallError(
   code: Parameters<typeof documentedCoralSetupError>[0],
@@ -47,15 +32,86 @@ function toInstallError(
   };
 }
 
-function dataDirOf(runtime: Runtime, name: string): string {
-  return runtime.paths.coral.engine.dataDir(name);
+function isMissing(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === 'ENOENT' || code === 'ENOTDIR';
 }
 
-function isFile(runtime: Runtime, path: string): boolean {
+function isRegularFile(runtime: Runtime, path: string): boolean {
   try {
-    return runtime.storage.statSync(path).isFile();
+    return runtime.storage.lstatSync(path).isFile();
+  } catch (error) {
+    if (isMissing(error)) return false;
+    throw error;
+  }
+}
+
+function realpathIfPresent(runtime: Runtime, path: string): string | null {
+  try {
+    return runtime.storage.realpathSync(path);
+  } catch (error) {
+    if (isMissing(error)) return null;
+    throw error;
+  }
+}
+
+type LegacyCopy =
+  | { kind: 'absent' }
+  | { kind: 'migratable'; canonicalPath: string }
+  | { kind: 'retained'; reason: string }
+  | { kind: 'aliases-standard'; reason: string };
+
+function inspectLegacyCopy(runtime: Runtime, path: string, standard: string): LegacyCopy {
+  try {
+    if (!runtime.storage.lstatSync(path).isFile()) {
+      return { kind: 'retained', reason: 'The path is not a regular file. Inspect it before removing it manually.' };
+    }
+  } catch (error) {
+    if (isMissing(error)) return { kind: 'absent' };
+    return { kind: 'retained', reason: 'Coral could not inspect the path. Restore access before rechecking it.' };
+  }
+
+  const parent = dirname(path);
+  const stateRootParent = dirname(dirname(runtime.paths.coral.generation.root));
+  try {
+    const expectedParent = resolve(runtime.storage.realpathSync(stateRootParent), relative(stateRootParent, parent));
+    if (!runtime.storage.lstatSync(parent).isDirectory() || runtime.storage.realpathSync(parent) !== expectedParent) {
+      return {
+        kind: 'retained',
+        reason:
+          "The legacy engine directory is symlinked or outside its canonical location. Restore a real directory at Coral's expected engine path before retrying migration.",
+      };
+    }
+    const canonicalPath = join(expectedParent, basename(path));
+    if (realpathIfPresent(runtime, standard) === canonicalPath) {
+      return {
+        kind: 'aliases-standard',
+        reason: `The standard path ${standard} resolves to the legacy copy at ${path}. Use a standard directory outside the Coral engine tree and retry.`,
+      };
+    }
+    if (!runtime.storage.lstatSync(canonicalPath).isFile()) {
+      return {
+        kind: 'retained',
+        reason: 'The canonical path is not a regular file. Inspect it before removing it manually.',
+      };
+    }
+    return { kind: 'migratable', canonicalPath };
   } catch {
-    return false;
+    return {
+      kind: 'retained',
+      reason: 'Coral could not verify the canonical engine or standard path. Restore access before retrying migration.',
+    };
+  }
+}
+
+function legacyStatus(copy: LegacyCopy, path: string, name: string): { statusDescription?: string } {
+  switch (copy.kind) {
+    case 'absent':
+      return {};
+    case 'migratable':
+      return { statusDescription: `Legacy Coral copy at ${path}. Run '/equip ${name}' to migrate it.` };
+    default:
+      return { statusDescription: `Legacy Coral path at ${path} is retained. ${copy.reason}` };
   }
 }
 
@@ -96,75 +152,111 @@ async function withInstallLock<T>(opts: EngineInstallerOptions, run: () => Promi
   }
 }
 
-export function createShellInstaller(spec: ShellInstallerSpec): EngineInstaller {
-  const packageId = assertExpansionPackageId(spec.packageId);
+export function createShellInstaller(tool: EquippedAgentTool, installCommand: string): EngineInstaller {
+  const packageId = assertExpansionPackageId(tool.id);
+
   function assertInstallerIdentity(name: string): void {
     if (name !== packageId) {
       throw new Error(`Shell installer identity mismatch: expected '${packageId}', got '${name}'`);
     }
   }
 
-  function inspect(runtime: Runtime, name: string): LocalExpansionInstallState {
-    assertInstallerIdentity(name);
-    const targetDir = dataDirOf(runtime, name);
-    const installLockPath = runtime.paths.coral.engine.installLockPath(name);
-    const binary = spec.binaryPath(targetDir);
-    const installed = isFile(runtime, binary);
-    return {
-      targetDir,
-      addonPath: installed ? binary : null,
-      installLockPath,
-      version: null,
-      method: installed ? 'shell' : null,
-      installed,
-      installLocked: isLocked(runtime, installLockPath),
-      durableState: installed,
-    };
+  function legacyBinaryPath(runtime: Runtime): string {
+    return join(runtime.paths.coral.engine.dataDir(packageId), tool.bin);
+  }
+
+  function installedBinary(runtime: Runtime): string | null {
+    return findEquippedTool(tool, runtime.env, runtime.storage, legacyBinaryPath(runtime));
   }
 
   return {
-    inspect,
+    installTargetDir: (runtime) => dirname(standardToolPath(tool, runtime.env.homedir())),
+
+    inspect(runtime, name): LocalExpansionInstallState {
+      assertInstallerIdentity(name);
+      const binary = installedBinary(runtime);
+      const legacy = legacyBinaryPath(runtime);
+      const installLockPath = runtime.paths.coral.engine.installLockPath(name);
+      const standard = standardToolPath(tool, runtime.env.homedir());
+      return {
+        targetDir: dirname(standard),
+        addonPath: binary,
+        installLockPath,
+        version: null,
+        method: binary === null ? null : 'shell',
+        installed: binary !== null,
+        installLocked: isLocked(runtime, installLockPath),
+        durableState: binary !== null,
+        ...legacyStatus(inspectLegacyCopy(runtime, legacy, standard), legacy, name),
+      };
+    },
 
     async install(opts: EngineInstallerOptions): Promise<unknown> {
       assertInstallerIdentity(opts.name);
       return withInstallLock(opts, async () => {
-        const targetDir = dataDirOf(opts.runtime, opts.name);
-        const binary = spec.binaryPath(targetDir);
-        const alreadyInstalled = isFile(opts.runtime, binary);
-        if (alreadyInstalled && opts.update !== true) {
-          return { status: 'already_installed', method: 'shell', version: opts.version, targetDir, command: binary };
+        const { runtime, name, version } = opts;
+        const binary = installedBinary(runtime);
+        const legacy = legacyBinaryPath(runtime);
+        const standard = standardToolPath(tool, runtime.env.homedir());
+        const targetDir = dirname(standard);
+        const legacyBefore = inspectLegacyCopy(runtime, legacy, standard);
+        if (legacyBefore.kind === 'aliases-standard') {
+          return toInstallError('expansion_install_command_failed', { name, detail: legacyBefore.reason });
+        }
+        if (binary !== null && opts.update !== true && legacyBefore.kind !== 'migratable') {
+          return {
+            status: 'already_installed',
+            method: 'shell',
+            version,
+            command: binary,
+            targetDir,
+            ...legacyStatus(legacyBefore, legacy, name),
+          };
         }
 
-        const selfUpdate = opts.update === true && alreadyInstalled ? spec.buildUpdateCommand : undefined;
-        const command = selfUpdate ? selfUpdate(binary) : spec.buildInstallCommand(targetDir);
-        opts.runtime.storage.mkdirSync(targetDir, { recursive: true });
-        const result = await opts.runtime.process.exec('bash', ['-c', command], {
+        if (opts.update === true && binary !== null && (binary !== standard || !isRegularFile(runtime, standard))) {
+          return toInstallError('expansion_external_tool_managed', { name, path: binary, operation: 'update' });
+        }
+
+        const result = await runtime.process.exec('bash', ['-o', 'pipefail', '-c', installCommand], {
           timeout: INSTALL_TIMEOUT_MS,
           inheritEnv: true,
           encoding: 'utf-8',
         });
-
         if (result.status !== 0 || result.error) {
-          const detail = (result.stderr.trim().length > 0 ? result.stderr : (result.error?.message ?? '')).trim();
-          return toInstallError('expansion_install_command_failed', {
-            name: opts.name,
-            ...(detail.length > 0 ? { detail } : {}),
-          });
+          const detail = result.stderr.trim() || result.error?.message.trim();
+          return toInstallError('expansion_install_command_failed', { name, ...(detail ? { detail } : {}) });
         }
 
-        if (!isFile(opts.runtime, binary)) {
+        if (!isExecutableFile(runtime.storage, standard) || !isRegularFile(runtime, standard)) {
           return toInstallError('expansion_install_command_failed', {
-            name: opts.name,
-            detail: `Install command completed but ${binary} is missing.`,
+            name,
+            detail: `Install command completed without placing an executable file at ${standard}.`,
           });
         }
+        const legacyAfter = inspectLegacyCopy(runtime, legacy, standard);
+        if (legacyAfter.kind === 'aliases-standard') {
+          return toInstallError('expansion_install_command_failed', { name, detail: legacyAfter.reason });
+        }
+        const migrated = legacyBefore.kind !== 'absent' && legacyAfter.kind === 'migratable';
+        if (migrated) {
+          runtime.storage.rmSync(legacyAfter.canonicalPath, { force: true });
+        }
 
+        const command = installedBinary(runtime);
+        if (command === null) {
+          return toInstallError('expansion_install_command_failed', {
+            name,
+            detail: 'The installed executable could no longer be resolved after installation.',
+          });
+        }
         return {
           status: opts.update === true ? 'updated' : 'installed',
           method: 'shell',
-          version: opts.version,
+          version,
+          command,
           targetDir,
-          command: binary,
+          ...(migrated ? {} : legacyStatus(legacyAfter, legacy, name)),
         };
       });
     },
@@ -172,25 +264,14 @@ export function createShellInstaller(spec: ShellInstallerSpec): EngineInstaller 
     async uninstall(opts: EngineInstallerOptions): Promise<unknown> {
       assertInstallerIdentity(opts.name);
       return withInstallLock(opts, async () => {
-        const targetDir = dataDirOf(opts.runtime, opts.name);
-        const binary = spec.binaryPath(targetDir);
-        if (!isFile(opts.runtime, binary)) {
-          return { status: 'not_equipped' };
-        }
-        // Let the binary tear down what it registered outside its own directory
-        // (agent configs / MCP registration). Best-effort: its teardown is
-        // advisory and we must still remove Coral's artifact regardless.
-        if (spec.buildUninstallCommand !== undefined) {
-          await opts.runtime.process
-            .exec('bash', ['-c', spec.buildUninstallCommand(binary)], {
-              timeout: INSTALL_TIMEOUT_MS,
-              inheritEnv: true,
-              encoding: 'utf-8',
-            })
-            .catch(() => undefined);
-        }
-        opts.runtime.storage.rmSync(targetDir, { recursive: true, force: true });
-        return { status: 'uninstalled' };
+        const binary = installedBinary(opts.runtime);
+        return binary === null
+          ? { status: 'not_equipped' }
+          : toInstallError('expansion_external_tool_managed', {
+              name: opts.name,
+              path: binary,
+              operation: 'uninstall',
+            });
       });
     },
   };

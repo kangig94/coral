@@ -52,6 +52,7 @@ export type LocalExpansionInstallState = {
   readonly installed: boolean;
   readonly installLocked: boolean;
   readonly durableState: boolean;
+  readonly statusDescription?: string;
 };
 
 export interface EngineInstallerOptions {
@@ -68,6 +69,7 @@ export interface EngineInstallerOptions {
 }
 
 export interface EngineInstaller {
+  installTargetDir?(runtime: Runtime): string;
   install(opts: EngineInstallerOptions): Promise<unknown>;
   uninstall(opts: EngineInstallerOptions): Promise<unknown>;
   inspect(runtime: Runtime, name: string): LocalExpansionInstallState;

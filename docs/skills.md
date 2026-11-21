@@ -34,6 +34,12 @@ Resolved absolute paths are injected through `inject/tools.md` (`{{CORAL_METHODS
 | `/coral:bid`           | Submit a bid or speech into an active discuss session                                                                                                                                                                                                                                                                                                                                                                             |
 | `/coral:statusline`    | Install or remove the Coral HUD statusline                                                                                                                                                                                                                                                                                                                                                                                        |
 
+## `/coral:equip`
+
+`/coral:equip codebase-memory` uses an existing executable found on an eligible local PATH entry or in the standard installation directory. It runs the official installer for installation or when it can migrate a legacy copy. The installer puts `codebase-memory-mcp` in `~/.local/bin` and configures supported agents. The installer may create or overwrite the updater at `~/.local/bin/install.sh`. `/coral:equip --list` and `/coral:equip info codebase-memory` show the resolved copy and flag a legacy Coral copy.
+
+Use `/coral:equip --update codebase-memory` to refresh the standard copy through the official installer. Use the original install source to update other PATH copies or uninstall Codebase Memory. See [agent tool locations](./configuration.md#agent-tool-locations).
+
 ## Common CLI Launch Pattern
 
 Many skills follow the same detached-launch pattern:

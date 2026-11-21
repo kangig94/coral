@@ -302,6 +302,15 @@ export class InMemoryStorage implements StoragePort {
     }
   }
 
+  assertExecutableSync(path: string): void {
+    const normalized = normalizePathForStorage(path);
+    const node = this.fileNode(normalized);
+    if (node === undefined) throw createErrnoError('ENOENT', normalized);
+    if ((node.mode & 0o111) === 0 || this.observeDirectoryTraversabilitySync(parentPath(normalized)) === 'denied') {
+      throw createErrnoError('EACCES', normalized);
+    }
+  }
+
   observeDirectoryTraversabilitySync(path: string): DirectoryTraversability {
     let current = normalizePathForStorage(path);
     while (true) {

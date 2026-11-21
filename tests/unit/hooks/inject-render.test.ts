@@ -8,7 +8,6 @@ import { KB_START_HOOK, expectHookOutput, runHook } from '#tests/unit/hooks/_hel
 
 // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
 import { MAX_ADDITIONAL_CONTEXT_BYTES } from '../../../clients/hooks/lib/additional-context.mjs';
-// @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
 import { EQUIP_AGENT_TOOLS } from '../../../clients/hooks/lib/equip-tools.mjs';
 // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
 import { renderInject } from '../../../clients/hooks/lib/inject-render.mjs';

@@ -386,6 +386,7 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
 function createRealStoragePort(platform: NodeJS.Platform): StoragePort {
   return {
     assertReadableSync: (path) => accessSync(path, fsConstants.R_OK),
+    assertExecutableSync: (path) => accessSync(path, fsConstants.X_OK),
     observeDirectoryTraversabilitySync: (path) => {
       // Node documents `fs.constants.X_OK` as having no effect on Windows, so it cannot establish
       // traversability there.

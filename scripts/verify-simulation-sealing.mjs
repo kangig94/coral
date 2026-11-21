@@ -7,6 +7,10 @@ const __filename = fileURLToPath(import.meta.url);
 const SCRIPT_DIR = dirname(__filename);
 const REPO_ROOT = resolve(SCRIPT_DIR, '..');
 const SRC_ROOT = resolve(REPO_ROOT, 'src');
+const SHARED_HOOK_SOURCES = [
+  resolve(REPO_ROOT, 'clients/hooks/lib/equip-tools.mjs'),
+  resolve(REPO_ROOT, 'clients/hooks/lib/path-executable.mjs'),
+];
 const SIMULATION_ROOT = resolve(REPO_ROOT, 'tools', 'simulation');
 const TOOLS_TESTING_ROOT = resolve(REPO_ROOT, 'tools', 'testing');
 const MANIFEST_PATH = resolve(SIMULATION_ROOT, 'sealed-inventory.json');
@@ -75,7 +79,7 @@ function resolveRelativeSourcePath(sourceFilePath, sourceCanonicalPath, specifie
   const candidates =
     extension === '.js'
       ? [resolvedBase.slice(0, -3) + '.ts']
-      : extension === '.ts'
+      : extension === '.ts' || extension === '.mjs'
         ? [resolvedBase]
         : extension === ''
           ? [`${resolvedBase}.ts`, join(resolvedBase, 'index.ts')]
@@ -151,7 +155,7 @@ function classifyExportDeclaration(node) {
 function parseSourceEdges(sourceFilePath, productionFiles) {
   const sourceCanonicalPath = toCanonicalRepoPath(sourceFilePath);
   const sourceText = readFileSync(sourceFilePath, 'utf-8');
-  const sourceFile = ts.createSourceFile(sourceFilePath, sourceText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const sourceFile = ts.createSourceFile(sourceFilePath, sourceText, ts.ScriptTarget.Latest, true);
   const edges = new Map();
 
   function recordEdge(specifier, via, contribution) {
@@ -321,6 +325,7 @@ function main() {
   const manifest = loadManifest();
   const productionFilePaths = [
     ...listSourceFiles(SRC_ROOT),
+    ...SHARED_HOOK_SOURCES,
     ...listSourceFiles(SIMULATION_ROOT),
     ...listSourceFiles(TOOLS_TESTING_ROOT),
   ].sort();

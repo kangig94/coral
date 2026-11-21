@@ -222,6 +222,9 @@ gpt-6-sol  │ 5h: 0% (4:59) wk:22% (2.8d) │ spark 5h: 3% (0:47) wk: 1% (6.8d)
 | `/coral:discuss`       | Moderated multi-agent discussion                                            |      -       |
 | `/coral:bid`           | Submit bid/speech in active `--user` discuss session                        |      -       |
 | `/coral:statusline`    | Install or remove HUD statusline                                            |      -       |
+| `/coral:equip`         | Install agent tools and KB runtime artifacts                               |      -       |
+
+Run `/coral:equip codebase-memory` to install Codebase Memory. The official installer puts the executable in `~/.local/bin`. It may create or overwrite the updater at `~/.local/bin/install.sh`. Coral checks eligible local PATH entries before falling back to the standard directory. `/coral:equip --list` shows the resolved copy and reports whether a legacy copy can be migrated. Use the original install source to uninstall Codebase Memory. [Agent tool locations](docs/configuration.md#agent-tool-locations)
 
 ## Knowledge Base
 

@@ -69,6 +69,7 @@ export type SetupErrorAuthorship = Readonly<{
 export type DocumentedCoralSetupErrorCode =
   | 'expansion_install_lock_contended'
   | 'expansion_install_command_failed'
+  | 'expansion_external_tool_managed'
   | 'expansion_install_artifact_failed'
   | 'startup_not_ready'
   | 'startup_bundle_unresolvable'
@@ -249,6 +250,17 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
       const detail = stringContextValue(context, 'detail', '');
       const base = 'Check network access and the prerequisites named by the install script, then retry.';
       return detail.length > 0 ? `${detail}\n${base}` : base;
+    },
+  },
+  expansion_external_tool_managed: {
+    userMessage: (context) => `${stringContextValue(context, 'name', 'This tool')} is managed outside Coral.`,
+    remediation: (context) => {
+      const path = stringContextValue(context, 'path', '');
+      if (context?.operation === 'update') {
+        return `Update ${path} using its original installer or package manager.`;
+      }
+      const binary = "'" + path.replaceAll("'", "'\\''") + "'";
+      return `To remove ${path}, use its package manager or run ${binary} uninstall for an upstream installation.`;
     },
   },
   expansion_install_artifact_failed: {
