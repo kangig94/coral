@@ -105,8 +105,8 @@ Run project review agents by tier taxonomy, consolidate findings, issue a verdic
     | Condition | Verdict |
     |-----------|---------|
     | Any BLOCKING finding | REJECT |
-    | Multiple unresolved STRONG findings | NEEDS WORK |
-    | No BLOCKING, 1-2 STRONG items remaining | APPROVED WITH CONDITIONS |
+    | No BLOCKING, 2 or more unresolved STRONG findings | NEEDS WORK |
+    | No BLOCKING, exactly 1 unresolved STRONG finding | APPROVED WITH CONDITIONS |
     | No BLOCKING, no unresolved STRONG | APPROVED |
     | No BLOCKING, no STRONG, all agents report high quality | EXCEPTIONAL |
   </Protocol>
