@@ -75,6 +75,7 @@ vi.mock('#src/cli/follow.js', () => ({ followJobs: vi.fn(async () => 0) }));
 afterEach(() => {
   vi.clearAllMocks();
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   process.exitCode = undefined;
 });
 
@@ -193,7 +194,7 @@ it('keeps listing options on jobs list and aborts explicit IDs under jobs', asyn
   expect(client.abortJobs).toHaveBeenCalledWith(['a']);
 });
 
-it('hides both legacy commands and gives both grammars the same options and action', async () => {
+it('rejects the retired wait jobs spelling and runs jobs wait', async () => {
   vi.spyOn(process.stdout, 'write').mockImplementation(((text: string, callback?: () => void) => {
     callback?.();
     return true;
@@ -203,26 +204,20 @@ it('hides both legacy commands and gives both grammars the same options and acti
   client.snapshotJobsWait.mockResolvedValue(selectWaitSnapshot(session, 7));
   const root = program();
   const jobs = root.commands.find((command) => command.name() === 'jobs')!;
-  const wait = root.commands.find((command) => command.name() === 'wait')!;
   const current = jobs.commands.find((command) => command.name() === 'wait')!;
-  const legacy = wait.commands.find((command) => command.name() === 'jobs')!;
-  expect(root.helpInformation()).not.toMatch(/^\s+wait\b/m);
-  expect(wait.helpInformation()).not.toMatch(/^\s+jobs\b/m);
-  expect(current.options.map((option) => option.flags)).toEqual(legacy.options.map((option) => option.flags));
-  for (const argv of [
-    ['jobs', 'wait'],
-    ['wait', 'jobs'],
-  ]) {
-    await program().parseAsync([...argv, 'a', '--snapshot', '--lines', '7'], { from: 'user' });
-    expect(client.snapshotJobsWait).toHaveBeenLastCalledWith({ jobIds: ['a'], projectRoot: process.cwd(), lines: 7 });
-    expect(process.exitCode).toBe(75);
-  }
-  expect(client.snapshotJobsWait).toHaveBeenCalledTimes(2);
+  await expect(root.parseAsync(['wait', 'jobs', 'a'], { from: 'user' })).rejects.toThrow("unknown command 'wait'");
+  expect(client.snapshotJobsWait).not.toHaveBeenCalled();
+  await program().parseAsync(['jobs', 'wait', 'a', '--snapshot', '--lines', '7'], { from: 'user' });
+  expect(client.snapshotJobsWait).toHaveBeenCalledExactlyOnceWith({
+    jobIds: ['a'],
+    projectRoot: process.cwd(),
+    lines: 7,
+  });
+  expect(process.exitCode).toBe(75);
   expect(() => assertCommandClassCoverage(root)).not.toThrow();
   for (const [command, commandClass] of [
     [jobs.commands.find((command) => command.name() === 'list')!, 'directRead'],
     [current, 'subscribe'],
-    [legacy, 'subscribe'],
     [jobs.commands.find((command) => command.name() === 'abort')!, 'mutate'],
     [jobs.commands.find((command) => command.name() === 'send')!, 'mutate'],
   ] as const)

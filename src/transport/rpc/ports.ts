@@ -79,7 +79,7 @@ interface JobsRequestPort {
 
   waitHandoverSignal(): AbortSignal;
   list(filters: JobsListFilters): JobsListResponse['jobs'];
-  detail(jobId: string, callerRoot?: CanonicalWorkDir): JobDetailLookup;
+  detail(jobId: string): JobDetailLookup;
   unknownJobDisposition(): 'pre-epoch-history' | 'not-found' | 'discovery-unknown' | 'discovery-unreadable';
   unknownJobCaveat?(): string;
 }

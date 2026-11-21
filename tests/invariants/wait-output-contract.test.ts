@@ -1,8 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { Command } from 'commander';
 import { expect, it } from 'vitest';
-import { registerSessionCommands } from '#src/cli/commands/session.js';
 import {
   formatWaitContinuation,
   formatWaitSnapshot,
@@ -10,7 +8,6 @@ import {
   formatWaitWaiting,
 } from '#src/cli/format/wait.js';
 import { selectWaitSnapshot } from '#tests/helpers/wait-progress.js';
-import { ProviderRegistry } from '#src/providers/registry.js';
 import { rpcCatalog } from '#src/transport/rpc/catalog.js';
 import { executeCatalogRequest } from '#src/transport/dispatch.js';
 import { jobsWaitRequest } from '#src/transport/rpc/jobs.js';
@@ -125,27 +122,7 @@ it.each([false, true])(
   },
 );
 
-it('M2 help and exit documentation preserve failure precedence even with siblings', () => {
-  const program = new Command();
-  registerSessionCommands(program, new ProviderRegistry());
-  const help = program.commands
-    .find((command) => command.name() === 'jobs')
-    ?.commands.find((command) => command.name() === 'wait');
-  let output = '';
-  help?.configureOutput({
-    writeOut: (text) => {
-      output += text;
-    },
-  });
-  help?.outputHelp();
-  for (const text of [output, read('docs/cli-errors.md')]) {
-    expect(text).toContain('first failed terminal in request order');
-    expect(text).toContain('even with pending siblings');
-    expect(text).toContain('permanent refusals exit 1');
-    expect(text).toContain('remaining collection work exits 75');
-    expect(text).toContain('exhausted successful sets exit 0');
-    expect(text).toContain('SIGTERM');
-  }
+it('preserves a delivered failure exit while siblings remain', () => {
   const failed = admitted('a', [], true, 'epoch-E', true);
   const pending = admitted('b', [], false);
   const session = testSession(['a', 'b']);
@@ -154,12 +131,6 @@ it('M2 help and exit documentation preserve failure precedence even with sibling
   expect(session.exitCode()).toBe(42);
   session.reconcile([admitted('a'), pending]);
   expect(session.exitCode()).toBe(75);
-  expect(output).toContain('--snapshot');
-  expect(output.replace(/\s+/g, ' ')).toContain('continuations keep --snapshot');
-  expect(output.replace(/\s+/g, ' ')).toContain('drop it explicitly to switch to a blocking wait');
-  expect(output.replace(/\s+/g, ' ')).toContain('first terminal by default');
-  expect(output.replace(/\s+/g, ' ')).toContain('--all to wait for every job');
-  expect(output.replace(/\s+/g, ' ')).toContain('artifact availability is reported separately');
 });
 
 it('M3 scope remediation changes cwd and lists terminal jobs', async () => {

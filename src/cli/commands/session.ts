@@ -2,7 +2,7 @@ import { parseWaitAllOutcome } from '../wait-all-outcome.js';
 import { decodeWaitCursor, WAIT_CURSOR_REPLAY_NOTICE } from '../../jobs/wait/cursor.js';
 import type { WaitCursor } from '../../jobs/wait/contract.js';
 import { parseWaitSnapshot } from '../../jobs/wait/snapshot.js';
-import { formatWaitSnapshot, formatWaitContinuation, waitCommandPrefix } from '../format/wait.js';
+import { formatWaitSnapshot, formatWaitContinuation } from '../format/wait.js';
 import { mapWaitSubscriptionError, SOFT_CURSOR_REFUSALS } from '../wait-stream-error.js';
 import { MAX_WAIT_JOB_IDS } from '../../jobs/wait/stream-event.js';
 import { BackendToolHttpError } from '../../transport/http/errors.js';
@@ -13,7 +13,6 @@ import { z } from 'zod';
 
 import { isLivePhase, jobPhaseSchema } from '../../jobs/phase.js';
 import type { JobStatus } from '../../jobs/records.js';
-import { waitCommandPaths } from '../../coordinator/handoff-routing/wait-command.js';
 import type { AbortResult } from '../../jobs/contracts/abort-registry.js';
 import type { ProviderRegistry } from '../../providers/registry.js';
 import { getProviderNames, makeClient } from '../dispatch.js';
@@ -70,7 +69,7 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
   const registeredProviders = getProviderNames(providerRegistry);
   const jobsCommand = program.command('jobs').description('List, monitor, and manage jobs');
   registerJobsListCommand(jobsCommand, registeredProviders);
-  registerJobsWaitCommand(jobsCommand, program);
+  configureWaitJobsCommand(jobsCommand.command('wait')).action(runWaitJobs);
   registerJobsAbortCommand(jobsCommand, registeredProviders);
   registerJobsSendCommand(jobsCommand);
   registerJobsDetailCommand(jobsCommand);
@@ -150,11 +149,6 @@ function registerJobsListCommand(jobsCommand: Command, registeredProviders: stri
         emitError(normalizeUsageError(error));
       }
     });
-}
-
-function registerJobsWaitCommand(jobsCommand: Command, program: Command): void {
-  configureWaitJobsCommand(jobsCommand.command(waitCommandPaths.current.split(' ')[1])).action(runWaitJobs);
-  registerLegacyWaitJobs(program, runWaitJobs);
 }
 
 async function runWaitJobs(jobIdArgs: string[], opts: WaitJobsOptions, command: Command): Promise<void> {
@@ -321,12 +315,6 @@ function registerJobsDetailCommand(jobsCommand: Command): void {
         const causeRenderer = openCliCauseRefRenderer(projectRoot);
         try {
           const result = await client.detailJob(jobId);
-          const workflowChildren =
-            result.status.jobKind === 'workflow'
-              ? (await client.listJobs({ allProjects: true, all: true })).jobs.filter(
-                  ({ status }) => status.parentWorkflowJobId === result.status.jobId,
-                )
-              : [];
           const renderCauseRef = causeRenderer.render;
           process.stdout.write(
             formatJobDetail(
@@ -334,7 +322,7 @@ function registerJobsDetailCommand(jobsCommand: Command): void {
               renderCauseRef === undefined
                 ? undefined
                 : (ref) => renderCauseRef(ref, result.exit?.outcome, result.epochKey),
-              workflowChildren,
+              result.workflowChildren,
               opts.full === true,
             ) + '\n',
           );
@@ -397,15 +385,6 @@ function configureWaitJobsCommand(command: Command): Command {
     );
 }
 
-function registerLegacyWaitJobs(
-  program: Command,
-  action: (jobIds: string[], opts: WaitJobsOptions, command: Command) => Promise<void>,
-): void {
-  const [group, verb] = waitCommandPaths.legacyWaitJobs.split(' ');
-  const wait = program.command(group, { hidden: true });
-  configureWaitJobsCommand(wait.command(verb, { hidden: true })).action(action);
-}
-
 async function runWaitSnapshot(
   client: ReturnType<typeof makeClient>,
   jobIds: string[],
@@ -452,7 +431,7 @@ async function runWaitSnapshot(
   } catch {
     throw new WaitSnapshotResponseError(
       invocation?.originalCommand ??
-        `${waitCommandPrefix()} ${jobIds.join(' ')} --snapshot${opts.cursor === undefined ? '' : ` --cursor ${opts.cursor}`}${opts.lines === undefined ? '' : ` --lines ${opts.lines}`}`,
+        `coral-cli jobs wait ${jobIds.join(' ')} --snapshot${opts.cursor === undefined ? '' : ` --cursor ${opts.cursor}`}${opts.lines === undefined ? '' : ` --lines ${opts.lines}`}`,
     );
   }
   const output = formatWaitSnapshot(snapshot) + '\n';
@@ -468,7 +447,7 @@ async function runWaitSnapshot(
     throw new WaitOutputError(
       error,
       invocation?.originalCommand ??
-        `${waitCommandPrefix()} ${jobIds.join(' ')} --snapshot${opts.cursor === undefined ? '' : ` --cursor ${opts.cursor}`}${opts.lines === undefined ? '' : ` --lines ${opts.lines}`}`,
+        `coral-cli jobs wait ${jobIds.join(' ')} --snapshot${opts.cursor === undefined ? '' : ` --cursor ${opts.cursor}`}${opts.lines === undefined ? '' : ` --lines ${opts.lines}`}`,
     );
   }
 

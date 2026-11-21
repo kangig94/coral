@@ -133,5 +133,6 @@ export const jobDetailRequestSchema = z
   .object({
     jobId: jobIdSchema,
     projectRoot: projectRootSchema,
+    forSend: z.literal(true).optional(),
   })
   .strict();

@@ -1,20 +1,15 @@
 #!/usr/bin/env node
 import { execFileSync } from 'node:child_process';
-import { realpathSync } from 'node:fs';
-import { dirname, isAbsolute, join, relative, sep } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { exitIfChildProcess, exitIfWrongFlavor, readStdin, writeHookOutput } from './lib/hook-utils.mjs';
 import { projectDirFromInput } from './lib/plugin-paths.mjs';
 import { jobGuardAlreadyBlocked, recordJobGuardBlock } from './lib/live-work-registry.mjs';
 
+const MAX_WAIT_JOB_IDS = 128;
+
 exitIfChildProcess();
 exitIfWrongFlavor();
-
-function jobInWaitScope(job, scopeRoot) {
-  if (job.status.jobKind === 'kb') return true;
-  const descendant = relative(scopeRoot, job.status.workDir);
-  return descendant === '' || (!descendant.startsWith(`..${sep}`) && descendant !== '..' && !isAbsolute(descendant));
-}
 
 function waitCommand(jobs) {
   return `coral-cli jobs wait ${jobs.map((job) => job.jobId).join(' ')}${jobs.length > 1 ? ' --all' : ''}`;
@@ -36,35 +31,21 @@ try {
   }));
   if (!Array.isArray(rows)) process.exit(0);
   const jobs = rows.filter((job) => typeof job?.jobId === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(job.jobId) &&
-    Number.isSafeInteger(job.execution) && job.execution >= 1 &&
-    (job.status?.jobKind === 'kb' || typeof job.status?.workDir === 'string'));
+    Number.isSafeInteger(job.execution) && job.execution >= 1);
   if (jobs.length === 0) process.exit(0);
   if (jobGuardAlreadyBlocked(projectDir, input.session_id, jobs)) process.exit(0);
 
-  const waitScope = realpathSync(input.cwd ?? projectDir);
-  const inScopeJobs = [];
-  const otherDirectories = new Map();
-  for (const job of jobs) {
-    if (jobInWaitScope(job, waitScope)) {
-      inScopeJobs.push(job);
-    } else {
-      const group = otherDirectories.get(job.status.workDir) ?? [];
-      group.push(job);
-      otherDirectories.set(job.status.workDir, group);
-    }
+  const commands = [];
+  for (let start = 0; start < jobs.length; start += MAX_WAIT_JOB_IDS) {
+    commands.push(waitCommand(jobs.slice(start, start + MAX_WAIT_JOB_IDS)));
   }
-  const commands = inScopeJobs.length > 0 ? [waitCommand(inScopeJobs)] : [];
-  for (const [workDir, group] of otherDirectories) {
-    commands.push(`cd '${workDir.replaceAll("'", "'\\''")}' && ${waitCommand(group)}`);
-  }
-  const waitInstruction = commands.length > 1
-    ? `Run each command below separately to wait for them:\n${commands.join('\n')}`
-    : `Run ${commands[0]} to wait for them.`;
-
   recordJobGuardBlock(projectDir, input.session_id, jobs);
   writeHookOutput({
     decision: 'block',
-    reason: `${jobs.length} Coral job(s) launched in this session are still running with no wait attached. ${waitInstruction}`,
+    reason: `${jobs.length} Coral job(s) launched in this session are still running with no wait attached. ` +
+      (commands.length === 1
+        ? `Run ${commands[0]} to wait for them.`
+        : `Run each command below separately to wait for them.\n${commands.join('\n')}`),
   });
 } catch {
   process.exit(0);

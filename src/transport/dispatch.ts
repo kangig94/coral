@@ -2,7 +2,7 @@ import { ProjectionConversationMalformedError } from '../jobs/records.js';
 import { jobSendOutcomeSchema, malformedConversationSendRefusal } from '../jobs/send.js';
 import { proxyOperationSendResultSchema } from '../provider-proxy/protocol.js';
 import { WaitSessionError } from '../jobs/wait/session.js';
-import type { OperatorJobReadScopeExemption } from '../jobs/scope.js';
+import type { OperatorJobReadScopeExemption, ScopeCheckResult } from '../jobs/scope.js';
 import { waitExecutionSelectionsSchema } from '../jobs/wait/execution-selection.js';
 import type { WaitCursor, WaitSnapshotRequest, CanonicalWaitStreamRequest } from '../jobs/wait/contract.js';
 import { raceWithSignal } from '../infra/promise-signal.js';
@@ -86,16 +86,20 @@ function invalidRequestResult(message = 'invalid request', detail?: unknown): To
   return domainError('invalid_request', message, detail);
 }
 
-// The refused job's own work directory is deliberately not disclosed: the caller is outside the
-// scope that would authorize reading it.
-function jobScopeMismatchResult(jobs: readonly string[]): ToolDomainResult {
+function jobScopeMismatchResult(
+  scope: ScopeCheckResult,
+  operator: OperatorJobReadScopeExemption | undefined = undefined,
+): ToolDomainResult {
+  const workDirs = operator === undefined ? undefined : scope.mismatchWorkDirs;
   return {
     ok: false,
     code: 'scope_mismatch',
     message: "Jobs are outside the caller's work directory scope",
     remediation:
-      "Change cwd to the job's work directory or an ancestor within your project binding, if one applies. Use `coral-cli jobs list --all` to find authorized jobs and their work directories, including terminal jobs.",
-    detail: { jobs: [...jobs] },
+      workDirs === undefined
+        ? "Change cwd to the job's work directory or an ancestor within your project binding, if one applies. Use `coral-cli jobs list --all` to find authorized jobs and their work directories, including terminal jobs."
+        : `Change cwd to a directory that contains the targeted jobs. Work directories: ${workDirs.map(({ jobId, workDir }) => `${JSON.stringify(jobId)} at ${JSON.stringify(workDir)}`).join(', ')}.`,
+    detail: { jobs: scope.mismatch, ...(workDirs === undefined ? {} : { workDirs }) },
   };
 }
 
@@ -1071,6 +1075,7 @@ async function executeJobsSendCatalogRequest({
   canonicalRequest,
   rpcPorts,
   principal,
+  outsideCwdJobRead,
 }: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
   const parsed = request as z.infer<typeof jobSendSchema>;
   const callerRoot = canonicalRequest.projectRoot;
@@ -1082,6 +1087,12 @@ async function executeJobsSendCatalogRequest({
     if (raw.state === 'delivered') {
       proxyOperationSendResultSchema.parse(raw);
       return unary({ state: 'delivered' });
+    }
+    if (raw.state === 'refused') {
+      const { scopeMismatchWorkDir, ...refusal } = raw;
+      if (outsideCwdJobRead !== undefined && refusal.code === 'scope_mismatch' && scopeMismatchWorkDir !== undefined)
+        refusal.reason += ` Rerun the send from ${JSON.stringify(scopeMismatchWorkDir)} or an ancestor directory.`;
+      return unary(jobSendOutcomeSchema.parse(refusal));
     }
     const result = jobSendOutcomeSchema.parse(raw);
     return unary(result);
@@ -1096,13 +1107,14 @@ async function executeJobsAbortCatalogRequest({
   request,
   canonicalRequest,
   rpcPorts,
+  outsideCwdJobRead,
 }: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
   const parsed = request as { jobs: string[]; projectRoot: string };
   const callerRoot = canonicalRequest.projectRoot;
   if (callerRoot === undefined) return unaryHttp(domainResultToHttp(invalidRequestResult()));
   const scopeCheck = rpcPorts.jobs.scopeCheck(parsed.jobs, callerRoot, 'contains');
   if (scopeCheck.mismatch.length > 0) {
-    return unaryHttp(domainResultToHttp(jobScopeMismatchResult(scopeCheck.mismatch)));
+    return unaryHttp(domainResultToHttp(jobScopeMismatchResult(scopeCheck, outsideCwdJobRead)));
   }
   if (scopeCheck.missing.length === parsed.jobs.length) {
     return unknownJobsAnswer(rpcPorts, scopeCheck.missing);
@@ -1144,18 +1156,18 @@ async function executeJobsDetailCatalogRequest({
   rpcPorts,
   outsideCwdJobRead,
 }: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
-  const parsed = request as { jobId: string; projectRoot: string };
+  const parsed = request as { jobId: string; projectRoot: string; forSend?: true };
   const callerRoot = canonicalRequest.projectRoot;
   if (callerRoot === undefined) return unaryHttp(domainResultToHttp(invalidRequestResult()));
-  if (outsideCwdJobRead === undefined) {
+  if (parsed.forSend === true || outsideCwdJobRead === undefined) {
     const scopeCheck = rpcPorts.jobs.scopeCheck([parsed.jobId], callerRoot, 'contains');
     if (scopeCheck.mismatch.length > 0)
-      return unaryHttp(domainResultToHttp(jobScopeMismatchResult(scopeCheck.mismatch)));
+      return unaryHttp(domainResultToHttp(jobScopeMismatchResult(scopeCheck, outsideCwdJobRead)));
   }
 
   let detail;
   try {
-    detail = rpcPorts.jobs.detail(parsed.jobId, callerRoot);
+    detail = rpcPorts.jobs.detail(parsed.jobId);
   } catch (error) {
     if (!(error instanceof ProjectionConversationMalformedError)) throw error;
     const sendRefusal = malformedConversationSendRefusal(parsed.jobId);
@@ -1230,16 +1242,23 @@ async function executeJobsDetailCatalogRequest({
       409,
     );
   }
-  if ('executionAddressing' in detail && detail.executionAddressing === 'lifetime')
+  const response =
+    parsed.forSend !== true && 'status' in detail && detail.status.jobKind === 'workflow'
+      ? {
+          ...detail,
+          workflowChildren: rpcPorts.jobs.list({ parentWorkflowJobId: detail.status.jobId, all: true }),
+        }
+      : detail;
+  if ('executionAddressing' in response && response.executionAddressing === 'lifetime')
     return unary({
-      ...detail,
+      ...response,
       sendRefusal: {
         state: 'refused',
         code: 'pre_generation_job',
         reason: 'The job predates the current store format generation and cannot be continued.',
       },
     });
-  return unary(detail);
+  return unary(response);
 }
 
 async function executeJobsWaitCatalogRequest({
@@ -1327,7 +1346,7 @@ async function executeJobsCatalogRequest(context: AuthorizedCatalogRequest): Pro
       if (callerRoot === undefined) return unaryHttp(domainResultToHttp(invalidRequestResult()));
       const scopeCheck = rpcPorts.jobs.scopeCheck(parsed.jobs, callerRoot, 'contains');
       if (scopeCheck.mismatch.length > 0) {
-        return unaryHttp(domainResultToHttp(jobScopeMismatchResult(scopeCheck.mismatch)));
+        return unaryHttp(domainResultToHttp(jobScopeMismatchResult(scopeCheck, context.outsideCwdJobRead)));
       }
       return unary(rpcPorts.jobs.release(parsed.jobs));
     }
@@ -1345,10 +1364,7 @@ async function executeJobsCatalogRequest(context: AuthorizedCatalogRequest): Pro
       try {
         return unary(
           context.rpcPorts.jobs.snapshot(
-            withAbortSignal(
-              { ...snapshot, outsideCwdJobRead: context.outsideCwdJobRead, observeOnlyJobIds: undefined },
-              context.abortSignal,
-            ),
+            withAbortSignal({ ...snapshot, outsideCwdJobRead: context.outsideCwdJobRead }, context.abortSignal),
           ),
         );
       } catch (error) {

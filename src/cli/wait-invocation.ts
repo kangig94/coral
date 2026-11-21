@@ -1,6 +1,5 @@
 import { UsageError, WaitOutputError } from './errors.js';
 import { Command } from 'commander';
-import { waitCommandPaths } from '../coordinator/handoff-routing/wait-command.js';
 import { performance } from 'node:perf_hooks';
 import { raceWithSignal } from '../infra/promise-signal.js';
 import { isRecord } from '../infra/json.js';
@@ -35,25 +34,18 @@ export function waitInvocationMode(program: Command, argv: readonly string[]): W
   const parser = new Command().exitOverride(fail).configureOutput({ writeOut: () => {}, writeErr: () => {} });
   for (const option of program.options) parser.addOption(option);
   let mode: WaitInvocationMode | undefined;
-  for (const path of Object.values(waitCommandPaths)) {
-    const [groupName, verbName] = path.split(' ');
-    const group = program.commands.find((command) => command.name() === groupName);
-    const verb = group?.commands.find((command) => command.name() === verbName);
-    if (group === undefined || verb === undefined) continue;
-    const groupParser = parser.command(group.name()).aliases(group.aliases());
-    const verbParser = groupParser.command(verb.name()).aliases(verb.aliases()).argument('<jobIds...>');
-    for (const [source, target] of [
-      [group, groupParser],
-      [verb, verbParser],
-    ] as const) {
-      for (const option of source.options) target.addOption(option);
-    }
-    verbParser.action(() => {
-      const opts = verbParser.opts();
-      validateWaitJobsOptions(opts);
-      mode = opts.snapshot === true ? 'snapshot' : 'stream';
-    });
-  }
+  const group = program.commands.find((command) => command.name() === 'jobs');
+  const verb = group?.commands.find((command) => command.name() === 'wait');
+  if (group === undefined || verb === undefined) return undefined;
+  const groupParser = parser.command('jobs');
+  const verbParser = groupParser.command('wait').argument('<jobIds...>');
+  for (const option of group.options) groupParser.addOption(option);
+  for (const option of verb.options) verbParser.addOption(option);
+  verbParser.action(() => {
+    const opts = verbParser.opts();
+    validateWaitJobsOptions(opts);
+    mode = opts.snapshot === true ? 'snapshot' : 'stream';
+  });
   try {
     parser.parse([...argv]);
   } catch (error) {

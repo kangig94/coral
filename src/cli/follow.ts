@@ -1,7 +1,6 @@
 import { encodeWaitAllOutcome, type WaitAllOutcome } from './wait-all-outcome.js';
 import { formatRecoveryQuarantineCommand } from './format/backend.js';
 import type { WaitExecutionSelection } from '../jobs/wait/execution-selection.js';
-import { waitCommandPaths } from '../coordinator/handoff-routing/wait-command.js';
 import { WaitInvocation, WaitInvocationEnded } from './wait-invocation.js';
 import { decodeWaitCursor, WAIT_CURSOR_REPLAY_NOTICE } from '../jobs/wait/cursor.js';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -79,22 +78,17 @@ function writeStdout(text: string): void {
 }
 
 /** A wait must not hold the epoch lock that a succession needs. */
-function readJobStatuses(projectRoot: string, jobIds: readonly string[]): Map<string, JobStatus> {
+function readJobStatus(projectRoot: string, jobId: string): JobStatus | undefined {
   let handle: ReadCoralStoreHandle;
   try {
     handle = openReadCoralStore(projectRoot);
   } catch {
-    return new Map();
+    return undefined;
   }
   try {
-    return new Map(
-      jobIds.flatMap((jobId) => {
-        const status = handle.store.jobs.detail(jobId)?.status;
-        return status === undefined ? [] : [[jobId, status] as const];
-      }),
-    );
+    return handle.store.jobs.detail(jobId)?.status;
   } catch {
-    return new Map();
+    return undefined;
   } finally {
     handle.close();
   }
@@ -105,33 +99,31 @@ type JobLabel = Readonly<{
   terminal: string;
 }>;
 
-function jobLabelsFor(projectRoot: string, jobIds: readonly string[]): Map<string, JobLabel> | null {
-  const statuses = readJobStatuses(projectRoot, jobIds);
-  const labels = new Map<string, JobLabel>();
-  let hasWorkflowLabel = false;
+function admittedJobLabel(event: WaitStreamEvent, context: FollowContext): JobLabel | undefined {
+  if (event.type !== 'progress' && event.type !== 'queued' && event.type !== 'terminal' && event.type !== 'interrupted')
+    return undefined;
+  const { jobId } = event;
+  const { options, jobLabels } = context;
+  if (jobLabels.has(jobId)) return jobLabels.get(jobId);
+  const index = options.jobIds.indexOf(jobId);
+  if (index === -1) return undefined;
 
-  jobIds.forEach((jobId, index) => {
-    const workflowSlot = formatWorkflowSlot(statuses.get(jobId) ?? {});
-    if (workflowSlot === null) {
-      labels.set(jobId, { stream: `j${index}`, terminal: jobId });
-      return;
-    }
-
-    hasWorkflowLabel = true;
-    const slotLabel = `slot ${workflowSlot}`;
-    labels.set(jobId, {
-      stream: jobIds.length > 1 ? `j${index} · ${slotLabel}` : slotLabel,
-      terminal: `${jobId} (${slotLabel})`,
-    });
-  });
-
-  return jobIds.length > 1 || hasWorkflowLabel ? labels : null;
+  const slot = formatWorkflowSlot(readJobStatus(options.projectRoot, jobId) ?? {});
+  const numbered = options.jobIds.length > 1;
+  const label =
+    slot === null
+      ? numbered
+        ? { stream: `j${index}`, terminal: jobId }
+        : undefined
+      : { stream: numbered ? `j${index} · slot ${slot}` : `slot ${slot}`, terminal: `${jobId} (slot ${slot})` };
+  jobLabels.set(jobId, label);
+  return label;
 }
 
 function formatFollowWaitEvent(
   event: WaitStreamEvent,
   cursor: string | null,
-  jobLabels: ReadonlyMap<string, JobLabel> | null,
+  jobLabel: JobLabel | undefined,
   resumeJobIds: readonly string[],
   renderOptions: FollowRender,
   renderCauseRef?: (ref: CauseRef, terminalOutcomeDiagnostic?: TerminalOutcome, epochKey?: string) => string,
@@ -151,10 +143,10 @@ function formatFollowWaitEvent(
       line = `Job ${event.jobId}: ${event.disposition}${event.message ? ` — ${event.message}` : ''}`;
       break;
     case 'progress':
-      line = formatWaitProgress(event, jobLabels?.get(event.jobId)?.stream);
+      line = formatWaitProgress(event, jobLabel?.stream);
       break;
     case 'queued':
-      line = formatWaitQueued(event, jobLabels?.get(event.jobId)?.stream);
+      line = formatWaitQueued(event, jobLabel?.stream);
       break;
     case 'terminal':
       line = formatWaitTerminal(event, cursor, renderOptions.embed, {
@@ -162,7 +154,7 @@ function formatFollowWaitEvent(
           ? (ref) => renderCauseRef(ref, event.result.outcome, 'epochKey' in event ? event.epochKey : undefined)
           : undefined,
         verbose: renderOptions.verbose,
-        label: jobLabels?.get(event.jobId)?.terminal,
+        label: jobLabel?.terminal,
         continuationMode: renderOptions.continuationMode,
         allOutcome: renderOptions.allOutcome,
       });
@@ -170,7 +162,7 @@ function formatFollowWaitEvent(
     case 'interrupted':
       line = formatWaitCarrierInterrupted({
         ...event,
-        jobId: jobLabels?.get(event.jobId)?.terminal ?? event.jobId,
+        jobId: jobLabel?.terminal ?? event.jobId,
       });
       break;
     case 'waiting':
@@ -184,13 +176,13 @@ function formatFollowWaitEvent(
 function emitWaitEvent(
   event: WaitStreamEvent,
   cursor: string | null,
-  jobLabels: ReadonlyMap<string, JobLabel> | null,
+  jobLabel: JobLabel | undefined,
   resumeJobIds: readonly string[],
   renderOptions: FollowRender,
   renderCauseRef?: (ref: CauseRef, terminalOutcomeDiagnostic?: TerminalOutcome, epochKey?: string) => string,
   onDelivered?: () => void,
 ): Promise<void> {
-  const line = formatFollowWaitEvent(event, cursor, jobLabels, resumeJobIds, renderOptions, renderCauseRef);
+  const line = formatFollowWaitEvent(event, cursor, jobLabel, resumeJobIds, renderOptions, renderCauseRef);
 
   const trailingNewline =
     renderOptions.isTTY && ['terminal', 'waiting', 'notice', 'disposition'].includes(event.type) ? '\n' : '';
@@ -268,7 +260,7 @@ async function connectFollowStream(
 type FollowContext = {
   options: FollowJobsOptions & { invocation: WaitInvocation };
   state: FollowSessionState;
-  jobLabels: ReturnType<typeof jobLabelsFor>;
+  jobLabels: Map<string, JobLabel | undefined>;
   causeRenderer: ReturnType<typeof openCliCauseRefRenderer>;
 };
 
@@ -345,7 +337,7 @@ async function applyFollowStreamEvent(
   event: WaitStreamEvent,
   context: FollowContext,
 ): Promise<FollowStep | { kind: 'continue' }> {
-  const { options, state, jobLabels, causeRenderer } = context;
+  const { options, state, causeRenderer } = context;
   options.invocation.check();
   state.remainingJobIds = eventRemainingJobs(event, state.remainingJobIds);
   if (event.type === 'interrupted') {
@@ -380,7 +372,7 @@ async function applyFollowStreamEvent(
         ? { ...renderedEvent, carrierAbsentJobIds: [...state.absentCarriers] }
         : renderedEvent,
       cursor ?? null,
-      jobLabels,
+      admittedJobLabel(event, context),
       state.remainingJobIds,
       { ...options.render, continuationMode: state.continuationMode, allOutcome: continuationOutcome(state) },
       causeRenderer.render,
@@ -481,7 +473,6 @@ async function consumeFollowSubscription(subscription: WaitSubscription, context
 async function monitorFollowJobs(context: FollowContext): Promise<number> {
   const { options, state } = context;
   options.invocation.check();
-  context.jobLabels = jobLabelsFor(options.projectRoot, options.jobIds);
   while (state.remainingJobIds.length > 0) {
     options.invocation.check();
     const connected = await connectFollowStream(options, state);
@@ -502,7 +493,8 @@ export async function followJobs(options: FollowJobsOptions): Promise<number> {
     new WaitInvocation('stream', [
       'node',
       'coral-cli',
-      ...waitCommandPaths.current.split(' '),
+      'jobs',
+      'wait',
       ...options.jobIds,
       ...(options.waitForAll ? ['--all'] : []),
       ...(options.priorOutcome === undefined ? [] : ['--all-outcome', encodeWaitAllOutcome(options.priorOutcome)]),
@@ -515,7 +507,7 @@ export async function followJobs(options: FollowJobsOptions): Promise<number> {
   if (decoded?.kind === 'rejected') writeStdout(`${WAIT_CURSOR_REPLAY_NOTICE}\n`);
   const context: FollowContext = {
     options: { ...options, invocation },
-    jobLabels: null,
+    jobLabels: new Map(),
     causeRenderer: openCliCauseRefRenderer(options.projectRoot),
     state: {
       continuationMode: mode,

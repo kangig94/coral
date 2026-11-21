@@ -1,4 +1,4 @@
-import type { CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
+import { jobInCallerScope, type JobCallerScope } from './scope.js';
 import { currentResultArtifacts } from './retained-current.js';
 import { executionRetryStatusSchema } from './records.js';
 import type { RecoveryObservation } from '../recovery/phase-observation.js';
@@ -173,6 +173,13 @@ const storedExecutionSchema = z
     detail: storedJobDetailSchema,
   })
   .passthrough();
+const locationAddressSchema = locationIdentitySchema.pick({
+  version: true,
+  jobId: true,
+  epochKey: true,
+  subject: true,
+});
+const locationJsonSchema = z.unknown().transform((value) => ({ value }));
 const locationSchema = locationIdentitySchema
   .extend({
     detail: z.unknown().optional(),
@@ -279,10 +286,20 @@ export interface JobLocationView {
   readHistorical?: HistoricalSourceReader;
   historicalSourceState?(epochKey: string): 'present' | 'absent' | 'unobservable';
   readonly time: TimePort;
-  read(jobId: string): JobLocation | null;
+  read(jobId: string, observation?: RecoveryObservation, callerScope?: JobCallerScope): JobLocation | null;
   observePoll?<T>(read: () => T, liveJobIds?: ReadonlySet<string>): T;
   resultPathFor(jobId: string, execution: number): string;
   unknownLocationHolds(): UnknownLocationHold[];
+}
+
+export function locationInCallerScope(location: Pick<JobLocation, 'subject'>, scope?: JobCallerScope): boolean {
+  if (scope === undefined) return true;
+  const { jobKind, workDir } = location.subject;
+  return jobInCallerScope(
+    { jobKind, workDir: workDir === null ? null : canonicalWorkDirWireSchema.parse(workDir) },
+    scope.root,
+    scope.relation,
+  );
 }
 
 function viewLocation(stored: StoredJobLocation): JobLocation {
@@ -538,7 +555,7 @@ export class JobLocationIndex {
     return revision;
   }
 
-  private pollReads: Map<string, StoredJobLocation | null> | undefined;
+  private pollReads: Map<string, { value: unknown } | null> | undefined;
 
   private pollReadCount = 0;
   private livePollJobs: ReadonlySet<string> = new Set();
@@ -555,21 +572,32 @@ export class JobLocationIndex {
     }
   }
 
-  private readStored(jobId: string, observation?: RecoveryObservation): StoredJobLocation | null {
+  private readLocationJson(jobId: string, observation?: RecoveryObservation): { value: unknown } | null {
     if (this.pollReads?.has(jobId)) return this.pollReads.get(jobId) ?? null;
     if (this.pollReads && !this.livePollJobs.has(jobId)) {
       if (this.pollReadCount >= 32)
         throw new LocationObservationDeferred('Location observation deferred to the next bounded poll');
       this.pollReadCount++;
     }
-    const stored = optionalJson(this.runtime, this.jobPath(jobId), locationSchema, observation);
+    const stored = optionalJson(this.runtime, this.jobPath(jobId), locationJsonSchema, observation);
     this.pollReads?.set(jobId, stored);
     return stored;
   }
 
-  read(jobId: string, observation?: RecoveryObservation): JobLocation | null {
-    const stored = this.readStored(jobId, observation);
-    return stored === null ? null : viewLocation(stored);
+  private readStored(jobId: string, observation?: RecoveryObservation): StoredJobLocation | null {
+    const json = this.readLocationJson(jobId, observation);
+    return json === null ? null : locationSchema.parse(json.value);
+  }
+
+  read(jobId: string, observation?: RecoveryObservation, callerScope?: JobCallerScope): JobLocation | null {
+    const json = this.readLocationJson(jobId, observation);
+    if (json === null) return null;
+    if (callerScope !== undefined) {
+      const address = locationAddressSchema.parse(json.value);
+      if (!locationInCallerScope(address, callerScope))
+        return { ...address, disposition: 'unresolved', detail: { kind: 'absent' } };
+    }
+    return viewLocation(locationSchema.parse(json.value));
   }
 
   historicalSourceState(epochKey: string): 'present' | 'absent' | 'unobservable' {
@@ -586,21 +614,21 @@ export class JobLocationIndex {
     jobIds: readonly string[],
     session?: object,
     fullHistory = false,
-    callerRoot?: CanonicalWorkDir,
+    callerScope?: JobCallerScope,
   ): HistoricalSourceRead {
-    return readHistoricalSource(this, epochKey, jobIds, session, fullHistory, callerRoot);
+    return readHistoricalSource(this, epochKey, jobIds, session, fullHistory, callerScope);
   }
 
   readOnlyView(): JobLocationView {
     return {
       time: this.time,
       currentFingerprint: this.currentFingerprint,
-      read: (jobId) => this.read(jobId),
+      read: (jobId, observation, callerScope) => this.read(jobId, observation, callerScope),
       observePoll: (read, liveJobIds) => this.observePoll(read, liveJobIds),
       resultPathFor: (jobId, execution) => this.resultPathFor(jobId, execution),
       unknownLocationHolds: () => this.unknownLocationHolds(),
-      readHistorical: (epochKey, jobIds, session, fullHistory, callerRoot) =>
-        this.readHistorical(epochKey, jobIds, session, fullHistory, callerRoot),
+      readHistorical: (epochKey, jobIds, session, fullHistory, callerScope) =>
+        this.readHistorical(epochKey, jobIds, session, fullHistory, callerScope),
       historicalSourceState: (epochKey) => this.historicalSourceState(epochKey),
     };
   }

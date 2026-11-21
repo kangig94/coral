@@ -80,7 +80,7 @@ describe('bash-rewrite.mjs', () => {
   });
 
   it('ignores heredoc-only Coral text', () => {
-    const result = runBashHook('cat <<EOF\ncoral-cli jobs list\ncoral-cli wait jobs a\nEOF');
+    const result = runBashHook('cat <<EOF\ncoral-cli jobs list\ncoral-cli jobs wait a\nEOF');
     expect(result.status).toBe(0);
     expect(result.stdout).toBe('');
   });
@@ -116,7 +116,7 @@ describe('bash-rewrite.mjs', () => {
   });
 
   it('does not raise a delegation timeout because its prompt mentions a wait', () => {
-    const command = "coral-cli codex agent -i - <<'EOF'\ncoral-cli wait jobs fake\nEOF";
+    const command = "coral-cli codex agent -i - <<'EOF'\ncoral-cli jobs wait fake\nEOF";
     const output = expectBashRewriteOutput(runBashHook(command)).hookSpecificOutput;
     expect(output.updatedInput).not.toHaveProperty('timeout');
     expect(output.permissionDecision).toBe('allow');
@@ -136,7 +136,7 @@ describe('bash-rewrite.mjs', () => {
   });
 
   it('ignores Coral-looking heredoc text inside quoted substitutions', () => {
-    const result = runBashHook('echo "$(cat <<EOF\ncoral-cli wait jobs fake\nEOF\n)"');
+    const result = runBashHook('echo "$(cat <<EOF\ncoral-cli jobs wait fake\nEOF\n)"');
     expect(result.status).toBe(0);
     expect(result.stdout).toBe('');
   });
@@ -218,19 +218,16 @@ describe('bash-rewrite.mjs', () => {
     expect(splitPrefix(rewrittenCommand(command)).rest).toBe(command);
   });
 
-  it.each(['jobs wait', 'wait jobs'])(
-    'rewrites a chained, redirected %s without overriding the harness timeout',
-    (grammar) => {
-      const result = runBashHook(`cd "/tmp/x" && coral-cli ${grammar} jb-1 --embed > /tmp/out.txt 2>&1`);
+  it('rewrites a chained, redirected wait without overriding the harness timeout', () => {
+    const result = runBashHook(`cd "/tmp/x" && coral-cli jobs wait jb-1 --embed > /tmp/out.txt 2>&1`);
 
-      const updatedInput = expectBashRewriteOutput(result).hookSpecificOutput.updatedInput as Record<string, unknown>;
-      expect(updatedInput.timeout).toBeUndefined();
-      expect(updatedInput.run_in_background).toBeUndefined();
-    },
-  );
+    const updatedInput = expectBashRewriteOutput(result).hookSpecificOutput.updatedInput as Record<string, unknown>;
+    expect(updatedInput.timeout).toBeUndefined();
+    expect(updatedInput.run_in_background).toBeUndefined();
+  });
 
   it('keeps the wait command when a mixed command needs normal permission evaluation', () => {
-    const command = 'sleep 5 && coral-cli wait jobs a';
+    const command = 'sleep 5 && coral-cli jobs wait a';
     const output = expectBashRewriteOutput(runBashHook(command)).hookSpecificOutput;
     expect(output).not.toHaveProperty('permissionDecision');
     expect(output.updatedInput).not.toHaveProperty('timeout');
@@ -323,7 +320,7 @@ describe('bash-rewrite.mjs: background-task wrapping', () => {
     'prefixes the bridge for a background Coral invocation after %s',
     (redirect) => {
       const fixture = createFixture();
-      const command = `${redirect} coral-cli wait jobs a${redirect.startsWith('<<') ? '\nprompt\nEOF' : ''}`;
+      const command = `${redirect} coral-cli jobs wait a${redirect.startsWith('<<') ? '\nprompt\nEOF' : ''}`;
       const output = expectBashRewriteOutput(
         runBg(fixture, { command, run_in_background: true }, 'claude'),
       ).hookSpecificOutput;

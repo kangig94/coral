@@ -129,6 +129,7 @@ type DecodedTerminalRow = {
 export type JobsListFilters = {
   owner?: string;
   discussionId?: string;
+  parentWorkflowJobId?: string;
   unwaited?: boolean;
   projectRoot?: CanonicalWorkDir;
   phase?: JobPhase;
@@ -197,6 +198,10 @@ function readOrderedProjectionRows(db: Database, filters?: JobsListFilters): Pro
   if (filters?.projectRoot !== undefined) {
     clauses.push("(job_kind = 'kb' OR work_dir = ?)");
     parameters.push(filters.projectRoot);
+  }
+  if (filters?.parentWorkflowJobId !== undefined) {
+    clauses.push('parent_workflow_job_id = ?');
+    parameters.push(filters.parentWorkflowJobId);
   }
   if (filters?.discussionId !== undefined) {
     clauses.push(

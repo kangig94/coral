@@ -1,6 +1,5 @@
 import type { CanonicalWorkDir } from '../../runtime/canonical-work-dir.js';
 import { formatRecoveryQuarantineCommand } from './backend.js';
-import { waitCommandPrefix } from '../../coordinator/handoff-routing/wait-command.js';
 import { formatResultAvailability } from './result-availability.js';
 import type { CauseRef } from '../../causality/cause-ref.js';
 import { describeTerminalOutcome } from '../../jobs/outcome.js';
@@ -294,7 +293,7 @@ function jobSendUncertainRemedy(jobId: string, targetExecution: number | undefin
 
 function targetExecutionEvidence(jobId: string, targetExecution: number | undefined): readonly string[] {
   return [
-    formatJobsOperatorCommand({ kind: 'wait-job', jobId, grammar: 'current' }),
+    formatJobsOperatorCommand({ kind: 'wait-job', jobId }),
     `If it reports an execution other than ${targetExecution === undefined ? 'the one this send targeted' : `#${targetExecution}`}, it does not show whether the message arrived; the job detail lists every execution and may.`,
     formatJobsOperatorCommand({ kind: 'jobs-detail-full', jobId }),
   ];
@@ -309,10 +308,7 @@ function jobSendTargetChangedRemedy(jobId: string, context: JobSendOutputContext
 }
 
 function jobSendInspectionRemedy(jobId: string, policy: Extract<RemedyPolicy, { kind: 'inspect' }>): readonly string[] {
-  return [
-    policy.message,
-    formatJobsOperatorCommand({ kind: policy.command, jobId, grammar: 'current', all: policy.all }),
-  ];
+  return [policy.message, formatJobsOperatorCommand({ kind: policy.command, jobId, all: policy.all })];
 }
 
 function jobSendRetryRemedy(jobId: string, context: JobSendOutputContext | undefined): readonly string[] {
@@ -328,7 +324,7 @@ function jobSendRetryRemedy(jobId: string, context: JobSendOutputContext | undef
 function jobSendTerminalRemedy(jobId: string, context: JobSendOutputContext | undefined): readonly string[] {
   return [
     "Read the job's result before requesting another execution of its conversation.",
-    formatJobsOperatorCommand({ kind: 'wait-job', jobId, grammar: 'current' }),
+    formatJobsOperatorCommand({ kind: 'wait-job', jobId }),
     ...jobSendNewAttemptRemedy(jobId, context),
   ];
 }
@@ -352,7 +348,7 @@ function jobSendUnrestorableRemedy(
   return [
     diagnosis,
     'Read the execution result.',
-    formatJobsOperatorCommand({ kind: 'wait-job', jobId, grammar: 'current' }),
+    formatJobsOperatorCommand({ kind: 'wait-job', jobId }),
     'Start a new conversation with a fresh provider job. This does not continue this conversation.',
     ...jobSendFreshProviderRemedy(context, workDir),
   ];
@@ -465,7 +461,7 @@ export function formatLaunch(result: AcceptedLaunchResponse, execution: number |
       ? `Provider job ${result.jobId}${ordinal} ${result.launchState}`
       : `Workflow ${result.workflowId} ${result.launchState} (job ${result.jobId}${ordinal})`,
     'Wait for completion with the command below.',
-    formatJobsOperatorCommand({ jobId: result.jobId, kind: 'wait-job', grammar: 'current' }),
+    formatJobsOperatorCommand({ jobId: result.jobId, kind: 'wait-job' }),
   ].join('\n');
 }
 
@@ -713,7 +709,7 @@ export type JobsOperatorCommand =
   | Readonly<{ kind: 'backend-status' }>
   | Readonly<{ kind: 'jobs-detail-full'; jobId: string }>
   | JobOperatorRemedy
-  | Readonly<{ kind: 'wait-job'; jobId: string; grammar?: 'current' }>
+  | Readonly<{ kind: 'wait-job'; jobId: string }>
   | (Readonly<{ kind: 'send-job'; jobId: string }> & JobSendOutputContext)
   | Readonly<{ kind: 'jobs-list'; all?: boolean }>
   | (Readonly<{ kind: 'fresh-provider'; provider: 'codex' | 'claude'; workDir: CanonicalWorkDir }> &
@@ -732,7 +728,7 @@ export function renderJobsOperatorCommand(command: JobsOperatorCommand): string 
     case 'jobs-detail':
       return `coral-cli jobs detail ${command.jobId}`;
     case 'wait-job':
-      return `${command.grammar === 'current' ? 'coral-cli jobs wait' : waitCommandPrefix()} ${quoteCommandArgument(command.jobId)}`;
+      return `coral-cli jobs wait ${quoteCommandArgument(command.jobId)}`;
     case 'send-job':
       return `coral-cli jobs send ${quoteCommandArgument(command.jobId)} ${renderCommandInputTokens(command.inputTokens)}`;
     case 'jobs-list':

@@ -9,7 +9,7 @@ describe('isCoralOnlyCommand', () => {
   it.each([
     'coral-cli jobs wait abc',
     'timeout 10s coral-cli jobs wait a',
-    'timeout --preserve-status 1.5m coral-cli wait jobs a',
+    'timeout --preserve-status 1.5m coral-cli jobs wait a',
     'CORAL_OWNER=s coral-cli jobs list',
     'coral-cli jobs list 2>&1',
     'coral-cli jobs list 1>&2',
@@ -95,65 +95,65 @@ describe('isCoralOnlyCommand', () => {
 
 describe('Coral invocation detection', () => {
   it('does not read a fake heredoc in a comment after a standalone continuation', () => {
-    const command = "echo \\\n# <<'EOF'\ncoral-cli wait jobs real\nEOF";
+    const command = "echo \\\n# <<'EOF'\ncoral-cli jobs wait real\nEOF";
     expect(textInvokesCoralCli(command)).toBe(true);
     expect(textInvokesCoralWait(command)).toBe(true);
   });
 
   it.each(['EOF', "'EOF'", '"EOF"', '-EOF'])('excludes the %s heredoc body', (delimiter) => {
-    const command = `cat <<${delimiter}\ncoral-cli jobs list\ncoral-cli wait jobs a\nEOF`;
+    const command = `cat <<${delimiter}\ncoral-cli jobs list\ncoral-cli jobs wait a\nEOF`;
     expect(textInvokesCoralCli(command)).toBe(false);
     expect(textInvokesCoralWait(command)).toBe(false);
   });
 
   it('excludes an unterminated heredoc body', () => {
-    const command = 'cat <<EOF\ncoral-cli wait jobs a';
+    const command = 'cat <<EOF\ncoral-cli jobs wait a';
     expect(textInvokesCoralCli(command)).toBe(false);
     expect(textInvokesCoralWait(command)).toBe(false);
   });
 
   it('resumes command detection after every heredoc terminator', () => {
     const command =
-      "cat <<ONE <<'TWO'\ncoral-cli wait jobs fake\nONE\ncoral-cli wait jobs fake\nTWO\ncoral-cli wait jobs real";
+      "cat <<ONE <<'TWO'\ncoral-cli jobs wait fake\nONE\ncoral-cli jobs wait fake\nTWO\ncoral-cli jobs wait real";
     expect(textInvokesCoralCli(command)).toBe(true);
     expect(textInvokesCoralWait(command)).toBe(true);
   });
 
   it('keeps heredoc prompt content out of wait detection', () => {
-    const command = "coral-cli codex agent -i - <<'EOF'\ncoral-cli wait jobs fake\nEOF";
+    const command = "coral-cli codex agent -i - <<'EOF'\ncoral-cli jobs wait fake\nEOF";
     expect(textInvokesCoralCli(command)).toBe(true);
     expect(textInvokesCoralWait(command)).toBe(false);
   });
 
   it('does not mistake a quoted heredoc operator for a redirect', () => {
-    const command = 'echo "<<EOF"\ncoral-cli wait jobs real';
+    const command = 'echo "<<EOF"\ncoral-cli jobs wait real';
     expect(textInvokesCoralCli(command)).toBe(true);
     expect(textInvokesCoralWait(command)).toBe(true);
   });
 
   it('recognizes an unquoted heredoc terminator split by a backslash-newline', () => {
-    const command = 'cat <<EOF\nE\\\nOF\ncoral-cli wait jobs real\nEOF';
+    const command = 'cat <<EOF\nE\\\nOF\ncoral-cli jobs wait real\nEOF';
     expect(textInvokesCoralCli(command)).toBe(true);
     expect(textInvokesCoralWait(command)).toBe(true);
   });
 
   it('does not treat a delimiter line continuation as quoting', () => {
-    const command = 'cat <<EO\\\nF\nE\\\nOF\ncoral-cli wait jobs real\nEOF';
+    const command = 'cat <<EO\\\nF\nE\\\nOF\ncoral-cli jobs wait real\nEOF';
     expect(textInvokesCoralCli(command)).toBe(true);
     expect(textInvokesCoralWait(command)).toBe(true);
   });
 
   it.each([
-    'echo "$(cat <<EOF\ncoral-cli wait jobs fake\nEOF\n)"',
-    'echo "`cat <<EOF\ncoral-cli wait jobs fake\nEOF\n`"',
-    'echo "$(echo "$(cat <<EOF\ncoral-cli wait jobs fake\nEOF\n)")"',
+    'echo "$(cat <<EOF\ncoral-cli jobs wait fake\nEOF\n)"',
+    'echo "`cat <<EOF\ncoral-cli jobs wait fake\nEOF\n`"',
+    'echo "$(echo "$(cat <<EOF\ncoral-cli jobs wait fake\nEOF\n)")"',
   ])('excludes heredoc bodies inside substitutions: %s', (command) => {
     expect(textInvokesCoralCli(command)).toBe(false);
     expect(textInvokesCoralWait(command)).toBe(false);
     expect(isCoralOnlyCommand(command)).toBe(false);
   });
 
-  it.each(['echo "$(coral-cli wait jobs real)"', 'echo "`coral-cli wait jobs real`"'])(
+  it.each(['echo "$(coral-cli jobs wait real)"', 'echo "`coral-cli jobs wait real`"'])(
     'still detects executable substitutions: %s',
     (command) => {
       expect(textInvokesCoralCli(command)).toBe(true);

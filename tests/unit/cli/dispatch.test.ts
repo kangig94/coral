@@ -181,10 +181,8 @@ function stubNonChildInvocationEnv(): void {
 }
 
 describe('command client routing', () => {
-  it.each([
-    ['jobs', 'wait'],
-    ['wait', 'jobs'],
-  ])('attaches the invocation to the %s %s subscription', async (group, verb) => {
+  it('attaches the invocation to the jobs wait subscription', async () => {
+    const [group, verb] = ['jobs', 'wait'];
     const invocation = new WaitInvocation('stream', ['node', 'coral-cli', group, verb, 'a'], { now: () => 0 });
     installWaitInvocation(invocation);
     const subscription = { events: [], close: vi.fn() };

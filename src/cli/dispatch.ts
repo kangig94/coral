@@ -1047,10 +1047,16 @@ async function bindJobSendTarget(context: JobSendClientContext, jobId: string): 
   const { request, defaultContext } = context;
   let observed: unknown;
   try {
-    observed = await request<unknown>('jobs.detail', buildProjectScopedQuery({ jobId }, defaultContext));
+    observed = await request<unknown>('jobs.detail', buildProjectScopedQuery({ jobId, forSend: true }, defaultContext));
   } catch (error: unknown) {
     if (!(error instanceof IpcRpcError)) throw error;
-    const detail = isRecord(error.data) && isRecord(error.data.detail) ? error.data.detail : null;
+    if (isUnrecognizedKeysRejection(error)) return { kind: 'refused', outcome: unsupportedJobSendBuild() };
+    const data = isRecord(error.data) ? error.data : null;
+    if (error.code === 'scope_mismatch') {
+      const reason = typeof data?.remediation === 'string' ? `${error.message}. ${data.remediation}` : error.message;
+      return { kind: 'refused', outcome: { state: 'refused', code: 'scope_mismatch', reason } };
+    }
+    const detail = isRecord(data?.detail) ? data.detail : null;
     const refusal = readJobSendRefusal(detail?.sendRefusal);
     if (refusal !== null) return bindJobSendRefusal(refusal, detail);
 
@@ -1059,8 +1065,6 @@ async function bindJobSendTarget(context: JobSendClientContext, jobId: string): 
         return { kind: 'refused', outcome: { state: 'refused', code: 'not_found', reason: error.message } };
       case 'job_pre_epoch_history':
         return { kind: 'refused', outcome: { state: 'refused', code: 'pre_generation_job', reason: error.message } };
-      case 'scope_mismatch':
-        return { kind: 'refused', outcome: { state: 'refused', code: 'scope_mismatch', reason: error.message } };
       default:
         throw error;
     }

@@ -1,5 +1,4 @@
 import type { Command } from 'commander';
-import { waitCommandPaths } from '../coordinator/handoff-routing/wait-command.js';
 
 import { classifyHandoffRoutingStatusOperatorInvocation } from '../coordinator/handoff-routing/repair-operation.js';
 
@@ -9,7 +8,7 @@ export type StaticCommandPath =
   | 'jobs list'
   | 'jobs detail'
   | 'jobs release'
-  | (typeof waitCommandPaths)[keyof typeof waitCommandPaths]
+  | 'jobs wait'
   | 'jobs abort'
   | 'jobs send'
   | 'workflow'
@@ -68,8 +67,7 @@ export const commandClassMap = {
   'jobs list': 'directRead',
   'jobs detail': 'servedRead',
   'jobs release': 'mutate',
-  [waitCommandPaths.current]: 'subscribe',
-  [waitCommandPaths.legacyWaitJobs]: 'subscribe',
+  'jobs wait': 'subscribe',
   'jobs abort': 'mutate',
   'jobs send': 'mutate',
   workflow: 'mutate',
@@ -137,7 +135,6 @@ export const commandContainerPaths = new Set<string>([
   'discuss',
   'expansion',
   'kb',
-  waitCommandPaths.legacyWaitJobs.split(' ')[0],
   'jobs',
   'kb source',
   'kb community',

@@ -65,7 +65,17 @@ export const jobSendOutcomeSchema = z.discriminatedUnion('state', [
 export type JobSendOutcome = Readonly<z.infer<typeof jobSendOutcomeSchema>>;
 export type JobSendResult =
   | (Extract<JobSendOutcome, { state: 'delivered' }> & { providerTurnId: string })
-  | Exclude<JobSendOutcome, { state: 'delivered' }>;
+  | (Extract<JobSendOutcome, { state: 'refused' }> & { scopeMismatchWorkDir?: string })
+  | Exclude<JobSendOutcome, { state: 'delivered' | 'refused' }>;
+
+export function jobSendScopeMismatch(workDir: string | null): JobSendResult {
+  return {
+    state: 'refused',
+    code: 'scope_mismatch',
+    reason: 'The job belongs to another project.',
+    ...(workDir === null ? {} : { scopeMismatchWorkDir: workDir }),
+  };
+}
 
 export function missingJobSendRefusal(location: JobLocation | null): Extract<JobSendOutcome, { state: 'refused' }> {
   return location === null

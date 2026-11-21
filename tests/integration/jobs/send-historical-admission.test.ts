@@ -17,7 +17,7 @@ import { executeCatalogRequest } from '#src/transport/dispatch.js';
 import { IpcRpcError } from '#src/transport/ipc/client.js';
 import { rpcCatalog } from '#src/transport/rpc/catalog.js';
 import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
-import { testProjectPrincipal } from '#tests/helpers/principal.js';
+import { testPrincipal, testProjectPrincipal } from '#tests/helpers/principal.js';
 
 const client = vi.hoisted(() => ({ request: vi.fn() }));
 vi.mock('#src/transport/ipc/ensure.js', () => ({
@@ -194,3 +194,29 @@ it.each(['missing', 'unreadable'] as const)(
     expect(output.text).not.toContain('jobs wait');
   },
 );
+
+it('reports the retained job’s work directory before refusing a foreign send', async () => {
+  const { addressing, projectRoot: jobDir } = frozenHistoricalJob('missing');
+  const callerDir = mkdtempSync(join(tmpdir(), 'coral-send-sibling-'));
+  roots.push(callerDir);
+  const method = rpcCatalog.find((entry) => entry.name === 'jobs.detail')!;
+  const detail = vi.fn(addressing.detail.bind(addressing));
+  const ports = {
+    jobs: { scopeCheck: addressing.scopeCheck.bind(addressing), detail },
+  } as unknown as HttpHandlerPorts;
+  client.request.mockImplementation(async (name: string, params: unknown) => {
+    expect(name).toBe('jobs.detail');
+    const response = await executeCatalogRequest(method, method.requestSchema.parse(params), ports, testPrincipal());
+    if (response.kind !== 'unary') throw new Error('Expected unary detail response');
+    const body = response.body as { message: string };
+    throw new IpcRpcError({ code: -32000, message: body.message, data: body });
+  });
+
+  const result = await makeClient(callerDir, new Command('coral-cli').command('jobs').command('send')).sendJob(
+    jobId,
+    'continue',
+  );
+  expect(result).toMatchObject({ state: 'refused', code: 'scope_mismatch' });
+  expect(formatJobSendResult(jobId, result).text).toContain(jobDir);
+  expect(detail).not.toHaveBeenCalled();
+});

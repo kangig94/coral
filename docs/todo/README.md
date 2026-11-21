@@ -392,7 +392,6 @@ in a corpus whose index is the entry point is a file nobody reads.
 | Entry or file | Release obligation |
 | --- | --- |
 | [`legacy-cli-bundle-name.md`](./legacy-cli-bundle-name.md) | Remove the `coral-cli.cjs` compatibility copy and its build, verification, package, and attribute references when the release moves to 0.11.0. |
-| [`tests/invariants/legacy-wait-jobs-expiry.test.ts`](../../tests/invariants/legacy-wait-jobs-expiry.test.ts) | Retire the hidden `coral-cli wait jobs` shim: delete its registration and the legacy wait-path member, the delegated-child legacy prefix, and the hook's `LEGACY_WAIT_INVOCATION_RE`. Bump the wait-invocation handoff contract to version 2 so runners at <=0.10.19 refuse with `wait_build_mismatch` instead of "unknown command". The linked invariant enforces retirement. |
 | `clients/scripts/sweep-provider-session-residue.mjs` | Remove the temporary backlog cleanup tool tracked in `provider-session-residue-has-no-owner`. |
 
 ---

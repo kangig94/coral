@@ -4,7 +4,6 @@ const COMMAND_POSITION = String.raw`(?:^|[\n;&|(\x60])\s*${COMMAND_LEAD}coral-cl
 
 const INVOCATION_RE = new RegExp(`${COMMAND_POSITION}(?=\\s|$|[;&|)\\x60])`);
 const WAIT_INVOCATION_RE = new RegExp(`${COMMAND_POSITION}\\s+jobs\\s+wait(?=\\s|$|[;&|)\\x60])`);
-const LEGACY_WAIT_INVOCATION_RE = new RegExp(`${COMMAND_POSITION}\\s+wait(?=\\s|$|[;&|)\\x60])`);
 
 export function textInvokesCoralCli(text) {
   const { commandText, tokens } = scanCommand(text);
@@ -13,11 +12,7 @@ export function textInvokesCoralCli(text) {
 
 export function textInvokesCoralWait(text) {
   const { commandText, tokens } = scanCommand(text);
-  return (
-    WAIT_INVOCATION_RE.test(commandText) ||
-    LEGACY_WAIT_INVOCATION_RE.test(commandText) ||
-    tokensInvokeCoral(tokens, true)
-  );
+  return WAIT_INVOCATION_RE.test(commandText) || tokensInvokeCoral(tokens, true);
 }
 
 function tokensInvokeCoral(tokens, wait = false) {
@@ -42,10 +37,7 @@ function isCoralCommandWord(tokens, index, wait) {
 }
 
 function isWaitCommand(tokens, index) {
-  return (
-    (tokens[index + 1]?.raw === 'jobs' && tokens[index + 2]?.raw === 'wait') ||
-    (tokens[index + 1]?.raw === 'wait' && tokens[index + 2]?.raw === 'jobs')
-  );
+  return tokens[index + 1]?.raw === 'jobs' && tokens[index + 2]?.raw === 'wait';
 }
 
 function isTimedCoralWait(tokens, index) {

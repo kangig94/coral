@@ -1,7 +1,5 @@
 import { encodeWaitAllOutcome, type WaitAllOutcome } from '../wait-all-outcome.js';
 import { formatRecoveryQuarantineCommand } from './backend.js';
-import { waitCommandPrefix } from '../../coordinator/handoff-routing/wait-command.js';
-export { waitCommandPrefix } from '../../coordinator/handoff-routing/wait-command.js';
 import { formatResultAvailability } from './result-availability.js';
 import type { WaitSnapshot } from '../../jobs/wait/session.js';
 import { assertNever } from '../../infra/error-format.js';
@@ -81,7 +79,7 @@ export function waitContinuationCommand(
   allOutcome?: WaitAllOutcome,
 ): string {
   const outcomeFlag = allOutcome === undefined ? '' : ` --all-outcome ${encodeWaitAllOutcome(allOutcome)}`;
-  return `${waitCommandPrefix()} ${jobIds.join(' ')}${CONTINUATION_MODE_FLAG[mode]}${outcomeFlag}${cursor === null ? '' : ` --cursor ${cursor}`}`;
+  return `coral-cli jobs wait ${jobIds.join(' ')}${CONTINUATION_MODE_FLAG[mode]}${outcomeFlag}${cursor === null ? '' : ` --cursor ${cursor}`}`;
 }
 
 export function formatWaitContinuation(
@@ -128,7 +126,6 @@ export function formatWaitTerminal(
       event.result,
       options.describeCauseRef,
     ),
-    event.outsideCwdWorkDir === undefined ? undefined : `Work dir: ${JSON.stringify(event.outsideCwdWorkDir)}`,
     formatUsageSegment(event.usage, options),
   ]
     .filter((segment): segment is string => segment !== undefined)
@@ -205,7 +202,7 @@ export function formatWaitSnapshot(snapshot: WaitSnapshot): string {
         : `Job ${job.jobId}${job.execution === undefined ? '' : ` execution #${job.execution}`}: ${job.terminal ? 'terminal' : (job.phase ?? 'nonterminal')}`;
     const terminal = job.terminal;
     return joinLines([
-      job.outsideCwdWorkDir === undefined ? header : `${header} · Work dir: ${JSON.stringify(job.outsideCwdWorkDir)}`,
+      header,
       job.finishingStatus === undefined
         ? undefined
         : `Finishing: ${job.finishingStatus.kind}; ${job.finishingStatus.reason}; successor=${job.finishingStatus.successor}.`,

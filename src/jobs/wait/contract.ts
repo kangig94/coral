@@ -31,7 +31,6 @@ export interface WaitStreamRequest extends WaitRequest {
   abortSignal?: AbortSignal;
   drainProgress?: boolean;
   outsideCwdJobRead?: OperatorJobReadScopeExemption;
-  observeOnlyJobIds?: ReadonlySet<string>;
   admissions?: WaitAdmission[];
   onAdmission?: (admission: WaitAdmission) => void;
 }
@@ -73,7 +72,6 @@ type TerminalWaitEvent = {
   result: JobTerminal;
   continuity?: ContinuitySnapshot | null;
   usage?: UsageSummary;
-  outsideCwdWorkDir?: string;
 };
 /** A null cursor resumes as a fresh collection. */
 type Final = { cursor: WaitCursor | null; exitCode: number; executionSelections?: WaitExecutionSelection[] };

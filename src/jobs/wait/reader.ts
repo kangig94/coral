@@ -284,13 +284,6 @@ function* admissionEvents(session: WaitSession, state: DeliveryState): Generator
     yield { type: 'disposition', jobId: job.jobId, disposition: job.disposition, message: job.message };
   }
   for (const job of session.admissions) {
-    if (job.outsideCwdWorkDir === undefined || job.detail?.exit) continue;
-    const message = `Job ${job.jobId} · Work dir: ${JSON.stringify(job.outsideCwdWorkDir)}`;
-    if (state.notices.has(message)) continue;
-    state.notices.add(message);
-    yield { type: 'notice', message };
-  }
-  for (const job of session.admissions) {
     const status = job.detail?.status.finishingStatus;
     if (status === undefined) continue;
     const message = `Execution ${job.jobId}#${job.detail?.status.execution} is finishing: ${status.kind}; ${status.reason}; successor=${status.successor}.`;
@@ -338,7 +331,6 @@ function terminalEvent(
     type: 'terminal' as const,
     cursor: session.cursor(),
     jobId: job.jobId,
-    ...(job.outsideCwdWorkDir === undefined ? {} : { outsideCwdWorkDir: job.outsideCwdWorkDir }),
     ...(typeof job.detail?.status.execution === 'number' ? { execution: job.detail.status.execution } : {}),
     seq: job.detail?.terminalSeq ?? job.detail?.status.lastSeq ?? 0,
     result: { content, outcome, durationMs },

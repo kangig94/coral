@@ -145,17 +145,19 @@ carries `## Pioneer Ledger` after the items, pointing at the sealed Pioneer Repo
     job = parse `Provider job <jobId> execution #<n> <launchState>` from launch
     terminal = Bash(`cd "<work_dir>" && coral-cli jobs wait ${job} --embed`)
     while true:
-      if terminal prints a wait continuation for the job:
+      if terminal contains the job's terminal result header:
+        if terminal prints an available Result path:
+          resultPath = the printed Result path
+          output = Read(resultPath)
+          break
+        if terminal has no usable wait continuation for the job:
+          report the terminal outcome and unavailable artifact; take the pioneer-failed path below
+      if terminal prints a usable wait continuation for the job:
         terminal = Bash(the printed continuation command exactly as printed, from the same cwd)
         continue
       if terminal prints `remediation:` containing a `coral-cli jobs wait` command:
         terminal = Bash(run that command, preserving all arguments and the same cwd; accept either backticked or plain-text commands, and exclude surrounding prose)
         continue
-      if terminal contains the job's terminal result header:
-        if terminal has no printed Result path: take the pioneer-failed path below and report the unavailable artifact
-        resultPath = the printed Result path
-        output = Read(resultPath)
-        break
       stop with the rendered error; `wait_build_mismatch` requires restarting the session
     ```
     Classify the rendered output before reading an artifact; do not classify exit code `75` alone. The terminal header marks the result even when `provider_exit` propagated code `75`. A non-zero `provider_exit` code is terminal and is passed through unchanged (0–255).

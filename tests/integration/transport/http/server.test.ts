@@ -1195,7 +1195,7 @@ describe('execution backend server', () => {
     });
   });
 
-  it('streams another project’s job and its work directory to an unbound backend-token operator', async () => {
+  it('streams another project’s job to an unbound backend-token operator', async () => {
     const fakeService = createFakeExecutionService();
     const progressStore = createProgressStore();
     createdJobIds.add('93000000-0000-4000-8006-000000000002');
@@ -1230,7 +1230,6 @@ describe('execution backend server', () => {
     expect(JSON.parse(terminal!)).toMatchObject({
       type: 'terminal',
       jobId: '93000000-0000-4000-8006-000000000002',
-      outsideCwdWorkDir: ALTERNATE_PROJECT_ROOT,
       exitCode: 1,
     });
   });

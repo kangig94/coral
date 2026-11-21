@@ -73,11 +73,9 @@ const waitProgram = () => {
 };
 const waitArgv = (...flags: string[]) => ['node', 'coral-cli', 'jobs', 'wait', 'a', ...flags];
 
-it.each([
-  ['jobs', 'wait'],
-  ['wait', 'jobs'],
-])('detects every wait mode for %s %s', (group, verb) => {
-  const argv = ['node', 'coral-cli', group, verb, 'a'];
+it('detects wait modes for jobs wait', () => {
+  const argv = waitArgv();
+  expect(waitInvocationMode(waitProgram(), ['node', 'coral-cli', 'wait', 'jobs', 'a'])).toBeUndefined();
   expect(waitInvocationMode(waitProgram(), argv)).toBe('stream');
   expect(waitInvocationMode(waitProgram(), [...argv, '--snapshot'])).toBe('snapshot');
   expect(waitInvocationMode(waitProgram(), [...argv, '--unbounded'])).toBeUndefined();

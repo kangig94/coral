@@ -2,8 +2,9 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it, vi } from 'vitest';
+import { followJobs } from '#src/cli/follow.js';
+import * as readStore from '#src/cli/read-store.js';
 import { formatJobDetail } from '#src/cli/format/jobs.js';
-import { formatWaitSnapshot, formatWaitTerminal } from '#src/cli/format/wait.js';
 import { createCoordinatorRpcPorts } from '#src/coordinator/composition/rpc-ports.js';
 import { JobAttention } from '#src/coordinator/services/job-attention.js';
 import { readProjectionJobAddress } from '#src/jobs/projection-row.js';
@@ -11,7 +12,6 @@ import { CHILD_PRINCIPAL_CAPABILITIES } from '#src/coordinator/child-principal-r
 import { JobAddressing } from '#src/jobs/addressing.js';
 import { JobLocationIndex } from '#src/jobs/location-index.js';
 import type { JobDetailResponse } from '#src/jobs/records.js';
-import { parseWaitSnapshot } from '#src/jobs/wait/snapshot.js';
 import { parseWaitStreamEventValue } from '#src/jobs/wait/stream-event.js';
 import { canonicalizeWorkDir } from '#src/runtime/canonical-work-dir.js';
 import { attenuate } from '#src/security/attenuate.js';
@@ -25,9 +25,10 @@ import { conversationIdentityFixture } from '#tests/integration/jobs/conversatio
 it('allows operator job reads from another cwd, while keeping bound reads and all mutations scoped', async () => {
   const temp = realpathSync(mkdtempSync(join(tmpdir(), 'coral-job-read-scope-')));
   const callerDir = join(temp, 'caller');
-  const jobDir = join(temp, 'job');
+  const jobDir = join(temp, 'repo');
+  const subDir = join(jobDir, 'sub');
   mkdirSync(callerDir);
-  mkdirSync(jobDir);
+  mkdirSync(subDir, { recursive: true });
   const hintResultRepair = vi.fn();
   const f = conversationIdentityFixture({ stall: true, hintResultRepair });
   try {
@@ -104,73 +105,119 @@ it('allows operator job reads from another cwd, while keeping bound reads and al
       }
       return events;
     }
-    const send = (mode: 'steer' | 'continue') =>
-      request('jobs.send', {
-        jobId,
-        input: 'must not be delivered',
-        clientMessageId: '33333333-3333-4333-8333-000000000011',
-        target: { mode, execution: 1, requestedSeq, sourceEpoch: epochKey },
-      });
+    const send = (mode: 'steer' | 'continue', principal = operator) =>
+      request(
+        'jobs.send',
+        {
+          jobId,
+          input: 'must not be delivered',
+          clientMessageId: '33333333-3333-4333-8333-000000000011',
+          target: { mode, execution: 1, requestedSeq, sourceEpoch: epochKey },
+        },
+        principal,
+      );
 
     const reading = await request('jobs.detail', detail);
     expect(reading).toMatchObject({ kind: 'unary', body: { status: { workDir: jobDir } } });
     if (reading.kind !== 'unary') throw new Error('Expected detail response');
     expect(formatJobDetail(reading.body as JobDetailResponse)).toContain(`Work dir: ${jobDir}`);
-    for (const projectRoot of [callerDir, jobDir]) {
+    for (const projectRoot of [subDir, callerDir, jobDir]) {
       const live = await request('jobs.wait', { ...stream, projectRoot });
       if (live.kind !== 'subscription') throw new Error(JSON.stringify(live));
       const events = live.notifications[Symbol.asyncIterator]();
       try {
         expect((await events.next()).value).toMatchObject({ type: 'admission' });
-        if (projectRoot === callerDir)
-          expect((await events.next()).value).toMatchObject({
-            type: 'notice',
-            message: `Job ${jobId} · Work dir: "${jobDir}"`,
-          });
-        const mine = await request('jobs.list', { projectRoot: jobDir, owner: 'owning-session', unwaited: true });
+        const spec = specFor('jobs.list');
+        const mine = await executeCatalogRequest(
+          spec,
+          spec.requestSchema.parse({ owner: 'owning-session', unwaited: true }),
+          ports,
+          operator,
+        );
         expect(mine).toMatchObject({
-          body: { jobs: projectRoot === callerDir ? [{ jobId }] : [] },
+          body: { jobs: [] },
         });
       } finally {
         await events.return?.();
       }
     }
-    expect(await send('steer')).toMatchObject({ kind: 'unary', body: { state: 'refused', code: 'scope_mismatch' } });
+    for (const [principal, disclosed] of [
+      [operator, true],
+      [boundOperator, false],
+    ] as const) {
+      expect(await send('steer', principal)).toMatchObject({
+        body: {
+          state: 'refused',
+          code: 'scope_mismatch',
+          reason: disclosed ? expect.stringContaining(JSON.stringify(jobDir)) : 'The job belongs to another project.',
+        },
+      });
+    }
     for (const method of ['jobs.abort', 'jobs.release']) {
-      expect(await request(method, { jobs: [jobId] })).toMatchObject({ body: { code: 'scope_mismatch' } });
+      expect(await request(method, { jobs: [jobId] })).toMatchObject({
+        body: { code: 'scope_mismatch', detail: { workDirs: [{ jobId, workDir: jobDir }] } },
+      });
+      const bound = await request(method, { jobs: [jobId] }, boundOperator);
+      expect(bound).toMatchObject({ body: { code: 'scope_mismatch', detail: { jobs: [jobId] } } });
+      expect(JSON.stringify(bound)).not.toContain(jobDir);
     }
     expect(abort).not.toHaveBeenCalled();
     f.finish(jobId);
     await f.drive(service.waitForJobTerminal(jobId, 10_000));
     expect(f.store.loadJobDetailResponse(jobId)?.exit?.outcome).toMatchObject({ kind: 'completed' });
     const terminalSeq = f.store.readJobLastSeq(jobId);
-    expect(await send('continue')).toMatchObject({ kind: 'unary', body: { state: 'refused', code: 'scope_mismatch' } });
+    for (const [principal, disclosed] of [
+      [operator, true],
+      [boundOperator, false],
+    ] as const) {
+      expect(await send('continue', principal)).toMatchObject({
+        body: {
+          state: 'refused',
+          code: 'scope_mismatch',
+          reason: disclosed ? expect.stringContaining(JSON.stringify(jobDir)) : 'The job belongs to another project.',
+        },
+      });
+    }
 
     vi.spyOn(exportOwner, 'observeResultAvailability').mockReturnValue({ kind: 'pending' });
-    hintResultRepair.mockClear();
-    expect(await request('jobs.detail', detail)).toMatchObject({ body: { availability: { kind: 'pending' } } });
-    expect(hintResultRepair).not.toHaveBeenCalled();
-    const terminal = (await f.drive(readStream(operator))).find((event) => event.type === 'terminal');
-    expect(terminal).toMatchObject({
-      jobId,
-      outsideCwdWorkDir: jobDir,
-      result: { outcome: { kind: 'completed' } },
-      availability: { kind: 'pending' },
-      exitCode: 75,
-    });
-    if (terminal === undefined) throw new Error('Expected terminal response');
-    expect(formatWaitTerminal(terminal, terminal.cursor ?? null, false)).toContain(`Work dir: "${jobDir}"`);
-    const result = await request('jobs.wait.snapshot', snapshot);
-    if (result.kind !== 'unary') throw new Error('Expected snapshot response');
-    expect(formatWaitSnapshot(parseWaitSnapshot(result.body))).toContain(`Work dir: "${jobDir}"`);
+    const readPendingDetail = await request('jobs.detail', { ...detail, projectRoot: jobDir });
+    expect(readPendingDetail).toMatchObject({ body: { availability: { kind: 'pending' } } });
+    for (const projectRoot of [callerDir, jobDir]) {
+      hintResultRepair.mockClear();
+      expect(await request('jobs.detail', { ...detail, projectRoot })).toEqual(readPendingDetail);
+      expect(hintResultRepair).toHaveBeenCalledWith(jobId, 1);
 
-    expect(hintResultRepair).not.toHaveBeenCalled();
+      hintResultRepair.mockClear();
+      const terminal = (await f.drive(readStream(operator, { ...stream, projectRoot }))).find(
+        (event) => event.type === 'terminal',
+      );
+      expect(terminal).toMatchObject({
+        jobId,
+        result: { outcome: { kind: 'completed' } },
+        availability: { kind: 'pending' },
+        exitCode: 75,
+      });
+      expect(hintResultRepair).toHaveBeenCalledWith(jobId, 1);
+
+      hintResultRepair.mockClear();
+      const result = await request('jobs.wait.snapshot', { ...snapshot, projectRoot });
+      expect(result).toMatchObject({
+        body: {
+          jobs: [
+            {
+              jobId,
+              disposition: 'admitted',
+              terminal: { outcomeKind: 'completed' },
+              availability: { kind: 'pending' },
+            },
+          ],
+        },
+      });
+      expect(hintResultRepair).toHaveBeenCalledWith(jobId, 1);
+    }
     expect(f.store.readJobLastSeq(jobId)).toBe(terminalSeq);
     expect(locations.read(jobId)).toBeNull();
-    expect(await request('jobs.detail', { ...detail, projectRoot: jobDir })).toMatchObject({
-      body: { availability: { kind: 'pending' } },
-    });
-    expect(hintResultRepair).toHaveBeenCalledWith(jobId, 1);
+
     const forgedSelection = {
       cursor: String(requestedSeq),
       executionSelections: [
@@ -194,6 +241,42 @@ it('allows operator job reads from another cwd, while keeping bound reads and al
       }
     }
     expect(readWaitAdmissions.mock.calls.flatMap(([ids]) => ids)).not.toContain(jobId);
+    const localDetail = vi.fn();
+    const store = vi.spyOn(readStore, 'openReadCoralStore').mockReturnValue({
+      store: { jobs: { detail: localDetail } },
+      close: vi.fn(),
+    } as unknown as ReturnType<typeof readStore.openReadCoralStore>);
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(((chunk, callback) => {
+      if (typeof callback === 'function') callback();
+      return Boolean(chunk);
+    }) as typeof process.stdout.write);
+    try {
+      const code = await f.drive(
+        followJobs({
+          jobIds: [jobId],
+          projectRoot: callerDir,
+          render: { isTTY: false, columns: 80, embed: false, verbose: false },
+          emitError: (error) => {
+            throw error;
+          },
+          connect: async () => {
+            const result = await request('jobs.wait', stream, child);
+            if (result.kind !== 'subscription') throw new Error(JSON.stringify(result));
+            return {
+              [Symbol.asyncIterator]: () => result.notifications[Symbol.asyncIterator](),
+              close: async () => {},
+            };
+          },
+        }),
+      );
+      expect(code).toBe(1);
+      expect(stdout.mock.calls.map(([chunk]) => String(chunk)).join('')).toContain('scope-mismatch');
+      expect(localDetail).not.toHaveBeenCalled();
+    } finally {
+      stdout.mockRestore();
+      store.mockRestore();
+    }
+
     const forged = { projectRoot: callerDir, outsideCwdJobRead: true };
     for (const [method, params] of [
       ['jobs.detail', detail],

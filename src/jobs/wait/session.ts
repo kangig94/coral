@@ -23,8 +23,6 @@ export type WaitDisposition = 'admitted' | 'missing' | 'scope-mismatch' | 'unkno
 
 export type WaitAdmission = {
   jobId: string;
-  outsideCwdWorkDir?: string;
-  observeOnly?: true;
   selection?: WaitExecutionSelection;
   disposition: WaitDisposition;
   message?: string;
@@ -85,7 +83,6 @@ export type WaitTerminalSummary = {
 };
 export type WaitSnapshotJob = {
   jobId: string;
-  outsideCwdWorkDir?: string;
   execution?: number;
   disposition: WaitDisposition;
   message?: string;

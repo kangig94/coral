@@ -65,7 +65,6 @@ function snapshotJob(session: WaitSession, admission: WaitAdmission): WaitSnapsh
   const { jobId, disposition, message, detail, availability } = admission;
   const row: WaitSnapshotJob = { jobId, disposition, ...(message === undefined ? {} : { message }), progress: [] };
   if (disposition !== 'admitted') return row;
-  if (admission.outsideCwdWorkDir !== undefined) row.outsideCwdWorkDir = admission.outsideCwdWorkDir;
   if (typeof detail?.status.execution === 'number') row.execution = detail.status.execution;
   row.phase = detail?.status.phase ?? 'unresolved';
   row.finishingStatus = detail?.status.finishingStatus;
@@ -176,7 +175,6 @@ const waitSnapshotSchema = z
         z
           .object({
             jobId: z.string().min(1),
-            outsideCwdWorkDir: z.string().min(1).optional(),
             execution: executionOrdinalSchema.optional(),
             disposition: z.enum(['admitted', 'missing', 'scope-mismatch', 'unknown', 'unreadable']),
             message: z.string().optional(),

@@ -90,7 +90,6 @@ export const resultAvailabilitySchema = z.discriminatedUnion('kind', [
 
 const waitTerminalBlockSchema = z.object({
   type: z.literal('terminal'),
-  outsideCwdWorkDir: z.string().min(1).optional(),
   execution: executionOrdinalSchema.optional(),
   executionSelections: waitExecutionSelectionsSchema.optional(),
   jobId: z.string(),

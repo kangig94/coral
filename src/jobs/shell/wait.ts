@@ -346,7 +346,7 @@ export class WaitCoordinator {
     const saved = cache.get(jobId);
     const cached = saved && sameEpoch(saved.epochKey, epochKey) ? saved : undefined;
     const request = session as WaitStreamRequest | undefined;
-    const refreshed = cached === undefined ? undefined : this.refreshCachedAdmission(jobId, cached, request);
+    const refreshed = cached === undefined ? undefined : this.refreshCachedAdmission(jobId, cached);
     if (refreshed !== undefined) return refreshed;
     const supplied = request?.executionSelections?.find((selection) => selection.jobId === jobId);
     const admission = this.readSelectedAdmission({
@@ -361,17 +361,13 @@ export class WaitCoordinator {
     return admission;
   }
 
-  private refreshCachedAdmission(
-    jobId: string,
-    cached: WaitAdmission,
-    request?: WaitStreamRequest,
-  ): WaitAdmission | undefined {
+  private refreshCachedAdmission(jobId: string, cached: WaitAdmission): WaitAdmission | undefined {
     if (cached.detail && !cached.detail.exit && cached.detail.status.lastSeq === this.deps.readJobLastSeq(jobId)) {
       return this.refreshPendingAdmission(jobId, cached, cached.detail);
     }
     if (cached.detail?.exit) {
       const availability = this.deps.observeResultAvailability(jobId, cached.detail.status.execution ?? undefined);
-      if (availability.kind === 'pending' && !request?.observeOnlyJobIds?.has(jobId))
+      if (availability.kind === 'pending')
         this.deps.hintResultRepair?.(jobId, cached.detail.status.execution ?? undefined);
       return { ...cached, availability };
     }
@@ -473,14 +469,13 @@ export class WaitCoordinator {
   }
 
   private buildWaitAdmission(context: WaitAdmissionContext, projected: AdmittedWaitDetail): WaitAdmission {
-    const { jobId, epochKey, session } = context;
+    const { jobId, epochKey } = context;
     const status = projected.status;
     const exit = this.readAdmissionExit(jobId, projected);
     const availability = exit
       ? this.deps.observeResultAvailability(jobId, projected.status.execution ?? undefined)
       : undefined;
-    if (availability?.kind === 'pending' && !session?.observeOnlyJobIds?.has(jobId))
-      this.deps.hintResultRepair?.(jobId, projected.status.execution ?? undefined);
+    if (availability?.kind === 'pending') this.deps.hintResultRepair?.(jobId, projected.status.execution ?? undefined);
     const selection = this.selectWaitExecution(context, projected);
     return {
       jobId,
