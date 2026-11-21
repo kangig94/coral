@@ -217,6 +217,7 @@ function toInstallOnlyCatalogEntry(manifest: InstallOnlyManifest, runtime: Runti
     ...(typeof local.targetDir === 'string' ? { targetDir: local.targetDir } : {}),
     ...(typeof local.method === 'string' ? { method: local.method } : {}),
     ...(confirmDownload === undefined ? {} : { confirmDownload }),
+    ...(local.statusDescription === undefined ? {} : { statusDescription: local.statusDescription }),
   });
 }
 

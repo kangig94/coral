@@ -16,6 +16,9 @@
   },
   "files": [
     "dist/",
+    "clients/hooks/lib/equip-tools.mjs",
+    "clients/hooks/lib/equip-tools.d.mts",
+    "clients/hooks/lib/path-executable.mjs",
     "clients/bridge/coral-backend.cjs",
     "clients/bridge/coral-sentinel.cjs",
     "clients/bridge/coral-cli",

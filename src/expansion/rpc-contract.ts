@@ -331,6 +331,7 @@ const installedResultSchema = z
     postInstall: postInstallSchema.optional(),
     onboarding: onboardingSchema.optional(),
     command: z.string().min(1).optional(),
+    statusDescription: z.string().min(1).optional(),
   })
   .strict();
 
@@ -343,6 +344,7 @@ const updatedResultSchema = z
     postInstall: postInstallSchema.optional(),
     onboarding: onboardingSchema.optional(),
     command: z.string().min(1).optional(),
+    statusDescription: z.string().min(1).optional(),
   })
   .strict();
 
@@ -355,6 +357,7 @@ const alreadyInstalledResultSchema = z
     postInstall: postInstallSchema.optional(),
     onboarding: onboardingSchema.optional(),
     command: z.string().min(1).optional(),
+    statusDescription: z.string().min(1).optional(),
   })
   .strict();
 

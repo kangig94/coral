@@ -132,11 +132,17 @@ async function applyPostInstallCatalogActions(
   return result;
 }
 
-function assertCanonicalInstallerTarget(result: InstallResponse, runtime: Runtime, name: string): void {
+function assertCanonicalInstallerTarget(
+  result: InstallResponse,
+  installer: EngineInstaller,
+  runtime: Runtime,
+  name: string,
+): void {
   if (!('targetDir' in result) || result.targetDir === undefined) {
     return;
   }
-  if (resolve(result.targetDir) !== resolve(runtime.paths.coral.engine.dataDir(name))) {
+  const targetDir = installer.installTargetDir?.(runtime) ?? runtime.paths.coral.engine.dataDir(name);
+  if (resolve(result.targetDir) !== resolve(targetDir)) {
     throw new Error(`Expansion package '${name}' returned a non-canonical target directory`);
   }
 }
@@ -210,7 +216,7 @@ export async function installExpansion(name: string, opts: InstallExpansionOptio
           operationLockHeld: true,
         }),
       );
-      assertCanonicalInstallerTarget(result, runtime, name);
+      assertCanonicalInstallerTarget(result, pkg.installer, runtime, name);
       return applyPostInstallCatalogActions(result, runtime, name, assertLocksOwned);
     },
   );

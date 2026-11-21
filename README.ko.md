@@ -218,6 +218,9 @@ gpt-6-sol  │ 5h: 0% (4:59) wk:22% (2.8d) │ spark 5h: 3% (0:47) wk: 1% (6.8d)
 | `/coral:discuss`       | 모더레이션 기반 다자간 AI 토론                               |      -       |
 | `/coral:bid`           | 활성 `--user` 토론 세션에서 입찰/발언                        |      -       |
 | `/coral:statusline`    | HUD 상태줄 설치/제거                                         |      -       |
+| `/coral:equip`         | 에이전트 도구와 KB 런타임 파일 설치                           |      -       |
+
+Codebase Memory를 설치하려면 `/coral:equip codebase-memory`를 실행하세요. 공식 설치 프로그램이 실행 파일을 `~/.local/bin`에 설치합니다. 업데이트 스크립트를 저장하는 과정에서 기존 `~/.local/bin/install.sh`를 덮어쓸 수 있습니다. Coral은 PATH에서 로컬 경로로 확인된 항목을 먼저 살펴보고, 실행 파일을 찾지 못하면 기본 설치 경로를 확인합니다. `/coral:equip --list`에서 Coral이 찾은 실행 파일과 기존 Coral 설치본을 옮길 수 있는지 확인할 수 있습니다. Codebase Memory를 제거할 때는 처음 설치한 방식에 맞는 제거 절차를 따르세요. [에이전트 도구 설치 경로](docs/configuration.md#agent-tool-locations)
 
 ## 지식 베이스
 

@@ -136,6 +136,7 @@ export interface StorageMutationPort {
 
 export interface StoragePort extends StorageWholeFilePort, StorageMutationPort {
   assertReadableSync(path: string): void;
+  assertExecutableSync(path: string): void;
   observeDirectoryTraversabilitySync(path: string): DirectoryTraversability;
   readdir(path: string): Promise<string[]>;
   iterateDirectory(path: string): AsyncIterable<string>;

@@ -47,7 +47,7 @@ Bundled engines auto-equip at coordinator boot via the bundled fallback pass. Th
 
 | status    | Action |
 |-----------|--------|
-| `catalog` | Present the catalog as a table with `id`, `name`, `tier`, package `description`, `provides` when present, translated `activation`, `status`, `statusDescription` when present, `confirmDownload` when present, `targetDir` when present, and `cleanupCommand` when present. Render `provides` as sibling collections: `provides.capabilities` as a comma-separated capability label/name list and `provides.retrievalRoles` as a comma-separated role label list, for example `provides: capabilities=[Text (FTS), Vector (Semantic)]; retrievalRoles=[Text, Vector, Graph]`. Do not group capabilities by `typeTag`; it is opaque metadata |
+| `catalog` | Present the catalog as a table with `id`, `name`, `tier`, package `description`, `provides` when present, translated `activation`, `status`, `statusDescription` when present, installed `command` when present, `confirmDownload` when present, `targetDir` when present, and `cleanupCommand` when present. Render `provides` as sibling collections: `provides.capabilities` as a comma-separated capability label/name list and `provides.retrievalRoles` as a comma-separated role label list, for example `provides: capabilities=[Text (FTS), Vector (Semantic)]; retrievalRoles=[Text, Vector, Graph]`. Do not group capabilities by `typeTag`; it is opaque metadata |
 | `info`    | Show the single package entry using the same package-status routing table below, including `tier`, `fills`/`slot` when present, `provides` when present using the same sibling collection rendering as catalog rows, and the translated `activation` label |
 | `error`   | Show `userMessage` and `remediation`. Show `suggestions` when present, then stop. For debugging, show `code` and any `context` fields |
 
@@ -77,7 +77,8 @@ Bundled engines auto-equip at coordinator boot via the bundled fallback pass. Th
 
 0. Unless this session already has a complete current `--list`/`info` entry for the package — including `activation` and whether `confirmDownload` is present — run `coral-cli expansion info <package>` first. Remembering only the activation is not sufficient.
 1. **Retired residue gate.** If `activation` is `'remove-catalog'`, do not run `expansion equip`. When `cleanupCommand` is present, show that exact command, ask the user to confirm cleanup, and on confirmation run only Bash(`<exact cleanupCommand>`), parse its single-line JSON result, and stop. Never interpolate or reconstruct this command. When `cleanupCommand` is absent, show `lastError` and stop without running any command.
-2. **Consent gate for install-only packages.** If `activation` is `'none'` and the current entry includes `confirmDownload`, show that message exactly and ask the user to confirm. It describes the package's actual download and preservation behavior; do not replace it with a generic remote-script warning. If the field is absent, explain that the package may run its own remote install script through the shell, then ask for confirmation. If the user declines, stop without running equip. (Engine packages — `activation: 'equip'` — need no extra prompt; proceed directly.) The install runs synchronously and progress is not streamed back, so explain that the final result may take time.
+2. **Install-only preflight.** When the `codebase-memory` entry reports an installed `command` and does not offer legacy migration, show the existing executable and any `statusDescription`, then finish. For an explicit refresh, use `/equip --update codebase-memory`. Plain equip runs the official installer only for installation or legacy migration.
+   For an install-only package that still requires an operation, if `activation` is `'none'` and the current entry includes `confirmDownload`, show that message exactly and ask the user to confirm. It describes the package's actual download and preservation behavior; do not replace it with a generic remote-script warning. If the field is absent, explain that the package may run its own remote install script through the shell, then ask for confirmation. If the user declines, stop without running equip. (Engine packages — `activation: 'equip'` — need no extra prompt; proceed directly.) The install runs synchronously and progress is not streamed back, so explain that the final result may take time.
 3. Bash(`coral-cli expansion equip <package>`)
 4. Parse the single-line JSON result.
 5. Route by `status`:
@@ -118,9 +119,11 @@ Bundled engines auto-equip at coordinator boot via the bundled fallback pass. Th
 | `error`              | Show `userMessage` and `remediation`. Show `suggestions` when present, then stop. For debugging, show `code` and any `context` fields |
 
 5. Apply the shared install-only result routing below: use the changed case for `updated` and the no-change case for `already_up_to_date`.
-6. `update` is equivalent to `equip` when the local version differs from the catalog version; `/equip <package>` also updates implicitly. Use `/equip --update <package>` when the user is explicitly asking to bump or refresh the installed version.
+6. Engine packages can update implicitly during equip when the local version differs from the catalog version. Use `/equip --update <package>` when the user explicitly asks to refresh the installed version.
 
 #### Shared install-only result routing
+
+Show `statusDescription` when present. For a retained legacy path, present the reported reason and the action needed before retrying cleanup.
 
 - Changed results:
   - `method: 'runtime-download'`: show `targetDir` when present and say no coding-agent restart is required. When `ko` is enabled and the backend is active, Kiwi recovery and Korean reindex proceed live; otherwise the artifacts are ready for the next backend start or for when `ko` is enabled.
@@ -133,7 +136,7 @@ Bundled engines auto-equip at coordinator boot via the bundled fallback pass. Th
 
 1. Bash(`coral-cli expansion info <package>`)
 2. Parse the single-line JSON result.
-3. Show the status and, when returned, the package `tier`, `provides.capabilities`, `confirmDownload`, `targetDir`, `addonPath`, installed `command`, retired-residue `cleanupCommand`, `userMessage`, and `remediation`. Show `confirmDownload` exactly so the user can inspect any source, size, and preservation disclosure before equip or update. Treat an error result as terminal.
+3. Show the status and, when returned, the package `tier`, `statusDescription`, `provides.capabilities`, `confirmDownload`, `targetDir`, `addonPath`, installed `command`, retired-residue `cleanupCommand`, `userMessage`, and `remediation`. Show `confirmDownload` exactly so the user can inspect any source, size, and preservation disclosure before equip or update. Treat an error result as terminal.
 
 ### `uninstall <equipment-name>`
 
@@ -143,15 +146,18 @@ Bundled engines auto-equip at coordinator boot via the bundled fallback pass. Th
 
 | status         | Action                                                                                                           |
 |----------------|------------------------------------------------------------------------------------------------------------------|
-| `uninstalled`  | For install-only packages, confirm the local installation or runtime artifacts were removed directly. For installed-tier engines, confirm removal through the coordinator-owned catalog-removal transaction |
+| `uninstalled`  | For Coral-owned install-only packages, confirm that the runtime artifacts were removed. For installed-tier engines, confirm removal through the coordinator-owned catalog-removal transaction |
 | `not_equipped` | Inform user the engine was already not equipped; treat as success                                                |
 | `error`        | Show `userMessage` and `remediation`. Show `suggestions` when present, then stop. For debugging, show `code` and any `context` fields |
 
-4. `unequip` for installed-tier engines asks the coordinator to remove the catalog entry transactionally, which disposes any live scope without running bundled fallback, unregisters manifest-scoped capability declarations when allowed, and then removes local artifacts. For install-only packages, it removes the local installation or runtime artifacts.
+4. `unequip` for installed-tier engines asks the coordinator to remove the catalog entry transactionally, which disposes any live scope without running bundled fallback, unregisters manifest-scoped capability declarations when allowed, and then removes local artifacts. For Coral-owned install-only packages such as Kiwi, it removes the runtime artifacts. For Codebase Memory, show the returned instructions for uninstalling the resolved copy through its original install source.
 
 ## Notes
 
-- Install-only binaries and engine artifacts both land under the engine data tree (`~/.coral/data/engines/<engine>/`, or `~/.coral/data-dev/engines/<engine>/` when `CORAL_FLAVOR=dev`). Shell-installer results report the executable path as `command`; pinned runtime-download results report their artifact root as `targetDir`
+- Codebase Memory's official installer puts `codebase-memory-mcp` in `~/.local/bin` and configures supported agents. The installer may create or overwrite the updater at `~/.local/bin/install.sh`. Coral checks eligible local PATH entries first, then checks the standard directory. Show the resolved `command` when present.
+- `/equip --update codebase-memory` reruns the official installer for the standard copy. For another PATH installation, follow the returned instructions to update through its original installer or package manager.
+- When `statusDescription` identifies a migratable legacy Coral copy, show the path and the migration instruction. When it identifies a retained path, show the reason and the reported remediation.
+- Coral-owned artifacts such as Kiwi live under `~/.coral/gen2/data/engines/<engine>/` in prod or `~/.coral/gen2/data-dev/engines/<engine>/` in dev. Runtime-download results report their artifact root as `targetDir`.
 - Corpus indexes stay under `~/.coral/data/kb/` in prod or `~/.coral/data-dev/kb/` in dev
 - These data paths are account-neutral. `CODEX_HOME` and `CLAUDE_CONFIG_DIR` select provider credentials per invocation and never change the Coral daemon or state root
 - Some installed engines may have native artifacts or model downloads; follow the `userMessage` and `remediation` returned by the CLI for missing prerequisites.
