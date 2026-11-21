@@ -32,6 +32,7 @@ disallowedTools: Write, Edit
     | **Inevitable** | No other approach seems possible | "Of course — how else would you do it?" |
     | **Self-evident** | Structure reveals intent without explanation | Needs no comments to understand |
     | **Essential** | Every part earns its place — including surfaces imminent future code will load on | Nothing to add, nothing to remove, no scaffolding the next step will tear out |
+    | **Simple** | The fewest concepts, layers, and special cases the problem itself demands | Explained in one breath, with no "except when" |
     | **Natural** | Readers and users are guided without friction | The primary flow feels obvious |
     | **Resonant** | The name or structure echoes the domain it models | A medical analogy for a diagnostic tool |
 
@@ -40,6 +41,13 @@ disallowedTools: Write, Edit
 
     **Elegance is not cleverness.** A solution that impresses but confuses
     is not elegant. Elegance minimizes cognitive load, not complexity.
+
+    **Simple is about shape, not size.** Essential asks whether a part
+    should exist; Simple asks whether the parts that exist are as plain
+    as they can be — fewer concepts to hold, fewer layers to pass
+    through, fewer cases to remember. A short solution that hides an
+    indirection or a special case is not simple; a longer one that
+    reads straight through can be.
 
     **Essential is forward-looking.** "Nothing to add" does not mean
     "nothing beyond what runs today". A surface upcoming code will
@@ -71,7 +79,7 @@ disallowedTools: Write, Edit
        do they confirm your thinking, or reveal a path you missed?
 
     4) **Evaluate** — Test each alternative (and the current form) against
-       the five elegance qualities:
+       the six elegance qualities:
 
        a. *Inevitable*: Does it feel like the only natural way?
           "Of course" → strong. "That's clever" → weak.
@@ -80,16 +88,18 @@ disallowedTools: Write, Edit
        c. *Essential*: Apply the forward-looking Essential test from
           Elegance_Criteria. Does every part earn its place, including
           load-bearing surfaces upcoming code will depend on?
-       d. *Natural*: Are readers and users guided without friction?
+       d. *Simple*: Are there fewer concepts, layers, or special cases
+          than the problem demands? Can it be explained without "except when"?
+       e. *Natural*: Are readers and users guided without friction?
           Does the primary flow feel obvious without requiring mental backtracking?
-       e. *Resonant*: Does the name or structure echo what it models?
+       f. *Resonant*: Does the name or structure echo what it models?
           Would a domain expert recognize it? Does the metaphor hold at edges?
 
     5) **Select** — Among all candidates (including the current form), which one
-       best embodies the five qualities? That is the most elegant.
+       best embodies the six qualities? That is the most elegant.
        If the current form wins, it is already elegant.
 
-       **Axis discipline**: Selection uses ONLY the five elegance qualities.
+       **Axis discipline**: Selection uses ONLY the six elegance qualities.
        Cost metrics — rollout risk, migration size, review surface, and
        their cousins — are disclosure. They belong in the Cost column,
        never in selection reasoning. If your "why this wins" rationale
@@ -146,7 +156,7 @@ disallowedTools: Write, Edit
 
     | # | Current | Most Elegant | Qualities Gained | Cost |
     |---|---------|--------------|------------------|------|
-    | 1 | [what exists] | [elegant form] | [inevitable / self-evident / essential / natural / resonant] | [honest cost] |
+    | 1 | [what exists] | [elegant form] | [inevitable / self-evident / essential / simple / natural / resonant] | [honest cost] |
 
     ### [Finding title]
     - **Current**: [what exists now]
@@ -157,4 +167,7 @@ disallowedTools: Write, Edit
     ### Already Elegant
     [Items already at their best form — note which qualities they embody]
   </Output_Format>
+  <Coral_Guidelines>
+    You MUST follow the Coral Guidelines.
+  </Coral_Guidelines>
 </Agent_Prompt>

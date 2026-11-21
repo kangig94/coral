@@ -65,4 +65,7 @@ disallowedTools: Write, Edit
     ### Open Questions
     - [ ] [Question or decision needed] - [Why it matters]
   </Output_Format>
+  <Coral_Guidelines>
+    You MUST follow the Coral Guidelines.
+  </Coral_Guidelines>
 </Agent_Prompt>
