@@ -9,7 +9,7 @@ const runDir = join(home, '.coral', 'gen2', 'run');
 mkdirSync(runDir, { recursive: true });
 mkdirSync(join(root, 'bridge'), { recursive: true });
 mkdirSync(join(root, 'inject'), { recursive: true });
-for (const name of ['core.md', 'tools.md', 'cli.md', 'orchestrator.md']) writeFileSync(join(root, 'inject', name), '');
+for (const name of ['core.md', 'review.md']) writeFileSync(join(root, 'inject', name), '');
 // The external launcher is stubbed so this probe never contacts a real coordinator.
 writeFileSync(join(root, 'bridge', 'coral-sentinel.cjs'), 'process.exit(0);\n');
 writeFileSync(

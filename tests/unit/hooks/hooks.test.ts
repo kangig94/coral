@@ -15,6 +15,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   CORAL_SKILL_VARS_HOOK,
+  CORAL_START_HOOK,
   KB_START_HOOK,
   KB_LOOKUP_REMINDER_HOOK,
   KB_PROMOTE_GATE_HOOK,
@@ -46,11 +47,33 @@ function coralProjectDir(homeDir: string, source: string): string {
   return join(homeDir, '.coral', 'projects', source.replace(/\//g, '-'));
 }
 
+describe('Coral start hook registration', () => {
+  it.each([
+    { host: 'claude', event: 'SessionStart', matcher: '*', rootVar: 'CLAUDE_PLUGIN_ROOT', timeout: 5 },
+    { host: 'claude', event: 'SubagentStart', matcher: '*', rootVar: 'CLAUDE_PLUGIN_ROOT', timeout: 3 },
+    { host: 'codex', event: 'SessionStart', matcher: '*', rootVar: 'PLUGIN_ROOT', timeout: 5 },
+    { host: 'copilot', event: 'SessionStart', matcher: undefined, rootVar: 'CLAUDE_PLUGIN_ROOT', timeout: 5 },
+  ])('registers coral-start.mjs on $host $event', ({ host, event, matcher, rootVar, timeout }) => {
+    const manifest = JSON.parse(
+      readFileSync(new URL(`../../../clients/hooks/${host}.json`, import.meta.url), 'utf8'),
+    ) as { hooks: Record<string, { matcher?: string; hooks: unknown[] }[]> };
+    const group = manifest.hooks[event]?.find((entry) => entry.matcher === matcher);
+    const pluginRoot = '${' + rootVar + '}';
+    const commands = group?.hooks ?? [];
+    expect(commands).toContainEqual({
+      type: 'command',
+      command: `test -d "${pluginRoot}" || exit 0; node "${pluginRoot}/hooks/coral-start.mjs"`,
+      [host === 'copilot' ? 'timeoutSec' : 'timeout']: timeout,
+    });
+  });
+});
+
 describe('session-start.mjs', () => {
   it('outputs the inject bundle with session_id when both are provided', () => {
     const fixture = createFixture();
     const coreFragment = 'Project instructions\nSecond line';
-    writeInjectBundle(fixture.pluginRoot, coreFragment);
+    const reviewFragment = 'Review findings for the owner';
+    writeInjectBundle(fixture.pluginRoot, { core: coreFragment, review: reviewFragment });
 
     const result = runHook(SESSION_START_HOOK, { session_id: 'sess-123' }, { CLAUDE_PLUGIN_ROOT: fixture.pluginRoot });
 
@@ -62,23 +85,7 @@ describe('session-start.mjs', () => {
       /^SessionStart:session_id=sess-123\nCurrent host: (claude|codex)\nClaude config dir: .+\n\n/u,
     );
     expect(output.hookSpecificOutput.additionalContext).toContain(coreFragment);
-  });
-
-  it('injects the launch, wait, and send guidance at session start', () => {
-    const fixture = createFixture();
-    writeInjectBundle(fixture.pluginRoot, {
-      cli: readFileSync(new URL('../../../clients/inject/cli.md', import.meta.url), 'utf8'),
-      orchestrator: readFileSync(new URL('../../../clients/inject/orchestrator.md', import.meta.url), 'utf8'),
-    });
-
-    const result = runHook(SESSION_START_HOOK, { session_id: 'sess-123' }, { CLAUDE_PLUGIN_ROOT: fixture.pluginRoot });
-
-    expect(result.status).toBe(0);
-    const { additionalContext } = expectHookOutput(result).hookSpecificOutput;
-    expect(additionalContext).toContain('coral-cli codex <agent> --work-dir "<path>" -i -');
-    expect(additionalContext).toContain('command=coral-cli jobs wait <job-id>');
-    expect(additionalContext).toContain('timeout --preserve-status 100 coral-cli jobs wait <job-id>');
-    expect(additionalContext).toContain('A continuation starts the next execution in the same conversation');
+    expect(output.hookSpecificOutput.additionalContext).toContain(reviewFragment);
   });
 
   it('emits a flat, unwrapped payload and "Current host: copilot" under Copilot CLI', () => {
@@ -329,7 +336,7 @@ describe('kb-start.mjs', () => {
 describe('subagent-start.mjs', () => {
   it('outputs the inject bundle with SubagentStart hookEventName', () => {
     const fixture = createFixture();
-    writeInjectBundle(fixture.pluginRoot, 'Guidelines for subagent');
+    writeInjectBundle(fixture.pluginRoot, { core: 'Guidelines for subagent', review: 'Owner review findings' });
 
     const result = runHook(
       SUBAGENT_START_HOOK,
@@ -341,33 +348,86 @@ describe('subagent-start.mjs', () => {
 
     const output = expectHookOutput(result);
     expect(output.hookSpecificOutput.hookEventName).toBe('SubagentStart');
-    expect(output.hookSpecificOutput.additionalContext).toContain('Guidelines for subagent');
+    expect(output.hookSpecificOutput.additionalContext).toBe('Guidelines for subagent');
   });
+});
 
-  it.each([SESSION_START_HOOK, SUBAGENT_START_HOOK])('renders tools in the standard location in %s', (hook) => {
+describe('coral-start.mjs', () => {
+  it('injects the launch, wait, and send guidance at session start', () => {
     const fixture = createFixture();
-    const binDir = join(fixture.root, 'bin');
-    const standardDir = join(fixture.root, '.local', 'bin');
-    mkdirSync(binDir);
-    symlinkSync(process.execPath, join(binDir, 'node'));
-    mkdirSync(standardDir, { recursive: true });
-    writeFileSync(join(standardDir, 'codebase-memory-mcp'), 'binary', { mode: 0o755 });
-    writeInjectBundle(fixture.pluginRoot, { tools: 'Tools\n\n{{EQUIPPED_TOOLS}}\n\nDone' });
+    writeInjectBundle(fixture.pluginRoot, {
+      cli: readFileSync(new URL('../../../clients/inject/cli.md', import.meta.url), 'utf8'),
+      orchestrator: readFileSync(new URL('../../../clients/inject/orchestrator.md', import.meta.url), 'utf8'),
+    });
 
     const result = runHook(
-      hook,
-      { session_id: 'sess-parent' },
-      {
-        CLAUDE_PLUGIN_ROOT: fixture.pluginRoot,
-        HOME: fixture.root,
-        PATH: binDir,
-      },
+      CORAL_START_HOOK,
+      { hook_event_name: 'SessionStart', session_id: 'sess-123' },
+      { CLAUDE_PLUGIN_ROOT: fixture.pluginRoot },
     );
 
-    const output = expectHookOutput(result);
-    expect(output.hookSpecificOutput.additionalContext).toContain('- codebase-memory:');
-    expect(output.hookSpecificOutput.additionalContext).not.toContain('{{EQUIPPED_TOOLS}}');
+    expect(result.status).toBe(0);
+    const { additionalContext } = expectHookOutput(result).hookSpecificOutput;
+    expect(additionalContext).toContain('coral-cli codex <agent> --work-dir "<path>" -i -');
+    expect(additionalContext).toContain('command=coral-cli jobs wait <job-id>');
+    expect(additionalContext).toContain('timeout --preserve-status 100 coral-cli jobs wait <job-id>');
+    expect(additionalContext).toContain('A continuation starts the next execution in the same conversation');
   });
+
+  it('emits the Coral payload on Copilot without a hookSpecificOutput envelope', () => {
+    const fixture = createFixture();
+    writeInjectBundle(fixture.pluginRoot, { cli: 'Coral CLI', orchestrator: 'Owner orchestration' });
+
+    const result = runHook(
+      CORAL_START_HOOK,
+      { hook_event_name: 'SessionStart', session_id: 'sess-copilot' },
+      { CLAUDE_PLUGIN_ROOT: fixture.pluginRoot, COPILOT_PLUGIN_ROOT: fixture.pluginRoot, HOME: fixture.root },
+    );
+
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({ additionalContext: 'Coral CLI\n\nOwner orchestration' });
+  });
+
+  it.each(['SessionStart', 'SubagentStart'])(
+    'renders available tools and audience-specific guidance for %s',
+    (hookEventName) => {
+      const fixture = createFixture();
+      const binDir = join(fixture.root, 'bin');
+      const standardDir = join(fixture.root, '.local', 'bin');
+      mkdirSync(binDir);
+      symlinkSync(process.execPath, join(binDir, 'node'));
+      mkdirSync(standardDir, { recursive: true });
+      writeFileSync(join(standardDir, 'codebase-memory-mcp'), 'binary', { mode: 0o755 });
+      writeInjectBundle(fixture.pluginRoot, {
+        tools: 'Tools\n\n{{EQUIPPED_TOOLS}}\n\nDone',
+        cli: 'Coral CLI',
+        orchestrator: 'Owner orchestration',
+      });
+
+      const result = runHook(
+        CORAL_START_HOOK,
+        { hook_event_name: hookEventName, session_id: 'sess-parent' },
+        {
+          CLAUDE_PLUGIN_ROOT: fixture.pluginRoot,
+          HOME: fixture.root,
+          PATH: binDir,
+        },
+      );
+
+      expect(result.status).toBe(0);
+      const output = expectHookOutput(result);
+      const { additionalContext } = output.hookSpecificOutput;
+      expect(output.hookSpecificOutput.hookEventName).toBe(hookEventName);
+      expect(additionalContext).toContain('- codebase-memory:');
+      expect(additionalContext).toContain('Coral CLI');
+      expect(additionalContext).not.toContain('{{EQUIPPED_TOOLS}}');
+      if (hookEventName === 'SessionStart') {
+        expect(additionalContext).toContain('Owner orchestration');
+      } else {
+        expect(additionalContext).not.toContain('Owner orchestration');
+      }
+    },
+  );
 });
 
 describe('kb-promote-gate.mjs', () => {

@@ -3,17 +3,18 @@ import { join } from 'node:path';
 import { coralProjectDir, resolveKbRoot, resolveProjectSource } from './hook-utils.mjs';
 
 export const INJECT_FRAGMENT_GROUPS = {
-  base: ['core.md', 'tools.md', 'cli.md', 'orchestrator.md'],
+  guidelines: ['core.md', 'review.md'],
+  coral: ['tools.md', 'cli.md', 'orchestrator.md'],
   kb: ['kb/common.md', 'kb/orchestrator.md', 'kb/session.md'],
 };
 
-function readInjectBundle({ asOwner, kbEnabled }) {
-  return {
-    base: INJECT_FRAGMENT_GROUPS.base.filter((path) => asOwner || path !== 'orchestrator.md'),
-    kb: kbEnabled
-      ? INJECT_FRAGMENT_GROUPS.kb.filter((path) => asOwner || path !== 'kb/orchestrator.md')
-      : [],
-  };
+const OWNER_ONLY_FRAGMENTS = new Set(['review.md', 'orchestrator.md', 'kb/orchestrator.md']);
+
+function readInjectBundle({ asOwner, group, kbEnabled }) {
+  const fragments = INJECT_FRAGMENT_GROUPS[group];
+  if (fragments === undefined) throw new Error(`Unknown inject fragment group: ${group}`);
+  if (group === 'kb' && !kbEnabled) return [];
+  return asOwner ? fragments : fragments.filter((path) => !OWNER_ONLY_FRAGMENTS.has(path));
 }
 
 // Render the equipped-tools block at the end of tools.md. Empty string
@@ -44,8 +45,7 @@ export function renderInject({
   kbEnabled = true,
   equippedTools,
 }) {
-  const fragmentPaths = readInjectBundle({ asOwner, kbEnabled })[group];
-  if (fragmentPaths === undefined) throw new Error(`Unknown inject fragment group: ${group}`);
+  const fragmentPaths = readInjectBundle({ asOwner, group, kbEnabled });
   const bundle = fragmentPaths
     .map((path) => readFileSync(join(pluginRoot, 'inject', path), 'utf-8').trimEnd())
     .filter(Boolean)

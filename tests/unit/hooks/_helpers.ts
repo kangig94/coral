@@ -8,6 +8,7 @@ import { projectPathKey } from '../../../clients/hooks/lib/plugin-paths.mjs';
 
 // Hook entry points — absolute paths so tests are independent of cwd resolution.
 export const SESSION_START_HOOK = join(process.cwd(), 'clients', 'hooks', 'session-start.mjs');
+export const CORAL_START_HOOK = join(process.cwd(), 'clients', 'hooks', 'coral-start.mjs');
 export const KB_START_HOOK = join(process.cwd(), 'clients', 'hooks', 'kb-start.mjs');
 export const SUBAGENT_START_HOOK = join(process.cwd(), 'clients', 'hooks', 'subagent-start.mjs');
 export const SUBAGENT_TRACK_HOOK = join(process.cwd(), 'clients', 'hooks', 'subagent-track.mjs');
@@ -280,6 +281,7 @@ export function expectBashRewriteOutput(result: HookRunResult): BashRewriteOutpu
 
 export type InjectBundleFixture = {
   core?: string;
+  review?: string;
   tools?: string;
   cli?: string;
   orchestrator?: string;
@@ -294,6 +296,7 @@ export function writeInjectBundle(pluginRoot: string, input: string | InjectBund
   mkdirSync(join(injectRoot, 'kb'), { recursive: true });
   for (const [relativePath, content] of [
     ['core.md', fragments.core],
+    ['review.md', fragments.review],
     ['tools.md', fragments.tools],
     ['cli.md', fragments.cli],
     ['orchestrator.md', fragments.orchestrator],
