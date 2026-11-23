@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 
 import { existsSync } from 'node:fs';
-import { resolveEquippedTools } from './lib/equip-tools.mjs';
+import { fitAdditionalContext } from './lib/additional-context.mjs';
 import { exitIfChildProcess, exitIfWrongFlavor, readStdin, writeHookOutput } from './lib/hook-utils.mjs';
 import { renderInject } from './lib/inject-render.mjs';
+
 exitIfChildProcess();
 exitIfWrongFlavor();
 
@@ -20,12 +21,12 @@ try {
     projectDir,
     sessionId,
     asOwner: false,
-    group: 'base',
-    equippedTools: resolveEquippedTools(),
+    group: 'guidelines',
   });
 
+  const additionalContext = fitAdditionalContext({ fixedContent: injectContent });
   writeHookOutput({
-    hookSpecificOutput: { hookEventName: 'SubagentStart', additionalContext: injectContent },
+    hookSpecificOutput: { hookEventName: 'SubagentStart', additionalContext },
   });
 } catch {
   process.exit(0);

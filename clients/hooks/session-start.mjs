@@ -18,7 +18,6 @@ import {
   writeHookOutput,
 } from './lib/hook-utils.mjs';
 import { fitAdditionalContext, truncateUtf8 } from './lib/additional-context.mjs';
-import { resolveEquippedTools } from './lib/equip-tools.mjs';
 import { renderInject } from './lib/inject-render.mjs';
 import { projectIgnoreOutcomeNotice, renderProjectIgnoreResultNotices } from './lib/project-ignore/notices.mjs';
 import { isProjectIgnoreResult } from './lib/project-ignore/result.mjs';
@@ -161,8 +160,7 @@ try {
     projectDir,
     sessionId,
     asOwner: true,
-    group: 'base',
-    equippedTools: resolveEquippedTools(),
+    group: 'guidelines',
   });
 
   const host = hostKind();

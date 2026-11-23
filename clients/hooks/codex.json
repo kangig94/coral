@@ -11,6 +11,11 @@
           },
           {
             "type": "command",
+            "command": "test -d \"${PLUGIN_ROOT}\" || exit 0; node \"${PLUGIN_ROOT}/hooks/coral-start.mjs\"",
+            "timeout": 5
+          },
+          {
+            "type": "command",
             "command": "test -d \"${PLUGIN_ROOT}\" || exit 0; node \"${PLUGIN_ROOT}/hooks/kb-start.mjs\"",
             "timeout": 5
           }

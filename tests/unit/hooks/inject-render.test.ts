@@ -4,7 +4,7 @@ import { basename, join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { KB_START_HOOK, expectHookOutput, runHook } from '#tests/unit/hooks/_helpers.js';
+import { KB_START_HOOK, expectHookOutput, runHook, writeInjectBundle } from '#tests/unit/hooks/_helpers.js';
 
 // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
 import { MAX_ADDITIONAL_CONTEXT_BYTES } from '../../../clients/hooks/lib/additional-context.mjs';
@@ -21,33 +21,10 @@ afterEach(() => {
   }
 });
 
-type InjectFragments = {
-  core?: string;
-  tools?: string;
-  cli?: string;
-  orchestrator?: string;
-  kbCommon?: string;
-  kbOrchestrator?: string;
-  kbSession?: string;
-};
-
-function pluginRootWith(input: string | InjectFragments): string {
+function pluginRootWith(input: Parameters<typeof writeInjectBundle>[1]): string {
   const root = mkdtempSync(join(tmpdir(), 'coral-inject-render-'));
   createdRoots.push(root);
-  const fragments: InjectFragments = typeof input === 'string' ? { core: input } : input;
-  const injectRoot = join(root, 'inject');
-  mkdirSync(join(injectRoot, 'kb'), { recursive: true });
-  for (const [relativePath, content] of [
-    ['core.md', fragments.core],
-    ['tools.md', fragments.tools],
-    ['cli.md', fragments.cli],
-    ['orchestrator.md', fragments.orchestrator],
-    ['kb/common.md', fragments.kbCommon],
-    ['kb/orchestrator.md', fragments.kbOrchestrator],
-    ['kb/session.md', fragments.kbSession],
-  ] as const) {
-    writeFileSync(join(injectRoot, relativePath), content ?? '', 'utf-8');
-  }
+  writeInjectBundle(root, input);
   return root;
 }
 
@@ -105,59 +82,67 @@ describe('renderInject fragment composition', () => {
       name: 'owner session',
       asOwner: true,
       kbEnabled: true,
-      expectedKb: ['kb common', 'orchestrator', 'session'],
+      guidelines: ['core', 'review'],
+      coral: ['tools', 'cli', 'orchestrator'],
+      kb: ['kb common', 'kb orchestrator', 'kb session'],
     },
     {
       name: 'subagent session',
       asOwner: false,
       kbEnabled: true,
-      expectedKb: ['kb common', 'session'],
+      guidelines: ['core'],
+      coral: ['tools', 'cli'],
+      kb: ['kb common', 'kb session'],
     },
-    { name: 'KB-disabled session', asOwner: true, kbEnabled: false, expectedKb: [] },
-  ])('composes the $name fragment groups in order', ({ asOwner, kbEnabled, expectedKb }) => {
+    {
+      name: 'KB-disabled session',
+      asOwner: true,
+      kbEnabled: false,
+      guidelines: ['core', 'review'],
+      coral: ['tools', 'cli', 'orchestrator'],
+      kb: [],
+    },
+  ])('composes the $name fragment groups', ({ asOwner, kbEnabled, guidelines, coral, kb }) => {
     const pluginRoot = pluginRootWith({
       core: 'core',
+      review: 'review',
       tools: 'tools',
+      cli: 'cli',
+      orchestrator: 'orchestrator',
       kbCommon: 'kb common',
-      kbOrchestrator: 'orchestrator',
-      kbSession: 'session',
+      kbOrchestrator: 'kb orchestrator',
+      kbSession: 'kb session',
     });
-    const base = renderInject({
-      pluginRoot,
-      projectDir: undefined,
-      sessionId: 's',
-      asOwner,
-      group: 'base',
-      kbEnabled,
-    });
-    const kb = renderInject({
-      pluginRoot,
-      projectDir: undefined,
-      sessionId: 's',
-      asOwner,
-      group: 'kb',
-      kbEnabled,
-    });
+    const input = { pluginRoot, projectDir: undefined, sessionId: 's', asOwner, kbEnabled };
 
-    expect(base).toBe('core\n\ntools');
-    expect(kb).toBe(expectedKb.join('\n\n'));
+    expect(renderInject({ ...input, group: 'guidelines' })).toBe(guidelines.join('\n\n'));
+    expect(renderInject({ ...input, group: 'coral' })).toBe(coral.join('\n\n'));
+    expect(renderInject({ ...input, group: 'kb' })).toBe(kb.join('\n\n'));
   });
 
-  it('keeps the owner payload with equipped tools at or below 8,000 bytes', () => {
-    const input = {
+  it.each([
+    { hook: 'session-start', group: 'guidelines', asOwner: true },
+    { hook: 'subagent-start', group: 'guidelines', asOwner: false },
+    { hook: 'coral-start', group: 'coral', asOwner: true },
+    { hook: 'coral-start', group: 'coral', asOwner: false },
+    { hook: 'kb-start', group: 'kb', asOwner: true },
+    { hook: 'kb-start', group: 'kb', asOwner: false },
+  ])('keeps the $hook payload in budget (asOwner=$asOwner)', ({ hook, group, asOwner }) => {
+    const sessionId = 'size-gate-session';
+    const content = renderInject({
       pluginRoot: join(process.cwd(), 'clients'),
-      projectDir: undefined,
-      sessionId: 'size-gate-session',
-      asOwner: true,
-      kbEnabled: true,
+      projectDir: group === 'kb' && !asOwner ? undefined : process.cwd(),
+      sessionId,
+      asOwner,
+      group,
       equippedTools: EQUIP_AGENT_TOOLS,
-    };
-    const base = renderInject({ ...input, group: 'base' });
-    const kb = renderInject({ ...input, group: 'kb' });
-    const basePayload = `SessionStart:session_id=size-gate-session\nCurrent host: claude\nClaude config dir: /tmp/claude\n\n${base}`;
+    });
+    const header =
+      hook === 'session-start'
+        ? `SessionStart:session_id=${sessionId}\nCurrent host: claude\nClaude config dir: /home/test/.claude\n\n`
+        : '';
 
-    expect(Buffer.byteLength(basePayload, 'utf-8')).toBeLessThanOrEqual(MAX_ADDITIONAL_CONTEXT_BYTES);
-    expect(Buffer.byteLength(kb, 'utf-8')).toBeLessThanOrEqual(MAX_ADDITIONAL_CONTEXT_BYTES);
+    expect(Buffer.byteLength(header + content, 'utf-8')).toBeLessThanOrEqual(MAX_ADDITIONAL_CONTEXT_BYTES);
   });
 
   it('fits the real KB hooks when the project wiki wake-up exceeds the payload budget', () => {
@@ -187,7 +172,7 @@ describe('renderInject {{EQUIPPED_TOOLS}}', () => {
       projectDir: undefined,
       sessionId: 's',
       asOwner: true,
-      group: 'base',
+      group: 'coral',
       kbEnabled: true,
       equippedTools: [
         {
@@ -206,13 +191,13 @@ describe('renderInject {{EQUIPPED_TOOLS}}', () => {
     expect(out).not.toContain('{{EQUIPPED_TOOLS}}');
   });
 
-  it('strips the placeholder when no tools are provided (subagents / empty snapshot)', () => {
+  it('strips the placeholder when no tools are provided (empty tool list)', () => {
     const out = renderInject({
       pluginRoot: pluginRootWith({ tools: TEMPLATE }),
       projectDir: undefined,
       sessionId: 's',
       asOwner: false,
-      group: 'base',
+      group: 'coral',
       kbEnabled: true,
     });
 
@@ -235,7 +220,7 @@ describe('renderInject path aliases', () => {
       projectDir,
       sessionId: 's',
       asOwner: true,
-      group: 'base',
+      group: 'guidelines',
       kbEnabled: true,
     });
 
@@ -261,7 +246,7 @@ describe('renderInject path aliases', () => {
       projectDir: undefined,
       sessionId: 's',
       asOwner: true,
-      group: 'base',
+      group: 'guidelines',
       kbEnabled: true,
     });
     expect(out).toContain('project: {{CORAL_PROJECT}}');

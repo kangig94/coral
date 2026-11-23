@@ -23,7 +23,6 @@ vi.mock('../../../clients/hooks/lib/hook-utils.mjs', async (importOriginal) => (
   writeHookOutput: output,
 }));
 vi.mock('../../../clients/hooks/lib/inject-render.mjs', () => ({ renderInject: () => 'session context' }));
-vi.mock('../../../clients/hooks/lib/equip-tools.mjs', () => ({ resolveEquippedTools: () => [] }));
 
 afterEach(() => {
   vi.unstubAllEnvs();
